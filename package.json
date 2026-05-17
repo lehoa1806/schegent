@@ -1,0 +1,504 @@
+{
+  "name": "schegent",
+  "displayName": "Schegent",
+  "description": "Autonomously orchestrates the Claude Code CLI to drive the Speckit spec-driven development pipeline.",
+  "version": "0.1.0",
+  "publisher": "schegent",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "speckit",
+    "claude",
+    "spec-driven",
+    "automation",
+    "orchestration"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:.specify/"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "schegent",
+          "title": "Schegent",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "schegent": [
+        {
+          "id": "schegent.sidebar",
+          "name": "Schegent",
+          "type": "webview",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "schegent.auto",
+        "title": "Schegent: Run Autonomous Workflow"
+      },
+      {
+        "command": "schegent.schedule",
+        "title": "Schegent: Enqueue Feature Request"
+      },
+      {
+        "command": "schegent.resume",
+        "title": "Schegent: Resume Paused or Failed Workflow"
+      },
+      {
+        "command": "schegent.cancel",
+        "title": "Schegent: Cancel In-Flight Workflow"
+      },
+      {
+        "command": "schegent.reset",
+        "title": "Schegent: Reset Workspace State"
+      },
+      {
+        "command": "schegent.showAuditLog",
+        "title": "Schegent: Show Audit Log"
+      },
+      {
+        "command": "schegent.pauseQueue",
+        "title": "Schegent: Pause Queue"
+      },
+      {
+        "command": "schegent.resumeQueue",
+        "title": "Schegent: Resume Queue"
+      },
+      {
+        "command": "schegent.retryQueuedItem",
+        "title": "Schegent: Retry Queued Item"
+      },
+      {
+        "command": "schegent.moveQueuedItemUp",
+        "title": "Schegent: Move Queued Item Up"
+      },
+      {
+        "command": "schegent.moveQueuedItemDown",
+        "title": "Schegent: Move Queued Item Down"
+      },
+      {
+        "command": "schegent.clearCompleted",
+        "title": "Schegent: Clear Completed Queue Items"
+      },
+      {
+        "command": "schegent.clearFailed",
+        "title": "Schegent: Clear Failed Queue Items"
+      },
+      {
+        "command": "schegent.rerunFromHistory",
+        "title": "Schegent: Rerun From History"
+      },
+      {
+        "command": "schegent.showActiveRun",
+        "title": "Schegent: Show Active Run"
+      },
+      {
+        "command": "schegent.openDashboard",
+        "title": "Schegent: Open Dashboard"
+      },
+      {
+        "command": "schegent.retryActiveRun",
+        "title": "Schegent: Retry Active Run"
+      },
+      {
+        "command": "schegent.redetectClaudeTransport",
+        "title": "Schegent: Re-detect Claude CLI prompt transport"
+      }
+    ],
+    "configuration": {
+      "title": "Schegent",
+      "properties": {
+        "schegent.cli.path": {
+          "type": "string",
+          "default": "claude",
+          "scope": "application",
+          "description": "Path to the Claude CLI binary."
+        },
+        "schegent.backend.runner": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "default": "claude",
+          "scope": "application",
+          "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in single-shot `exec --no-stream` mode; the prompt is piped over stdin. Existing workspaces see no behavior change. See docs/operations/backends.md for the contract any backend must honor."
+        },
+        "schegent.loop.maxIterations": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "scope": "resource",
+          "description": "Maximum iterations for the Clarify and Analyze loop phases before force-advancing."
+        },
+        "schegent.watchdog.pollIntervalMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "scope": "resource",
+          "description": "Credit watchdog poll interval in minutes."
+        },
+        "schegent.invocation.timeoutSeconds": {
+          "type": "number",
+          "default": 1800,
+          "minimum": 30,
+          "scope": "resource",
+          "description": "Per-phase CLI invocation timeout in seconds."
+        },
+        "schegent.audit.rotation.sizeMB": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "scope": "resource",
+          "description": "Audit log rotation threshold in megabytes."
+        },
+        "schegent.audit.rotation.maxAgeDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "scope": "resource",
+          "description": "Audit log rotation max age in days."
+        },
+        "schegent.rules.injectPerPhase": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Optionally write phase-specific rule files (.claude/rules/<phase>.md) before each invocation."
+        },
+        "schegent.models": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "List of custom model identifiers (e.g. `claude-3-7-sonnet-20250219`, `sonnet`, `opus`) available in the Pipeline Builder.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schegent.phases": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Custom phase definitions. Each phase is a reusable named Claude CLI invocation step. User-defined phases with the same `id` as a built-in phase **shadow** the built-in (replace it). Built-in phase ids are reserved: `specify`, `clarify`, `plan`, `tasks`, `analyze`, `implement`, `finalize`, `done`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "instruction",
+              "loopable"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                "markdownDescription": "Unique identifier (kebab-case, alphanumeric + hyphen, ≤ 64 chars)."
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "markdownDescription": "Display name shown in sidebar tiles, audit logs, and the pipeline picker."
+              },
+              "instruction": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8192,
+                "markdownDescription": "Phase-specific directive injected into the Claude CLI prompt."
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "markdownDescription": "Optional Claude model id passed as `--model <id>` to the CLI for this phase only."
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "markdownDescription": "Optional reasoning effort level passed as `--effort <level>` to the CLI for this phase only."
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600,
+                "markdownDescription": "Optional per-phase timeout in seconds (1 to 3600)."
+              },
+              "loopable": {
+                "type": "boolean",
+                "default": false,
+                "markdownDescription": "When `true`, the phase re-runs until its stdout signals `[SCHEGENT_STATUS: CLEAR]`."
+              },
+              "retryCondition": {
+                "type": "string",
+                "minLength": 1,
+                "markdownDescription": "Optional retry-condition DSL expression. When set AND the phase invocation produces a well-formed audit-log block, the expression is evaluated against the audit-entry's `metrics` map (extracted from `<identifier>: <number>` lines inside the SCHEGENT AUDIT LOG block). A truthy result loops the phase; a falsy result advances. The DSL supports identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive), signed numeric literals, comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), boolean combinators (`and` / `or` / `&&` / `||`), unary negation (`not` / `!`), and parentheses. Operator precedence (highest to lowest): `not`/`!` > comparisons > `and`/`&&` > `or`/`||`. Arithmetic, function calls, and member access are NOT supported. Invalid expressions are stripped at configuration load with a one-shot host-logger warning; the surrounding phase remains loadable and falls back to default loop semantics. Examples: `\"open_questions > 0\"`, `\"unresolved_findings > 0 or open_questions > 0\"`, `\"not (confidence > 0.85)\"`."
+              }
+            }
+          }
+        },
+        "schegent.pipelines": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Custom pipeline definitions. A pipeline is an ordered chain of phase ids. The id `speckit-new-feature` is reserved for the built-in pipeline.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "phases"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                "markdownDescription": "Unique pipeline identifier."
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "markdownDescription": "Display name shown in the QuickPick picker and the sidebar header."
+              },
+              "phases": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "markdownDescription": "Ordered list of phase ids. Each id must match a built-in phase id or a `schegent.phases[].id` you defined."
+              }
+            }
+          }
+        },
+        "schegent.defaultPipelineId": {
+          "type": "string",
+          "default": "speckit-new-feature",
+          "scope": "resource",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "markdownDescription": "Pipeline id used when a feature is enqueued without an explicit selection. Defaults to the built-in `speckit-new-feature` pipeline."
+        },
+        "schegent.retry.maxAttempts": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 5,
+          "scope": "resource",
+          "markdownDescription": "Maximum delayed-retry attempts per run before pausing the queue. When a phase encounters a transient error or rate limit, it schedules a delayed retry. After this many consecutive failures without a clean recovery, the run and queue are paused. Range: 1–5. Feature 056 reduced the advertised max from 20 to match the effective implementation cap (`DELAYED_RETRY_CAP = 5`)."
+        },
+        "schegent.queue.globalConcurrencyCap": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 1,
+          "scope": "resource",
+          "markdownDescription": "Maximum number of workflow runs that may be in-flight at the same time. v1 supports exactly one active run; this knob is pinned at 1 for forward-compatibility. Values >1 saved by older versions are clamped on read. Range: 1–1."
+        },
+        "schegent.logging.verbose": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only — prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
+        },
+        "schegent.logging.runtimeLogLevel": {
+          "type": "string",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ],
+          "default": "INFO",
+          "scope": "resource",
+          "description": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit — mid-run changes apply at the next event boundary.",
+          "markdownDescription": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit — mid-run changes apply at the next event boundary."
+        },
+        "schegent.logging.runtimeLogFilePath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Accepts an absolute path (POSIX or Windows) or a workspace-relative path. Relative paths containing `..` are rejected. The parent directory is auto-created on first write; the file is created with mode 0644 on POSIX.",
+          "markdownDescription": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Accepts an absolute path (POSIX or Windows) or a workspace-relative path. Relative paths containing `..` are rejected. The parent directory is auto-created on first write; the file is created with mode `0644` on POSIX."
+        },
+        "schegent.logging.runtimeLogMaxBytes": {
+          "type": "integer",
+          "default": 5242880,
+          "minimum": 65536,
+          "maximum": 1073741824,
+          "scope": "resource",
+          "markdownDescription": "Maximum size in bytes of the active runtime log file before rotation. When the next write would push the file past this size, the current file is rotated to `<path>.1` and existing generations shift by one (`.1` → `.2`, ...). Range: 64 KiB–1 GiB. Default: 5 MiB. Setting changes are read on every log emit, so no extension reload is required."
+        },
+        "schegent.logging.runtimeLogMaxGenerations": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 20,
+          "scope": "resource",
+          "markdownDescription": "Number of rotated runtime log generations to keep (`<path>.1` ... `<path>.N`). Older generations are deleted on the next rotation. Range: 0–20. Default: 3. Setting changes are read on every log emit."
+        },
+        "schegent.fatalSignatures": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "markdownDescription": "Operator-additive supplement to the code-resident Fatal Signature Registry. Each element is a verbatim substring; when present in CLI stdout or stderr, the active phase fails fast on the current invocation. Code-resident signatures are managed via PR review and cannot be removed or modified here. A malformed value falls back to `[]` without blocking extension activation."
+        },
+        "schegent.claude.autoCompactPctOverride": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "minimum": 1,
+          "maximum": 100,
+          "markdownDescription": "When set, the value is exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to the Claude Code CLI to override its auto-compaction threshold. Integer between 1 and 100 (percent). Leave unset to use the CLI default."
+        },
+        "schegent.wakeUp.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Enable the Wake up background scheduler. When enabled, a per-user OS-native scheduled task (launchd on macOS, Task Scheduler on Windows, cron/systemd user units on Linux) periodically invokes a 1-token Claude CLI command in a sandboxed temporary directory to keep the 5-hour rolling allocation window warm. The OS entry is installed only on the **primary** VS Code host."
+        },
+        "schegent.wakeUp.schedulerType": {
+          "type": "string",
+          "default": "chronological",
+          "enum": [
+            "chronological",
+            "periodic"
+          ],
+          "scope": "application",
+          "markdownDescription": "Wake up scheduler trigger style. `chronological` fires once per day at a fixed local time (see `schegent.wakeUp.chronologicalTime`). `periodic` fires at a fixed interval (see `schegent.wakeUp.periodicInterval`)."
+        },
+        "schegent.wakeUp.chronologicalTime": {
+          "type": "string",
+          "default": "04:00",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "scope": "application",
+          "markdownDescription": "Daily fire time for Wake up in 24-hour `HH:MM` form (local time). Used only when `schegent.wakeUp.schedulerType` is `chronological`. Defaults to `04:00`."
+        },
+        "schegent.wakeUp.periodicInterval": {
+          "type": "string",
+          "default": "Every 4h",
+          "pattern": "^Every (\\d+)(m|h)$",
+          "scope": "application",
+          "markdownDescription": "Periodic fire interval for Wake up in `Every Nm` or `Every Nh` form. Minimum granularity is 1 minute (`Every 1m`). Intervals below 5 hours are accepted but surface a non-blocking advisory in the Settings UI because they may waste tokens within an unreset rolling window. Used only when `schegent.wakeUp.schedulerType` is `periodic`."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build:webview && npm run build:host",
+    "build:host": "node esbuild.config.mjs",
+    "build:webview": "npm --prefix webview-ui run build",
+    "dev:webview": "npm --prefix webview-ui run dev",
+    "typecheck": "tsc --noEmit",
+    "typecheck:webview": "npm --prefix webview-ui run typecheck",
+    "lint": "eslint --ext .ts src tests",
+    "lint:webview": "npm --prefix webview-ui run lint --if-present",
+    "test": "vitest run && npm --prefix webview-ui run test",
+    "test:host": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:webview": "npm --prefix webview-ui run test",
+    "test:perf": "vitest run tests/perf/",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:integration:compile": "tsc -p tsconfig.integration.json",
+    "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
+    "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test && npm run test:e2e && npm run build && npm run test:integration",
+    "package": "vsce package --no-dependencies",
+    "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.1",
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lehoa1806/schegent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lehoa1806/schegent/issues"
+  },
+  "homepage": "https://github.com/lehoa1806/schegent",
+  "eslintConfig": {
+    "root": true,
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+      "ecmaVersion": 2022,
+      "sourceType": "module"
+    },
+    "plugins": [
+      "@typescript-eslint"
+    ],
+    "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended"
+    ],
+    "ignorePatterns": [
+      "dist/",
+      "node_modules/",
+      "out/",
+      ".specify/",
+      "specs/",
+      "docs/",
+      ".claude/",
+      "webview-ui/",
+      "*.mjs",
+      "*.config.js"
+    ],
+    "rules": {
+      "no-console": "off",
+      "no-empty": [
+        "error",
+        {
+          "allowEmptyCatch": true
+        }
+      ],
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          "argsIgnorePattern": "^_",
+          "varsIgnorePattern": "^_"
+        }
+      ],
+      "@typescript-eslint/no-non-null-assertion": "off"
+    }
+  }
+}

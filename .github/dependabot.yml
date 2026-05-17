@@ -1,0 +1,103 @@
+# Schegent Dependabot policy — see specs/037-dependabot/spec.md
+# Major-version bumps are intentionally excluded (FR-012); open manually if desired.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps-dev)"
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+    groups:
+      vitest-toolchain:
+        patterns:
+          - "vitest"
+        update-types:
+          - "minor"
+          - "patch"
+      eslint:
+        patterns:
+          - "eslint"
+          - "@typescript-eslint/*"
+        update-types:
+          - "minor"
+          - "patch"
+      typescript:
+        patterns:
+          - "typescript"
+          - "@types/*"
+        update-types:
+          - "minor"
+          - "patch"
+      esbuild:
+        patterns:
+          - "esbuild"
+        update-types:
+          - "minor"
+          - "patch"
+      vscode-test:
+        patterns:
+          - "@vscode/test-electron"
+          - "@vscode/vsce"
+        update-types:
+          - "minor"
+          - "patch"
+      prettier:
+        patterns:
+          - "prettier"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/webview-ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps-dev)"
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+    groups:
+      vite-toolchain:
+        patterns:
+          - "vite"
+          - "@sveltejs/vite-plugin-svelte"
+        update-types:
+          - "minor"
+          - "patch"
+      svelte:
+        patterns:
+          - "svelte"
+          - "svelte-check"
+          - "@tsconfig/svelte"
+        update-types:
+          - "minor"
+          - "patch"
+      vitest-toolchain:
+        patterns:
+          - "vitest"
+          - "@testing-library/svelte"
+          - "jsdom"
+        update-types:
+          - "minor"
+          - "patch"
+      typescript:
+        patterns:
+          - "typescript"
+        update-types:
+          - "minor"
+          - "patch"

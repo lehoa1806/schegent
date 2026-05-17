@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose a new capability for the schegent VS Code extension.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a new capability.
+
+        Larger features go through the **spec-first workflow**: see the `/speckit-specify` and related slash commands in [CONTRIBUTING.md](../CONTRIBUTING.md). Use this issue as the starting conversation before drafting a spec under `specs/<NNN-feature>/`.
+
+  - type: input
+    id: short-title
+    attributes:
+      label: One-line summary
+      description: A short headline describing the capability.
+      placeholder: e.g., "Allow operator to override phase timeout per pipeline"
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why — the problem being solved
+      description: What problem or limitation does this feature address? (Keep it user-facing — no implementation details yet.)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What — proposed solution (high level)
+      description: How would this work from the operator's point of view? (Skip the *how* of the implementation — the spec phase covers that.)
+    validations:
+      required: true
+
+  - type: textarea
+    id: hard-rule-impact
+    attributes:
+      label: Impact on hard-rule surfaces (optional)
+      description: |
+        Does this change need to touch any of the high-stakes invariants listed in [CLAUDE.md](../CLAUDE.md)?
+        Common surfaces: `src/lib/logger.ts` (sanitization SoT), `src/headless/`, `src/telemetry/`, `src/wakeup/` (`vscode`-import bans), the audit log writer, `MUTATING_COMMANDS` (primary-host gate), `WorkflowController.driveRun()` (lock-release), or `src/runner/claude-cli.ts` (`-c` single-append-site).
+      placeholder: e.g., "Would extend SECRET_PATTERNS in src/lib/logger.ts" or "No hard-rule surfaces affected"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-checks (optional)
+      description: Tick what applies. Unchecked boxes do not block triage.
+      options:
+        - label: I have searched existing issues for duplicates.
+        - label: I have read [CONTRIBUTING.md](../CONTRIBUTING.md).
+        - label: I am willing to drive the spec-first workflow if this is accepted.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Reminder: do not paste secrets, tokens, or environment variables into any field above. This issue is public.

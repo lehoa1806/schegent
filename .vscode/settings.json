@@ -1,0 +1,6 @@
+{
+    "schegent.fatalSignatures": [],
+    "schegent.logging.verbose": true,
+    "schegent.claude.autoCompactPctOverride": 60,
+    "schegent.logging.runtimeLogLevel": "DEBUG"
+}

@@ -1,0 +1,160 @@
+:root {
+  /* Base VS Code tokens */
+  --schegent-fg: var(--vscode-foreground);
+  --schegent-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --schegent-muted-fg: var(--vscode-descriptionForeground, var(--vscode-disabledForeground));
+  --schegent-disabled-fg: var(--vscode-disabledForeground);
+  --schegent-border: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  --schegent-divider: var(--vscode-sideBarSectionHeader-border, var(--vscode-editorWidget-border));
+
+  --schegent-button-bg: var(--vscode-button-background);
+  --schegent-button-fg: var(--vscode-button-foreground);
+  --schegent-button-hover: var(--vscode-button-hoverBackground);
+  --schegent-button-secondary-bg: var(--vscode-button-secondaryBackground);
+  --schegent-button-secondary-fg: var(--vscode-button-secondaryForeground);
+
+  --schegent-input-bg: var(--vscode-input-background);
+  --schegent-input-fg: var(--vscode-input-foreground);
+  --schegent-input-border: var(--vscode-input-border, var(--vscode-editorWidget-border));
+
+  --schegent-list-hover: var(--vscode-list-hoverBackground);
+  --schegent-list-active: var(--vscode-list-activeSelectionBackground);
+
+  --schegent-focus-border: var(--vscode-focusBorder);
+
+  --schegent-color-active: var(--vscode-charts-blue, var(--vscode-button-background));
+  --schegent-color-completed: var(--vscode-charts-green, #2ea043);
+  --schegent-color-warning: var(--vscode-charts-yellow, #d29922);
+  --schegent-color-error: var(--vscode-charts-red, #f85149);
+  --schegent-color-system: var(--vscode-disabledForeground);
+  --schegent-color-disabled: var(--vscode-charts-purple, #b180d7);
+
+  /* Premium Design Tokens */
+  --sch-font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --sch-glass-bg: color-mix(in srgb, var(--vscode-editor-background) 60%, transparent);
+  --sch-glass-border: color-mix(in srgb, var(--vscode-editorWidget-border) 30%, transparent);
+  --sch-glow-active: 0 0 12px var(--vscode-charts-blue);
+  --sch-glow-success: 0 0 12px var(--vscode-charts-green);
+  --sch-accent-gradient: linear-gradient(135deg, var(--vscode-charts-blue), var(--vscode-charts-purple, #b180d7));
+  --sch-card-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+
+  --schegent-radius: 8px; /* Increased for premium feel */
+  --schegent-gap: 12px;
+  --schegent-pad: 16px;
+
+  /* Hover-text primitive (Feature 018) — matches VS Code editor hover widget. */
+  --hover-text-bg: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background));
+  --hover-text-fg: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  --hover-text-border: var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, var(--schegent-border)));
+  --hover-text-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.16));
+  --hover-text-radius: 4px;
+  --hover-text-z: 2000;
+}
+
+/* Feature 018 — Hover-text primitives.
+ * Global styles so both inline-render (HoverText.svelte wrapper) and
+ * portal-render (HoverTextPortal.svelte mounted by the hoverTextAnchor
+ * action into document.body) share the same visual contract. */
+
+.hover-text-container {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.hover-text-inline-help {
+  margin: 0;
+  flex-basis: 100%;
+  font-size: 0.9em;
+  line-height: 1.4;
+  color: var(--schegent-muted-fg, var(--vscode-descriptionForeground));
+}
+
+.hover-text-popover-body {
+  position: fixed;
+  z-index: var(--hover-text-z, 2000);
+  max-width: 320px;
+  min-width: 180px;
+  padding: 8px 10px;
+  background: var(--hover-text-bg);
+  color: var(--hover-text-fg);
+  border: 1px solid var(--hover-text-border);
+  border-radius: var(--hover-text-radius, 4px);
+  box-shadow: var(--hover-text-shadow);
+  pointer-events: auto;
+}
+
+.hover-text-title {
+  display: block;
+  margin: 0 0 4px 0;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.hover-text-body {
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hover-text-popover-body {
+    animation: hoverTextFadeIn 120ms ease-out;
+    transition: opacity 120ms ease-out;
+  }
+  @keyframes hoverTextFadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app,
+#dashboard-app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--sch-font-primary);
+  font-size: var(--vscode-font-size);
+  color: var(--schegent-fg);
+  background: transparent;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button:focus-visible,
+[tabindex]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--schegent-focus-border);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}

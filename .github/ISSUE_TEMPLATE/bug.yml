@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a defect in the schegent VS Code extension.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Two reminders before you continue:
+        - **Security issues**: do NOT file here. Use the "Security issue (redirect)" template, which points you at the private advisory channel from [SECURITY.md](../SECURITY.md).
+        - **Do not paste raw logs, tokens, environment variables, or secrets** in any field below. If you need to share runtime output, use the redacted-by-design exporter described in `docs/operations/inspect-raw-transcripts.md` and double-check the output before pasting.
+
+  - type: input
+    id: short-title
+    attributes:
+      label: One-line summary
+      description: A short headline describing the bug.
+      placeholder: e.g., "Phase runner hangs after rate-limit retry on macOS"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps needed to trigger the bug.
+      placeholder: |
+        1. Open a workspace with `…`
+        2. Run `…` from the command palette
+        3. Wait for `…`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you thought would happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What actually happened. (Describe the symptom — do NOT paste raw logs or env values.)
+    validations:
+      required: true
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: Schegent extension version
+      description: Visible in the VS Code Extensions view.
+      placeholder: e.g., 0.6.0
+    validations:
+      required: true
+
+  - type: input
+    id: vscode-version
+    attributes:
+      label: VS Code version
+      description: From `Help → About` (or `code --version`).
+      placeholder: e.g., 1.95.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        Final reminder: please re-read everything you pasted above and redact any secret, token, request body, or environment variable before submitting. Once posted in a public issue, the data is part of GitHub's audit history — editing or deleting the issue does NOT remove it.

@@ -1,0 +1,9 @@
+# Issue-template chooser configuration.
+# The `<placeholder-org>` token below MUST be replaced with the real
+# GitHub org slug before publishing the repo or enabling Security
+# advisories.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/<placeholder-org>/schegent/security/advisories/new
+    about: Use the private advisory channel for any security-related report. Never file vulnerabilities in public issues.

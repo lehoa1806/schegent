@@ -1,0 +1,28 @@
+name: Security issue (redirect)
+description: Report a security vulnerability via the private advisory channel.
+title: "[Security] DO NOT FILE — use the private advisory channel"
+labels: [security]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Do NOT file a public security issue.
+
+        Security vulnerabilities MUST be reported through the **private advisory channel** so the maintainers can coordinate disclosure before any fix lands in public history. Full policy: [SECURITY.md](../SECURITY.md).
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Where to report
+
+        - **Private GitHub advisory** (preferred): open a new advisory at `https://github.com/<placeholder-org>/schegent/security/advisories/new`.
+        - **Backup email**: see the contact address in [SECURITY.md](../SECURITY.md) under "Reporting a vulnerability".
+
+  - type: markdown
+    attributes:
+      value: |
+        ## If you have already posted exploit details to this form
+
+        Close this issue immediately and re-file through the private channel.
+
+        Editing or deleting a public issue does **not** remove its content from GitHub's audit history. Once posted, assume it is permanently public. The private channel exists so vulnerability details never enter the public history in the first place.

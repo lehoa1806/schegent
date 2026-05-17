@@ -1,0 +1,56 @@
+name: Security audit
+
+# Feature 056 Track 6 (FR-029, T042) — dependency hygiene workflow.
+#
+# Runs `npm audit --audit-level=low` against both `package-lock.json`
+# (root) and `webview-ui/package-lock.json` on a weekly cadence plus on
+# any manual dispatch. Findings surface as workflow-summary annotations;
+# the workflow does NOT auto-fix or commit — operators triage in a
+# compatibility-safe batch and open a PR.
+
+on:
+  schedule:
+    # Mondays 03:00 UTC — out of business hours globally.
+    - cron: '0 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+
+      - name: Audit root (low+ severity)
+        run: npm audit --audit-level=low
+        continue-on-error: true
+
+      - name: Audit webview-ui (low+ severity)
+        working-directory: webview-ui
+        run: npm audit --audit-level=low
+        continue-on-error: true
+
+      - name: Summary
+        run: |
+          {
+            echo "## Security audit run"
+            echo "Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "If either audit reported findings, triage in a compatibility-safe"
+            echo "dependency-refresh batch (root Vite/Vitest/esbuild chain;"
+            echo "webview Svelte/devalue/Vite/esbuild chain). Avoid"
+            echo "\`npm audit fix --force\` unless the breaking upgrade plan is explicit."
+          } >> "$GITHUB_STEP_SUMMARY"

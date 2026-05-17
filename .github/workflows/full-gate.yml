@@ -1,0 +1,130 @@
+name: Full gate
+
+# Feature 056 Track 6 (FR-030, T049) — required scheduled / manual full
+# gate.
+#
+# The fast PR gate (.github/workflows/pr.yml) runs typecheck + lint +
+# test + build on every PR. This workflow adds the heavier
+# integration-host and deterministic E2E coverage on a weekly cadence
+# plus on demand. Required green before cutting a release per
+# RELEASE.md.
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — comfortably after the security-audit run at
+    # 03:00 UTC so a dep-refresh PR can race through pr.yml first.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  typecheck-host:
+    name: typecheck (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+
+  typecheck-webview:
+    name: typecheck (webview)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck:webview
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+  e2e:
+    name: deterministic E2E smoke (feature 055)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:e2e
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            tests/e2e/.artifacts/**
+            vitest-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration:
+    name: extension-host integration smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci
+      - name: Run @vscode/test-electron under Xvfb
+        run: xvfb-run -a npm run test:integration
+      - name: Upload integration logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts
+          path: |
+            .vscode-test/**
+            out/tests/integration/**
+          if-no-files-found: ignore
+          retention-days: 14

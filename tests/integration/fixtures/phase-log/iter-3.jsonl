@@ -1,0 +1,5 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"valid line one"}]}}
+this is not valid json
+{"type":"system","subtype":"compact","trigger":"limit"}
+{also definitely not json
+{"type":"assistant","message":{"content":[{"type":"text","text":"valid line two"}]}}

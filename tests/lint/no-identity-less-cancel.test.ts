@@ -1,0 +1,62 @@
+import { describe, expect, it } from 'vitest';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
+
+interface Offender {
+  readonly file: string;
+  readonly line: number;
+  readonly snippet: string;
+}
+
+function listFilesReferencingCancel(): readonly string[] {
+  let out: string;
+  try {
+    out = execSync(`grep -rln "postCommand(CMD_CANCEL" "${SCAN_ROOT}"`, {
+      encoding: 'utf8'
+    });
+  } catch (err: unknown) {
+    const e = err as { status?: number; stdout?: string };
+    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
+    throw err;
+  }
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function findOffenders(absFile: string): readonly Offender[] {
+  const text = readFileSync(absFile, 'utf8');
+  const lines = text.split('\n');
+  const offenders: Offender[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    // Match exactly `postCommand(CMD_CANCEL` (not CMD_CANCEL_*).
+    // Ensure the call site carries a `taskId` field; if not, flag it.
+    if (/postCommand\(CMD_CANCEL\b/.test(line) && !/taskId/.test(line)) {
+      offenders.push({
+        file: absFile.startsWith(REPO_ROOT + '/') ? absFile.slice(REPO_ROOT.length + 1) : absFile,
+        line: i + 1,
+        snippet: line.trim()
+      });
+    }
+  }
+  return offenders;
+}
+
+describe('Feature 017 BUG-001 — every CMD_CANCEL dispatch carries a taskId', () => {
+  it('rejects identity-less postCommand(CMD_CANCEL) invocations in webview-ui/src/', () => {
+    const matchedFiles = listFilesReferencingCancel();
+    const allOffenders = matchedFiles.flatMap(findOffenders);
+    expect(
+      allOffenders,
+      `Offending postCommand(CMD_CANCEL) calls without taskId payload:\n${allOffenders
+        .map((o) => `  ${o.file}:${o.line} — ${o.snippet}`)
+        .join('\n')}`
+    ).toEqual([]);
+  });
+});

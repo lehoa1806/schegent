@@ -1,0 +1,34 @@
+# Node / TypeScript build artifacts
+node_modules/
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# Secrets
+.env*
+
+# VS Code extension build & test artifacts
+*.vsix
+.vscode-test/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*~
+.#*
+*.swp
+*.swo
+
+# Runtime sidecar — per-run, intentionally unredacted developer-debug
+# artefacts under .schegent/sessions/raw-<runId>.log. Local only —
+# never committed. See docs/features/008-raw-transcript-logging.md FR-009.
+.schegent/
+
+# Local scratch
+scratch/
+empty/

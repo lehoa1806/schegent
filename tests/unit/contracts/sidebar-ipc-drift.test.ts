@@ -1,0 +1,117 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import * as Authoritative from '../../../src/contracts/sidebar-ipc';
+import * as HostShim from '../../../src/ui/sidebar/messages';
+
+// Drift guard for FR-024 / US4.
+//
+// The host shim is statically imported above so module identity can be
+// asserted via `===`. The webview shim lives in a package configured with
+// `"type": "module"` + bundler resolution, which cannot be statically
+// imported from the host's Node16/CJS TS context (TS1479). Module identity
+// for the webview shim is guaranteed at the source-text level: it is a
+// single `export *` re-export of the authoritative module. We assert that
+// invariant by reading the shim's source. If a future contributor adds a
+// local declaration, fork in a divergent type, or repoints the path, this
+// test fails.
+
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+
+describe('sidebar-ipc drift guard (FR-024)', () => {
+  it('host shim re-exports CMD_CANCEL identical to authoritative module', () => {
+    expect(HostShim.CMD_CANCEL).toBe(Authoritative.CMD_CANCEL);
+    expect(HostShim.CMD_CANCEL).toBe('CMD_CANCEL');
+  });
+
+  it('host shim shares SCHEMA_VERSION with authoritative module', () => {
+    expect(HostShim.SCHEMA_VERSION).toBe(Authoritative.SCHEMA_VERSION);
+  });
+
+  it('host shim exports the same COMMAND_GUARDS object as authoritative module', () => {
+    expect(HostShim.COMMAND_GUARDS).toBe(Authoritative.COMMAND_GUARDS);
+  });
+
+  it('every COMMAND_TYPES literal has a guard in COMMAND_GUARDS', () => {
+    for (const literal of Authoritative.COMMAND_TYPES) {
+      expect(Authoritative.COMMAND_GUARDS).toHaveProperty(literal);
+      const guard = Authoritative.COMMAND_GUARDS[literal];
+      expect(typeof guard).toBe('function');
+    }
+  });
+
+  it('COMMAND_GUARDS keyset equals COMMAND_TYPES (no extra/missing keys)', () => {
+    const guardKeys = Object.keys(Authoritative.COMMAND_GUARDS).sort();
+    const literals = [...Authoritative.COMMAND_TYPES].sort();
+    expect(guardKeys).toEqual(literals);
+  });
+
+  it('discriminated union is exhaustive — each literal has a runtime guard that accepts a minimal command of that type', () => {
+    for (const literal of Authoritative.COMMAND_TYPES) {
+      const guard = Authoritative.COMMAND_GUARDS[literal];
+      const minimal = { type: literal, correlationId: 'c-test' };
+      expect(guard(minimal), `guard for ${literal} must accept a minimal {type} fixture`).toBe(true);
+      expect(guard({ type: 'NEVER_VALID_LITERAL' }), `guard for ${literal} must reject foreign literal`).toBe(false);
+    }
+  });
+
+  it('rejects null, undefined, primitives, and objects without a type discriminator', () => {
+    for (const literal of Authoritative.COMMAND_TYPES) {
+      const guard = Authoritative.COMMAND_GUARDS[literal];
+      expect(guard(null)).toBe(false);
+      expect(guard(undefined)).toBe(false);
+      expect(guard('string')).toBe(false);
+      expect(guard(42)).toBe(false);
+      expect(guard({})).toBe(false);
+      expect(guard({ type: undefined })).toBe(false);
+    }
+  });
+
+  it('SCHEMA_VERSION is a numeric integer constant', () => {
+    expect(typeof Authoritative.SCHEMA_VERSION).toBe('number');
+    expect(Number.isInteger(Authoritative.SCHEMA_VERSION)).toBe(true);
+  });
+
+  it('webview shim source re-exports the authoritative IPC module via a single export-* statement', () => {
+    const shimPath = path.join(REPO_ROOT, 'webview-ui/src/lib/messages.ts');
+    const text = fs.readFileSync(shimPath, 'utf8');
+
+    // Strip line and block comments before matching.
+    const codeOnly = text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+
+    // Must contain exactly one export-* targeting the authoritative module.
+    // The `.js` extension is required by the webview's "type": "module"
+    // declaration; bundler resolution maps it to the .ts source.
+    const exportStarMatches = codeOnly.match(
+      /export\s+\*\s+from\s+['"][^'"]*src\/contracts\/sidebar-ipc(?:\.js)?['"]/g
+    ) ?? [];
+    expect(
+      exportStarMatches,
+      'webview shim must contain exactly one export-* re-export of src/contracts/sidebar-ipc'
+    ).toHaveLength(1);
+
+    // No other top-level `export ...` statements that could shadow or
+    // diverge from the canonical surface.
+    const otherExports = codeOnly.match(/^\s*export\s+(?!\*\s+from\s)\S/gm) ?? [];
+    expect(
+      otherExports,
+      'webview shim must not declare any local exports beyond the export-*'
+    ).toEqual([]);
+  });
+
+  it('host shim source re-exports the authoritative IPC module via a single export-* statement', () => {
+    const shimPath = path.join(REPO_ROOT, 'src/ui/sidebar/messages.ts');
+    const text = fs.readFileSync(shimPath, 'utf8');
+    const codeOnly = text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const exportStarMatches = codeOnly.match(
+      /export\s+\*\s+from\s+['"][^'"]*contracts\/sidebar-ipc(?:\.js)?['"]/g
+    ) ?? [];
+    expect(exportStarMatches).toHaveLength(1);
+    const otherExports = codeOnly.match(/^\s*export\s+(?!\*\s+from\s)\S/gm) ?? [];
+    expect(otherExports).toEqual([]);
+  });
+});

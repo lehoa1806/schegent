@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "description": "Performance budgets enforced by tests under tests/perf/. The inline `expect(elapsed).toBeLessThan(...)` in each perf test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
+  "feature": "049-perf-budgets",
+  "updated": "2026-05-16",
+  "budgets": [
+    {
+      "test": "tests/perf/rate-limit-extractor.test.ts",
+      "name": "extractResetTimestamp — 1MB adversarial buffer",
+      "budgetMs": 100,
+      "constant": "ONE_MB_BUDGET_MS",
+      "rationale": "Feature 027 SC-007 — guards against catastrophic regex backtracking"
+    },
+    {
+      "test": "tests/perf/rate-limit-extractor.test.ts",
+      "name": "extractResetTimestamp — 10MB adversarial buffer",
+      "budgetMs": 100,
+      "constant": "TEN_MB_BUDGET_MS",
+      "rationale": "Feature 027 SC-007 — same guard at 10x the input size"
+    },
+    {
+      "test": "tests/perf/activity-feed-render.test.ts",
+      "name": "activity-feed render — 100KB manifest",
+      "budgetMs": 150,
+      "constant": "BUDGET_MS",
+      "rationale": "Feature 029 — keeps the manifest -> rendered activity feed pipeline interactive"
+    },
+    {
+      "test": "tests/perf/load-catalog.test.ts",
+      "name": "loadCatalog — p95 with many phases/pipelines",
+      "budgetMs": 50,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "Feature 026 — catalog load must stay fast even with the operator-extended catalog"
+    },
+    {
+      "test": "tests/perf/render-budget.test.ts",
+      "name": "StateProjector — 100 v2 project() passes total",
+      "budgetMs": 1600,
+      "constant": "TOTAL_BUDGET_MS",
+      "rationale": "Snapshot render hot-path total budget over 100 simulated push cycles"
+    },
+    {
+      "test": "tests/perf/render-budget.test.ts",
+      "name": "StateProjector — single project() median",
+      "budgetMs": 16,
+      "constant": "MEDIAN_BUDGET_MS",
+      "rationale": "Snapshot render hot-path per-frame budget (60 fps target)"
+    }
+  ],
+  "notes": [
+    "All budgets are wall-clock milliseconds measured via performance.now().",
+    "Items 048 and 053 (deferred refactors) MAY adjust the StateProjector totals; reset budgets accordingly when those land.",
+    "Item 050 (second BackendRunner adapter, deferred) does not affect any budget."
+  ]
+}

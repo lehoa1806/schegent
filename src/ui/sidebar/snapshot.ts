@@ -1,0 +1,510 @@
+export const SCHEMA_VERSION = 3 as const;
+
+export const BUILT_IN_PHASE_NAMES = [
+  'speckit-specify',
+  'speckit-clarify',
+  'speckit-plan',
+  'speckit-tasks',
+  'speckit-analyze',
+  'speckit-implement',
+  'finalize'
+] as const;
+
+export const PHASE_NAMES = BUILT_IN_PHASE_NAMES;
+
+export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
+
+export type PhaseName = string;
+
+export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
+
+export type WorkflowStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export type QueueItemStatus =
+  | 'pending'
+  | 'in-flight'
+  | 'paused'
+  | 'completed'
+  | 'canceled'
+  | 'failed';
+
+export type AuditCategory =
+  | 'phase-transition'
+  | 'file-write'
+  | 'cli-invocation'
+  | 'error'
+  | 'warning'
+  | 'system';
+
+export type FreshnessState = 'live' | 'slowing' | 'stalled' | 'paused' | 'idle';
+
+export type MonitorStatus =
+  | 'starting'
+  | 'running'
+  | 'stalled'
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'canceled'
+  | 'paused';
+
+export interface SubProgress {
+  readonly current: number;
+  readonly total: number;
+  readonly label: 'task' | 'iteration';
+}
+
+export interface PhaseTile {
+  readonly name: PhaseName;
+  readonly order: number;
+  readonly state: PhaseState;
+  readonly iteration: number;
+  readonly lastResult: 'clean' | 'ambiguities-remain' | 'issues-remain' | null;
+  readonly elapsedMs: number;
+  readonly subProgress: SubProgress | null;
+  readonly loopable?: boolean;
+  readonly phaseMessage?: {
+    readonly fromPhaseId: string;
+    readonly entryCount: number;
+    readonly byteSize: number;
+    readonly truncated: boolean;
+    readonly invalidReason: string | null;
+  } | null;
+}
+
+export interface ActiveFeatureSummary {
+  readonly id: string;
+  readonly label: string;
+  readonly startedAt: string;
+}
+
+export interface QueueItem {
+  readonly id: string;
+  readonly label: string;
+  readonly enqueuedAt: string;
+  readonly startedAt: string | null;
+  readonly updatedAt: string;
+  readonly completedAt: string | null;
+  readonly status: QueueItemStatus;
+  readonly retryCount: number;
+  readonly lastErrorSummary: string | null;
+  readonly pausedReason: string | null;
+  readonly currentPhase: PhaseName | null;
+  readonly queueId: string;
+  readonly position: number;
+  readonly pauseCause: 'queue-paused' | 'phase-paused' | 'manually-paused-task' | 'breakpoint' | null;
+  /**
+   * Feature 020 — pipeline id under which this task is currently
+   * executing (or last executed). Surfaced to the webview so the
+   * Activity Feed can map a task selection to its diagnostics
+   * directory tuple `(pipelineId, phaseId, iterationN)` without a
+   * round-trip to the host. Null when the task has never started a
+   * pipeline.
+   */
+  readonly currentPipelineId: string | null;
+}
+
+export interface QueueSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly position: number;
+  readonly state: 'active' | 'manually-paused';
+  /**
+   * Feature 028 — `'cascade'` when the pause was a side effect of a phase
+   * pause; `'operator'` when an operator paused the queue directly; `null`
+   * when the queue is active. Drives the cascade badge in
+   * QueueGlobalActions.svelte.
+   */
+  readonly pauseSource: 'operator' | 'cascade' | null;
+  readonly schedule: {
+    readonly expression: string;
+    readonly kind: 'relative' | 'absolute';
+    readonly targetAt: string;
+  } | null;
+  readonly taskCount: number;
+}
+
+export interface QueueProjection {
+  readonly inFlight: QueueItem | null;
+  readonly pending: readonly QueueItem[];
+  readonly recent: readonly QueueItem[];
+  readonly queues: readonly QueueSummary[];
+  readonly paused: boolean;
+  readonly pausedReason: string | null;
+}
+
+export interface AuditTailEntry {
+  readonly id: string;
+  readonly timestamp: string;
+  readonly phase: PhaseName | null;
+  readonly category: AuditCategory;
+  readonly summary: string;
+}
+
+export interface LiveActivity {
+  readonly summary: string | null;
+  readonly category: AuditCategory | null;
+  readonly lastEventAt: string | null;
+  readonly freshness: FreshnessState;
+  readonly staleSeconds: number | null;
+}
+
+export interface CliMonitorState {
+  readonly runId: string;
+  readonly phase: PhaseName;
+  readonly status: MonitorStatus;
+  readonly pid: number | null;
+  readonly startedAt: string;
+  readonly lastStdoutAt: string | null;
+  readonly lastStderrAt: string | null;
+  readonly lastProgressAt: string | null;
+  readonly stdoutLines: number;
+  readonly stderrLines: number;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
+  readonly msSinceLastStdout: number | null;
+  readonly msSinceLastStderr: number | null;
+}
+
+export interface HistoryEntry {
+  readonly runId: string;
+  readonly featureId: string;
+  readonly descriptionPreview: string;
+  readonly terminalStatus: 'completed' | 'failed' | 'canceled';
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly durationMs: number;
+  readonly lastErrorSummary: string | null;
+  readonly auditLogPointer: string;
+}
+
+export interface ActivePipelineSummary {
+  readonly id: string;
+  readonly name: string;
+}
+
+import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
+import type { GeneralSettings } from '../../config/general-settings';
+import type { WakeUpLogProjection } from '../../wakeup/invocation-log';
+import type { WakeUpSettings, WakeUpModelSelection } from '../../wakeup/settings';
+import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
+import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
+export type { GeneralSettings } from '../../config/general-settings';
+export type { WakeUpLogProjection, WakeUpLogProjectionEntry } from '../../wakeup/invocation-log';
+export type {
+  WakeUpSettings,
+  WakeUpModelSelection,
+  WakeUpModelId,
+  RunnerDefaultModel
+} from '../../wakeup/settings';
+export type {
+  PhasePrecedenceLayer,
+  PhasePrecedenceProjection
+} from '../../config/phase-precedence';
+export type { TelemetrySnapshot, TelemetryStatus } from '../../telemetry/telemetry-snapshot';
+
+/**
+ * Feature 011 — delayed-retry projection on the active run.
+ *
+ * - `pendingRetryAt`: ISO timestamp when the retry will fire, or null
+ *   when no retry is pending (FR-008 hidden-when-not-pending).
+ * - `pendingRetryCause`: 'transient_error' | 'rate_limit' | null. Matches
+ *   the disjoint classifier in src/parser/transient-error.ts.
+ * - `delayedRetryCount`: 0..5. The 5th failure trips the cap (FR-006);
+ *   webview surfaces the count to inform the operator how close they
+ *   are to cap exhaustion.
+ */
+export type DelayedRetryCauseProjection = 'transient_error' | 'rate_limit' | null;
+
+export interface DelayedRetryState {
+  readonly pendingRetryAt: string | null;
+  readonly pendingRetryCause: DelayedRetryCauseProjection;
+  readonly delayedRetryCount: number;
+}
+
+export interface WorkflowSnapshot {
+  readonly schemaVersion: 3;
+  readonly isPrimary: boolean;
+  readonly status: WorkflowStatus;
+  readonly activeFeature: ActiveFeatureSummary | null;
+  readonly phases: readonly PhaseTile[];
+  readonly queue: QueueProjection;
+  readonly phaseOverrides: readonly {
+    readonly phaseId: string;
+    readonly action: 'skipped' | 'disabled' | 'removed';
+  }[];
+  readonly manualPauseAt: string | null;
+  // Feature 028 — extends with `'breakpoint-paused'` for future-phase
+  // breakpoint fires. UI uses this to distinguish active-pause from
+  // breakpoint-paused styling on the active phase tile.
+  readonly manualPauseCause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused' | null;
+  /**
+   * Feature 028 — per-run future-phase breakpoints projected for the UI.
+   * Sorted by `setAt` ascending for deterministic ordering. Empty when
+   * the active run has no breakpoints; the field is always present so
+   * the webview can read it without an existence guard.
+   */
+  readonly phaseBreakpoints: readonly {
+    readonly phaseId: string;
+    readonly setAt: string;
+    readonly actor: 'operator' | 'system';
+  }[];
+  /**
+   * Feature 028 — id of the phase that fired the breakpoint, non-null
+   * iff `manualPauseCause === 'breakpoint-paused'`.
+   */
+  readonly resumeTargetPhaseId: string | null;
+  /**
+   * Feature 028 — id of the active `WorkflowRun` (distinct from
+   * `activeFeature.id`, which is the queue/task id). Non-null when a
+   * run is in flight; the webview needs this to target the two
+   * breakpoint IPC commands `CMD_SET_PHASE_BREAKPOINT` and
+   * `CMD_CLEAR_PHASE_BREAKPOINT` at the controller.
+   */
+  readonly activeRunId: string | null;
+  readonly auditTail: readonly AuditTailEntry[];
+  readonly liveActivity: LiveActivity;
+  readonly workflowElapsedMs: number | null;
+  readonly monitor: CliMonitorState | null;
+  readonly history: readonly HistoryEntry[];
+  readonly producedAt: string;
+  readonly activePipeline?: ActivePipelineSummary;
+  readonly availablePipelines: readonly PipelineDef[];
+  readonly availablePhases: readonly PhaseDef[];
+  readonly availableModels: readonly string[];
+  /**
+   * Feature 011 — delayed-retry state on the active run. Always present
+   * (even when there is no active run); fields are null/0 when no retry
+   * is pending. Webview reads `pendingRetryAt !== null` to gate the
+   * "Retry Phase Now" affordance.
+   */
+  readonly delayedRetry: DelayedRetryState;
+  /**
+   * Feature 011 — scalar `schegent.*` settings projected for the
+   * Settings surface. Always present (defaults populated when the
+   * workspace/user override is absent).
+   */
+  readonly generalSettings: GeneralSettings;
+  /**
+   * Feature 014 (BUG-001 / BUG-002) — Wake up settings projected for
+   * the Settings surface. Always present (defaults populated when the
+   * user-scope override is absent). The webview's WakeUpTab hydrates
+   * its draft from this field on mount and resyncs via a `$effect`
+   * when the projection changes (FR-025, SC-010).
+   */
+  readonly wakeUpSettings: WakeUpSettings;
+  /**
+   * Feature 024 — latest Wake up attempts projected from the
+   * user-data wakeup invocation log. Strings are sanitized and capped
+   * before they enter the snapshot.
+   */
+  readonly wakeUpLog: WakeUpLogProjection;
+  /**
+   * Feature 031 / data-model §7 — DISPLAY-ONLY wake-up surface. Always
+   * present so the webview can render the model dropdown and the
+   * "View session log" affordance without an existence guard.
+   *
+   * - `model`: the operator's current `WakeUpModelSelection` (closed
+   *   union; defaults to `'runner-default'`).
+   * - `sessionLogPath`: absolute path to the host-composed
+   *   `<globalStorageUri>/wakeup/session.log` (composed host-side from
+   *   the existing `globalStorageUri` resolver — never from operator
+   *   input). The webview NEVER routes this path back to the host; the
+   *   `CMD_READ_WAKEUP_SESSION_LOG` payload carries `correlationId`
+   *   only.
+   */
+  readonly wakeUp: {
+    readonly model: WakeUpModelSelection;
+    readonly sessionLogPath: string;
+  };
+  /**
+   * Feature 026 — per-phase precedence projection. Flat map keyed by
+   * `"<phaseId>::<fieldKey>"` whose value is the layer that provided
+   * the effective value (`'workspace' | 'user' | 'built-in' | 'unset'`).
+   * UI-only — never persisted, never written to the audit log or
+   * runtime log sink. Optional and present only when the merged
+   * catalog has been computed; absent when no catalog read has
+   * occurred yet (e.g. very first idle snapshot).
+   */
+  readonly phasePrecedence?: PhasePrecedenceProjection;
+  /**
+   * Feature 033 — ephemeral per-subprocess telemetry for the in-flight
+   * task. Present (non-null) only while a Claude CLI subprocess is alive
+   * (or for one publish cycle after exit to surface the final sample).
+   * Never persisted to `WorkflowRun`, never written to the audit log.
+   * Always present on the snapshot envelope so the webview never gates
+   * on existence; the field is `null` when no subprocess is in flight.
+   */
+  readonly telemetry: TelemetrySnapshot | null;
+}
+
+export const AUDIT_TAIL_MAX = 50;
+export const RECENT_QUEUE_MAX = 5;
+export const HISTORY_MAX = 50;
+
+export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
+  summary: null,
+  category: null,
+  lastEventAt: null,
+  freshness: 'idle',
+  staleSeconds: null
+});
+
+export function buildEmptyPhases(): readonly PhaseTile[] {
+  return BUILT_IN_PHASE_NAMES.map((name, idx) => ({
+    name,
+    order: idx + 1,
+    state: 'not-started' as const,
+    iteration: 0,
+    lastResult: null,
+    elapsedMs: 0,
+    subProgress: null,
+    loopable: name === 'speckit-clarify' || name === 'speckit-analyze'
+  }));
+}
+
+export function buildIdleSnapshot(opts: {
+  isPrimary: boolean;
+  producedAt?: string;
+}): WorkflowSnapshot {
+  return Object.freeze({
+    schemaVersion: SCHEMA_VERSION,
+    isPrimary: opts.isPrimary,
+    status: 'idle' as const,
+    activeFeature: null,
+    phases: Object.freeze(buildEmptyPhases().map((p) => Object.freeze(p))),
+    queue: Object.freeze({
+      inFlight: null,
+      pending: Object.freeze([]) as readonly QueueItem[],
+      recent: Object.freeze([]) as readonly QueueItem[],
+      queues: Object.freeze([]) as readonly QueueSummary[],
+      paused: false,
+      pausedReason: null
+    }),
+    phaseOverrides: Object.freeze([]),
+    manualPauseAt: null,
+    manualPauseCause: null,
+    phaseBreakpoints: Object.freeze([]),
+    resumeTargetPhaseId: null,
+    activeRunId: null,
+    auditTail: Object.freeze([]) as readonly AuditTailEntry[],
+    liveActivity: IDLE_LIVE_ACTIVITY,
+    workflowElapsedMs: null,
+    monitor: null,
+    history: Object.freeze([]) as readonly HistoryEntry[],
+    producedAt: opts.producedAt ?? new Date().toISOString(),
+    availablePipelines: Object.freeze([]),
+    availablePhases: Object.freeze([]),
+    availableModels: Object.freeze([]),
+    delayedRetry: IDLE_DELAYED_RETRY,
+    generalSettings: IDLE_GENERAL_SETTINGS,
+    wakeUpSettings: IDLE_WAKEUP_SETTINGS,
+    wakeUpLog: IDLE_WAKEUP_LOG,
+    wakeUp: IDLE_WAKEUP_PROJECTION,
+    // Feature 033 — telemetry is ephemeral and absent on idle snapshots.
+    telemetry: null
+  });
+}
+
+export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
+  pendingRetryAt: null,
+  pendingRetryCause: null,
+  delayedRetryCount: 0
+});
+
+/**
+ * Feature 011 — safe defaults for the `generalSettings` projection.
+ * Mirrors the `package.json` defaults so the webview can render the
+ * Settings surface even before the projector has finished its first
+ * `onDidChangeConfiguration` round-trip.
+ */
+export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
+  cliPath: 'claude',
+  loggingVerbose: false,
+  loopMaxIterations: 10,
+  invocationTimeoutSeconds: 1800,
+  watchdogPollIntervalMinutes: 30,
+  auditRotationSizeMB: 5,
+  auditRotationMaxAgeDays: 30,
+  rulesInjectPerPhase: false,
+  defaultPipelineId: 'standard',
+  fatalSignatures: Object.freeze([]) as readonly string[],
+  claudeAutoCompactPctOverride: undefined,
+  queueGlobalConcurrencyCap: 1,
+  queueDefaultQueueId: 'default',
+  runtimeLogLevel: 'INFO',
+  runtimeLogFilePath: '',
+  runtimeLogMaxBytes: 5 * 1024 * 1024,
+  runtimeLogMaxGenerations: 3,
+  retryMaxAttempts: 5,
+  scopes: Object.freeze({
+    cliPath: 'default',
+    loggingVerbose: 'default',
+    loopMaxIterations: 'default',
+    invocationTimeoutSeconds: 'default',
+    watchdogPollIntervalMinutes: 'default',
+    auditRotationSizeMB: 'default',
+    auditRotationMaxAgeDays: 'default',
+    rulesInjectPerPhase: 'default',
+    defaultPipelineId: 'default',
+    fatalSignatures: 'default',
+    claudeAutoCompactPctOverride: 'default',
+    queueGlobalConcurrencyCap: 'default',
+    queueDefaultQueueId: 'default',
+    runtimeLogLevel: 'default',
+    runtimeLogFilePath: 'default',
+    runtimeLogMaxBytes: 'default',
+    runtimeLogMaxGenerations: 'default',
+    retryMaxAttempts: 'default'
+  })
+});
+
+/**
+ * Feature 014 (BUG-001 / BUG-002) — safe defaults for the
+ * `wakeUpSettings` projection. Mirrors `DEFAULTS` in
+ * `src/wakeup/settings.ts` so the webview can render the Wake up
+ * Settings tab even before the projector has finished its first
+ * `onDidChangeConfiguration` round-trip.
+ */
+export const IDLE_WAKEUP_SETTINGS: WakeUpSettings = Object.freeze({
+  enabled: false,
+  schedulerType: 'chronological',
+  chronologicalTime: '04:00',
+  periodicInterval: 'Every 4h',
+  // Feature 031 — sentinel meaning "no `--model` flag passed to the
+  // Claude CLI"; runner picks its own default.
+  model: 'runner-default' as const
+});
+
+export const IDLE_WAKEUP_LOG: WakeUpLogProjection = Object.freeze({
+  entries: Object.freeze([])
+});
+
+/**
+ * Feature 031 — DISPLAY-ONLY defaults for the wake-up surface. Always
+ * present on the idle snapshot so the webview never gates on existence.
+ * `model` matches `IDLE_WAKEUP_SETTINGS.model` and `sessionLogPath` is an
+ * empty string until the host wires its `getWakeupSessionLogPath` dep.
+ */
+export const IDLE_WAKEUP_PROJECTION: {
+  readonly model: WakeUpModelSelection;
+  readonly sessionLogPath: string;
+} = Object.freeze({
+  model: 'runner-default' as const,
+  sessionLogPath: ''
+});
+
+export function isRecursivePhase(name: PhaseName): boolean {
+  return name === 'speckit-clarify' || name === 'speckit-analyze';
+}
+
+export function isBuiltInPhase(name: string): name is BuiltInPhaseName {
+  return (BUILT_IN_PHASE_NAMES as readonly string[]).includes(name);
+}

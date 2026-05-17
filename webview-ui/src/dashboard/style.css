@@ -1,0 +1,21 @@
+/* Schegent dashboard panel styles. Layered above webview theme variables. */
+:root {
+  --schegent-dashboard-min-pane-height: 80px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  background: var(--schegent-bg, var(--vscode-editor-background));
+  color: var(--schegent-fg, var(--vscode-foreground));
+}
+
+#app,
+#dashboard-app {
+  height: 100%;
+  width: 100%;
+}

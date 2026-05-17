@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","model":"claude-opus-4-7","cwd":"/workspace"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello from iteration 1"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"file1.txt\nfile2.txt","is_error":false}]}}
+{"type":"message_start"}
+{"type":"content_block_delta","delta":{"text":"chunk"}}
+{"type":"result","subtype":"success","duration_ms":1234,"num_turns":2,"total_cost_usd":0.05}

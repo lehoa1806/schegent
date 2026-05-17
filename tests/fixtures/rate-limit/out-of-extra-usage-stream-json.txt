@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"test-session-027","model":"claude-sonnet-4-5","cwd":"/tmp/wsp"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1747017000,"unifiedRateLimitFallbackNoticeStatus":"will_show_when_blocked"}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1747017000,"unifiedRateLimitFallbackNoticeStatus":"will_show_when_blocked"}}
+You're out of extra usage · resets 1:10am (Asia/Saigon)

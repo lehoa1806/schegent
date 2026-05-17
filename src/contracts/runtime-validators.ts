@@ -1,0 +1,964 @@
+// Authoritative runtime validators for inbound webview→host IPC messages.
+//
+// Feature 013 — Wave 5 (US5): this file is the SINGLE source of truth for
+// the `validateInboundMessage` helper and its private validators. The
+// sidebar shim at `src/ui/sidebar/ipc-validator.ts` is a thin re-export
+// of this module. The lint test at
+// `tests/lint/no-duplicate-ipc-validators.test.ts` guards against drift.
+//
+// Validator scope: each validator covers exactly one command literal from
+// `COMMAND_TYPES` (defined in the authoritative IPC contract module
+// `src/contracts/sidebar-ipc.ts`). Cross-context payload validation
+// (e.g., pipelines, phases) intentionally validates only the structural
+// shape at the IPC boundary; downstream host code (e.g., the workspace
+// settings writer) re-validates against typed allowlists.
+
+import {
+  CMD_CANCEL,
+  CMD_CLEAR_COMPLETED,
+  CMD_CLEAR_FAILED,
+  CMD_MOVE_QUEUE_ITEM_DOWN,
+  CMD_MOVE_QUEUE_ITEM_UP,
+  CMD_OPEN_AUDIT_LOG,
+  CMD_OPEN_DASHBOARD,
+  CMD_OPEN_HISTORY_ITEM_DETAILS,
+  CMD_OPEN_QUEUE_ITEM_DETAILS,
+  CMD_PAUSE_QUEUE,
+  CMD_REMOVE_TASK_PHASE,
+  CMD_REMOVE_QUEUE_ITEM,
+  CMD_RERUN_FROM_HISTORY,
+  CMD_RESET,
+  CMD_RESUME,
+  CMD_RESUME_QUEUE,
+  CMD_RETRY_ACTIVE_RUN,
+  CMD_RETRY_QUEUE_ITEM,
+  CMD_START,
+  CMD_SAVE_PIPELINES,
+  CMD_SAVE_PHASES,
+  CMD_SAVE_MODELS,
+  CMD_SAVE_GENERAL_SETTINGS,
+  CMD_RETRY_PHASE_NOW,
+  CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_WAKE_UP_NOW,
+  CMD_PAUSE_PHASE,
+  CMD_RESUME_PHASE,
+  CMD_RESTART_PHASE,
+  CMD_SKIP_PHASE,
+  CMD_DISABLE_PHASE,
+  CMD_ENABLE_PHASE,
+  CMD_OPEN_VERBOSE_SETTING,
+  // Feature 030 — single-queue mode dropped CMD_CREATE_QUEUE,
+  // CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS,
+  // CMD_MOVE_TASK, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE.
+  CMD_MODIFY_TASK,
+  CMD_REORDER_TASK,
+  CMD_RESTART_CANCELED_TASK,
+  CMD_READ_PHASE_LOG,
+  CMD_READ_WAKEUP_SESSION_LOG,
+  CMD_REVEAL_WAKEUP_SESSION_LOG,
+  CMD_START_PHASE_LOG_TAIL,
+  CMD_STOP_PHASE_LOG_TAIL,
+  CMD_SET_PHASE_BREAKPOINT,
+  CMD_CLEAR_PHASE_BREAKPOINT,
+  type SidebarCommand
+} from './sidebar-ipc';
+
+export interface IpcValidationError {
+  readonly ok: false;
+  readonly reason: string;
+  readonly type?: string;
+  readonly correlationId?: string;
+}
+
+export type IpcValidationResult =
+  | { readonly ok: true; readonly command: SidebarCommand }
+  | IpcValidationError;
+
+const CORRELATION_ID_MAX = 64;
+const DESCRIPTION_MAX = 4096;
+const QUEUE_ID_MAX = 256;
+// Feature 013 — US4 (FR-016): mirror the projector cap so payloads
+// produced by the projector are guaranteed to validate. The projector
+// at state-projector.ts:PAUSED_REASON_MAX_LENGTH writes ≤500 chars to
+// host→webview snapshots; this validator enforces the same cap on the
+// inverse webview→host direction (operator-typed pause reason).
+const PAUSED_REASON_MAX_LENGTH = 500;
+
+export function validateInboundMessage(raw: unknown): IpcValidationResult {
+  if (raw === null || typeof raw !== 'object') {
+    return fail('not-an-object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const type = obj['type'];
+  if (typeof type !== 'string') return fail('missing-or-non-string-type');
+  const correlationId = obj['correlationId'];
+  if (typeof correlationId !== 'string' || correlationId.length === 0 || correlationId.length > CORRELATION_ID_MAX) {
+    return fail('invalid-correlationId', { type });
+  }
+
+  switch (type) {
+    case CMD_START:
+      return validateStart(obj, correlationId);
+    case CMD_CANCEL:
+      // Feature 017 — BUG-001: CMD_CANCEL carries the operator's intended
+      // target taskId so the host resolves the run by FeatureRequest.id
+      // instead of via the singular `store.getRun()` projection.
+      return validateTaskIdPayload(CMD_CANCEL, obj, correlationId);
+    case CMD_RESUME:
+      return validateNoPayload(CMD_RESUME, obj, correlationId);
+    case CMD_RESET:
+      return validateReset(obj, correlationId);
+    case CMD_REMOVE_QUEUE_ITEM:
+      return validateConfirmedRemoveQueueItem(obj, correlationId);
+    case CMD_OPEN_AUDIT_LOG:
+      return validateNoPayload(CMD_OPEN_AUDIT_LOG, obj, correlationId);
+    case CMD_RETRY_QUEUE_ITEM:
+      return validateIdPayload(CMD_RETRY_QUEUE_ITEM, obj, correlationId);
+    case CMD_MOVE_QUEUE_ITEM_UP:
+      return validateIdPayload(CMD_MOVE_QUEUE_ITEM_UP, obj, correlationId);
+    case CMD_MOVE_QUEUE_ITEM_DOWN:
+      return validateIdPayload(CMD_MOVE_QUEUE_ITEM_DOWN, obj, correlationId);
+    case CMD_OPEN_QUEUE_ITEM_DETAILS:
+      return validateIdPayload(CMD_OPEN_QUEUE_ITEM_DETAILS, obj, correlationId);
+    case CMD_OPEN_HISTORY_ITEM_DETAILS:
+      return validateIdPayload(CMD_OPEN_HISTORY_ITEM_DETAILS, obj, correlationId);
+    case CMD_RERUN_FROM_HISTORY:
+      return validateRunIdPayload(CMD_RERUN_FROM_HISTORY, obj, correlationId);
+    case CMD_PAUSE_QUEUE:
+      return validatePauseQueue(obj, correlationId);
+    case CMD_RESUME_QUEUE:
+      return validateResumeQueue(obj, correlationId);
+    case CMD_CLEAR_COMPLETED:
+      return validateNoPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
+    case CMD_CLEAR_FAILED:
+      return validateNoPayload(CMD_CLEAR_FAILED, obj, correlationId);
+    case CMD_OPEN_DASHBOARD:
+      return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
+    case CMD_RETRY_ACTIVE_RUN:
+      return validateNoPayload(CMD_RETRY_ACTIVE_RUN, obj, correlationId);
+    case CMD_SAVE_PIPELINES:
+      return validateSavePipelines(obj, correlationId);
+    case CMD_SAVE_PHASES:
+      return validateSavePhases(obj, correlationId);
+    case CMD_SAVE_MODELS:
+      return validateSaveModels(obj, correlationId);
+    case CMD_SAVE_GENERAL_SETTINGS:
+      return validateSaveGeneralSettings(obj, correlationId);
+    case CMD_RETRY_PHASE_NOW:
+      return validateNoPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
+    case CMD_SAVE_WAKEUP_SETTINGS:
+      return validateSaveWakeUpSettings(obj, correlationId);
+    case CMD_WAKE_UP_NOW:
+      return validateWakeUpNow(obj, correlationId);
+    // Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
+    // CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS,
+    // CMD_MOVE_TASK, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE
+    // removed because the commands no longer exist.
+    case CMD_MODIFY_TASK:
+      return validateModifyTask(obj, correlationId);
+    case CMD_REORDER_TASK:
+      return validateReorderTask(obj, correlationId);
+    case CMD_RESTART_CANCELED_TASK:
+      return validateTaskIdPayload(CMD_RESTART_CANCELED_TASK, obj, correlationId);
+    case CMD_PAUSE_PHASE:
+      return validateNoPayload(CMD_PAUSE_PHASE, obj, correlationId);
+    case CMD_RESUME_PHASE:
+      return validateNoPayload(CMD_RESUME_PHASE, obj, correlationId);
+    case CMD_RESTART_PHASE:
+      return validatePhaseIdPayload(CMD_RESTART_PHASE, obj, correlationId);
+    case CMD_SKIP_PHASE:
+      return validatePhaseIdPayload(CMD_SKIP_PHASE, obj, correlationId);
+    case CMD_DISABLE_PHASE:
+      return validatePhaseIdPayload(CMD_DISABLE_PHASE, obj, correlationId);
+    case CMD_ENABLE_PHASE:
+      return validatePhaseIdPayload(CMD_ENABLE_PHASE, obj, correlationId);
+    case CMD_REMOVE_TASK_PHASE:
+      return validateRemoveTaskPhase(obj, correlationId);
+    case CMD_READ_PHASE_LOG:
+      return validateReadPhaseLog(obj, correlationId);
+    case CMD_READ_WAKEUP_SESSION_LOG:
+      return validateReadWakeupSessionLog(obj, correlationId);
+    case CMD_REVEAL_WAKEUP_SESSION_LOG:
+      return validateRevealWakeupSessionLog(obj, correlationId);
+    case CMD_START_PHASE_LOG_TAIL:
+      return validateStartPhaseLogTail(obj, correlationId);
+    case CMD_STOP_PHASE_LOG_TAIL:
+      return validateStopPhaseLogTail(obj, correlationId);
+    case CMD_OPEN_VERBOSE_SETTING:
+      return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
+    case CMD_SET_PHASE_BREAKPOINT:
+      return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
+    case CMD_CLEAR_PHASE_BREAKPOINT:
+      return validatePhaseBreakpointPayload(CMD_CLEAR_PHASE_BREAKPOINT, obj, correlationId);
+    default:
+      return fail('unknown-type', { type, correlationId });
+  }
+}
+
+function validateStart(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_START, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['description', 'pipelineId', 'queueId', 'position'])) {
+    return fail('unexpected-payload-fields', { type: CMD_START, correlationId });
+  }
+  const description = p['description'];
+  if (typeof description !== 'string') {
+    return fail('description-not-string', { type: CMD_START, correlationId });
+  }
+  const trimmed = description.trim();
+  if (trimmed.length === 0 || trimmed.length > DESCRIPTION_MAX) {
+    return fail('description-out-of-range', { type: CMD_START, correlationId });
+  }
+  const pipelineId = p['pipelineId'];
+  if (pipelineId !== undefined && typeof pipelineId !== 'string') {
+    return fail('pipelineId-not-string', { type: CMD_START, correlationId });
+  }
+  const queueId = p['queueId'];
+  if (
+    queueId !== undefined &&
+    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
+  ) {
+    return fail('invalid-queueId', { type: CMD_START, correlationId });
+  }
+  const position = p['position'];
+  if (
+    position !== undefined &&
+    (typeof position !== 'number' || !Number.isInteger(position) || position < 0)
+  ) {
+    return fail('invalid-position', { type: CMD_START, correlationId });
+  }
+  return ok({
+    type: CMD_START,
+    correlationId,
+    payload: {
+      description: trimmed,
+      ...(pipelineId ? { pipelineId } : {}),
+      ...(queueId ? { queueId } : {}),
+      ...(position !== undefined ? { position } : {})
+    }
+  });
+}
+
+function validateReset(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_RESET, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['confirmed'])) {
+    return fail('unexpected-payload-fields', { type: CMD_RESET, correlationId });
+  }
+  if (p['confirmed'] !== true) {
+    return fail('reset-not-confirmed', { type: CMD_RESET, correlationId });
+  }
+  return ok({ type: CMD_RESET, correlationId, payload: { confirmed: true } });
+}
+
+type IdCommandType =
+  | typeof CMD_RETRY_QUEUE_ITEM
+  | typeof CMD_MOVE_QUEUE_ITEM_UP
+  | typeof CMD_MOVE_QUEUE_ITEM_DOWN
+  | typeof CMD_OPEN_QUEUE_ITEM_DETAILS
+  | typeof CMD_OPEN_HISTORY_ITEM_DETAILS;
+
+function validateIdPayload(type: IdCommandType, obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['id'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const id = p['id'];
+  if (typeof id !== 'string' || id.length === 0 || id.length > QUEUE_ID_MAX) {
+    return fail('invalid-id', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: { id } } as SidebarCommand);
+}
+
+function validateConfirmedRemoveQueueItem(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['id', 'confirmed'])) {
+    return fail('unexpected-payload-fields', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
+  }
+  const id = p['id'];
+  if (typeof id !== 'string' || id.length === 0 || id.length > QUEUE_ID_MAX) {
+    return fail('invalid-id', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
+  }
+  if (p['confirmed'] !== true) {
+    return fail('missing-confirmation', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
+  }
+  return ok({ type: CMD_REMOVE_QUEUE_ITEM, correlationId, payload: { id, confirmed: true } });
+}
+
+function validateRemoveTaskPhase(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_REMOVE_TASK_PHASE, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['taskId', 'phaseId', 'confirmed'])) {
+    return fail('unexpected-payload-fields', { type: CMD_REMOVE_TASK_PHASE, correlationId });
+  }
+  const taskId = p['taskId'];
+  const phaseId = p['phaseId'];
+  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+    return fail('invalid-taskId', { type: CMD_REMOVE_TASK_PHASE, correlationId });
+  }
+  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+    return fail('invalid-phaseId', { type: CMD_REMOVE_TASK_PHASE, correlationId });
+  }
+  if (p['confirmed'] !== true) {
+    return fail('missing-confirmation', { type: CMD_REMOVE_TASK_PHASE, correlationId });
+  }
+  return ok({
+    type: CMD_REMOVE_TASK_PHASE,
+    correlationId,
+    payload: { taskId, phaseId, confirmed: true }
+  });
+}
+
+function validateRunIdPayload(
+  type: typeof CMD_RERUN_FROM_HISTORY,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  // Feature 013 — Wave 6 (US6, FR-031): `force` is an optional boolean
+  // operator opt-in for replaying legacy entries with the truncated
+  // preview. Defaults to `false` (refuse with warning) when absent.
+  if (hasUnexpectedKeys(p, ['runId', 'force'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const runId = p['runId'];
+  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
+    return fail('invalid-runId', { type, correlationId });
+  }
+  const force = p['force'];
+  if (force !== undefined && typeof force !== 'boolean') {
+    return fail('force-not-boolean', { type, correlationId });
+  }
+  return ok({
+    type,
+    correlationId,
+    payload: { runId, ...(force === true ? { force: true } : {}) }
+  } as SidebarCommand);
+}
+
+function validatePauseQueue(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type: CMD_PAUSE_QUEUE, correlationId } as SidebarCommand);
+  }
+  if (payload === null || typeof payload !== 'object') {
+    return fail('invalid-payload', { type: CMD_PAUSE_QUEUE, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['queueId', 'reason'])) {
+    return fail('unexpected-payload-fields', { type: CMD_PAUSE_QUEUE, correlationId });
+  }
+  const queueId = p['queueId'];
+  if (
+    queueId !== undefined &&
+    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
+  ) {
+    return fail('invalid-queueId', { type: CMD_PAUSE_QUEUE, correlationId });
+  }
+  const reason = p['reason'];
+  if (reason !== undefined && typeof reason !== 'string') {
+    return fail('reason-not-string', { type: CMD_PAUSE_QUEUE, correlationId });
+  }
+  if (typeof reason === 'string' && reason.length > PAUSED_REASON_MAX_LENGTH) {
+    return fail('reason-too-long', { type: CMD_PAUSE_QUEUE, correlationId });
+  }
+  return ok({
+    type: CMD_PAUSE_QUEUE,
+    correlationId,
+    payload:
+      queueId !== undefined || reason !== undefined
+        ? { ...(queueId ? { queueId } : {}), ...(reason !== undefined ? { reason } : {}) }
+        : undefined
+  } as SidebarCommand);
+}
+
+function validateResumeQueue(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type: CMD_RESUME_QUEUE, correlationId } as SidebarCommand);
+  }
+  if (payload === null || typeof payload !== 'object') {
+    return fail('invalid-payload', { type: CMD_RESUME_QUEUE, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['queueId'])) {
+    return fail('unexpected-payload-fields', { type: CMD_RESUME_QUEUE, correlationId });
+  }
+  const queueId = p['queueId'];
+  if (
+    queueId !== undefined &&
+    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
+  ) {
+    return fail('invalid-queueId', { type: CMD_RESUME_QUEUE, correlationId });
+  }
+  return ok({
+    type: CMD_RESUME_QUEUE,
+    correlationId,
+    payload: queueId ? { queueId } : undefined
+  } as SidebarCommand);
+}
+
+type NoPayloadType =
+  | typeof CMD_RESUME
+  | typeof CMD_OPEN_AUDIT_LOG
+  | typeof CMD_CLEAR_COMPLETED
+  | typeof CMD_CLEAR_FAILED
+  | typeof CMD_OPEN_DASHBOARD
+  | typeof CMD_RETRY_ACTIVE_RUN
+  | typeof CMD_RETRY_PHASE_NOW
+  | typeof CMD_PAUSE_PHASE
+  | typeof CMD_RESUME_PHASE
+  | typeof CMD_OPEN_VERBOSE_SETTING;
+
+// Feature 017 — BUG-001. Both CMD_CANCEL and CMD_RESTART_CANCELED_TASK
+// carry a single `taskId: string` payload.
+type TaskIdCommandType = typeof CMD_CANCEL | typeof CMD_RESTART_CANCELED_TASK;
+
+function validateTaskIdPayload(
+  type: TaskIdCommandType,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['taskId'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const taskId = p['taskId'];
+  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+    return fail('invalid-taskId', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: { taskId } } as SidebarCommand);
+}
+
+function validateNoPayload(
+  type: NoPayloadType,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  if ('payload' in obj && obj['payload'] !== undefined) {
+    return fail('unexpected-payload', { type, correlationId });
+  }
+  return ok({ type, correlationId } as SidebarCommand);
+}
+
+// Feature 014 — CMD_WAKE_UP_NOW accepts either no payload or an empty
+// object `{}` (the webview sends `payload: {}`). Rejects any non-empty
+// payload.
+function validateWakeUpNow(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type: CMD_WAKE_UP_NOW, correlationId } as SidebarCommand);
+  }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return fail('invalid-payload', { type: CMD_WAKE_UP_NOW, correlationId });
+  }
+  if (Object.keys(payload as object).length !== 0) {
+    return fail('unexpected-payload-fields', { type: CMD_WAKE_UP_NOW, correlationId });
+  }
+  return ok({ type: CMD_WAKE_UP_NOW, correlationId, payload: {} } as SidebarCommand);
+}
+
+// Feature 017 — phase-control commands that carry a single `phaseId` string.
+type PhaseIdCommandType =
+  | typeof CMD_RESTART_PHASE
+  | typeof CMD_SKIP_PHASE
+  | typeof CMD_DISABLE_PHASE
+  | typeof CMD_ENABLE_PHASE;
+
+function validatePhaseIdPayload(
+  type: PhaseIdCommandType,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['phaseId'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const phaseId = p['phaseId'];
+  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+    return fail('invalid-phaseId', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: { phaseId } } as SidebarCommand);
+}
+
+// Feature 028 — phase breakpoint commands carry `{ runId, phaseId }`.
+type PhaseBreakpointCommandType =
+  | typeof CMD_SET_PHASE_BREAKPOINT
+  | typeof CMD_CLEAR_PHASE_BREAKPOINT;
+
+function validatePhaseBreakpointPayload(
+  type: PhaseBreakpointCommandType,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['runId', 'phaseId'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const runId = p['runId'];
+  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
+    return fail('invalid-runId', { type, correlationId });
+  }
+  const phaseId = p['phaseId'];
+  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+    return fail('invalid-phaseId', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: { runId, phaseId } } as SidebarCommand);
+}
+
+function validateSavePipelines(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_SAVE_PIPELINES, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (!Array.isArray(p.pipelines)) {
+    return fail('invalid-payload', { type: CMD_SAVE_PIPELINES, correlationId });
+  }
+  return ok({ type: CMD_SAVE_PIPELINES, correlationId, payload: { pipelines: p.pipelines } } as SidebarCommand);
+}
+
+function validateSavePhases(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_SAVE_PHASES, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (!Array.isArray(p.phases)) {
+    return fail('invalid-payload', { type: CMD_SAVE_PHASES, correlationId });
+  }
+  return ok({ type: CMD_SAVE_PHASES, correlationId, payload: { phases: p.phases } } as SidebarCommand);
+}
+
+function validateSaveModels(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_SAVE_MODELS, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (!Array.isArray(p.models)) {
+    return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+  }
+  for (const v of p.models) {
+    if (typeof v !== 'string' || v.length === 0) {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+    }
+  }
+  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: { models: p.models } } as SidebarCommand);
+}
+
+// Feature 011 — CMD_SAVE_GENERAL_SETTINGS payload contract.
+// Keys are unprefixed (host adds the `schegent.` prefix). Per-key allowlist
+// and type validation happen in the host router (out-of-scope for IPC
+// shape validation; this validator only confirms the basic object shape).
+function validateSaveGeneralSettings(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['updates'])) {
+    return fail('unexpected-payload-fields', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
+  }
+  const updates = p['updates'];
+  if (updates === null || typeof updates !== 'object' || Array.isArray(updates)) {
+    return fail('invalid-updates', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
+  }
+  return ok({
+    type: CMD_SAVE_GENERAL_SETTINGS,
+    correlationId,
+    payload: { updates: updates as Record<string, unknown> }
+  } as SidebarCommand);
+}
+
+// Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
+// CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS removed
+// because the commands no longer exist.
+
+function validateModifyTask(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_MODIFY_TASK, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['taskId', 'description'])) {
+    return fail('unexpected-payload-fields', { type: CMD_MODIFY_TASK, correlationId });
+  }
+  const taskId = p['taskId'];
+  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+    return fail('invalid-taskId', { type: CMD_MODIFY_TASK, correlationId });
+  }
+  const description = p['description'];
+  if (typeof description !== 'string') {
+    return fail('description-not-string', { type: CMD_MODIFY_TASK, correlationId });
+  }
+  const trimmed = description.trim();
+  if (trimmed.length === 0 || trimmed.length > DESCRIPTION_MAX) {
+    return fail('description-out-of-range', { type: CMD_MODIFY_TASK, correlationId });
+  }
+  return ok({
+    type: CMD_MODIFY_TASK,
+    correlationId,
+    payload: { taskId, description: trimmed }
+  } as SidebarCommand);
+}
+
+function validateReorderTask(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_REORDER_TASK, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['taskId', 'newPosition'])) {
+    return fail('unexpected-payload-fields', { type: CMD_REORDER_TASK, correlationId });
+  }
+  const taskId = p['taskId'];
+  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+    return fail('invalid-taskId', { type: CMD_REORDER_TASK, correlationId });
+  }
+  const newPosition = p['newPosition'];
+  if (typeof newPosition !== 'number' || !Number.isInteger(newPosition) || newPosition < 0) {
+    return fail('invalid-position', { type: CMD_REORDER_TASK, correlationId });
+  }
+  return ok({
+    type: CMD_REORDER_TASK,
+    correlationId,
+    payload: { taskId, newPosition }
+  } as SidebarCommand);
+}
+
+// Feature 030 — single-queue mode: validators for CMD_MOVE_TASK,
+// CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE removed because the
+// commands no longer exist.
+
+// Feature 014 — CMD_SAVE_WAKEUP_SETTINGS payload contract.
+// IPC-shape validation only — invariants (HH:MM regex, "Every Nm/h"
+// regex, ≥ 1-minute floor, schedulerType literal) are enforced by the
+// host's save-handler at the next layer (src/wakeup/save-handler.ts).
+// Per specs/014-wake-up/contracts/wakeup-settings-ipc.md §Request envelope.
+function validateSaveWakeUpSettings(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  // Feature 031 — `model` is an OPTIONAL string at the IPC shape layer.
+  // Closed-registry membership + sentinel coercion is enforced inside
+  // the host save-handler (src/wakeup/save-handler.ts) so the wire
+  // contract stays maximally backwards compatible.
+  if (hasUnexpectedKeys(p, [
+    'enabled',
+    'schedulerType',
+    'chronologicalTime',
+    'periodicInterval',
+    'model'
+  ])) {
+    return fail('unexpected-payload-fields', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const enabled = p['enabled'];
+  if (typeof enabled !== 'boolean') {
+    return fail('invalid-enabled', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const schedulerType = p['schedulerType'];
+  if (schedulerType !== 'chronological' && schedulerType !== 'periodic') {
+    return fail('invalid-scheduler-type', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const chronologicalTime = p['chronologicalTime'];
+  if (typeof chronologicalTime !== 'string') {
+    return fail('invalid-chronological-time', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const periodicInterval = p['periodicInterval'];
+  if (typeof periodicInterval !== 'string') {
+    return fail('invalid-periodic-interval', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  const model = p['model'];
+  if (model !== undefined && typeof model !== 'string') {
+    return fail('invalid-model', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
+  }
+  return ok({
+    type: CMD_SAVE_WAKEUP_SETTINGS,
+    correlationId,
+    payload: {
+      enabled,
+      schedulerType,
+      chronologicalTime,
+      periodicInterval,
+      ...(typeof model === 'string' ? { model } : {})
+    }
+  } as SidebarCommand);
+}
+
+// Feature 020 — BUG-001: payload contracts for the three phase-log
+// commands. Read-only by construction — none of them appear in
+// `MUTATING_COMMANDS`. Wire format pinned in
+// `specs/020-phase-level-logs/contracts/phase-log-ipc.md` and mirrors
+// `ReadPhaseLogRequest` / `StartPhaseLogTailRequest` /
+// `StopPhaseLogTailRequest` from `./sidebar-ipc`. The shape-only
+// allowlist here is the SINGLE inbound gate; tuple resolution and
+// path composition happen later inside the phase-log service.
+//
+// `iterationN: number | null` on the read path means "host picks the
+// latest iter-N"; `iterationN: number` on the start path is required.
+const PHASE_LOG_SELECTION_KEYS = [
+  'queueId',
+  'taskId',
+  'pipelineId',
+  'phaseId',
+  'iterationN'
+] as const;
+
+type ValidatedPhaseLogSelection = {
+  readonly queueId: string;
+  readonly taskId: string;
+  readonly pipelineId: string;
+  readonly phaseId: string;
+  readonly iterationN: number | null;
+};
+
+type SelectionValidationOutcome =
+  | { readonly ok: true; readonly selection: ValidatedPhaseLogSelection }
+  | IpcValidationError;
+
+function validatePhaseLogSelection(
+  raw: unknown,
+  type: string,
+  correlationId: string,
+  opts: { readonly iterationNRequired: boolean }
+): SelectionValidationOutcome {
+  if (raw === null || typeof raw !== 'object') {
+    return fail('invalid-selection', { type, correlationId });
+  }
+  const sel = raw as Record<string, unknown>;
+  if (hasUnexpectedKeys(sel, [...PHASE_LOG_SELECTION_KEYS])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const queueId = sel['queueId'];
+  if (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX) {
+    return fail('invalid-queueId', { type, correlationId });
+  }
+  const taskId = sel['taskId'];
+  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+    return fail('invalid-taskId', { type, correlationId });
+  }
+  const pipelineId = sel['pipelineId'];
+  if (
+    typeof pipelineId !== 'string' ||
+    pipelineId.length === 0 ||
+    pipelineId.length > QUEUE_ID_MAX
+  ) {
+    return fail('invalid-pipelineId', { type, correlationId });
+  }
+  const phaseId = sel['phaseId'];
+  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+    return fail('invalid-phaseId', { type, correlationId });
+  }
+  const iterRaw = sel['iterationN'];
+  let iterationN: number | null;
+  if (opts.iterationNRequired) {
+    if (typeof iterRaw !== 'number' || !Number.isInteger(iterRaw) || iterRaw < 1) {
+      return fail('invalid-iterationN', { type, correlationId });
+    }
+    iterationN = iterRaw;
+  } else if (iterRaw === null || iterRaw === undefined) {
+    iterationN = null;
+  } else if (typeof iterRaw === 'number' && Number.isInteger(iterRaw) && iterRaw >= 1) {
+    iterationN = iterRaw;
+  } else {
+    return fail('invalid-iterationN', { type, correlationId });
+  }
+  return {
+    ok: true,
+    selection: { queueId, taskId, pipelineId, phaseId, iterationN }
+  };
+}
+
+function validateReadPhaseLog(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_READ_PHASE_LOG, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['selection'])) {
+    return fail('unexpected-payload-fields', { type: CMD_READ_PHASE_LOG, correlationId });
+  }
+  const sel = validatePhaseLogSelection(p['selection'], CMD_READ_PHASE_LOG, correlationId, {
+    iterationNRequired: false
+  });
+  if (!sel.ok) return sel;
+  return ok({
+    type: CMD_READ_PHASE_LOG,
+    correlationId,
+    payload: { selection: sel.selection }
+  } as SidebarCommand);
+}
+
+function validateReadWakeupSessionLog(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return fail('missing-payload', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['correlationId'])) {
+    return fail('unexpected-payload-fields', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
+  }
+  const sessionCorrelationId = p['correlationId'];
+  if (
+    typeof sessionCorrelationId !== 'string' ||
+    sessionCorrelationId.length === 0 ||
+    sessionCorrelationId.length > CORRELATION_ID_MAX
+  ) {
+    return fail('invalid-correlationId', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
+  }
+  return ok({
+    type: CMD_READ_WAKEUP_SESSION_LOG,
+    correlationId,
+    payload: { correlationId: sessionCorrelationId }
+  } as SidebarCommand);
+}
+
+function validateRevealWakeupSessionLog(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId } as SidebarCommand);
+  }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return fail('invalid-payload', { type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId });
+  }
+  if (Object.keys(payload as object).length !== 0) {
+    return fail('unexpected-payload-fields', { type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId });
+  }
+  return ok({
+    type: CMD_REVEAL_WAKEUP_SESSION_LOG,
+    correlationId,
+    payload: {}
+  } as SidebarCommand);
+}
+
+function validateStartPhaseLogTail(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_START_PHASE_LOG_TAIL, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['selection'])) {
+    return fail('unexpected-payload-fields', { type: CMD_START_PHASE_LOG_TAIL, correlationId });
+  }
+  const sel = validatePhaseLogSelection(
+    p['selection'],
+    CMD_START_PHASE_LOG_TAIL,
+    correlationId,
+    { iterationNRequired: true }
+  );
+  if (!sel.ok) return sel;
+  return ok({
+    type: CMD_START_PHASE_LOG_TAIL,
+    correlationId,
+    payload: {
+      selection: sel.selection as ValidatedPhaseLogSelection & { readonly iterationN: number }
+    }
+  } as SidebarCommand);
+}
+
+function validateStopPhaseLogTail(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['sessionId'])) {
+    return fail('unexpected-payload-fields', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
+  }
+  const sessionId = p['sessionId'];
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > QUEUE_ID_MAX) {
+    return fail('invalid-sessionId', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
+  }
+  return ok({
+    type: CMD_STOP_PHASE_LOG_TAIL,
+    correlationId,
+    payload: { sessionId }
+  } as SidebarCommand);
+}
+
+function ok(command: SidebarCommand): IpcValidationResult {
+  return { ok: true, command };
+}
+
+function fail(reason: string, extra: { type?: string; correlationId?: string } = {}): IpcValidationError {
+  return { ok: false, reason, ...extra };
+}
+
+function hasUnexpectedKeys(obj: Record<string, unknown>, allowed: string[]): boolean {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) return true;
+  }
+  return false;
+}
