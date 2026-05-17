@@ -17,6 +17,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+// CLAUDE.md lives at the workspace root (envelope-level operating contract);
+// AGENTS.md lives inside repo/ (execution-repo orientation file).
+const WORKSPACE_ROOT = path.resolve(REPO_ROOT, '..');
 
 // Topical anchors — each phrase MUST appear at least once in
 // CLAUDE.md. Use lowercased substring matching. Keep phrases short,
@@ -53,19 +56,23 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   "append `-c`"
 ];
 
-function readDoc(name: string): string {
-  return fs.readFileSync(path.join(REPO_ROOT, name), 'utf8').toLowerCase();
+function readClaudeMd(): string {
+  return fs.readFileSync(path.join(WORKSPACE_ROOT, 'CLAUDE.md'), 'utf8').toLowerCase();
+}
+
+function readAgentsMd(): string {
+  return fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf8').toLowerCase();
 }
 
 describe('AGENTS.md ↔ CLAUDE.md parity guard', () => {
   it('CLAUDE.md contains every curated hard-rule anchor', () => {
-    const claude = readDoc('CLAUDE.md');
+    const claude = readClaudeMd();
     const missing = CLAUDE_RULE_ANCHORS.filter((a) => !claude.includes(a));
     expect(missing, 'anchors not found in CLAUDE.md').toEqual([]);
   });
 
   it('AGENTS.md points at CLAUDE.md as the authoritative hard-rule source', () => {
-    const agents = readDoc('AGENTS.md');
+    const agents = readAgentsMd();
     // Must mention CLAUDE.md and the phrase that signals authority.
     expect(agents).toContain('claude.md');
     expect(agents).toContain('single source of truth');
@@ -76,7 +83,7 @@ describe('AGENTS.md ↔ CLAUDE.md parity guard', () => {
     // AGENTS.md must stay well below that — at most ~30 bullets — so it
     // cannot silently re-grow into a parallel rule set that drifts.
     const agents = fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf8');
-    const claude = fs.readFileSync(path.join(REPO_ROOT, 'CLAUDE.md'), 'utf8');
+    const claude = fs.readFileSync(path.join(WORKSPACE_ROOT, 'CLAUDE.md'), 'utf8');
     const count = (s: string) => (s.match(/\*\*Never\*\*/g) ?? []).length;
     const agentsCount = count(agents);
     const claudeCount = count(claude);

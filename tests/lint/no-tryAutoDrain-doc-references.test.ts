@@ -20,6 +20,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+// Operator-facing docs currently live at the workspace level under docs/;
+// fresh repo-level docs will be authored at repo/docs/* later.
+const WORKSPACE_ROOT = path.resolve(REPO_ROOT, '..');
 
 /**
  * The allowlist of symbols that MUST NOT appear in operator-facing
@@ -45,6 +48,7 @@ const REMOVED_SYMBOLS: ReadonlyArray<{
 ]);
 
 function walk(dir: string, accept: (p: string) => boolean): string[] {
+  if (!fs.existsSync(dir)) return [];
   const found: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const abs = path.join(dir, entry.name);
@@ -59,7 +63,11 @@ function walk(dir: string, accept: (p: string) => boolean): string[] {
 
 function collectDocTargets(): string[] {
   return [
+    // Workspace-level operator docs (canonical location post-restructure).
+    ...walk(path.join(WORKSPACE_ROOT, 'docs', 'operations'), (p) => p.endsWith('.md')),
+    // Repo-level docs added later will also be scanned automatically.
     ...walk(path.join(REPO_ROOT, 'docs', 'operations'), (p) => p.endsWith('.md')),
+    path.join(WORKSPACE_ROOT, 'README.md'),
     path.join(REPO_ROOT, 'README.md'),
     path.join(REPO_ROOT, 'ARCHITECTURE.md'),
     path.join(REPO_ROOT, 'webview-ui', 'README.md')
