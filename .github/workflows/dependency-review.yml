@@ -1,0 +1,45 @@
+name: Dependency review
+
+# GitHub's dependency-review-action diffs the PR's lockfile changes
+# against the base branch and flags newly introduced vulnerable
+# dependencies, license-incompatible packages, or dependency
+# additions that exceed the configured severity floor.
+#
+# This is complementary to:
+# - security-audit.yml (full-tree `npm audit`, weekly)
+# - codeql.yml (static analysis of source code, weekly + PR)
+# - dependabot.yml (automated upgrade PRs)
+#
+# The action only runs on pull_request events because the diff is
+# anchored against `github.event.pull_request.base.sha`.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          # Comment the PR with a markdown summary of any flagged
+          # additions / vulnerabilities. Keeps the audit trail in the
+          # PR conversation so reviewers don't need to dig through
+          # Security-tab annotations.
+          comment-summary-in-pr: on-failure
