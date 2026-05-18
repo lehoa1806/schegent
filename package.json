@@ -439,14 +439,14 @@
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
-    "@vitest/coverage-v8": "^1.6.1",
+    "@vitest/coverage-v8": "^3.2.4",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.9.1",
-    "esbuild": "^0.20.0",
+    "esbuild": "^0.28.0",
     "eslint": "^8.57.0",
     "prettier": "^3.2.0",
     "typescript": "^5.4.0",
-    "vitest": "^1.4.0"
+    "vitest": "^3.2.4"
   },
   "repository": {
     "type": "git",

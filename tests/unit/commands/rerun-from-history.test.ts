@@ -28,7 +28,9 @@ interface ScheduleOrEnqueueResult {
 
 function makeGuarded(outcome: ScheduleOrEnqueueResult['outcome'] = 'enqueued') {
   return {
-    scheduleOrEnqueue: vi.fn<[ScheduleOrEnqueueArgs], Promise<ScheduleOrEnqueueResult>>(async () => ({
+    scheduleOrEnqueue: vi.fn<
+      (args: ScheduleOrEnqueueArgs) => Promise<ScheduleOrEnqueueResult>
+    >(async () => ({
       outcome,
       queueItemId: outcome === 'enqueued' ? 'q-1' : undefined
     }))

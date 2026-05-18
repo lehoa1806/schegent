@@ -21,8 +21,7 @@ import {
 } from '../../../../../../src/wakeup/settings';
 
 const saveSpy = vi.fn<
-  Parameters<typeof import('../../../../lib/save-wakeup-settings').saveWakeUpSettings>,
-  ReturnType<typeof import('../../../../lib/save-wakeup-settings').saveWakeUpSettings>
+  typeof import('../../../../lib/save-wakeup-settings').saveWakeUpSettings
 >();
 
 vi.mock('../../../../lib/save-wakeup-settings', () => ({

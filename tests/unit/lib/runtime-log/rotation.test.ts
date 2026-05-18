@@ -64,17 +64,17 @@ async function flush(sink: RuntimeLogSink): Promise<void> {
 function makeFsMocks() {
   const files = new Map<string, string>();
 
-  const appendFile: Mock<[string, string], Promise<void>> = vi.fn(
+  const appendFile: Mock<(target: string, data: string) => Promise<void>> = vi.fn(
     async (target: string, data: string) => {
       files.set(target, (files.get(target) ?? '') + data);
     }
   );
-  const writeFile: Mock<[string, string], Promise<void>> = vi.fn(
+  const writeFile: Mock<(target: string, data: string) => Promise<void>> = vi.fn(
     async (target: string, data: string) => {
       files.set(target, data);
     }
   );
-  const rename: Mock<[string, string], Promise<void>> = vi.fn(
+  const rename: Mock<(from: string, to: string) => Promise<void>> = vi.fn(
     async (from: string, to: string) => {
       if (!files.has(from)) {
         const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -84,7 +84,7 @@ function makeFsMocks() {
       files.delete(from);
     }
   );
-  const unlink: Mock<[string], Promise<void>> = vi.fn(
+  const unlink: Mock<(target: string) => Promise<void>> = vi.fn(
     async (target: string) => {
       if (!files.has(target)) {
         const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -93,7 +93,7 @@ function makeFsMocks() {
       files.delete(target);
     }
   );
-  const stat: Mock<[string], Promise<{ size: number }>> = vi.fn(
+  const stat: Mock<(target: string) => Promise<{ size: number }>> = vi.fn(
     async (target: string) => {
       const content = files.get(target);
       if (content === undefined) {
@@ -103,7 +103,7 @@ function makeFsMocks() {
       return { size: Buffer.byteLength(content, 'utf8') };
     }
   );
-  const mkdir = vi.fn<[string, { recursive: true }], Promise<unknown>>(
+  const mkdir = vi.fn<(target: string, opts: { recursive: true }) => Promise<unknown>>(
     async () => undefined as unknown
   );
 

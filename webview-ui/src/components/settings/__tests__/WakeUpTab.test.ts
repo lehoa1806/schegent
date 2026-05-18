@@ -29,12 +29,10 @@ import type { WakeUpLogProjection, WakeUpSettings, WorkflowSnapshot } from '../.
 // ── Mock the shared save helper ────────────────────────────────────────────
 
 const saveSpy = vi.fn<
-  Parameters<typeof import('../../../lib/save-wakeup-settings').saveWakeUpSettings>,
-  ReturnType<typeof import('../../../lib/save-wakeup-settings').saveWakeUpSettings>
+  typeof import('../../../lib/save-wakeup-settings').saveWakeUpSettings
 >();
 const wakeNowSpy = vi.fn<
-  Parameters<typeof import('../../../lib/wake-up-now').wakeUpNow>,
-  ReturnType<typeof import('../../../lib/wake-up-now').wakeUpNow>
+  typeof import('../../../lib/wake-up-now').wakeUpNow
 >();
 
 vi.mock('../../../lib/save-wakeup-settings', () => ({

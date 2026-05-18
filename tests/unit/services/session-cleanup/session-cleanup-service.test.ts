@@ -71,7 +71,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
     const { logger, warnSpy } = makeLogger();
     const calls: string[] = [];
     const fsRm = vi
-      .fn<[string, { recursive: true; force: true }], Promise<void>>()
+      .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
       .mockImplementation(async (p) => {
         calls.push(p);
         if (p.endsWith(runId)) throw new Error('boom-dir');
@@ -95,7 +95,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
   it('file rm throws — resolves false, exactly one warn', async () => {
     const { logger, warnSpy } = makeLogger();
     const fsRm = vi
-      .fn<[string, { recursive: true; force: true }], Promise<void>>()
+      .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
       .mockImplementation(async (p) => {
         if (p.endsWith(`raw-${runId}.log`)) throw new Error('boom-file');
         // session-root path succeeds
@@ -113,7 +113,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
   it('both throw — resolves false, exactly one aggregated warn (not two)', async () => {
     const { logger, warnSpy } = makeLogger();
     const fsRm = vi
-      .fn<[string, { recursive: true; force: true }], Promise<void>>()
+      .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
       .mockImplementation(async () => {
         throw new Error('boom-both');
       });
@@ -131,7 +131,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
     const { logger } = makeLogger();
     // A throwy fsRm that also rejects with a non-Error value.
     const fsRm = vi
-      .fn<[string, { recursive: true; force: true }], Promise<void>>()
+      .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
       .mockImplementation(async () => {
         throw 'not-an-error-object';
       });
@@ -161,7 +161,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
     const logger = new SanitizedLogger([]);
     const warnSpy = vi.spyOn(logger, 'warn');
     const fsRm = vi
-      .fn<[string, { recursive: true; force: true }], Promise<void>>()
+      .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
       .mockImplementation(async () => {
         throw new Error('io-failure');
       });

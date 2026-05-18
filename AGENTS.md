@@ -110,8 +110,9 @@ text, citations, and rationale):
 - **Never** weaken the redaction set in [src/lib/logger.ts](src/lib/logger.ts).
 - **Never** route untrusted strings to the UI without sanitization.
 - **Never** weaken CSP for webviews. No remote `script-src` permitted.
-- **Never** skip lock release. Use the existing `lockReleased` flag
-  pattern in `WorkflowController.driveRun()`.
+- **Never** skip lock release. Use
+  `WorkspaceLockManager.withLock()` and call `session.retain()` only
+  for intentional pause-style exits.
 - **Never** drop unknown audit event types from the parser. Warn and
   preserve.
 - **Never** bypass `appendAudit` or the raw transcript writer for

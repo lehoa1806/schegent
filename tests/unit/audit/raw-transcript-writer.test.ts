@@ -7,7 +7,7 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 
 let workspaceRoot: string;
 let logger: SanitizedLogger;
-let warnSpy: MockInstance<[message: string, context?: Record<string, unknown>], void>;
+let warnSpy: MockInstance<(message: string, context?: Record<string, unknown>) => void>;
 let writer: RawTranscriptWriter;
 
 async function readLog(runId: string): Promise<string> {

@@ -634,7 +634,10 @@ function spawnClaude(
     }, CLAUDE_TIMEOUT_MS);
     sigtermTimer.unref();
 
-    child.on('exit', (code) => {
+    // Use `close`, not `exit`: `exit` can fire before stdout/stderr pipes
+    // have drained, which can seal a header-only session.log block under
+    // parallel test or host load.
+    child.on('close', (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(sigtermTimer);

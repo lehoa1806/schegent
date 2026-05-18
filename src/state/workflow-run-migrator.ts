@@ -37,6 +37,12 @@
  *     `QueueRegistryEntry` (default `'operator'` when
  *     `state === 'manually-paused'`, else `null`). Migrated via
  *     `migrateQueueRegistryV4ToV5()`.
+ *
+ *   repair (feature 056): removes legacy bugfix phases that were
+ *     accidentally persisted into the immutable `speckit-new-feature`
+ *     pipeline snapshot. This repair is intentionally code-resident here
+ *     instead of activation wiring so persisted `WorkflowRun` rewrites have a
+ *     single migration-style home.
  */
 
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
@@ -75,6 +81,21 @@ const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'ope
   'operator',
   'system'
 ]);
+
+export interface WorkflowRunRepairedAuditEvent {
+  readonly type: 'workflow-run-repaired';
+  readonly runId: string;
+  readonly pipelineId: 'speckit-new-feature';
+  readonly repair: 'remove-bugfix-phases-from-default-pipeline';
+  readonly removedPhaseCount: number;
+  readonly removedBreakpointCount: number;
+  readonly remainingPhaseCount: number;
+}
+
+export interface WorkflowRunRepairResult {
+  readonly run: WorkflowRun;
+  readonly auditEvent: WorkflowRunRepairedAuditEvent | null;
+}
 
 export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
   if (legacy === null || legacy === undefined) return null;
@@ -142,6 +163,45 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
     manualPauseCause,
     phaseBreakpoints: rawBreakpoints,
     resumeTargetPhaseId
+  };
+}
+
+export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResult {
+  const pipeline = run.pipeline;
+  if (!pipeline || pipeline.id !== 'speckit-new-feature') {
+    return { run, auditEvent: null };
+  }
+  const phases = Array.isArray(pipeline.phases) ? pipeline.phases : [];
+  const bugfixPhases = phases.filter((phase) => phase.id.startsWith('bugfix-'));
+  if (phases.length <= 8 || bugfixPhases.length === 0) {
+    return { run, auditEvent: null };
+  }
+
+  const fixedPhases = phases.filter((phase) => !phase.id.startsWith('bugfix-'));
+  const remainingPhaseIds = new Set(fixedPhases.map((phase) => phase.id));
+  const fixedBreakpoints = run.phaseBreakpoints.filter((breakpoint) =>
+    remainingPhaseIds.has(breakpoint.phaseId)
+  );
+  const repaired: WorkflowRun = {
+    ...run,
+    pipeline: {
+      ...pipeline,
+      phases: fixedPhases
+    },
+    phaseBreakpoints: fixedBreakpoints
+  };
+
+  return {
+    run: repaired,
+    auditEvent: {
+      type: 'workflow-run-repaired',
+      runId: run.id,
+      pipelineId: 'speckit-new-feature',
+      repair: 'remove-bugfix-phases-from-default-pipeline',
+      removedPhaseCount: bugfixPhases.length,
+      removedBreakpointCount: run.phaseBreakpoints.length - fixedBreakpoints.length,
+      remainingPhaseCount: fixedPhases.length
+    }
   };
 }
 

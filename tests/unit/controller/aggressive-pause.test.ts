@@ -20,7 +20,7 @@
 //   (e) Cascade-pause preservation — queue cascade STILL fires (no regression
 //       on the 028 invariant).
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
@@ -94,7 +94,7 @@ let queue: QueueManager;
 let phaseRunner: PhaseRunner;
 let controller: SchegentWorkflowController;
 let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn<[], Promise<void>>>;
+  pauseAndPoll: Mock<() => Promise<void>>;
   cancelPendingTimer: ReturnType<typeof vi.fn>;
 };
 

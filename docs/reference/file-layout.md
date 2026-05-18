@@ -18,11 +18,11 @@ Everything under `<workspaceRoot>/.schegent/` is **local-only**. It is intention
 └── sessions/
     ├── raw-<runId>.log                 # Raw transcript for runId (unredacted)
     └── <runId>/
-        ├── phase-message.env           # Optional inter-phase sidecar
-        └── diagnostics/                # Verbose diagnostics (opt-in, unredacted)
+        └── diagnostics/                # Phase sidecars and verbose diagnostics
             └── <pipelineId>/
                 └── <phaseId>/
                     └── iter-<N>/
+                        ├── phase-message.env  # Optional inter-phase sidecar
                         ├── debug.json
                         ├── stream.jsonl
                         └── verbose.log
@@ -70,7 +70,7 @@ The host writes this file as the run proceeds; nothing reads it back. There is n
 
 This file is the fallback when a failure correlates with a string the sanitizer masked from `audit.log`. Treat it like your shell history: useful, may contain sensitive context, do not check into version control.
 
-### `sessions/<runId>/phase-message.env`
+### `sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/phase-message.env`
 
 Optional sidecar file the phase runner uses to pass small typed values from one phase to the next. Lives only for the lifetime of the run (or until the operator removes the session tree via task deletion).
 

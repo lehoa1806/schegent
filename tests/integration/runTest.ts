@@ -18,10 +18,10 @@ function findRepoRoot(start: string): string {
 
 // VS Code parses `--folder-uri=file://…` from its own argv after Electron has
 // already loaded the main entry, so the workspace path is never treated as a
-// candidate Electron app. We need the integration tests to attach to the
-// schegent repo itself (for `.specify/`, `.git/`, and `package.json`), and
-// passing the repo as a positional arg would trip Electron into loading
-// `dist/extension.js` directly. `--folder-uri` is the only safe route.
+// candidate Electron app. We attach to the extension repo itself for `.git/`
+// and `package.json`; the harness creates a temporary `.specify/` marker below
+// so the `workspaceContains:.specify/` activation trigger is exercised even
+// when the planning envelope lives one directory above `repo/`.
 function folderUri(p: string): string {
   const abs = path.resolve(p).split(path.sep).join('/');
   const prefix = abs.startsWith('/') ? 'file://' : 'file:///';
@@ -46,11 +46,18 @@ async function main() {
 
     const extensionDevelopmentPath = findRepoRoot(__dirname);
     const extensionTestsPath = path.resolve(__dirname, './index');
-    await runTests({
-      extensionDevelopmentPath,
-      extensionTestsPath,
-      launchArgs: [`--folder-uri=${folderUri(extensionDevelopmentPath)}`]
-    });
+    const specifyDir = path.join(extensionDevelopmentPath, '.specify');
+    const createdSpecifyDir = !fs.existsSync(specifyDir);
+    if (createdSpecifyDir) fs.mkdirSync(specifyDir, { recursive: true });
+    try {
+      await runTests({
+        extensionDevelopmentPath,
+        extensionTestsPath,
+        launchArgs: [`--folder-uri=${folderUri(extensionDevelopmentPath)}`]
+      });
+    } finally {
+      if (createdSpecifyDir) fs.rmSync(specifyDir, { recursive: true, force: true });
+    }
   } catch (err) {
     console.error('Failed to run integration tests:', err);
     process.exit(1);

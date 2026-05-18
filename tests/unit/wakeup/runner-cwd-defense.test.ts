@@ -66,7 +66,7 @@ vi.mock('node:child_process', async () => {
       child.stderr = new EventEmitter();
       child.stdin = { write: () => undefined, end: () => undefined };
       child.kill = () => undefined;
-      setImmediate(() => child.emit('exit', 0));
+      setImmediate(() => child.emit('close', 0));
       return child as unknown as ReturnType<typeof actual.spawn>;
     }) as unknown as typeof actual.spawn
   };

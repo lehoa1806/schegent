@@ -42,9 +42,7 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
   }
 
   it('secondary host can dispatch CMD_READ_PHASE_LOG without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<Parameters<AckPoster>, ReturnType<AckPoster>>(() =>
-      Promise.resolve(true)
-    );
+    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
       queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },
@@ -81,9 +79,7 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
   });
 
   it('secondary host can dispatch CMD_START_PHASE_LOG_TAIL without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<Parameters<AckPoster>, ReturnType<AckPoster>>(() =>
-      Promise.resolve(true)
-    );
+    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
       queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },
@@ -119,9 +115,7 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
   });
 
   it('secondary host can dispatch CMD_STOP_PHASE_LOG_TAIL without secondary-window-readonly rejection', async () => {
-    const ackSpy = vi.fn<Parameters<AckPoster>, ReturnType<AckPoster>>(() =>
-      Promise.resolve(true)
-    );
+    const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
       queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },

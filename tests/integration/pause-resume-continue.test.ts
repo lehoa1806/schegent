@@ -46,7 +46,7 @@
 //      mark t1.
 //   4. Assert `t1 − t0 ≤ 3000 ms` over 20 trials (95th percentile).
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -106,7 +106,7 @@ function makeCleanOutput(): RawInvocationOutput {
 function makeScriptedCliRunner(): {
   runner: ClaudeCliRunner;
   invocations: CapturedInvocation[];
-  cancelSpy: ReturnType<typeof vi.fn<[], boolean>>;
+  cancelSpy: Mock<() => boolean>;
   setOutcome: (outcomes: Array<() => RawInvocationOutput>) => void;
 } {
   const invocations: CapturedInvocation[] = [];

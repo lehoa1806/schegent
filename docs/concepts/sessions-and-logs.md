@@ -72,7 +72,7 @@ Treat raw transcripts like you treat your shell history: they are useful, they m
 
 ## 3. Verbose diagnostic files (opt-in)
 
-When you set `schegent.logging.verbose: true`, the host adds three CLI flags to every phase invocation — `--debug-to-file`, `--output-format stream-json`, and `--verbose` — and tees the resulting streams to a per-invocation directory:
+When you set `schegent.logging.verbose: true`, the host adds three CLI flags to every phase invocation — `--debug-file`, `--output-format stream-json`, and `--verbose` — and tees the resulting streams to a per-invocation directory:
 
 ```text
 <workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/
@@ -126,9 +126,10 @@ Each run gets its own subtree under `.schegent/sessions/<runId>/`:
 └── sessions/
     ├── raw-<runId>.log             <- raw transcript for runId
     └── <runId>/
-        ├── phase-message.env       <- optional inter-phase sidecar
-        └── diagnostics/            <- verbose diagnostics if enabled
-            └── <pipelineId>/<phaseId>/iter-<N>/...
+        └── diagnostics/
+            └── <pipelineId>/<phaseId>/iter-<N>/
+                ├── phase-message.env  <- optional inter-phase sidecar
+                └── ...                <- verbose diagnostics if enabled
 ```
 
 The `runId` is a UUID; you find it in audit-log events for the run, in the sidebar's run-detail view, and in the dashboard.

@@ -38,16 +38,17 @@ import type {
 
 // `phase-log-ipc` is mocked so the test can both observe what the
 // container asks for and drive the push listener it registers.
-const startSpy = vi.fn<[unknown], Promise<PhaseLogTailStartResult>>();
-const stopSpy = vi.fn<[unknown], Promise<PhaseLogTailStopResult>>();
-const readSpy = vi.fn<[unknown], Promise<PhaseLogReadResult>>();
+const startSpy = vi.fn<(req: unknown) => Promise<PhaseLogTailStartResult>>();
+const stopSpy = vi.fn<(req: unknown) => Promise<PhaseLogTailStopResult>>();
+const readSpy = vi.fn<(req: unknown) => Promise<PhaseLogReadResult>>();
 const subscribeSpy = vi.fn<
-  [(payload: {
-    tailSessionId: string;
-    entrySeq: number;
-    entry: PhaseLogDisplayEntry;
-  }) => void],
-  () => void
+  (
+    cb: (payload: {
+      tailSessionId: string;
+      entrySeq: number;
+      entry: PhaseLogDisplayEntry;
+    }) => void
+  ) => () => void
 >();
 let capturedPushListener:
   | ((payload: {
@@ -392,4 +393,3 @@ describe('Feature 021 — shared Activity Feed selection callbacks', () => {
     expect(onJumpToCurrent).toHaveBeenCalledTimes(1);
   });
 });
-

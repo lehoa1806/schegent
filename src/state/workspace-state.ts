@@ -14,7 +14,12 @@ import {
 } from '../queue/queue-registry';
 import type { WorkflowRun, WatchdogState, WorkspaceLock } from './workflow-run';
 import { STATE_SCHEMA_VERSION } from '../contracts/state-schema';
-import { migrateLegacyRun, migrateQueueRegistryV4ToV5 } from './workflow-run-migrator';
+import {
+  migrateLegacyRun,
+  migrateQueueRegistryV4ToV5,
+  repairLegacyRunSnapshot,
+  type WorkflowRunRepairedAuditEvent
+} from './workflow-run-migrator';
 import {
   migrateLegacyQueueState,
   migrateV5ToV6,
@@ -228,6 +233,8 @@ export interface InitializeResult {
   // (extension.ts) forwards these through `appendAudit` after the
   // `auditWriter` is constructed. Empty array when no migration occurred.
   v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
+  // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
+  runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
 
 export class WorkspaceStateStore {
@@ -279,34 +286,39 @@ export class WorkspaceStateStore {
     if (!persistedVersion) {
       await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
       await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      await this.migrateRunIfNeeded();
+      const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      return { migrated: true, v6MigrationEvents: v6Events };
+      return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
     }
     if (persistedVersion === SCHEMA_VERSION) {
       if (persistedNumeric !== STATE_SCHEMA_VERSION) {
         await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
         // Numeric schema bump only (additive fields) — apply forward
         // migrator so legacy `WorkflowRun` records gain the new fields.
-        await this.migrateRunIfNeeded();
+        const runRepairEvents = await this.normalizeRunForInitialize(true);
         await this.migrateQueueRegistryIfNeeded();
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-        return { migrated: true, v6MigrationEvents: v6Events };
+        return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
       }
+      const runRepairEvents = await this.normalizeRunForInitialize(false);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      return { migrated: v6Events.length > 0, v6MigrationEvents: v6Events };
+      return {
+        migrated: v6Events.length > 0 || runRepairEvents.length > 0,
+        v6MigrationEvents: v6Events,
+        runRepairEvents
+      };
     }
     const [persistedMajor] = persistedVersion.split('.');
     const [runtimeMajor] = SCHEMA_VERSION.split('.');
     if (persistedMajor === runtimeMajor) {
       await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
       await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      await this.migrateRunIfNeeded();
+      const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      return { migrated: true, v6MigrationEvents: v6Events };
+      return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
     }
     throw new Error(
       `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
@@ -317,12 +329,18 @@ export class WorkspaceStateStore {
    * Feature 011 — STATE_SCHEMA_VERSION 1 → 2 forward migration.
    * Fills the three new `WorkflowRun` fields on legacy records.
    */
-  private async migrateRunIfNeeded(): Promise<void> {
+  private async normalizeRunForInitialize(
+    applyLegacyMigration: boolean
+  ): Promise<readonly WorkflowRunRepairedAuditEvent[]> {
     const raw = this.memento.get<unknown>(KEYS.run);
-    if (raw === undefined || raw === null) return;
-    const migrated = migrateLegacyRun(raw);
-    if (migrated === null) return;
-    await this.memento.update(KEYS.run, migrated);
+    if (raw === undefined || raw === null) return [];
+    const migrated = applyLegacyMigration ? migrateLegacyRun(raw) : (raw as WorkflowRun);
+    if (migrated === null) return [];
+    const repair = repairLegacyRunSnapshot(migrated);
+    if (applyLegacyMigration || repair.auditEvent !== null) {
+      await this.memento.update(KEYS.run, repair.run);
+    }
+    return repair.auditEvent === null ? [] : [repair.auditEvent];
   }
 
   private async migrateQueueRegistryIfNeeded(): Promise<void> {

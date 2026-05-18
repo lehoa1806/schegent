@@ -7,7 +7,7 @@ Svelte 5 + Vite 5 app that renders both the Schegent **sidebar** and the **dashb
 | Surface | Entry | Purpose |
 |---|---|---|
 | Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
-| Dashboard | `webview-ui/src/dashboard/...` (mounted via `dashboard.html`) | Full-window operator console: named queue management, queue scheduling, pending-task edit/move/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
+| Dashboard | `webview-ui/src/dashboard/...` (mounted via `dashboard.html`) | Full-window operator console: single-queue management, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
 
 Both webviews subscribe to the same host `WorkflowSnapshot` projected by `src/ui/sidebar/state-projector.ts`. The dashboard renders the full operator surface; the sidebar projects a strict subset of the same `WorkflowSnapshot` (see `contracts/sidebar-view-contract.md` in the active spec for the testid contract).
 
@@ -30,7 +30,7 @@ webview-ui/
 │   └── lib/
 │       ├── derive-stats.ts — pure helper: deriveSidebarStats / deriveActivePhase
 │       ├── deletion-confirmation.ts — status-aware destructive confirmation copy
-│       ├── messages.ts   — re-exports from src/contracts/webview-commands.ts
+│       ├── messages.ts   — re-exports from src/contracts/sidebar-ipc.ts
 │       ├── snapshot-store.svelte.ts — latest WorkflowSnapshot + pending-correlation ids
 │       ├── snapshot-types.ts — re-exports of host-projected types
 │       ├── vscode-api.ts — typed postCommand / onHostMessage
@@ -43,8 +43,8 @@ webview-ui/
 
 Webview → host commands and host → webview snapshots are typed in `src/contracts/`:
 
-- Webview → host: `WebviewCommand` (discriminated union) — see `src/contracts/webview-commands.ts`.
-- Host → webview: `WebviewSnapshot` — see `src/contracts/webview-snapshots.ts`.
+- Webview → host: `SidebarCommand` (discriminated union) — see `src/contracts/sidebar-ipc.ts`.
+- Host → webview: `WorkflowSnapshot` — see `src/ui/sidebar/snapshot.ts` and the mirrored webview types in `webview-ui/src/lib/snapshot-types.ts`.
 - Validation: `MessageRouter` validates every inbound command via `src/contracts/runtime-validators.ts`. Unknown shapes are rejected and audited as `audit.invalid_command`.
 
 The webview's command literal types are re-exported from `src/contracts/`. There is no separate webview-side definition.
@@ -56,7 +56,7 @@ The phase-tracking IPC shape was widened to support operator-defined pipelines:
 - `PhaseName` is `string` (was a fixed literal union of the eight built-in phases). Webview components must not assume any specific phase id list.
 - `PhaseTile.order` is `number` (was a 1..7 tuple). Tiles render in catalog order, with vertical scroll when the active pipeline exceeds ~10 phases.
 - `PhaseTile.loopable?: boolean` is now optional, mirroring the per-phase `PhaseDef.loopable` setting.
-- `WorkflowSnapshot.activePipeline?: { id: string; name: string }` is optional. When present, the dashboard header renders `Phase Progression — Pipeline: <name>`; when absent, the built-in `standard` pipeline is implied.
+- `WorkflowSnapshot.activePipeline?: { id: string; name: string }` is optional. When present, the dashboard header renders `Phase Progression — Pipeline: <name>`; when absent, the built-in `speckit-new-feature` pipeline is implied.
 
 All four fields fall back to the prior built-in defaults when omitted, so existing snapshots continue to render unchanged.
 
@@ -72,8 +72,8 @@ with inner tabs is gone):
 
 | Route | Component | Purpose |
 |---|---|---|
-| Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, and the collapsible **Model Catalog** section near the bottom (mounts `ModelCatalogEditor.svelte`, hidden by `<details>` until opened). |
-| Pipeline Builder | `components/PipelineBuilder.svelte` | Phases editor on top (mounts `settings/PhasesTab.svelte` — the same rich editor with loopable / RetryConditionEditor / RawJsonPhaseEditor wiring), Pipelines composition area below. |
+| Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, audit tail, and phase log feed. |
+| Pipeline Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
 | Settings | `components/SettingsSurface.svelte` | Two sub-tabs only: **General** and **Fatal Signatures**. |
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`

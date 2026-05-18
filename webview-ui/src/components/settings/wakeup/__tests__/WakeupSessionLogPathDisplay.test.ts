@@ -43,7 +43,7 @@ type RevealResult =
         | 'unknown-error';
     };
 
-const revealSpy = vi.fn<[], Promise<RevealResult>>();
+const revealSpy = vi.fn<() => Promise<RevealResult>>();
 
 vi.mock('../../../../lib/reveal-wakeup-session-log', () => ({
   revealWakeupSessionLog: () => revealSpy()

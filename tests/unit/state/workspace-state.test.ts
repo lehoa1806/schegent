@@ -410,6 +410,50 @@ describe('Persistence migration (T065 / SC-013)', () => {
     expect(typeof queue.updatedAt).toBe('number');
   });
 
+  it('repairs contaminated default pipeline snapshots during initialize', async () => {
+    const memento = new FakeMemento();
+    await memento.update(KEYS.schemaVersion, '1.0.0');
+    await memento.update(KEYS.schemaVersionNumeric, 6);
+    await memento.update(KEYS.run, {
+      ...sampleRun(),
+      pipeline: {
+        id: 'speckit-new-feature',
+        name: 'Spec-kit New Feature',
+        phases: [
+          { id: 'speckit-specify', name: 'Specify', instruction: 'x', loopable: false },
+          { id: 'speckit-clarify', name: 'Clarify', instruction: 'x', loopable: true },
+          { id: 'speckit-plan', name: 'Plan', instruction: 'x', loopable: false },
+          { id: 'speckit-tasks', name: 'Tasks', instruction: 'x', loopable: false },
+          { id: 'speckit-analyze', name: 'Analyze', instruction: 'x', loopable: true },
+          { id: 'speckit-implement', name: 'Implement', instruction: 'x', loopable: false },
+          { id: 'finalize', name: 'Finalize', instruction: 'x', loopable: false },
+          { id: 'done', name: 'Done', instruction: 'x', loopable: false },
+          { id: 'bugfix-report', name: 'Bugfix Report', instruction: 'x', loopable: false }
+        ]
+      }
+    });
+
+    const s = new WorkspaceStateStore(memento);
+    const initResult = await s.initialize();
+
+    expect(initResult.runRepairEvents).toHaveLength(1);
+    expect(initResult.runRepairEvents[0]).toMatchObject({
+      type: 'workflow-run-repaired',
+      removedPhaseCount: 1,
+      remainingPhaseCount: 8
+    });
+    expect(s.getRun()?.pipeline?.phases.map((p) => p.id)).toEqual([
+      'speckit-specify',
+      'speckit-clarify',
+      'speckit-plan',
+      'speckit-tasks',
+      'speckit-analyze',
+      'speckit-implement',
+      'finalize',
+      'done'
+    ]);
+  });
+
   it('history-store: pre-004 history (no descriptionPreview/durationMs/auditLogPointer) is normalized', async () => {
     const memento = new FakeMemento();
     await memento.update(KEYS.schemaVersion, '1.0.0');

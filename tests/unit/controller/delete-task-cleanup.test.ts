@@ -158,14 +158,11 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     expect(queue.findById(feature.id)?.runId).toBeNull();
 
     const cleanupSpy = vi.fn<
-      [
-        {
-          workspaceRoot: string;
-          runId: string;
-          logger: SanitizedLogger;
-        }
-      ],
-      Promise<boolean>
+      (input: {
+        workspaceRoot: string;
+        runId: string;
+        logger: SanitizedLogger;
+      }) => Promise<boolean>
     >();
     const controller = makeController(cleanupSpy);
     const result = await controller.deleteTask(feature.id);

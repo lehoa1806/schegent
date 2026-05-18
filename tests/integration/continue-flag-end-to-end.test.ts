@@ -210,6 +210,18 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Best-effort cleanup: async audit writes can race the first rm on macOS
+  // and surface as ENOTEMPTY/EBUSY even though the test body has completed.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code !== 'ENOTEMPTY' && code !== 'EBUSY') throw err;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 

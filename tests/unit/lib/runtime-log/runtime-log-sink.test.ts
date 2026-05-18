@@ -172,14 +172,18 @@ describe('RuntimeLogSink — accessor returns null (path unresolvable)', () => {
 });
 
 describe('RuntimeLogSink — suppression on failure', () => {
-  let appendFile: Mock<[string, string], Promise<void>>;
-  let mkdir: Mock<[string, { recursive: true }], Promise<unknown>>;
+  let appendFile: Mock<(target: string, data: string) => Promise<void>>;
+  let mkdir: Mock<(target: string, opts: { recursive: true }) => Promise<unknown>>;
   let fallback: SanitizedLogger & { warnings: string[] };
   let sink: RuntimeLogSink;
 
   beforeEach(() => {
-    appendFile = vi.fn().mockResolvedValue(undefined);
-    mkdir = vi.fn().mockResolvedValue(undefined);
+    appendFile = vi
+      .fn<(target: string, data: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    mkdir = vi
+      .fn<(target: string, opts: { recursive: true }) => Promise<unknown>>()
+      .mockResolvedValue(undefined);
     fallback = makeFallback();
     sink = new RuntimeLogSink({
       accessor: makeAccessor({ level: 'INFO', path: TARGET_PATH }),

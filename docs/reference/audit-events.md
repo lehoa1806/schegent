@@ -323,7 +323,7 @@ A new pending task was created. Payload:
 
 ## Phase message
 
-The phase-message channel is a sidecar file (`<workspaceRoot>/.schegent/sessions/<runId>/phase-message.env`) used to pass small typed values between phases.
+The phase-message channel is a canonical sidecar file at `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/phase-message.env` used to pass small typed values between phases.
 
 ### `phase-message-emitted`
 
@@ -343,6 +343,17 @@ The phase-message file did not match the expected `env`-style format. The malfor
 
 A fatal-signature substring matched the CLI's stdout or stderr. Payload:
 - `signature` — the matched substring.
+
+## State migration
+
+### `workflow-run-repaired`
+
+A persisted `WorkflowRun` snapshot was repaired during state initialization. Current repair payloads are structural only:
+- `pipelineId`
+- `repair`
+- `removedPhaseCount`
+- `removedBreakpointCount`
+- `remainingPhaseCount`.
 - `source` — `'built-in'` (the immutable code-resident registry) or `'operator-defined'` (an entry in `schegent.fatalSignatures`).
 - `where` — `'stdout'` | `'stderr'`.
 

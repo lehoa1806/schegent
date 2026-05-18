@@ -21,7 +21,7 @@
 // `phaseLogService` shape — a single `read(req): Promise<response>`
 // method whose result is forwarded verbatim to `ack.result`.
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
   CMD_READ_WAKEUP_SESSION_LOG
 } from '../../../../src/ui/sidebar/messages';
@@ -77,14 +77,10 @@ function makeRouter(opts: {
   reader?: ReaderServiceDep;
 }): {
   router: MessageRouter;
-  ackSpy: ReturnType<
-    typeof vi.fn<Parameters<AckPoster>, ReturnType<AckPoster>>
-  >;
+  ackSpy: Mock<AckPoster>;
   reader: ReaderServiceDep;
 } {
-  const ackSpy = vi.fn<Parameters<AckPoster>, ReturnType<AckPoster>>(() =>
-    Promise.resolve(true)
-  );
+  const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
   const reader: ReaderServiceDep = opts.reader ?? {
     read: vi.fn(async (req) => ({
       status: 'success',

@@ -56,7 +56,7 @@ type ReadResult =
         | 'timeout';
     };
 
-const readSpy = vi.fn<[string], Promise<ReadResult>>();
+const readSpy = vi.fn<(correlationId: string) => Promise<ReadResult>>();
 
 vi.mock('../../../../lib/wakeup-session-log-ipc', () => ({
   readWakeupSessionLog: (correlationId: string) => readSpy(correlationId)

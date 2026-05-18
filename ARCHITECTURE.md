@@ -72,8 +72,9 @@ Owns the workflow state machine. Drives one run from `specify` through
 
 - Acquire/release the workspace lock around a run.
 - Validate input (CLI available, scaffold present, description) BEFORE
-  acquiring the lock when possible; release the lock in every terminal
-  branch and in a `finally` guarded by a `lockReleased` flag.
+  acquiring the lock when possible; run `driveRun()` inside
+  `WorkspaceLockManager.withLock()`. Terminal paths release through the
+  wrapper's `finally`; pause-style exits call `session.retain()`.
 - Persist phase transitions to `WorkspaceStateStore`.
 - Append `phase-start` / `phase-end` audit entries.
 - Delegate the history-write side effect at every terminal transition
@@ -83,10 +84,10 @@ Owns the workflow state machine. Drives one run from `specify` through
   `AutoDrainCoordinator` (`src/services/auto-drain-coordinator.ts`).
 - Enforce per-run phase overrides (`skipped` / `disabled` / `removed`) without
   mutating the frozen `WorkflowRun.pipeline` snapshot.
-- Provide each phase invocation with a conventional
-  `phase-message.env` sidecar path and inject only the immediately
-  preceding phase's sanitized flat key/value message into the next
-  prompt.
+- Provide each phase invocation with the canonical
+  `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/phase-message.env`
+  sidecar path and inject only the immediately preceding phase's
+  sanitized flat key/value message into the next prompt.
 - Feature 028 — own the future-phase breakpoint state machine. `setPhaseBreakpoint(runId, phaseId)`
   appends a one-shot `PhaseBreakpoint` to the run, validated per Decision 10 (phase
   exists in the immutable pipeline, not active/completed, no override action, not
@@ -112,12 +113,12 @@ their own service modules to shrink the controller's surface area:
 - `AutoDrainCoordinator` — owns the four-step gate that promotes the
   next pending feature when a run terminates.
 
-The 600-line `driveRun()` method and the delayed-retry surface
+The `driveRun()` state-machine loop and the delayed-retry surface
 (watchdog + rate-limit handler) deliberately remain inline. See
 [specs/013-correctness-trust-refactor/decisions.md](specs/013-correctness-trust-refactor/decisions.md)
 "Wave 7 — scope deviation: T096 and T097 NOT extracted" for the
 rationale (byte-identical audit-event sequencing requirement and the
-`lockReleased` flag hard rule).
+lock-retain/release invariant).
 
 ### Phase runner (`src/controller/phase-runner.ts`)
 
@@ -125,11 +126,14 @@ Spawns the Claude CLI for a single phase prompt, captures stdout/stderr,
 applies output cap and timeout, and emits a `PhaseResult`.
 
 Feature 017 keeps the deterministic stdout contract intact by treating
-inter-phase messages as an optional sidecar. After termination-token and
-audit-log validation, the runner looks for one `phase-message.env` path in
-the existing audit `files_created` / `files_modified` arrays. The raw file is
-capped at 4096 UTF-8 bytes. Values are sanitized through the logger before
-downstream prompt consumption; audit events carry metadata only
+inter-phase messages as an optional sidecar. The runner first probes the
+host-computed canonical `phase-message.env` path under the current run's
+diagnostics directory. If it must consider audit-reported
+`files_created` / `files_modified` candidates, each candidate must
+canonicalize to that same path; outside paths are rejected with
+`phase-message-invalid`. The raw file is capped at 4096 UTF-8 bytes.
+Values are sanitized through the logger before downstream prompt
+consumption; audit events carry metadata only
 (`phase-message-emitted`, `phase-message-truncated`,
 `phase-message-invalid`) and never include message values.
 
@@ -400,13 +404,13 @@ A **sibling sink** to the raw-transcript writer (not a replacement),
 gated entirely on the workspace setting `schegent.logging.verbose`
 (default `false`). When enabled, `PhaseRunner` constructs a
 `VerboseDiagnosticTarget` per invocation and threads it into the CLI
-runner, which appends `--debug-to-file <debugFile>`,
+runner, which appends `--debug-file <debugFile>`,
 `--output-format stream-json`, and `--verbose` to the spawn argv and
 tees CLI stdout / stderr into the corresponding sibling files:
 
 ```
 <workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/
-                                          ├── debug.json     (CLI --debug-to-file payload)
+                                          ├── debug.json     (CLI --debug-file payload)
                                           ├── stream.jsonl   (teed stdout — stream-json events)
                                           └── verbose.log    (teed stderr — verbose trace)
 ```

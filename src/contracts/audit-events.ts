@@ -199,7 +199,7 @@ export const PHASE_BREAKPOINT_EVENT_TYPES = [
 // the audit log alone. The payload is structural (counts + booleans +
 // enum literals); it passes `SECRET_PATTERNS` unchanged. Additive — no
 // `AUDIT_SCHEMA_VERSION` bump (follows 028 precedent).
-export const STATE_MIGRATION_EVENT_TYPES = ['state-migrated'] as const;
+export const STATE_MIGRATION_EVENT_TYPES = ['state-migrated', 'workflow-run-repaired'] as const;
 
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,

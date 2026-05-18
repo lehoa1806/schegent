@@ -275,9 +275,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // they are forwarded through `auditWriter.append` once the writer exists
   // (constructed below). Empty array when no migration occurred.
   let v6MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV5ToV6AuditEvent[] = [];
+  let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
   try {
     const initResult = await store.initialize();
     v6MigrationEvents = initResult.v6MigrationEvents;
+    runRepairEvents = initResult.runRepairEvents;
   } catch (err) {
     void vscode.window.showErrorMessage(
       `Schegent: ${(err as Error).message}`,
@@ -286,17 +288,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     onInitFailure();
     for (const d of disposables) d.dispose();
     return null;
-  }
-
-  const runToRepair = store.getRun();
-  if (runToRepair?.pipeline?.id === 'speckit-new-feature' && runToRepair.pipeline.phases.length > 8) {
-    const isCorrupted = runToRepair.pipeline.phases.some((p: any) => p.id === 'bugfix-report');
-    if (isCorrupted) {
-      const fixedPhases = runToRepair.pipeline.phases.filter((p: any) => !p.id.startsWith('bugfix-'));
-      const fixedRun = { ...runToRepair, pipeline: { ...runToRepair.pipeline, phases: fixedPhases } };
-      await store.setRun(fixedRun);
-      logger.info(`workflow-run.repaired runId=${runToRepair.id} removed bugfix phases from default pipeline`);
-    }
   }
 
   const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
@@ -361,6 +352,26 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       });
     } catch (err) {
       logger.warn(`state-migrated audit append failed: ${(err as Error).message}`);
+    }
+  }
+  for (const event of runRepairEvents) {
+    try {
+      await auditWriter.append({
+        runId: event.runId,
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: {
+          pipelineId: event.pipelineId,
+          repair: event.repair,
+          removedPhaseCount: event.removedPhaseCount,
+          removedBreakpointCount: event.removedBreakpointCount,
+          remainingPhaseCount: event.remainingPhaseCount
+        },
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`workflow-run-repaired audit append failed: ${(err as Error).message}`);
     }
   }
   const monitor = new ClaudeCliMonitor({
