@@ -131,6 +131,15 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
 });
 
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
+  it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
+    const mod = await import('../../src/ui/sidebar/snapshot.js');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
+    expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
+    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(1);
+    expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
+    expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
+  });
+
   it('webview IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
     expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');

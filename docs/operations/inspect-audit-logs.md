@@ -70,7 +70,7 @@ The single source of truth for `eventType` values is [src/contracts/audit-events
 
 | Field | Type | When present |
 |---|---|---|
-| `pipelineId` | `string` | Always — `'standard'` for the built-in zero-config flow. |
+| `pipelineId` | `string` | Always — `'speckit-new-feature'` for the built-in zero-config flow. |
 | `phaseId` | `string` | Always — the active phase id (matches the entry's `phase`). |
 | `model` | `string` | Only when the active `PhaseDef.model` is set. |
 | `effort` | `'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | Only when the active `PhaseDef.effort` is set. |
@@ -79,7 +79,7 @@ The single source of truth for `eventType` values is [src/contracts/audit-events
 Filter by pipeline:
 
 ```bash
-jq -c 'select(.payload.pipelineId == "standard")' .schegent/audit.log
+jq -c 'select(.payload.pipelineId == "speckit-new-feature")' .schegent/audit.log
 ```
 
 Filter all phases that used a model override:
