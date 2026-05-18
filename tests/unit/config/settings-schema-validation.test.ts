@@ -54,7 +54,11 @@ class FakeWorkspaceConfig implements GeneralSettingsConfig {
 
   update(key: string, value: unknown, target: number): Promise<void> {
     this.updateCalls.push({ key, value, target });
-    this.workspace[key] = value;
+    if (value === undefined) {
+      delete this.workspace[key];
+    } else {
+      this.workspace[key] = value;
+    }
     return Promise.resolve();
   }
 }
@@ -116,20 +120,36 @@ describe('SETTINGS_SCHEMA validation alignment with writeGeneralSettings', () =>
     expect(config.updateCalls).toHaveLength(0);
   });
 
-  it('writeGeneralSettings rejects out-of-range integers for ranged keys', async () => {
+  it('writeGeneralSettings rejects out-of-range numeric values for ranged keys', async () => {
     const ranged = generalSettingsCoveredKeys()
       .map((k) => SETTINGS_SCHEMA[k])
-      .filter((entry) => entry.type === 'integer' && entry.max !== undefined);
+      .filter(
+        (entry) =>
+          (entry.type === 'integer' || entry.type === 'number') &&
+          (entry.min !== undefined || entry.max !== undefined)
+      );
     expect(ranged.length).toBeGreaterThan(0);
     for (const entry of ranged) {
-      const overMax = (entry.max ?? 0) + 1;
-      const config = new FakeWorkspaceConfig();
-      const result = await writeGeneralSettings(config, { [unprefix(entry.key)]: overMax });
-      expect(result, `expected reject for ${entry.key} overMax=${overMax}`).toEqual({
-        ok: false,
-        reason: `out-of-range:${unprefix(entry.key)}`
-      });
-      expect(config.updateCalls).toHaveLength(0);
+      if (entry.min !== undefined) {
+        const underMin = entry.min - 1;
+        const config = new FakeWorkspaceConfig();
+        const result = await writeGeneralSettings(config, { [unprefix(entry.key)]: underMin });
+        expect(result, `expected reject for ${entry.key} underMin=${underMin}`).toEqual({
+          ok: false,
+          reason: `out-of-range:${unprefix(entry.key)}`
+        });
+        expect(config.updateCalls).toHaveLength(0);
+      }
+      if (entry.max !== undefined) {
+        const overMax = entry.max + 1;
+        const config = new FakeWorkspaceConfig();
+        const result = await writeGeneralSettings(config, { [unprefix(entry.key)]: overMax });
+        expect(result, `expected reject for ${entry.key} overMax=${overMax}`).toEqual({
+          ok: false,
+          reason: `out-of-range:${unprefix(entry.key)}`
+        });
+        expect(config.updateCalls).toHaveLength(0);
+      }
     }
   });
 

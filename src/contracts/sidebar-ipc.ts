@@ -262,8 +262,9 @@ export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
 }
 
 // Feature 011 — keys in `updates` are unprefixed scalar setting names;
-// the host prepends `schegent.` and validates against an allowlist
-// before applying any update transactionally. See
+// the host prepends `schegent.` and validates the full batch against an
+// allowlist before writing any key. If a later workspace write fails, the
+// host compensates by restoring any keys already written by that batch. See
 // specs/011-webui-config-editor/contracts/general-settings-ipc.md.
 //
 // Supported keys (host-side allowlist lives in
@@ -272,7 +273,10 @@ export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
 //   - cli.path, logging.verbose, loop.maxIterations,
 //     invocation.timeoutSeconds, watchdog.pollIntervalMinutes,
 //     audit.rotation.sizeMB, audit.rotation.maxAgeDays,
-//     rules.injectPerPhase, defaultPipelineId, fatalSignatures.
+//     rules.injectPerPhase, defaultPipelineId, fatalSignatures,
+//     queue.globalConcurrencyCap, logging.runtimeLogLevel,
+//     logging.runtimeLogFilePath, logging.runtimeLogMaxBytes,
+//     logging.runtimeLogMaxGenerations, retry.maxAttempts.
 //   - Feature 012: `claude.autoCompactPctOverride`.
 export interface SaveGeneralSettingsCommand
   extends CommandBase<typeof CMD_SAVE_GENERAL_SETTINGS> {

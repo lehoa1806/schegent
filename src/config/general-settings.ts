@@ -8,7 +8,9 @@
 //      updates transactionally — every key must be in the allowlist
 //      AND every value must match the declared runtime type — and then
 //      writes each accepted key to `vscode.ConfigurationTarget.Workspace`
-//      (FR-020). On any validation failure no key is written.
+//      (FR-020). On validation failure no key is written; on a later
+//      persistence failure, keys already written by the batch are restored
+//      to their previous workspace-scope values.
 //
 // The host adds the `schegent.` prefix; payload keys are unprefixed
 // scalar setting names. See contracts/general-settings-ipc.md.
@@ -129,27 +131,33 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
   'loop.maxIterations': {
     type: 'number',
     typedField: 'loopMaxIterations',
-    defaultValue: 10
+    defaultValue: 10,
+    min: 1,
+    max: 50
   },
   'invocation.timeoutSeconds': {
     type: 'number',
     typedField: 'invocationTimeoutSeconds',
-    defaultValue: 1800
+    defaultValue: 1800,
+    min: 30
   },
   'watchdog.pollIntervalMinutes': {
     type: 'number',
     typedField: 'watchdogPollIntervalMinutes',
-    defaultValue: 30
+    defaultValue: 30,
+    min: 1
   },
   'audit.rotation.sizeMB': {
     type: 'number',
     typedField: 'auditRotationSizeMB',
-    defaultValue: 5
+    defaultValue: 5,
+    min: 1
   },
   'audit.rotation.maxAgeDays': {
     type: 'number',
     typedField: 'auditRotationMaxAgeDays',
-    defaultValue: 30
+    defaultValue: 30,
+    min: 1
   },
   'rules.injectPerPhase': {
     type: 'boolean',
@@ -247,6 +255,11 @@ export type WriteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
+interface WorkspaceValueSnapshot {
+  readonly hadWorkspaceValue: boolean;
+  readonly value: unknown;
+}
+
 function isAllowedKey(key: string): key is AllowedKey {
   return ALLOWED_KEYS.has(key);
 }
@@ -258,9 +271,16 @@ function checkType(spec: KeySpec, value: unknown): WriteResult {
         ? { ok: true }
         : { ok: false, reason: 'type-mismatch' };
     case 'number':
-      return typeof value === 'number' && Number.isFinite(value)
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return { ok: false, reason: 'type-mismatch' };
+      }
+      if (spec.min !== undefined && value < spec.min) {
+        return { ok: false, reason: 'out-of-range' };
+      }
+      if (spec.max !== undefined && value > spec.max) {
+        return { ok: false, reason: 'out-of-range' };
+      }
+      return { ok: true };
     case 'boolean':
       return typeof value === 'boolean'
         ? { ok: true }
@@ -330,8 +350,10 @@ function checkArrayElements(value: readonly unknown[]): WriteResult {
 
 /**
  * Validate a batch of updates AND persist each one to
- * `ConfigurationTarget.Workspace` if every entry validates. On any
- * failure no key is written (transactional accept/reject).
+ * `ConfigurationTarget.Workspace` if every entry validates. Validation
+ * failure is a no-op. Write failure triggers compensating rollback of
+ * keys already written by this batch so the effective workspace values
+ * return to their pre-call state when rollback succeeds.
  *
  * Possible failure reasons:
  *   - `unknown-key:<key>` — key not in `ALLOWED_KEYS`
@@ -340,6 +362,8 @@ function checkArrayElements(value: readonly unknown[]): WriteResult {
  *   - `out-of-range:<key>` — integer outside the declared `[min, max]` range
  *   - `write-failed:<key>` — underlying `config.update()` rejected
  *   - `clear-failed:<key>` — clear via `config.update(key, undefined)` rejected
+ *   - `rollback-failed:<key>:after:<reason>:<detail>` — a write failed and
+ *     the compensating rollback for a previously-written key also failed
  */
 /**
  * Optional callback fired AFTER a successful write that touched either
@@ -365,6 +389,51 @@ const RUNTIME_LOG_KEYS = new Set<string>([
   'logging.runtimeLogMaxGenerations'
 ]);
 
+function captureWorkspaceValue(
+  config: GeneralSettingsConfig,
+  key: string
+): WorkspaceValueSnapshot {
+  const inspected = config.inspect<unknown>(key);
+  const value = inspected?.workspaceValue;
+  return {
+    hadWorkspaceValue: value !== undefined,
+    value
+  };
+}
+
+async function restoreWorkspaceValue(
+  config: GeneralSettingsConfig,
+  key: string,
+  snapshot: WorkspaceValueSnapshot
+): Promise<void> {
+  await Promise.resolve(
+    config.update(
+      key,
+      snapshot.hadWorkspaceValue ? snapshot.value : undefined,
+      CONFIGURATION_TARGET_WORKSPACE
+    )
+  );
+}
+
+async function rollbackWrittenSettings(
+  config: GeneralSettingsConfig,
+  snapshots: ReadonlyMap<string, WorkspaceValueSnapshot>,
+  writtenKeys: readonly string[],
+  primaryReason: string
+): Promise<string | null> {
+  for (const key of [...writtenKeys].reverse()) {
+    const snapshot = snapshots.get(key);
+    if (!snapshot) continue;
+    try {
+      await restoreWorkspaceValue(config, key, snapshot);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown';
+      return `rollback-failed:${key}:after:${primaryReason}:${detail}`;
+    }
+  }
+  return null;
+}
+
 export async function writeGeneralSettings(
   config: GeneralSettingsConfig,
   updates: Readonly<Record<string, unknown>>,
@@ -389,8 +458,15 @@ export async function writeGeneralSettings(
     }
   }
 
+  const snapshots = new Map<string, WorkspaceValueSnapshot>();
+  for (const [key] of entries) {
+    snapshots.set(key, captureWorkspaceValue(config, key));
+  }
+
   // All valid — write each. Surface the first underlying failure as
-  // `write-failed:<key>` so the operator gets the offending key id.
+  // `write-failed:<key>` so the operator gets the offending key id. If
+  // a later key fails, restore any earlier keys changed by this batch.
+  const writtenKeys: string[] = [];
   for (const [key, value] of entries) {
     const spec = KEY_SPECS[key as AllowedKey];
     const isClear =
@@ -403,12 +479,17 @@ export async function writeGeneralSettings(
       } else {
         await Promise.resolve(config.update(key, value, CONFIGURATION_TARGET_WORKSPACE));
       }
+      writtenKeys.push(key);
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'unknown';
-      return {
-        ok: false,
-        reason: isClear ? `clear-failed:${key}` : `write-failed:${key}:${detail}`
-      };
+      const primaryReason = isClear ? `clear-failed:${key}` : `write-failed:${key}:${detail}`;
+      const rollbackReason = await rollbackWrittenSettings(
+        config,
+        snapshots,
+        writtenKeys,
+        primaryReason
+      );
+      return { ok: false, reason: rollbackReason ?? primaryReason };
     }
   }
   if (hooks?.onRuntimeLogSettingChanged) {
@@ -471,6 +552,16 @@ export function readGeneralSettings(
     if (spec.type === 'array-of-string') {
       if (!Array.isArray(value)) value = [];
       else value = (value as unknown[]).filter((el) => typeof el === 'string' && el.length > 0);
+    }
+    if (spec.type === 'number') {
+      if (
+        typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        (spec.min !== undefined && value < spec.min) ||
+        (spec.max !== undefined && value > spec.max)
+      ) {
+        value = spec.defaultValue;
+      }
     }
     if (spec.type === 'number-int-range') {
       if (

@@ -54,7 +54,11 @@ class FakeWorkspaceConfig {
 
   update(key: string, value: unknown, target: number): Promise<void> {
     this.updateCalls.push({ key, value, target });
-    this.workspace[key] = value;
+    if (value === undefined) {
+      delete this.workspace[key];
+    } else {
+      this.workspace[key] = value;
+    }
     return Promise.resolve();
   }
 }
@@ -134,6 +138,15 @@ describe('Feature 011 — general-settings type checking', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe('type-mismatch:loop.maxIterations');
+  });
+
+  it('rejects bounded number settings outside their package/schema range', async () => {
+    const config = makeConfig();
+    const result = await writeGeneralSettings(config, { 'loop.maxIterations': 51 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('out-of-range:loop.maxIterations');
   });
 
   it('rejects array→string mismatch with `type-mismatch:<key>`', async () => {
@@ -321,6 +334,18 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     expect(typeof snap.cliPath).toBe('string');
     expect(Array.isArray(snap.fatalSignatures)).toBe(true);
   });
+
+  it('falls back to defaults when bounded number settings are malformed in storage', () => {
+    const config = makeConfig({
+      workspace: {
+        'loop.maxIterations': 51,
+        'invocation.timeoutSeconds': 29
+      }
+    });
+    const snap = readGeneralSettings(config);
+    expect(snap.loopMaxIterations).toBe(10);
+    expect(snap.invocationTimeoutSeconds).toBe(1800);
+  });
 });
 
 describe('Feature 017 — queue settings validation', () => {
@@ -379,6 +404,74 @@ describe('Feature 011 — writeGeneralSettings surfaces underlying errors', () =
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/write-failed/);
+  });
+
+  it('rolls back earlier workspace writes when a later update rejects', async () => {
+    const config = makeConfig({
+      defaults: {
+        'loop.maxIterations': 10,
+        'logging.verbose': false
+      },
+      workspace: {
+        'loop.maxIterations': 3
+      }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    const updateSpy = vi
+      .spyOn(fake, 'update')
+      .mockImplementation(async (key, value, target) => {
+        if (key === 'logging.verbose') {
+          fake.updateCalls.push({ key, value, target });
+          throw new Error('settings.json: EBUSY');
+        }
+        return update(key, value, target);
+      });
+
+    const result = await writeGeneralSettings(config, {
+      'loop.maxIterations': 7,
+      'logging.verbose': true
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('write-failed:logging.verbose:settings.json: EBUSY');
+    expect(fake.updateCalls).toEqual([
+      { key: 'loop.maxIterations', value: 7, target: CONFIGURATION_TARGET_WORKSPACE },
+      { key: 'logging.verbose', value: true, target: CONFIGURATION_TARGET_WORKSPACE },
+      { key: 'loop.maxIterations', value: 3, target: CONFIGURATION_TARGET_WORKSPACE }
+    ]);
+    expect(readGeneralSettings(config).loopMaxIterations).toBe(3);
+    expect(readGeneralSettings(config).loggingVerbose).toBe(false);
+    updateSpy.mockRestore();
+  });
+
+  it('rolls back a newly-created workspace key by clearing it', async () => {
+    const config = makeConfig({
+      defaults: {
+        'loop.maxIterations': 10,
+        'logging.verbose': false
+      }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === 'logging.verbose') {
+        fake.updateCalls.push({ key, value, target });
+        throw new Error('settings.json: EBUSY');
+      }
+      return update(key, value, target);
+    });
+
+    const result = await writeGeneralSettings(config, {
+      'loop.maxIterations': 7,
+      'logging.verbose': true
+    });
+
+    expect(result.ok).toBe(false);
+    const after = readGeneralSettings(config);
+    expect(after.loopMaxIterations).toBe(10);
+    expect(after.scopes.loopMaxIterations).toBe('default');
   });
 });
 

@@ -82,10 +82,14 @@ describe('Feature 012 T051 — saveGeneralSettings helper', () => {
       postMessage
     );
     const envelope = postMessage.mock.calls[0][0] as { correlationId: string };
-    fireAck(envelope.correlationId, 'rejected', 'out-of-range:1-100');
+    fireAck(
+      envelope.correlationId,
+      'rejected',
+      'out-of-range:claude.autoCompactPctOverride'
+    );
     await expect(promise).resolves.toEqual({
       status: 'rejected',
-      reason: 'out-of-range:1-100'
+      reason: 'out-of-range:claude.autoCompactPctOverride'
     });
   });
 

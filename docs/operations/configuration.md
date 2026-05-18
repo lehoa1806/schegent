@@ -3,10 +3,12 @@
 This doc is the operator-facing index of `schegent.*` workspace settings.
 The Dashboard's **Settings → General** tab provides per-key edit controls
 backed by VS Code's configuration store. Workspace-scope edits override
-user-scope, which override defaults. Edits are persisted transactionally
-via the host-validated `CMD_SAVE_GENERAL_SETTINGS` IPC and round-trip back
-through the snapshot, so dirty fields display per-key accept / reject
-status.
+user-scope, which override defaults. Edits are saved through the
+host-validated `CMD_SAVE_GENERAL_SETTINGS` IPC: the host validates the
+entire batch before writing anything, then uses compensating rollback to
+restore earlier workspace-scope values if a later `config.update()` call
+fails. Saved values round-trip back through the snapshot, so dirty fields
+display per-key accept / reject status.
 
 ## Top-level Dashboard navigation
 
@@ -33,7 +35,7 @@ they live where operators actually use them.
 | **Location** | Dashboard → Settings → General → "Claude auto-compaction threshold (%)" |
 | **Effect when set** | Exported as the environment variable `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for every Claude CLI subprocess spawned by Schegent. |
 | **Effect when unset** | The env var is not exported. The CLI uses its built-in default. |
-| **Re-validation** | Host re-validates on every save. Out-of-range values are rejected transactionally with `out-of-range:1-100`; non-integer values reject with `type-mismatch:...`. |
+| **Re-validation** | Host re-validates on every save. Out-of-range values reject with `out-of-range:claude.autoCompactPctOverride`; non-integer values reject with `type-mismatch:claude.autoCompactPctOverride`. |
 | **Mid-run apply** | Reads via `AutoCompactOverrideAccessor` at the top of every `PhaseRunner.run()` — toggling mid-run applies to the next invocation. Never cached on the runner. |
 
 **Clearing the override**: post `null` from the UI (the empty-input handler in
@@ -52,11 +54,11 @@ The list is authoritative against `src/config/general-settings.ts`
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
 | `schegent.backend.runner` | enum (`claude`, `codex`) | Selects the concrete `BackendRunner` adapter. Default `claude`. See [docs/operations/backends.md](backends.md). |
 | `schegent.logging.verbose` | boolean | Captures unredacted per-iteration diagnostics under `.schegent/sessions/`. |
-| `schegent.loop.maxIterations` | integer (1–100) | Maximum recursive iterations per loopable phase. |
-| `schegent.invocation.timeoutSeconds` | integer (60–7200) | Maximum wall-clock duration per CLI call. |
-| `schegent.watchdog.pollIntervalMinutes` | integer (1–240) | Watchdog re-check cadence during a paused run. |
-| `schegent.audit.rotation.sizeMB` | integer (1–100) | Audit log size threshold for rotation. |
-| `schegent.audit.rotation.maxAgeDays` | integer (1–365) | Retention for rotated audit log files. |
+| `schegent.loop.maxIterations` | number (1–50) | Maximum recursive iterations per loopable phase. |
+| `schegent.invocation.timeoutSeconds` | number (minimum 30) | Maximum wall-clock duration per CLI call. |
+| `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |
+| `schegent.audit.rotation.sizeMB` | number (minimum 1) | Audit log size threshold for rotation. |
+| `schegent.audit.rotation.maxAgeDays` | number (minimum 1) | Retention for rotated audit log files. |
 | `schegent.rules.injectPerPhase` | boolean | Concatenate `.claude/skills/<phase>/SKILL.md` at every invocation. |
 | `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. |
 | `schegent.fatalSignatures` | string[] | Operator-additive fatal-signature substrings; managed via the **Settings → Fatal Signatures** sub-tab. |
