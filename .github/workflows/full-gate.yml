@@ -33,7 +33,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run typecheck
 
   typecheck-webview:
@@ -45,7 +50,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run typecheck:webview
 
   lint:
@@ -57,7 +67,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run lint
 
   test:
@@ -69,7 +84,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run test
 
   build:
@@ -81,7 +101,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run build
 
   e2e:
@@ -93,7 +118,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run test:e2e
       - name: Upload E2E artifacts on failure
         if: failure()
@@ -115,7 +145,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: 'npm'
-      - run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. We re-run the webview install
+      # explicitly with the same flag so neither tree executes
+      # arbitrary scripts on `npm ci`.
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
       - name: Run @vscode/test-electron under Xvfb
         run: xvfb-run -a npm run test:integration
       - name: Upload integration logs on failure

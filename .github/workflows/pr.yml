@@ -31,8 +31,16 @@ jobs:
           node-version-file: .nvmrc
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      # Skip third-party npm lifecycle scripts on install to reduce
+      # supply-chain blast radius. The root `postinstall` (which
+      # delegates to `webview-ui`) is skipped here too; we re-run the
+      # webview install explicitly with the same flag so neither tree
+      # executes arbitrary scripts on `npm ci`.
+      - name: Install root dependencies (no scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Install webview-ui dependencies (no scripts)
+        run: npm --prefix webview-ui ci --ignore-scripts
 
       - name: Typecheck (host)
         run: npm run typecheck
