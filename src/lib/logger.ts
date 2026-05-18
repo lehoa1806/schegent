@@ -1,6 +1,10 @@
 const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
-  // Anthropic / OpenAI style API keys
-  /sk-(ant-)?[A-Za-z0-9_-]{20,}/g,
+  // Anthropic / OpenAI style API keys. Word-boundary prefix prevents
+  // matching `sk-` inside an unrelated word (e.g. `worksk-XYZ`); the
+  // `(ant-|proj-|svcacct-)?` group covers both the Anthropic
+  // (`sk-ant-…`) and OpenAI (`sk-proj-…`, `sk-svcacct-…`, legacy
+  // `sk-…`) families.
+  /\bsk-(ant-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}/g,
   // GitHub personal access tokens (classic + fine-grained)
   /\bghp_[A-Za-z0-9]{30,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
@@ -8,6 +12,15 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
   // AWS access key IDs
   /\bAKIA[0-9A-Z]{16}\b/g,
+  // Google Cloud API key (developer key surface — 39 chars, `AIza`
+  // prefix + 35-char body). Common dual-use leak in CI logs and
+  // sample payloads.
+  /\bAIza[A-Za-z0-9_-]{35}\b/g,
+  // Google OAuth 2.0 short-lived access token (ya29.…). Length is
+  // implementation-defined but consistently > 40 chars in practice.
+  /\bya29\.[A-Za-z0-9_-]{20,}/g,
+  // Stripe live/test secret + restricted keys.
+  /\b[rs]k_(live|test)_[A-Za-z0-9]{20,}\b/g,
   // GCP service account snippet
   /"private_key"\s*:\s*"-----BEGIN [^"]+-----[\s\S]+?-----END [^"]+-----\\n?"/g,
   // Bearer / Authorization headers

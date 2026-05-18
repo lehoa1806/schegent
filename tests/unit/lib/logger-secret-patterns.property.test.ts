@@ -1,11 +1,11 @@
 // Property-based fuzz coverage for SanitizedLogger.
 //
-// The 11 SECRET_PATTERNS regexes in `src/lib/logger.ts` are the
-// single source of truth for redaction across the host. Unit tests
-// elsewhere cover the happy path; this file pins several structural
-// properties that any future evolution of the pattern set must
-// preserve. To avoid adding a `fast-check` dev dep, we use a
-// deterministic seeded PRNG so failures are reproducible.
+// The SECRET_PATTERNS regexes in `src/lib/logger.ts` are the single
+// source of truth for redaction across the host. Unit tests elsewhere
+// cover the happy path; this file pins several structural properties
+// that any future evolution of the pattern set must preserve. To
+// avoid adding a `fast-check` dev dep, we use a deterministic seeded
+// PRNG so failures are reproducible.
 
 import { describe, it, expect } from 'vitest';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -37,12 +37,22 @@ function randAlnum(rng: () => number, len: number): string {
 // Each generator emits a string that SHOULD trigger SECRET_PATTERNS redaction.
 const SECRET_GENERATORS: ReadonlyArray<(rng: () => number) => string> = [
   (rng) => `sk-ant-${randAlnum(rng, randInt(rng, 25, 60))}`,
+  (rng) => `sk-proj-${randAlnum(rng, randInt(rng, 25, 60))}`,
+  (rng) => `sk-svcacct-${randAlnum(rng, randInt(rng, 25, 60))}`,
   (rng) => `sk-${randAlnum(rng, randInt(rng, 25, 60))}`,
   (rng) => `ghp_${randAlnum(rng, randInt(rng, 35, 50))}`,
   (rng) => `github_pat_${randAlnum(rng, randInt(rng, 30, 60))}`,
   (rng) => `xoxb-${randAlnum(rng, randInt(rng, 15, 40))}`,
   (rng) => `xoxp-${randAlnum(rng, randInt(rng, 15, 40))}`,
   (rng) => `AKIA${randAlnum(rng, 16).toUpperCase().replace(/[^0-9A-Z]/g, 'A')}`,
+  // Google Cloud API key: AIza + exactly 35 of [A-Za-z0-9_-].
+  (rng) => `AIza${randAlnum(rng, 35)}`,
+  // Google OAuth 2.0 short-lived access token.
+  (rng) => `ya29.${randAlnum(rng, randInt(rng, 30, 80))}`,
+  // Stripe live/test/restricted secret keys.
+  (rng) => `sk_live_${randAlnum(rng, randInt(rng, 24, 48))}`,
+  (rng) => `sk_test_${randAlnum(rng, randInt(rng, 24, 48))}`,
+  (rng) => `rk_live_${randAlnum(rng, randInt(rng, 24, 48))}`,
   (rng) => `Bearer ${randAlnum(rng, randInt(rng, 20, 50))}`,
   (rng) => `authorization: ${randAlnum(rng, randInt(rng, 20, 50))}`,
   (rng) => `api_key=${randAlnum(rng, randInt(rng, 20, 40))}`,

@@ -44,6 +44,48 @@ describe('SanitizedLogger.sanitize', () => {
     const matches = out.match(/\[REDACTED\]/g);
     expect(matches?.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('redacts Google Cloud API keys (AIza...)', () => {
+    const out = logger.sanitize('GOOGLE_API_KEY=AIzaSyA1B2C3D4E5F6G7H8I9J0KaLbMcNdOePfQg');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('AIzaSyA1B2C3D4E5F6G7H8I9J0KaLbMcNdOePfQg');
+  });
+
+  it('redacts Google OAuth access tokens (ya29.…)', () => {
+    const out = logger.sanitize('token: ya29.A0Ae4lvCabcdefghijklmnopqrstuvwxyz0123456789');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('ya29.A0Ae4lvCabcdefghijklmnopqrstuvwxyz0123456789');
+  });
+
+  it('redacts Stripe live secret keys', () => {
+    const out = logger.sanitize('STRIPE=sk_live_abcdefghijklmnopqrstuvwxyz');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('sk_live_abcdefghijklmnopqrstuvwxyz');
+  });
+
+  it('redacts Stripe restricted keys (rk_live_)', () => {
+    const out = logger.sanitize('rk_live_RAabcdefghijklmnopqrstu');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('rk_live_RAabcdefghijklmnopqrstu');
+  });
+
+  it('redacts OpenAI sk-proj- and sk-svcacct- variants', () => {
+    const a = logger.sanitize('sk-proj-abcdefghijklmnopqrstuvwxyz1234');
+    const b = logger.sanitize('sk-svcacct-abcdefghijklmnopqrstuvwxyz1234');
+    expect(a).toContain('[REDACTED]');
+    expect(b).toContain('[REDACTED]');
+  });
+
+  it('does not match sk- inside an unrelated word boundary', () => {
+    // `worksk-` was previously susceptible to partial-match noise; the
+    // word-boundary anchor on the `sk-` family rules it out.
+    expect(logger.sanitize('worksk-irrelevanttext1234567890')).toBe('worksk-irrelevanttext1234567890');
+  });
+
+  it('preserves benign Google-prefixed strings that are not API keys', () => {
+    // AIza requires 35 trailing chars from the API-key alphabet; "AIzaShort" is benign.
+    expect(logger.sanitize('AIzaShort')).toBe('AIzaShort');
+  });
 });
 
 describe('SanitizedLogger.info/warn/error', () => {
