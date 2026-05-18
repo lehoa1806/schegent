@@ -161,8 +161,13 @@ export class CodexCliRunner implements BackendRunner {
       this.terminate(child);
     }, request.timeoutMs);
 
+    // Keep `onAbort` referenced so we can detach after exit. See the
+    // matching note in `claude-cli.ts`: the controller shares one signal
+    // across every phase in a `driveRun`, so an undetached listener leaks
+    // a child-process closure per phase for the lifetime of the run.
+    let onAbort: (() => void) | null = null;
     if (request.cancellationSignal) {
-      const onAbort = () => {
+      onAbort = () => {
         killed = true;
         this.terminate(child);
       };
@@ -180,6 +185,9 @@ export class CodexCliRunner implements BackendRunner {
       child.on('error', () => resolve(null));
     });
 
+    if (onAbort !== null) {
+      request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+    }
     clearTimeout(timer);
     const exitSignal = (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
     this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });

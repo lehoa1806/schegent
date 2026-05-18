@@ -18,7 +18,20 @@ export interface InvocationRequest {
   env?: Record<string, string>;
   model?: string;
   effort?: Effort;
-  cancellationSignal?: { aborted: boolean; addEventListener(event: 'abort', cb: () => void): void };
+  /**
+   * Minimal `AbortSignal`-shaped contract. `removeEventListener` is OPTIONAL
+   * on the type because some fake signals in legacy tests only implement
+   * `addEventListener` — but production AbortSignals always provide it, and
+   * the runners use it (when present) to detach the per-invocation `'abort'`
+   * listener once the child exits. Without that detach, a long-lived signal
+   * (shared across phases within one `driveRun`) accumulates closures that
+   * pin already-exited subprocesses for the remainder of the run.
+   */
+  cancellationSignal?: {
+    aborted: boolean;
+    addEventListener(event: 'abort', cb: () => void): void;
+    removeEventListener?(event: 'abort', cb: () => void): void;
+  };
   verboseDiagnostics?: VerboseDiagnosticTarget;
   /**
    * Feature 032 — session-control hint set by the controller's continuation

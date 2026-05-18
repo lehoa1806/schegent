@@ -223,6 +223,40 @@ describe('CodexCliRunner.invoke', () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
+  // Pair with `claude-cli`'s identical leak fix: per-phase listeners
+  // must detach after the child exits so a long-lived shared signal does
+  // not accumulate closures across phases within one `driveRun`.
+  it('detaches the abort listener once the child exits', async () => {
+    const child = makeFakeChild();
+    const spawnFn: SpawnFn = () => {
+      setImmediate(() => child.emit('exit', 0, null));
+      return child as unknown as ChildProcess;
+    };
+    const runner = new CodexCliRunner(spawnFn);
+
+    const added: Array<() => void> = [];
+    const removed: Array<() => void> = [];
+    const signal = {
+      aborted: false,
+      addEventListener: (_e: 'abort', cb: () => void) => added.push(cb),
+      removeEventListener: (_e: 'abort', cb: () => void) => removed.push(cb)
+    };
+
+    await runner.invoke({
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'p',
+      timeoutMs: 60_000,
+      cliPath: 'codex',
+      cwd: '/repo',
+      cancellationSignal: signal
+    });
+
+    expect(added).toHaveLength(1);
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toBe(added[0]);
+  });
+
   it('rejects shell:true via the safeSpawn guard', async () => {
     const evilSpawn: SpawnFn = (_cmd, _args, options) => {
       // The runner is supposed to throw BEFORE reaching here, but assert

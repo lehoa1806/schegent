@@ -132,6 +132,41 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(result.killed).toBe(true);
   });
 
+  // The controller shares one AbortController.signal across every phase
+  // within a `driveRun`. Without removing the per-invocation `'abort'`
+  // listener at exit, the listener set grows by one per phase and each
+  // closure pins the (already-exited) subprocess for the rest of the run.
+  it('detaches the abort listener once the child exits', async () => {
+    const child = makeFakeChild();
+    const spawnFn: SpawnFn = () => {
+      setImmediate(() => child.emit('exit', 0, null));
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+
+    const added: Array<() => void> = [];
+    const removed: Array<() => void> = [];
+    const signal = {
+      aborted: false,
+      addEventListener: (_e: 'abort', cb: () => void) => added.push(cb),
+      removeEventListener: (_e: 'abort', cb: () => void) => removed.push(cb)
+    };
+
+    await runner.invoke({
+      phase: 'speckit-plan',
+      iteration: 1,
+      prompt: 'p',
+      timeoutMs: 60_000,
+      cliPath: 'claude',
+      cwd: '/repo',
+      cancellationSignal: signal
+    });
+
+    expect(added).toHaveLength(1);
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toBe(added[0]);
+  });
+
   it('cancelActive kills the in-flight child and returns true', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => child as unknown as ChildProcess;

@@ -341,8 +341,14 @@ export class ClaudeCliRunner implements BackendRunner {
         this.terminate(child);
       }, request.timeoutMs);
 
+      // `onAbort` is kept in scope so we can detach it after the exit
+      // promise resolves. The controller reuses one AbortController.signal
+      // across every phase within a `driveRun`; without the detach the
+      // listener set grows by one per phase and each closure pins the
+      // (already-exited) subprocess for the rest of the run.
+      let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
-        const onAbort = () => {
+        onAbort = () => {
           killed = true;
           this.terminate(child);
         };
@@ -360,6 +366,9 @@ export class ClaudeCliRunner implements BackendRunner {
         child.on('error', () => resolve(null));
       });
 
+      if (onAbort !== null) {
+        request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      }
       clearTimeout(timer);
       const exitSignal = (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
