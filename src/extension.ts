@@ -53,6 +53,7 @@ import {
   readFatalSignaturesSetting,
   type GeneralSettingsConfig
 } from './config/general-settings';
+import { validateWorkspaceSettings } from './config/settings-schema-validator';
 import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
 import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
@@ -291,6 +292,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   }
 
   const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
+  // Feature 056 follow-on — one-shot drift guard. Compares every layer
+  // (workspace folder / workspace / global) against SETTINGS_SCHEMA and
+  // emits a sanitized warn per finding. Operator typos (e.g. a hand-set
+  // `loop.maxIterations: 0`) surface in the runtime log at activation
+  // instead of producing a confusing downstream reject. Sync, no I/O.
+  validateWorkspaceSettings(config, logger, new Set());
   const cliPath = config.get<string>('cli.path', 'claude');
   const iterationCap = config.get<number>('loop.maxIterations', 10);
   const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
