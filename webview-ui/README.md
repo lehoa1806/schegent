@@ -1,6 +1,6 @@
 # Schegent Webview UI
 
-Svelte 5 + Vite 5 app that renders both the Schegent **sidebar** and the **dashboard** inside VS Code webviews. A single Vite build produces two HTML entry points; the host's renderer wires each into its own webview panel.
+Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashboard** inside VS Code webviews. A single Vite build produces two HTML entry points; the host's renderer wires each into its own webview panel.
 
 ## Ownership
 
@@ -226,10 +226,10 @@ shared confirmation dialog.
 
 Two new mutating commands ride the existing `CMD_*` discriminated union:
 
-- `CMD_SAVE_GENERAL_SETTINGS` — payload `{ updates: Record<key, value> }`. Host validates every key against `ALLOWED_KEYS` in `src/config/general-settings.ts` and rejects transactionally. Webview pre-validates for UX but the host is the source of truth.
+- `CMD_SAVE_GENERAL_SETTINGS` — payload `{ updates: Record<key, value> }`. Host validates every key against `ALLOWED_KEYS` in `src/config/general-settings.ts` before writing and uses compensating rollback if a later workspace write fails. Webview pre-validates for UX but the host is the source of truth.
 - `CMD_RETRY_PHASE_NOW` — payload `{ runId: string }`. Host cancels the watchdog timer, resets `delayedRetryCount`, optionally unpauses the queue (only when `pausedReason` matches `retry-cap-exhausted:<runId>`), and re-runs the phase within ~1 s.
 
-Both commands are members of `MUTATING_COMMANDS` in `src/ui/sidebar/messages.ts`. The primary-only gate rejects mutations from secondary VS Code windows with reason `secondary-window-readonly`.
+Both commands are members of `MUTATING_COMMANDS` in `src/ui/sidebar/message-router.ts`. The primary-only gate rejects mutations from secondary VS Code windows with reason `secondary-window-readonly`.
 
 **Feature 056 Track 1 (FR-001..FR-005)** reclassified the three catalog
 saves (`CMD_SAVE_PIPELINES`, `CMD_SAVE_PHASES`, `CMD_SAVE_MODELS`) and

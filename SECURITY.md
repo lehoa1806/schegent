@@ -16,7 +16,7 @@ Schegent runs the upstream `claude` CLI with the `--dangerously-skip-permissions
 
 - **Secret leakage** — the `SECRET_PATTERNS` redaction set in `src/lib/logger.ts` and every downstream sink (audit log, runtime log, phase-log IPC, wake-up session log). A finding that bypasses redaction at any sink is in scope. See [docs/security/threat-model.md](docs/security/threat-model.md).
 - **Audit-log tampering** — the append-only `<workspaceRoot>/.schegent/audit.log` write path and its parser. A finding that mutates, truncates, or corrupts the log without the append-only invariant being honored is in scope. See [docs/security/threat-model.md](docs/security/threat-model.md).
-- **IPC bypass** — the `MUTATING_COMMANDS` primary-host gate in `src/ui/sidebar/messages.ts` and every webview command surface. A finding that lets a secondary VS Code host (or any non-primary surface) execute a mutating command is in scope. See [docs/security/threat-model.md](docs/security/threat-model.md).
+- **IPC bypass** — the `MUTATING_COMMANDS` primary-host gate in `src/ui/sidebar/message-router.ts` and every webview command surface. A finding that lets a secondary VS Code host (or any non-primary surface) execute a mutating command is in scope. See [docs/security/threat-model.md](docs/security/threat-model.md).
 - **Wake-up isolation** — the headless `src/headless/wakeup-runner.ts` entry, its `cwdInsideWorkspace` defense against the workspace-roots snapshot, and its env scrubbing allowlist. A finding that escapes the isolation (workspace traversal, env leak, vscode-namespace import) is in scope. See [docs/security/threat-model.md](docs/security/threat-model.md).
 
 ## What Is Out of Scope

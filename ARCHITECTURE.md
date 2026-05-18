@@ -33,7 +33,7 @@ VS Code Extension Host
 │   └── notifications.ts   — toast wrappers
 └── contracts/             — single-source-of-truth typed contracts (see below)
 
-webview-ui/                — Svelte 5 + Vite 5 build for both webviews
+webview-ui/                — Svelte 5 + Vite 7 build for both webviews
 ```
 
 ## Trust boundaries
@@ -381,6 +381,10 @@ Parallel to the structured audit pipeline, but **strictly separate**.
 including on the timeout and cancel branches. Writes target
 `<workspaceRoot>/.schegent/sessions/raw-<runId>.log`, one file per
 workflow run, append-only, no rotation, no retention, no sanitization.
+The first runtime writer to create `.schegent/` also writes a best-effort
+`.schegent/.gitignore` (`*`) without overwriting an existing operator-managed
+file, so arbitrary workspaces get local-only behavior even when their root
+`.gitignore` does not yet know about Schegent.
 
 The writer is best-effort: I/O failures (read-only FS, EACCES, ENOSPC)
 are caught and surfaced once per `runId` as a warn-level audit log
@@ -422,8 +426,11 @@ fold into a single one-shot warning per slot appended to
 `AuditEntryFields.warnings`, never failing the run. The structured
 `.schegent/audit.log` is byte-identical between verbose-on and
 verbose-off runs of the same fixture (excluding wall-clock timestamps
-and run-scoped IDs). Feature 008's `raw-<runId>.log` is independent
-and continues to be written in both modes. See
+and run-scoped IDs), except that stream-json `result` rows can add
+numeric usage/cost fields to the `phase-end` payload
+(`cliDurationMs`, `numTurns`, `totalCostUsd`, token counts). Feature 008's
+`raw-<runId>.log` is independent and continues to be written in both
+modes. See
 [docs/security/threat-model.md](docs/security/threat-model.md) T10.
 
 ### Runtime log sink (`src/lib/runtime-log/`, feature 019)
@@ -1039,7 +1046,7 @@ into the JSONL but never gates the wake-up's success outcome.
 Three read-only commands + one host → webview push message expose
 the phase-log service through the sidebar IPC boundary. None of the
 three mutate workspace state — they are explicitly excluded from
-`MUTATING_COMMANDS` in [src/ui/sidebar/messages.ts](src/ui/sidebar/messages.ts)
+`MUTATING_COMMANDS` in [src/ui/sidebar/message-router.ts](src/ui/sidebar/message-router.ts)
 because they never write workspace settings.
 
 - **`CMD_READ_PHASE_LOG`** — accepts `{ selection: { queueId, taskId,
@@ -1174,7 +1181,7 @@ expected command has a typed shape declared in `src/contracts/`.
 
 ### Sidebar / dashboard webviews (`webview-ui/`)
 
-Svelte 5 + Vite 5. Both load with strict CSP:
+Svelte 5 + Vite 7. Both load with strict CSP:
 `default-src 'none'; script-src ${cspSource} 'nonce-…'; …`. Inline
 scripts are nonced. No remote sources.
 
@@ -1225,10 +1232,12 @@ this module.
 
 ## Backend runner interface
 
-`src/runner/claude-cli.ts` is the only implementation today, but it
-implements an interface declared in the contracts module so future
-backends can be added without controller changes. The interface
-documents subprocess spawn, output cap, timeout, and exit-code surface.
+`src/runner/claude-cli.ts` and `src/runner/codex-cli.ts` both implement
+the `BackendRunner` interface declared in the contracts module. The
+factory in `src/runner/backend-runner-factory.ts` selects the concrete
+adapter from `schegent.backend.runner`, so backend selection does not
+change workflow orchestration. The interface documents subprocess spawn,
+output cap, timeout, and exit-code surface.
 
 ## Build pipeline
 

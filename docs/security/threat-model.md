@@ -87,7 +87,9 @@ Three sinks are deliberately unredacted:
 These exist because the sanitizer is conservative. When debugging a real failure, you sometimes need the field the sanitizer would have masked. The trade-off is:
 
 - These files **never leave the operator's machine through the IPC pipeline.** The webview cannot request them. The audit log never references them by path.
-- They are **gitignored.** The `.schegent/` directory ignores itself; the workspace `.gitignore` should ignore the directory.
+- They are **gitignored.** Schegent writes a best-effort `.schegent/.gitignore`
+  on first runtime-directory use, and project repositories should also ignore
+  `.schegent/` at the workspace root.
 - They **accumulate.** Diagnostic files do not rotate. Manage manually if you leave verbose on for long periods.
 
 If you cannot tolerate unredacted bytes on disk, the mitigations are:
@@ -137,7 +139,7 @@ This prevents two windows from racing on the same workspace. The primary host ow
 
 ## The mutating-commands registry
 
-Every mutating IPC command must be a member of `MUTATING_COMMANDS` in `src/ui/sidebar/messages.ts`. Adding a new mutating command requires adding it to the registry; the primary-only gate is enforced based on registry membership.
+Every mutating IPC command must be a member of `MUTATING_COMMANDS` in `src/ui/sidebar/message-router.ts`. Adding a new mutating command requires adding it to the registry; the primary-only gate is enforced based on registry membership.
 
 This is the single line of defense against accidentally adding a mutating command without primary-host gating. Forgetting to register is a code-review-catchable mistake.
 
