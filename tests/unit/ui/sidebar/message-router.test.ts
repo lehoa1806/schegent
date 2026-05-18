@@ -107,6 +107,8 @@ function makeRouter(opts: {
   notifyWarning?: (m: string) => void;
   wakeUpNow?: RouterDeps['wakeUpNow'];
   onWakeUpNowComplete?: RouterDeps['onWakeUpNowComplete'];
+  isTrusted?: () => boolean;
+  omitIsTrusted?: boolean;
 } = {}): {
   router: MessageRouter;
   executeCommand: ReturnType<typeof vi.fn>;
@@ -131,7 +133,9 @@ function makeRouter(opts: {
       enablePhase: vi.fn(async () => ({ ok: true }))
     },
     isPrimary: opts.isPrimary ?? (() => true),
-    isTrusted: () => true,
+    ...(opts.omitIsTrusted
+      ? {}
+      : { isTrusted: opts.isTrusted ?? (() => true) }),
     notifyWarning: opts.notifyWarning ?? ((m) => warnings.push(m)),
     wakeUpNow: opts.wakeUpNow,
     onWakeUpNowComplete: opts.onWakeUpNowComplete,
@@ -579,6 +583,42 @@ describe('MessageRouter.dispatch', () => {
   });
 
   describe('Primary-window write gate (T042)', () => {
+    it('rejects mutating commands fail-closed when workspace-trust wiring is missing', async () => {
+      const built = makeRouter({ omitIsTrusted: true });
+      const localAcks: CapturedAck[] = [];
+      await dispatch(
+        built.router,
+        {
+          type: CMD_START,
+          correlationId: 'trust-missing',
+          payload: { description: 'queued task', queueId: 'default', position: 0 }
+        },
+        localAcks
+      );
+
+      expect(localAcks[0].msg.status).toBe('rejected');
+      expect(localAcks[0].msg.reason).toBe('untrusted-workspace');
+      expect(built.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('rejects mutating commands when VS Code reports an untrusted workspace', async () => {
+      const built = makeRouter({ isTrusted: () => false });
+      const localAcks: CapturedAck[] = [];
+      await dispatch(
+        built.router,
+        {
+          type: CMD_START,
+          correlationId: 'trust-false',
+          payload: { description: 'queued task', queueId: 'default', position: 0 }
+        },
+        localAcks
+      );
+
+      expect(localAcks[0].msg.status).toBe('rejected');
+      expect(localAcks[0].msg.reason).toBe('untrusted-workspace');
+      expect(built.executeCommand).not.toHaveBeenCalled();
+    });
+
     it('rejects CMD_RETRY_QUEUE_ITEM when not primary, with reason secondary-window-readonly', async () => {
       const built = makeRouter({ isPrimary: () => false });
       const localAcks: CapturedAck[] = [];
