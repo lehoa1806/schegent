@@ -114,9 +114,17 @@ Replace `<runId>` with the UUID for the run; you find it in the audit log or the
 
 ## "How many tokens has this run consumed?"
 
-The audit log does not record token usage directly. The CLI does report it on completion, but the host does not parse it into a structured field.
+When the CLI emits a `stream-json` `result` row, the `phase-end`
+audit payload records numeric usage fields directly:
+`cliDurationMs`, `numTurns`, `totalCostUsd`, `inputTokens`,
+`outputTokens`, `cacheCreationInputTokens`, and
+`cacheReadInputTokens`. `durationMs` is always present and reflects
+Schegent's runner-measured process duration; the `cli*` / usage fields appear only
+when the CLI reports them.
 
-You can grep the raw transcript for the CLI's usage summary. Or, if verbose diagnostics are enabled, the `stream.jsonl` has structured token usage records per turn.
+If those fields are absent, inspect the raw transcript for the CLI's
+human-readable usage summary. Or, if verbose diagnostics are enabled,
+the `stream.jsonl` has the original structured records per turn.
 
 ## "Is the wake-up scheduler doing its job?"
 

@@ -9,6 +9,7 @@ import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import { parseAuditLogBlock } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
+import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { TerminationReason } from '../state/workflow-run';
 import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
@@ -493,6 +494,7 @@ export class PhaseRunner {
       combinedWarnings.push(...raw.diagnosticWarnings);
     }
 
+    const usageMetrics = extractInvocationUsageMetrics(raw.stdout);
     const auditEntry = await this.appendAudit(
       inputs,
       'phase-end',
@@ -501,6 +503,7 @@ export class PhaseRunner {
         ...this.pipelineMeta(inputs),
         outcome,
         exitCode: raw.exitCode,
+        durationMs: raw.durationMs,
         files_created: audit.entry?.filesCreated ?? [],
         files_modified: audit.entry?.filesModified ?? [],
         commands_executed: audit.entry?.commandsExecuted ?? [],
@@ -509,6 +512,7 @@ export class PhaseRunner {
         // single sanitization point (sanitize() runs there on the
         // whole payload).
         ...(fatalCause ? { cause: fatalCause } : {}),
+        ...(usageMetrics ?? {}),
         ...truncationFields(raw)
       }
     );

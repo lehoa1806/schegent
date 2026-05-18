@@ -97,6 +97,44 @@ describe('PhaseRunner.run', () => {
     expect(out.auditEntryId).toBe('audit-2');
   });
 
+  it('adds runner duration and stream-json usage metrics to phase-end audit payload', async () => {
+    const stdout = [
+      cleanStdout,
+      JSON.stringify({
+        type: 'result',
+        duration_ms: 1234,
+        num_turns: 3,
+        total_cost_usd: 0.0042,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 7,
+          cache_read_input_tokens: 9
+        }
+      })
+    ].join('\n');
+    cliRunner = makeFakeRunner(async () => makeRawOutput({ stdout, durationMs: 99 }));
+    runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    await runner.run(baseInputs);
+
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'phase-end',
+        payload: expect.objectContaining({
+          durationMs: 99,
+          cliDurationMs: 1234,
+          numTurns: 3,
+          totalCostUsd: 0.0042,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheCreationInputTokens: 7,
+          cacheReadInputTokens: 9
+        })
+      })
+    );
+  });
+
   it('parses a valid phase-message.env sidecar and emits metadata-only audit', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-phase-msg-'));
     // Feature 056 Track 2 — host-computed canonical sidecar path. The

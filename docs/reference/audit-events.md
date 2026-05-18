@@ -66,7 +66,15 @@ Payload fields:
 
 Emitted after the phase invocation terminates.
 
-Payload includes the duration, the outcome, the exit code, the iteration index (for loop phases), and a `cause` field on failures (e.g., `timeout`, `fatal-signature`, `nonzero-exit`).
+Payload includes `durationMs` (runner-measured process duration),
+the outcome, the exit code, file/command summaries from the phase's
+constitution audit block, and a `cause` field on failures (for
+example `timeout`, fatal-signature text, or `cap_exhausted`). When
+the CLI stdout includes a stream-json `result` row, the payload also
+includes numeric usage/cost fields reported by the CLI:
+`cliDurationMs`, `numTurns`, `totalCostUsd`, `inputTokens`,
+`outputTokens`, `cacheCreationInputTokens`, and
+`cacheReadInputTokens`.
 
 ## Runner
 
