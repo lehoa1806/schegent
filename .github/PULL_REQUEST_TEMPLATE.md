@@ -41,7 +41,7 @@ Full hard-rule index: see [CLAUDE.md](../CLAUDE.md).
 -->
 
 - [ ] **Single sanitization SoT** — Touched `SECRET_PATTERNS` or the redaction set in [`src/lib/logger.ts`](../src/lib/logger.ts)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
-- [ ] **Primary-host gate (mutating IPC)** — Added or modified an entry in `MUTATING_COMMANDS` in [`src/ui/sidebar/messages.ts`](../src/ui/sidebar/messages.ts)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **Primary-host gate (mutating IPC)** — Added or modified an entry in `MUTATING_COMMANDS` in [`src/ui/sidebar/message-router.ts`](../src/ui/sidebar/message-router.ts)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
 - [ ] **`vscode`-import bans** — Added an import (direct or transitive) of `vscode` from anywhere under [`src/headless/`](../src/headless/), [`src/telemetry/`](../src/telemetry/), or [`src/wakeup/`](../src/wakeup/) modules reached by the wakeup runner? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
 - [ ] **Lock-release pattern** — Modified [`WorkflowController.driveRun()`](../src/controller/workflow-controller.ts) or any `WorkspaceLockManager` consumer? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
 - [ ] **Append-only audit log** — Added a code path that deletes from `<workspaceRoot>/.schegent/audit.log` or bypasses `appendAudit`? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code) and [docs/security/threat-model.md](../docs/security/threat-model.md).

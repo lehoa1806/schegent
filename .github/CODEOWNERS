@@ -2,24 +2,19 @@
 # Semantics: last-match-wins. The catch-all `*` rule appears FIRST; security-
 # sensitive paths appear AFTER it so they win the routing.
 #
-# Operator action required before enabling CODEOWNERS-required branch protection:
-# replace the `_PLACEHOLDER` handles below with real GitHub team slugs (e.g.
-# `@org/security-reviewers`). Until then, GitHub flags placeholders as
-# "Unknown owner" warnings; merges are not gated by the routing.
-
 # Default reviewer routing.
-*                          @MAINTAINERS_PLACEHOLDER
+*                          @lehoa1806
 
 # Security-sensitive paths (must follow the catch-all). Sourced from Item 038
 # in `docs/features/034-architecture-refactoring-and-hardening-plan.md` plus
 # the post-roadmap CLAUDE.md additions (`src/telemetry/`, `src/wakeup/`).
-src/lib/logger.ts          @SECURITY_TEAM_PLACEHOLDER
-src/audit/                 @SECURITY_TEAM_PLACEHOLDER
-src/headless/              @SECURITY_TEAM_PLACEHOLDER
-src/telemetry/             @SECURITY_TEAM_PLACEHOLDER
-src/wakeup/                @SECURITY_TEAM_PLACEHOLDER
-src/runner/claude-cli.ts   @SECURITY_TEAM_PLACEHOLDER
-docs/security/             @SECURITY_TEAM_PLACEHOLDER
-CLAUDE.md                  @SECURITY_TEAM_PLACEHOLDER
-SECURITY.md                @SECURITY_TEAM_PLACEHOLDER
-.github/SECURITY.md        @SECURITY_TEAM_PLACEHOLDER
+src/lib/logger.ts          @lehoa1806
+src/audit/                 @lehoa1806
+src/headless/              @lehoa1806
+src/telemetry/             @lehoa1806
+src/wakeup/                @lehoa1806
+src/runner/claude-cli.ts   @lehoa1806
+docs/security/             @lehoa1806
+CLAUDE.md                  @lehoa1806
+SECURITY.md                @lehoa1806
+.github/SECURITY.md        @lehoa1806

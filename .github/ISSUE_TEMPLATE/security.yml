@@ -15,7 +15,7 @@ body:
       value: |
         ## Where to report
 
-        - **Private GitHub advisory** (preferred): open a new advisory at `https://github.com/<placeholder-org>/schegent/security/advisories/new`.
+        - **Private GitHub advisory** (preferred): open a new advisory at `https://github.com/lehoa1806/schegent/security/advisories/new`.
         - **Backup email**: see the contact address in [SECURITY.md](../SECURITY.md) under "Reporting a vulnerability".
 
   - type: markdown
