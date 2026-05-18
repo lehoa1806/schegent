@@ -145,15 +145,15 @@ When you delete a task, Schegent gives you a confirmation dialog with an option 
 
 In **either case**, the structured `audit.log` is **never** modified by task deletion. The audit log is append-only evidence: deleting a task records a `task-removed` event with the optional `sessionCleaned` flag; it does not erase the events that came before.
 
-## Why three different unredacted sinks?
+## Why three different local-only sinks?
 
-You may have noticed that Schegent has *three* places that contain unredacted content:
+You may have noticed that Schegent has three local-only diagnostic sinks with stricter handling rules:
 
 1. The raw transcript (always written, local-only, gitignored).
 2. The verbose diagnostic files (opt-in, local-only, gitignored).
 3. The wake-up session log (under global storage, sanitized at capture, defense-in-depth re-sanitized on read).
 
-The trade-off is the same in each case: the operator's ability to deeply debug a real failure outweighs the cost of strictly-local unredacted bytes. The architectural mitigations — never reading them back through the IPC pipeline, never serializing them to audit events, gitignoring them in the workspace `.gitignore` — keep them from accidentally leaving the operator's machine.
+The raw transcript and verbose diagnostics trade strictly-local unredacted bytes for the operator's ability to deeply debug a real failure. The wake-up session log is sanitized, but still records local execution context outside workspace-level `.gitignore` coverage. The architectural mitigations — never serializing sensitive local artifact paths to audit events, keeping workspace-local diagnostic sinks gitignored, and re-sanitizing wake-up session-log reads — keep them from accidentally leaving the operator's machine.
 
 If you cannot tolerate unredacted bytes on disk, you can:
 

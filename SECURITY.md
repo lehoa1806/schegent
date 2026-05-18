@@ -202,22 +202,24 @@ catalogs the threats and the mitigations for each one.
   state through an MCP boundary tool. All operator interaction is
   mediated by VS Code commands and the sidebar UI.
 
-### Unredacted sinks — design and trade-offs
+### Local diagnostic sinks — design and trade-offs
 
-Schegent intentionally writes three unredacted sinks:
+Schegent intentionally writes two unredacted local sinks and one
+sanitized global-storage session log:
 
 1. The **raw transcript** (always written, local-only, gitignored).
 2. The **verbose diagnostic files** (opt-in via
    `schegent.logging.verbose`, local-only, gitignored).
 3. The **wake-up session log** (under VS Code global storage,
-   sanitized at capture, re-sanitized on read as defense in depth).
+   sanitized before write and again at the read-side IPC boundary).
 
-The trade-off is the same in each case: the operator's ability to
-deeply debug a real failure outweighs the cost of strictly-local
-unredacted bytes. Architectural mitigations — never reading these
-sinks back through the IPC pipeline, never serializing them into
-audit events, gitignoring them in the workspace — keep them from
-accidentally leaving the operator's machine.
+The raw transcript and verbose diagnostic files are unredacted by
+design. The wake-up session log is sanitized before write but still
+lives outside the workspace in VS Code global storage and may contain
+operator-sensitive context that the redaction patterns did not catch.
+Architectural mitigations — never serializing local artifact paths
+into audit events and gitignoring workspace-local sinks — keep these
+artifacts from accidentally leaving the operator's machine.
 
 If the trade-off does not match your environment, you can:
 

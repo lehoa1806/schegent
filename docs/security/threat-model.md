@@ -17,7 +17,7 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 | [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI, install OS-scheduler entries, or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
 | [T8](#t8--prompt-injection-via-specplantask-content) | Prompt-injection via spec / plan / task / phase-instruction content the operator (or an upstream model) authored. | Out-of-band trust boundary; the host does not analyze prompt content. Operator decides whether to ingest untrusted text. | [A note on prompt-injection](#a-note-on-prompt-injection) |
 | [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A custom-phase (`schegent.phases`) invocation bypassing the audit + redaction + raw-transcript path that built-ins flow through. | `appendAudit` + raw transcript writer is the single, mandatory invocation path. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What is intentionally unredacted](#what-is-intentionally-unredacted) |
+| [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What requires local-only handling](#what-requires-local-only-handling) |
 | [T11](#t11--retrycondition-dsl-escape) | The operator-authored `retryCondition` DSL expression escaping the sandboxed evaluator. | Evaluator at `src/lib/retry-condition.ts` is the sole entry point: no arbitrary code, no function calls, no member access, no I/O. | [The hard rules](#the-hard-rules) |
 | [T12](#t12--fatal-signature-floor-weakening) | Operator workspace settings weakening or re-ordering the code-resident fatal-signature floor. | `FATAL_SIGNATURES` in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) is immutable at runtime; operator-additive surface extends but never removes built-ins; built-ins-first scan order preserved. | [The hard rules](#the-hard-rules) |
 | [T13](#t13--state-schema-invariant-violation) | Persisting a `WorkflowRun` with a one-sided pair (`pendingRetryAt`/`pendingRetryCause` or `manualPauseAt`/`manualPauseCause`) that leaves the scheduler in an unresumable state. | `WorkspaceStateStore.setRun()` rejects mismatched pairs; forward-only migrators backfill legacy records. | [The hard rules](#the-hard-rules) |
@@ -76,15 +76,15 @@ A central set has two consequences:
 
 The extension's CLAUDE.md hard rules forbid forking the redaction set or introducing parallel sanitizers.
 
-## What is *intentionally* unredacted
+## What requires local-only handling
 
-Three sinks are deliberately unredacted:
+Three local diagnostic sinks require special handling:
 
 - The **raw transcript** (`.schegent/sessions/raw-<runId>.log`). Captures CLI stdout/stderr verbatim. Always written.
 - The **verbose diagnostic files** (`.schegent/sessions/<runId>/diagnostics/...`). Captured only when `schegent.logging.verbose` is true. Opt-in.
-- The **wake-up session log** at `<globalStorageUri>/wakeup/session.log`. Sanitized at capture, defense-in-depth re-sanitized on read, but the on-disk bytes are intentionally unredacted-after-capture (the writer is a sink, not a sanitizer).
+- The **wake-up session log** at `<globalStorageUri>/wakeup/session.log`. Sanitized before write, defense-in-depth re-sanitized on read, and kept outside the workspace in VS Code global storage. The writer itself is a sink and does not carry a second sanitizer.
 
-These exist because the sanitizer is conservative. When debugging a real failure, you sometimes need the field the sanitizer would have masked. The trade-off is:
+The raw transcript and verbose diagnostic files exist because the sanitizer is conservative; when debugging a real failure, operators sometimes need the bytes the sanitizer would have masked. The wake-up session log is sanitized, but it still captures local execution context and lives outside workspace-level `.gitignore` coverage. The trade-off is:
 
 - These files **never leave the operator's machine through the IPC pipeline.** The webview cannot request them. The audit log never references them by path.
 - They are **gitignored.** Schegent writes a best-effort `.schegent/.gitignore`
@@ -109,7 +109,7 @@ The structured audit log **does not contain filesystem paths to sensitive locati
 - The phase log feed's file path is never in the audit log — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
 - Operator credentials, environment variables, and tokens are scrubbed by the redaction set.
 
-This makes the audit log **safe to ship off-machine**. It can be attached to bug reports, stored in shared infrastructure, or grepped by ops tooling without leaking sensitive locations. The unredacted sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
+This makes the audit log **safe to ship off-machine**. It can be attached to bug reports, stored in shared infrastructure, or grepped by ops tooling without leaking sensitive locations. The local diagnostic sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
 
 ## The CSP and webview integrity
 
@@ -263,7 +263,7 @@ A custom phase declared in `schegent.phases` could in principle skip the audit +
 
 ### T10 — Verbose-diagnostic unredacted leak
 
-The verbose-diagnostic files (`debug.json`, `stream.jsonl`, `verbose.log` under `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`) are intentionally unredacted. The risk is that an operator ships them off-machine. Mitigated by making the sink operator-opt-in (`schegent.logging.verbose`, default off), gitignored, and excluded from the structured audit log. See [What is intentionally unredacted](#what-is-intentionally-unredacted).
+The verbose-diagnostic files (`debug.json`, `stream.jsonl`, `verbose.log` under `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`) are intentionally unredacted. The risk is that an operator ships them off-machine. Mitigated by making the sink operator-opt-in (`schegent.logging.verbose`, default off), gitignored, and excluded from the structured audit log. See [What requires local-only handling](#what-requires-local-only-handling).
 
 ### T11 — retryCondition DSL escape
 
