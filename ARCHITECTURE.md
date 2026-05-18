@@ -114,9 +114,9 @@ their own service modules to shrink the controller's surface area:
   next pending feature when a run terminates.
 
 The `driveRun()` state-machine loop and the delayed-retry surface
-(watchdog + rate-limit handler) deliberately remain inline. See
-[specs/013-correctness-trust-refactor/decisions.md](specs/013-correctness-trust-refactor/decisions.md)
-"Wave 7 — scope deviation: T096 and T097 NOT extracted" for the
+(watchdog + rate-limit handler) deliberately remain inline. See the
+workspace-level spec `specs/013-correctness-trust-refactor/decisions.md`
+("Wave 7 — scope deviation: T096 and T097 NOT extracted") for the
 rationale (byte-identical audit-event sequencing requirement and the
 lock-retain/release invariant).
 
@@ -615,8 +615,8 @@ at `audit-log-writer.ts`.
 Sandboxed boolean expression evaluator that drives per-phase loop /
 advance decisions for custom phases. Operators declare
 `retryCondition: "<expression>"` on `schegent.phases[]` entries.
-Grammar (normative EBNF at
-[specs/010-pipeline-resilience/contracts/retry-condition-grammar.ebnf](specs/010-pipeline-resilience/contracts/retry-condition-grammar.ebnf)):
+Grammar (normative EBNF in the workspace-level spec
+`specs/010-pipeline-resilience/contracts/retry-condition-grammar.ebnf`):
 
 - Identifiers, signed numeric literals, comparisons
   (`> >= < <= == !=`), logical combinators (`and / or / && / ||`),
@@ -1260,5 +1260,6 @@ does not compete for the same files.
 - [docs/security/threat-model.md](docs/security/threat-model.md)
 - [docs/security/security-note.md](docs/security/security-note.md)
 - [docs/operations/](docs/operations/) — operator runbooks
-- [specs/005-stabilization-refactor/](specs/005-stabilization-refactor/)
-  — the active stabilization plan
+- The workspace-level `specs/` tree holds the BRDs and active plan
+  (e.g. `specs/056-principal-arch-hardening/plan.md`) that drive
+  implementation slices in this repo.
