@@ -168,6 +168,10 @@ describe('PhaseRunner — truncation forwarding to phase-end (Feature 042)', () 
       (c) => c[0].eventType === 'phase-end' && c[0].payload?.reason === 'timeout'
     );
     expect(end).toBeDefined();
-    expect(end?.[0].payload).toMatchObject({ stdoutTruncated: true, reason: 'timeout' });
+    expect(end?.[0].payload).toMatchObject({
+      durationMs: 50,
+      stdoutTruncated: true,
+      reason: 'timeout'
+    });
   });
 });

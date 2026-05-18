@@ -582,12 +582,21 @@ describe('PhaseRunner.run', () => {
 
   it('returns timeout outcome when CLI runner reports timedOut', async () => {
     cliRunner = makeFakeRunner(async () =>
-      makeRawOutput({ stdout: '', timedOut: true, killed: true, exitCode: null })
+      makeRawOutput({ stdout: '', timedOut: true, killed: true, exitCode: null, durationMs: 321 })
     );
     runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
     const out = await runner.run(baseInputs);
     expect(out.outcome).toBe('timeout');
     expect(out.terminationReason).toBe('timeout');
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'phase-end',
+        payload: expect.objectContaining({
+          reason: 'timeout',
+          durationMs: 321
+        })
+      })
+    );
   });
 
   it('returns failed outcome when killed without exit code', async () => {
