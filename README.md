@@ -1,0 +1,342 @@
+# Schegent
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
+[![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.85.0-007ACC.svg)](https://code.visualstudio.com/)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg)](https://nodejs.org/)
+
+> Autonomously orchestrate the Claude Code CLI to drive the Speckit
+> spec-driven development pipeline — without leaving VS Code.
+
+**Schegent** is a Visual Studio Code extension that runs the
+[Claude Code CLI](https://docs.claude.com/claude-code) as a headless
+backend and walks it through the seven Speckit phases
+(`specify → clarify → plan → tasks → analyze → implement → finalize`)
+on your behalf. You enqueue a feature request in the sidebar, walk
+away, and come back to either a completed feature or a paused run
+waiting for an operator decision.
+
+A second built-in pipeline, `speckit-bugfix`, drives a five-phase
+investigate → patch → verify-pre → implement → verify-post cycle for
+bug repair work.
+
+---
+
+## Table of contents
+
+1. [What it does](#what-it-does)
+2. [Requirements](#requirements)
+3. [Installation](#installation)
+4. [Quick start](#quick-start)
+5. [Key features](#key-features)
+6. [Documentation](#documentation)
+7. [Common commands](#common-commands)
+8. [Configuration](#configuration)
+9. [On-disk layout](#on-disk-layout)
+10. [Security posture](#security-posture)
+11. [Building from source](#building-from-source)
+12. [Reporting bugs](#reporting-bugs)
+13. [License](#license)
+
+---
+
+## What it does
+
+Schegent treats each Speckit phase as a discrete CLI invocation, then
+strings the phases together inside an orchestrator that handles:
+
+- **Queueing and concurrency** — exactly one in-flight run per
+  workspace, with a visible queue of pending tasks.
+- **Pausing and resuming** — pause mid-phase, inspect the audit log,
+  and resume from where you stopped.
+- **Failure recovery** — automatic retries for transient and
+  rate-limit failures, manual overrides for everything else.
+- **Customization** — override the model, effort, timeout, or
+  loopability of any phase without forking the pipeline; add your own
+  phases and pipelines through workspace settings.
+- **Observability** — a sanitized, append-only audit log; opt-in
+  unredacted diagnostics for deep troubleshooting; a sanitized runtime
+  log that mirrors the VS Code Output channel to disk.
+- **Unattended execution** — an OS-native wake-up scheduler
+  (launchd / Task Scheduler / cron / systemd-user) keeps your Claude
+  rolling-allocation warm so unattended pipelines do not pay the
+  cold-start cost.
+
+Schegent does not replace the Speckit slash commands you already use
+interactively — it drives the same pipeline non-interactively from a
+queue.
+
+## Requirements
+
+- **Visual Studio Code** `^1.85.0` (April 2024 or newer).
+- **Node.js** `>= 20` (for building from source; not required to run
+  the published extension).
+- **Claude Code CLI** installed and authenticated on `PATH`, or an
+  absolute path provided via `schegent.cli.path`.
+  - Optional: **Codex CLI** if you select the `codex` backend.
+- A **trusted workspace folder** open in VS Code. Schegent is
+  intentionally inert in untrusted workspaces.
+
+## Installation
+
+### From the VS Code Marketplace
+
+1. Open VS Code.
+2. Open the Extensions view (`Ctrl/Cmd+Shift+X`).
+3. Search for **Schegent** and click **Install**.
+
+### From a `.vsix` artifact
+
+If you have a packaged `.vsix` file:
+
+```bash
+code --install-extension schegent-<version>.vsix
+```
+
+After install, reload VS Code, open a workspace folder, and accept the
+workspace-trust prompt.
+
+### Verify the CLI link
+
+Open the Schegent sidebar (activity bar icon). The header badge shows
+one of:
+
+- **CLI ready** (green) — Schegent found and authenticated the CLI.
+- **CLI not found** (red) — set `schegent.cli.path` to the absolute
+  path of your `claude` binary.
+- **CLI unauthenticated** (yellow) — run `claude login` in a fresh
+  terminal, then click the badge to re-probe.
+
+## Quick start
+
+1. Open the Schegent sidebar.
+2. Click **Enqueue Feature Request** (or run
+   `Schegent: Enqueue Feature Request` from the command palette).
+3. Enter a short, declarative description of what you want built.
+4. Confirm the pipeline selection (`speckit-new-feature` by default).
+5. Watch the **In-flight** card. Each phase reports its progress in
+   the **Phase Log Feed** below.
+
+When the run finishes, the task moves to **History**. To rerun, right-
+click and choose **Rerun from History**. To inspect what happened,
+click **Show Audit Log** or open
+`<workspaceRoot>/.schegent/audit.log` directly.
+
+For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting-started/first-pipeline.md).
+
+## Key features
+
+| Feature | Summary |
+|---|---|
+| **Two built-in pipelines** | `speckit-new-feature` (7 phases) and `speckit-bugfix` (5 phases). |
+| **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — merged across four precedence layers. |
+| **Custom phases & pipelines** | Define your own phases through `schegent.phases` / `schegent.pipelines`; they run through the same audit path as the built-ins. |
+| **Phase breakpoints** | Pause a run before a named phase to review state and intervene; consumed on fire. |
+| **Aggressive pause** | SIGTERM at click time with a 2s SIGKILL escalation; state is updated before the kill so the audit record never lies. |
+| **Rate-limit handling** | Parses Anthropic reset hints and schedules a dynamic backoff (5-attempt cap, 60-minute fallback). |
+| **Fatal signatures** | A code-resident floor of unrecoverable error patterns plus operator-additive entries through `schegent.fatalSignatures`. |
+| **Context-preserving retries** | Pass `-c` / `--continue` to a retry so Claude resumes the prior context (Claude backend). |
+| **Verbose diagnostics (opt-in)** | Per-phase unredacted `debug.json`, `stream.jsonl`, and `verbose.log` captures for deep troubleshooting. |
+| **Wake-up scheduler** | OS-native, per-user; chronological (`HH:MM`) or periodic (`Every Nm`/`Every Nh`). |
+| **Auto-compact override** | Export `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to control when Claude compacts context, per workspace. |
+| **Multi-window safe** | Secondary VS Code windows are read-only; only the primary host mutates state. |
+| **Backend abstraction** | Pluggable `BackendRunner` contract; `claude` (default) and `codex` (single-shot `exec --no-stream`) ship in-tree. |
+
+## Documentation
+
+The full operator manual lives under [`docs/`](docs/). Start with:
+
+- [`docs/README.md`](docs/README.md) — manual index.
+- [`docs/getting-started/installation.md`](docs/getting-started/installation.md) — install and link the CLI.
+- [`docs/getting-started/first-pipeline.md`](docs/getting-started/first-pipeline.md) — end-to-end first run.
+- [`docs/getting-started/sidebar-tour.md`](docs/getting-started/sidebar-tour.md) — every panel and what it does.
+
+By topic:
+
+- **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md).
+- **Features** — [phase overrides](docs/features/phase-overrides.md), [custom phases](docs/features/custom-phases.md), [phase breakpoints](docs/features/phase-breakpoints.md), [wake-up scheduler](docs/features/wake-up-scheduler.md), [verbose diagnostics](docs/features/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
+- **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
+- **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).
+- **Security** — [operator threat model](docs/security/threat-model.md).
+
+## Common commands
+
+All commands are available from the VS Code command palette
+(`Ctrl/Cmd+Shift+P`) under the **Schegent** category.
+
+| Command id | Palette title |
+|---|---|
+| `schegent.auto` | Run Autonomous Workflow |
+| `schegent.schedule` | Enqueue Feature Request |
+| `schegent.resume` | Resume Paused or Failed Workflow |
+| `schegent.cancel` | Cancel In-Flight Workflow |
+| `schegent.pauseQueue` | Pause Queue |
+| `schegent.resumeQueue` | Resume Queue |
+| `schegent.retryActiveRun` | Retry Active Run |
+| `schegent.retryQueuedItem` | Retry Queued Item |
+| `schegent.moveQueuedItemUp` | Move Queued Item Up |
+| `schegent.moveQueuedItemDown` | Move Queued Item Down |
+| `schegent.clearCompleted` | Clear Completed History |
+| `schegent.clearFailed` | Clear Failed History |
+| `schegent.rerunFromHistory` | Rerun from History |
+| `schegent.showActiveRun` | Show Active Run |
+| `schegent.openDashboard` | Open Dashboard |
+| `schegent.showAuditLog` | Show Audit Log |
+| `schegent.reset` | Reset Workspace State (destructive — clears queue and runs; audit log preserved) |
+| `schegent.redetectClaudeTransport` | Re-detect CLI Transport |
+
+See [`docs/reference/commands.md`](docs/reference/commands.md) for the
+complete contract.
+
+## Configuration
+
+All settings live under the `schegent.*` namespace and edit through
+**Dashboard → Settings → General** or VS Code's settings UI.
+Workspace-scope overrides user-scope, which overrides defaults.
+
+Frequently used keys:
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `schegent.cli.path` | string | `"claude"` | Path to the Claude CLI binary. |
+| `schegent.backend.runner` | enum | `"claude"` | `claude` or `codex`. |
+| `schegent.loop.maxIterations` | number | `10` | Max iterations per loopable phase (1–50). |
+| `schegent.invocation.timeoutSeconds` | number | `1800` | Per-phase wall-clock timeout. |
+| `schegent.watchdog.pollIntervalMinutes` | number | `30` | Watchdog cadence during paused runs. |
+| `schegent.retry.maxAttempts` | number | `5` | Delayed-retry cap (1–5). |
+| `schegent.audit.rotation.sizeMB` | number | `5` | Audit log rotation threshold. |
+| `schegent.audit.rotation.maxAgeDays` | number | `30` | Rotated archive retention floor. |
+| `schegent.logging.verbose` | boolean | `false` | Opt-in unredacted per-phase capture. |
+| `schegent.logging.runtimeLogLevel` | enum | `"INFO"` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
+| `schegent.rules.injectPerPhase` | boolean | `false` | Concatenate `.claude/skills/<phase>/SKILL.md` per invocation. |
+| `schegent.defaultPipelineId` | string | `"speckit-new-feature"` | Pipeline used when none is explicitly chosen. |
+| `schegent.fatalSignatures` | string[] | `[]` | Operator-additive fatal-signature substrings. |
+| `schegent.claude.autoCompactPctOverride` | integer\|null | unset | Exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` when set. |
+| `schegent.wakeUp.enabled` | boolean | `false` | Master switch for the OS-native wake-up entry. |
+| `schegent.wakeUp.schedulerType` | enum | `"chronological"` | `chronological` (`HH:MM`) or `periodic`. |
+| `schegent.wakeUp.chronologicalTime` | string | `"04:00"` | 24-hour time string. |
+| `schegent.wakeUp.periodicInterval` | string | `"Every 4h"` | `Every Nm` or `Every Nh`. |
+
+The full schema (`schegent.phases`, `schegent.pipelines`,
+`schegent.models`, validation rules) is documented in
+[`docs/reference/settings.md`](docs/reference/settings.md).
+
+## On-disk layout
+
+Schegent writes to four sinks under your workspace, each with a
+distinct purpose, trust profile, and rotation policy:
+
+```text
+<workspaceRoot>/.schegent/
+├── audit.log                          # sanitized, rotated, append-only evidence
+├── audit.log.<rotation-stamp>         # rotated archives
+├── syslog (or syslog.1, .2, ...)      # sanitized runtime log + rotations
+└── sessions/
+    ├── raw-<runId>.log                # raw transcript (unredacted, local-only)
+    └── <runId>/
+        └── diagnostics/
+            └── <pipelineId>/<phaseId>/iter-<N>/
+                ├── debug.json         # full CLI debug payload (opt-in)
+                ├── stream.jsonl       # stream-json output (opt-in)
+                └── verbose.log        # --verbose stderr capture (opt-in)
+```
+
+Schegent writes a best-effort `.schegent/.gitignore` on first
+runtime-directory use, and recommends adding `.schegent/sessions/raw-*.log`
+to your workspace `.gitignore` as well — the raw transcript and verbose
+diagnostics are unredacted by design.
+
+A fifth sink, the wake-up session log, lives under VS Code global
+storage rather than `.schegent/`; see
+[`docs/features/wake-up-scheduler.md`](docs/features/wake-up-scheduler.md).
+
+## Security posture
+
+Schegent assumes a trusted local operator on a trusted workstation.
+The defenses below reduce risk; they are not absolute guarantees.
+
+- **Workspace-trust gating** — the extension is inert in untrusted
+  workspaces.
+- **Primary-host gating** — only the first VS Code window opened
+  against a workspace mutates state. Secondary windows are read-only.
+- **Single sanitization surface** — every operator-visible sink
+  (audit log, runtime log, Output channel, phase log feed, wake-up
+  session log) passes through the same redaction set.
+- **Metadata-only audit by default** — the structured audit log
+  records counts, IDs, and selection tuples rather than file paths or
+  raw payloads. Paths-free discipline keeps the file safe to attach to
+  bug reports.
+- **TTL-bound context fragments** — diagnostic captures live under
+  the workspace and are scoped to the run that produced them. Verbose
+  capture is opt-in; raw transcripts are local-only.
+- **Sandboxed retry-condition DSL** — operator-supplied retry
+  expressions are evaluated by a restricted parser that allows
+  identifiers, signed numerics, comparison operators, and boolean
+  combinators. Arithmetic, function calls, member access, and I/O are
+  rejected.
+- **Local transactional sync** — operations that span multiple files
+  use compensating rollback so a partial failure restores the prior
+  state.
+- **No MCP boundary tool** — Schegent does not expose its internal
+  state through an MCP boundary tool. All operator interaction goes
+  through VS Code commands and the sidebar UI.
+
+See [`docs/security/threat-model.md`](docs/security/threat-model.md)
+for the threat catalog (T1–T20), explicit non-defenses, and the knobs
+you control. To report a security issue, see [SECURITY.md](SECURITY.md).
+
+## Building from source
+
+```bash
+# install deps (also installs webview-ui)
+npm install
+
+# typecheck + lint + unit tests
+npm run ci:fast
+
+# full build (host + webview)
+npm run build
+
+# package a .vsix artifact
+npm run package
+```
+
+Useful targets:
+
+| Script | Purpose |
+|---|---|
+| `npm run build` | Build host + webview bundles. |
+| `npm run typecheck` | TypeScript no-emit check. |
+| `npm run lint` | ESLint over `src/` and `tests/`. |
+| `npm run test` | Vitest unit suites (host + webview). |
+| `npm run test:coverage` | Unit suites with coverage. |
+| `npm run test:e2e` | End-to-end VS Code suite. |
+| `npm run test:integration` | Integration suite (boots a real VS Code instance). |
+| `npm run ci` | Full pre-merge gate (typecheck + lint + unit + e2e + build + integration). |
+| `npm run package` | `vsce package --no-dependencies`. |
+
+The repository targets Node `>= 20` and VS Code `^1.85.0`. Use the
+checked-in `.nvmrc` if you use `nvm` or `fnm`.
+
+## Reporting bugs
+
+- File issues at <https://github.com/lehoa1806/schegent/issues>.
+- For security-sensitive reports, follow [SECURITY.md](SECURITY.md).
+- For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+- For version history, see [CHANGELOG.md](CHANGELOG.md).
+
+When filing a bug, include:
+
+- Operating system and VS Code version.
+- Claude CLI version (`claude --version`).
+- The relevant audit-log snippet (`.schegent/audit.log` — safe to
+  attach; it is sanitized and paths-free).
+- Your `settings.json` for `schegent.*` keys.
+- The runtime log if relevant (`.schegent/syslog` — also sanitized).
+
+Do **not** attach the raw transcript (`.schegent/sessions/raw-*.log`)
+or the verbose diagnostics directory unless asked. Both are
+unredacted by design.
+
+## License
+
+Schegent is distributed under the [MIT License](LICENSE.md).
