@@ -86,6 +86,61 @@ describe('SanitizedLogger.sanitize', () => {
     // AIza requires 35 trailing chars from the API-key alphabet; "AIzaShort" is benign.
     expect(logger.sanitize('AIzaShort')).toBe('AIzaShort');
   });
+
+  it('redacts AWS temporary session access key IDs (ASIA...)', () => {
+    // STS / assumed-role keys carry the same blast radius as long-lived
+    // AKIA credentials for their lifetime and must redact identically.
+    // The shape is `ASIA` + exactly 16 uppercase alphanumerics.
+    const out = logger.sanitize('aws_access_key_id=ASIAY44QH2Y4SAMPLE00');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('ASIAY44QH2Y4SAMPLE00');
+  });
+
+  it('does not redact ASIA-prefixed strings that are not session keys', () => {
+    // ASIA needs 16 trailing uppercase alphanumerics; "ASIAFoo" is benign.
+    expect(logger.sanitize('ASIAFoo')).toBe('ASIAFoo');
+  });
+
+  it('redacts PEM RSA private key headers', () => {
+    const out = logger.sanitize(
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA…\n-----END RSA PRIVATE KEY-----'
+    );
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+  });
+
+  it('redacts PEM OPENSSH private key headers', () => {
+    const out = logger.sanitize(
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk…\n'
+    );
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('-----BEGIN OPENSSH PRIVATE KEY-----');
+  });
+
+  it('redacts PEM PGP private key headers', () => {
+    const out = logger.sanitize(
+      '-----BEGIN PGP PRIVATE KEY-----\nlQHYBGZ…\n-----END PGP PRIVATE KEY-----'
+    );
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('-----BEGIN PGP PRIVATE KEY-----');
+  });
+
+  it('preserves PUBLIC key headers (not secrets)', () => {
+    // Public keys are explicitly intended to be shareable.
+    const input = '-----BEGIN PUBLIC KEY-----';
+    expect(logger.sanitize(input)).toBe(input);
+  });
+
+  it('redacts X-API-Key header style', () => {
+    const out = logger.sanitize('X-API-Key: abcdefghijklmnopqrstuv');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('abcdefghijklmnopqrstuv');
+  });
+
+  it('redacts x_api_key= environment style', () => {
+    const out = logger.sanitize('x_api_key=abcdefghijklmnopqrstuv');
+    expect(out).toContain('[REDACTED]');
+  });
 });
 
 describe('SanitizedLogger.info/warn/error', () => {

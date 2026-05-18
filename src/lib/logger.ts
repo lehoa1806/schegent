@@ -10,8 +10,14 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   // Slack bot/user/app/refresh/legacy tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
-  // AWS access key IDs
+  // AWS access key IDs (long-lived IAM user credentials)
   /\bAKIA[0-9A-Z]{16}\b/g,
+  // AWS temporary session access key IDs (STS / assumed-role). Same
+  // 20-char shape as AKIA but the `ASIA` prefix is the documented
+  // distinguisher; treat with the same redaction urgency since the
+  // accompanying session token grants identical privileges for its
+  // lifetime.
+  /\bASIA[0-9A-Z]{16}\b/g,
   // Google Cloud API key (developer key surface — 39 chars, `AIza`
   // prefix + 35-char body). Common dual-use leak in CI logs and
   // sample payloads.
@@ -23,11 +29,20 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\b[rs]k_(live|test)_[A-Za-z0-9]{20,}\b/g,
   // GCP service account snippet
   /"private_key"\s*:\s*"-----BEGIN [^"]+-----[\s\S]+?-----END [^"]+-----\\n?"/g,
+  // Standalone PEM private-key headers — catches SSH, PGP, and other
+  // private keys that leak into stdout without the JSON envelope above.
+  // The header alone is enough to redact; the body is not required to
+  // match because the header is the high-signal indicator.
+  /-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP|ENCRYPTED) PRIVATE KEY-----/g,
   // Bearer / Authorization headers
   /Bearer\s+[A-Za-z0-9_\-.=]{16,}/gi,
   /authorization["'\s:=]+[A-Za-z0-9_\-.=]{16,}/gi,
   // api_key / apikey / api-key
   /api[_-]?key["'\s:=]+[A-Za-z0-9_-]{16,}/gi,
+  // X-API-Key / X_API_KEY header style — common AWS API Gateway and
+  // third-party SaaS shape that the api_key pattern misses because of
+  // the `x-` prefix.
+  /x[_-]api[_-]?key["'\s:=]+[A-Za-z0-9_-]{16,}/gi,
   // JSON Web Tokens
   /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   // Generic KEY=VALUE secrets in env-style strings
