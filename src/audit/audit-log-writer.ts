@@ -125,12 +125,27 @@ export class AuditLogWriter {
     // or rejected append cannot stall the whole chain. The caller still
     // observes this call's outcome via the awaited `next` promise; the
     // self-healing `writeChain` swallows errors after warning.
+    //
+    // Include the failed entry's id + type + runId in the warn so a disk-full
+    // / wedge incident is forensically attributable from the runtime log
+    // alone — the prior generic "audit append failed: <message>" left
+    // operators correlating timestamps by hand. Keep the message free of
+    // path/body bytes (paths-free audit discipline, see hard rule 014).
     const next = this.writeChain.then(
       () => this.doWrite(line),
       () => this.doWrite(line)
     );
     this.writeChain = next.catch((err) => {
-      this.logger.warn(`audit append failed: ${(err as Error).message}`);
+      const code = (err as NodeJS.ErrnoException).code;
+      this.logger.warn(
+        `audit append failed: ${(err as Error).message}`,
+        {
+          eventId: sanitized.id,
+          eventType: sanitized.eventType,
+          runId: sanitized.runId,
+          ...(typeof code === 'string' ? { errno: code } : {})
+        }
+      );
     });
     await next;
     this.notify(sanitized);
