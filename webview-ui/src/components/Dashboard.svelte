@@ -86,18 +86,32 @@
     if (!item) return phases;
     const catalog = snapshot.availablePhases ?? [];
     if (catalog.length === 0) return phases;
-    return catalog.map((def, idx): PhaseTile => {
+    // Filter catalog phases to only those belonging to the task's pipeline.
+    // Without this, ALL catalog phases (including phases from unrelated
+    // pipelines like bugfix) would appear in the phase progression.
+    let phaseDefs = catalog;
+    if (item.currentPipelineId) {
+      const pipeline = availablePipelines.find((p) => p.id === item.currentPipelineId);
+      if (pipeline) {
+        const catalogById = new Map(catalog.map((d) => [d.id, d]));
+        // Preserve pipeline ordering rather than catalog ordering
+        phaseDefs = pipeline.phases
+          .map((phaseId) => catalogById.get(phaseId))
+          .filter((d): d is typeof catalog[number] => d !== undefined);
+      }
+    }
+    return phaseDefs.map((def, idx): PhaseTile => {
       let state: PhaseTile['state'] = 'not-started';
       if (item.status === 'completed') {
         state = 'completed';
       } else if (item.status === 'failed' || item.status === 'canceled') {
-        const currentIdx = catalog.findIndex((p) => p.id === item.currentPhase);
+        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';
         }
       } else if (item.status === 'in-flight') {
-        const currentIdx = catalog.findIndex((p) => p.id === item.currentPhase);
+        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';

@@ -7,7 +7,7 @@ Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashb
 | Surface | Entry | Purpose |
 |---|---|---|
 | Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
-| Dashboard | `webview-ui/src/dashboard/...` (mounted via `dashboard.html`) | Full-window operator console: single-queue management, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
+| Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: single-queue management, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
 
 Both webviews subscribe to the same host `WorkflowSnapshot` projected by `src/ui/sidebar/state-projector.ts`. The dashboard renders the full operator surface; the sidebar projects a strict subset of the same `WorkflowSnapshot` (see `contracts/sidebar-view-contract.md` in the active spec for the testid contract).
 
@@ -18,7 +18,7 @@ webview-ui/
 ├── src/
 │   ├── App.svelte        — sidebar root (compact 4-zone layout)
 │   ├── main.ts           — sidebar entry
-│   ├── dashboard/        — dashboard entry, Dashboard.svelte, components/
+│   ├── dashboard/        — dashboard entry, routes, and dashboard shell CSS
 │   ├── components/       — shared Svelte 5 components (StatusBar, StatsStrip,
 │   │                       CurrentTask, DashboardLink, plus dashboard-only:
 │   │                       PhaseTracker, ControlPanel, QueueList,
@@ -74,7 +74,7 @@ with inner tabs is gone):
 |---|---|---|
 | Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, audit tail, and phase log feed. |
 | Pipeline Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
-| Settings | `components/SettingsSurface.svelte` | Two sub-tabs only: **General** and **Fatal Signatures**. |
+| Settings | `components/SettingsSurface.svelte` | Three sub-tabs: **General**, **Fatal Signatures**, and **Wake up**. |
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
 (`$derived(snapshotStore.snapshot)`); every route receives the snapshot
@@ -101,7 +101,7 @@ it.
 
 ### Settings hover-text primitive (spec 018)
 
-Every focusable control in the four Settings sub-tabs is annotated by
+Every focusable control in the three Settings sub-tabs is annotated by
 the shared [`use:hoverTextAnchor`](src/components/hover-text/hover-text-anchor-action.ts)
 Svelte 5 action (the primary call shape). The action picks the surface
 deterministically from `description.body.length`:
