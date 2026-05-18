@@ -97,6 +97,15 @@ export function extractResetTimestamp(
       if (trimmed.length < 2 || trimmed.charCodeAt(0) !== 0x7b /* { */) continue;
       if (trimmed.charCodeAt(trimmed.length - 1) !== 0x7d /* } */) continue;
       if (trimmed.indexOf('rate_limit_event') === -1) continue;
+      // The common non-actionable event is `status: "allow"`. Skip the
+      // canonical compact/pretty JSON shapes before JSON.parse; this keeps
+      // large stdout buffers with frequent allow events under the perf budget.
+      if (
+        trimmed.indexOf('"status":"allow"') !== -1 ||
+        trimmed.indexOf('"status": "allow"') !== -1
+      ) {
+        continue;
+      }
       let obj: unknown;
       try {
         obj = JSON.parse(trimmed);
