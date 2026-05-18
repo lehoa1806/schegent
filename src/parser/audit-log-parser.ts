@@ -9,17 +9,6 @@ import {
 } from '../audit/audit-entry';
 import type { Phase } from '../controller/phase';
 
-const PHASES: ReadonlySet<string> = new Set([
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-analyze',
-  'speckit-implement',
-  'finalize',
-  'done'
-]);
-
 const OUTCOMES: ReadonlySet<string> = new Set(['success', 'failure', 'info']);
 
 export interface ParseAuditLineResult {
@@ -45,7 +34,14 @@ export function parseAuditLogLineDetailed(line: string): ParseAuditLineResult {
   const id = typeof obj.id === 'string' ? obj.id : null;
   const timestamp = typeof obj.timestamp === 'string' ? obj.timestamp : null;
   const runId = typeof obj.runId === 'string' ? obj.runId : null;
-  const phase = typeof obj.phase === 'string' && PHASES.has(obj.phase) ? (obj.phase as Phase) : null;
+  // Phase ids are operator-extensible (`schegent.phases`) and the built-in
+  // catalog now includes non-Speckit ids such as `bugfix-report`. The
+  // structured audit reader must preserve any non-empty phase id instead of
+  // pinning to the original seven-phase built-in list.
+  const phase =
+    typeof obj.phase === 'string' && obj.phase.trim().length > 0
+      ? (obj.phase as Phase)
+      : null;
   const iteration =
     typeof obj.iteration === 'number' && Number.isFinite(obj.iteration) ? obj.iteration : null;
   const eventTypeRaw = typeof obj.eventType === 'string' ? obj.eventType : null;

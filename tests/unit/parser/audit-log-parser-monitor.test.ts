@@ -77,6 +77,26 @@ describe('audit-log-parser schema version handling (US4 / T063)', () => {
   });
 });
 
+describe('audit-log-parser dynamic phase hydration', () => {
+  it('preserves valid audit entries for bugfix and custom phase ids', () => {
+    for (const phase of ['bugfix-report', 'security-review']) {
+      const line = JSON.stringify({
+        id: `entry-${phase}`,
+        timestamp: new Date().toISOString(),
+        runId: 'r1',
+        phase,
+        iteration: 1,
+        eventType: 'phase-start',
+        payload: { phaseId: phase },
+        outcome: 'info'
+      });
+      const entry = parseAuditLogLine(line);
+      expect(entry).not.toBeNull();
+      expect(entry?.phase).toBe(phase);
+    }
+  });
+});
+
 describe('audit-log-parser correlationId hydration (US4 / T066)', () => {
   it('reads an explicit correlationId field when present', () => {
     const line = JSON.stringify({
