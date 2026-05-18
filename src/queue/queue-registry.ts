@@ -261,6 +261,9 @@ export function validateQueueRegistry(registry: QueueRegistry): void {
  * Create a new queue entry. Caller supplies the freshly minted UUIDv4 id
  * (so this module remains pure / clock-injectable). Throws on cap or
  * duplicate-name; returns the new registry on success.
+ *
+ * @deprecated v6 single-queue mode keeps this helper only for historical
+ * shape readability. No active runtime path may create non-default queues.
  */
 export function createQueue(
   registry: QueueRegistry,
@@ -310,6 +313,9 @@ export function createQueue(
 /**
  * Rename a queue. Names must remain unique. The reserved `'default'` id can
  * be renamed (the display name is purely cosmetic) but the id stays fixed.
+ *
+ * @deprecated v6 single-queue mode keeps this helper only for historical
+ * shape readability. No active runtime path may rename queues.
  */
 export function renameQueue(
   registry: QueueRegistry,
@@ -346,6 +352,9 @@ export function renameQueue(
  * Delete a queue. The reserved `'default'` queue can never be deleted.
  * Caller is responsible for relocating or canceling that queue's pending
  * `FeatureRequest`s before invoking this — see `quickstart.md`.
+ *
+ * @deprecated v6 single-queue mode keeps this helper only for historical
+ * shape readability. No active runtime path may delete queues.
  */
 export function deleteQueue(
   registry: QueueRegistry,
@@ -423,6 +432,10 @@ export function setQueuePaused(
   });
 }
 
+/**
+ * @deprecated v6 single-queue mode clears schedules and rejects scheduled
+ * queues. This helper remains for legacy shape readability only.
+ */
 export function setQueueSchedule(
   registry: QueueRegistry,
   params: { id: string; schedule: QueueSchedule | null; now: number }
