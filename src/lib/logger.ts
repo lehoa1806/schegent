@@ -34,6 +34,30 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|ACCESS_KEY)[A-Z_]*\s*=\s*[A-Za-z0-9_\-/+=]{8,}/g
 ];
 
+/**
+ * Pre-compiled union regexes for the hot path. `sanitize()` formerly
+ * iterated all 14 patterns per call (~14 regex passes per log line);
+ * with two unions (case-sensitive and case-insensitive) the same
+ * coverage costs 2 passes. Behavior is byte-identical: alternation
+ * preserves leftmost-match semantics and every secret substring still
+ * collapses to `[REDACTED]`.
+ *
+ * Build at module-init time. `SECRET_PATTERNS` stays the single source
+ * of truth — adding a pattern to the array automatically extends the
+ * matching union (no second edit required).
+ */
+function compileUnion(caseInsensitive: boolean): RegExp | null {
+  const filtered = SECRET_PATTERNS.filter(
+    (p) => p.flags.includes('i') === caseInsensitive
+  );
+  if (filtered.length === 0) return null;
+  const body = filtered.map((p) => `(?:${p.source})`).join('|');
+  return new RegExp(body, caseInsensitive ? 'gi' : 'g');
+}
+
+const SECRET_UNION_CS: RegExp | null = compileUnion(false);
+const SECRET_UNION_CI: RegExp | null = compileUnion(true);
+
 export interface LogSink {
   appendLine(line: string): void;
 }
@@ -90,9 +114,8 @@ export class SanitizedLogger {
 
   public sanitize(input: string): string {
     let out = input;
-    for (const pattern of SECRET_PATTERNS) {
-      out = out.replace(pattern, '[REDACTED]');
-    }
+    if (SECRET_UNION_CS !== null) out = out.replace(SECRET_UNION_CS, '[REDACTED]');
+    if (SECRET_UNION_CI !== null) out = out.replace(SECRET_UNION_CI, '[REDACTED]');
     return out;
   }
 
