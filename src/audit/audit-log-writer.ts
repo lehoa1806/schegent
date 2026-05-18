@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import type { AuditEntry } from './audit-entry';
 import { AUDIT_SCHEMA_VERSION } from '../contracts/audit-events';
 import type { SanitizedLogger } from '../lib/logger';
+import { ensureSchegentGitignore } from './schegent-gitignore';
 
 export interface AuditLogConfig {
   workspaceRoot: string;
@@ -59,6 +60,7 @@ export class AuditLogWriter {
   private readonly logger: SanitizedLogger;
   private writeChain: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<AuditAppendListener>();
+  private gitignoreEnsure: Promise<void> | null = null;
 
   constructor(config: Partial<AuditLogConfig> & { workspaceRoot: string }, logger: SanitizedLogger) {
     this.config = {
@@ -155,6 +157,7 @@ export class AuditLogWriter {
   private async doWrite(line: string): Promise<void> {
     const dir = path.dirname(this.logPath);
     await fs.mkdir(dir, { recursive: true });
+    await this.ensureRuntimeGitignore();
     await this.maybeRotate();
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -170,6 +173,11 @@ export class AuditLogWriter {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  private ensureRuntimeGitignore(): Promise<void> {
+    this.gitignoreEnsure ??= ensureSchegentGitignore(this.config.workspaceRoot, this.logger);
+    return this.gitignoreEnsure;
   }
 
   private async maybeRotate(): Promise<void> {

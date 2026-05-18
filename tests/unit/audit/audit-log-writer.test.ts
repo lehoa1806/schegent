@@ -35,6 +35,33 @@ describe('AuditLogWriter.append', () => {
     expect(parsed.runId).toBe('run-1');
   });
 
+  it('creates a local .schegent/.gitignore without overwriting existing operator content', async () => {
+    const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    await writer.append({
+      runId: 'run-1',
+      phase: 'speckit-specify',
+      iteration: 1,
+      eventType: 'phase-end',
+      payload: { ok: true },
+      outcome: 'success'
+    });
+    const ignorePath = path.join(tmpRoot, '.schegent', '.gitignore');
+    const first = await fs.readFile(ignorePath, 'utf8');
+    expect(first).toContain('*');
+
+    await fs.writeFile(ignorePath, 'operator-managed\n', 'utf8');
+    await writer.append({
+      runId: 'run-2',
+      phase: 'speckit-specify',
+      iteration: 1,
+      eventType: 'phase-end',
+      payload: { ok: true },
+      outcome: 'success'
+    });
+
+    await expect(fs.readFile(ignorePath, 'utf8')).resolves.toBe('operator-managed\n');
+  });
+
   it('appends multiple entries in order', async () => {
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
     await writer.append({

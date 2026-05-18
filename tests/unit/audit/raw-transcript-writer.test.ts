@@ -63,6 +63,22 @@ describe('RawTranscriptWriter happy path (T005, US1)', () => {
     expect(contents).toContain('========== SESSION END ==========');
   });
 
+  it('creates a local .schegent/.gitignore for transcript privacy defense-in-depth', async () => {
+    await writer.appendStart({
+      runId: 'gitignore',
+      phase: 'speckit-specify',
+      iteration: 1,
+      prompt: 'hello prompt'
+    });
+
+    const contents = await fs.readFile(
+      path.join(workspaceRoot, '.schegent', '.gitignore'),
+      'utf8'
+    );
+    expect(contents).toContain('Schegent runtime artifacts are local-only');
+    expect(contents).toContain('*');
+  });
+
   it('writes [EXIT_CODE]: timeout when timedOut=true', async () => {
     await writer.appendStart({ runId: 'tmo', phase: 'speckit-plan', iteration: 1, prompt: 'p' });
     await writer.appendEnd({

@@ -66,7 +66,9 @@ The raw transcript is the canonical *what-actually-happened* artefact. If a run 
 - Path: `<workspaceRoot>/.schegent/sessions/raw-<runId>.log`.
 - Written by the host as the run proceeds.
 - **Never read back** by the host or webview. There is no UI that surfaces its contents. You open it with your editor of choice.
-- Listed in `.schegent/.gitignore` and the workspace `.gitignore` — it is local-only by design.
+- Listed in the best-effort `.schegent/.gitignore` Schegent writes on first
+  runtime-directory use, and ideally in the workspace `.gitignore` too — it is
+  local-only by design.
 
 Treat raw transcripts like you treat your shell history: they are useful, they may contain sensitive context, do not check them into version control or share them publicly without review.
 

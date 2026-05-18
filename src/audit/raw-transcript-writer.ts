@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Phase } from '../controller/phase';
 import type { SanitizedLogger } from '../lib/logger';
+import { ensureSchegentGitignore } from './schegent-gitignore';
 
 const SESSION_START = '========== SESSION START ==========';
 const SESSION_END = '========== SESSION END ==========';
@@ -37,6 +38,7 @@ export class RawTranscriptWriter {
   private readonly logger: SanitizedLogger;
   private readonly chains = new Map<string, Promise<void>>();
   private readonly failedRuns = new Set<string>();
+  private gitignoreEnsure: Promise<void> | null = null;
   private emptyRunIdWarned = false;
 
   constructor(workspaceRoot: string, logger: SanitizedLogger) {
@@ -77,6 +79,7 @@ export class RawTranscriptWriter {
     const target = this.filePathFor(runId);
     try {
       await fs.mkdir(path.dirname(target), { recursive: true });
+      await this.ensureRuntimeGitignore();
       await fs.appendFile(target, content, 'utf8');
     } catch (err) {
       if (!this.failedRuns.has(runId)) {
@@ -86,6 +89,11 @@ export class RawTranscriptWriter {
         );
       }
     }
+  }
+
+  private ensureRuntimeGitignore(): Promise<void> {
+    this.gitignoreEnsure ??= ensureSchegentGitignore(this.workspaceRoot, this.logger);
+    return this.gitignoreEnsure;
   }
 
   private warnEmptyRunId(): void {
