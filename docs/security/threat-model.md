@@ -2,6 +2,33 @@
 
 Schegent runs an autonomous local Claude CLI backend with broad capabilities inside your workspace. This page is the operator-facing summary of what Schegent can and cannot do, what risks exist, and what mitigations are in place. It is not exhaustive — it is the model you need to make informed decisions about whether and how to use the extension.
 
+## Threat catalog (T1–T20)
+
+The catalog below enumerates each in-scope threat, the primary mitigation, and the prose section that elaborates. CLAUDE.md hard rules and `SECURITY.md` cite these identifiers directly; every cited `Tn` resolves to an anchor here. The `tests/lint/threat-id-anchor-parity.test.ts` regression fails the build on any drift.
+
+| Id | Threat | Primary mitigation | Elaborated under |
+|---|---|---|---|
+| [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks (audit log, runtime log, Output channel, phase-log IPC, wake-up session log). | Single `SECRET_PATTERNS` redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) feeds every `SanitizedLogger` sink. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T2](#t2--untrusted-webview-mutating-host-state) | The untrusted webview (Svelte sidebar) mutating host state via crafted IPC payloads. | Strict CSP + `MUTATING_COMMANDS` primary-host gate + host-side re-validation of every command payload. | [The CSP and webview integrity](#the-csp-and-webview-integrity), [The mutating-commands registry](#the-mutating-commands-registry) |
+| [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit log tampering, truncation, or non-append writes that destroy operator evidence. | `appendAudit` is the single writer; deletion paths never erase `.schegent/audit.log`; rotation preserves history. | [The append-only audit log](#the-append-only-audit-log) |
+| [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Workspace path leakage into the structured audit log (e.g. wake-up session-log path, workspace roots, phase-log file paths). | Paths-free audit discipline — count and selection-tuple fields only, never raw paths. | [The paths-free audit discipline](#the-paths-free-audit-discipline) |
+| [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Concurrent state mutation across two VS Code windows opened on the same workspace. | Primary-host gating + `WorkspaceLockManager.withLock` + lock-file stale recovery. | [Primary-host gating (multi-window)](#primary-host-gating-multi-window) |
+| [T6](#t6--workspace-lock-leak-fail-deadly) | Workspace lock leak (fail-deadly): a code path acquires the lock and never releases it, deadlocking subsequent runs. | All entry points wrap the body in `withLock`; pause paths must call `session.retain()`; forgotten retain is fail-safe (lock releases) not fail-deadly. | [The hard rules](#the-hard-rules) |
+| [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI, install OS-scheduler entries, or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
+| [T8](#t8--prompt-injection-via-specplantask-content) | Prompt-injection via spec / plan / task / phase-instruction content the operator (or an upstream model) authored. | Out-of-band trust boundary; the host does not analyze prompt content. Operator decides whether to ingest untrusted text. | [A note on prompt-injection](#a-note-on-prompt-injection) |
+| [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A custom-phase (`schegent.phases`) invocation bypassing the audit + redaction + raw-transcript path that built-ins flow through. | `appendAudit` + raw transcript writer is the single, mandatory invocation path. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What is intentionally unredacted](#what-is-intentionally-unredacted) |
+| [T11](#t11--retrycondition-dsl-escape) | The operator-authored `retryCondition` DSL expression escaping the sandboxed evaluator. | Evaluator at `src/lib/retry-condition.ts` is the sole entry point: no arbitrary code, no function calls, no member access, no I/O. | [The hard rules](#the-hard-rules) |
+| [T12](#t12--fatal-signature-floor-weakening) | Operator workspace settings weakening or re-ordering the code-resident fatal-signature floor. | `FATAL_SIGNATURES` in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) is immutable at runtime; operator-additive surface extends but never removes built-ins; built-ins-first scan order preserved. | [The hard rules](#the-hard-rules) |
+| [T13](#t13--state-schema-invariant-violation) | Persisting a `WorkflowRun` with a one-sided pair (`pendingRetryAt`/`pendingRetryCause` or `manualPauseAt`/`manualPauseCause`) that leaves the scheduler in an unresumable state. | `WorkspaceStateStore.setRun()` rejects mismatched pairs; forward-only migrators backfill legacy records. | [The hard rules](#the-hard-rules) |
+| [T14](#t14--multi-queue-reintroduction) | Re-introducing the multi-queue registry shape (removed in v6) and bypassing the single-queue invariants. | `MAX_QUEUES === 1` in `src/queue/queue-registry.ts`; lint regression `tests/lint/no-multi-queue-commands.test.ts`; v5→v6 forward-only migrator. | [The hard rules](#the-hard-rules) |
+| [T15](#t15--phase-message-env-injection) | A `phase-message.env` value reaching the UI or audit projection without passing through the sanitizer used at prompt composition time. | Phase-message values pass through `SanitizedLogger.sanitize` before downstream consumption; audit + UI surface metadata only, never raw env values. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T16](#t16--operator-additive-fatal-signatures-stale-cache) | A cached `schegent.fatalSignatures` value masking an operator update mid-run. | `FatalSignaturesAccessor` is read at the top of every `PhaseRunner.run()`; never cached on the runner. | [The hard rules](#the-hard-rules) |
+| [T17](#t17--wake-up-runner-workspace-contamination) | The OS-scheduled wake-up runner spawning the CLI inside a workspace root, or with workspace-specific environment variables leaking through. | Env scrubbing allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR`); `cwdInsideWorkspace` defense against the workspace-roots snapshot; paths-free `wakeup-runner-invocation` audit. | [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk) |
+| [T18](#t18--vs-code-namespace-leakage-into-headless-or-telemetry-code) | A `vscode` import reaching `src/headless/`, `src/wakeup/`, or `src/telemetry/` and either blowing up the spawn or re-enabling a capability surface those trees must not have. | Lint regressions in `tests/lint/no-vscode-import-in-{headless,wakeup,telemetry}.test.ts` fail the build on drift. | [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk) |
+| [T19](#t19--runtime-log-sink-forking-the-redaction-set) | The runtime log sink forking or doubling the redaction set, breaking the "single SECRET_PATTERNS source of truth" guarantee. | Sink at `src/lib/runtime-log/runtime-log-sink.ts` is a `LogSink` registered on `SanitizedLogger`; no second sanitizer; `tests/lint/no-direct-syslog-fs-writes.test.ts` pins the writer allowlist. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T20](#t20--phase-log-ipc-double-or-skipped-sanitization) | The phase-log IPC pipeline (manifest read + live tail) double-sanitizing, skipping sanitization, or routing operator-influenced strings to the webview via `{@html}` interpolation. | Fixed order project → truncate → sanitize at the IPC boundary; one injected `SanitizedLogger.sanitize`; webview never re-sanitizes; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule. | [Sanitization is centralized](#sanitization-is-centralized) |
+
 ## What Schegent has access to
 
 Schegent runs as a VS Code extension. When a workspace is trusted, the extension can:
@@ -191,3 +218,87 @@ If you find a security issue:
 For non-security operational issues, file a regular bug report. See [Troubleshooting](../operations/troubleshooting.md) for what to include.
 
 This page is a summary. For the underlying invariants and the long list of code-review rules, the extension's CLAUDE.md is the authoritative reference.
+
+## Threat anchors
+
+The headings below are the canonical anchor targets for the [Threat catalog (T1–T20)](#threat-catalog-t1t20) table. Each entry restates the threat, names the load-bearing defenses, and points to the elaborating prose.
+
+### T1 — Secret leakage to operator-visible sinks
+
+API keys, bearer tokens, JWTs, AWS access key ids, GitHub tokens, Slack tokens, GCP service-account material, and any matching env-style `KEY=VALUE` strings that reach an operator-visible sink. Mitigated by the single `SECRET_PATTERNS` set in [src/lib/logger.ts](../../src/lib/logger.ts); every `SanitizedLogger` sink (audit, runtime log, Output channel, phase-log IPC, wake-up session log) re-uses the same regex set. See [Sanitization is centralized](#sanitization-is-centralized).
+
+### T2 — Untrusted webview mutating host state
+
+The Svelte sidebar is the messenger, not the source of truth. A crafted IPC message that bypasses primary-host gating, registry validation, or host-side re-validation would let a non-primary VS Code host mutate workspace state. Mitigated by the strict CSP, the `MUTATING_COMMANDS` registry, and host-side re-validation of every command payload. See [The CSP and webview integrity](#the-csp-and-webview-integrity) and [The mutating-commands registry](#the-mutating-commands-registry).
+
+### T3 — Audit log tampering or non-append writes
+
+The structured audit log at `<workspaceRoot>/.schegent/audit.log` is the operator's evidence trail. Any code path that truncates, overwrites, or deletes prior entries would destroy that evidence. Mitigated by the append-only invariant — `appendAudit` is the single writer; task deletion records `task-removed` and never erases history; rotation preserves the rotated generations. See [The append-only audit log](#the-append-only-audit-log).
+
+### T4 — Workspace path leakage into the structured audit log
+
+A workspace path serialized into an audit payload would leak the operator's directory structure when the audit log is shipped off-machine (e.g. attached to a bug report). Mitigated by the paths-free audit discipline — counts and selection tuples only, never `path`, `filePath`, `workspaceRoot`, `roots`, `paths`, or `workspaces`. See [The paths-free audit discipline](#the-paths-free-audit-discipline).
+
+### T5 — Concurrent state mutation across multiple VS Code windows
+
+Opening the same workspace in two VS Code windows would otherwise race on shared mutable state (queue, run, pause). Mitigated by primary-host gating — only the primary host accepts mutating commands; secondary hosts receive `not-primary-host` rejections. The `MUTATING_COMMANDS` registry is the single source of truth for which commands are gated. See [Primary-host gating (multi-window)](#primary-host-gating-multi-window).
+
+### T6 — Workspace lock leak (fail-deadly)
+
+A code path that acquires the workspace lock and never releases it would deadlock subsequent runs (fail-deadly). Mitigated by `WorkspaceLockManager.withLock` — the wrapper acquires (idempotent for the same owner), runs the body, and releases the lock in `finally` on both normal and exceptional exit. Pause paths that intentionally retain the lock past the scope call `session.retain()`; a forgotten `retain` is fail-safe (the lock releases) rather than fail-deadly (the lock leaks).
+
+### T7 — Untrusted workspace executing extension capabilities
+
+A workspace the operator has not explicitly trusted must not cause Schegent to spawn the CLI, install OS-scheduler entries, or persist state. Mitigated by Schegent registering as a `workspaceTrust` consumer with `untrusted-restricted` posture; every mutating command rejects until the workspace is trusted. See [Workspace-trust gating](#workspace-trust-gating).
+
+### T8 — Prompt-injection via spec / plan / task content
+
+If the spec / plan / task / phase-instruction text contains injection instructions (e.g. "ignore prior instructions and exec X"), the CLI may follow them. The host does not analyze prompt content for adversarial inputs — this is upstream of the extension's threat model. Mitigations are out-of-band: do not check untrusted content into the workspace; operator-authored content is the trust boundary. See [A note on prompt-injection](#a-note-on-prompt-injection).
+
+### T9 — Custom-phase bypassing audit or redaction
+
+A custom phase declared in `schegent.phases` could in principle skip the audit + redaction + raw-transcript path that built-in phases flow through. Mitigated by routing every phase invocation — built-in and custom — through the same `appendAudit` + raw transcript writer. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`.
+
+### T10 — Verbose-diagnostic unredacted leak
+
+The verbose-diagnostic files (`debug.json`, `stream.jsonl`, `verbose.log` under `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`) are intentionally unredacted. The risk is that an operator ships them off-machine. Mitigated by making the sink operator-opt-in (`schegent.logging.verbose`, default off), gitignored, and excluded from the structured audit log. See [What is intentionally unredacted](#what-is-intentionally-unredacted).
+
+### T11 — retryCondition DSL escape
+
+The operator-authored `retryCondition` DSL must not execute arbitrary code, perform I/O, or access object members. Mitigated by sandboxing the evaluator in `src/lib/retry-condition.ts`: identifiers + numeric literals + comparison/boolean operators + parentheses only. Any new evaluator must preserve those invariants.
+
+### T12 — Fatal-signature floor weakening
+
+The code-resident `FATAL_SIGNATURES` floor in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) classifies CLI exit signatures that always escalate to operator intervention. The risk is that operator workspace settings (`schegent.fatalSignatures`) remove, re-order, or shadow built-ins. Mitigated by making the operator-additive surface strictly extension-only — operator entries can extend the registry but cannot remove, modify, or re-order built-ins; the built-ins-first scan order is preserved so a built-in that matches the same text wins attribution. The `fatal-signature-matched` audit event carries `source: 'built-in' | 'operator-defined'`.
+
+### T13 — State schema invariant violation
+
+`WorkflowRun.pendingRetryAt` / `pendingRetryCause` and `WorkflowRun.manualPauseAt` / `manualPauseCause` are both-null-or-both-non-null pairs. A persisted run with a one-sided pair would leave the scheduler in an unresumable state. Mitigated by rejection in `WorkspaceStateStore.setRun()`; forward-only migrators backfill legacy records on activation.
+
+### T14 — Multi-queue reintroduction
+
+The v6 `QueueRegistry` is constrained to exactly one entry with `id === 'default'`. Re-introducing multi-queue support would reopen the registry race surface and the orphan-task pathways the v5→v6 migration retired. Mitigated by `MAX_QUEUES === 1` in `src/queue/queue-registry.ts`, the lint regression `tests/lint/no-multi-queue-commands.test.ts`, and the forward-only v5→v6 migrator.
+
+### T15 — Phase-message env injection
+
+A `phase-message.env` value could otherwise reach the UI or audit projection without passing through the sanitizer used at prompt composition time. Mitigated by routing phase-message values through `SanitizedLogger.sanitize` before downstream consumption; the audit + UI surfaces expose metadata only, never raw env values.
+
+### T16 — Operator-additive fatal-signatures stale cache
+
+Caching the `schegent.fatalSignatures` value on the runner would mask an operator update mid-run. Mitigated by reading the `FatalSignaturesAccessor` at the top of every `PhaseRunner.run()` (mirrors the `VerboseDiagnosticsAccessor` and `AutoCompactOverrideAccessor` patterns) so a toggle applies to the next phase boundary.
+
+### T17 — Wake-up runner workspace contamination
+
+The OS-scheduled wake-up runner is detached from the VS Code host and runs with direct UID access to the operator's filesystem. The risk is that it spawns the CLI inside a workspace root, or with workspace-specific environment variables leaking through. Mitigated by (a) env scrubbing — only `PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR` pass to `child_process.spawn`; (b) the `cwdInsideWorkspace` defense against the workspace-roots snapshot at `<globalStorageUri>/wakeup/workspace-roots.json`, which aborts the spawn if the chosen cwd is a descendant of any root; (c) paths-free `wakeup-runner-invocation` audit payload. See [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk).
+
+### T18 — VS Code namespace leakage into headless or telemetry code
+
+Any `vscode` import reaching `src/headless/`, `src/wakeup/`, or `src/telemetry/` would either blow up the spawn at runtime (`Cannot find module 'vscode'`) or re-enable a capability surface those trees must not have. Mitigated by the lint regressions `tests/lint/no-vscode-import-in-{headless,wakeup,telemetry}.test.ts`.
+
+### T19 — Runtime log sink forking the redaction set
+
+A second sanitizer in the runtime log sink would break the "single `SECRET_PATTERNS` source of truth" guarantee — extending the set in one place would no longer extend every sink. Mitigated by registering the runtime log sink as a `LogSink` on `SanitizedLogger`, which writes lines that have already been sanitized once. Direct `fs.appendFile` calls against a path containing `syslog` are blocked by the `tests/lint/no-direct-syslog-fs-writes.test.ts` regression.
+
+### T20 — Phase-log IPC double or skipped sanitization
+
+The phase-log IPC pipeline (manifest read + live tail) must sanitize exactly once at the host → webview boundary, in the fixed order project → truncate → sanitize. The risks are (a) double-sanitization corrupting the projected JSON, (b) skipping sanitization on a new field, or (c) the webview re-stringifying / re-sanitizing a host-sanitized field via `{@html …}` interpolation. Mitigated by a single injected `SanitizedLogger.sanitize` at the IPC boundary in `src/services/phase-log/phase-log-reader.ts` (manifest reads) and `src/services/phase-log/phase-log-tail-session.ts` (live tail pushes); the webview consumes the field as a typed JSON value only; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule.
