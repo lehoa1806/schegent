@@ -41,6 +41,15 @@ If you need a larger buffer, edit `MAX_BUFFER_BYTES` in [src/runner/claude-cli.t
 
 Rotation creates `.schegent/audit.log.<YYYYMMDD-HHMMSS>` and resumes appending to a fresh `.schegent/audit.log`. Whichever threshold trips first wins.
 
+## Runtime log rotation
+
+| Setting | Default | What it does |
+|---|---|---|
+| `schegent.logging.runtimeLogMaxBytes` | `5_242_880` (5 MiB) | Active-file size threshold. The sink rotates when `bytesOnDisk + line.length >= maxBytes`. |
+| `schegent.logging.runtimeLogMaxGenerations` | `3` (range 0–10) | Number of rotated files (`<path>.1` … `<path>.<maxGens>`) kept on disk. `0` disables rotation (truncate-in-place). Worst-case disk usage ≈ `(maxGens + 1) × maxBytes`. |
+
+Rotation walks `<path> → <path>.1 → <path>.2 → … → <path>.<maxGens>` and drops files beyond `<path>.<maxGens>`. Both settings are read on every emit (no caching), so a mid-run change takes effect at the next log line. See [runtime-log.md](runtime-log.md) for the full operator workflow.
+
 ## Audit archive retention
 
 | Setting (compile-time) | Default | What it does |

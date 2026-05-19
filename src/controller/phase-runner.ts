@@ -185,7 +185,7 @@ export class PhaseRunner {
     // added via the sidebar mid-run applies to the very next phase
     // invocation. The check fires BEFORE any CLI spawn, BEFORE prompt build,
     // and BEFORE the `phase-start` audit so the marked phase is genuinely
-    // paused (no partial side effects). The controller (driveRun) consumes
+    // paused (no partial side effects). RunDriver consumes
     // `outcome: 'paused-at-breakpoint'` and stamps
     // `manualPauseCause: 'breakpoint-paused'` + `resumeTargetPhaseId`.
     const breakpointPhaseId = inputs.phaseDef?.id ?? inputs.phase;
@@ -596,4 +596,3 @@ export class PhaseRunner {
   }
 
 }
-

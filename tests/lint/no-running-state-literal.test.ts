@@ -18,6 +18,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',
   'src/services/guarded-run-service.ts',
+  'src/services/run-driver.ts',
   'src/state/workflow-run.ts',
   'src/state/workflow-run-migrator.ts',
   'src/telemetry/platform/platform-ps.ts',

@@ -64,7 +64,7 @@ landed as a separate commit.
 
 Adds an OS-scheduled wake-up runner that pre-warms the Claude CLI five-hour rolling allocation so credit returns before the next phase boundary.
 
-- Spec: [specs/014-wake-up/spec.md](../../specs/014-wake-up/spec.md)
+- Spec: [specs/014-wake-up/spec.md](../../../specs/014-wake-up/spec.md)
 - Landing commit: [166401a](https://github.com/lehoa1806/schegent/commit/166401a0af08ce5150356da55a3a39a4f748d601)
 
 ---
@@ -73,7 +73,7 @@ Adds an OS-scheduled wake-up runner that pre-warms the Claude CLI five-hour roll
 
 Adds a runtime log sink with operator-configurable level and file path, sharing the canonical `SanitizedLogger` redaction set so log lines on disk are pre-redacted.
 
-- Spec: [specs/019-runtime-debug-log/spec.md](../../specs/019-runtime-debug-log/spec.md)
+- Spec: [specs/019-runtime-debug-log/spec.md](../../../specs/019-runtime-debug-log/spec.md)
 - Landing commit: [7c81de6](https://github.com/lehoa1806/schegent/commit/7c81de6918e24166f67b336caf9b2738d4d3ad25)
 
 ---
@@ -82,7 +82,7 @@ Adds a runtime log sink with operator-configurable level and file path, sharing 
 
 Adds a phase-level log feed with hierarchical drill-in (queue → task → pipeline → phase → iteration), host-sanitized at the IPC boundary.
 
-- Spec: [specs/020-phase-level-logs/spec.md](../../specs/020-phase-level-logs/spec.md)
+- Spec: [specs/020-phase-level-logs/spec.md](../../../specs/020-phase-level-logs/spec.md)
 - Landing commit: [72f9656](https://github.com/lehoa1806/schegent/commit/72f9656d4dff13f1e3fcda1106dbf7b8ebe14971)
 
 ---
@@ -91,7 +91,7 @@ Adds a phase-level log feed with hierarchical drill-in (queue → task → pipel
 
 Lifts the in-flight-only restriction on task and phase deletion, gating destructive removals behind an operator confirmation prompt.
 
-- Spec: [specs/022-unrestricted-deletion/spec.md](../../specs/022-unrestricted-deletion/spec.md)
+- Spec: [specs/022-unrestricted-deletion/spec.md](../../../specs/022-unrestricted-deletion/spec.md)
 - Landing commit: [565a898](https://github.com/lehoa1806/schegent/commit/565a898464a59fa242cadcd747d7a414d9a45a9d)
 
 ---
@@ -100,7 +100,7 @@ Lifts the in-flight-only restriction on task and phase deletion, gating destruct
 
 Adds per-phase model and effort overrides plus a Spec-Kit bugfix pipeline; user/workspace precedence is computed in a UI-only host projection.
 
-- Spec: [specs/026-phase-effort-bugfix-pipeline/spec.md](../../specs/026-phase-effort-bugfix-pipeline/spec.md)
+- Spec: [specs/026-phase-effort-bugfix-pipeline/spec.md](../../../specs/026-phase-effort-bugfix-pipeline/spec.md)
 - Landing commit: [6dc6965](https://github.com/lehoa1806/schegent/commit/6dc69653db32eac81eb7c35ec45df3bc5737b5cd)
 
 ---
@@ -109,7 +109,7 @@ Adds per-phase model and effort overrides plus a Spec-Kit bugfix pipeline; user/
 
 Replaces the fixed 60-minute rate-limit backoff with a dynamic schedule derived from the parsed Claude CLI reset epoch.
 
-- Spec: [specs/027-dynamic-quota-reset-countdown/spec.md](../../specs/027-dynamic-quota-reset-countdown/spec.md)
+- Spec: [specs/027-dynamic-quota-reset-countdown/spec.md](../../../specs/027-dynamic-quota-reset-countdown/spec.md)
 - Landing commit: [89fc24b](https://github.com/lehoa1806/schegent/commit/89fc24b1ddf1eec9e647dd33bf62bf5958a6273f)
 
 ---
@@ -118,7 +118,7 @@ Replaces the fixed 60-minute rate-limit backoff with a dynamic schedule derived 
 
 Adds operator-set phase breakpoints and decouples queue-pause source attribution so operator-initiated queue pauses survive cascade-resume.
 
-- Spec: [specs/028-advanced-phase-pausing/spec.md](../../specs/028-advanced-phase-pausing/spec.md)
+- Spec: [specs/028-advanced-phase-pausing/spec.md](../../../specs/028-advanced-phase-pausing/spec.md)
 - Landing commit: [0efa49d](https://github.com/lehoa1806/schegent/commit/0efa49d69e4f2689eb17f64af2bcffa141d2990c)
 
 ---
@@ -127,7 +127,7 @@ Adds operator-set phase breakpoints and decouples queue-pause source attribution
 
 Reshapes the activity feed so tool calls, metadata, and audit footers render as structured rows, with operator-influenced strings host-sanitized at the IPC boundary.
 
-- Spec: [specs/029-human-readable-activity-logs/spec.md](../../specs/029-human-readable-activity-logs/spec.md)
+- Spec: [specs/029-human-readable-activity-logs/spec.md](../../../specs/029-human-readable-activity-logs/spec.md)
 - Landing commit: [3ee88ba](https://github.com/lehoa1806/schegent/commit/3ee88bab50646a8e583e26a193e1bdb3f1f13b07)
 
 ---
@@ -136,7 +136,7 @@ Reshapes the activity feed so tool calls, metadata, and audit footers render as 
 
 Migrates the queue registry to a single-queue model with operator-driven reorder UX; legacy multi-queue commands and the rename/delete/schedule surface are retired.
 
-- Spec: [specs/030-single-task-queue/spec.md](../../specs/030-single-task-queue/spec.md)
+- Spec: [specs/030-single-task-queue/spec.md](../../../specs/030-single-task-queue/spec.md)
 - Landing commit: [989ee31](https://github.com/lehoa1806/schegent/commit/989ee31ad4b77ddc6dc31df0ef9fb56fc3b8254c)
 
 ---
@@ -145,7 +145,7 @@ Migrates the queue registry to a single-queue model with operator-driven reorder
 
 Adds a closed-registry model picker for wake-up invocations plus a per-correlation on-disk session log under globalStorage.
 
-- Spec: [specs/031-advanced-wakeup-logs-models/spec.md](../../specs/031-advanced-wakeup-logs-models/spec.md)
+- Spec: [specs/031-advanced-wakeup-logs-models/spec.md](../../../specs/031-advanced-wakeup-logs-models/spec.md)
 - Landing commit: [f40d02c](https://github.com/lehoa1806/schegent/commit/f40d02c948f16908a7fd1e776867eb89447d2e19)
 
 ---
@@ -154,7 +154,7 @@ Adds a closed-registry model picker for wake-up invocations plus a per-correlati
 
 Injects the Claude CLI continuation flag (`-c`) on retry, resume, and restart-active dispatches so the agent retains context across recovery boundaries.
 
-- Spec: [specs/032-context-preserving-retries/spec.md](../../specs/032-context-preserving-retries/spec.md)
+- Spec: [specs/032-context-preserving-retries/spec.md](../../../specs/032-context-preserving-retries/spec.md)
 - Landing commit: [c5f9654](https://github.com/lehoa1806/schegent/commit/c5f9654c2ccb6cfcafdde1a8010ea9c863877384)
 
 ---
@@ -163,7 +163,7 @@ Injects the Claude CLI continuation flag (`-c`) on retry, resume, and restart-ac
 
 Switches the manual-pause path to an aggressive subprocess kill, plus an ephemeral per-task CPU/RSS/uptime telemetry projection on the snapshot.
 
-- Spec: [specs/033-aggressive-pause-telemetry/spec.md](../../specs/033-aggressive-pause-telemetry/spec.md)
+- Spec: [specs/033-aggressive-pause-telemetry/spec.md](../../../specs/033-aggressive-pause-telemetry/spec.md)
 - Landing commit: [2560f07](https://github.com/lehoa1806/schegent/commit/2560f07ea2213c668a0515ce57818fdd8e6a08e0)
 
 ---
@@ -172,5 +172,5 @@ Switches the manual-pause path to an aggressive subprocess kill, plus an ephemer
 
 Cleans up the per-runId session tree and raw transcript on operator-confirmed task deletion; the append-only audit log is explicitly preserved.
 
-- Spec: [specs/034-task-deletion-cleanup/spec.md](../../specs/034-task-deletion-cleanup/spec.md)
+- Spec: [specs/034-task-deletion-cleanup/spec.md](../../../specs/034-task-deletion-cleanup/spec.md)
 - Landing commit: [3b5a4d7](https://github.com/lehoa1806/schegent/commit/3b5a4d7cb944db923612dbe439961cc601723f39)

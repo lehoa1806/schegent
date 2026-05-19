@@ -54,6 +54,8 @@ The list is authoritative against `src/config/general-settings.ts`
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
 | `schegent.backend.runner` | enum (`claude`, `codex`) | Selects the concrete `BackendRunner` adapter. Default `claude`. See [docs/operations/backends.md](backends.md). |
 | `schegent.logging.verbose` | boolean | Captures unredacted per-iteration diagnostics under `.schegent/sessions/`. |
+| `schegent.logging.runtimeLogMaxBytes` | number (default `5_242_880` / 5 MiB) | Size threshold at which the runtime log rotates `<path> → <path>.1 → … → <path>.<maxGens>`. Read uncached on every emit. See [docs/operations/runtime-log.md](runtime-log.md). |
+| `schegent.logging.runtimeLogMaxGenerations` | number (0–10, default `3`) | Number of rotated generations to keep on disk. `0` disables rotation (truncate-in-place). Worst-case disk = active file + `maxGens × maxBytes`. |
 | `schegent.loop.maxIterations` | number (1–50) | Maximum recursive iterations per loopable phase. |
 | `schegent.invocation.timeoutSeconds` | number (minimum 30) | Maximum wall-clock duration per CLI call. |
 | `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |

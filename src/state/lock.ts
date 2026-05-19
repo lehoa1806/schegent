@@ -130,8 +130,8 @@ export class WorkspaceLockManager {
    * ownership). Thrown errors propagate; the lock is still released
    * unless retained.
    *
-   * Replaces the hand-rolled `lockReleased` flag pattern in
-   * `SchegentWorkflowController.driveRun()`. The wrapper IS the new
+   * Replaces the hand-rolled `lockReleased` flag pattern now owned by
+   * `RunDriver.drive()`. The wrapper IS the new
    * lock-released invariant: any new exit path is covered automatically.
    *
    * Throws `LockHeldError` when the lock is held by another owner.

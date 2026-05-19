@@ -10,14 +10,14 @@
  *     `resumeActivePhase`, breakpoint-resume, `resumeExistingFromActivation`
  *     when the persisted run has a non-null pause-cause or
  *     pending-retry-cause, cascaded-resume of a queue-paused-mid-run
- *     task) call `arm()` BEFORE invoking `driveRun()`.
- *   - `driveRun()` consumes-and-resets the flag on its FIRST runner call
+ *     task) call `arm()` BEFORE invoking `RunDriver.drive()`.
+ *   - `RunDriver.drive()` consumes-and-resets the flag on its FIRST runner call
  *     via `consume()`. Subsequent iterations within the same drive
  *     invocation see `false`.
  *   - `restartActivePhase`, `startNew`, loop iterations, and bugfix-loop
  *     iterations MUST NOT arm the flag.
  *   - The flag is NEVER persisted — it lives only for the duration of
- *     one `driveRun` invocation.
+ *     one `RunDriver.drive()` invocation.
  *
  * The flag's lifecycle is intentionally tiny: the only reason this is
  * its own class (rather than two private fields) is to make the
@@ -39,7 +39,7 @@ export class IsContinueGate {
 
   /**
    * Atomic snapshot-and-reset. Returns whether the gate was armed
-   * and clears it. `driveRun()` calls this on the FIRST runner
+   * and clears it. `RunDriver.drive()` calls this on the FIRST runner
    * invocation per drive cycle; subsequent loop iterations within
    * the same drive invocation see `false` because the bit was
    * cleared by that first call.

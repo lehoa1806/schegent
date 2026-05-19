@@ -12,8 +12,8 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const BUDGETS = [
   { path: 'src/controller/phase-runner.ts', max: 600 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
-  { path: 'src/controller/phase-retry-evaluator.ts', max: 400 },
-  { path: 'src/controller/phase-outcome-mapper.ts', max: 400 }
+  { path: 'src/controller/phase-retry-evaluator.ts', max: 150 },
+  { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }
 ] as const;
 
 function countLines(absPath: string): number {

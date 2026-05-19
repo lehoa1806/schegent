@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import type { PhaseRunner } from './phase-runner';
-import { composePhaseMessagePath } from './phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
@@ -8,9 +7,7 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import { IsContinueGate } from './is-continue-gate';
-import { PhaseSequencer, nextOverridesAfterSkip } from './phase-sequencer';
 import type {
-  PhaseResult,
   SanitizedError,
   WorkflowRun,
   WorkflowRunPipeline
@@ -20,7 +17,6 @@ import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
-import type { PhaseName } from '../ui/sidebar/snapshot';
 import {
   BUILT_IN_CATALOG,
   BUILT_IN_PHASES,
@@ -30,7 +26,9 @@ import {
   type PipelineCatalog
 } from '../config/pipeline-config';
 import { DELAYED_RETRY_CAP } from './retry-constants';
-import { RetryHandler, type DelayedRetryWatchdog } from './retry-handler';
+import type { DelayedRetryWatchdog } from './retry-handler';
+import { RunDriver } from '../services/run-driver';
+import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { getOperatorActor } from '../lib/operator-attribution';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
@@ -82,23 +80,16 @@ export interface StartNewOptions {
   pipelineId?: string;
 }
 
-export type RateLimitHandler = (cause: string, run: WorkflowRun) => Promise<void>;
-
 export type MutationResult = { ok: true } | { ok: false; reason: string };
 
 export class SchegentWorkflowController {
-  private cancellationController: AbortController | null = null;
-  private isRunning = false;
-  private rateLimitHandler: RateLimitHandler | null = null;
-  private carriedIssues: Array<{ tag?: string; summary: string }> | string[] = [];
-  private readonly removedActivePhaseAborts = new Set<string>();
   /**
    * Feature 032 — transient session-continuation hint consumed by
-   * `driveRun()` on the FIRST `runner.run()` call of a single dispatch
+   * `RunDriver.drive()` on the FIRST `runner.run()` call of a single dispatch
    * cycle. Entry points call `isContinueGate.arm()` BEFORE invoking
-   * `resumeExisting()` / `driveRun()`; `driveRun()` consumes-and-resets
-   * via `consume()` so subsequent iterations within the same drive
-   * invocation carry `isContinue: false`. NEVER persisted.
+   * `resumeExisting()` / `RunDriver.drive()`; `RunDriver` consumes-and-resets
+   * via `consume()` so subsequent iterations within the same invocation carry
+   * `isContinue: false`. NEVER persisted.
    *
    * Feature 056 R5 — extracted to `is-continue-gate.ts` so the arm /
    * consume semantics live in a single tiny class that can't be
@@ -108,7 +99,6 @@ export class SchegentWorkflowController {
 
   private readonly monitor: Pick<ClaudeCliMonitor, 'onStart'> | null;
   private readonly auditWriter: Pick<AuditLogWriter, 'append'> | null;
-  private watchdog: DelayedRetryWatchdog | null;
   private catalog: PipelineCatalog;
   private readonly getRetryCapFn: (() => number) | null;
   // Feature 034 — pluggable session-cleanup runner; defaults to the
@@ -118,19 +108,11 @@ export class SchegentWorkflowController {
   // Feature 013 — Wave 7 (US7 / T098, T099): decomposed services.
   private readonly historyRecorder: HistoryRecorder;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
-  // Feature 034 Item 047 — delayed-retry state machine extracted into a
-  // collaborator so the controller stays focused on orchestration. The
-  // handler closes over the controller's persistTransition + getRetryCap
-  // surface so persisted-state shape and retry-cap math stay centralised.
-  private readonly retryHandler: RetryHandler;
-  // Feature 034 Item 047 (completion) — pure next-phase decision module.
-  // The sequencer wraps `transition()` with run-state awareness
-  // (phaseOverrides, phaseBreakpoints, verify-phase non-clean, manual-
-  // pause-mid-run). Stateless: a single instance is reused across runs.
-  private readonly sequencer: PhaseSequencer = new PhaseSequencer();
+  private readonly retryCoordinator: RetryCoordinator;
+  private readonly runDriver: RunDriver;
 
   constructor(
-    private readonly runner: PhaseRunner,
+    runner: PhaseRunner,
     private readonly store: WorkspaceStateStore,
     private readonly queue: QueueManager,
     private readonly statusBar: SchegentStatusBar,
@@ -142,7 +124,6 @@ export class SchegentWorkflowController {
   ) {
     this.monitor = deps.monitor ?? null;
     this.auditWriter = deps.auditWriter ?? null;
-    this.watchdog = deps.watchdog ?? null;
     this.catalog = deps.catalog ?? BUILT_IN_CATALOG;
     this.getRetryCapFn = deps.getRetryCap ?? null;
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
@@ -156,16 +137,37 @@ export class SchegentWorkflowController {
       lock,
       controller: this
     });
-    this.retryHandler = new RetryHandler({
+    this.retryCoordinator = new RetryCoordinator({
       store,
       queue,
       statusBar,
       notifier,
       logger,
-      getWatchdog: () => this.watchdog,
+      watchdog: deps.watchdog ?? null,
       auditWriter: this.auditWriter,
       getRetryCap: () => this.retryCap,
       persistTransition: (prev, next) => this.persistTransition(prev, next)
+    });
+    this.runDriver = new RunDriver({
+      runner,
+      store,
+      queue,
+      statusBar,
+      notifier,
+      logger,
+      lock,
+      options,
+      monitor: this.monitor,
+      historyRecorder: this.historyRecorder,
+      retryCoordinator: this.retryCoordinator,
+      isContinueGate: this.isContinueGate,
+      persistTransition: (prev, next) => this.persistTransition(prev, next),
+      appendPhaseControlAudit: (eventType, run, payload) =>
+        this.appendPhaseControlAudit(eventType, run, payload),
+      appendBreakpointAudit: (eventType, run, payload) =>
+        this.appendBreakpointAudit(eventType, run, payload),
+      emitRunEndedBreakpointAudit: (run) => this.emitRunEndedBreakpointAudit(run),
+      scheduleAutoDrain: () => this.scheduleAutoDrain()
     });
   }
 
@@ -176,7 +178,7 @@ export class SchegentWorkflowController {
    * `setWatchdog()` once both are constructed.
    */
   public setWatchdog(watchdog: DelayedRetryWatchdog | null): void {
-    this.watchdog = watchdog;
+    this.retryCoordinator.setWatchdog(watchdog);
   }
 
   /**
@@ -193,7 +195,7 @@ export class SchegentWorkflowController {
   }
 
   public setRateLimitHandler(handler: RateLimitHandler): void {
-    this.rateLimitHandler = handler;
+    this.retryCoordinator.setRateLimitHandler(handler);
   }
 
   public setCatalog(catalog: PipelineCatalog): void {
@@ -205,11 +207,11 @@ export class SchegentWorkflowController {
   }
 
   public get running(): boolean {
-    return this.isRunning;
+    return this.runDriver.running;
   }
 
   public cancelActive(): void {
-    this.cancellationController?.abort();
+    this.runDriver.cancelActive();
   }
 
   public async startNew(
@@ -251,7 +253,7 @@ export class SchegentWorkflowController {
       };
       await this.store.setRun(run);
       await this.queue.markInFlight(feature.id, run.id);
-      await this.driveRun(run, feature.description);
+      await this.runDriver.drive(run, feature.description);
     } catch (err) {
       await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
     }
@@ -415,7 +417,7 @@ export class SchegentWorkflowController {
     //      point. (Operator and breakpoint resumes use the entry-point
     //      arm path below and clear the field BEFORE reaching here.)
     // The explicit `isContinueGate` (armed by `resumeActivePhase` /
-    // `retryPhaseNow`) takes effect downstream in `driveRun()`
+    // `retryPhaseNow`) takes effect downstream in `RunDriver.drive()`
     // regardless of what we derive here.
     if (run.pendingRetryCause !== null || run.manualPauseCause !== null) {
       this.isContinueGate.arm();
@@ -437,7 +439,7 @@ export class SchegentWorkflowController {
     };
     await this.store.setRun(next);
     await this.queue.markInFlight(feature.id, next.id);
-    await this.driveRun(next, feature.description);
+    await this.runDriver.drive(next, feature.description);
     return true;
   }
 
@@ -451,7 +453,7 @@ export class SchegentWorkflowController {
     if (run.manualPauseAt !== null) return { ok: false, reason: 'run-already-paused' };
     // Cancel the watchdog timer when pausing during retry countdown
     if (isInRetryCountdown) {
-      this.watchdog?.cancelPendingTimer();
+      this.retryCoordinator.cancelPendingTimer();
     }
     const updated: WorkflowRun = {
       ...run,
@@ -506,11 +508,11 @@ export class SchegentWorkflowController {
     }
     // Feature 032 — operator resume continues the paused phase's
     // conversation. Arm the dispatch hint BEFORE clearing the pause /
-    // retry fields so `driveRun()` can consume it on the first
+    // retry fields so `RunDriver.drive()` can consume it on the first
     // post-resume `runner.run()` call. Distinguishes resume from
     // restart: `restartActivePhase` does NOT arm this gate.
     this.isContinueGate.arm();
-    this.watchdog?.cancelPendingTimer();
+    this.retryCoordinator.cancelPendingTimer();
     const updated: WorkflowRun = {
       ...run,
       status: 'running',
@@ -549,7 +551,7 @@ export class SchegentWorkflowController {
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     // Cancel any active watchdog timer and clear retry state immediately
-    this.watchdog?.cancelPendingTimer();
+    this.retryCoordinator.cancelPendingTimer();
     const hadPendingRetry = run.pendingRetryAt !== null;
     const updated: WorkflowRun = {
       ...run,
@@ -579,7 +581,7 @@ export class SchegentWorkflowController {
       phaseId: updated.currentPhase,
       clearedPendingRetry: hadPendingRetry
     });
-    if (!this.isRunning) {
+    if (!this.runDriver.running) {
       setImmediate(() => {
         void this.resumeExisting().catch((err) =>
           this.logger.warn(`restartActivePhase resume failed: ${(err as Error).message}`)
@@ -754,391 +756,10 @@ export class SchegentWorkflowController {
     };
     await this.store.setRun(updated);
     if (run.currentPhase === phaseId && run.status === 'running') {
-      this.removedActivePhaseAborts.add(this.phaseRemovalAbortKey(run.id, phaseId));
+      this.runDriver.noteActivePhaseRemovalAbort(run.id, phaseId);
       this.cancelActive();
     }
     return { ok: true, priorPhaseState, runId: updated.id };
-  }
-
-  private async driveRun(initial: WorkflowRun, description: string): Promise<void> {
-    if (this.isRunning) {
-      this.logger.warn('controller already running; ignoring duplicate driveRun');
-      return;
-    }
-    this.isRunning = true;
-    this.cancellationController = new AbortController();
-    let run = initial;
-    let previousPhaseMessage: Readonly<Record<string, string>> | null = null;
-    // Feature 032 — capture-and-reset the continuation hint at driveRun
-    // entry. Only the FIRST `runner.run()` call inside the loop applies
-    // the flag; subsequent phase / loop iterations within this same
-    // driveRun invocation are fresh. The instance gate is reset
-    // immediately so a re-entrant or cascaded invocation cannot
-    // inadvertently inherit it.
-    let pendingIsContinue = this.isContinueGate.consume();
-    // Feature 034 Item 046 — auto-release lock wrapper. The body below
-    // calls `session.retain()` on every pause-style exit (breakpoint,
-    // delayed-retry, rate-limit, verify pause, manual pause) so the lock
-    // survives for the upcoming resume. Terminal paths (failed,
-    // completed, cancelled, unexpected break) leave `retain` unset; the
-    // wrapper's `finally` releases the lock. Every exit path is covered
-    // uniformly by the wrapper.
-    try {
-      await this.lock.withLock('drive-run', async (session) => {
-       while (run.currentPhase !== 'done' && run.status === 'running') {
-        // Non-null asserted: `this.cancellationController` is assigned
-        // before this withLock call (line 646) and reset only in the
-        // outer `finally` after the wrapper resolves. Any in-body
-        // reassignment (after a phase-removal abort, see below) replaces
-        // it with a fresh AbortController — never null.
-        if (this.cancellationController!.signal.aborted) {
-          run = await this.persistTransition(run, { ...run, status: 'canceled' });
-          await this.emitRunEndedBreakpointAudit(run);
-          await this.historyRecorder.record(run, description, 'canceled');
-          break;
-        }
-
-        const preDecision = this.sequencer.decideBeforePhase({
-          run,
-          iterationCap: this.options.iterationCap,
-          now: Date.now()
-        });
-        if (preDecision.kind === 'skip-phase') {
-          const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
-          const advanced: WorkflowRun = {
-            ...run,
-            phaseOverrides: nextOverridesAfterSkip(run, phaseOverride),
-            currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
-            currentIteration: decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, skippedResult]
-          };
-          run = await this.persistTransition(run, advanced);
-          previousPhaseMessage = null;
-          await this.appendPhaseControlAudit(
-            phaseOverride.action === 'disabled'
-              ? 'phase-disabled'
-              : phaseOverride.action === 'removed'
-                ? 'phase-removed'
-                : 'phase-skipped',
-            run,
-            {
-              runId: run.id,
-              phaseId: skippedResult.phase,
-              disabledByOverride: phaseOverride.action === 'disabled',
-              removedByOverride: phaseOverride.action === 'removed'
-            }
-          );
-          continue;
-        }
-
-        const iteration = preDecision.iteration;
-        this.statusBar.update({
-          kind: 'running',
-          phase: run.currentPhase,
-          iteration,
-          iterationCap: this.options.iterationCap
-        });
-
-        const phaseStartedAt = Date.now();
-        if (this.monitor) {
-          try {
-            this.monitor.onStart(run.id, run.currentPhase as PhaseName, null);
-          } catch {
-            // monitor errors must not propagate
-          }
-        }
-        const activePhaseDef = preDecision.activePhaseDef;
-        // Feature 032 — consume-and-reset the continuation hint on this
-        // dispatch only. The flag is true only on the FIRST iteration of
-        // the loop following a resume/retry entry point that armed it.
-        const dispatchIsContinue = pendingIsContinue;
-        pendingIsContinue = false;
-        const output = await this.runner.run({
-          phase: run.currentPhase,
-          phaseDef: activePhaseDef,
-          pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-          iteration,
-          iterationCap: this.options.iterationCap,
-          featureDescription: description,
-          featureDir: run.featureDir || null,
-          carriedIssues: this.carriedIssues,
-          cliPath: this.options.cliPath,
-          cwd: this.options.cwd,
-          timeoutMs: activePhaseDef?.timeoutSeconds
-            ? activePhaseDef.timeoutSeconds * 1000
-            : this.options.timeoutMs,
-          runId: run.id,
-          phaseMessagePath: composePhaseMessagePath({
-            cwd: this.options.cwd,
-            runId: run.id,
-            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-            phaseId: run.currentPhase,
-            iteration
-          }),
-          previousPhaseMessage,
-          cancellationSignal: this.cancellationController!.signal as unknown as {
-            aborted: boolean;
-            addEventListener(event: 'abort', cb: () => void): void;
-          },
-          // Feature 032 — `isContinue` is set only on the first iteration
-          // following a resume/retry entry-point arm. All other
-          // dispatches (loop iterations, phase advancements, fresh runs)
-          // pass `false`.
-          isContinue: dispatchIsContinue
-        });
-        if (this.removedActivePhaseAborts.delete(this.phaseRemovalAbortKey(run.id, run.currentPhase))) {
-          const latestRun = this.store.getRun();
-          if (latestRun?.id === run.id) {
-            run = latestRun;
-          }
-          this.cancellationController = new AbortController();
-          continue;
-        }
-
-        // Feature 034 Item 047 (completion) — single sequencer call that
-        // classifies the runner's output into a typed next-action. The
-        // controller below switches on `postDecision.kind` and owns all
-        // state persistence + audit + queue + status-bar + lock retention.
-        // The pre-runner `phaseStartedAt` is reused to stamp `startedAt` on
-        // the phaseResult; `endedAt` becomes `Date.now()` at decision time.
-        const postDecision = this.sequencer.decideAfterPhase({
-          run,
-          output,
-          iteration,
-          iterationCap: this.options.iterationCap,
-          activePhaseDef,
-          latestRun: this.store.getRun(),
-          now: Date.now()
-        });
-        for (const w of postDecision.warnings) {
-          this.logger.warn(w);
-        }
-
-        // Feature 028 US2 — breakpoint fired in the runner before the CLI was
-        // invoked. Filter the consumed entry out, emit `phase-breakpoint-cleared`
-        // with cause 'consumed-by-fire', set `manualPauseCause` to
-        // `breakpoint-paused`, stash the marked phase id in `resumeTargetPhaseId`,
-        // cascade-pause the host queue, and release the lock. Resume re-invokes
-        // the marked phase via the standard pipeline (T036).
-        if (postDecision.kind === 'pause-breakpoint') {
-          const consumedPhaseId = postDecision.consumedPhaseId;
-          const now = Date.now();
-          const paused: WorkflowRun = {
-            ...run,
-            status: 'paused',
-            currentIteration: iteration,
-            manualPauseAt: now,
-            manualPauseCause: 'breakpoint-paused',
-            resumeTargetPhaseId: consumedPhaseId,
-            phaseBreakpoints: run.phaseBreakpoints.filter(
-              (bp) => bp.phaseId !== consumedPhaseId
-            ),
-            lastTransitionAt: now
-          };
-          run = await this.persistTransition(run, paused);
-          await this.appendBreakpointAudit('phase-breakpoint-cleared', run, {
-            runId: run.id,
-            phaseId: consumedPhaseId,
-            cause: 'consumed-by-fire'
-          });
-          this.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-          const feature = this.queue.findById(run.featureId);
-          const queueId = feature?.queueId ?? null;
-          if (queueId) {
-            await this.queue.cascadedPause(queueId);
-          }
-          session.retain();
-          break;
-        }
-
-        previousPhaseMessage =
-          output.phaseMessage && output.phaseMessage.entryCount > 0
-            ? output.phaseMessage.entries
-            : null;
-
-        // Stamp `startedAt` from the pre-runner timestamp; the sequencer
-        // synthesizes the rest of the PhaseResult shape from `output`.
-        const phaseResult: PhaseResult = {
-          ...postDecision.phaseResult,
-          startedAt: phaseStartedAt
-        };
-
-        if (postDecision.kind === 'pause-delayed-retry') {
-          run = await this.retryHandler.handleDelayedRetry(
-            run,
-            iteration,
-            phaseResult,
-            postDecision.cause,
-            postDecision.resetsAtMs,
-            postDecision.rateLimitMessage
-          );
-          session.retain();
-          break;
-        }
-
-        if (postDecision.kind === 'pause-rate-limit') {
-          const paused: WorkflowRun = {
-            ...run,
-            status: 'paused',
-            currentIteration: iteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult]
-          };
-          run = await this.persistTransition(run, paused);
-          this.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-          if (this.rateLimitHandler) {
-            await this.rateLimitHandler(postDecision.cause, run);
-          }
-          // Lock intentionally retained for resume.
-          session.retain();
-          break;
-        }
-
-        if (postDecision.kind === 'fail') {
-          // FR-005 — fatal-CLI cause surfaces via lastError.message. The
-          // text was already sanitized exactly once when the audit-log-
-          // writer persisted the phase-end record; we reuse the same
-          // post-sanitization string the runner returned to us as a
-          // warning. Cap-exhaustion (FR-010) emits 'cap_exhausted'
-          // through the same decision.cause channel (US2).
-          //
-          // FR-010 — emit a terminal phase-end with cause: 'cap_exhausted'
-          // when the transition engine exhausted the iteration cap with a
-          // truthy retryCondition. The runner already emitted a success-
-          // shaped phase-end for the LLM-level outcome; this is the
-          // controller-level addendum the audit-events contract requires.
-          if (postDecision.capExhausted) {
-            await this.runner.appendCapExhaustedPhaseEnd({
-              runId: run.id,
-              phase: run.currentPhase,
-              iteration,
-              pipelineId: run.pipeline?.id,
-              phaseDef: activePhaseDef
-            });
-          }
-          const sanitized: SanitizedError = {
-            code: 'invocation-failed',
-            message: postDecision.baseMessage.slice(0, 240),
-            phase: run.currentPhase,
-            iteration,
-            at: Date.now()
-          };
-          const failed: WorkflowRun = {
-            ...run,
-            status: 'failed',
-            currentIteration: iteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult],
-            lastError: sanitized
-          };
-          run = await this.persistTransition(run, failed);
-          await this.emitRunEndedBreakpointAudit(run);
-          this.statusBar.update({ kind: 'failed', phase: run.currentPhase, detail: sanitized.message });
-          this.notifier.warn(`Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`);
-          await this.queue.finish(run.featureId, 'failed', {
-            code: sanitized.code,
-            message: sanitized.message,
-            phase: sanitized.phase ?? undefined,
-            correlationId: run.id
-          });
-          await this.historyRecorder.record(run, description, 'failed');
-          break;
-        }
-
-        this.carriedIssues = pickCarriedIssues(output.result);
-
-        // Feature 026 FR-016 — verify phases pause on non-clean outcomes
-        // instead of silently advancing. Pause keeps `currentPhase`
-        // unchanged so the next resumeExisting() re-invokes the failing
-        // verify phase. The queue task pause cause stays `'phase-paused'`
-        // (reuse, no new literal).
-        if (postDecision.kind === 'pause-verify') {
-          const paused: WorkflowRun = {
-            ...run,
-            status: 'paused',
-            currentIteration: iteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult]
-          };
-          run = await this.persistTransition(run, paused);
-          await this.queue.pause(run.featureId, 'phase-paused');
-          await this.appendPhaseControlAudit('phase-paused', run, {
-            runId: run.id,
-            phaseId: run.currentPhase
-          });
-          this.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-          session.retain();
-          break;
-        }
-
-        if (postDecision.kind === 'break-unexpected') {
-          break;
-        }
-
-        if (postDecision.kind === 'pause-manual') {
-          const decision = postDecision.transition;
-          const latestRun = this.store.getRun()!;
-          const paused: WorkflowRun = {
-            ...latestRun,
-            status: 'paused',
-            currentPhase: decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
-            currentIteration:
-              decision.kind === 'advance' || decision.kind === 'loop'
-                ? decision.nextIteration
-                : latestRun.currentIteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...latestRun.phasesCompleted, phaseResult]
-          };
-          run = await this.persistTransition(latestRun, paused);
-          await this.queue.pause(run.featureId, 'phase-paused');
-          await this.appendPhaseControlAudit('phase-paused', run, {
-            runId: run.id,
-            phaseId: phaseResult.phase,
-            nextPhaseId: run.currentPhase,
-            nextIteration: run.currentIteration
-          });
-          this.statusBar.update({ kind: 'paused', phase: phaseResult.phase });
-          session.retain();
-          break;
-        }
-
-        // postDecision.kind === 'advance-or-loop'
-        // Feature 011 — FR-007: on a clean outcome after one or more
-        // delayed retries, reset the counter and emit `retry-recovered`
-        // before persisting the advance.
-        run = await this.retryHandler.maybeEmitRetryRecovered(run, output.outcome);
-
-        const decision = postDecision.transition;
-        const advanced: WorkflowRun = {
-          ...run,
-          currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
-          currentIteration:
-            decision.kind === 'advance' || decision.kind === 'loop'
-              ? decision.nextIteration
-              : run.currentIteration,
-          lastTransitionAt: Date.now(),
-          phasesCompleted: [...run.phasesCompleted, phaseResult]
-        };
-        run = await this.persistTransition(run, advanced);
-      }
-
-      if (run.currentPhase === 'done' && run.status === 'running') {
-        const completed: WorkflowRun = { ...run, status: 'completed', lastTransitionAt: Date.now() };
-        run = await this.persistTransition(run, completed);
-        await this.emitRunEndedBreakpointAudit(run);
-        this.statusBar.update({ kind: 'completed' });
-        this.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
-        await this.queue.finish(run.featureId, 'completed');
-        await this.historyRecorder.record(run, description, 'completed');
-      }
-      });
-    } finally {
-      this.isRunning = false;
-      this.cancellationController = null;
-      this.carriedIssues = [];
-      this.scheduleAutoDrain();
-    }
   }
 
   /**
@@ -1153,13 +774,13 @@ export class SchegentWorkflowController {
     if (run.pendingRetryAt === null || run.pendingRetryCause === null) {
       return { ok: false, reason: 'not-pending-retry' };
     }
-    if (this.isRunning) return { ok: false, reason: 'already-retrying' };
+    if (this.runDriver.running) return { ok: false, reason: 'already-retrying' };
 
     // Feature 032 — manual override of a delayed retry is a continuation
     // (same semantics as the watchdog-fired retry). Arm the gate before
-    // clearing `pendingRetryCause` below so `driveRun()` consumes it.
+    // clearing `pendingRetryCause` below so `RunDriver.drive()` consumes it.
     this.isContinueGate.arm();
-    this.watchdog?.cancelPendingTimer();
+    this.retryCoordinator.cancelPendingTimer();
 
     const queueState = this.store.getQueue();
     const expectedReason = `retry-cap-exhausted:${run.id}`;
@@ -1176,7 +797,7 @@ export class SchegentWorkflowController {
       pendingRetryCause: null
     };
     await this.store.setRun(updated);
-    await this.retryHandler.appendManualRetryAudit({
+    await this.retryCoordinator.appendManualRetryAudit({
       runId: run.id,
       phase: run.currentPhase,
       iteration: run.currentIteration,
@@ -1206,31 +827,8 @@ export class SchegentWorkflowController {
   public async resumeExistingFromActivation(): Promise<void> {
     const run = this.store.getRun();
     if (!run) return;
-    if (run.pendingRetryAt === null || run.pendingRetryCause === null) return;
-    const delay = Math.max(0, run.pendingRetryAt - Date.now());
-    if (delay === 0) {
-      // Deadline elapsed while the extension was offline — resume on
-      // next tick so callers can finish their activation hooks.
-      // Feature 032 — the persisted state already has
-      // `pendingRetryCause !== null`, so `resumeExisting()` will derive
-      // `isContinue: true` from the state. No explicit arming needed
-      // here; the state-derivation path covers it.
-      setImmediate(() => {
-        void this.resumeExisting().catch((err) =>
-          this.logger.warn(`resumeExistingFromActivation resume failed: ${(err as Error).message}`)
-        );
-      });
-      return;
-    }
-    if (!this.watchdog) {
-      this.logger.warn(
-        `resumeExistingFromActivation: watchdog not wired; cannot re-arm delayed retry for run ${run.id}`
-      );
-      return;
-    }
-    await this.watchdog.pauseAndPoll(run.pendingRetryCause, {
-      durationOverrideMs: delay,
-      skipStatusCheck: true
+    await this.retryCoordinator.resumeExistingFromActivation(run, async () => {
+      await this.resumeExisting();
     });
   }
 
@@ -1243,10 +841,9 @@ export class SchegentWorkflowController {
   // "dynamic backoff trusts parsed resetsAtMs; DELAYED_RETRY_CAP bounds
   // attempts" remains in force.
 
-  // Feature 034 Item 047 — `handleDelayedRetry`, `scheduleQueuePauseAndFail`,
-  // `maybeEmitRetryRecovered`, and `appendDelayedRetryAudit` moved to
-  // src/controller/retry-handler.ts. The controller delegates via
-  // `this.retryHandler.<method>()`. State-shape, audit-payload, and
+  // Feature 013 T097 / 034 Item 047 — retry/watchdog/rate-limit orchestration
+  // is owned by RetryCoordinator, which delegates phase retry state-machine
+  // work to src/controller/retry-handler.ts. State-shape, audit-payload, and
   // CLAUDE.md hard-rule semantics (pause-cause pair invariant, pre-buffer
   // resetsAtMs in audit, DELAYED_RETRY_CAP bounds attempts) preserved.
 
@@ -1385,9 +982,9 @@ export class SchegentWorkflowController {
             phaseOverrides: latest.phaseOverrides,
             // Feature 028 — phaseBreakpoints may be mutated by external
             // operator commands (setPhaseBreakpoint / clearPhaseBreakpoint)
-            // between driveRun iterations. Preserve the latest store state so
+            // between RunDriver iterations. Preserve the latest store state so
             // external writes are not overwritten by stale `next` values.
-            // The breakpoint branch in driveRun explicitly filters the
+            // The breakpoint branch in RunDriver explicitly filters the
             // consumed entry before calling persistTransition with the new
             // `next.phaseBreakpoints`; that explicit write wins via the
             // `next.phaseBreakpoints !== _prev.phaseBreakpoints` check.
@@ -1401,15 +998,4 @@ export class SchegentWorkflowController {
     return merged;
   }
 
-  private phaseRemovalAbortKey(runId: string, phaseId: string): string {
-    return `${runId}:${phaseId}`;
-  }
-}
-
-function pickCarriedIssues(
-  result: import('../parser/stdout-parser').InvocationResult
-): Array<{ tag?: string; summary: string }> | string[] {
-  if (result.kind === 'open_questions') return result.questions;
-  if (result.kind === 'remaining_issues') return result.issues;
-  return [];
 }

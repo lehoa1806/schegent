@@ -122,7 +122,7 @@ export interface WorkflowRun {
   /**
    * Feature 017/022 — per-run phase overrides (skip / disable / remove).
    * Per-run scope; a new run starts with `[]`. The pipeline snapshot is
-   * NEVER mutated; overrides are consulted by `driveRun()` before invoking
+   * NEVER mutated; overrides are consulted by `RunDriver.drive()` before invoking
    * each phase and by projectors before rendering phase progression.
    */
   phaseOverrides: PhaseOverride[];

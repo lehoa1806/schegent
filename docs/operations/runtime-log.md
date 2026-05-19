@@ -18,10 +18,14 @@ tail for ad-hoc troubleshooting.
 | `<workspaceRoot>/.schegent/syslog` | Default runtime log file (created on first emit). |
 | `<operator-configured path>` | Override via Settings → "Runtime Log File Path". Accepts an absolute path or a workspace-relative path. |
 
-The file is append-only. There is **no rotation, no retention, no
-schema, and no machine parser** — operators are expected to trim or
-delete it manually when it gets large. Adding `.schegent/syslog` to
-`.gitignore` (or your `.schegent/` umbrella ignore) is recommended.
+The file is append-only with **size-based rotation** (feature 056): when
+the active file's size plus the next line's bytes meets or exceeds
+`schegent.logging.runtimeLogMaxBytes` (default `5_242_880` / 5 MiB), the
+sink rotates `<path> → <path>.1 → <path>.2 → … → <path>.<maxGens>` and
+truncates the active file. Files beyond `<path>.<maxGens>` are dropped.
+There is no machine parser; the format is human-readable text only.
+Adding `.schegent/syslog*` to `.gitignore` (or your `.schegent/`
+umbrella ignore) is recommended.
 
 ## Settings surface
 
@@ -31,6 +35,8 @@ Both controls live in the Schegent sidebar under **Settings → General**:
 |---|---|---|---|
 | Runtime Log Level | `schegent.logging.runtimeLogLevel` | `INFO` | One of `DEBUG`, `INFO`, `WARN`, `ERROR`. Filters output to the configured severity or higher. |
 | Runtime Log File Path | `schegent.logging.runtimeLogFilePath` | empty (resolves to `<workspaceRoot>/.schegent/syslog`) | Absolute path or workspace-relative. Relative paths containing `..` are rejected by the host validator. |
+| Runtime Log Max Bytes | `schegent.logging.runtimeLogMaxBytes` | `5_242_880` (5 MiB) | Active-file size threshold that triggers a rotation. The check is `bytesOnDisk + line.length >= maxBytes`. |
+| Runtime Log Max Generations | `schegent.logging.runtimeLogMaxGenerations` | `3` (range 0–10) | Number of rotated files (`<path>.1` … `<path>.<maxGens>`) kept on disk. `0` disables rotation: the active file is truncated in place. Worst-case disk usage ≈ `(maxGens + 1) × maxBytes`. |
 
 Both settings are read on **every** log emission (never cached on the
 runner). A change made mid-run takes effect at the next emission — no
@@ -128,7 +134,7 @@ re-saving the same value triggers the suppression clear.
 | WARN in OUTPUT channel: `runtime-log-sink: append failed for path (EACCES); suppressing until settings change.` | The host process cannot write to the configured path. | `chmod` the parent directory or pick a writable path, then re-save the Runtime Log File Path setting. |
 | WARN in OUTPUT channel: `runtime-log-sink: append failed for path (ENOENT-parent); …` | Parent directory could not be created (e.g. operator-typoed an unreachable path). | Verify the path is reachable, then re-save the setting. |
 | Path setting rejected by the Settings UI with `relative-traversal: ..` | Workspace-relative paths containing `..` are rejected at validator time to prevent escape from the workspace root. | Use an absolute path or a relative path that stays inside the workspace. |
-| File is growing unbounded | The runtime log has **no rotation**. | Truncate manually: `: > .schegent/syslog`. The running process keeps appending after the truncate without restart. |
+| File is growing unbounded despite rotation | `runtimeLogMaxBytes` set very high, or `runtimeLogMaxGenerations: 0` (rotation disabled, truncate-in-place). | Lower the threshold or raise generations in Settings → General → Runtime Log Max Bytes / Max Generations. To force an immediate truncate without restart: `: > .schegent/syslog`. |
 
 ## Operator workflow: short-lived diagnostic capture
 
