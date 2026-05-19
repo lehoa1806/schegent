@@ -1,11 +1,13 @@
 <script lang="ts">
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { deriveSidebarStats, deriveActivePhase } from '../lib/derive-stats';
+  import { deriveOperatorHealth } from '../lib/derive-operator-health';
   import { formatPhaseLabel } from '../lib/format';
 
   const stats = $derived(deriveSidebarStats(snapshotStore.phases, snapshotStore.queue));
   const active = $derived(deriveActivePhase(snapshotStore.phases));
   const activeLine = $derived(formatActiveLine(active));
+  const health = $derived(deriveOperatorHealth(snapshotStore.snapshot));
 
   function formatActiveLine(a: ReturnType<typeof deriveActivePhase>): string {
     if (a === null) return 'no active phase';
@@ -34,6 +36,13 @@
     </span>
   </div>
   <div class="active-phase" data-testid="sidebar-active-phase" title={activeLine}>{activeLine}</div>
+  <div
+    class={`health health-${health.level}`}
+    data-testid="sidebar-health"
+    title={health.title}
+  >
+    {health.label}
+  </div>
 </div>
 
 <style>
@@ -77,5 +86,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .health {
+    font-size: 0.78em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .health-ok {
+    color: var(--schegent-muted-fg);
+  }
+  .health-attention {
+    color: var(--schegent-warning-fg, var(--schegent-fg));
+  }
+  .health-blocked {
+    color: var(--schegent-error-fg, var(--schegent-fg));
   }
 </style>

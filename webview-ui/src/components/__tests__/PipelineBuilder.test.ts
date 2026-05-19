@@ -21,6 +21,8 @@ import type {
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { savePhases as savePhasesHelper } from '../../lib/save-phases';
+import { savePipelines as savePipelinesHelper } from '../../lib/save-pipelines';
+import { saveModels as saveModelsHelper } from '../../lib/save-models';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
@@ -33,6 +35,12 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
 }));
 vi.mock('../../lib/save-phases', () => ({
   savePhases: vi.fn(async () => ({ status: 'accepted' as const }))
+}));
+vi.mock('../../lib/save-pipelines', () => ({
+  savePipelines: vi.fn(async () => ({ status: 'accepted' as const }))
+}));
+vi.mock('../../lib/save-models', () => ({
+  saveModels: vi.fn(async () => ({ status: 'accepted' as const }))
 }));
 
 afterEach(() => cleanup());
@@ -153,6 +161,46 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await switchTab(container, 'Models');
     const items = container.querySelectorAll('.model-list-item');
     expect(items.length).toBe(2);
+  });
+
+  it('Pipelines tab: saves through the shared save-pipelines helper', async () => {
+    vi.mocked(savePipelinesHelper).mockClear();
+    const pipeline: PipelineDefinition = Object.freeze({
+      id: 'custom',
+      name: 'Custom Pipeline',
+      phases: Object.freeze(['speckit-specify', 'speckit-plan'])
+    }) as unknown as PipelineDefinition;
+    const snap = buildSnapshot([], [pipeline]);
+    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    await tick();
+    const saveBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent?.trim() === 'Save Pipelines'
+    ) as HTMLButtonElement | undefined;
+    expect(saveBtn).toBeDefined();
+    await fireEvent.click(saveBtn!);
+    await tick();
+    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual([
+      { id: 'custom', name: 'Custom Pipeline', phases: ['speckit-specify', 'speckit-plan'] }
+    ]);
+  });
+
+  it('Models tab: saves through the shared save-models helper', async () => {
+    vi.mocked(saveModelsHelper).mockClear();
+    const snap = buildSnapshot([], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    await switchTab(container, 'Models');
+    const saveBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent?.trim() === 'Save Models'
+    ) as HTMLButtonElement | undefined;
+    expect(saveBtn).toBeDefined();
+    await fireEvent.click(saveBtn!);
+    await tick();
+    expect(saveModelsHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual([
+      'claude-sonnet-4-6',
+      'claude-opus-4-6'
+    ]);
   });
 });
 

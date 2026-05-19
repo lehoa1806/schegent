@@ -32,7 +32,8 @@ const SEVEN_NOT_STARTED: ReadonlyArray<PhaseTile> = Object.freeze([
 function buildSnapshot(
   phases: readonly PhaseTile[] = SEVEN_NOT_STARTED,
   pending: readonly QueueItem[] = [],
-  recent: readonly QueueItem[] = []
+  recent: readonly QueueItem[] = [],
+  overrides: Partial<WorkflowSnapshot> = {}
 ): WorkflowSnapshot {
   return Object.freeze({
     schemaVersion: 3,
@@ -57,7 +58,8 @@ function buildSnapshot(
     workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
-    producedAt: '2026-05-10T00:00:00.000Z'
+    producedAt: '2026-05-10T00:00:00.000Z',
+    ...overrides
   } as unknown as WorkflowSnapshot);
 }
 
@@ -125,6 +127,28 @@ describe('StatsStrip', () => {
     const line = container.querySelector('[data-testid="sidebar-active-phase"]');
     expect(line).not.toBeNull();
     expect(line!.textContent?.toLowerCase()).toContain('no active phase');
+  });
+
+  it('renders a compact operator health indicator', () => {
+    const { container } = render(StatsStrip);
+    const health = container.querySelector('[data-testid="sidebar-health"]');
+    expect(health).not.toBeNull();
+    expect(health!.textContent?.toLowerCase()).toContain('health ok');
+  });
+
+  it('surfaces stalled live activity in the operator health indicator', () => {
+    applySnap(buildSnapshot(SEVEN_NOT_STARTED, [], [], {
+      liveActivity: Object.freeze({
+        summary: 'last event',
+        category: 'warning',
+        lastEventAt: '2026-05-10T00:00:00.000Z',
+        freshness: 'stalled',
+        staleSeconds: 120
+      })
+    }));
+    const { container } = render(StatsStrip);
+    const health = container.querySelector('[data-testid="sidebar-health"]');
+    expect(health!.textContent?.toLowerCase()).toContain('activity stalled');
   });
 
   it('renders only phase name when active phase has no sub-progress', () => {

@@ -133,6 +133,7 @@ export interface QueueProjection {
   readonly recent: readonly QueueItem[];
   readonly queues?: readonly QueueSummary[];
   readonly paused: boolean;
+  readonly pausedReason?: string | null;
 }
 
 export interface AuditTailEntry {

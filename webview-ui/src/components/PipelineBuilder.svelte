@@ -5,9 +5,12 @@
     PhaseDefinition,
     PhasePrecedenceLayer
   } from '../lib/snapshot-types';
-  import { postCommand } from '../lib/vscode-api';
-  import { CMD_SAVE_PIPELINES, CMD_SAVE_MODELS } from '../lib/messages';
   import { savePhases as savePhasesHelper, type SavePhaseRow } from '../lib/save-phases';
+  import {
+    savePipelines as savePipelinesHelper,
+    type SavePipelineRow
+  } from '../lib/save-pipelines';
+  import { saveModels as saveModelsHelper } from '../lib/save-models';
   import RetryConditionEditor from './settings/RetryConditionEditor.svelte';
   import RawJsonPhaseEditor from './settings/RawJsonPhaseEditor.svelte';
   import TrustBanner from './TrustBanner.svelte';
@@ -52,6 +55,8 @@
     'claude-haiku-4-5'
   ];
 
+  // `initialTab` is a mount-only test seam; production never updates it.
+  // svelte-ignore state_referenced_locally
   let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
 
   type MutablePipeline = Omit<PipelineDefinition, 'phases'> & { phases: string[] };
@@ -77,7 +82,14 @@
     }
   });
 
-  function savePipelines(): void { postCommand(CMD_SAVE_PIPELINES, { pipelines }); }
+  function savePipelines(): void {
+    const payload: SavePipelineRow[] = pipelines.map((p) => ({
+      id: p.id,
+      name: p.name,
+      phases: [...p.phases]
+    }));
+    void savePipelinesHelper(payload);
+  }
   function savePhases(): void {
     const payload: SavePhaseRow[] = phases.map((p) => {
       const row: {
@@ -103,7 +115,9 @@
     });
     void savePhasesHelper(payload);
   }
-  function saveModels(): void { postCommand(CMD_SAVE_MODELS, { models }); }
+  function saveModels(): void {
+    void saveModelsHelper([...models]);
+  }
 
   function effortLayer(phaseId: string): PhasePrecedenceLayer | undefined {
     return snapshot.phasePrecedence?.[`${phaseId}::effort`];
