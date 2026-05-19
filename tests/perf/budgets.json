@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "description": "Performance budgets enforced by tests under tests/perf/. The inline `expect(elapsed).toBeLessThan(...)` in each perf test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
+  "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
   "updated": "2026-05-16",
   "budgets": [
@@ -45,6 +45,13 @@
       "budgetMs": 16,
       "constant": "MEDIAN_BUDGET_MS",
       "rationale": "Snapshot render hot-path per-frame budget (60 fps target)"
+    },
+    {
+      "test": "tests/integration/activation-eager.host.test.ts",
+      "name": "Extension activation via workspaceContains:.specify/",
+      "budgetMs": 5000,
+      "constant": "ACTIVATION_BUDGET_MS",
+      "rationale": "Release smoke for startup responsiveness before the sidebar is revealed"
     }
   ],
   "notes": [

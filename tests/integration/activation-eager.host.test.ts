@@ -54,9 +54,14 @@ export async function run(): Promise<void> {
   while (!ext.isActive && Date.now() - start < ACTIVATION_BUDGET_MS) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  const elapsedMs = Date.now() - start;
   assert.strictEqual(
     ext.isActive,
     true,
-    `extension did not activate within ${ACTIVATION_BUDGET_MS}ms despite workspaceContains:.specify/ trigger and the sidebar was never revealed`
+    `extension did not activate within ${ACTIVATION_BUDGET_MS}ms despite workspaceContains:.specify/ trigger and the sidebar was never revealed (elapsed=${elapsedMs}ms)`
+  );
+  assert.ok(
+    elapsedMs <= ACTIVATION_BUDGET_MS,
+    `extension activation took ${elapsedMs}ms, over budget ${ACTIVATION_BUDGET_MS}ms`
   );
 }
