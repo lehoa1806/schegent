@@ -52,6 +52,40 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(seen.options.shell).toBe(false);
   });
 
+  it('can spawn with only Schegent-controlled env when inheritance is disabled', async () => {
+    const originalSecret = process.env.SCHEGENT_SECRET_TEST;
+    process.env.SCHEGENT_SECRET_TEST = 'do-not-forward';
+    try {
+      const child = makeFakeChild();
+      const seen: { options: SpawnOptions } = { options: {} };
+      const spawnFn: SpawnFn = (_command, _args, options) => {
+        seen.options = options;
+        setImmediate(() => child.emit('exit', 0, null));
+        return child as unknown as ChildProcess;
+      };
+      const runner = new ClaudeCliRunner(spawnFn);
+      await runner.invoke({
+        phase: 'speckit-plan',
+        iteration: 1,
+        prompt: 'do work',
+        timeoutMs: 5_000,
+        cliPath: 'claude',
+        cwd: '/repo',
+        env: { SCHEGENT_PHASE: 'speckit-plan' },
+        inheritProcessEnv: false
+      });
+
+      expect(seen.options.env).toEqual({ SCHEGENT_PHASE: 'speckit-plan' });
+      expect((seen.options.env as NodeJS.ProcessEnv).SCHEGENT_SECRET_TEST).toBeUndefined();
+    } finally {
+      if (originalSecret === undefined) {
+        delete process.env.SCHEGENT_SECRET_TEST;
+      } else {
+        process.env.SCHEGENT_SECRET_TEST = originalSecret;
+      }
+    }
+  });
+
   it('captures stdout and stderr and resolves exit code', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {

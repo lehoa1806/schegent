@@ -16,6 +16,13 @@ export interface InvocationRequest {
   cliPath: string;
   cwd: string;
   env?: Record<string, string>;
+  /**
+   * When omitted or `true`, child CLI processes inherit the VS Code extension
+   * host environment and overlay Schegent-controlled `env` keys. When `false`,
+   * the runner spawns with only `env`, reducing ambient secret leakage into
+   * backend CLIs for hardened operator environments.
+   */
+  inheritProcessEnv?: boolean;
   model?: string;
   effort?: Effort;
   /**

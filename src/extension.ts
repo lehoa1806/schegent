@@ -313,6 +313,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // instead of producing a confusing downstream reject. Sync, no I/O.
   validateWorkspaceSettings(config, logger, new Set());
   const cliPath = config.get<string>('cli.path', 'claude');
+  const inheritProcessEnv = config.get<boolean>('cli.inheritEnvironment', true);
   const iterationCap = config.get<number>('loop.maxIterations', 10);
   const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
   const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 1800);
@@ -538,6 +539,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       cwd: workspaceRoot,
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
+      inheritProcessEnv,
       perPhaseRulesEnabled: rulesPerPhase
     },
     {

@@ -20,6 +20,7 @@ interface RunDriverOptions {
   readonly cwd: string;
   readonly iterationCap: number;
   readonly timeoutMs: number;
+  readonly inheritProcessEnv?: boolean;
 }
 
 type PhaseControlEventType =
@@ -172,6 +173,7 @@ export class RunDriver {
             timeoutMs: activePhaseDef?.timeoutSeconds
               ? activePhaseDef.timeoutSeconds * 1000
               : this.deps.options.timeoutMs,
+            inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
             runId: run.id,
             phaseMessagePath: composePhaseMessagePath({
               cwd: this.deps.options.cwd,

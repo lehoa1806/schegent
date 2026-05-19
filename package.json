@@ -126,6 +126,12 @@
           "scope": "application",
           "description": "Path to the Claude CLI binary."
         },
+        "schegent.cli.inheritEnvironment": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "When enabled, Schegent backend CLI processes inherit the VS Code extension-host environment before Schegent-controlled variables are overlaid. Disable to spawn the backend with only Schegent-controlled variables."
+        },
         "schegent.backend.runner": {
           "type": "string",
           "enum": [

@@ -181,4 +181,26 @@ describe('AuditLogWriter.subscribe', () => {
 
     expect(ok).toEqual([7]);
   });
+
+  it('notifies sanitized live subscribers even when the durable append fails', async () => {
+    await fs.writeFile(path.join(tmpRoot, '.schegent'), 'not-a-directory', 'utf8');
+    const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    const received: unknown[] = [];
+    writer.subscribe((entry) => received.push(entry));
+
+    await expect(
+      writer.append({
+        runId: 'r',
+        phase: 'speckit-specify',
+        iteration: 1,
+        eventType: 'cli-invocation',
+        payload: { token: 'Bearer abcdefghijklmnopqrst' },
+        outcome: 'info'
+      })
+    ).rejects.toThrow();
+
+    expect(received).toHaveLength(1);
+    expect(JSON.stringify(received[0])).toContain('[REDACTED]');
+    expect(JSON.stringify(received[0])).not.toContain('abcdefghijklmnopqrst');
+  });
 });

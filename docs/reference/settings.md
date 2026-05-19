@@ -30,6 +30,16 @@ Path to the Claude CLI binary. The default `"claude"` works if the binary is on 
 { "schegent.cli.path": "/opt/anthropic/bin/claude" }
 ```
 
+### `schegent.cli.inheritEnvironment`
+
+- **Type:** `boolean`
+- **Default:** `true`
+- **Scope:** `application`
+
+When enabled, Schegent backend CLI processes inherit the VS Code extension-host environment and then overlay Schegent-controlled variables such as `SCHEGENT_PHASE`, `SCHEGENT_ITERATION`, and optional Claude auto-compact overrides. Set to `false` in hardened environments to spawn the backend with only Schegent-controlled variables.
+
+Disabling inheritance can break CLIs that rely on ambient variables such as `PATH`, proxy configuration, language runtimes, or vendor authentication tokens. Use an absolute `schegent.cli.path` and configure required authentication through the backend CLI's own supported mechanism before disabling this setting.
+
 ### `schegent.backend.runner`
 
 - **Type:** `string`

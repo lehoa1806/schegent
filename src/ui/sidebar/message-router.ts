@@ -1,39 +1,5 @@
 import type { SidebarCommand } from './messages';
-import {
-  CMD_CANCEL,
-  CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
-  CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_DISABLE_PHASE,
-  CMD_ENABLE_PHASE,
-  CMD_MODIFY_TASK,
-  CMD_MOVE_QUEUE_ITEM_DOWN,
-  CMD_MOVE_QUEUE_ITEM_UP,
-  CMD_PAUSE_PHASE,
-  CMD_PAUSE_QUEUE,
-  CMD_REMOVE_QUEUE_ITEM,
-  CMD_REMOVE_TASK_PHASE,
-  CMD_REORDER_TASK,
-  CMD_RERUN_FROM_HISTORY,
-  CMD_RESET,
-  CMD_RESTART_CANCELED_TASK,
-  CMD_RESTART_PHASE,
-  CMD_RESUME,
-  CMD_RESUME_PHASE,
-  CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
-  CMD_RETRY_PHASE_NOW,
-  CMD_RETRY_QUEUE_ITEM,
-  CMD_SAVE_GENERAL_SETTINGS,
-  CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_SET_PHASE_BREAKPOINT,
-  CMD_SKIP_PHASE,
-  CMD_START,
-  CMD_WAKE_UP_NOW
-} from './messages';
+import { MUTATING_COMMAND_TYPES } from '../../contracts/sidebar-command-metadata';
 import { HANDLERS } from './commands';
 import { SECONDARY_REJECT, UNTRUSTED_REJECT } from './commands/constants';
 import { ack } from './commands/handler-helpers';
@@ -47,53 +13,7 @@ export type {
   RouterDeps
 } from './commands/router-types';
 
-export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
-  CMD_REMOVE_QUEUE_ITEM,
-  CMD_RETRY_QUEUE_ITEM,
-  CMD_MOVE_QUEUE_ITEM_UP,
-  CMD_MOVE_QUEUE_ITEM_DOWN,
-  CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
-  CMD_PAUSE_QUEUE,
-  CMD_RESUME_QUEUE,
-  CMD_RERUN_FROM_HISTORY,
-  CMD_RETRY_ACTIVE_RUN,
-  CMD_START,
-  CMD_CANCEL,
-  CMD_RESUME,
-  CMD_RESET,
-  CMD_RETRY_PHASE_NOW,
-  CMD_PAUSE_PHASE,
-  CMD_RESUME_PHASE,
-  CMD_RESTART_PHASE,
-  CMD_SKIP_PHASE,
-  CMD_DISABLE_PHASE,
-  CMD_ENABLE_PHASE,
-  CMD_REMOVE_TASK_PHASE,
-  // Feature 030 — removed the seven multi-queue mutation commands from the
-  // gate (enumerated by name in the lint regression at
-  // `tests/lint/no-multi-queue-commands.test.ts`). Single-queue mode keeps
-  // reorder + modify.
-  CMD_MODIFY_TASK,
-  CMD_REORDER_TASK,
-  // Feature 014 — Wake up settings save. Primary-host gate must reject
-  // secondary-window attempts.
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_WAKE_UP_NOW,
-  // Feature 056 Track 1 (FR-001..FR-005) — Catalog and general-settings
-  // saves write VS Code configuration / workspace state and MUST be
-  // primary-only. Closes the F-001 documentation-vs-implementation drift.
-  CMD_SAVE_GENERAL_SETTINGS,
-  CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  // Feature 017 — BUG-001. Operator-driven restart of a canceled task.
-  CMD_RESTART_CANCELED_TASK,
-  // Feature 028 — future-phase breakpoint mutations (US2). Primary-host gate
-  // must reject secondary-window attempts.
-  CMD_SET_PHASE_BREAKPOINT,
-  CMD_CLEAR_PHASE_BREAKPOINT
-]);
+export const MUTATING_COMMANDS: ReadonlySet<string> = new Set(MUTATING_COMMAND_TYPES);
 
 /**
  * Sidebar IPC message router. Decomposed into per-command handler files
@@ -105,7 +25,8 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
  *   1. Add the CMD_ constant + interface in `src/contracts/sidebar-ipc.ts`.
  *   2. Create the per-command handler file in `./commands/cmd-<name>.ts`.
  *   3. Wire it into `./commands/index.ts`.
- *   4. If the command mutates host state, add it to MUTATING_COMMANDS above.
+ *   4. If the command mutates host state, add it to
+ *      `MUTATING_COMMAND_REASONS` in `src/contracts/sidebar-command-metadata.ts`.
  */
 export class MessageRouter {
   constructor(private readonly deps: RouterDeps) {}

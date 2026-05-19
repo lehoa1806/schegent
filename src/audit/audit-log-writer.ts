@@ -149,8 +149,16 @@ export class AuditLogWriter {
         }
       );
     });
-    await next;
-    this.notify(sanitized);
+    try {
+      await next;
+    } finally {
+      // Live subscribers should still learn that the event occurred even
+      // when the durable audit sink rejects (for example disk-full or
+      // permissions failures). The append promise still rejects, preserving
+      // durability-first semantics for callers, while the sanitized live
+      // projection can surface the failure context instead of going stale.
+      this.notify(sanitized);
+    }
     return sanitized;
   }
 

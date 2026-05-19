@@ -13,10 +13,8 @@
 // prefixes as the visible signal of write intent.
 
 import { describe, it, expect } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
-
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
+import * as Ipc from '../../src/contracts/sidebar-ipc';
+import { MUTATING_COMMANDS } from '../../src/ui/sidebar/message-router';
 
 // Verb prefixes that strongly imply state mutation. A new command
 // matching one of these MUST be gated unless explicitly allowlisted.
@@ -47,54 +45,22 @@ const INTENTIONAL_READ_ONLY_ALLOWLIST: ReadonlyMap<string, string> = new Map([
   // None at the moment. Verb-matching commands today are all mutating.
 ]);
 
-const CONTRACT_PATH = path.join(REPO_ROOT, 'src', 'contracts', 'sidebar-ipc.ts');
-const ROUTER_PATH = path.join(REPO_ROOT, 'src', 'ui', 'sidebar', 'message-router.ts');
-
-function readSrc(p: string): string {
-  return fs.readFileSync(p, 'utf8');
-}
-
-function extractCmdConstants(contractSrc: string): string[] {
-  // Match: export const CMD_FOO = 'CMD_FOO' as const;
-  const re = /export\s+const\s+(CMD_[A-Z0-9_]+)\s*=/g;
-  const found = new Set<string>();
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(contractSrc)) !== null) {
-    found.add(m[1]);
-  }
-  return [...found].sort();
-}
-
-function extractMutatingSetMembers(routerSrc: string): Set<string> {
-  // Find the MUTATING_COMMANDS literal block.
-  const re = /MUTATING_COMMANDS[^=]*=\s*new\s+Set\(\s*\[([^\]]*)\]\s*\)/m;
-  const m = re.exec(routerSrc);
-  if (!m) {
-    throw new Error('Could not locate MUTATING_COMMANDS Set literal in message-router.ts');
-  }
-  const body = m[1];
-  const names = new Set<string>();
-  const idRe = /(CMD_[A-Z0-9_]+)/g;
-  let id: RegExpExecArray | null;
-  while ((id = idRe.exec(body)) !== null) {
-    names.add(id[1]);
-  }
-  return names;
+function commandConstants(): string[] {
+  return Object.entries(Ipc)
+    .filter(([name, value]) => name.startsWith('CMD_') && typeof value === 'string')
+    .map(([name]) => name)
+    .sort();
 }
 
 describe('MUTATING_COMMANDS naming-convention gate', () => {
   it('every CMD_* with a mutating verb name is gated (or explicitly allowlisted)', () => {
-    const contractSrc = readSrc(CONTRACT_PATH);
-    const routerSrc = readSrc(ROUTER_PATH);
-
-    const allCmds = extractCmdConstants(contractSrc);
-    const gated = extractMutatingSetMembers(routerSrc);
+    const allCmds = commandConstants();
 
     const violations: { cmd: string; reason: string }[] = [];
     for (const cmd of allCmds) {
       const looksMutating = MUTATING_VERB_PATTERNS.some((re) => re.test(cmd));
       if (!looksMutating) continue;
-      if (gated.has(cmd)) continue;
+      if (MUTATING_COMMANDS.has(cmd)) continue;
       if (INTENTIONAL_READ_ONLY_ALLOWLIST.has(cmd)) continue;
       violations.push({
         cmd,
@@ -111,19 +77,14 @@ describe('MUTATING_COMMANDS naming-convention gate', () => {
   it('every CMD_SET_PHASE_BREAKPOINT / CMD_CLEAR_PHASE_BREAKPOINT IS gated', () => {
     // Explicit positive assertion — these were exempted from the
     // verb regex via negative lookahead so we re-check by name.
-    const routerSrc = readSrc(ROUTER_PATH);
-    const gated = extractMutatingSetMembers(routerSrc);
-    expect(gated.has('CMD_SET_PHASE_BREAKPOINT')).toBe(true);
-    expect(gated.has('CMD_CLEAR_PHASE_BREAKPOINT')).toBe(true);
+    expect(MUTATING_COMMANDS.has('CMD_SET_PHASE_BREAKPOINT')).toBe(true);
+    expect(MUTATING_COMMANDS.has('CMD_CLEAR_PHASE_BREAKPOINT')).toBe(true);
   });
 
   it('every gated command is a known CMD_ export', () => {
-    const contractSrc = readSrc(CONTRACT_PATH);
-    const routerSrc = readSrc(ROUTER_PATH);
-    const declared = new Set(extractCmdConstants(contractSrc));
-    const gated = extractMutatingSetMembers(routerSrc);
+    const declared = new Set(commandConstants());
     const stragglers: string[] = [];
-    for (const cmd of gated) {
+    for (const cmd of MUTATING_COMMANDS) {
       if (!declared.has(cmd)) stragglers.push(cmd);
     }
     expect(stragglers, 'gated commands not declared in sidebar-ipc.ts').toEqual([]);

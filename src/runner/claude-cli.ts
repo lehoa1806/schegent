@@ -8,6 +8,7 @@ import type {
 } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
+import { buildSpawnEnv } from './spawn-env';
 
 const SIGKILL_DELAY_MS = 2_000;
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -278,7 +279,7 @@ export class ClaudeCliRunner implements BackendRunner {
         stdio,
         shell: false,
         cwd: request.cwd,
-        env: request.env ? { ...process.env, ...request.env } : process.env
+        env: buildSpawnEnv(request)
       });
       this.active = child;
       this.emitHook({ kind: 'started', pid: child.pid ?? null });

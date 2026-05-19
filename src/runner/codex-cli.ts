@@ -6,6 +6,7 @@ import type {
   MonitorSidecarHook
 } from '../contracts/backend-runner';
 import { SanitizedLogger } from '../lib/logger';
+import { buildSpawnEnv } from './spawn-env';
 
 // Feature 034 Item 050 — second `BackendRunner` adapter. The Codex CLI is
 // invoked single-shot, non-interactive, with the prompt piped over stdin so
@@ -109,7 +110,7 @@ export class CodexCliRunner implements BackendRunner {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       cwd: request.cwd,
-      env: request.env ? { ...process.env, ...request.env } : process.env
+      env: buildSpawnEnv(request)
     });
     this.active = child;
     this.emitHook({ kind: 'started', pid: child.pid ?? null });

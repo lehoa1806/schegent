@@ -80,6 +80,13 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'application',
     docLabel: 'Claude CLI binary path'
   },
+  'schegent.cli.inheritEnvironment': {
+    key: 'schegent.cli.inheritEnvironment',
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    docLabel: 'Backend CLI environment inheritance'
+  },
   'schegent.backend.runner': {
     key: 'schegent.backend.runner',
     type: 'enum',

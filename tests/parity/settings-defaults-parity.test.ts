@@ -198,6 +198,10 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     ]);
     const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines']);
     const backendRunnerKey = new Set<string>(['backend.runner']);
+    // Application-scoped CLI spawn hardening toggle. It is read once at
+    // activation and intentionally not writable through the workspace-scoped
+    // general-settings IPC surface.
+    const cliApplicationKeys = new Set<string>(['cli.inheritEnvironment']);
     // Feature 058 — read-once-at-activation toggles. The activation guard
     // reads `schegent.multiRoot.suppressWarning` via `getConfiguration` with
     // a typed default; SETTINGS_SCHEMA + the drift-guard in
@@ -225,6 +229,7 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         wakeUpKeys.has(key) ||
         complexObjectKeys.has(key) ||
         backendRunnerKey.has(key) ||
+        cliApplicationKeys.has(key) ||
         multiRootKeys.has(key) ||
         trustScopeKeys.has(key);
       if (!covered) orphans.push(key);

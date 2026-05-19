@@ -38,6 +38,7 @@ export interface WorkflowControllerOptions {
   cwd: string;
   iterationCap: number;
   timeoutMs: number;
+  inheritProcessEnv?: boolean;
   perPhaseRulesEnabled: boolean;
 }
 

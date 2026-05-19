@@ -44,6 +44,7 @@ export interface PhaseRunInputs {
   cliPath: string;
   cwd: string;
   timeoutMs: number;
+  inheritProcessEnv?: boolean;
   runId: string;
   perPhaseRulesPath?: string | null;
   phaseMessagePath?: string | null;
@@ -298,6 +299,7 @@ export class PhaseRunner {
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
       env,
+      ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
       cancellationSignal: inputs.cancellationSignal,
       ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
       ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
