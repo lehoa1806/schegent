@@ -324,6 +324,20 @@ Periodic fire interval in `Every Nm` or `Every Nh` form. Minimum granularity is 
 
 For full Wake-up behavior, see [Wake-up Scheduler](../features/wake-up-scheduler.md).
 
+## Multi-root workspaces
+
+### `schegent.multiRoot.suppressWarning`
+
+- **Type:** `boolean`
+- **Default:** `false`
+- **Scope:** `window`
+
+Suppress the one-shot informational toast that Schegent surfaces at activation when the active workspace contains more than one folder. The toast names the **canonical workspace folder** — the first folder in the `.code-workspace` file, under which Schegent creates `.schegent/`, the audit log, and the per-run session tree.
+
+When `true`, both the toast and the corresponding `multi-root.warning-shown` audit event are suppressed. The canonical-folder selection itself is unaffected — the setting is purely cosmetic.
+
+The setting is `window`-scoped so it only applies to the specific `.code-workspace` file you save it under. See [The Workspace Lock → Multi-root workspaces](../concepts/workspace-lock.md#multi-root-workspaces) for the underlying semantics.
+
 ## All-keys index
 
 For quick lookup, the full list of keys:
@@ -355,6 +369,7 @@ For quick lookup, the full list of keys:
 | `schegent.wakeUp.schedulerType` | application | `"chronological"` |
 | `schegent.wakeUp.chronologicalTime` | application | `"04:00"` |
 | `schegent.wakeUp.periodicInterval` | application | `"Every 4h"` |
+| `schegent.multiRoot.suppressWarning` | window | `false` |
 
 ## Editing settings
 

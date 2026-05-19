@@ -59,6 +59,41 @@ Schegent's lock is *per workspace*, not per host. If you open the same workspace
 
 Trying to enqueue a task or click Resume in a secondary window surfaces a "not primary host" rejection in the audit log. The UI reflects the read-only state.
 
+## Multi-root workspaces
+
+Schegent treats the **first folder** in the active `.code-workspace` file as the **canonical workspace folder**. Concretely:
+
+- The lock, the `.schegent/` directory, the audit log, and the per-run session tree all live under the first folder.
+- Other folders in the workspace are ordinary VS Code roots — Claude can still read and edit files in them like any other open folder — but Schegent itself does not create state in them.
+- The queue, run history, pause/breakpoint state, and watchdog are scoped to the canonical folder. Reordering folders mid-session does **not** migrate state and does **not** re-trigger the canonical selection — the chosen folder stays the canonical one for the lifetime of the window.
+
+When you activate Schegent against a multi-root workspace, you will see a one-shot informational toast naming the canonical folder. This is intentional — it ensures the chosen folder is explicit rather than implicit.
+
+### Suppressing the multi-root warning
+
+If you regularly work in multi-root workspaces and already know which folder Schegent activates against, set:
+
+```jsonc
+// .code-workspace, in the "settings" object
+{
+  "settings": {
+    "schegent.multiRoot.suppressWarning": true
+  }
+}
+```
+
+The setting is window-scope, so the choice only applies to that specific workspace file.
+
+When the warning is suppressed, Schegent also stops emitting the corresponding `multi-root.warning-shown` audit event — the event represents an actually-shown warning, not a hypothetical one. The canonical-folder selection itself is unaffected; it is purely cosmetic.
+
+### v1 limitations
+
+- There is no operator-chosen canonical folder. The first folder in the `.code-workspace` wins.
+- There are no per-folder queues, run histories, or pause states — those are scoped to the canonical folder.
+- Adding or reordering folders mid-session does not re-fire the warning or change the canonical selection; close and reopen the window to surface a fresh activation.
+
+Per-folder state (independent queues, independent canonical folders, operator-selectable canonical roots) is tracked for a future release.
+
 ## When the lock looks stuck
 
 There are three failure modes that look like a stuck lock from the outside:

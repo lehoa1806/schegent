@@ -99,6 +99,13 @@ vi.mock('vscode', () => {
 });
 
 import { activate } from '../../../src/extension';
+// Feature 058 — the canonical-folder picker memoizes its first read for the
+// process lifetime, so tests that run `activate(...)` multiple times need to
+// flush the cache between cases. The picker's dispose is idempotent.
+import { disposeWorkspaceFolderPicker } from '../../../src/state/workspace-folder-picker';
+// Feature 058 — the activation guard is one-shot per activation; reset it
+// so each test case exercises the predicate independently.
+import { resetMultiRootWarningGuardForTest } from '../../../src/state/multi-root-warning';
 
 interface MockMemento {
   get<T>(key: string): T | undefined;
@@ -148,6 +155,8 @@ beforeEach(() => {
   mocks.state.createStatusBarItemDispose.mockClear();
   mocks.state.listeners.clear();
   mocks.state.workspaceFolders = undefined;
+  disposeWorkspaceFolderPicker();
+  resetMultiRootWarningGuardForTest();
 });
 
 describe('activate() — BUG-001 activation invariant', () => {

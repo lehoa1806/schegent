@@ -379,6 +379,12 @@
           "maximum": 100,
           "markdownDescription": "When set, the value is exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to the Claude Code CLI to override its auto-compaction threshold. Integer between 1 and 100 (percent). Leave unset to use the CLI default."
         },
+        "schegent.multiRoot.suppressWarning": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "markdownDescription": "Suppress the one-shot multi-root workspace warning toast surfaced at activation. Feature 058 makes the first folder in the active `.code-workspace` the canonical Schegent workspace folder; `.schegent/` state is created there, and other folders are treated as ordinary VS Code roots. Set to `true` to hide the per-activation toast. See `repo/docs/concepts/workspace-lock.md`."
+        },
         "schegent.wakeUp.enabled": {
           "type": "boolean",
           "default": false,

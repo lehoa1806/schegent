@@ -283,6 +283,20 @@ resumption data.
 window; [lock.ts](src/state/lock.ts) provides the workspace lock
 acquisition wrapper.
 
+[workspace-folder-picker.ts](src/state/workspace-folder-picker.ts) is the
+single source of truth for the canonical workspace folder in multi-root
+workspaces (feature 058). It memoizes `vscode.workspace.workspaceFolders[0]`
+and lazily subscribes to `onDidChangeWorkspaceFolders` for cache
+invalidation. All host code routes through `getCanonicalWorkspaceRoot()`;
+direct `workspaceFolders[0]` reads are forbidden outside this module and
+guarded by the lint regression at
+[tests/lint/no-direct-first-workspace-folder.test.ts](tests/lint/no-direct-first-workspace-folder.test.ts).
+[multi-root-warning.ts](src/state/multi-root-warning.ts) consumes the picker
+and emits a one-shot activation-time toast plus a `multi-root.warning-shown`
+audit event (payload: `folderCount`, `canonicalFolderName` — name only,
+never `fsPath`). Suppressible per-workspace via
+`schegent.multiRoot.suppressWarning` (`window`-scoped boolean).
+
 ### Queue (`src/queue/`)
 
 Single active run for v1 (feature 029 + 030). The public registry in

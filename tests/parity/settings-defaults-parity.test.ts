@@ -198,6 +198,13 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     ]);
     const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines']);
     const backendRunnerKey = new Set<string>(['backend.runner']);
+    // Feature 058 — read-once-at-activation toggles. The activation guard
+    // reads `schegent.multiRoot.suppressWarning` via `getConfiguration` with
+    // a typed default; SETTINGS_SCHEMA + the drift-guard in
+    // `validateWorkspaceSettings(config, logger, ...)` already constrain
+    // the value. Not part of KEY_SPECS because it does not flow through
+    // the general-settings IPC handler.
+    const multiRootKeys = new Set<string>(['multiRoot.suppressWarning']);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -205,7 +212,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         hostValidatedKeys.has(key) ||
         wakeUpKeys.has(key) ||
         complexObjectKeys.has(key) ||
-        backendRunnerKey.has(key);
+        backendRunnerKey.has(key) ||
+        multiRootKeys.has(key);
       if (!covered) orphans.push(key);
     }
 

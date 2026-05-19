@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "name": "multi-root-a",
+      "path": "multi-root-a"
+    },
+    {
+      "name": "multi-root-b",
+      "path": "multi-root-b"
+    }
+  ],
+  "settings": {}
+}

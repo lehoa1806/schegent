@@ -31,7 +31,7 @@ export type SettingsSchemaType =
   | 'enum';
 
 /** Setting scope as documented in `package.json` contributions. */
-export type SettingsSchemaScope = 'resource' | 'application';
+export type SettingsSchemaScope = 'resource' | 'application' | 'window';
 
 export interface SettingsSchemaEntry {
   /** Fully qualified key (prefixed with `schegent.`). */
@@ -238,6 +238,13 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     nullable: true,
     scope: 'resource',
     docLabel: 'Override for CLAUDE_AUTOCOMPACT_PCT (1-100, null = CLI default)'
+  },
+  'schegent.multiRoot.suppressWarning': {
+    key: 'schegent.multiRoot.suppressWarning',
+    type: 'boolean',
+    default: false,
+    scope: 'window',
+    docLabel: 'Suppress multi-root workspace warning toast'
   },
   'schegent.wakeUp.enabled': {
     key: 'schegent.wakeUp.enabled',

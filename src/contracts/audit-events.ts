@@ -201,6 +201,17 @@ export const PHASE_BREAKPOINT_EVENT_TYPES = [
 // `AUDIT_SCHEMA_VERSION` bump (follows 028 precedent).
 export const STATE_MIGRATION_EVENT_TYPES = ['state-migrated', 'workflow-run-repaired'] as const;
 
+// Feature 058 — multi-root workspace activation lifecycle audit event.
+// Emitted by `extension.ts` at activation when the workspace contains more
+// than one folder AND the `schegent.multiRoot.suppressWarning` setting is
+// not `true`. The payload is bounded to `folderCount` (number) and
+// `canonicalFolderName` (string — folder `.name` only, NEVER `.uri.fsPath`).
+// Hard rule: NEVER serialize workspace root paths into the structured audit
+// log. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 /
+// 032 precedent). Historical records lack the event entirely and are
+// backwards-compatible per the warn-and-preserve parser discipline.
+export const WORKSPACE_LIFECYCLE_EVENT_TYPES = ['multi-root.warning-shown'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -218,7 +229,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...WAKEUP_DAEMON_EVENT_TYPES,
   ...PHASE_LOG_EVENT_TYPES,
   ...PHASE_BREAKPOINT_EVENT_TYPES,
-  ...STATE_MIGRATION_EVENT_TYPES
+  ...STATE_MIGRATION_EVENT_TYPES,
+  ...WORKSPACE_LIFECYCLE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -238,8 +250,19 @@ export type WakeUpDaemonEventType = (typeof WAKEUP_DAEMON_EVENT_TYPES)[number];
 export type PhaseLogEventType = (typeof PHASE_LOG_EVENT_TYPES)[number];
 export type PhaseBreakpointEventType = (typeof PHASE_BREAKPOINT_EVENT_TYPES)[number];
 export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[number];
+export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
+
+// Feature 058 — payload for the `multi-root.warning-shown` audit event.
+// Bounded to two primitives: `folderCount` (the workspace folder count,
+// always >= 2 when emitted) and `canonicalFolderName` (the canonical
+// folder's `.name`). NEVER includes `folder.uri.fsPath` or any other
+// path-bearing field — see workspace root path serialization hard rule.
+export interface MultiRootWarningShownPayload {
+  readonly folderCount: number;
+  readonly canonicalFolderName: string;
+}
 
 export interface RetryEvaluatedPayload {
   readonly pipelineId: string;

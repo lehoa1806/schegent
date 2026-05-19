@@ -448,6 +448,21 @@ The runner hit the breakpoint and paused before the phase. Payload: `runId`, `ph
 
 Emitted by the state store on activation after a forward migration ran. Payload is structural (counts + booleans + enum literals); the v5 → v6 single-queue coalesce is the most operator-visible case.
 
+## Workspace lifecycle
+
+### `multi-root.warning-shown`
+
+Emitted once at activation when the active workspace contains more than one folder AND `schegent.multiRoot.suppressWarning` is `false`. Records that the operator was informed of the canonical-folder rule. The audit emission strictly precedes the toast, so a notifier failure cannot drop the record.
+
+Payload is primitive-only:
+
+| Key | Type | Notes |
+|---|---|---|
+| `folderCount` | number | The total number of folders in the active workspace (always `>= 2` for this event). |
+| `canonicalFolderName` | string | The `WorkspaceFolder.name` of the first folder. **Folder name only — never `fsPath`** (the [hard rule](../../../CLAUDE.md#hard-rules-when-changing-host-code) forbids path strings in audit payloads). |
+
+The synthetic envelope uses `runId: 'workspace-activation'` and `phase: 'activation'` because the event is workspace-scoped, not run-scoped. See [The Workspace Lock → Multi-root workspaces](../concepts/workspace-lock.md#multi-root-workspaces).
+
 ## Schema versioning
 
 `schemaVersion` on every audit event is currently `2`. The version bumps only when a payload field changes type or semantics; *additive* fields (new optional keys) do not bump the version.

@@ -27,6 +27,24 @@ A list of the things that go wrong, what they look like, and how to fix them.
 - **No workspace folder is open.** Schegent only operates on workspace folders. Open one via `File > Open Folder`.
 - **Workspace trust is not granted.** Schegent is intentionally inert in untrusted workspaces. Look for the trust prompt at the top of VS Code and accept it.
 
+## Multi-root workspace — `.schegent/` only appears in one folder
+
+**Symptom:** You opened a `.code-workspace` containing several folders, but the `.schegent/` directory was created in only one of them. The audit log and run history are not visible from the other folders.
+
+**Cause:** This is by design. Schegent treats the **first folder** in the `.code-workspace` as the canonical workspace folder. All state — `.schegent/`, the audit log, the per-run session tree, the queue, the lock — lives under that folder. Other folders are ordinary VS Code roots that Claude can read and edit, but Schegent itself does not create state in them.
+
+**At activation,** Schegent surfaces a one-shot informational toast naming the canonical folder. If you missed it, look at the audit log:
+
+```bash
+jq -c 'select(.eventType == "multi-root.warning-shown") | {timestamp, payload}' .schegent/audit.log
+```
+
+The payload records the folder count and the canonical folder's name (folder name only — never the absolute path).
+
+**Fix:** None required if the chosen folder is correct. To change which folder Schegent activates against, reorder the folders in the `.code-workspace` file so the desired folder is listed first, then reload the window. To hide the warning toast for this workspace, set `schegent.multiRoot.suppressWarning` to `true` in the `.code-workspace` `settings` block (window-scope).
+
+**v1 limitations:** No operator-chosen canonical folder, no per-folder queues, no migration when folders are reordered mid-session. See [Concepts → The Workspace Lock](../concepts/workspace-lock.md#multi-root-workspaces) for the full description and the v2 follow-ups.
+
 ## A run looks stuck
 
 **Symptom:** The in-flight task is showing as running, but nothing is updating in the phase log feed.

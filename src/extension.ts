@@ -5,6 +5,11 @@ import * as path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { WorkspaceLockManager } from './state/lock';
+import {
+  getCanonicalWorkspaceRoot,
+  disposeWorkspaceFolderPicker
+} from './state/workspace-folder-picker';
+import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { QueueManager } from './queue/queue-manager';
 import { resetPromptTransportCache } from './runner/claude-cli';
 import { createBackendRunner, resolveBackendKind } from './runner/backend-runner-factory';
@@ -123,11 +128,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // target `/etc/passwd.log` or another sensitive location.
   const runtimeLogAccessor = createRuntimeLogAccessor(
     () => vscode.workspace.getConfiguration('schegent'),
-    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null,
+    () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
     logger,
     () => {
       const roots: string[] = [];
-      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const wsRoot = getCanonicalWorkspaceRoot()?.uri.fsPath;
       if (wsRoot) roots.push(wsRoot);
       roots.push(context.globalStorageUri.fsPath);
       try {
@@ -170,9 +175,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let activeOutput: SchegentOutputChannel | null = null;
   let activePlaceholder: PlaceholderProjector = placeholder;
 
+  // Feature 058 — pre-warm the canonical-folder picker so its
+  // `onDidChangeWorkspaceFolders` cache-invalidator is registered BEFORE
+  // the extension's own listener below. This way, when VS Code fires a
+  // workspace-folders change, the picker resets its memoized value first
+  // and the extension's listener observes a fresh canonical folder when
+  // it calls `getCanonicalWorkspaceRoot()` via `ensureStage2()`.
+  void getCanonicalWorkspaceRoot();
+
   const ensureStage2 = async (): Promise<void> => {
     if (stage2) return;
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = getCanonicalWorkspaceRoot();
     if (!folder) return;
     const wiring = await wireStage2({
       context,
@@ -381,6 +394,24 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       logger.warn(`workflow-run-repaired audit append failed: ${(err as Error).message}`);
     }
   }
+
+  // Feature 058 — one-shot activation guard for multi-root workspaces.
+  // Emits `multi-root.warning-shown` (folder count + canonical folder
+  // NAME only, NEVER fsPath) and a non-blocking informational toast.
+  // The helper is internally one-shot per activation and respects
+  // `schegent.multiRoot.suppressWarning` (window-scope). Window-scope
+  // reads omit the resource URI so VS Code resolves the value from
+  // the active `.code-workspace`.
+  void maybeShowMultiRootWarning({
+    workspaceFolders: vscode.workspace.workspaceFolders,
+    canonicalFolder: getCanonicalWorkspaceRoot(),
+    suppressWarning: vscode.workspace
+      .getConfiguration('schegent')
+      .get<boolean>('multiRoot.suppressWarning', false),
+    auditWriter,
+    notifier
+  });
+
   const monitor = new ClaudeCliMonitor({
     stallThresholdMs: 90_000,
     rateLimitMatchers: RATE_LIMIT_MATCHERS,
@@ -1262,4 +1293,8 @@ export function deactivate(): void {
     activeWakeUpDeps = null;
     void deactivateWakeUp(deps);
   }
+  // Feature 058 — release the workspace-folder-picker subscription and clear
+  // its memoized canonical folder so a fresh activation rebuilds from a clean
+  // state. Idempotent and never throws.
+  disposeWorkspaceFolderPicker();
 }

@@ -215,6 +215,7 @@ Frequently used keys:
 | `schegent.wakeUp.schedulerType` | enum | `"chronological"` | `chronological` (`HH:MM`) or `periodic`. |
 | `schegent.wakeUp.chronologicalTime` | string | `"04:00"` | 24-hour time string. |
 | `schegent.wakeUp.periodicInterval` | string | `"Every 4h"` | `Every Nm` or `Every Nh`. |
+| `schegent.multiRoot.suppressWarning` | boolean | `false` | Suppress the one-shot multi-root activation toast — see [The Workspace Lock → Multi-root workspaces](docs/concepts/workspace-lock.md#multi-root-workspaces). |
 
 The full schema (`schegent.phases`, `schegent.pipelines`,
 `schegent.models`, validation rules) is documented in
