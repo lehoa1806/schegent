@@ -114,3 +114,82 @@ describe('audit-log-parser correlationId hydration (US4 / T066)', () => {
     expect(entry?.correlationId).toBe('corr-abc');
   });
 });
+
+describe('audit-log-parser trust.capability-denied tolerance (059, T030)', () => {
+  it('preserves trust.capability-denied entries with the contracted payload shape', () => {
+    const line = JSON.stringify({
+      id: 'audit-trust-1',
+      timestamp: new Date().toISOString(),
+      runId: 'trust-gate',
+      phase: 'settings',
+      iteration: 0,
+      eventType: 'trust.capability-denied',
+      payload: {
+        capability: 'phases',
+        resolvedScope: 'workspace',
+        workspaceBasename: 'enterprise-monorepo',
+        reason:
+          'Custom phase prompts disabled by workspace policy. Reset to defaults to save other phase fields.'
+      },
+      outcome: 'failure',
+      correlationId: 'corr-abc'
+    });
+    const result = parseAuditLogLineDetailed(line);
+    expect(result.entry).not.toBeNull();
+    expect(result.entry?.eventType).toBe('trust.capability-denied');
+    expect(result.entry?.runId).toBe('trust-gate');
+    expect(result.entry?.phase).toBe('settings');
+    expect(result.entry?.iteration).toBe(0);
+    expect(result.entry?.outcome).toBe('failure');
+    expect(result.entry?.correlationId).toBe('corr-abc');
+    // Known event — parser must NOT emit a warning for it.
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('preserves trust.capability-denied entries that include the optional rowIndex', () => {
+    const line = JSON.stringify({
+      id: 'audit-trust-2',
+      timestamp: new Date().toISOString(),
+      runId: 'trust-gate',
+      phase: 'settings',
+      iteration: 0,
+      eventType: 'trust.capability-denied',
+      payload: {
+        capability: 'retryConditions',
+        resolvedScope: 'user',
+        workspaceBasename: 'team-workspace',
+        reason:
+          'Custom retry-condition expressions disabled by workspace policy.',
+        rowIndex: 3
+      },
+      outcome: 'failure'
+    });
+    const entry = parseAuditLogLine(line);
+    expect(entry).not.toBeNull();
+    expect(entry?.eventType).toBe('trust.capability-denied');
+    const payload = entry?.payload as Record<string, unknown> | undefined;
+    expect(payload?.capability).toBe('retryConditions');
+    expect(payload?.resolvedScope).toBe('user');
+    expect(payload?.rowIndex).toBe(3);
+  });
+
+  it('does NOT warn on an unknown eventType warning for trust.capability-denied (it is registered)', () => {
+    const line = JSON.stringify({
+      id: 'audit-trust-3',
+      timestamp: new Date().toISOString(),
+      runId: 'trust-gate',
+      phase: 'settings',
+      iteration: 0,
+      eventType: 'trust.capability-denied',
+      payload: {
+        capability: 'pipelineOverrides',
+        resolvedScope: 'workspace-trust',
+        workspaceBasename: 'untrusted',
+        reason: 'Custom pipelines disabled by workspace policy.'
+      },
+      outcome: 'failure'
+    });
+    const result = parseAuditLogLineDetailed(line);
+    expect(result.warning).toBeUndefined();
+  });
+});

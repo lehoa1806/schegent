@@ -62,6 +62,18 @@ vi.mock('vscode', () => {
           }
         };
       },
+      // Feature 059 — capability trust resolver subscribes to these
+      // two events; the unit-test mock only needs to satisfy the API
+      // surface (returning a disposable no-op).
+      onDidGrantWorkspaceTrust: (_listener: () => void) => ({
+        dispose: () => undefined
+      }),
+      onDidChangeConfiguration: (
+        _listener: (event: { affectsConfiguration: (key: string) => boolean }) => void
+      ) => ({
+        dispose: () => undefined
+      }),
+      isTrusted: true,
       getConfiguration: () => ({
         get: <T>(_key: string, def: T) => def,
         inspect: <T>(_key: string) =>

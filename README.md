@@ -216,6 +216,9 @@ Frequently used keys:
 | `schegent.wakeUp.chronologicalTime` | string | `"04:00"` | 24-hour time string. |
 | `schegent.wakeUp.periodicInterval` | string | `"Every 4h"` | `Every Nm` or `Every Nh`. |
 | `schegent.multiRoot.suppressWarning` | boolean | `false` | Suppress the one-shot multi-root activation toast — see [The Workspace Lock → Multi-root workspaces](docs/concepts/workspace-lock.md#multi-root-workspaces). |
+| `schegent.trust.allowCustomPhases` | boolean\|null | `null` | Per-capability trust scope (feature 059). When `null`, follows Workspace Trust; when `false`, denies non-default phase prompts. See [Trust Scopes](docs/operations/trust-scopes.md). |
+| `schegent.trust.allowCustomRetryConditions` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `retryCondition` DSL expressions. See [Trust Scopes](docs/operations/trust-scopes.md). |
+| `schegent.trust.allowPipelineOverrides` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `schegent.pipelines` entries. See [Trust Scopes](docs/operations/trust-scopes.md). |
 
 The full schema (`schegent.phases`, `schegent.pipelines`,
 `schegent.models`, validation rules) is documented in

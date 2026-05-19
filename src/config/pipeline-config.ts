@@ -216,6 +216,62 @@ export const BUILT_IN_PIPELINES: readonly PipelineDef[] = Object.freeze([
   BUILT_IN_BUGFIX_PIPELINE
 ]);
 
+// Feature 059 — default-detection helpers used by the per-capability
+// trust gate in `cmd-save-phases.ts` and `cmd-save-pipelines.ts`. The
+// I-2 invariant of the save-command contract requires that saving the
+// built-in payload bypasses the gate unconditionally so an operator can
+// always reset-to-defaults from a denied state.
+//
+// `stableJsonStringify` produces a key-sorted, deterministic JSON
+// rendering so byte equality is independent of object-property order
+// from the wire (the webview emits properties in declaration order, but
+// that order is a JS-engine implementation detail). Stable across runs.
+function stableJsonStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return '[' + value.map(stableJsonStringify).join(',') + ']';
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  const parts = keys.map((k) => JSON.stringify(k) + ':' + stableJsonStringify(obj[k]));
+  return '{' + parts.join(',') + '}';
+}
+
+/**
+ * Returns `true` iff `payload` is byte-equivalent (after key-sorted
+ * JSON normalization) to the `BUILT_IN_PHASES` catalog. Used by the
+ * trust gate to recognize a reset-to-defaults save.
+ */
+export function equalsBuiltInPhases(payload: readonly unknown[]): boolean {
+  return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PHASES);
+}
+
+/**
+ * Returns `true` iff `payload` is byte-equivalent (after key-sorted
+ * JSON normalization) to the `BUILT_IN_PIPELINES` catalog. Used by the
+ * trust gate to recognize a reset-to-defaults save.
+ */
+export function equalsBuiltInPipelines(payload: readonly unknown[]): boolean {
+  return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PIPELINES);
+}
+
+/**
+ * Returns the `retryCondition` declared on the built-in phase with the
+ * given id, or `undefined` if the phase has no default retry condition
+ * (built-in phases currently do not declare retry conditions). Used by
+ * the row-granularity retry-condition gate in `cmd-save-phases.ts`: a
+ * payload row whose `retryCondition` matches this value is considered
+ * "default" and bypasses the per-row gate.
+ */
+export function defaultRetryConditionForPhaseId(phaseId: string): string | undefined {
+  const phase = BUILT_IN_PHASES.find((p) => p.id === phaseId);
+  return phase?.retryCondition;
+}
+
 export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'id',
   'name',

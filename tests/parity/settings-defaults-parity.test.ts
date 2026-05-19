@@ -205,6 +205,18 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // the value. Not part of KEY_SPECS because it does not flow through
     // the general-settings IPC handler.
     const multiRootKeys = new Set<string>(['multiRoot.suppressWarning']);
+    // Feature 059 — per-capability trust scopes. These three keys are
+    // `nullable boolean` settings consumed exclusively by
+    // `src/state/capability-trust-resolver.ts` via `getConfiguration().inspect()`.
+    // They never flow through the general-settings IPC handler — the
+    // resolver re-reads them on every call so there is no host-side
+    // validator beyond the JSON schema in package.json. Not part of
+    // KEY_SPECS by design (no writeGeneralSettings path).
+    const trustScopeKeys = new Set<string>([
+      'trust.allowCustomPhases',
+      'trust.allowCustomRetryConditions',
+      'trust.allowPipelineOverrides'
+    ]);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -213,7 +225,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         wakeUpKeys.has(key) ||
         complexObjectKeys.has(key) ||
         backendRunnerKey.has(key) ||
-        multiRootKeys.has(key);
+        multiRootKeys.has(key) ||
+        trustScopeKeys.has(key);
       if (!covered) orphans.push(key);
     }
 

@@ -212,6 +212,18 @@ export const STATE_MIGRATION_EVENT_TYPES = ['state-migrated', 'workflow-run-repa
 // backwards-compatible per the warn-and-preserve parser discipline.
 export const WORKSPACE_LIFECYCLE_EVENT_TYPES = ['multi-root.warning-shown'] as const;
 
+// Feature 059 — per-capability trust scope denial events. Emitted by
+// the save-command handlers when an `isCapabilityAllowed(capability)`
+// check returns `false` for a non-default payload. The payload is
+// bounded to four primitives (capability/resolvedScope/reason from
+// closed enums; `workspaceBasename` derived via `path.basename`). No
+// operator-supplied string flows through this event, so
+// `SECRET_PATTERNS` is unchanged. Additive — no `AUDIT_SCHEMA_VERSION`
+// bump (follows 028 / 058 precedent). Historical records lack the
+// event entirely and are backwards-compatible per the warn-and-preserve
+// parser discipline.
+export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -230,7 +242,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_LOG_EVENT_TYPES,
   ...PHASE_BREAKPOINT_EVENT_TYPES,
   ...STATE_MIGRATION_EVENT_TYPES,
-  ...WORKSPACE_LIFECYCLE_EVENT_TYPES
+  ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
+  ...TRUST_GATE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -251,6 +264,7 @@ export type PhaseLogEventType = (typeof PHASE_LOG_EVENT_TYPES)[number];
 export type PhaseBreakpointEventType = (typeof PHASE_BREAKPOINT_EVENT_TYPES)[number];
 export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[number];
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
+export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
@@ -262,6 +276,25 @@ export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 export interface MultiRootWarningShownPayload {
   readonly folderCount: number;
   readonly canonicalFolderName: string;
+}
+
+// Feature 059 — payload for the `trust.capability-denied` audit event.
+// Bounded to four primitives sourced from closed enums and a basename:
+//   - `capability` (TrustCapability literal — closed enum).
+//   - `resolvedScope` (ResolvedScope literal — closed enum).
+//   - `workspaceBasename` (the canonical folder's `path.basename(...)`;
+//     MUST NOT contain `/` or `\\`; never the full `.uri.fsPath`).
+//   - `reason` (TrustDeniedReason literal from `TRUST_DENIED_REASONS`).
+// NEVER includes workspace root paths, operator-authored phase prompts,
+// or any other free-form text. See contracts/trust-capability-denied-
+// audit-contract.md (I-1..I-6) and the workspace-root-serialization
+// hard rule.
+export interface TrustCapabilityDeniedPayload {
+  readonly capability: 'phases' | 'retryConditions' | 'pipelineOverrides';
+  readonly resolvedScope: 'user' | 'workspace' | 'workspace-trust';
+  readonly workspaceBasename: string;
+  readonly reason: string;
+  readonly rowIndex?: number;
 }
 
 export interface RetryEvaluatedPayload {

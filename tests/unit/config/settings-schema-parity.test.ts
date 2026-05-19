@@ -178,6 +178,35 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
     }
     expect(violators, `self-consistency violations: ${violators.join('; ')}`).toEqual([]);
   });
+
+  // Feature 059 — three trust-scope settings are explicitly required to
+  // exist with the agreed shape. The generic loop above already exercises
+  // parity for any present key; this assertion catches accidental
+  // deletion of all three at once (the generic loop would silently pass
+  // an empty intersection).
+  it('declares the three Feature 059 trust-scope keys (nullable boolean, window scope)', () => {
+    const trustKeys = [
+      'schegent.trust.allowCustomPhases',
+      'schegent.trust.allowCustomRetryConditions',
+      'schegent.trust.allowPipelineOverrides'
+    ];
+    for (const key of trustKeys) {
+      const entry = SETTINGS_SCHEMA[key];
+      expect(entry, `missing schema entry for ${key}`).toBeDefined();
+      expect(entry.type, `${key} type`).toBe('boolean');
+      expect(entry.nullable, `${key} nullable`).toBe(true);
+      expect(entry.default, `${key} default`).toBeNull();
+      expect(entry.scope, `${key} scope`).toBe('window');
+      expect(key in props, `package.json must declare ${key}`).toBe(true);
+      const pkg = props[key];
+      expect(
+        Array.isArray(pkg.type) && pkg.type.includes('boolean') && pkg.type.includes('null'),
+        `${key} package.json type must be ["boolean", "null"]`
+      ).toBe(true);
+      expect(pkg.default, `${key} package.json default`).toBeNull();
+      expect(pkg.scope, `${key} package.json scope`).toBe('window');
+    }
+  });
 });
 
 // `enum` in package.json is the JSON Schema `enum` keyword; the schema

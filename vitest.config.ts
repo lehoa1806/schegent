@@ -1,6 +1,18 @@
 import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
+  // Feature 059 — alias the bare `vscode` specifier to a default stub so
+  // modules that statically import `vscode` (e.g.
+  // `src/state/capability-trust-resolver.ts`) can be loaded by tests that
+  // do not supply their own `vi.mock('vscode', …)`. Tests that need real
+  // VS Code semantics continue to override the alias via `vi.mock` at
+  // module scope.
+  resolve: {
+    alias: {
+      vscode: fileURLToPath(new URL('./tests/__stubs__/vscode.ts', import.meta.url))
+    }
+  },
   test: {
     include: [
       'tests/unit/**/*.test.ts',

@@ -343,7 +343,57 @@ export interface WorkflowSnapshot {
    * on existence; the field is `null` when no subprocess is in flight.
    */
   readonly telemetry: TelemetrySnapshot | null;
+  /**
+   * Feature 059 — per-capability trust projection. Always present on the
+   * envelope so the webview can render policy banners and disable Save
+   * affordances without an existence guard.
+   *
+   * - `workspaceTrust`: mirrors `vscode.workspace.isTrusted`. When `false`,
+   *   all three `resolvedTrust.*` fields are also `false` (the ceiling
+   *   per the resolution ladder).
+   * - `resolvedTrust.phases`: result of `isCapabilityAllowed('phases')`.
+   *   Drives the Phases-tab Save button and policy banner.
+   * - `resolvedTrust.retryConditions`: result of
+   *   `isCapabilityAllowed('retryConditions')`. Drives the per-row
+   *   retry-condition column read-only state.
+   * - `resolvedTrust.pipelineOverrides`: result of
+   *   `isCapabilityAllowed('pipelineOverrides')`. Drives the Pipelines-
+   *   tab Save button and policy banner.
+   *
+   * Contract:
+   * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
+   */
+  readonly workspaceTrust: boolean;
+  readonly resolvedTrust: {
+    readonly phases: boolean;
+    readonly retryConditions: boolean;
+    readonly pipelineOverrides: boolean;
+  };
 }
+
+/**
+ * Feature 059 — fail-closed defaults for the trust projection. Used on
+ * the idle snapshot and as the fallback when the resolver throws. The
+ * explicit `TrustProjection` annotation widens the literal booleans to
+ * the `WorkflowSnapshot` field type.
+ */
+interface TrustProjection {
+  readonly workspaceTrust: boolean;
+  readonly resolvedTrust: Readonly<{
+    phases: boolean;
+    retryConditions: boolean;
+    pipelineOverrides: boolean;
+  }>;
+}
+
+export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
+  workspaceTrust: false,
+  resolvedTrust: Object.freeze({
+    phases: false,
+    retryConditions: false,
+    pipelineOverrides: false
+  })
+});
 
 export const AUDIT_TAIL_MAX = 50;
 export const RECENT_QUEUE_MAX = 5;
@@ -409,7 +459,11 @@ export function buildIdleSnapshot(opts: {
     wakeUpLog: IDLE_WAKEUP_LOG,
     wakeUp: IDLE_WAKEUP_PROJECTION,
     // Feature 033 — telemetry is ephemeral and absent on idle snapshots.
-    telemetry: null
+    telemetry: null,
+    // Feature 059 — idle snapshot uses fail-closed trust defaults until
+    // the projector composes the first resolver read.
+    workspaceTrust: IDLE_TRUST_PROJECTION.workspaceTrust,
+    resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust
   });
 }
 

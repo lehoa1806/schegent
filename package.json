@@ -385,6 +385,33 @@
           "scope": "window",
           "markdownDescription": "Suppress the one-shot multi-root workspace warning toast surfaced at activation. Feature 058 makes the first folder in the active `.code-workspace` the canonical Schegent workspace folder; `.schegent/` state is created there, and other folders are treated as ordinary VS Code roots. Set to `true` to hide the per-activation toast. See `repo/docs/concepts/workspace-lock.md`."
         },
+        "schegent.trust.allowCustomPhases": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "scope": "window",
+          "markdownDescription": "Per-capability trust scope (feature 059). When `null` (default), the capability follows the workspace's Workspace Trust state. When `true`, saving non-default phase definitions is allowed even on an untrusted workspace _only if_ the workspace itself is trusted (the Workspace Trust ceiling is never widened). When `false`, saving non-default phase definitions is denied at the IPC layer and a `trust.capability-denied` audit event is recorded. The four-step resolution ladder is: workspace-trust ceiling → workspace-scope → user-scope → default-allow. See `repo/docs/operations/trust-scopes.md`."
+        },
+        "schegent.trust.allowCustomRetryConditions": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "scope": "window",
+          "markdownDescription": "Per-capability trust scope (feature 059) gating non-default retry-condition DSL expressions on phase rows. When `null` (default), follows Workspace Trust. When `false`, any save that introduces a non-default `retryCondition` on any phase row is denied at the IPC layer; the row's default retry-condition is unaffected. The Workspace Trust ceiling is never widened. See `repo/docs/operations/trust-scopes.md`."
+        },
+        "schegent.trust.allowPipelineOverrides": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "scope": "window",
+          "markdownDescription": "Per-capability trust scope (feature 059) gating non-default entries in the pipeline catalog (`schegent.pipelines`). When `null` (default), follows Workspace Trust. When `false`, saving a non-default pipeline catalog is denied at the IPC layer. Reset-to-defaults is always allowed. The Workspace Trust ceiling is never widened. See `repo/docs/operations/trust-scopes.md`."
+        },
         "schegent.wakeUp.enabled": {
           "type": "boolean",
           "default": false,

@@ -1,8 +1,27 @@
+// Feature 059 (US1/US3) — per-capability trust gate for CMD_SAVE_PHASES.
+// Contract: specs/059-fine-grained-trust-scopes/contracts/save-command-trust-gate-contract.md
+//
+// The gate runs AFTER existing DSL/effort/model validation and BEFORE
+// the persistent `updateConfig` call. It honors three invariants from
+// the contract:
+//   I-2: a payload byte-equivalent to `BUILT_IN_PHASES` always passes
+//        (reset-to-defaults is unconditionally allowed).
+//   I-3: row-granularity retry-condition check uses
+//        `defaultRetryConditionForPhaseId` as the per-row "default" baseline.
+//   I-4: at most one denial per save; `phases` takes precedence over
+//        `retryConditions` and short-circuits the row scan.
+
 import { validate as validateRetryCondition } from '../../../lib/retry-condition';
-import { EFFORT_LEVELS } from '../../../config/pipeline-config';
+import {
+  EFFORT_LEVELS,
+  defaultRetryConditionForPhaseId,
+  equalsBuiltInPhases
+} from '../../../config/pipeline-config';
+import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePhasesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
+import { denyAndAudit } from './trust-gate';
 
 export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) => {
   if (!ctx.deps.updateConfig) {
@@ -62,6 +81,37 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       return;
     }
   }
+
+  // Feature 059 trust gate — see header docstring.
+  // I-2: reset-to-defaults is always allowed.
+  if (!equalsBuiltInPhases(command.payload.phases as readonly unknown[])) {
+    // Step 2: phases-level check (precedence).
+    if (!isCapabilityAllowed('phases')) {
+      await denyAndAudit(ctx, 'phases');
+      return;
+    }
+    // Step 3: row-granularity retry-conditions check.
+    for (let i = 0; i < phasesPayload.length; i++) {
+      const phase = phasesPayload[i];
+      const phaseId = String(phase.id ?? '');
+      const submittedRc =
+        typeof phase.retryCondition === 'string' && phase.retryCondition !== ''
+          ? phase.retryCondition
+          : undefined;
+      const defaultRc = defaultRetryConditionForPhaseId(phaseId);
+      if (submittedRc !== defaultRc) {
+        if (!isCapabilityAllowed('retryConditions')) {
+          await denyAndAudit(ctx, 'retryConditions', i);
+          return;
+        }
+        // I-4: one denial per save. Break the row scan as soon as the
+        // first non-default retry-condition row is observed AND the
+        // capability is allowed.
+        break;
+      }
+    }
+  }
+
   await ctx.deps.updateConfig('phases', command.payload.phases);
   await ack(ctx, 'accepted');
 };

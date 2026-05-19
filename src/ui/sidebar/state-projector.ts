@@ -3,6 +3,7 @@ import type { AuditEntry } from '../../audit/audit-entry';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import { parseAuditLogLine } from '../../parser/audit-log-parser';
+import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
 import type {
   Disposable,
   StoreChangeListener,
@@ -17,6 +18,7 @@ import {
   AUDIT_TAIL_MAX,
   IDLE_LIVE_ACTIVITY,
   IDLE_GENERAL_SETTINGS,
+  IDLE_TRUST_PROJECTION,
   IDLE_WAKEUP_LOG,
   IDLE_WAKEUP_SETTINGS,
   SCHEMA_VERSION,
@@ -277,10 +279,21 @@ export class StateProjector {
     this.getWakeupModel = deps.getWakeupModel;
     this.getWakeupSessionLogPath = deps.getWakeupSessionLogPath;
     this.getPhasePrecedence = deps.getPhasePrecedence;
-    this.currentSnapshot = buildIdleSnapshot({
-      isPrimary: true,
-      producedAt: this.now().toISOString()
-    });
+    // Feature 059 — populate the initial snapshot via a real `project()`
+    // so the first `subscribe()` delivers fresh trust + queue values
+    // without requiring `start()` to be called first. The projection is
+    // pure (read-only across the wired deps) and the trust path is
+    // fail-closed via try/catch inside `project()`. If something throws
+    // before the first projection completes, fall back to the static
+    // idle snapshot.
+    try {
+      this.currentSnapshot = this.project();
+    } catch {
+      this.currentSnapshot = buildIdleSnapshot({
+        isPrimary: true,
+        producedAt: this.now().toISOString()
+      });
+    }
   }
 
   public start(): void {
@@ -738,6 +751,25 @@ export class StateProjector {
       sessionLogPath: this.getWakeupSessionLogPath ? this.getWakeupSessionLogPath() : ''
     });
 
+    // Feature 059 — per-capability trust projection. Fail-closed on
+    // resolver throw (FR-010d): all four booleans default to `false`
+    // and a warning is logged once per failed projection.
+    let workspaceTrust = IDLE_TRUST_PROJECTION.workspaceTrust;
+    let resolvedTrust = IDLE_TRUST_PROJECTION.resolvedTrust;
+    try {
+      const resolved = getResolvedCapabilities();
+      workspaceTrust = resolved.workspaceTrust;
+      resolvedTrust = Object.freeze({
+        phases: resolved.phases,
+        retryConditions: resolved.retryConditions,
+        pipelineOverrides: resolved.pipelineOverrides
+      });
+    } catch (err) {
+      this.logger?.warn(
+        `projector: failed to resolve trust capabilities: ${(err as Error).message}`
+      );
+    }
+
     return Object.freeze({
       schemaVersion: SCHEMA_VERSION,
       isPrimary,
@@ -797,6 +829,11 @@ export class StateProjector {
       // is already sanitized + clamped + frozen in `updateTelemetry`,
       // so we propagate it as-is.
       telemetry: this.stagedTelemetry,
+      // Feature 059 — trust projection. Always present so the webview
+      // can render policy banners and gate Save affordances without an
+      // existence guard.
+      workspaceTrust,
+      resolvedTrust,
       ...(activePipeline ? { activePipeline } : {}),
       ...(phasePrecedence !== undefined ? { phasePrecedence } : {})
     });

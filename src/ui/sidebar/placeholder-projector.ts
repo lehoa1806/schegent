@@ -6,6 +6,7 @@ import {
   IDLE_DELAYED_RETRY,
   IDLE_GENERAL_SETTINGS,
   IDLE_LIVE_ACTIVITY,
+  IDLE_TRUST_PROJECTION,
   IDLE_WAKEUP_LOG,
   IDLE_WAKEUP_PROJECTION,
   IDLE_WAKEUP_SETTINGS,
@@ -77,7 +78,10 @@ export class PlaceholderProjector implements ProjectorHandle {
       wakeUpLog: IDLE_WAKEUP_LOG,
       wakeUp: IDLE_WAKEUP_PROJECTION,
       // Feature 033 — telemetry is ephemeral; placeholder is always null.
-      telemetry: null
+      telemetry: null,
+      // Feature 059 — fail-closed trust projection on placeholder.
+      workspaceTrust: IDLE_TRUST_PROJECTION.workspaceTrust,
+      resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust
     });
   }
 

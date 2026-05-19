@@ -1,12 +1,17 @@
 // Feature 056 Track 3 (FR-013..FR-018) — typed single source of truth
 // for every `schegent.*` setting the host accepts.
 //
-// `SETTINGS_SCHEMA` mirrors the 25 properties under
+// `SETTINGS_SCHEMA` mirrors the properties under
 // `package.json` → `contributes.configuration.properties`. The parity
 // test at `tests/unit/config/settings-schema-parity.test.ts` enforces
 // bidirectional agreement: every package property has a schema entry
 // and every schema entry has a package property, with matching
 // `type` / `default` / `minimum` / `maximum` / `enum` constraints.
+//
+// Feature 059 added three nullable boolean trust-scope settings:
+//   - schegent.trust.allowCustomPhases
+//   - schegent.trust.allowCustomRetryConditions
+//   - schegent.trust.allowPipelineOverrides
 //
 // This module is intentionally `vscode`-free: it is imported by host
 // validators (transitively via `general-settings.ts`) and by tests.
@@ -55,7 +60,7 @@ export interface SettingsSchemaEntry {
 }
 
 /**
- * Authoritative typed schema for the 25 `schegent.*` settings shipped in
+ * Authoritative typed schema for the `schegent.*` settings shipped in
  * this extension. Every entry MUST agree byte-for-byte with the matching
  * property under `package.json` → `contributes.configuration.properties`.
  *
@@ -245,6 +250,30 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: false,
     scope: 'window',
     docLabel: 'Suppress multi-root workspace warning toast'
+  },
+  'schegent.trust.allowCustomPhases': {
+    key: 'schegent.trust.allowCustomPhases',
+    type: 'boolean',
+    default: null,
+    nullable: true,
+    scope: 'window',
+    docLabel: 'Trust scope: allow saving non-default phase definitions'
+  },
+  'schegent.trust.allowCustomRetryConditions': {
+    key: 'schegent.trust.allowCustomRetryConditions',
+    type: 'boolean',
+    default: null,
+    nullable: true,
+    scope: 'window',
+    docLabel: 'Trust scope: allow saving non-default retry-condition DSL expressions on phase rows'
+  },
+  'schegent.trust.allowPipelineOverrides': {
+    key: 'schegent.trust.allowPipelineOverrides',
+    type: 'boolean',
+    default: null,
+    nullable: true,
+    scope: 'window',
+    docLabel: 'Trust scope: allow saving non-default pipeline catalog entries'
   },
   'schegent.wakeUp.enabled': {
     key: 'schegent.wakeUp.enabled',

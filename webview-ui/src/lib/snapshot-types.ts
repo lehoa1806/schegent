@@ -550,6 +550,21 @@ export interface WorkflowSnapshot {
    */
   readonly phasePrecedence?: PhasePrecedenceProjection;
   /**
+   * Feature 059 — per-capability trust projection. Optional for legacy-
+   * tolerance: an older host bundle may not include either field, in
+   * which case the webview must fail closed (treat as `false`) per the
+   * trust-projection contract's failure-mode rules.
+   *
+   * Contract:
+   * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
+   */
+  readonly workspaceTrust?: boolean;
+  readonly resolvedTrust?: {
+    readonly phases: boolean;
+    readonly retryConditions: boolean;
+    readonly pipelineOverrides: boolean;
+  };
+  /**
    * Feature 033 — ephemeral per-subprocess telemetry sample. Never
    * persisted to WorkflowRun, never written to the audit log. The host
    * projection clears this to `null` one publish after the runner's

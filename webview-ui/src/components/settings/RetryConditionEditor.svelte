@@ -50,10 +50,18 @@
     instruction: string;
     /** Optional onchange callback fired after the 200ms debounce settles. */
     onchange?: (e: ChangeEvent) => void;
+    /**
+     * Feature 059 — when `true`, render the textarea as `readonly` so
+     * the trust-denied state surfaces in the UI. Drift control: when the
+     * value is read-only, the parent must NOT submit the row's
+     * `retryCondition` field (the host gate would reject it anyway).
+     */
+    readonly?: boolean;
   }
 
   const props: Props = $props();
   const onchange = $derived(props.onchange);
+  const isReadonly = $derived(props.readonly === true);
 
   // Local mutable copy of the source so the parent can re-render with
   // a new initial value without clobbering the operator's draft. Using
@@ -152,6 +160,10 @@
     spellcheck="false"
     value={local}
     oninput={onInput}
+    readonly={isReadonly}
+    title={isReadonly
+      ? 'Custom retry-condition expressions are disabled by workspace policy.'
+      : undefined}
     placeholder="open_questions > 0 and tasks_remaining > 0"
   ></textarea>
 

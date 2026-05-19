@@ -574,6 +574,55 @@ export type RevealWakeupSessionLogResponse =
   | RevealWakeupSessionLogResponseSuccess
   | RevealWakeupSessionLogResponseRejected;
 
+// Feature 059 — Fine-Grained Trust Scopes. Three per-capability trust
+// scopes gate the save-command handlers and the webview projection.
+// See specs/059-fine-grained-trust-scopes/data-model.md §3 and the
+// contracts under specs/059-fine-grained-trust-scopes/contracts/.
+export type TrustCapability =
+  | 'phases'
+  | 'retryConditions'
+  | 'pipelineOverrides';
+
+// Scope that produced the most-restrictive applicable layer for the
+// resolved capability decision. Documented in data-model.md §1.
+export type ResolvedScope = 'user' | 'workspace' | 'workspace-trust';
+
+// Closed template set for the `reason` field of `TrustDeniedError` and
+// the audit payload's `reason` field. No user-controlled string is ever
+// stored or surfaced — every reason originates here. The closed set
+// preserves the `SECRET_PATTERNS` redaction invariant (CLAUDE.md hard
+// rule) because no operator input flows into the audit payload.
+export const TRUST_DENIED_REASONS = {
+  workspaceTrust:
+    'Workspace is not trusted; per-capability scopes cannot widen workspace trust.',
+  phasesWorkspace: 'allowCustomPhases is false at workspace scope.',
+  phasesUser: 'allowCustomPhases is false at user scope.',
+  retryConditionsWorkspace:
+    'allowCustomRetryConditions is false at workspace scope.',
+  retryConditionsUser: 'allowCustomRetryConditions is false at user scope.',
+  pipelineOverridesWorkspace:
+    'allowPipelineOverrides is false at workspace scope.',
+  pipelineOverridesUser: 'allowPipelineOverrides is false at user scope.'
+} as const;
+
+export type TrustDeniedReason =
+  (typeof TRUST_DENIED_REASONS)[keyof typeof TRUST_DENIED_REASONS];
+
+// IPC error variant carried in `CommandAckMessage.result` when a
+// save-command handler denies a payload because of a per-capability
+// trust scope. The webview discriminates on `kind === 'trust-denied'`.
+//
+// `rowIndex` is only present when `capability === 'retryConditions'`;
+// otherwise it MUST be omitted (the per-row gate is documented in
+// contracts/save-command-trust-gate-contract.md).
+export interface TrustDeniedError {
+  readonly kind: 'trust-denied';
+  readonly capability: TrustCapability;
+  readonly resolvedScope: ResolvedScope;
+  readonly rowIndex?: number;
+  readonly reason: TrustDeniedReason;
+}
+
 export type SidebarCommand =
   | StartCommand
   | CancelCommand

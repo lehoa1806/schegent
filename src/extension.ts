@@ -10,6 +10,7 @@ import {
   disposeWorkspaceFolderPicker
 } from './state/workspace-folder-picker';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
+import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
 import { resetPromptTransportCache } from './runner/claude-cli';
 import { createBackendRunner, resolveBackendKind } from './runner/backend-runner-factory';
@@ -689,6 +690,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // the projector exists. The sampler's `onSample` closure consults this
   // pointer on every emission (and is a no-op until binding).
   telemetryProjector = projector;
+
+  // Feature 059 (US1, T012) — wire the per-capability trust resolver. The
+  // resolver re-reads `workspace.isTrusted` + the three `schegent.trust.*`
+  // settings on every call (no cache); its only stateful surface is a
+  // pair of disposables that fire `projector.kick()` when the operator
+  // grants workspace trust or edits any of the three trust keys.
+  // Contract: specs/059-fine-grained-trust-scopes/contracts/
+  // capability-trust-resolver-contract.md.
+  initCapabilityTrustResolver(context, () => projector.kick());
 
   if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
     disposables.push(

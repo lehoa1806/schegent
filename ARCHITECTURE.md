@@ -297,6 +297,23 @@ audit event (payload: `folderCount`, `canonicalFolderName` — name only,
 never `fsPath`). Suppressible per-workspace via
 `schegent.multiRoot.suppressWarning` (`window`-scoped boolean).
 
+[capability-trust-resolver.ts](src/state/capability-trust-resolver.ts) is
+the host-only resolver for the three per-capability trust scopes
+introduced in feature 059 (`schegent.trust.allowCustomPhases`,
+`schegent.trust.allowCustomRetryConditions`,
+`schegent.trust.allowPipelineOverrides`). Each call re-reads
+`vscode.workspace.isTrusted` and the relevant setting via
+`getConfiguration().inspect(key)` — no value is cached across
+configuration or workspace-trust changes. Resolution follows a four-step
+ladder: **workspace-trust ceiling → workspace-scope → user-scope →
+default-allow**. The ceiling is never widened; user-scope cannot
+override workspace-scope. The resolver subscribes to
+`onDidGrantWorkspaceTrust` and `onDidChangeConfiguration` and kicks the
+state projector so the webview reflects projection changes immediately.
+Save handlers consult the resolver before mutating the catalog and emit
+a `trust.capability-denied` audit event on denial (payload bounded to
+closed enums + workspace basename).
+
 ### Queue (`src/queue/`)
 
 Single active run for v1 (feature 029 + 030). The public registry in

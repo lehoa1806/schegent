@@ -132,6 +132,37 @@ Schegent registers as a `workspaceTrust` consumer with **untrusted-restricted** 
 
 You must explicitly trust the workspace before Schegent does anything. This is the same trust gate VS Code applies for "can run code from this workspace".
 
+## Per-capability trust scopes
+
+VS Code's Workspace Trust is binary; Schegent layers three
+independently-configurable trust scopes on top to give enterprise IT a
+narrower gate than "trust everything or trust nothing":
+
+- `schegent.trust.allowCustomPhases` — gates non-default phase prompts.
+- `schegent.trust.allowCustomRetryConditions` — gates non-default retry-condition DSL expressions on phase rows.
+- `schegent.trust.allowPipelineOverrides` — gates non-default entries in the pipeline catalog.
+
+Each setting is `boolean | null`, defaults to `null` (follow Workspace
+Trust), and is resolved against a four-step ladder:
+**workspace-trust ceiling → workspace-scope → user-scope → default-allow**.
+
+The Workspace Trust check runs first. A workspace that is not trusted
+returns `false` for every capability regardless of any user- or
+workspace-scope value — the **ceiling is never widened**. This is the
+core invariant: per-capability scopes can only *narrow* the trust
+surface, never broaden it past what VS Code's workspace-trust gate
+allows.
+
+Denied save attempts emit a `trust.capability-denied` audit event whose
+payload is bounded to a closed enum (capability, resolved scope, fixed
+reason template) plus `workspaceBasename` (basename only, never the
+full path). No operator-controlled string flows into the payload, so
+`SECRET_PATTERNS` redaction is unchanged.
+
+See [operations/trust-scopes.md](../operations/trust-scopes.md) for the
+operator-facing guide, the full 16-row truth table, and the four worked
+resolution examples.
+
 ## Primary-host gating (multi-window)
 
 When the same workspace is open in multiple VS Code windows, only the **primary host** can mutate state. Secondary hosts receive `not-primary-host` rejections on every mutating IPC command.

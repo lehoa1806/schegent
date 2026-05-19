@@ -81,6 +81,15 @@ vi.mock('vscode', () => {
           }
         };
       },
+      onDidGrantWorkspaceTrust: (_listener: () => void) => ({
+        dispose: () => undefined
+      }),
+      onDidChangeConfiguration: (
+        _listener: (event: { affectsConfiguration: (key: string) => boolean }) => void
+      ) => ({
+        dispose: () => undefined
+      }),
+      isTrusted: true,
       getConfiguration: mocks.state.getConfiguration
     },
     commands: {

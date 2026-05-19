@@ -10,11 +10,40 @@
   import { savePhases as savePhasesHelper, type SavePhaseRow } from '../lib/save-phases';
   import RetryConditionEditor from './settings/RetryConditionEditor.svelte';
   import RawJsonPhaseEditor from './settings/RawJsonPhaseEditor.svelte';
+  import TrustBanner from './TrustBanner.svelte';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
-  interface Props { snapshot: WorkflowSnapshot; }
-  const { snapshot }: Props = $props();
+  interface Props {
+    snapshot: WorkflowSnapshot;
+    // Feature 059 — test seam: lets the component test render the
+    // Phases tab without simulating a click. Production wiring omits
+    // this prop and the component opens on the Pipelines tab as
+    // before.
+    initialTab?: 'pipelines' | 'phases' | 'models';
+  }
+  const { snapshot, initialTab }: Props = $props();
+
+  // Feature 059 — trust projection. Fail closed when the host bundle is
+  // older and does not include these fields.
+  const workspaceTrust = $derived(snapshot.workspaceTrust === true);
+  const trustPhases = $derived(
+    workspaceTrust && snapshot.resolvedTrust?.phases === true
+  );
+  const trustRetryConditions = $derived(
+    workspaceTrust && snapshot.resolvedTrust?.retryConditions === true
+  );
+  const trustPipelineOverrides = $derived(
+    workspaceTrust && snapshot.resolvedTrust?.pipelineOverrides === true
+  );
+  const showWorkspaceTrustBanner = $derived(snapshot.workspaceTrust === false);
+  const showPhasesBanner = $derived(!showWorkspaceTrustBanner && !trustPhases);
+  const showRetryConditionsBanner = $derived(
+    !showWorkspaceTrustBanner && !trustRetryConditions
+  );
+  const showPipelinesBanner = $derived(
+    !showWorkspaceTrustBanner && !trustPipelineOverrides
+  );
 
   const PRESEEDED_MODELS = [
     'claude-sonnet-4-6',
@@ -23,7 +52,7 @@
     'claude-haiku-4-5'
   ];
 
-  let activeTab = $state<'pipelines' | 'phases' | 'models'>('pipelines');
+  let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
 
   type MutablePipeline = Omit<PipelineDefinition, 'phases'> & { phases: string[] };
   type MutablePhase = {
@@ -249,12 +278,18 @@
   </div>
 
   <div class="builder-canvas">
+    {#if showWorkspaceTrustBanner}
+      <TrustBanner variant="workspace-trust" />
+    {/if}
     {#if activeTab === 'pipelines'}
+      {#if showPipelinesBanner}
+        <TrustBanner variant="pipelines" />
+      {/if}
       <div class="toolbar">
-        <button class="btn btn-primary" onclick={addPipeline}>Add Pipeline</button>
+        <button class="btn btn-primary" onclick={addPipeline} disabled={!trustPipelineOverrides}>Add Pipeline</button>
         <button class="btn" disabled={pipelineHistoryIndex <= 0} onclick={undoPipeline}>Undo</button>
         <button class="btn" disabled={pipelineHistoryIndex >= pipelineHistory.length - 1} onclick={redoPipeline}>Redo</button>
-        <button class="btn btn-secondary" style="margin-left:auto" onclick={savePipelines}>Save Pipelines</button>
+        <button class="btn btn-secondary" style="margin-left:auto" onclick={savePipelines} disabled={!trustPipelineOverrides}>Save Pipelines</button>
       </div>
       <div class="split-pane">
         <div class="pane-left">
@@ -330,11 +365,17 @@
       </div>
 
     {:else if activeTab === 'phases'}
+      {#if showPhasesBanner}
+        <TrustBanner variant="phases" />
+      {/if}
+      {#if showRetryConditionsBanner}
+        <TrustBanner variant="retry-conditions" />
+      {/if}
       <div class="toolbar">
-        <button class="btn btn-primary" data-testid="phases-add" onclick={addPhase}>Add Phase</button>
+        <button class="btn btn-primary" data-testid="phases-add" onclick={addPhase} disabled={!trustPhases}>Add Phase</button>
         <button class="btn" disabled={phaseHistoryIndex <= 0} onclick={undoPhase}>Undo</button>
         <button class="btn" disabled={phaseHistoryIndex >= phaseHistory.length - 1} onclick={redoPhase}>Redo</button>
-        <button class="btn btn-secondary" data-testid="phases-save-all" style="margin-left:auto" onclick={savePhases}>Save Phases</button>
+        <button class="btn btn-secondary" data-testid="phases-save-all" style="margin-left:auto" onclick={savePhases} disabled={!trustPhases}>Save Phases</button>
       </div>
       <div class="split-pane">
         <div class="pane-left">
@@ -409,7 +450,7 @@
                     </select>
                   </label>
                   <label class="form-field checkbox-field">
-                    <input type="checkbox" data-testid="phases-retry-toggle" checked={isRetryEnabled(phaseRef)} onchange={() => toggleRetryCondition(idx)} />
+                    <input type="checkbox" data-testid="phases-retry-toggle" checked={isRetryEnabled(phaseRef)} onchange={() => toggleRetryCondition(idx)} disabled={!trustRetryConditions} />
                     <span class="form-label">Retry Condition</span>
                   </label>
                   {#if isRetryEnabled(phaseRef)}
@@ -418,6 +459,7 @@
                         source={phaseRef.retryCondition ?? ''}
                         instruction={phaseRef.instruction}
                         onchange={(e) => onRetryConditionChange(idx, e)}
+                        readonly={!trustRetryConditions}
                       />
                     </div>
                   {/if}
