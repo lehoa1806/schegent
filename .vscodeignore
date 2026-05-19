@@ -24,6 +24,7 @@ vitest.config.ts
 .agents/**
 .schegent/**
 scratch/**
+scripts/**
 out/**
 node_modules/**
 coverage/**

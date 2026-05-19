@@ -70,6 +70,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Package smoke
+        run: npm run package:smoke
+
       # Integration tests run real VS Code via @vscode/test-electron.
       # On Linux we need xvfb; macOS/Windows have native display servers.
       - name: Integration tests (Linux)

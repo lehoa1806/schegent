@@ -108,6 +108,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run build
+      - run: npm run package:smoke
 
   e2e:
     name: deterministic E2E smoke (feature 055)

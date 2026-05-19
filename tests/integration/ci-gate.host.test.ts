@@ -51,7 +51,19 @@ export async function run(): Promise<void> {
     'package.json:scripts.ci must invoke `npm run test:integration` so Electron is part of the documented release gate'
   );
   assert.ok(
+    scripts.ci.includes('package:smoke'),
+    'package.json:scripts.ci must invoke `npm run package:smoke` so packaged VSIX creation is part of the documented release gate'
+  );
+  assert.ok(
+    scripts['package:smoke']?.includes('scripts/check-vsix-smoke.mjs'),
+    'package.json:scripts["package:smoke"] must inspect the produced VSIX contents, not only create the archive'
+  );
+  assert.ok(
     !scripts['ci:fast'].includes('test:integration'),
     'package.json:scripts["ci:fast"] must NOT invoke `test:integration` — that script is the inner-loop iteration gate'
+  );
+  assert.ok(
+    !scripts['ci:fast'].includes('package:smoke'),
+    'package.json:scripts["ci:fast"] must NOT invoke `package:smoke` — that script is the inner-loop iteration gate'
   );
 }

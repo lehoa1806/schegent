@@ -43,6 +43,21 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     expect(scripts.ci).toContain('npm run test:integration');
   });
 
+  it('the `ci` chain invokes `package:smoke` after build and before integration', () => {
+    const scripts = readScripts();
+    expect(scripts['package:smoke']).toBeTypeOf('string');
+    expect(scripts['package:smoke']).toContain('vsce package');
+    expect(scripts['package:smoke']).toContain('--out schegent-smoke.vsix');
+    expect(scripts['package:smoke']).toContain('scripts/check-vsix-smoke.mjs');
+
+    const ci = scripts.ci;
+    const idxBuild = ci.indexOf('npm run build');
+    const idxPackage = ci.indexOf('npm run package:smoke');
+    const idxIntegration = ci.indexOf('npm run test:integration');
+    expect(idxPackage).toBeGreaterThan(idxBuild);
+    expect(idxIntegration).toBeGreaterThan(idxPackage);
+  });
+
   it('the `ci:fast` chain does NOT invoke `test:integration`', () => {
     const scripts = readScripts();
     // ci:fast is the inner-loop iteration gate. Pulling Electron into it
@@ -56,17 +71,19 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     const scripts = readScripts();
     const ci = scripts.ci;
     // Sanity check: the documented chain is typecheck → typecheck:webview →
-    // lint → test → build → test:integration. We only assert presence and
-    // ordering of the load-bearing steps, not exact whitespace.
+    // lint → test → build → package:smoke → test:integration. We only assert
+    // presence and ordering of the load-bearing steps, not exact whitespace.
     const idxTypecheck = ci.indexOf('npm run typecheck');
     const idxLint = ci.indexOf('npm run lint');
     const idxTest = ci.indexOf('npm run test');
     const idxBuild = ci.indexOf('npm run build');
+    const idxPackage = ci.indexOf('npm run package:smoke');
     const idxIntegration = ci.indexOf('npm run test:integration');
     expect(idxTypecheck).toBeGreaterThanOrEqual(0);
     expect(idxLint).toBeGreaterThan(idxTypecheck);
     expect(idxTest).toBeGreaterThan(idxLint);
     expect(idxBuild).toBeGreaterThan(idxTest);
-    expect(idxIntegration).toBeGreaterThan(idxBuild);
+    expect(idxPackage).toBeGreaterThan(idxBuild);
+    expect(idxIntegration).toBeGreaterThan(idxPackage);
   });
 });

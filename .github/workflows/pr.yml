@@ -56,3 +56,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Package smoke
+        run: npm run package:smoke

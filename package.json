@@ -463,8 +463,9 @@
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test && npm run test:e2e && npm run build && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
+    "package:smoke": "vsce package --no-dependencies --out schegent-smoke.vsix && node scripts/check-vsix-smoke.mjs schegent-smoke.vsix",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
   "devDependencies": {
