@@ -2,6 +2,8 @@
 
 Schegent runs an autonomous local Claude CLI backend with broad capabilities inside your workspace. This page is the operator-facing summary of what Schegent can and cannot do, what risks exist, and what mitigations are in place. It is not exhaustive — it is the model you need to make informed decisions about whether and how to use the extension.
 
+> For a non-contributor-facing projection of this threat model — trust ceiling, audit boundary, network boundary, seven failure modes, and five escape hatches in ≤15 pages — see [Security White-Paper](whitepaper.md).
+
 ## Threat catalog (T1–T20)
 
 The catalog below enumerates each in-scope threat, the primary mitigation, and the prose section that elaborates. CLAUDE.md hard rules and `SECURITY.md` cite these identifiers directly; every cited `Tn` resolves to an anchor here. The `tests/lint/threat-id-anchor-parity.test.ts` regression fails the build on any drift.

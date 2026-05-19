@@ -85,6 +85,7 @@ Day-2 playbooks for monitoring active work and intervening when something is wro
 Schegent runs the Claude CLI with broad workspace capabilities. Before deploying it against sensitive code, read these two pages.
 
 - [Operator Threat Model](security/threat-model.md) — what we defend against, what we explicitly do not, and which knobs you control.
+- [Security White-Paper](security/whitepaper.md) — operator-facing trust ceiling, audit boundary, and failure-mode summary; designed for a 45-minute read by an enterprise reviewer or operator deciding whether to deploy Schegent.
 
 ## Versioning and updates
 
