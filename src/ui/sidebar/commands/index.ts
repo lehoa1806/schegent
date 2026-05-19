@@ -40,6 +40,7 @@ import {
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_PHASE_LOG_TAIL,
+  CMD_START_QUEUE,
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_WAKE_UP_NOW
 } from '../messages';
@@ -86,6 +87,7 @@ import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
 import { handler as start } from './cmd-start';
 import { handler as startPhaseLogTail } from './cmd-start-phase-log-tail';
+import { handler as startQueue } from './cmd-start-queue';
 import { handler as stopPhaseLogTail } from './cmd-stop-phase-log-tail';
 import { handler as wakeUpNow } from './cmd-wake-up-now';
 
@@ -142,6 +144,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],
   [CMD_START_PHASE_LOG_TAIL, startPhaseLogTail as CommandHandler],
+  [CMD_START_QUEUE, startQueue as CommandHandler],
   [CMD_STOP_PHASE_LOG_TAIL, stopPhaseLogTail as CommandHandler],
   [CMD_WAKE_UP_NOW, wakeUpNow as CommandHandler]
 ]);

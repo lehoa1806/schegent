@@ -94,7 +94,7 @@ describe('App.svelte (compact sidebar)', () => {
     const removed = [
       'live-activity-header',
       'monitor-pill',
-      'queue-pause-button',
+      'queue-action-button',
       'queue-open-dashboard-button',
       'history-section',
       'retry-active-run-button'

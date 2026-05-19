@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 import Dashboard from '../Dashboard.svelte';
 import {
   CMD_START,
+  CMD_START_QUEUE,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_CLEAR_COMPLETED,
@@ -390,49 +391,99 @@ describe('Dashboard FR-033..FR-038 layout (T058)', () => {
   });
 
   describe('FR-035 Queue Management Controls', () => {
-    it('contains four controls: Resume, Pause, Clear Done, Clean', () => {
-      const snap = buildSnapshot();
+    it('contains contextual action button plus Clear Done and Clean', () => {
+      // BUG-003 / FR-012a — the separate Resume + Pause buttons were
+      // consolidated into a single contextual button. When the default
+      // snapshot has no in-flight and no pending, the action button is
+      // hidden (idle state).
+      const snap = buildSnapshot({
+        queue: buildQueue({
+          inFlight: buildQueueItem({ id: 'q-fly', status: 'in-flight' })
+        })
+      });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       const zone = getByTestId('dashboard-queue-management');
-      expect(zone.querySelector('[data-testid="dashboard-queue-resume"]')).not.toBeNull();
-      expect(zone.querySelector('[data-testid="dashboard-queue-pause"]')).not.toBeNull();
+      expect(zone.querySelector('[data-testid="dashboard-queue-action"]')).not.toBeNull();
       expect(zone.querySelector('[data-testid="dashboard-queue-clear-done"]')).not.toBeNull();
       expect(zone.querySelector('[data-testid="dashboard-queue-clean"]')).not.toBeNull();
     });
 
-    it('Resume is enabled iff queue.paused === true', () => {
+    it('contextual button shows Resume when paused, Pause when in-flight, Start when pending+idle', () => {
+      // Paused -> Resume
       const snapPaused = buildSnapshot({ queue: buildQueue({ paused: true }) });
       const { getByTestId, unmount } = render(Dashboard, {
         props: { snapshot: snapPaused }
       });
-      const resumePaused = getByTestId('dashboard-queue-resume') as HTMLButtonElement;
-      const pausePaused = getByTestId('dashboard-queue-pause') as HTMLButtonElement;
-      expect(resumePaused.disabled).toBe(false);
-      expect(pausePaused.disabled).toBe(true);
+      const resumeBtn = getByTestId('dashboard-queue-action') as HTMLButtonElement;
+      expect(resumeBtn.textContent?.trim()).toBe('Resume');
+      expect(resumeBtn.disabled).toBe(false);
       unmount();
 
-      const snapNotPaused = buildSnapshot();
-      const { getByTestId: get2 } = render(Dashboard, {
-        props: { snapshot: snapNotPaused }
+      // In-flight -> Pause
+      const snapInFlight = buildSnapshot({
+        queue: buildQueue({
+          inFlight: buildQueueItem({ id: 'q-fly', status: 'in-flight' })
+        })
       });
-      const resumeNot = get2('dashboard-queue-resume') as HTMLButtonElement;
-      const pauseNot = get2('dashboard-queue-pause') as HTMLButtonElement;
-      expect(resumeNot.disabled).toBe(true);
-      expect(pauseNot.disabled).toBe(false);
+      const { getByTestId: get2, unmount: unmount2 } = render(Dashboard, {
+        props: { snapshot: snapInFlight }
+      });
+      const pauseBtn = get2('dashboard-queue-action') as HTMLButtonElement;
+      expect(pauseBtn.textContent?.trim()).toBe('Pause');
+      expect(pauseBtn.disabled).toBe(false);
+      unmount2();
+
+      // Pending + idle -> Start
+      const snapPending = buildSnapshot({
+        queue: buildQueue({
+          pending: Object.freeze([
+            buildQueueItem({ id: 'q-p', status: 'pending', position: 0 })
+          ])
+        })
+      });
+      const { getByTestId: get3 } = render(Dashboard, {
+        props: { snapshot: snapPending }
+      });
+      const startBtn = get3('dashboard-queue-action') as HTMLButtonElement;
+      expect(startBtn.textContent?.trim()).toBe('Start Queue');
+      expect(startBtn.disabled).toBe(false);
+    });
+
+    it('action button hidden when idle (no pending, no in-flight, not paused)', () => {
+      const snap = buildSnapshot();
+      const { queryByTestId } = render(Dashboard, { props: { snapshot: snap } });
+      expect(queryByTestId('dashboard-queue-action')).toBeNull();
     });
 
     it('Resume click fires CMD_RESUME_QUEUE', async () => {
       const snap = buildSnapshot({ queue: buildQueue({ paused: true }) });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      await fireEvent.click(getByTestId('dashboard-queue-resume'));
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_QUEUE);
     });
 
     it('Pause click fires CMD_PAUSE_QUEUE', async () => {
-      const snap = buildSnapshot();
+      const snap = buildSnapshot({
+        queue: buildQueue({
+          inFlight: buildQueueItem({ id: 'q-fly', status: 'in-flight' })
+        })
+      });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      await fireEvent.click(getByTestId('dashboard-queue-pause'));
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_QUEUE);
+    });
+
+    it('Start click fires CMD_START_QUEUE', async () => {
+      const snap = buildSnapshot({
+        queue: buildQueue({
+          pending: Object.freeze([
+            buildQueueItem({ id: 'q-p', status: 'pending', position: 0 })
+          ])
+        })
+      });
+      const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE);
     });
 
     it('Clear Done click fires CMD_CLEAR_COMPLETED', async () => {
@@ -765,18 +816,35 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
   });
 
   describe('FR-035 Queue Management buttons render text label', () => {
-    it('Resume button renders "Resume" as visible content', () => {
+    it('contextual button renders "Resume" when paused', () => {
       const snap = buildSnapshot({ queue: buildQueue({ paused: true }) });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      const btn = getByTestId('dashboard-queue-resume');
+      const btn = getByTestId('dashboard-queue-action');
       expect(btn.textContent?.trim()).toBe('Resume');
     });
 
-    it('Pause button renders "Pause" as visible content', () => {
-      const snap = buildSnapshot();
+    it('contextual button renders "Pause" when in-flight', () => {
+      const snap = buildSnapshot({
+        queue: buildQueue({
+          inFlight: buildQueueItem({ id: 'q-fly', status: 'in-flight' })
+        })
+      });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      const btn = getByTestId('dashboard-queue-pause');
+      const btn = getByTestId('dashboard-queue-action');
       expect(btn.textContent?.trim()).toBe('Pause');
+    });
+
+    it('contextual button renders "Start Queue" when pending + idle', () => {
+      const snap = buildSnapshot({
+        queue: buildQueue({
+          pending: Object.freeze([
+            buildQueueItem({ id: 'q-p', status: 'pending', position: 0 })
+          ])
+        })
+      });
+      const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
+      const btn = getByTestId('dashboard-queue-action');
+      expect(btn.textContent?.trim()).toBe('Start Queue');
     });
 
     it('Clear Done button renders "Clear Done" as visible content', () => {

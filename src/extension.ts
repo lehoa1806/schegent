@@ -1045,16 +1045,26 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // (`CMD_START`) dispatches here so a submission while the
     // controller is mid-pipeline lands as pending instead of being
     // rejected with `controller-already-running`.
-    vscode.commands.registerCommand('schegent.enqueue', (args) =>
-      runEnqueue(args, {
+    // BUG-002 (FR-012a) — fire-and-forget drain after successful
+    // enqueue so the first submitted task starts automatically when
+    // the queue is idle. The coordinator's capacity check
+    // short-circuits safely when a run is already in-flight.
+    vscode.commands.registerCommand('schegent.enqueue', async (args) => {
+      const result = await runEnqueue(args, {
         guardedRunService,
         store,
         audit: auditWriter,
         logger,
         via: 'dashboard-submit',
         promptForInput: false
-      })
-    ),
+      });
+      if (result?.result.outcome === 'enqueued') {
+        void controller.drainQueuedWork().catch((err) =>
+          logger.warn(`enqueue: auto-drain failed: ${(err as Error).message}`)
+        );
+      }
+      return result;
+    }),
     vscode.commands.registerCommand('schegent.schedule', (args) =>
       runSchedule(args, {
         guardedRunService,
@@ -1066,6 +1076,18 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     vscode.commands.registerCommand('schegent.resume', () =>
       runResume({ store, controller, lock, notifier, logger })
     ),
+    // BUG-002 (FR-012a) — queue-start trigger. The webview
+    // `CMD_START_QUEUE` handler delegates here. Promotes the oldest
+    // pending task to in-flight when the queue is idle and no run is
+    // active. Safe to call redundantly — the coordinator's internal
+    // capacity checks short-circuit when a run is already in-flight.
+    vscode.commands.registerCommand('schegent.startQueue', async () => {
+      try {
+        await controller.drainQueuedWork();
+      } catch (err) {
+        logger.warn(`startQueue: ${(err as Error).message}`);
+      }
+    }),
     vscode.commands.registerCommand('schegent.cancel', (arg?: { taskId?: string }) =>
       runCancel({
         controller,

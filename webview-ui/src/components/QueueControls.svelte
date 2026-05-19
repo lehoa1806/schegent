@@ -1,8 +1,15 @@
 <script lang="ts">
+  import { postCommand } from '../lib/vscode-api';
+  import { CMD_START_QUEUE } from '../lib/messages';
+
   interface Props {
     isPrimary: boolean;
-    resumeDisabled: boolean;
-    pauseDisabled: boolean;
+    /** True when the queue is paused (manually or cascaded). */
+    paused: boolean;
+    /** Number of pending tasks in the queue. */
+    pendingCount: number;
+    /** True when a run is actively in-flight. */
+    hasInFlight: boolean;
     clearDoneDisabled: boolean;
     cleanDisabled: boolean;
     onResume: () => void;
@@ -13,8 +20,9 @@
 
   const {
     isPrimary,
-    resumeDisabled,
-    pauseDisabled,
+    paused,
+    pendingCount,
+    hasInFlight,
     clearDoneDisabled,
     cleanDisabled,
     onResume,
@@ -22,25 +30,66 @@
     onClearDone,
     onClean
   }: Props = $props();
+
+  // BUG-003 / FR-012a — tri-state derivation for the contextual button.
+  //  - 'start':  pending tasks exist, no run in-flight, queue not paused
+  //  - 'pause':  a run is in-flight and the queue is not paused
+  //  - 'resume': the queue is paused (any cause)
+  //  - 'idle':   nothing pending, nothing in-flight, not paused — hide button
+  type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
+
+  const action = $derived<QueueAction>(
+    paused
+      ? 'resume'
+      : hasInFlight
+        ? 'pause'
+        : pendingCount > 0
+          ? 'start'
+          : 'idle'
+  );
+
+  const actionLabel = $derived(
+    action === 'start' ? 'Start Queue'
+      : action === 'pause' ? 'Pause'
+        : action === 'resume' ? 'Resume'
+          : ''
+  );
+
+  const actionTitle = $derived(
+    action === 'start' ? 'Start processing the next pending task'
+      : action === 'pause' ? 'Pause the queue'
+        : action === 'resume' ? 'Resume the queue'
+          : ''
+  );
+
+  const actionDisabled = $derived(!isPrimary || action === 'idle');
+
+  function onAction(): void {
+    if (actionDisabled) return;
+    if (action === 'start') {
+      postCommand(CMD_START_QUEUE);
+    } else if (action === 'pause') {
+      onPause();
+    } else if (action === 'resume') {
+      onResume();
+    }
+  }
 </script>
 
 <div class="queue-controls">
-  <button
-    type="button"
-    class="btn btn-primary"
-    data-testid="dashboard-queue-resume"
-    onclick={onResume}
-    disabled={resumeDisabled || !isPrimary}
-    title="Resume the queue"
-  >Resume</button>
-  <button
-    type="button"
-    class="btn btn-secondary"
-    data-testid="dashboard-queue-pause"
-    onclick={onPause}
-    disabled={pauseDisabled || !isPrimary}
-    title="Pause the queue"
-  >Pause</button>
+  {#if action !== 'idle'}
+    <button
+      type="button"
+      class="btn"
+      class:btn-start={action === 'start'}
+      class:btn-primary={action === 'resume'}
+      class:btn-secondary={action === 'pause'}
+      data-testid="dashboard-queue-action"
+      onclick={onAction}
+      disabled={actionDisabled}
+      title={actionTitle}
+    >{actionLabel}</button>
+  {/if}
   <button
     type="button"
     class="btn btn-ghost"
@@ -78,6 +127,8 @@
   }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn:active:not(:disabled) { transform: scale(0.93); opacity: 0.8; }
+  .btn-start { background: var(--schegent-color-completed); color: var(--vscode-button-foreground); }
+  .btn-start:hover:not(:disabled) { box-shadow: var(--sch-glow-success); }
   .btn-primary { background: var(--schegent-color-active); color: var(--vscode-button-foreground); }
   .btn-primary:hover:not(:disabled) { box-shadow: var(--sch-glow-active); }
   .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }

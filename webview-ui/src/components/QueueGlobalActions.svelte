@@ -3,6 +3,7 @@
   import {
     CMD_PAUSE_QUEUE,
     CMD_RESUME_QUEUE,
+    CMD_START_QUEUE,
     CMD_CLEAR_COMPLETED,
     CMD_CLEAR_FAILED,
     CMD_OPEN_DASHBOARD
@@ -13,6 +14,10 @@
     isPrimary: boolean;
     completedCount: number;
     failedCount: number;
+    /** BUG-003 / FR-012a — number of pending tasks in the queue. */
+    pendingCount: number;
+    /** BUG-003 / FR-012a — true when a run is actively in-flight. */
+    hasInFlight: boolean;
     /**
      * Feature 028 — `'cascade'` when the pause is a side effect of a phase
      * pause (or breakpoint fire); `'operator'` when the operator paused the
@@ -21,29 +26,55 @@
     pauseSource?: 'operator' | 'cascade' | null;
   }
 
-  // Feature 030 (US3, T042) — single-queue mode. The `queueId` prop was
-  // removed: there is exactly one queue and CMD_PAUSE_QUEUE /
-  // CMD_RESUME_QUEUE carry no payload. Per-queue payload branches were
-  // deleted alongside the multi-queue surfaces.
-  const { paused, isPrimary, completedCount, failedCount, pauseSource = null }: Props = $props();
+  const {
+    paused,
+    isPrimary,
+    completedCount,
+    failedCount,
+    pendingCount,
+    hasInFlight,
+    pauseSource = null
+  }: Props = $props();
+
   const showCascadedBadge = $derived(paused && pauseSource === 'cascade');
 
   const primaryDisabled = $derived(!isPrimary);
   const clearCompletedDisabled = $derived(primaryDisabled || completedCount === 0);
   const clearFailedDisabled = $derived(primaryDisabled || failedCount === 0);
-  const dashboardDisabled = $derived(false);
+
+  // BUG-003 / FR-012a — tri-state derivation for the contextual button.
+  type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
+
+  const action = $derived<QueueAction>(
+    paused
+      ? 'resume'
+      : hasInFlight
+        ? 'pause'
+        : pendingCount > 0
+          ? 'start'
+          : 'idle'
+  );
+
+  const actionLabel = $derived(
+    action === 'start' ? 'Start Queue'
+      : action === 'pause' ? 'Pause Queue'
+        : action === 'resume' ? 'Resume Queue'
+          : ''
+  );
 
   function aria(d: boolean): 'true' | 'false' {
     return d ? 'true' : 'false';
   }
 
-  function onPause(): void {
+  function onAction(): void {
     if (primaryDisabled) return;
-    postCommand(CMD_PAUSE_QUEUE);
-  }
-  function onResume(): void {
-    if (primaryDisabled) return;
-    postCommand(CMD_RESUME_QUEUE);
+    if (action === 'start') {
+      postCommand(CMD_START_QUEUE);
+    } else if (action === 'pause') {
+      postCommand(CMD_PAUSE_QUEUE);
+    } else if (action === 'resume') {
+      postCommand(CMD_RESUME_QUEUE);
+    }
   }
   function onClearCompleted(): void {
     if (clearCompletedDisabled) return;
@@ -59,14 +90,15 @@
 </script>
 
 <div class="global-actions" data-testid="queue-global-actions">
-  {#if paused}
+  {#if action !== 'idle'}
     <button
       type="button"
-      data-testid="queue-resume-button"
-      aria-label="Resume queue"
+      data-testid="queue-action-button"
+      aria-label={actionLabel}
       aria-disabled={aria(primaryDisabled)}
-      onclick={onResume}
-    >Resume Queue</button>
+      class:start-action={action === 'start'}
+      onclick={onAction}
+    >{actionLabel}</button>
     {#if showCascadedBadge}
       <span
         class="cascade-badge"
@@ -74,14 +106,6 @@
         title="Paused as a side effect of a phase pause. Resuming the phase will resume the queue."
       >cascaded</span>
     {/if}
-  {:else}
-    <button
-      type="button"
-      data-testid="queue-pause-button"
-      aria-label="Pause queue"
-      aria-disabled={aria(primaryDisabled)}
-      onclick={onPause}
-    >Pause Queue</button>
   {/if}
   <button
     type="button"
@@ -101,7 +125,7 @@
     type="button"
     data-testid="queue-open-dashboard-button"
     aria-label="Open dashboard"
-    aria-disabled={aria(dashboardDisabled || primaryDisabled)}
+    aria-disabled={aria(primaryDisabled)}
     onclick={onOpenDashboard}
   >Open Dashboard</button>
 </div>
@@ -133,6 +157,15 @@
   button:active:not([aria-disabled='true']) {
     transform: scale(0.93);
     opacity: 0.8;
+  }
+  .start-action {
+    background: var(--schegent-color-completed);
+    color: var(--vscode-button-foreground);
+    border-color: transparent;
+  }
+  .start-action:hover:not([aria-disabled='true']) {
+    box-shadow: var(--sch-glow-success);
+    color: var(--vscode-button-foreground);
   }
   .cascade-badge {
     display: inline-flex;

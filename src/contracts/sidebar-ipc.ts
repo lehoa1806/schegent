@@ -99,6 +99,10 @@ export const CMD_CLEAR_PHASE_BREAKPOINT = 'CMD_CLEAR_PHASE_BREAKPOINT' as const;
 // and contracts/wakeup-reveal-session-log-ipc.md.
 export const CMD_READ_WAKEUP_SESSION_LOG = 'CMD_READ_WAKEUP_SESSION_LOG' as const;
 export const CMD_REVEAL_WAKEUP_SESSION_LOG = 'CMD_REVEAL_WAKEUP_SESSION_LOG' as const;
+// BUG-002 (FR-012a) — queue-start trigger. Mutating: promotes the oldest
+// pending task to in-flight via `controller.drainQueuedWork()`. Member of
+// `MUTATING_COMMANDS` and gated by the primary-host check.
+export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -152,7 +156,8 @@ export const COMMAND_TYPES = [
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_READ_WAKEUP_SESSION_LOG,
-  CMD_REVEAL_WAKEUP_SESSION_LOG
+  CMD_REVEAL_WAKEUP_SESSION_LOG,
+  CMD_START_QUEUE
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -557,6 +562,13 @@ export interface RevealWakeupSessionLogCommand
   readonly payload?: Record<string, never>;
 }
 
+// BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
+// the oldest pending task to in-flight. Rejected when no pending tasks
+// exist, when the queue is paused, or when a run is already in-flight.
+export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
+  readonly payload?: Record<string, never>;
+}
+
 export interface RevealWakeupSessionLogResponseSuccess {
   readonly status: 'success';
 }
@@ -669,7 +681,8 @@ export type SidebarCommand =
   | SetPhaseBreakpointCommand
   | ClearPhaseBreakpointCommand
   | ReadWakeupSessionLogCommand
-  | RevealWakeupSessionLogCommand;
+  | RevealWakeupSessionLogCommand
+  | StartQueueCommand;
 
 // -- Host messages (host → webview) -----------------------------------------
 
@@ -883,6 +896,18 @@ export function isCmdReadWakeupSessionLog(value: unknown): value is ReadWakeupSe
 export function isCmdRevealWakeupSessionLog(value: unknown): value is RevealWakeupSessionLogCommand {
   return isObjectWithType(value, CMD_REVEAL_WAKEUP_SESSION_LOG);
 }
+// BUG-002 (FR-012a) — start-queue guard.
+export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
+  if (!isObjectWithType(value, CMD_START_QUEUE)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  return payload === undefined
+    || (
+      payload !== null
+      && typeof payload === 'object'
+      && !Array.isArray(payload)
+      && Object.keys(payload).length === 0
+    );
+}
 
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
@@ -934,5 +959,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_READ_WAKEUP_SESSION_LOG]: isCmdReadWakeupSessionLog,
-  [CMD_REVEAL_WAKEUP_SESSION_LOG]: isCmdRevealWakeupSessionLog
+  [CMD_REVEAL_WAKEUP_SESSION_LOG]: isCmdRevealWakeupSessionLog,
+  [CMD_START_QUEUE]: isCmdStartQueue
 });

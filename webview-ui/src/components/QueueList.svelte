@@ -30,6 +30,8 @@
     {isPrimary}
     {completedCount}
     {failedCount}
+    pendingCount={pending.length}
+    hasInFlight={inFlight !== null}
     pauseSource={defaultQueuePauseSource}
   />
   {#if empty}

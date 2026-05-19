@@ -31,6 +31,7 @@ import {
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
   CMD_START,
+  CMD_START_QUEUE,
   CMD_WAKE_UP_NOW,
   type CommandType
 } from './sidebar-ipc';
@@ -68,7 +69,10 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_SAVE_PIPELINES]: 'catalog settings write',
   [CMD_RESTART_CANCELED_TASK]: 'canceled task restart',
   [CMD_SET_PHASE_BREAKPOINT]: 'phase breakpoint write',
-  [CMD_CLEAR_PHASE_BREAKPOINT]: 'phase breakpoint write'
+  [CMD_CLEAR_PHASE_BREAKPOINT]: 'phase breakpoint write',
+  // BUG-002 (FR-012a) — start-queue trigger. Mutating because it promotes
+  // a pending task to in-flight and kicks off a controller run.
+  [CMD_START_QUEUE]: 'queue start'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

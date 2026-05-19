@@ -9,6 +9,7 @@
   import {
     CMD_PAUSE_QUEUE,
     CMD_RESUME_QUEUE,
+    CMD_START_QUEUE,
     CMD_CLEAR_COMPLETED,
     CMD_CLEAR_FAILED
   } from '../lib/messages';
@@ -152,8 +153,10 @@
   );
   const failedCount = $derived(queue.recent.filter((r) => r.status === 'failed').length);
 
-  const resumeDisabled = $derived(defaultQueueSummary.state !== 'manually-paused');
-  const pauseDisabled = $derived(defaultQueueSummary.state === 'manually-paused');
+  // BUG-003 / FR-012a — tri-state props for the contextual button.
+  const queuePaused = $derived(queue.paused);
+  const pendingCount = $derived(queue.pending.length);
+  const hasInFlight = $derived(queue.inFlight !== null);
   const clearDoneDisabled = $derived(completedCount === 0);
   const cleanDisabled = $derived(completedCount === 0 && failedCount === 0);
 
@@ -229,12 +232,10 @@
   }
 
   function onPause(): void {
-    if (pauseDisabled) return;
     postCommand(CMD_PAUSE_QUEUE);
   }
 
   function onResume(): void {
-    if (resumeDisabled) return;
     postCommand(CMD_RESUME_QUEUE);
   }
 
@@ -281,8 +282,9 @@
           <h2 class="zone-h2">Active Queue</h2>
           <QueueControls
             {isPrimary}
-            {resumeDisabled}
-            {pauseDisabled}
+            paused={queuePaused}
+            {pendingCount}
+            {hasInFlight}
             {clearDoneDisabled}
             {cleanDisabled}
             {onResume}

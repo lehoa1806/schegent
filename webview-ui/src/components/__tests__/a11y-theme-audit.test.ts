@@ -94,7 +94,7 @@ function buildSnapshot(): WorkflowSnapshot {
 describe('Accessibility verification (T070 / FR-022)', () => {
   it('all interactive buttons in QueueGlobalActions expose aria-label', () => {
     const { container } = render(QueueGlobalActions, {
-      props: { paused: false, isPrimary: true, completedCount: 1, failedCount: 1 }
+      props: { paused: false, isPrimary: true, completedCount: 1, failedCount: 1, pendingCount: 0, hasInFlight: true }
     });
     const buttons = Array.from(container.querySelectorAll('button'));
     expect(buttons.length).toBeGreaterThan(0);
@@ -166,7 +166,7 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     const renders = [
       render(MonitorPill, { props: { monitor: { ...buildMonitor(), status: 'stalled' } } }),
       render(QueueGlobalActions, {
-        props: { paused: false, isPrimary: true, completedCount: 0, failedCount: 0 }
+        props: { paused: false, isPrimary: true, completedCount: 0, failedCount: 0, pendingCount: 0, hasInFlight: false }
       }),
       render(Dashboard, { props: { snapshot: buildSnapshot() } })
     ];

@@ -60,6 +60,7 @@ import {
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_START_QUEUE,
   type SidebarCommand
 } from './sidebar-ipc';
 
@@ -190,6 +191,9 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_CLEAR_PHASE_BREAKPOINT, obj, correlationId);
+    // BUG-002 (FR-012a) — start-queue accepts no payload or empty `{}`.
+    case CMD_START_QUEUE:
+      return validateOptionalEmptyPayload(CMD_START_QUEUE, obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
@@ -946,6 +950,27 @@ function validateStopPhaseLogTail(
     correlationId,
     payload: { sessionId }
   } as SidebarCommand);
+}
+
+// BUG-002 (FR-012a) — generic validator for commands that accept either
+// no payload at all or an empty object `{}`. Shared by CMD_START_QUEUE
+// and structurally identical to the inline pattern in validateWakeUpNow.
+function validateOptionalEmptyPayload(
+  type: string,
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type, correlationId } as SidebarCommand);
+  }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return fail('invalid-payload', { type, correlationId });
+  }
+  if (Object.keys(payload as object).length !== 0) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: {} } as SidebarCommand);
 }
 
 function ok(command: SidebarCommand): IpcValidationResult {
