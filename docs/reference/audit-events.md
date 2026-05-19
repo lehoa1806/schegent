@@ -335,15 +335,24 @@ The phase-message channel is a canonical sidecar file at `<workspaceRoot>/.scheg
 
 ### `phase-message-emitted`
 
-The phase wrote a phase-message value. Payload carries the sanitized key and value metadata only.
+The phase wrote a readable phase-message sidecar. Payload carries metadata
+only: `pipelineId`, `phaseId`, `entryCount`, `byteSize`, and the optional
+`model`, `effort`, and `timeoutMs` fields when they were active for the
+phase. The sanitized key/value map is consumed by the next phase through the
+host prompt path and is not echoed into this audit event or the UI.
 
 ### `phase-message-truncated`
 
-The phase-message file exceeded the per-value byte cap. Truncated, the file remains readable.
+The phase-message file exceeded the whole-file byte cap. The host rejects the
+sidecar for cross-phase forwarding and emits metadata only; raw file bytes are
+left in the diagnostics directory for local inspection.
 
 ### `phase-message-invalid`
 
-The phase-message file did not match the expected `env`-style format. The malformed content is rejected; the file is preserved verbatim for inspection.
+The phase-message sidecar could not be safely consumed. Reasons include
+`malformed-lines`, `duplicate-keys`, `missing-sidecar`, `duplicate-sidecar`,
+`path-outside-run-dir`, and `path-symlink-redirect`. Malformed content is
+rejected; the file is preserved verbatim for local inspection when it exists.
 
 ## Fatal signature
 

@@ -170,11 +170,11 @@ describe('PhaseSidecarReader.parsePhaseMessage', () => {
     expect(invalid!.payload.reason).toBe('path-outside-run-dir');
   });
 
-  it('emits phase-message-invalid with reason=missing-canonical-sidecar when no candidate matches and canonical is missing', async () => {
+  it('returns null when no candidate matches and canonical is missing', async () => {
     const { cwd, runId, iteration } = await mkRunDir();
     // No sidecar written at canonicalPath; provide an audit candidate with
     // mismatched basename so the filter eliminates it and we reach the
-    // "no candidates" branch.
+    // "no candidates" branch without emitting a validation event.
     const auditEntry: AuditEntryFields = {
       phase: 'speckit-specify',
       filesCreated: [path.join(cwd, 'unrelated.txt')],

@@ -106,6 +106,16 @@ one of:
 - **CLI unauthenticated** (yellow) — run `claude login` in a fresh
   terminal, then click the badge to re-probe.
 
+### Fast Troubleshooting
+
+| Symptom | Check | Recovery |
+|---|---|---|
+| Sidebar shows **CLI not found** | `schegent.cli.path` and your shell `PATH` may differ from VS Code's extension-host environment. | Set `schegent.cli.path` to an absolute `claude` or `codex` binary path, then run `Schegent: Re-detect CLI Transport`. |
+| Sidebar shows **CLI unauthenticated** | The backend CLI may not have a valid local session. | Run the backend login command in a normal terminal, then re-probe from Schegent. |
+| Run pauses on rate limit | The CLI returned a recoverable quota/reset signal. | Leave the queue paused for automatic backoff, or resume manually after credits recover. |
+| Secondary VS Code window is read-only | Another window owns the workspace lock. | Use the primary window for mutations, or close/reopen windows after the active run finishes. |
+| Audit/log view looks stale | The durable audit sink or workspace disk may be failing. | Inspect `<workspaceRoot>/.schegent/syslog` and available disk space; live subscribers still receive sanitized append attempts even if the durable write fails. |
+
 ## Quick start
 
 1. Open the Schegent sidebar.
@@ -189,8 +199,9 @@ complete contract.
 
 ## Configuration
 
-All settings live under the `schegent.*` namespace and edit through
-**Dashboard → Settings → General** or VS Code's settings UI.
+All settings live under the `schegent.*` namespace. Many scalar settings
+edit through **Dashboard → Settings → General**; every contributed setting
+is available through VS Code's settings UI.
 Workspace-scope overrides user-scope, which overrides defaults.
 
 Frequently used keys:
@@ -198,6 +209,7 @@ Frequently used keys:
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `schegent.cli.path` | string | `"claude"` | Path to the Claude CLI binary. |
+| `schegent.cli.inheritEnvironment` | boolean | `true` | Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables. |
 | `schegent.backend.runner` | enum | `"claude"` | `claude` or `codex`. |
 | `schegent.loop.maxIterations` | number | `10` | Max iterations per loopable phase (1–50). |
 | `schegent.invocation.timeoutSeconds` | number | `1800` | Per-phase wall-clock timeout. |
@@ -207,7 +219,7 @@ Frequently used keys:
 | `schegent.audit.rotation.maxAgeDays` | number | `30` | Rotated archive retention floor. |
 | `schegent.logging.verbose` | boolean | `false` | Opt-in unredacted per-phase capture. |
 | `schegent.logging.runtimeLogLevel` | enum | `"INFO"` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
-| `schegent.rules.injectPerPhase` | boolean | `false` | Concatenate `.claude/skills/<phase>/SKILL.md` per invocation. |
+| `schegent.rules.injectPerPhase` | boolean | `false` | Reserved legacy toggle; current runner wiring does not inject per-phase rule files. |
 | `schegent.defaultPipelineId` | string | `"speckit-new-feature"` | Pipeline used when none is explicitly chosen. |
 | `schegent.fatalSignatures` | string[] | `[]` | Operator-additive fatal-signature substrings. |
 | `schegent.claude.autoCompactPctOverride` | integer\|null | unset | Exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` when set. |

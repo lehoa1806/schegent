@@ -272,11 +272,10 @@ describe('PhaseRunner.run', () => {
     );
   });
 
-  it('marks a referenced missing phase-message.env as missing-canonical-sidecar', async () => {
+  it('marks a referenced missing phase-message.env as missing-sidecar', async () => {
     // Feature 056 Track 2 — when the audit references the canonical
-    // path but no file exists on disk, the read attempt produces a
-    // `missing-canonical-sidecar` reason rather than the legacy
-    // `missing-sidecar`. This pins the new audit reason.
+    // path but no file exists on disk, the final read attempt still
+    // uses the legacy `missing-sidecar` reason.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-phase-msg-'));
     const sidecar = path.join(dir, 'phase-message.env');
     const stdout = cleanStdout.replace(
@@ -394,14 +393,12 @@ describe('PhaseRunner.run', () => {
       expect(out.phaseMessage?.invalidReason).toBe('path-outside-run-dir');
     });
 
-    it('emits missing-canonical-sidecar when no audit candidate even basename-matches', async () => {
+    it('returns null with no phase-message audit when no audit candidate basename-matches', async () => {
       // Audit reports a different filename entirely so the basename
       // filter strips it. With no candidates remaining the runner
       // returns null — there is nothing to attribute. The
-      // `missing-canonical-sidecar` reason fires only when at least
-      // one candidate basename-matched and none of them resolved to
-      // the canonical path. This test pins the null behavior to keep
-      // the audit log noise-free when there is genuinely no sidecar.
+      // This pins the null behavior to keep the audit log noise-free
+      // when there is genuinely no sidecar.
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-phase-canon-'));
       const canonical = path.join(dir, 'canon-phase-message.env');
       cliRunner = makeFakeRunner(async () => makeRawOutput());
@@ -621,6 +618,20 @@ describe('PhaseRunner.run', () => {
     const req = seenRequests[0];
     expect(req.prompt).toContain('SCHEGENT_PHASE: speckit-specify');
     expect(req.env).toMatchObject({ SCHEGENT_PHASE: 'speckit-specify' });
+  });
+
+  it('forwards the strict CLI environment opt-out to the runner', async () => {
+    const seenRequests: InvocationRequest[] = [];
+    cliRunner = makeFakeRunner(async (req) => {
+      seenRequests.push(req);
+      return makeRawOutput();
+    });
+    runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+    await runner.run({ ...baseInputs, inheritProcessEnv: false });
+
+    expect(seenRequests).toHaveLength(1);
+    expect(seenRequests[0].inheritProcessEnv).toBe(false);
+    expect(seenRequests[0].env).toMatchObject({ SCHEGENT_PHASE: 'speckit-specify' });
   });
 
   it('truncates very long stdout in summary', async () => {

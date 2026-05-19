@@ -141,7 +141,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     type: 'boolean',
     default: false,
     scope: 'resource',
-    docLabel: 'Inject per-phase rule files'
+    docLabel: 'Reserved per-phase rule injection toggle'
   },
   'schegent.models': {
     key: 'schegent.models',

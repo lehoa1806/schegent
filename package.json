@@ -182,7 +182,7 @@
           "type": "boolean",
           "default": false,
           "scope": "resource",
-          "description": "Optionally write phase-specific rule files (.claude/rules/<phase>.md) before each invocation."
+          "description": "Reserved legacy toggle; current runner wiring does not inject per-phase rule files."
         },
         "schegent.models": {
           "type": "array",

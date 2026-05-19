@@ -195,7 +195,10 @@ List of custom model identifiers (e.g., `claude-3-7-sonnet-20250219`, `sonnet`, 
 - **Default:** `false`
 - **Scope:** `resource`
 
-When enabled, the host writes phase-specific rule files (`.claude/rules/<phase>.md`) before each invocation. Useful for per-phase prompt scaffolding.
+Reserved legacy toggle. The current runner wiring reads the setting but does
+not write or inject `.claude/rules/<phase>.md`; keep this disabled until a
+future feature reintroduces rule-file injection with explicit trust-boundary
+coverage.
 
 ## Retry and queue
 

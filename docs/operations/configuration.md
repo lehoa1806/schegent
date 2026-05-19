@@ -43,15 +43,17 @@ they live where operators actually use them.
 translates `null` to `config.update(key, undefined)` so VS Code removes the
 key entirely.
 
-### Other general settings
+### Other settings
 
-These existed before feature 012 and are reachable from the same tab.
-The list is authoritative against `src/config/general-settings.ts`
-(`ALLOWED_KEYS` allowlist + `KEY_SPECS` validator).
+Most scalar keys below are reachable from the same tab and are authoritative
+against `src/config/general-settings.ts` (`ALLOWED_KEYS` allowlist +
+`KEY_SPECS` validator). Application-scoped CLI/backend keys are contributed
+through VS Code settings and read at activation.
 
 | Key | Type | Notes |
 |---|---|---|
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
+| `schegent.cli.inheritEnvironment` | boolean | Defaults to `true`. Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables; use absolute CLI paths and backend-native auth first. |
 | `schegent.backend.runner` | enum (`claude`, `codex`) | Selects the concrete `BackendRunner` adapter. Default `claude`. See [docs/operations/backends.md](backends.md). |
 | `schegent.logging.verbose` | boolean | Captures unredacted per-iteration diagnostics under `.schegent/sessions/`. |
 | `schegent.logging.runtimeLogMaxBytes` | number (default `5_242_880` / 5 MiB) | Size threshold at which the runtime log rotates `<path> → <path>.1 → … → <path>.<maxGens>`. Read uncached on every emit. See [docs/operations/runtime-log.md](runtime-log.md). |
@@ -61,7 +63,7 @@ The list is authoritative against `src/config/general-settings.ts`
 | `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |
 | `schegent.audit.rotation.sizeMB` | number (minimum 1) | Audit log size threshold for rotation. |
 | `schegent.audit.rotation.maxAgeDays` | number (minimum 1) | Retention for rotated audit log files. |
-| `schegent.rules.injectPerPhase` | boolean | Concatenate `.claude/skills/<phase>/SKILL.md` at every invocation. |
+| `schegent.rules.injectPerPhase` | boolean | Reserved legacy toggle; current runner wiring does not inject per-phase rule files. |
 | `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. |
 | `schegent.fatalSignatures` | string[] | Operator-additive fatal-signature substrings; managed via the **Settings → Fatal Signatures** sub-tab. |
 
