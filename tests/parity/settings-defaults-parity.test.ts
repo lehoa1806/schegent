@@ -194,7 +194,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'wakeUp.enabled',
       'wakeUp.schedulerType',
       'wakeUp.chronologicalTime',
-      'wakeUp.periodicInterval'
+      'wakeUp.periodicInterval',
+      'wakeUp.model'
     ]);
     const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines']);
     const backendRunnerKey = new Set<string>(['backend.runner']);

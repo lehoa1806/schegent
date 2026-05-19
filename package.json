@@ -447,6 +447,18 @@
           "pattern": "^Every (\\d+)(m|h)$",
           "scope": "application",
           "markdownDescription": "Periodic fire interval for Wake up in `Every Nm` or `Every Nh` form. Minimum granularity is 1 minute (`Every 1m`). Intervals below 5 hours are accepted but surface a non-blocking advisory in the Settings UI because they may waste tokens within an unreset rolling window. Used only when `schegent.wakeUp.schedulerType` is `periodic`."
+        },
+        "schegent.wakeUp.model": {
+          "type": "string",
+          "default": "runner-default",
+          "enum": [
+            "runner-default",
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-6"
+          ],
+          "scope": "application",
+          "markdownDescription": "Claude model used for Wake up invocations. `runner-default` defers to whatever the Claude CLI chooses. See `schegent.wakeUp.enabled`."
         }
       }
     }

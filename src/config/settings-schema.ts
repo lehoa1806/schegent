@@ -312,6 +312,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     pattern: '^Every (\\d+)(m|h)$',
     scope: 'application',
     docLabel: 'Wake up periodic interval (Every Nm | Every Nh)'
+  },
+  'schegent.wakeUp.model': {
+    key: 'schegent.wakeUp.model',
+    type: 'enum',
+    default: 'runner-default',
+    enum: ['runner-default', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
+    scope: 'application',
+    docLabel: 'Wake up Claude model selection'
   }
 });
 
