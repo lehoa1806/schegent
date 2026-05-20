@@ -341,11 +341,10 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
   });
 });
 
-describe('Feature 026 T025 — workspace-layer override wins over user (US3)', () => {
-  it('(a)+(c) workspace effort:high on bugfix-implement wins over user effort:medium; the user save remains accepted while shadowed', async () => {
-    // (c) FR-021 — user-layer save is accepted by CMD_SAVE_PHASES even
-    // when the workspace catalog will shadow it. We dispatch the save
-    // first and assert the ack succeeds.
+describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
+  it('(a)+(c) user effort:medium on bugfix-implement wins over workspace effort:high', async () => {
+    // (c) user-layer save is accepted by CMD_SAVE_PHASES.
+    // We dispatch the save first and assert the ack succeeds.
     const userBugfixImplement: PhaseDef = {
       id: 'bugfix-implement',
       ...VALID_BASE_FIELDS,
@@ -374,20 +373,20 @@ describe('Feature 026 T025 — workspace-layer override wins over user (US3)', (
     );
     expect(implementStarts.length).toBeGreaterThan(0);
     for (const evt of implementStarts) {
-      expect(evt.payload.effort).toBe('high');
+      expect(evt.payload.effort).toBe('medium');
       expect(evt.payload).not.toHaveProperty('model');
     }
   });
 
-  it('(b) removing the workspace catalog entry falls back to user effort:medium on the next enqueue', async () => {
-    const userBugfixImplement: PhaseDef = {
+  it('(b) removing the user catalog entry falls back to workspace effort:high on the next enqueue', async () => {
+    const workspaceBugfixImplement: PhaseDef = {
       id: 'bugfix-implement',
       ...VALID_BASE_FIELDS,
-      effort: 'medium'
+      effort: 'high'
     };
     const { auditLog } = await runHarness({
-      userPhases: [userBugfixImplement],
-      workspacePhases: [], // workspace layer entry removed
+      userPhases: [], // user layer entry removed
+      workspacePhases: [workspaceBugfixImplement],
       workspaceRoot: tmpRoot,
       pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
     });
@@ -396,7 +395,7 @@ describe('Feature 026 T025 — workspace-layer override wins over user (US3)', (
     );
     expect(implementStarts.length).toBeGreaterThan(0);
     for (const evt of implementStarts) {
-      expect(evt.payload.effort).toBe('medium');
+      expect(evt.payload.effort).toBe('high');
       expect(evt.payload).not.toHaveProperty('model');
     }
   });

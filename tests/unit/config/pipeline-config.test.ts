@@ -120,6 +120,26 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
     expect(errs.some((e) => e.field === 'loopable')).toBe(true);
   });
 
+  it('rejects loopable true without retryCondition (BUG-004)', () => {
+    const errs = validatePhaseRaw(validPhase({ loopable: true }));
+    expect(errs.some((e) => e.field === 'retryCondition')).toBe(true);
+  });
+
+  it('rejects loopable true with empty retryCondition (BUG-004)', () => {
+    const errs = validatePhaseRaw(validPhase({ loopable: true, retryCondition: '' }));
+    expect(errs.some((e) => e.field === 'retryCondition')).toBe(true);
+  });
+
+  it('accepts loopable true with valid retryCondition (BUG-004)', () => {
+    const errs = validatePhaseRaw(validPhase({ loopable: true, retryCondition: 'open_questions > 0' }));
+    expect(errs.some((e) => e.field === 'retryCondition')).toBe(false);
+  });
+
+  it('rejects non-string retryCondition', () => {
+    const errs = validatePhaseRaw({ ...validPhase(), retryCondition: 123 } as never);
+    expect(errs.some((e) => e.field === 'retryCondition')).toBe(true);
+  });
+
   it('rejects additional unknown property', () => {
     const errs = validatePhaseRaw({ ...validPhase(), unexpected: 'leak' } as never);
     expect(errs.some((e) => e.field === 'unexpected')).toBe(true);
@@ -282,7 +302,7 @@ describe('validateCatalog — soft caps and warnings', () => {
 });
 
 describe('mergeCatalog — precedence and duplicate warnings', () => {
-  it('workspace shadows user shadows builtin for shared ids', () => {
+  it('user shadows workspace shadows builtin for shared ids (BUG-003)', () => {
     const customSpecify: PhaseDef = {
       id: 'speckit-specify',
       name: 'Workspace Specify',
@@ -301,7 +321,7 @@ describe('mergeCatalog — precedence and duplicate warnings', () => {
       { phases: [customSpecify] }
     );
     const merged = merge.catalog.phases.find((p) => p.id === 'speckit-specify');
-    expect(merged?.name).toBe('Workspace Specify');
+    expect(merged?.name).toBe('User Specify');
   });
 
   it('flags duplicate phase ids within the same precedence layer', () => {

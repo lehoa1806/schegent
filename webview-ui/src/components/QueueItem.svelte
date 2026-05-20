@@ -139,8 +139,9 @@
       </span>
     {/if}
     {#if showCurrentPhase && item.currentPhase}
+      {@const phaseTile = snapshotStore.phaseByName(item.currentPhase)}
       <span class="chip phase-chip" data-testid="queue-item-phase-{item.id}">
-        {formatPhaseLabel(item.currentPhase)}
+        {formatPhaseLabel(item.currentPhase, phaseTile?.displayName)}
       </span>
     {/if}
     {#if showRetryBadge}

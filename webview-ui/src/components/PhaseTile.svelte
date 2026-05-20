@@ -83,7 +83,7 @@
   aria-current={isActive ? 'step' : undefined}
 >
   <span class="order">{tile.order}</span>
-  <span class="name">{formatPhaseLabel(tile.name)}</span>
+  <span class="name">{formatPhaseLabel(tile.name, tile.displayName)}</span>
   {#if showIteration && !subProgressLabel}
     <span class="iteration" data-testid="phase-iteration-{tile.name}">
       {formatIteration(tile.iteration)}

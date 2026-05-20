@@ -19,7 +19,8 @@ const STATUS_LABELS: Record<WorkflowStatus, string> = {
   canceled: 'Canceled'
 };
 
-export function formatPhaseLabel(phase: PhaseName): string {
+export function formatPhaseLabel(phase: PhaseName, displayName?: string): string {
+  if (displayName && displayName.length > 0) return displayName;
   const builtIn = BUILT_IN_PHASE_LABELS[phase];
   if (builtIn) return builtIn;
   return phase

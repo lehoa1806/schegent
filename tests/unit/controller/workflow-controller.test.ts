@@ -221,7 +221,7 @@ describe('SchegentWorkflowController.startNew', () => {
         return makeOutput({
           outcome: 'issues_remain',
           terminationReason: 'open_questions',
-          result: { kind: 'open_questions', questions: ['Q1?'], auditEntry: null as never }
+          result: { kind: 'open_questions', questions: ['Q1?'], auditEntry: { metrics: { open_questions: 1 } } as any }
         });
       }
       return makeOutput();
@@ -328,7 +328,7 @@ describe('SchegentWorkflowController.startNew', () => {
         return makeOutput({
           outcome: 'issues_remain',
           terminationReason: 'open_questions',
-          result: { kind: 'open_questions', questions: ['Need scope'], auditEntry: null as never }
+          result: { kind: 'open_questions', questions: ['Need scope'], auditEntry: { metrics: { open_questions: 1 } } as any }
         });
       }
       return makeOutput();
@@ -397,7 +397,7 @@ describe('SchegentWorkflowController.startNew', () => {
         return makeOutput({
           outcome: 'issues_remain',
           terminationReason: 'open_questions',
-          result: { kind: 'open_questions', questions: ['Need scope'], auditEntry: null as never }
+          result: { kind: 'open_questions', questions: ['Need scope'], auditEntry: { metrics: { open_questions: 1 } } as any }
         });
       }
       return makeOutput();

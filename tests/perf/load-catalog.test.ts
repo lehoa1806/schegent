@@ -16,6 +16,7 @@ function buildFixture(): { phases: readonly Record<string, unknown>[]; pipelines
       name: `Phase ${i}`,
       instruction: `Custom directive for ${id} — exercise PhaseDef ingestion across catalog merge and validation passes.`,
       loopable: i % 4 === 0,
+      ...(i % 4 === 0 ? { retryCondition: 'open_questions > 0' } : {}),
       ...(i % 3 === 0 ? { model: 'claude-opus-4-7' } : {}),
       ...(i % 5 === 0 ? { effort: 'high' } : {}),
       ...(i % 7 === 0 ? { timeoutSeconds: 600 } : {})

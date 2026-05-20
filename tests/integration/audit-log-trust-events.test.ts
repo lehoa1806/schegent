@@ -222,7 +222,7 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
         name: 'Clarify',
         instruction: 'Clarify',
         loopable: true,
-        retryCondition: 'open_questions > 0'
+        retryCondition: 'custom > 0'
       }
     ];
 

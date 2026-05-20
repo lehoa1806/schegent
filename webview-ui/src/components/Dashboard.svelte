@@ -120,6 +120,7 @@
       }
       return {
         name: def.id,
+        displayName: def.name,
         order: idx + 1,
         state,
         iteration: 0,

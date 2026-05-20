@@ -69,6 +69,12 @@ export interface PhaseTile {
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
   readonly loopable?: boolean;
+  /**
+   * Feature 061 — operator-configured display name from `PhaseDef.name`.
+   * Purely cosmetic; MUST NOT be used as a lookup key. When undefined or
+   * empty, consumers fall back to `formatPhaseLabel(tile.name)`.
+   */
+  readonly displayName?: string;
   readonly phaseMessage?: {
     readonly fromPhaseId: string;
     readonly entryCount: number;
@@ -407,9 +413,20 @@ export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
   staleSeconds: null
 });
 
+const BUILT_IN_DISPLAY_NAMES: Record<string, string> = {
+  'speckit-specify': 'Spec-kit Specify',
+  'speckit-clarify': 'Spec-kit Clarify',
+  'speckit-plan': 'Spec-kit Plan',
+  'speckit-tasks': 'Spec-kit Tasks',
+  'speckit-analyze': 'Spec-kit Analyze',
+  'speckit-implement': 'Spec-kit Implement',
+  finalize: 'Finalize'
+};
+
 export function buildEmptyPhases(): readonly PhaseTile[] {
   return BUILT_IN_PHASE_NAMES.map((name, idx) => ({
     name,
+    displayName: BUILT_IN_DISPLAY_NAMES[name],
     order: idx + 1,
     state: 'not-started' as const,
     iteration: 0,

@@ -6,7 +6,7 @@
 // `allowPipelineOverrides` is `false` is rejected with `trust-denied`
 // and one audit event is emitted (I-4, I-5).
 
-import { equalsBuiltInPipelines } from '../../../config/pipeline-config';
+import { PHASE_ID_PATTERN, equalsBuiltInPipelines } from '../../../config/pipeline-config';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePipelinesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
@@ -18,6 +18,40 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
+
+  // BUG-001 (FR-013) — foundational field validation. Runs BEFORE the
+  // trust gate so invalid entries are caught at the IPC boundary instead
+  // of being persisted and then silently discarded by the all-or-nothing
+  // `loadCatalog()` fallback.
+  const pipelinesPayload = command.payload.pipelines as readonly {
+    id?: unknown;
+    name?: unknown;
+    phases?: unknown;
+  }[];
+  for (const pipeline of pipelinesPayload) {
+    const pipelineId = typeof pipeline.id === 'string' ? pipeline.id : String(pipeline.id ?? '?');
+    if (typeof pipeline.id !== 'string' || !PHASE_ID_PATTERN.test(pipeline.id)) {
+      await ack(ctx, 'rejected', `pipeline-validation:${pipelineId}:id:invalid-pattern`);
+      return;
+    }
+    if (typeof pipeline.name !== 'string' || pipeline.name.length === 0) {
+      await ack(ctx, 'rejected', `pipeline-validation:${pipelineId}:name:must-be-non-empty`);
+      return;
+    }
+    if (pipeline.name.length > 80) {
+      await ack(ctx, 'rejected', `pipeline-validation:${pipelineId}:name:exceeds-max-length`);
+      return;
+    }
+    if (!Array.isArray(pipeline.phases) || pipeline.phases.length === 0) {
+      await ack(ctx, 'rejected', `pipeline-validation:${pipelineId}:phases:must-be-non-empty`);
+      return;
+    }
+    if (!pipeline.phases.every((p: unknown) => typeof p === 'string')) {
+      await ack(ctx, 'rejected', `pipeline-validation:${pipelineId}:phases:must-be-strings`);
+      return;
+    }
+  }
+
   if (!equalsBuiltInPipelines(command.payload.pipelines as readonly unknown[])) {
     if (!isCapabilityAllowed('pipelineOverrides')) {
       await denyAndAudit(ctx, 'pipelineOverrides');

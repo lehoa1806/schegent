@@ -58,8 +58,8 @@ export function projectPhasePrecedence(
     const w = workspaceById.get(id);
     for (const k of PHASE_FIELD_KEYS) {
       let layer: PhasePrecedenceLayer = 'unset';
-      if (readField(w, k) !== undefined) layer = 'workspace';
-      else if (readField(u, k) !== undefined) layer = 'user';
+      if (readField(u, k) !== undefined) layer = 'user';
+      else if (readField(w, k) !== undefined) layer = 'workspace';
       else if (readField(b, k) !== undefined) layer = 'built-in';
       out[compositeKey(id, k)] = layer;
     }

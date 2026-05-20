@@ -38,6 +38,8 @@ const cleanStdout = (phase: string): string =>
     'commands_executed: ["mock"]',
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
+    'open_questions: 0',
+    'critical_issues: 0',
     'notes: ok',
     '=== END AUDIT LOG ==='
   ].join('\n');
@@ -54,6 +56,8 @@ const issuesStdout = (phase: string): string =>
     'commands_executed: ["mock"]',
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
+    'open_questions: 1',
+    'critical_issues: 1',
     'notes: looping',
     '=== END AUDIT LOG ==='
   ].join('\n');

@@ -14,6 +14,7 @@
 import { validate as validateRetryCondition } from '../../../lib/retry-condition';
 import {
   EFFORT_LEVELS,
+  PHASE_ID_PATTERN,
   defaultRetryConditionForPhaseId,
   equalsBuiltInPhases
 } from '../../../config/pipeline-config';
@@ -30,10 +31,45 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
   }
   const phasesPayload = command.payload.phases as readonly {
     id?: unknown;
+    name?: unknown;
+    instruction?: unknown;
+    loopable?: unknown;
     retryCondition?: unknown;
     effort?: unknown;
     model?: unknown;
   }[];
+  // BUG-001 (FR-012) — foundational field validation. Runs BEFORE the
+  // existing effort/model/retryCondition checks and BEFORE the trust gate.
+  // Mirrors the constraints in `validatePhaseRaw()` so invalid entries are
+  // caught at the IPC boundary instead of being persisted and then silently
+  // discarded by the all-or-nothing `loadCatalog()` fallback.
+  for (const phase of phasesPayload) {
+    const phaseId = typeof phase.id === 'string' ? phase.id : String(phase.id ?? '?');
+    if (typeof phase.id !== 'string' || !PHASE_ID_PATTERN.test(phase.id)) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:id:invalid-pattern`);
+      return;
+    }
+    if (typeof phase.name !== 'string' || phase.name.length === 0) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:name:must-be-non-empty`);
+      return;
+    }
+    if (phase.name.length > 80) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:name:exceeds-max-length`);
+      return;
+    }
+    if (typeof phase.instruction !== 'string' || phase.instruction.length === 0) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:instruction:must-be-non-empty`);
+      return;
+    }
+    if (phase.instruction.length > 8192) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:instruction:exceeds-max-length`);
+      return;
+    }
+    if (typeof phase.loopable !== 'boolean') {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:loopable:must-be-boolean`);
+      return;
+    }
+  }
   // Feature 011 T059 — final-validation pass: every phase that declares a
   // `retryCondition` MUST parse with the host's DSL validator. This catches
   // webview-validator drift (FR-030).
@@ -46,6 +82,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
   // coherent (FR-004 / FR-005).
   for (const phase of phasesPayload) {
     const phaseId = String(phase.id ?? '?');
+
     if (phase.effort !== undefined && phase.effort !== null && phase.effort !== '') {
       if (
         typeof phase.effort !== 'string' ||
@@ -70,7 +107,17 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       }
     }
     const rc = phase.retryCondition;
-    if (rc === undefined || rc === null || rc === '') continue;
+    if (rc === undefined || rc === null || rc === '') {
+      if (phase.loopable === true) {
+        await ack(
+          ctx,
+          'rejected',
+          `phase-validation:${phaseId}:retryCondition:required-when-loopable`
+        );
+        return;
+      }
+      continue;
+    }
     if (typeof rc !== 'string') {
       await ack(ctx, 'rejected', `retry-condition-invalid:${phaseId}:must-be-string`);
       return;

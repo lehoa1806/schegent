@@ -34,8 +34,8 @@ describe('projectPhasePrecedence', () => {
     for (const k of Object.keys(out)) {
       if (k.endsWith('::loopable')) {
         // loopable is a required field on PhaseDef set to false in the test
-        // factory at every layer — workspace layer wins by precedence order.
-        expect(out[k]).toBe('workspace');
+        // factory at every layer — user layer wins by precedence order.
+        expect(out[k]).toBe('user');
       } else {
         expect(out[k]).toBe('unset');
       }
@@ -50,12 +50,12 @@ describe('projectPhasePrecedence', () => {
     expect(out['p::effort']).toBe('user');
   });
 
-  it('case (b): workspace shadows user → "workspace"', () => {
+  it('case (b): user shadows workspace → "user" (BUG-003)', () => {
     const builtIn = [phase('p')];
     const user = [phase('p', { effort: 'medium' })];
     const workspace = [phase('p', { effort: 'high' })];
     const out = projectPhasePrecedence(builtIn, user, workspace);
-    expect(out['p::effort']).toBe('workspace');
+    expect(out['p::effort']).toBe('user');
   });
 
   it('case (c): only built-in sets the field → "built-in"', () => {
@@ -84,7 +84,7 @@ describe('projectPhasePrecedence', () => {
         [phase('p', { model: 'm-u' })],
         [phase('p', { model: 'm-w' })]
       )['p::model']
-    ).toBe('workspace');
+    ).toBe('user');
     expect(
       projectPhasePrecedence([phase('p', { model: 'm-b' })], [phase('p')], [phase('p')])['p::model']
     ).toBe('built-in');

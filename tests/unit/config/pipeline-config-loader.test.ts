@@ -27,17 +27,17 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.catalog.phasesById.has('speckit-specify')).toBe(true);
   });
 
-  it('workspace settings shadow user settings for shared phase ids (T044, FR-021)', () => {
+  it('user settings shadow workspace settings for shared phase ids (BUG-003, FR-018)', () => {
     const userPhase = {
       id: 'security-audit',
       name: 'User Security Audit',
-      instruction: 'User-level instruction.',
+      instruction: 'User-level instruction (wins).',
       loopable: false
     };
     const workspacePhase = {
       id: 'security-audit',
       name: 'Workspace Security Audit',
-      instruction: 'Workspace-level instruction (wins).',
+      instruction: 'Workspace-level instruction.',
       loopable: true,
       model: 'claude-opus-4-7',
       effort: 'high' as const
@@ -50,14 +50,14 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('security-audit');
     expect(phase).toBeDefined();
-    expect(phase!.name).toBe('Workspace Security Audit');
-    expect(phase!.instruction).toBe('Workspace-level instruction (wins).');
-    expect(phase!.loopable).toBe(true);
-    expect(phase!.model).toBe('claude-opus-4-7');
-    expect(phase!.effort).toBe('high');
+    expect(phase!.name).toBe('User Security Audit');
+    expect(phase!.instruction).toBe('User-level instruction (wins).');
+    expect(phase!.loopable).toBe(false);
+    expect(phase!.model).toBeUndefined();
+    expect(phase!.effort).toBeUndefined();
   });
 
-  it('workspace settings shadow user settings for shared pipeline ids (T044, FR-021)', () => {
+  it('user settings shadow workspace settings for shared pipeline ids (BUG-003, FR-018)', () => {
     const userPipeline = {
       id: 'security',
       name: 'User Security Pipeline',
@@ -76,8 +76,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.errors).toEqual([]);
     const pipeline = result.catalog.pipelinesById.get('security');
     expect(pipeline).toBeDefined();
-    expect(pipeline!.name).toBe('Workspace Security Pipeline');
-    expect(pipeline!.phases).toEqual(['speckit-specify', 'speckit-clarify', 'finalize']);
+    expect(pipeline!.name).toBe('User Security Pipeline');
+    expect(pipeline!.phases).toEqual(['speckit-specify', 'finalize']);
   });
 
   it('user settings shadow built-in defaults for shared ids (T044)', () => {
@@ -97,7 +97,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(phase!.instruction).toBe('User-overridden specify instruction.');
   });
 
-  it('workspace defaultPipelineId shadows user defaultPipelineId (T044)', () => {
+  it('user defaultPipelineId shadows workspace defaultPipelineId (BUG-003)', () => {
     const reader = makeReader({
       userDefault: 'user-default',
       workspaceDefault: 'workspace-default',
@@ -108,7 +108,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
-    expect(result.catalog.defaultPipelineId).toBe('workspace-default');
+    expect(result.catalog.defaultPipelineId).toBe('user-default');
   });
 
   it('returns built-in catalog and emits errors when validation fails — no throw (T045, FR-024)', () => {
@@ -229,7 +229,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: true,
+          loopable: false,
           retryCondition: 'open_questions > 0 AND broken'
         }
       ]
@@ -248,7 +248,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: true,
+          loopable: false,
           retryCondition: '@@invalid'
         }
       ]
@@ -266,7 +266,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: true,
+          loopable: false,
           retryCondition: '!!!'
         },
         {

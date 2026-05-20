@@ -2,8 +2,7 @@
   import type {
     WorkflowSnapshot,
     PipelineDefinition,
-    PhaseDefinition,
-    PhasePrecedenceLayer
+    PhaseDefinition
   } from '../lib/snapshot-types';
   import { savePhases as savePhasesHelper, type SavePhaseRow } from '../lib/save-phases';
   import {
@@ -71,6 +70,14 @@
   let phases = $state<MutablePhase[]>([]);
   let models = $state<string[]>([]);
   let initialized = $state(false);
+  let saveError = $state<string | null>(null);
+  let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showSaveError(reason: string): void {
+    saveError = reason;
+    if (saveErrorTimer !== null) clearTimeout(saveErrorTimer);
+    saveErrorTimer = setTimeout(() => { saveError = null; }, 8000);
+  }
 
   $effect(() => {
     if (!initialized && snapshot.availablePipelines && snapshot.availablePhases && snapshot.availableModels) {
@@ -88,7 +95,10 @@
       name: p.name,
       phases: [...p.phases]
     }));
-    void savePipelinesHelper(payload);
+    void savePipelinesHelper(payload).then((result) => {
+      if (result.status === 'rejected') showSaveError(result.reason);
+      else saveError = null;
+    });
   }
   function savePhases(): void {
     const payload: SavePhaseRow[] = phases.map((p) => {
@@ -113,18 +123,16 @@
       if (typeof p.retryCondition === 'string') row.retryCondition = p.retryCondition;
       return row;
     });
-    void savePhasesHelper(payload);
+    void savePhasesHelper(payload).then((result) => {
+      if (result.status === 'rejected') showSaveError(result.reason);
+      else saveError = null;
+    });
   }
   function saveModels(): void {
     void saveModelsHelper([...models]);
   }
 
-  function effortLayer(phaseId: string): PhasePrecedenceLayer | undefined {
-    return snapshot.phasePrecedence?.[`${phaseId}::effort`];
-  }
-  function modelLayer(phaseId: string): PhasePrecedenceLayer | undefined {
-    return snapshot.phasePrecedence?.[`${phaseId}::model`];
-  }
+
 
   function getPhaseTooltip(phaseId: string): string {
     const phase = snapshot.availablePhases?.find(p => p.id === phaseId) || phases.find(p => p.id === phaseId);
@@ -230,7 +238,7 @@
     if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
   function addPhase(): void {
-    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: '', loopable: false } as MutablePhase];
+    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', loopable: false } as MutablePhase];
     selectedPhaseIndex = phases.length - 1;
   }
   function removePhase(index: number): void {
@@ -305,6 +313,13 @@
         <button class="btn" disabled={pipelineHistoryIndex >= pipelineHistory.length - 1} onclick={redoPipeline}>Redo</button>
         <button class="btn btn-secondary" style="margin-left:auto" onclick={savePipelines} disabled={!trustPipelineOverrides}>Save Pipelines</button>
       </div>
+      {#if saveError}
+        <div class="save-error-banner" data-testid="save-error-banner" role="alert">
+          <span class="save-error-icon">⚠</span>
+          <span class="save-error-text">Save rejected: {saveError}</span>
+          <button class="save-error-dismiss" onclick={() => saveError = null}>✕</button>
+        </div>
+      {/if}
       <div class="split-pane">
         <div class="pane-left">
           <div class="phase-list">
@@ -330,10 +345,16 @@
                 </div>
               </div>
               <div class="card-body">
-                <label>
-                  ID:
-                  <input class="text-input" bind:value={pipeline.id} placeholder="pipeline-id" />
-                </label>
+                <div class="form-grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 8px;">
+                  <label class="form-field">
+                    <span class="form-label">Name</span>
+                    <input class="text-input" data-testid="pipelines-name-field-{pipeline.id}" bind:value={pipelines[selectedPipelineIndex].name} placeholder="Pipeline display name" />
+                  </label>
+                  <label class="form-field">
+                    <span class="form-label">ID</span>
+                    <input class="text-input" bind:value={pipelines[selectedPipelineIndex].id} placeholder="pipeline-id" />
+                  </label>
+                </div>
                 <div class="phases-sequence-editor">
                   <div class="sequence-label">Phases Sequence:</div>
                   <div class="sequence-list">
@@ -345,10 +366,10 @@
                         <div class="custom-tooltip">{getPhaseTooltip(p)}</div>
                         <div class="sequence-number">{pIdx + 1}</div>
                         <select class="select-input sequence-select" bind:value={pipeline.phases[pIdx]}>
-                          {#each snapshot.availablePhases as availPhase}
+                          {#each phases as availPhase}
                             <option value={availPhase.id}>{availPhase.name} ({availPhase.id})</option>
                           {/each}
-                          {#if !snapshot.availablePhases.find((ap) => ap.id === p)}
+                          {#if !phases.find((ap) => ap.id === p)}
                             <option value={p}>{p} (Unknown)</option>
                           {/if}
                         </select>
@@ -363,7 +384,7 @@
                   <div class="add-phase-row">
                     <select class="select-input flex-1" bind:value={newPhaseIdForPipeline}>
                       <option value="">-- Select a phase to add --</option>
-                      {#each snapshot.availablePhases as availPhase}
+                      {#each phases as availPhase}
                         <option value={availPhase.id}>{availPhase.name} ({availPhase.id})</option>
                       {/each}
                     </select>
@@ -391,6 +412,13 @@
         <button class="btn" disabled={phaseHistoryIndex >= phaseHistory.length - 1} onclick={redoPhase}>Redo</button>
         <button class="btn btn-secondary" data-testid="phases-save-all" style="margin-left:auto" onclick={savePhases} disabled={!trustPhases}>Save Phases</button>
       </div>
+      {#if saveError}
+        <div class="save-error-banner" data-testid="save-error-banner" role="alert">
+          <span class="save-error-icon">⚠</span>
+          <span class="save-error-text">Save rejected: {saveError}</span>
+          <button class="save-error-dismiss" onclick={() => saveError = null}>✕</button>
+        </div>
+      {/if}
       <div class="split-pane">
         <div class="pane-left">
           <div class="phase-list">
@@ -428,6 +456,10 @@
               {:else}
                 <div class="form-grid">
                   <label class="form-field">
+                    <span class="form-label">Name</span>
+                    <input class="text-input" data-testid="phases-name-field-{phaseRef.id}" bind:value={phases[idx].name} placeholder="Phase display name" />
+                  </label>
+                  <label class="form-field">
                     <span class="form-label">ID</span>
                     <input class="text-input" bind:value={phases[idx].id} placeholder="phase-id" />
                   </label>
@@ -438,9 +470,6 @@
                   <label class="form-field" style="flex: 1">
                     <span class="form-label">
                       Model
-                      {#if modelLayer(phaseRef.id) === 'workspace'}
-                        <span class="precedence-badge" data-testid="phases-model-badge-{phaseRef.id}">shadowed by workspace</span>
-                      {/if}
                     </span>
                     <select class="select-input" data-testid="phases-model-{phaseRef.id}" value={phases[idx].model ?? ''} onchange={(e) => { phases[idx].model = (e.currentTarget as HTMLSelectElement).value || undefined; }}>
                       <option value="">[Inherit / Default Backend Model]</option>
@@ -452,9 +481,6 @@
                   <label class="form-field" style="flex: 1">
                     <span class="form-label">
                       Effort
-                      {#if effortLayer(phaseRef.id) === 'workspace'}
-                        <span class="precedence-badge" data-testid="phases-effort-badge-{phaseRef.id}">shadowed by workspace</span>
-                      {/if}
                     </span>
                     <select class="select-input" data-testid="phases-effort-{phaseRef.id}" value={phases[idx].effort ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].effort = v ? (v as PhaseDefinition['effort']) : undefined; }}>
                       <option value="">[Inherit]</option>
@@ -579,4 +605,9 @@
   .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
   .model-list-item { display: flex; align-items: center; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px 12px; border-radius: var(--schegent-radius); }
   .precedence-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; font-size: 0.75em; font-weight: 500; color: var(--vscode-editorWarning-foreground, var(--schegent-muted-fg)); background: transparent; border: 1px solid var(--vscode-editorWarning-foreground, var(--schegent-muted-fg)); border-radius: 3px; vertical-align: middle; }
+  .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--vscode-errorForeground); font-size: 0.9em; }
+  .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
+  .save-error-text { flex: 1; word-break: break-word; }
+  .save-error-dismiss { background: transparent; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
+  .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }
 </style>

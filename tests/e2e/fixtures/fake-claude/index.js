@@ -106,10 +106,16 @@ function emitLoopBack(phase, filesCreated) {
   process.stdout.write('Remaining issues:\n');
   process.stdout.write(`- [stub-loop] deterministic ${phase} loop signal\n`);
   process.stdout.write('\n');
-  emitAuditBlock(phase, filesCreated);
+  
+  const metrics = {};
+  if (phase === 'speckit-clarify') metrics.open_questions = 1;
+  else if (phase === 'speckit-analyze') metrics.critical_issues = 1;
+  else metrics.issues_remain = 1;
+  
+  emitAuditBlock(phase, filesCreated, metrics);
 }
 
-function emitAuditBlock(phase, filesCreated) {
+function emitAuditBlock(phase, filesCreated, metrics = null) {
   process.stdout.write('=== SCHEGENT AUDIT LOG ===\n');
   process.stdout.write(`phase: ${phase}\n`);
   process.stdout.write(`files_created: [${filesCreated.map((f) => `"${f}"`).join(', ')}]\n`);
@@ -119,6 +125,11 @@ function emitAuditBlock(phase, filesCreated) {
   process.stdout.write('network_calls: ["none"]\n');
   process.stdout.write('ruleset_switches: ["none"]\n');
   process.stdout.write(`notes: deterministic-stub phase=${phase} mode=${MODE}\n`);
+  if (metrics) {
+    for (const [key, val] of Object.entries(metrics)) {
+      process.stdout.write(`${key}: ${val}\n`);
+    }
+  }
   process.stdout.write('=== END AUDIT LOG ===\n');
 }
 

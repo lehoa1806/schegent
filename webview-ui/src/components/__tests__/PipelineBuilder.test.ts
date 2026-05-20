@@ -202,6 +202,45 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       'claude-opus-4-6'
     ]);
   });
+  it('Pipelines tab: Pipeline Name field updates name and saves correctly (BUG-005)', async () => {
+    vi.mocked(savePipelinesHelper).mockClear();
+    const pipeline: PipelineDefinition = Object.freeze({
+      id: 'custom',
+      name: 'Custom Pipeline',
+      phases: Object.freeze(['speckit-specify'])
+    }) as unknown as PipelineDefinition;
+    const snap = buildSnapshot([], [pipeline]);
+    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    await tick();
+
+    // Select pipeline
+    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
+    expect(pipelineItem).not.toBeNull();
+    await fireEvent.click(pipelineItem);
+    await tick();
+
+    // Find the Name field in the form grid
+    const nameInput = container.querySelector('[data-testid="pipelines-name-field-custom"]') as HTMLInputElement;
+    expect(nameInput).not.toBeNull();
+    expect(nameInput.value).toBe('Custom Pipeline');
+
+    // Edit Name
+    await fireEvent.input(nameInput, { target: { value: 'Renamed Pipeline' } });
+    await tick();
+
+    // Save
+    const saveBtn = [...container.querySelectorAll('button')].find(
+      (btn) => btn.textContent?.trim() === 'Save Pipeline'
+    ) as HTMLButtonElement | undefined;
+    expect(saveBtn).toBeDefined();
+    await fireEvent.click(saveBtn!);
+    await tick();
+
+    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual([
+      { id: 'custom', name: 'Renamed Pipeline', phases: ['speckit-specify'] }
+    ]);
+  });
 });
 
 describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges', () => {
@@ -271,31 +310,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     expect(phases[0]).toMatchObject({ id: 'speckit-plan', effort: 'high' });
   });
 
-  it('renders the "shadowed by workspace" badge when phasePrecedence maps effort to workspace', async () => {
-    const precedence: PhasePrecedenceProjection = Object.freeze({
-      'speckit-plan::effort': 'workspace'
-    });
-    const { container } = await openPhasesEditor(phase, { effort: 'medium', precedence });
-    const badge = container.querySelector(
-      '[data-testid="phases-effort-badge-speckit-plan"]'
-    );
-    expect(badge).not.toBeNull();
-    expect(badge?.textContent ?? '').toMatch(/shadowed by workspace/i);
-  });
 
-  it('hides the effort badge when the precedence layer is user / built-in / unset', async () => {
-    for (const layer of ['user', 'built-in', 'unset'] as const) {
-      cleanup();
-      const precedence: PhasePrecedenceProjection = Object.freeze({
-        'speckit-plan::effort': layer
-      });
-      const { container } = await openPhasesEditor(phase, { effort: 'medium', precedence });
-      const badge = container.querySelector(
-        '[data-testid="phases-effort-badge-speckit-plan"]'
-      );
-      expect(badge, `badge unexpectedly visible for layer=${layer}`).toBeNull();
-    }
-  });
 
   it('Inherit option submits the row with effort omitted (not null, not empty string)', async () => {
     vi.mocked(savePhasesHelper).mockClear();
@@ -352,15 +367,63 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     expect((phases[0] as unknown as Record<string, unknown>).effort).toBeUndefined();
   });
 
-  it('renders the "shadowed by workspace" badge for Model when phasePrecedence maps model to workspace', async () => {
-    const precedence: PhasePrecedenceProjection = Object.freeze({
-      'speckit-plan::model': 'workspace'
+
+});
+
+describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
+  it('newly created phase appears in pipeline editor dropdown without save round-trip', async () => {
+    // Start with one existing phase and one pipeline referencing it
+    const existingPhase: PhaseDefinition = Object.freeze({
+      id: 'speckit-specify',
+      name: 'Spec-kit Specify',
+      instruction: 'Write the spec.',
+      loopable: false
+    }) as unknown as PhaseDefinition;
+    const pipeline: PipelineDefinition = Object.freeze({
+      id: 'default',
+      name: 'Default Pipeline',
+      phases: Object.freeze(['speckit-specify'])
+    }) as unknown as PipelineDefinition;
+    const snap = buildSnapshot([existingPhase], [pipeline]);
+
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
     });
-    const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-4-6', precedence });
-    const badge = container.querySelector(
-      '[data-testid="phases-model-badge-speckit-plan"]'
-    );
-    expect(badge).not.toBeNull();
-    expect(badge?.textContent ?? '').toMatch(/shadowed by workspace/i);
+    await tick();
+
+    // 1. Add a new phase via the "Add Phase" button in the Phases tab
+    const addPhaseBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addPhaseBtn).not.toBeNull();
+    await fireEvent.click(addPhaseBtn);
+    await tick();
+
+    // Verify the new phase appears in the Phases tab sidebar
+    const phaseItems = container.querySelectorAll('.phase-list-item');
+    expect(phaseItems.length).toBe(2); // existing + new
+
+    // 2. Switch to Pipelines tab (without saving!)
+    await switchTab(container, 'Pipelines');
+
+    // 3. Select the existing pipeline to open its editor
+    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
+    expect(pipelineItem).not.toBeNull();
+    await fireEvent.click(pipelineItem);
+    await tick();
+
+    // 4. Check the "Add Phase" dropdown in the pipeline editor
+    const addPhaseDropdown = container.querySelector('.add-phase-row .select-input') as HTMLSelectElement;
+    expect(addPhaseDropdown).not.toBeNull();
+    const optionValues = Array.from(addPhaseDropdown.querySelectorAll('option')).map(o => o.value);
+
+    // The dropdown should contain both the existing phase AND the newly created phase
+    expect(optionValues).toContain('speckit-specify');
+    expect(optionValues).toContain('new-phase'); // default id from addPhase()
+
+    // 5. Also check the inline sequence select for the existing pipeline phase
+    const sequenceSelect = container.querySelector('.sequence-select') as HTMLSelectElement;
+    expect(sequenceSelect).not.toBeNull();
+    const seqOptions = Array.from(sequenceSelect.querySelectorAll('option')).map(o => o.value);
+    expect(seqOptions).toContain('speckit-specify');
+    expect(seqOptions).toContain('new-phase');
   });
 });

@@ -69,6 +69,12 @@ export interface PhaseTile {
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
   readonly loopable?: boolean;
+  /**
+   * Feature 061 — operator-configured display name from `PhaseDef.name`.
+   * Purely cosmetic; MUST NOT be used as a lookup key. When undefined or
+   * empty, consumers fall back to `formatPhaseLabel(tile.name)`.
+   */
+  readonly displayName?: string;
   readonly phaseMessage?: {
     readonly fromPhaseId: string;
     readonly entryCount: number;

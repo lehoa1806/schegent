@@ -38,6 +38,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
     pipelinePhases && pipelinePhases.length > 0
       ? pipelinePhases.filter((def) => !removedPhaseIds.has(def.id)).map<MutableTile>((def, idx) => ({
         name: def.id,
+        displayName: def.name,
         order: idx + 1,
         state: 'not-started',
         iteration: 0,

@@ -8,6 +8,7 @@ export interface SidebarStats {
 
 export interface ActivePhaseDescriptor {
   readonly name: PhaseName;
+  readonly displayName?: string;
   readonly subProgress: SubProgress | null;
 }
 
@@ -36,7 +37,7 @@ export function deriveSidebarStats(
 export function deriveActivePhase(phases: readonly PhaseTile[]): ActivePhaseDescriptor | null {
   for (const p of phases) {
     if (p.state === 'active') {
-      return { name: p.name, subProgress: p.subProgress };
+      return { name: p.name, displayName: p.displayName, subProgress: p.subProgress };
     }
   }
   return null;

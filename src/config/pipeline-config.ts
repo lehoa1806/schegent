@@ -110,7 +110,8 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'speckit-clarify',
     name: 'Spec-kit Clarify',
     instruction: PHASE_INSTRUCTIONS['speckit-clarify'],
-    loopable: true
+    loopable: true,
+    retryCondition: 'open_questions > 0'
   }),
   Object.freeze({
     id: 'speckit-plan',
@@ -128,7 +129,8 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'speckit-analyze',
     name: 'Spec-kit Analyze',
     instruction: PHASE_INSTRUCTIONS['speckit-analyze'],
-    loopable: true
+    loopable: true,
+    retryCondition: 'critical_issues > 0'
   }),
   Object.freeze({
     id: 'speckit-implement',
@@ -340,8 +342,8 @@ export function mergeCatalog(
 
   const layers: ReadonlyArray<{ name: string; input: MergeInput }> = [
     { name: 'builtin', input: builtin },
-    { name: 'user', input: user },
-    { name: 'workspace', input: workspace }
+    { name: 'workspace', input: workspace },
+    { name: 'user', input: user }
   ];
 
   for (const { name, input } of layers) {
@@ -377,8 +379,8 @@ export function mergeCatalog(
   }
 
   const defaultPipelineId =
-    workspace.defaultPipelineId ??
     user.defaultPipelineId ??
+    workspace.defaultPipelineId ??
     builtin.defaultPipelineId ??
     BUILT_IN_PIPELINE_ID;
 
@@ -533,6 +535,13 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
         message: 'Phase.retryCondition must be a non-empty string when set'
       });
     }
+  } else if (v.loopable === true) {
+    errors.push({
+      source: 'phase',
+      id,
+      field: 'retryCondition',
+      message: 'Phase.retryCondition is required when loopable is true'
+    });
   }
 
   return errors;

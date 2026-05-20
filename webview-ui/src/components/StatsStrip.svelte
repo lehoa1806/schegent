@@ -11,7 +11,7 @@
 
   function formatActiveLine(a: ReturnType<typeof deriveActivePhase>): string {
     if (a === null) return 'no active phase';
-    const name = formatPhaseLabel(a.name).toLowerCase();
+    const name = formatPhaseLabel(a.name, a.displayName).toLowerCase();
     if (a.subProgress === null) return name;
     const { current, total, label } = a.subProgress;
     return `${name} · ${current}/${total} ${label}s`;

@@ -220,7 +220,7 @@ describe('cmd-save-phases trust gate (T017, US3) — row-granularity retry-condi
         name: 'Spec-kit Clarify',
         instruction: 'i',
         loopable: true,
-        retryCondition: 'open_questions > 0'
+        retryCondition: 'some_custom_condition > 0'
       }
     ];
     await saveHandler(ctx, makeCmd(phases));
@@ -240,10 +240,11 @@ describe('cmd-save-phases trust gate (T017, US3) — row-granularity retry-condi
     mocks.state.capabilities.set('phases', true);
     mocks.state.capabilities.set('retryConditions', false);
     const { ctx, acks, updateConfigCalls } = buildCtx();
-    // Built-in phases have NO retryCondition; therefore submitting a row
-    // *without* retryCondition is the default and should be accepted.
+    // Built-in phases have a specific default retryCondition (if loopable);
+    // submitting a row with the SAME retryCondition is the default and should be accepted.
     const phases = [
-      { id: 'speckit-specify', name: 'Spec-kit Specify', instruction: 'i', loopable: false }
+      { id: 'speckit-specify', name: 'Spec-kit Specify', instruction: 'i', loopable: false },
+      { id: 'speckit-clarify', name: 'Spec-kit Clarify', instruction: 'i', loopable: true, retryCondition: 'open_questions > 0' }
     ];
     await saveHandler(ctx, makeCmd(phases));
     expect(acks[0].status).toBe('accepted');
@@ -262,7 +263,7 @@ describe('cmd-save-phases trust gate (T017, US3) — row-granularity retry-condi
         name: 'Renamed Clarify',
         instruction: 'overridden',
         loopable: true,
-        retryCondition: 'open_questions > 0'
+        retryCondition: 'some_custom_condition > 0'
       }
     ];
     await saveHandler(ctx, makeCmd(phases));
