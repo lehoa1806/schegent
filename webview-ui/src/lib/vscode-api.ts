@@ -1,30 +1,11 @@
 import type { CommandType, HostMessage, SidebarCommand } from './messages';
+import {
+  configureDefaultHostTransport,
+  getHostTransport
+} from './host-transport';
+import { createVSCodeTransport } from './vscode-transport';
 
-interface AcquiredVsCodeApi {
-  postMessage(message: unknown): void;
-  setState(state: unknown): void;
-  getState<T = unknown>(): T | undefined;
-}
-
-declare function acquireVsCodeApi(): AcquiredVsCodeApi;
-
-let cached: AcquiredVsCodeApi | null = null;
-
-function getApi(): AcquiredVsCodeApi {
-  if (cached) return cached;
-  if (typeof acquireVsCodeApi !== 'function') {
-    cached = {
-      postMessage() {},
-      setState() {},
-      getState() {
-        return undefined;
-      }
-    };
-    return cached;
-  }
-  cached = acquireVsCodeApi();
-  return cached;
-}
+configureDefaultHostTransport(createVSCodeTransport);
 
 function uuidv4(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -56,20 +37,18 @@ export function postCommand<C extends SidebarCommand>(
   const correlationId = opts.correlationId ?? uuidv4();
   const message: Record<string, unknown> = { type, correlationId };
   if (payload !== undefined) message['payload'] = payload;
-  getApi().postMessage(message);
+  getHostTransport().postMessage(message);
   return { correlationId };
 }
 
 export type HostMessageHandler<S> = (msg: HostMessage<S>) => void;
 
 export function onHostMessage<S>(handler: HostMessageHandler<S>): () => void {
-  const listener = (event: MessageEvent) => {
-    const data = event.data as HostMessage<S> | undefined;
+  return getHostTransport().onMessage((message) => {
+    const data = message as HostMessage<S> | undefined;
     if (!data || typeof data !== 'object') return;
     handler(data);
-  };
-  window.addEventListener('message', listener);
-  return () => window.removeEventListener('message', listener);
+  });
 }
 
 export const __test_only = { uuidv4 };
