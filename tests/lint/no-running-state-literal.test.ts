@@ -12,6 +12,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/commands/cancel.ts',
   'src/commands/auto.ts',
   'src/contracts/backend-runner.ts',
+  'src/contracts/generated/boundary-contracts.ts',
+  'src/contracts/generated/schemas/state.schema.json',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',

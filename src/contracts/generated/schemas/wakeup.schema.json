@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/wakeup.schema.json",
+  "title": "Schegent Wake-up Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "src/wakeup/settings.ts",
+    "src/wakeup/invocation-log.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "supportedModels",
+    "runnerDefaultModel",
+    "schedulerTypes",
+    "rejectReasons",
+    "triggerSources",
+    "attemptStatuses",
+    "wakeUpSettingsFields",
+    "invocationRecordFields"
+  ],
+  "properties": {
+    "supportedModels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "claude-opus-4-7",
+          "claude-sonnet-4-6",
+          "claude-haiku-4-6"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "runnerDefaultModel": {
+      "type": "string",
+      "const": "runner-default"
+    },
+    "schedulerTypes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "chronological",
+          "periodic"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "rejectReasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "unknown-key",
+          "invalid-scheduler-type",
+          "invalid-chronological-time",
+          "invalid-periodic-interval",
+          "periodic-interval-below-minimum",
+          "invalid-model",
+          "config-write-failed"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "triggerSources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "scheduled",
+          "manual"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "attemptStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "succeeded",
+          "failed",
+          "timed-out",
+          "skipped"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "wakeUpSettingsFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "enabled",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "schedulerType",
+          "optional": false,
+          "type": "SchedulerType"
+        },
+        {
+          "name": "chronologicalTime",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "periodicInterval",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "model",
+          "optional": false,
+          "type": "WakeUpModelSelection"
+        }
+      ]
+    },
+    "invocationRecordFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "timestamp",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "platform",
+          "optional": false,
+          "type": "'darwin' | 'win32' | 'linux-systemd' | 'linux-cron'"
+        },
+        {
+          "name": "pid",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "lockAcquired",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "ephemeralCwd",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "cwdInsideWorkspace",
+          "optional": false,
+          "type": "false"
+        },
+        {
+          "name": "envScrubbed",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "claudeExitCode",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "durationMs",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "triggerSource",
+          "optional": true,
+          "type": "WakeUpTriggerSource"
+        },
+        {
+          "name": "status",
+          "optional": true,
+          "type": "WakeUpAttemptStatus"
+        },
+        {
+          "name": "timedOut",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "skipped",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "rawResponse",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "errorReason",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "correlationId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "requestedModel",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "actualModel",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "sessionLogBytesAppended",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "sessionLogTrimmed",
+          "optional": true,
+          "type": "boolean"
+        }
+      ]
+    }
+  }
+}

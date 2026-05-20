@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/sidebar-ipc.schema.json",
+  "title": "Schegent Sidebar IPC Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "src/contracts/sidebar-ipc.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "commandTypes",
+    "hostMessageTypes",
+    "workflowSnapshotFields"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 3
+    },
+    "commandTypes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "CMD_START",
+          "CMD_CANCEL",
+          "CMD_RESUME",
+          "CMD_RESET",
+          "CMD_REMOVE_QUEUE_ITEM",
+          "CMD_OPEN_AUDIT_LOG",
+          "CMD_RETRY_QUEUE_ITEM",
+          "CMD_MOVE_QUEUE_ITEM_UP",
+          "CMD_MOVE_QUEUE_ITEM_DOWN",
+          "CMD_CLEAR_COMPLETED",
+          "CMD_CLEAR_FAILED",
+          "CMD_PAUSE_QUEUE",
+          "CMD_RESUME_QUEUE",
+          "CMD_OPEN_DASHBOARD",
+          "CMD_RETRY_ACTIVE_RUN",
+          "CMD_RERUN_FROM_HISTORY",
+          "CMD_OPEN_QUEUE_ITEM_DETAILS",
+          "CMD_OPEN_HISTORY_ITEM_DETAILS",
+          "CMD_SAVE_PIPELINES",
+          "CMD_SAVE_PHASES",
+          "CMD_SAVE_MODELS",
+          "CMD_SAVE_GENERAL_SETTINGS",
+          "CMD_RETRY_PHASE_NOW",
+          "CMD_SAVE_WAKEUP_SETTINGS",
+          "CMD_WAKE_UP_NOW",
+          "CMD_PAUSE_PHASE",
+          "CMD_RESUME_PHASE",
+          "CMD_RESTART_PHASE",
+          "CMD_SKIP_PHASE",
+          "CMD_DISABLE_PHASE",
+          "CMD_ENABLE_PHASE",
+          "CMD_REMOVE_TASK_PHASE",
+          "CMD_MODIFY_TASK",
+          "CMD_REORDER_TASK",
+          "CMD_RESTART_CANCELED_TASK",
+          "CMD_READ_PHASE_LOG",
+          "CMD_START_PHASE_LOG_TAIL",
+          "CMD_STOP_PHASE_LOG_TAIL",
+          "CMD_OPEN_VERBOSE_SETTING",
+          "CMD_SET_PHASE_BREAKPOINT",
+          "CMD_CLEAR_PHASE_BREAKPOINT",
+          "CMD_READ_WAKEUP_SESSION_LOG",
+          "CMD_REVEAL_WAKEUP_SESSION_LOG",
+          "CMD_START_QUEUE"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "hostMessageTypes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "STATE_SNAPSHOT",
+          "CMD_ACK",
+          "MSG_PHASE_LOG_ENTRY"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "workflowSnapshotFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "schemaVersion",
+          "optional": false,
+          "type": "3"
+        },
+        {
+          "name": "isPrimary",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "status",
+          "optional": false,
+          "type": "WorkflowStatus"
+        },
+        {
+          "name": "activeFeature",
+          "optional": false,
+          "type": "ActiveFeatureSummary | null"
+        },
+        {
+          "name": "phases",
+          "optional": false,
+          "type": "readonly PhaseTile[]"
+        },
+        {
+          "name": "queue",
+          "optional": false,
+          "type": "QueueProjection"
+        },
+        {
+          "name": "phaseOverrides",
+          "optional": false,
+          "type": "readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed'; }[]"
+        },
+        {
+          "name": "manualPauseAt",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "manualPauseCause",
+          "optional": false,
+          "type": "'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused' | null"
+        },
+        {
+          "name": "phaseBreakpoints",
+          "optional": false,
+          "type": "readonly { readonly phaseId: string; readonly setAt: string; readonly actor: 'operator' | 'system'; }[]"
+        },
+        {
+          "name": "resumeTargetPhaseId",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "activeRunId",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "auditTail",
+          "optional": false,
+          "type": "readonly AuditTailEntry[]"
+        },
+        {
+          "name": "liveActivity",
+          "optional": false,
+          "type": "LiveActivity"
+        },
+        {
+          "name": "workflowElapsedMs",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "monitor",
+          "optional": false,
+          "type": "CliMonitorState | null"
+        },
+        {
+          "name": "history",
+          "optional": false,
+          "type": "readonly HistoryEntry[]"
+        },
+        {
+          "name": "producedAt",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "activePipeline",
+          "optional": true,
+          "type": "ActivePipelineSummary"
+        },
+        {
+          "name": "availablePipelines",
+          "optional": false,
+          "type": "readonly PipelineDef[]"
+        },
+        {
+          "name": "availablePhases",
+          "optional": false,
+          "type": "readonly PhaseDef[]"
+        },
+        {
+          "name": "availableModels",
+          "optional": false,
+          "type": "readonly string[]"
+        },
+        {
+          "name": "delayedRetry",
+          "optional": false,
+          "type": "DelayedRetryState"
+        },
+        {
+          "name": "generalSettings",
+          "optional": false,
+          "type": "GeneralSettings"
+        },
+        {
+          "name": "wakeUpSettings",
+          "optional": false,
+          "type": "WakeUpSettings"
+        },
+        {
+          "name": "wakeUpLog",
+          "optional": false,
+          "type": "WakeUpLogProjection"
+        },
+        {
+          "name": "wakeUp",
+          "optional": false,
+          "type": "{ readonly model: WakeUpModelSelection; readonly sessionLogPath: string; }"
+        },
+        {
+          "name": "phasePrecedence",
+          "optional": true,
+          "type": "PhasePrecedenceProjection"
+        },
+        {
+          "name": "telemetry",
+          "optional": false,
+          "type": "TelemetrySnapshot | null"
+        },
+        {
+          "name": "workspaceTrust",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "resolvedTrust",
+          "optional": false,
+          "type": "{ readonly phases: boolean; readonly retryConditions: boolean; readonly pipelineOverrides: boolean; }"
+        }
+      ]
+    }
+  }
+}

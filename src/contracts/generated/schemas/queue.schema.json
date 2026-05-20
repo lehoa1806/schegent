@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/queue.schema.json",
+  "title": "Schegent Queue Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "src/contracts/queue-snapshot.ts",
+    "src/queue/feature-request.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "queueStatuses",
+    "featureRequestStatuses",
+    "featureRequestFields",
+    "queueStateFields"
+  ],
+  "properties": {
+    "queueStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "in-flight",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "featureRequestStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "in-flight",
+          "paused",
+          "completed",
+          "canceled",
+          "failed"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "featureRequestFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "id",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "enqueuedAt",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "createdAt",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "startedAt",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "updatedAt",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "completedAt",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "status",
+          "optional": false,
+          "type": "FeatureRequestStatus"
+        },
+        {
+          "name": "queueId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "position",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "pauseCause",
+          "optional": true,
+          "type": "FeatureRequestPauseCause | null"
+        },
+        {
+          "name": "runId",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "retryCount",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "lastError",
+          "optional": false,
+          "type": "FeatureRequestFailure | string | null"
+        },
+        {
+          "name": "pausedReason",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "pipelineId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "rerun",
+          "optional": true,
+          "type": "FeatureRequestRerun"
+        }
+      ]
+    },
+    "queueStateFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "requests",
+          "optional": false,
+          "type": "FeatureRequest[]"
+        },
+        {
+          "name": "inFlightId",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "paused",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "pausedReason",
+          "optional": false,
+          "type": "string | null"
+        },
+        {
+          "name": "updatedAt",
+          "optional": false,
+          "type": "number"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/state.schema.json",
+  "title": "Schegent Workflow State Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "src/contracts/state-schema.ts",
+    "src/state/workflow-run.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "stateSchemaVersion",
+    "workflowRunStatuses",
+    "manualPauseCauses",
+    "delayedRetryCauses",
+    "workflowRunFields"
+  ],
+  "properties": {
+    "stateSchemaVersion": {
+      "type": "integer",
+      "const": 6
+    },
+    "workflowRunStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "running",
+          "paused",
+          "failed",
+          "completed",
+          "canceled"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "manualPauseCauses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "operator-paused",
+          "queue-paused-mid-run",
+          "breakpoint-paused"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "delayedRetryCauses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "transient_error",
+          "rate_limit"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "workflowRunFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "id",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "featureId",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "featureDir",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "optional": false,
+          "type": "WorkflowRunStatus"
+        },
+        {
+          "name": "currentPhase",
+          "optional": false,
+          "type": "Phase"
+        },
+        {
+          "name": "currentIteration",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "startedAt",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "lastTransitionAt",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "phasesCompleted",
+          "optional": false,
+          "type": "PhaseResult[]"
+        },
+        {
+          "name": "lastError",
+          "optional": false,
+          "type": "SanitizedError | null"
+        },
+        {
+          "name": "pipeline",
+          "optional": true,
+          "type": "WorkflowRunPipeline"
+        },
+        {
+          "name": "delayedRetryCount",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "pendingRetryAt",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "pendingRetryCause",
+          "optional": false,
+          "type": "DelayedRetryCause | null"
+        },
+        {
+          "name": "phaseOverrides",
+          "optional": false,
+          "type": "PhaseOverride[]"
+        },
+        {
+          "name": "manualPauseAt",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "manualPauseCause",
+          "optional": false,
+          "type": "ManualPauseCause | null"
+        },
+        {
+          "name": "phaseBreakpoints",
+          "optional": false,
+          "type": "PhaseBreakpoint[]"
+        },
+        {
+          "name": "resumeTargetPhaseId",
+          "optional": false,
+          "type": "string | null"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "generatedBy": "scripts/generate-contract-schemas.mjs",
+  "generatedSchemaVersion": 1,
+  "families": [
+    {
+      "family": "sidebar-ipc",
+      "status": "generated",
+      "description": "Webview commands, acknowledgements, host push message literals, and snapshot field names.",
+      "sourceFiles": [
+        "src/contracts/sidebar-ipc.ts",
+        "src/ui/sidebar/snapshot.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/sidebar-ipc.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate and review literal diffs with every IPC contract change."
+    },
+    {
+      "family": "settings",
+      "status": "generated",
+      "description": "Schegent configuration keys and contribution constraints.",
+      "sourceFiles": [
+        "package.json",
+        "src/config/settings-schema.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/settings.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate after adding or changing any schegent.* setting."
+    },
+    {
+      "family": "queue",
+      "status": "generated",
+      "description": "Queue snapshot and persisted feature request status literals.",
+      "sourceFiles": [
+        "src/contracts/queue-snapshot.ts",
+        "src/queue/feature-request.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/queue.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate when queue status or feature request fields change."
+    },
+    {
+      "family": "workflow-state",
+      "status": "generated",
+      "description": "Workflow run status, pause causes, retry causes, and state schema version.",
+      "sourceFiles": [
+        "src/contracts/state-schema.ts",
+        "src/state/workflow-run.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/state.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate with every persisted workflow state shape change."
+    },
+    {
+      "family": "audit-events",
+      "status": "generated",
+      "description": "Structured audit event literals and audit schema version.",
+      "sourceFiles": [
+        "src/contracts/audit-events.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/audit-events.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate with every audit taxonomy change; unknown events must remain warn-and-preserve."
+    },
+    {
+      "family": "backend-runner",
+      "status": "generated",
+      "description": "Backend runner request and raw invocation result field names.",
+      "sourceFiles": [
+        "src/contracts/backend-runner.ts",
+        "src/runner/invocation-result.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/backend-runner.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate with every runner request/result boundary change."
+    },
+    {
+      "family": "wakeup",
+      "status": "generated",
+      "description": "Wake-up settings, model literals, invocation record fields, and trigger/status literals.",
+      "sourceFiles": [
+        "src/wakeup/settings.ts",
+        "src/wakeup/invocation-log.ts"
+      ],
+      "schemaFiles": [
+        "src/contracts/generated/schemas/wakeup.schema.json"
+      ],
+      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
+      "rustBinding": "contracts/rust/src/lib.rs",
+      "reviewPolicy": "Regenerate with every wake-up settings or invocation-log boundary change."
+    },
+    {
+      "family": "raw-transcript-bytes",
+      "status": "typescript-only",
+      "description": "Unredacted raw transcript sink bytes under .schegent/sessions/raw-<runId>.log.",
+      "sourceFiles": [
+        "src/audit/raw-transcript-writer.ts"
+      ],
+      "schemaFiles": [],
+      "typescriptBinding": null,
+      "rustBinding": null,
+      "reviewPolicy": "Do not generate UI-facing schemas for raw transcript bytes.",
+      "exclusionReason": "Sink-only unredacted bytes are intentionally never surfaced to UI or generated cross-release schemas."
+    }
+  ]
+}
