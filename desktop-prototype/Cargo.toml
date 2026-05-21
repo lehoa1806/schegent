@@ -1,0 +1,15 @@
+[package]
+name = "schegent-desktop-prototype"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+schegent-contracts = { path = "../contracts/rust" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "schegent-desktop-prototype"
+path = "src/main.rs"
