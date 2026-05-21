@@ -1,11 +1,9 @@
 import * as vscode from 'vscode';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 
 export async function runReset(ctx: {
   store: WorkspaceStateStore;
-  notifier: Notifier;
   logger: SanitizedLogger;
 }): Promise<void> {
   try {
@@ -16,9 +14,9 @@ export async function runReset(ctx: {
     );
     if (choice !== 'Reset') return;
     await ctx.store.reset();
-    ctx.notifier.info('Schegent: workspace state reset.');
+    void vscode.window.showInformationMessage('Schegent: workspace state reset.');
   } catch (err) {
-    ctx.notifier.error(`Schegent: reset failed — ${(err as Error).message}`);
+    void vscode.window.showErrorMessage(`Schegent: reset failed — ${(err as Error).message}`);
     ctx.logger.error((err as Error).message);
   }
 }

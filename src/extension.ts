@@ -172,6 +172,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => placeholder.dispose() }
   );
 
+  const store = new WorkspaceStateStore({
+    get: <T>(key: string) => context.workspaceState.get<T>(key),
+    update: (key, value) => context.workspaceState.update(key, value)
+  }, logger);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('schegent.reset', () =>
+      runReset({ store, logger })
+    )
+  );
+
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
   let activePlaceholder: PlaceholderProjector = placeholder;
@@ -193,6 +204,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       logger,
       ownerId,
       workspaceRoot: folder.uri.fsPath,
+      store,
       onInitFailure: () => {
         const replacement = new PlaceholderProjector({ reason: 'init-failed' });
         activePlaceholder.dispose();
@@ -260,6 +272,7 @@ interface Stage2Inputs {
   readonly logger: SanitizedLogger;
   readonly ownerId: string;
   readonly workspaceRoot: string;
+  readonly store: WorkspaceStateStore;
   readonly onInitFailure: () => void;
   readonly runtimeLogSink: RuntimeLogSink;
   readonly runtimeLogAccessor: ReturnType<typeof createRuntimeLogAccessor>;
@@ -271,6 +284,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger,
     ownerId,
     workspaceRoot,
+    store,
     onInitFailure,
     runtimeLogSink,
     runtimeLogAccessor
@@ -280,11 +294,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const channel = vscode.window.createOutputChannel('Schegent');
   disposables.push(channel);
   const output = new SchegentOutputChannel(channel, logger);
-
-  const store = new WorkspaceStateStore({
-    get: <T>(key: string) => context.workspaceState.get<T>(key),
-    update: (key, value) => context.workspaceState.update(key, value)
-  }, logger);
 
   // Feature 030 — `initialize()` returns the v5 → v6 migration audit events;
   // they are forwarded through `auditWriter.append` once the writer exists
@@ -299,7 +308,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     void vscode.window.showErrorMessage(
       `Schegent: ${(err as Error).message}`,
       'Open Reset Command'
-    );
+    ).then((selection) => {
+      if (selection === 'Open Reset Command') {
+        void vscode.commands.executeCommand('schegent.reset');
+      }
+    });
     onInitFailure();
     for (const d of disposables) d.dispose();
     return null;
@@ -1111,9 +1124,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           logger,
           taskId: typeof arg?.taskId === 'string' ? arg.taskId : ''
         })
-    ),
-    vscode.commands.registerCommand('schegent.reset', () =>
-      runReset({ store, notifier, logger })
     ),
     vscode.commands.registerCommand('schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot, notifier })

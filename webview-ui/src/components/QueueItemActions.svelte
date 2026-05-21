@@ -129,7 +129,7 @@
       title={`Cancel '${labelHint}'`}
       aria-disabled={ariaDisabled}
       onclick={onCancelInFlight}
-    >Cancel</button>
+    >⏹</button>
   {/if}
   {#if showRemove}
     {#if showPendingEdit}
@@ -140,7 +140,7 @@
         title={`Edit '${labelHint}'`}
         aria-disabled={ariaDisabled}
         onclick={() => (editOpen = !editOpen)}
-      >Edit</button>
+      >✎</button>
       <!--
         Feature 030 (US3, T045) — removed the "Move to another queue"
         affordance alongside the multi-queue surfaces. The single
@@ -171,7 +171,7 @@
       title={`Retry feature '${labelHint}'`}
       aria-disabled={ariaDisabled}
       onclick={onRetry}
-    >↻ Retry</button>
+    >↻</button>
   {/if}
   {#if showRestartCanceled}
     <button
@@ -181,7 +181,7 @@
       title={`Restart canceled task '${labelHint}'`}
       aria-disabled={ariaDisabled}
       onclick={onRestartCanceled}
-    >↻ Restart</button>
+    >↻</button>
   {/if}
 </div>
 
@@ -203,7 +203,8 @@
 <style>
   .actions {
     display: inline-flex;
-    gap: 4px;
+    flex-direction: column;
+    gap: 2px;
     align-items: center;
   }
   button {

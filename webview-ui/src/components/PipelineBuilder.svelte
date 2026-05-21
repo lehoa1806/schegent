@@ -60,7 +60,7 @@
 
   type MutablePipeline = Omit<PipelineDefinition, 'phases'> & { phases: string[] };
   type MutablePhase = {
-    id: string; name: string; instruction: string; loopable: boolean;
+    id: string; name: string; instruction: string;
     model?: string; effort?: PhaseDefinition['effort'];
     timeoutSeconds?: number; retryCondition?: string;
     [k: string]: unknown;
@@ -106,7 +106,6 @@
         id: string;
         name: string;
         instruction: string;
-        loopable: boolean;
         model?: string;
         effort?: PhaseDefinition['effort'];
         timeoutSeconds?: number;
@@ -114,8 +113,7 @@
       } = {
         id: p.id,
         name: p.name,
-        instruction: p.instruction,
-        loopable: p.loopable
+        instruction: p.instruction
       };
       if (typeof p.model === 'string' && p.model.length > 0) row.model = p.model;
       if (typeof p.effort === 'string' && p.effort.length > 0) row.effort = p.effort;
@@ -238,7 +236,7 @@
     if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
   function addPhase(): void {
-    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', loopable: false } as MutablePhase];
+    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.' } as MutablePhase];
     selectedPhaseIndex = phases.length - 1;
   }
   function removePhase(index: number): void {
@@ -247,6 +245,26 @@
     if (selectedPhaseIndex === index) selectedPhaseIndex = null;
     else if (selectedPhaseIndex !== null && selectedPhaseIndex > index) selectedPhaseIndex--;
     if (id) { const next = { ...editStateById }; delete next[id]; editStateById = next; }
+  }
+  function movePhaseListUp(index: number): void {
+    if (index <= 0) return;
+    const newPhases = [...phases];
+    const tmp = newPhases[index - 1];
+    newPhases[index - 1] = newPhases[index];
+    newPhases[index] = tmp;
+    phases = newPhases;
+    if (selectedPhaseIndex === index) selectedPhaseIndex = index - 1;
+    else if (selectedPhaseIndex === index - 1) selectedPhaseIndex = index;
+  }
+  function movePhaseListDown(index: number): void {
+    if (index >= phases.length - 1) return;
+    const newPhases = [...phases];
+    const tmp = newPhases[index + 1];
+    newPhases[index + 1] = newPhases[index];
+    newPhases[index] = tmp;
+    phases = newPhases;
+    if (selectedPhaseIndex === index) selectedPhaseIndex = index + 1;
+    else if (selectedPhaseIndex === index + 1) selectedPhaseIndex = index;
   }
   function resetPhase(index: number): void {
     const original = snapshot.availablePhases?.find(p => p.id === phases[index].id);
@@ -423,10 +441,16 @@
         <div class="pane-left">
           <div class="phase-list">
             {#each phases as phase, i (phase.id + '-' + i)}
-              <button class="phase-list-item {selectedPhaseIndex === i ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" onclick={() => selectedPhaseIndex = i}>
-                <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
-                <div class="phase-list-id">{phase.id}</div>
-              </button>
+              <div class="phase-list-row">
+                <button class="phase-list-item {selectedPhaseIndex === i ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" onclick={() => selectedPhaseIndex = i}>
+                  <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
+                  <div class="phase-list-id">{phase.id}</div>
+                </button>
+                <div class="phase-list-actions">
+                  <button class="icon-btn" data-testid="phases-move-up-{phase.id}" disabled={i === 0} onclick={() => movePhaseListUp(i)}>↑</button>
+                  <button class="icon-btn" data-testid="phases-move-down-{phase.id}" disabled={i === phases.length - 1} onclick={() => movePhaseListDown(i)}>↓</button>
+                </div>
+              </div>
             {/each}
           </div>
         </div>
@@ -555,6 +579,9 @@
   .phase-list-item.selected { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
   .phase-list-title { font-weight: 500; margin-bottom: 4px; }
   .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
+  .phase-list-row { display: flex; align-items: center; gap: 4px; }
+  .phase-list-row .phase-list-item { flex: 1; }
+  .phase-list-actions { display: flex; flex-direction: column; gap: 2px; }
   .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
   .full-height { flex: 1; }
   .editor-card { background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -604,7 +631,6 @@
   .model-form { display: flex; gap: 8px; flex: 1; }
   .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
   .model-list-item { display: flex; align-items: center; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px 12px; border-radius: var(--schegent-radius); }
-  .precedence-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; font-size: 0.75em; font-weight: 500; color: var(--vscode-editorWarning-foreground, var(--schegent-muted-fg)); background: transparent; border: 1px solid var(--vscode-editorWarning-foreground, var(--schegent-muted-fg)); border-radius: 3px; vertical-align: middle; }
   .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--vscode-errorForeground); font-size: 0.9em; }
   .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
   .save-error-text { flex: 1; word-break: break-word; }

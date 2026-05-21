@@ -18,8 +18,6 @@ export const BUILT_IN_PHASE_INDEX = new Map<PhaseName, number>([
   ['finalize', 6]
 ]);
 
-export const BUILT_IN_LOOPABLE = new Set<PhaseName>(['speckit-clarify', 'speckit-analyze']);
-
 export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   type MutableTile = {
     -readonly [K in keyof PhaseTile]: PhaseTile[K];
@@ -44,8 +42,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
         iteration: 0,
         lastResult: null,
         elapsedMs: 0,
-        subProgress: null,
-        loopable: def.loopable
+        subProgress: null
       }))
       : buildEmptyPhases()
         .filter((phase) => !removedPhaseIds.has(phase.name))
@@ -85,18 +82,13 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
     } else if (run.status === 'canceled') {
       tile.state = 'skipped';
     }
-    if (isLoopableTile(tile)) {
-      tile.iteration = Math.max(tile.iteration, run.currentIteration);
-    }
+    // Any phase can theoretically loop if it has a retry condition. If it is looping, its currentIteration will reflect it.
+    tile.iteration = Math.max(tile.iteration, run.currentIteration);
   }
 
   return tiles;
 }
 
-export function isLoopableTile(tile: PhaseTile): boolean {
-  if (typeof tile.loopable === 'boolean') return tile.loopable;
-  return BUILT_IN_LOOPABLE.has(tile.name);
-}
 
 export function phaseIndex(phase: Phase, phaseOrder?: Map<PhaseName, number>): number {
   if (phase === 'done') return -1;

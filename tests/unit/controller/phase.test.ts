@@ -125,16 +125,15 @@ describe('Phase enum and transitions', () => {
       expect(nextSuccessor('not-a-phase', pipeline)).toBe('done');
     });
 
-    it('isLoopPhase consults the PhaseDef.loopable when supplied', () => {
-      expect(isLoopPhase('foo', { id: 'foo', loopable: true })).toBe(true);
-      expect(isLoopPhase('foo', { id: 'foo', loopable: false })).toBe(false);
+    it('isLoopPhase consults the PhaseDef.retryCondition when supplied', () => {
+      expect(isLoopPhase('foo', { id: 'foo', retryCondition: 'open_questions > 0' })).toBe(true);
+      expect(isLoopPhase('foo', { id: 'foo', retryCondition: undefined })).toBe(false);
     });
   });
 
   describe('retryCondition truth table (010, T023, US2)', () => {
     const PHASE_DEF = {
       id: 'security-audit',
-      loopable: true,
       retryCondition: 'open_questions > 0'
     };
 
@@ -181,22 +180,6 @@ describe('Phase enum and transitions', () => {
       }
     });
 
-    it('phase without retryCondition preserves legacy loop semantics (FR-011)', () => {
-      const noRetry = {
-        id: 'speckit-clarify',
-        loopable: true
-      };
-      const result = transition({
-        phase: 'speckit-clarify',
-        outcome: 'issues_remain',
-        iteration: 1,
-        iterationCap: 5,
-        phaseDef: noRetry,
-        metrics: { open_questions: 0 }
-      });
-      // issues_remain on a loopable phase under cap → loop (legacy)
-      expect(result.kind).toBe('loop');
-    });
 
     it('failed outcome bypasses retryCondition (FR-010)', () => {
       const result = transition({

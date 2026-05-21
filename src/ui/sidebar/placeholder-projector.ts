@@ -31,8 +31,14 @@ export interface PlaceholderProjectorDeps {
 export class PlaceholderProjector implements ProjectorHandle {
   private readonly snapshot: WorkflowSnapshot;
   private readonly listeners = new Set<ProjectorListener>();
+  private readonly _reason: PlaceholderReason;
+
+  public get reason(): PlaceholderReason {
+    return this._reason;
+  }
 
   constructor(deps: PlaceholderProjectorDeps) {
+    this._reason = deps.reason;
     const now = deps.now ?? (() => new Date());
     const producedAt = now().toISOString();
     const guidance: AuditTailEntry = Object.freeze({

@@ -48,7 +48,6 @@ export interface PipelineLike {
 
 export interface PhaseDefLike {
   readonly id: string;
-  readonly loopable: boolean;
   readonly retryCondition?: string;
 }
 
@@ -71,7 +70,7 @@ export type TransitionResult =
 
 export function isLoopPhase(phase: Phase, phaseDef?: PhaseDefLike): boolean {
   if (phaseDef !== undefined) {
-    return phaseDef.loopable;
+    return !!phaseDef.retryCondition;
   }
   return LOOP_PHASES.has(phase);
 }

@@ -16,7 +16,6 @@
     readonly id?: unknown;
     readonly name?: unknown;
     readonly instruction?: unknown;
-    readonly loopable?: unknown;
     readonly model?: unknown;
     readonly effort?: unknown;
     readonly timeoutSeconds?: unknown;
@@ -63,9 +62,6 @@
     }
     if (typeof obj['instruction'] !== 'string') {
       return { ok: false, error: 'field `instruction` must be a string' };
-    }
-    if (typeof obj['loopable'] !== 'boolean') {
-      return { ok: false, error: 'field `loopable` must be a boolean' };
     }
     // Optional fields — validate when present
     if ('model' in obj && obj['model'] !== undefined && typeof obj['model'] !== 'string') {

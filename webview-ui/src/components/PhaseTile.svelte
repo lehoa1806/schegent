@@ -1,7 +1,6 @@
 <script lang="ts">
   import { formatPhaseLabel, formatIteration } from '../lib/format';
   import { formatDuration } from '../lib/format-duration';
-  import { isLoopablePhaseTile } from '../lib/snapshot-types';
   import type { DelayedRetryState, PhaseTile } from '../lib/snapshot-types';
 
   // Feature 011 — `pendingRetry` is shown only on the active tile when
@@ -25,7 +24,7 @@
   } = $props();
 
   const isActive = $derived(tile.state === 'active');
-  const showIteration = $derived(isActive && isLoopablePhaseTile(tile) && tile.iteration > 0);
+  const showIteration = $derived(isActive && tile.iteration > 0);
   const showElapsed = $derived(tile.state !== 'not-started' && tile.elapsedMs > 0);
   const elapsedLabel = $derived(showElapsed ? formatDuration(tile.elapsedMs) : '');
   const subProgress = $derived(tile.subProgress);

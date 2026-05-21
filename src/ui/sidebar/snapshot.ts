@@ -68,7 +68,6 @@ export interface PhaseTile {
   readonly lastResult: 'clean' | 'ambiguities-remain' | 'issues-remain' | null;
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
-  readonly loopable?: boolean;
   /**
    * Feature 061 — operator-configured display name from `PhaseDef.name`.
    * Purely cosmetic; MUST NOT be used as a lookup key. When undefined or
@@ -432,8 +431,7 @@ export function buildEmptyPhases(): readonly PhaseTile[] {
     iteration: 0,
     lastResult: null,
     elapsedMs: 0,
-    subProgress: null,
-    loopable: name === 'speckit-clarify' || name === 'speckit-analyze'
+    subProgress: null
   }));
 }
 

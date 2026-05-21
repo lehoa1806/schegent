@@ -4,7 +4,6 @@ export type PhaseFieldKey =
   | 'model'
   | 'effort'
   | 'timeoutSeconds'
-  | 'loopable'
   | 'retryCondition';
 
 export type PhasePrecedenceLayer = 'built-in' | 'user' | 'workspace' | 'unset';
@@ -15,7 +14,6 @@ const PHASE_FIELD_KEYS: readonly PhaseFieldKey[] = [
   'model',
   'effort',
   'timeoutSeconds',
-  'loopable',
   'retryCondition'
 ];
 

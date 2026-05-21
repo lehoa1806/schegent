@@ -32,13 +32,13 @@ describe('loadCatalog (T044, T045, US3)', () => {
       id: 'security-audit',
       name: 'User Security Audit',
       instruction: 'User-level instruction (wins).',
-      loopable: false
+      
     };
     const workspacePhase = {
       id: 'security-audit',
       name: 'Workspace Security Audit',
       instruction: 'Workspace-level instruction.',
-      loopable: true,
+      
       model: 'claude-opus-4-7',
       effort: 'high' as const
     };
@@ -52,7 +52,6 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(phase).toBeDefined();
     expect(phase!.name).toBe('User Security Audit');
     expect(phase!.instruction).toBe('User-level instruction (wins).');
-    expect(phase!.loopable).toBe(false);
     expect(phase!.model).toBeUndefined();
     expect(phase!.effort).toBeUndefined();
   });
@@ -85,7 +84,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
       id: 'speckit-specify',
       name: 'Custom Specify',
       instruction: 'User-overridden specify instruction.',
-      loopable: false
+      
     };
     const reader = makeReader({
       userPhases: [userOverride]
@@ -116,7 +115,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
       id: 'INVALID-ID-CAPITAL',
       name: 'Bad',
       instruction: 'x',
-      loopable: false
+      
     };
     const reader = makeReader({
       userPhases: [badPhase]
@@ -169,7 +168,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
           id: 'valid-phase',
           name: 'Valid Phase',
           instruction: 'ok',
-          loopable: false
+          
         }
       ] as readonly unknown[],
       userPipelines: [
@@ -192,8 +191,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
   it('emits duplicate warnings when the same workspace setting defines an id twice (T044)', () => {
     const reader = makeReader({
       workspacePhases: [
-        { id: 'twin', name: 'First', instruction: 'a', loopable: false },
-        { id: 'twin', name: 'Second', instruction: 'b', loopable: false }
+        { id: 'twin', name: 'First', instruction: 'a' },
+        { id: 'twin', name: 'Second', instruction: 'b' }
       ]
     });
     const result = loadCatalog(reader);
@@ -211,7 +210,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'security-audit',
           name: 'Security Audit',
           instruction: 'audit',
-          loopable: true,
+          
           retryCondition: 'open_questions > 0'
         }
       ]
@@ -229,7 +228,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: false,
+          
           retryCondition: 'open_questions > 0 AND broken'
         }
       ]
@@ -248,7 +247,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: false,
+          
           retryCondition: '@@invalid'
         }
       ]
@@ -266,14 +265,14 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           id: 'broken',
           name: 'Broken',
           instruction: 'inst',
-          loopable: false,
+          
           retryCondition: '!!!'
         },
         {
           id: 'ok',
           name: 'OK',
           instruction: 'inst',
-          loopable: false
+          
         }
       ]
     });
