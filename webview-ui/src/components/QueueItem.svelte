@@ -205,7 +205,7 @@
     grid-template-rows: auto auto auto auto;
     column-gap: var(--schegent-gap);
     align-items: center;
-    padding: 4px var(--schegent-pad);
+    padding: 8px var(--schegent-pad);
     border-radius: var(--schegent-radius);
   }
   .item:hover {
@@ -214,9 +214,8 @@
   .label {
     grid-column: 1;
     grid-row: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    word-break: break-word;
   }
   .meta {
     grid-column: 1;
@@ -313,6 +312,7 @@
     align-self: center;
     justify-self: end;
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
     gap: 2px;
   }

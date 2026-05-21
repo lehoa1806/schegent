@@ -290,7 +290,7 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
         id: 'custom-review',
         name: 'Custom Review',
         instruction: 'noop',
-        loopable: false
+        
       }
     });
 

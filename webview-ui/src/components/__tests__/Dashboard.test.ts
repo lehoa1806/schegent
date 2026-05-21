@@ -891,7 +891,7 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
       expect(btn.textContent?.trim()).toBe('✖');
     });
 
-    it('failed row Retry button renders ↻ glyph + visible text "Retry"', () => {
+    it('failed row Retry button renders ↻ glyph as visible content', () => {
       const snap = buildSnapshot({
         queue: buildQueue({
           recent: Object.freeze([buildQueueItem({ id: 'q-fail', status: 'failed' })])
@@ -899,10 +899,10 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
       });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       const btn = getByTestId('queue-item-retry-q-fail');
-      expect(btn.textContent?.trim()).toMatch(/^↻\s+Retry$/);
+      expect(btn.textContent?.trim()).toBe('↻');
     });
 
-    it('in-flight row Cancel button renders literal text "Cancel"', () => {
+    it('in-flight row Cancel button renders ⏹ glyph as visible content', () => {
       const snap = buildSnapshot({
         queue: buildQueue({
           inFlight: buildQueueItem({ id: 'q-flight', status: 'in-flight' })
@@ -910,7 +910,7 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
       });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       const btn = getByTestId('queue-item-cancel-q-flight');
-      expect(btn.textContent?.trim()).toBe('Cancel');
+      expect(btn.textContent?.trim()).toBe('⏹');
     });
   });
 

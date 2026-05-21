@@ -90,7 +90,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with invalid id pattern', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'INVALID-UPPER', name: 'Test', instruction: 'Do something', loopable: false }
+      { id: 'INVALID-UPPER', name: 'Test', instruction: 'Do something' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toContain('phase-validation:INVALID-UPPER:id:invalid-pattern');
@@ -100,7 +100,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with empty id', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: '', name: 'Test', instruction: 'Do something', loopable: false }
+      { id: '', name: 'Test', instruction: 'Do something' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toContain('id:invalid-pattern');
@@ -110,7 +110,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with empty name', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: '', instruction: 'Do something', loopable: false }
+      { id: 'valid-id', name: '', instruction: 'Do something' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toBe('phase-validation:valid-id:name:must-be-non-empty');
@@ -120,7 +120,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with name exceeding 80 chars', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'a'.repeat(81), instruction: 'Do something', loopable: false }
+      { id: 'valid-id', name: 'a'.repeat(81), instruction: 'Do something' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toBe('phase-validation:valid-id:name:exceeds-max-length');
@@ -130,7 +130,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with empty instruction', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: '', loopable: false }
+      { id: 'valid-id', name: 'Test', instruction: '' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toBe('phase-validation:valid-id:instruction:must-be-non-empty');
@@ -140,37 +140,18 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects phase with instruction exceeding 8192 chars', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: 'x'.repeat(8193), loopable: false }
+      { id: 'valid-id', name: 'Test', instruction: 'x'.repeat(8193) }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toBe('phase-validation:valid-id:instruction:exceeds-max-length');
     expect(updateConfigCalls).toEqual([]);
   });
 
-  it('rejects phase with non-boolean loopable', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: 'Do something', loopable: 'yes' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:loopable:must-be-boolean');
-    expect(updateConfigCalls).toEqual([]);
-  });
-
-  it('rejects phase when loopable is true but retryCondition is empty', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: 'Do something', loopable: true, retryCondition: '' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:retryCondition:required-when-loopable');
-    expect(updateConfigCalls).toEqual([]);
-  });
 
   it('accepts phase with all valid foundational fields', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test Phase', instruction: 'Do something useful', loopable: false }
+      { id: 'valid-id', name: 'Test Phase', instruction: 'Do something useful' }
     ]));
     expect(acks[0].status).toBe('accepted');
     expect(updateConfigCalls).toHaveLength(1);
@@ -180,8 +161,8 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
   it('rejects on first invalid phase in a multi-phase payload', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();
     await saveHandler(ctx, makeCmd([
-      { id: 'good-phase', name: 'Good', instruction: 'Valid instruction', loopable: true },
-      { id: 'bad-phase', name: '', instruction: 'Also valid', loopable: false }
+      { id: 'good-phase', name: 'Good', instruction: 'Valid instruction' },
+      { id: 'bad-phase', name: '', instruction: 'Also valid' }
     ]));
     expect(acks[0].status).toBe('rejected');
     expect(acks[0].reason).toBe('phase-validation:bad-phase:name:must-be-non-empty');
@@ -194,7 +175,7 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
     // The payload is non-default AND invalid. The foundational validation
     // must fire first, not the trust gate.
     await saveHandler(ctx, makeCmd([
-      { id: 'UPPER', name: 'Test', instruction: 'x', loopable: false }
+      { id: 'UPPER', name: 'Test', instruction: 'x' }
     ]));
     expect(acks[0].status).toBe('rejected');
     // If trust gate fired first, reason would be 'trust-denied'.

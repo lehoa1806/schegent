@@ -723,7 +723,7 @@ describe('PhaseRunner.run', () => {
       id: 'security-audit',
       name: 'Security Audit',
       instruction: 'Audit the project.',
-      loopable: true,
+      
       retryCondition: 'open_questions > 0'
     };
 
@@ -968,7 +968,7 @@ describe('PhaseRunner.run', () => {
           model: 'claude-opus-4-7',
           effort: 'high',
           timeoutSeconds: 90,
-          loopable: false
+          
         }
       });
       const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
@@ -1019,7 +1019,7 @@ describe('PhaseRunner.run', () => {
           id: 'security-audit',
           name: 'Security Audit',
           instruction: 'Audit.',
-          loopable: false
+          
         }
       });
       expect(seenRequests).toHaveLength(1);

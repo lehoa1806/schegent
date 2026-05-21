@@ -7,6 +7,7 @@ import type { ProjectorHandle } from './projector-handle';
 import type { SidebarCommand, CommandAckMessage } from './messages';
 import { STATE_SNAPSHOT, CMD_OPEN_DASHBOARD, CMD_ACK } from './messages';
 import type { Disposable } from '../../state/workspace-state';
+import { PlaceholderProjector } from './placeholder-projector';
 
 export type InboundDispatch = (
   command: SidebarCommand,
@@ -135,7 +136,11 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     const dispatch = this.dispatcher;
     if (!dispatch) {
       if (result.command.type === CMD_OPEN_DASHBOARD) {
-        void vscode.window.showWarningMessage('Please open a workspace to use the Schegent Dashboard.');
+        if (this.projector instanceof PlaceholderProjector && this.projector.reason === 'init-failed') {
+          void vscode.window.showWarningMessage('Schegent: Workspace initialization failed. Please check the extension host logs or reset workspace state.');
+        } else {
+          void vscode.window.showWarningMessage('Please open a workspace to use the Schegent Dashboard.');
+        }
         void view.webview.postMessage({ type: CMD_ACK, correlationId: result.command.correlationId, status: 'accepted' });
         return;
       }

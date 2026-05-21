@@ -8,7 +8,6 @@ export interface PhaseDef {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
-  readonly loopable: boolean;
   // Feature 010 — when set and the phase invocation produces a well-formed
   // audit-log block, the controller evaluates this DSL expression against the
   // entry's metrics map to decide loop-vs-advance. Captured in the
@@ -83,7 +82,7 @@ export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
   'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
   'speckit-analyze':
-    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL issues remain.',
+    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL and HIGH issues remain.',
   'speckit-implement': 'Run /speckit-implement on the active feature.',
   finalize:
     'Verify the implementation: run build/typecheck/test commands, summarize results, and emit the termination token if all pass.',
@@ -103,82 +102,69 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
   Object.freeze({
     id: 'speckit-specify',
     name: 'Spec-kit Specify',
-    instruction: PHASE_INSTRUCTIONS['speckit-specify'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['speckit-specify']
   }),
   Object.freeze({
     id: 'speckit-clarify',
     name: 'Spec-kit Clarify',
     instruction: PHASE_INSTRUCTIONS['speckit-clarify'],
-    loopable: true,
     retryCondition: 'open_questions > 0'
   }),
   Object.freeze({
     id: 'speckit-plan',
     name: 'Spec-kit Plan',
-    instruction: PHASE_INSTRUCTIONS['speckit-plan'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['speckit-plan']
   }),
   Object.freeze({
     id: 'speckit-tasks',
     name: 'Spec-kit Tasks',
-    instruction: PHASE_INSTRUCTIONS['speckit-tasks'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['speckit-tasks']
   }),
   Object.freeze({
     id: 'speckit-analyze',
     name: 'Spec-kit Analyze',
     instruction: PHASE_INSTRUCTIONS['speckit-analyze'],
-    loopable: true,
     retryCondition: 'critical_issues > 0'
   }),
   Object.freeze({
     id: 'speckit-implement',
     name: 'Spec-kit Implement',
-    instruction: PHASE_INSTRUCTIONS['speckit-implement'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['speckit-implement']
   }),
   Object.freeze({
     id: 'finalize',
     name: 'Finalize',
-    instruction: PHASE_INSTRUCTIONS.finalize,
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS.finalize
   }),
   Object.freeze({
     id: 'done',
     name: 'Done',
-    instruction: PHASE_INSTRUCTIONS.done,
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS.done
   }),
   Object.freeze({
     id: 'bugfix-report',
     name: 'Spec-kit Bugfix Report',
-    instruction: PHASE_INSTRUCTIONS['bugfix-report'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['bugfix-report']
   }),
   Object.freeze({
     id: 'bugfix-patch',
     name: 'Spec-kit Bugfix Patch',
-    instruction: PHASE_INSTRUCTIONS['bugfix-patch'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['bugfix-patch']
   }),
   Object.freeze({
     id: 'bugfix-verify-pre',
     name: 'Spec-kit Bugfix Verify (pre)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-verify-pre'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['bugfix-verify-pre']
   }),
   Object.freeze({
     id: 'bugfix-implement',
     name: 'Spec-kit Implement (bugfix)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-implement'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['bugfix-implement']
   }),
   Object.freeze({
     id: 'bugfix-verify-post',
     name: 'Spec-kit Bugfix Verify (post)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-verify-post'],
-    loopable: false
+    instruction: PHASE_INSTRUCTIONS['bugfix-verify-post']
   })
 ]);
 
@@ -281,7 +267,6 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'model',
   'effort',
   'timeoutSeconds',
-  'loopable',
   'retryCondition'
 ]);
 
@@ -294,7 +279,6 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     typeof v.id === 'string' &&
     typeof v.name === 'string' &&
     typeof v.instruction === 'string' &&
-    typeof v.loopable === 'boolean' &&
     (v.model === undefined || typeof v.model === 'string') &&
     (v.effort === undefined ||
       (typeof v.effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v.effort))) &&
@@ -479,15 +463,6 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
     });
   }
 
-  if (typeof v.loopable !== 'boolean') {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'loopable',
-      message: 'Phase.loopable is required and must be a boolean'
-    });
-  }
-
   if (v.model !== undefined) {
     if (typeof v.model !== 'string' || v.model.length === 0) {
       errors.push({
@@ -535,13 +510,6 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
         message: 'Phase.retryCondition must be a non-empty string when set'
       });
     }
-  } else if (v.loopable === true) {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'retryCondition',
-      message: 'Phase.retryCondition is required when loopable is true'
-    });
   }
 
   return errors;

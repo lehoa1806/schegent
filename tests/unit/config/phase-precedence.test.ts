@@ -10,7 +10,6 @@ function phase(id: string, fields: Partial<PhaseDef> = {}): PhaseDef {
     id,
     name: id,
     instruction: 'noop',
-    loopable: false,
     ...fields
   } as PhaseDef);
 }
@@ -25,20 +24,14 @@ describe('projectPhasePrecedence', () => {
   it('emits composite keys of the form `<phaseId>::<fieldKey>` for every entry', () => {
     const out = projectPhasePrecedence([phase('a')], [], []);
     for (const k of Object.keys(out)) {
-      expect(k).toMatch(/^[a-z][a-z0-9-]{0,63}::(model|effort|timeoutSeconds|loopable|retryCondition)$/);
+      expect(k).toMatch(/^[a-z][a-z0-9-]{0,63}::(model|effort|timeoutSeconds|retryCondition)$/);
     }
   });
 
   it('treats undefined inputs as "unset" at every layer', () => {
     const out = projectPhasePrecedence([phase('a')], [phase('a')], [phase('a')]);
     for (const k of Object.keys(out)) {
-      if (k.endsWith('::loopable')) {
-        // loopable is a required field on PhaseDef set to false in the test
-        // factory at every layer — user layer wins by precedence order.
-        expect(out[k]).toBe('user');
-      } else {
-        expect(out[k]).toBe('unset');
-      }
+      expect(out[k]).toBe('unset');
     }
   });
 
@@ -107,7 +100,7 @@ describe('projectPhasePrecedence', () => {
     const keys = Object.keys(out);
     const ids = new Set(keys.map((k) => k.split('::')[0]));
     expect(ids).toEqual(new Set(['a', 'b', 'c']));
-    expect(keys.length).toBe(15); // 3 ids × 5 fieldKeys
+    expect(keys.length).toBe(12); // 3 ids × 4 fieldKeys
   });
 
   it('does not mutate frozen inputs (purity)', () => {

@@ -68,7 +68,6 @@ export interface PhaseTile {
   readonly lastResult: 'clean' | 'ambiguities-remain' | 'issues-remain' | null;
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
-  readonly loopable?: boolean;
   /**
    * Feature 061 — operator-configured display name from `PhaseDef.name`.
    * Purely cosmetic; MUST NOT be used as a lookup key. When undefined or
@@ -203,7 +202,6 @@ export interface PhaseDefinition {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
-  readonly loopable: boolean;
   readonly retryCondition?: string;
 }
 
@@ -594,7 +592,3 @@ export function isRecursivePhase(name: PhaseName): boolean {
   return name === 'speckit-clarify' || name === 'speckit-analyze';
 }
 
-export function isLoopablePhaseTile(tile: PhaseTile): boolean {
-  if (typeof tile.loopable === 'boolean') return tile.loopable;
-  return isRecursivePhase(tile.name);
-}

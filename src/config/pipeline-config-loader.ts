@@ -45,7 +45,6 @@ function coercePhase(raw: unknown, warnings: ValidationWarning[]): PhaseDef | nu
   if (typeof v.id !== 'string') return null;
   if (typeof v.name !== 'string') return null;
   if (typeof v.instruction !== 'string') return null;
-  if (typeof v.loopable !== 'boolean') return null;
 
   // Feature 010 — FR-014: validate retryCondition at load time; on parse
   // failure strip the field, keep the PhaseDef, surface ONE warning naming
@@ -68,7 +67,6 @@ function coercePhase(raw: unknown, warnings: ValidationWarning[]): PhaseDef | nu
     id: v.id,
     name: v.name,
     instruction: v.instruction,
-    loopable: v.loopable,
     ...(typeof v.model === 'string' && v.model.length > 0 ? { model: v.model } : {}),
     ...(typeof v.effort === 'string' ? { effort: v.effort as PhaseDef['effort'] } : {}),
     ...(typeof v.timeoutSeconds === 'number' ? { timeoutSeconds: v.timeoutSeconds } : {}),

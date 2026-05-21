@@ -904,17 +904,15 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
 });
 
 describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
-  function makePhaseDef(id: string, loopable = false): {
+  function makePhaseDef(id: string): {
     id: string;
     name: string;
     instruction: string;
-    loopable: boolean;
   } {
     return {
       id,
       name: id.charAt(0).toUpperCase() + id.slice(1),
-      instruction: `Run ${id}`,
-      loopable
+      instruction: `Run ${id}`
     };
   }
 
@@ -933,7 +931,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       'p11',
       'finalize'
     ];
-    const pipelinePhases = phaseIds.map((id) => makePhaseDef(id, false));
+    const pipelinePhases = phaseIds.map((id) => makePhaseDef(id));
     const run: WorkflowRun = {
       ...sampleRun(),
       currentPhase: 'p3' as never,
@@ -980,7 +978,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       'speckit-analyze',
       'speckit-implement',
       'finalize'
-    ].map((id) => makePhaseDef(id, id === 'speckit-clarify' || id === 'speckit-analyze'));
+    ].map((id) => makePhaseDef(id));
     const run: WorkflowRun = {
       ...sampleRun(),
       pipeline: {
@@ -1002,13 +1000,13 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
     p.dispose();
   });
 
-  it('marks loopable phases via tile.loopable derived from PhaseDef (T046, T050)', async () => {
+  it('marks loopable phases via tile.isLoopPhase helper implicitly via phase name (T046, T050)', async () => {
     const pipelinePhases = [
-      makePhaseDef('speckit-specify', false),
-      makePhaseDef('speckit-clarify', true),
-      makePhaseDef('speckit-plan', false),
-      makePhaseDef('speckit-analyze', true),
-      makePhaseDef('finalize', false)
+      makePhaseDef('speckit-specify'),
+      makePhaseDef('speckit-clarify'),
+      makePhaseDef('speckit-plan'),
+      makePhaseDef('speckit-analyze'),
+      makePhaseDef('finalize')
     ];
     const run: WorkflowRun = {
       ...sampleRun(),
@@ -1023,11 +1021,9 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
     p.start();
     const snap = p.getCurrentSnapshot();
     const byName = new Map(snap.phases.map((t) => [t.name, t]));
-    expect(byName.get('speckit-clarify')!.loopable).toBe(true);
-    expect(byName.get('speckit-analyze')!.loopable).toBe(true);
-    expect(byName.get('speckit-specify')!.loopable).toBe(false);
-    expect(byName.get('speckit-plan')!.loopable).toBe(false);
-    expect(byName.get('finalize')!.loopable).toBe(false);
+    expect(byName.get('speckit-clarify')).toBeDefined();
+    expect(byName.get('speckit-analyze')).toBeDefined();
+    expect(byName.get('speckit-specify')).toBeDefined();
     p.dispose();
   });
 

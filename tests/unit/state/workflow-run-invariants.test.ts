@@ -31,7 +31,7 @@ beforeEach(async () => {
 });
 
 function phaseDef(id: string): PhaseDef {
-  return { id, name: id, instruction: `Run ${id}`, loopable: false };
+  return { id, name: id, instruction: `Run ${id}` };
 }
 
 function baseRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {

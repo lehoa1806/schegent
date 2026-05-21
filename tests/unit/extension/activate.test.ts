@@ -180,7 +180,8 @@ describe('activate() — BUG-001 activation invariant', () => {
 
     expect(mocks.state.registerWebviewViewProvider).toHaveBeenCalledTimes(1);
     expect(mocks.state.registerWebviewViewProvider.mock.calls[0][0]).toBe('schegent.sidebar');
-    expect(mocks.state.registerCommand).not.toHaveBeenCalled();
+    expect(mocks.state.registerCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.state.registerCommand.mock.calls[0][0]).toBe('schegent.reset');
   });
 
   it('(b) registers SidebarViewProvider exactly once when store.initialize() rejects', async () => {
@@ -194,7 +195,8 @@ describe('activate() — BUG-001 activation invariant', () => {
     expect(mocks.state.registerWebviewViewProvider.mock.calls[0][0]).toBe('schegent.sidebar');
     expect(mocks.state.showErrorMessage).toHaveBeenCalledOnce();
     expect(mocks.state.showErrorMessage.mock.calls[0][0]).toMatch(/Schegent/);
-    expect(mocks.state.registerCommand).not.toHaveBeenCalled();
+    expect(mocks.state.registerCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.state.registerCommand.mock.calls[0][0]).toBe('schegent.reset');
   });
 
   it('(c) running stage-2 wiring after a folder is added registers commands without re-registering the sidebar', async () => {
@@ -203,7 +205,8 @@ describe('activate() — BUG-001 activation invariant', () => {
 
     await activate(context as Parameters<typeof activate>[0]);
     expect(mocks.state.registerWebviewViewProvider).toHaveBeenCalledTimes(1);
-    expect(mocks.state.registerCommand).not.toHaveBeenCalled();
+    expect(mocks.state.registerCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.state.registerCommand.mock.calls[0][0]).toBe('schegent.reset');
 
     mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
     const handlers = Array.from(mocks.state.listeners);

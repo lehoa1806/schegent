@@ -10,7 +10,7 @@ const BUILT_IN_INSTRUCTIONS: Record<string, string> = {
   'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
   'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
   'speckit-analyze':
-    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL issues remain.',
+    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL and HIGH issues remain.',
   'speckit-implement': 'Run /speckit-implement on the active feature.',
   finalize:
     'Verify the implementation: run build/typecheck/test commands, summarize results, and emit the termination token if all pass.',

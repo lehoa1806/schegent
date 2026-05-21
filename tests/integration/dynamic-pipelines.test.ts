@@ -45,6 +45,7 @@ const cleanStdout = (phase: string): string =>
     'commands_executed: ["mock"]',
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
+    'open_issues: 0',
     'notes: ok',
     '=== END AUDIT LOG ==='
   ].join('\n');
@@ -61,6 +62,7 @@ const issuesStdout = (phase: string): string =>
     'commands_executed: ["mock"]',
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
+    'open_issues: 1',
     'notes: looping',
     '=== END AUDIT LOG ==='
   ].join('\n');
@@ -142,7 +144,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       model: 'claude-opus-4-7',
       effort: 'high',
       timeoutSeconds: 90,
-      loopable: true
+      retryCondition: 'open_issues > 0'
     };
     const securityPipeline: PipelineDef = {
       id: 'security',

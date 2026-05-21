@@ -116,7 +116,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       const retry = queryByTestId('queue-item-retry-q-1');
       expect(retry).not.toBeNull();
-      expect(retry?.textContent?.trim()).toMatch(/↻\s*Retry/);
+      expect(retry?.textContent?.trim()).toBe('↻');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
       expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
       expect(container.querySelectorAll('button').length).toBe(2);
@@ -136,7 +136,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       const restart = queryByTestId('queue-item-restart-q-1');
       expect(restart).not.toBeNull();
-      expect(restart?.textContent?.trim()).toMatch(/↻\s*Restart/);
+      expect(restart?.textContent?.trim()).toBe('↻');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
       expect(queryByTestId('queue-item-retry-q-1')).toBeNull();
       expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();

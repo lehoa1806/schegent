@@ -126,8 +126,7 @@
         iteration: 0,
         lastResult: null,
         elapsedMs: 0,
-        subProgress: null,
-        loopable: def.loopable
+        subProgress: null
       };
     });
   });

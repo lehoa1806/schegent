@@ -427,3 +427,166 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     expect(seqOptions).toContain('new-phase');
   });
 });
+
+describe('PipelineBuilder — BUG-012 phase list reordering', () => {
+  const phaseA: PhaseDefinition = Object.freeze({
+    id: 'phase-a', name: 'Alpha', instruction: 'Do alpha.'
+  }) as unknown as PhaseDefinition;
+  const phaseB: PhaseDefinition = Object.freeze({
+    id: 'phase-b', name: 'Beta', instruction: 'Do beta.'
+  }) as unknown as PhaseDefinition;
+  const phaseC: PhaseDefinition = Object.freeze({
+    id: 'phase-c', name: 'Charlie', instruction: 'Do charlie.'
+  }) as unknown as PhaseDefinition;
+
+  async function renderPhasesList() {
+    const snap = buildSnapshot([phaseA, phaseB, phaseC]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+    return container;
+  }
+
+  function getPhaseIds(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('.phase-list-item'))
+      .map((el) => {
+        const idEl = el.querySelector('.phase-list-id');
+        return idEl?.textContent?.trim() ?? '';
+      });
+  }
+
+  it('move down swaps a phase with the one below it', async () => {
+    const container = await renderPhasesList();
+    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-b', 'phase-c']);
+
+    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
+    expect(moveDown).not.toBeNull();
+    await fireEvent.click(moveDown);
+    await tick();
+
+    expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a', 'phase-c']);
+  });
+
+  it('move up swaps a phase with the one above it', async () => {
+    const container = await renderPhasesList();
+
+    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
+    expect(moveUp).not.toBeNull();
+    await fireEvent.click(moveUp);
+    await tick();
+
+    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-c', 'phase-b']);
+  });
+
+  it('first item up button is disabled', async () => {
+    const container = await renderPhasesList();
+    const upBtn = container.querySelector('[data-testid="phases-move-up-phase-a"]') as HTMLButtonElement;
+    expect(upBtn).not.toBeNull();
+    expect(upBtn.disabled).toBe(true);
+  });
+
+  it('last item down button is disabled', async () => {
+    const container = await renderPhasesList();
+    const downBtn = container.querySelector('[data-testid="phases-move-down-phase-c"]') as HTMLButtonElement;
+    expect(downBtn).not.toBeNull();
+    expect(downBtn.disabled).toBe(true);
+  });
+
+  it('selectedPhaseIndex follows the moved phase when moving down', async () => {
+    const container = await renderPhasesList();
+
+    // Select phase-a (index 0)
+    const itemA = container.querySelector('[data-testid="phases-list-item-phase-a"]') as HTMLButtonElement;
+    await fireEvent.click(itemA);
+    await tick();
+
+    // Verify it's selected (has the editor open)
+    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
+
+    // Move phase-a down
+    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
+    await fireEvent.click(moveDown);
+    await tick();
+
+    // phase-a is now at index 1 — selection should follow it
+    // The editor should still show phase-a
+    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
+  });
+
+  it('selectedPhaseIndex follows the moved phase when moving up', async () => {
+    const container = await renderPhasesList();
+
+    // Select phase-c (index 2)
+    const itemC = container.querySelector('[data-testid="phases-list-item-phase-c"]') as HTMLButtonElement;
+    await fireEvent.click(itemC);
+    await tick();
+
+    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
+
+    // Move phase-c up
+    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
+    await fireEvent.click(moveUp);
+    await tick();
+
+    // phase-c is now at index 1 — selection should follow
+    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
+  });
+});
+
+describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
+  it('addPhase() always appends the new phase at the end of the list', async () => {
+    const existing: PhaseDefinition = Object.freeze({
+      id: 'existing-1', name: 'Existing', instruction: 'Already here.'
+    }) as unknown as PhaseDefinition;
+    const snap = buildSnapshot([existing]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    const addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addBtn).not.toBeNull();
+
+    // Add first new phase
+    await fireEvent.click(addBtn);
+    await tick();
+
+    let ids = Array.from(container.querySelectorAll('.phase-list-item'))
+      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
+    expect(ids).toEqual(['existing-1', 'new-phase']);
+
+    // Add second new phase — should still append at the end
+    await fireEvent.click(addBtn);
+    await tick();
+
+    ids = Array.from(container.querySelectorAll('.phase-list-item'))
+      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
+    expect(ids.length).toBe(3);
+    expect(ids[0]).toBe('existing-1');
+    // Both new phases should be after the existing one
+    expect(ids[ids.length - 1]).toBe('new-phase');
+  });
+
+  it('no order or position dropdown exists in the phase form grid', async () => {
+    const phase: PhaseDefinition = Object.freeze({
+      id: 'p-1', name: 'Phase', instruction: 'test'
+    }) as unknown as PhaseDefinition;
+    const snap = buildSnapshot([phase]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    // Select the phase to open the form grid
+    const item = container.querySelector('[data-testid="phases-list-item-p-1"]') as HTMLButtonElement;
+    await fireEvent.click(item);
+    await tick();
+
+    // Verify no "order" or "position" label exists in the form grid
+    const labels = Array.from(container.querySelectorAll('.form-label'))
+      .map((el) => el.textContent?.trim().toLowerCase() ?? '');
+    expect(labels.some((l) => l.includes('order'))).toBe(false);
+    expect(labels.some((l) => l.includes('position'))).toBe(false);
+  });
+});

@@ -31,7 +31,7 @@ const validPhase = (overrides: Partial<PhaseDef> = {}): PhaseDef => ({
   id: 'security-audit',
   name: 'Security Audit',
   instruction: 'Audit the staged diff for security regressions.',
-  loopable: false,
+  
   ...overrides
 });
 
@@ -110,28 +110,8 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
     expect(errs.some((e) => e.field === 'timeoutSeconds')).toBe(true);
   });
 
-  it('rejects missing loopable field', () => {
-    const noLoopable: Record<string, unknown> = {
-      id: 'x',
-      name: 'X',
-      instruction: 'do x'
-    };
-    const errs = validatePhaseRaw(noLoopable);
-    expect(errs.some((e) => e.field === 'loopable')).toBe(true);
-  });
-
-  it('rejects loopable true without retryCondition (BUG-004)', () => {
-    const errs = validatePhaseRaw(validPhase({ loopable: true }));
-    expect(errs.some((e) => e.field === 'retryCondition')).toBe(true);
-  });
-
-  it('rejects loopable true with empty retryCondition (BUG-004)', () => {
-    const errs = validatePhaseRaw(validPhase({ loopable: true, retryCondition: '' }));
-    expect(errs.some((e) => e.field === 'retryCondition')).toBe(true);
-  });
-
-  it('accepts loopable true with valid retryCondition (BUG-004)', () => {
-    const errs = validatePhaseRaw(validPhase({ loopable: true, retryCondition: 'open_questions > 0' }));
+  it('accepts valid retryCondition', () => {
+    const errs = validatePhaseRaw(validPhase({ retryCondition: 'open_questions > 0' }));
     expect(errs.some((e) => e.field === 'retryCondition')).toBe(false);
   });
 
@@ -307,13 +287,13 @@ describe('mergeCatalog — precedence and duplicate warnings', () => {
       id: 'speckit-specify',
       name: 'Workspace Specify',
       instruction: 'Workspace-level override',
-      loopable: false
+      
     };
     const userSpecify: PhaseDef = {
       id: 'speckit-specify',
       name: 'User Specify',
       instruction: 'User-level override',
-      loopable: false
+      
     };
     const merge = mergeCatalog(
       { phases: BUILT_IN_PHASES },
@@ -360,10 +340,6 @@ describe('mergeCatalog — precedence and duplicate warnings', () => {
 describe('isPhaseDef / isPipelineDef predicates', () => {
   it('returns true for a valid PhaseDef', () => {
     expect(isPhaseDef(validPhase())).toBe(true);
-  });
-
-  it('returns false when loopable is missing', () => {
-    expect(isPhaseDef({ id: 'x', name: 'X', instruction: 'do x' } as never)).toBe(false);
   });
 
   it('returns true for a valid PipelineDef', () => {

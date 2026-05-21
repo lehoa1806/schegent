@@ -101,7 +101,7 @@ const SECURITY_AUDIT_PHASE: PhaseDef = {
   id: 'security-audit',
   name: 'Security Audit',
   instruction: 'Audit the project for security issues.',
-  loopable: true,
+  
   retryCondition: 'open_questions > 0'
 };
 
@@ -109,7 +109,7 @@ const DONE_PHASE: PhaseDef = {
   id: 'done',
   name: 'Done',
   instruction: '(no-op)',
-  loopable: false
+  
 };
 
 const SECURITY_PIPELINE: PipelineDef = {

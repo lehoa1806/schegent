@@ -33,7 +33,6 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     id?: unknown;
     name?: unknown;
     instruction?: unknown;
-    loopable?: unknown;
     retryCondition?: unknown;
     effort?: unknown;
     model?: unknown;
@@ -63,10 +62,6 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     }
     if (phase.instruction.length > 8192) {
       await ack(ctx, 'rejected', `phase-validation:${phaseId}:instruction:exceeds-max-length`);
-      return;
-    }
-    if (typeof phase.loopable !== 'boolean') {
-      await ack(ctx, 'rejected', `phase-validation:${phaseId}:loopable:must-be-boolean`);
       return;
     }
   }
@@ -108,14 +103,6 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     }
     const rc = phase.retryCondition;
     if (rc === undefined || rc === null || rc === '') {
-      if (phase.loopable === true) {
-        await ack(
-          ctx,
-          'rejected',
-          `phase-validation:${phaseId}:retryCondition:required-when-loopable`
-        );
-        return;
-      }
       continue;
     }
     if (typeof rc !== 'string') {
