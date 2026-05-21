@@ -61,7 +61,9 @@ src/
 ├── config/       settings schema (single source of truth), pipeline catalog, precedence, validation
 ├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
 ├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
+├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
 ├── headless/     non-extension-host entrypoints (wake-up runner) — must not import vscode
+├── host-services/ neutral host-service interfaces and VS Code adapter for future desktop host parity
 ├── lib/          shared pure helpers, SanitizedLogger, runtime-log sink, retry-condition DSL
 ├── monitor/      subprocess progress, stall detection, monitor events
 ├── parser/       stdout/audit-block/usage/rate-limit/credit-error parsers
@@ -83,6 +85,21 @@ webview-ui/
 │   └── lib/                        IPC helper modules and pure projectors
 └── __tests__/                      vitest suite
 ```
+
+`src/host-services/` makes VS Code-owned platform behavior explicit before a
+Rust desktop host exists. Its `types.ts` contract is `vscode`-free and covers
+workspace root/trust, configuration, memento persistence, global storage,
+notifications, command dispatch, file reveal, scheduler, and lifecycle
+disposal. `vscode-host-services.ts` is the current adapter and delegates
+canonical root selection through `src/state/workspace-folder-picker.ts`.
+
+`src/engine/` defines the shared workflow control boundary that both the VS
+Code extension and future desktop release will target. It enumerates queue,
+workflow, phase, settings, log, wake-up, cancellation, event-stream,
+host-dependency, and storage responsibilities, plus parity fixtures for
+cross-host certification. `CurrentExtensionEngineAdapter` wraps current
+TypeScript handlers with typed acknowledgements and rejects unwired commands
+as `engine-command-unavailable`; this is not yet the default controller path.
 
 ## Primary Flow
 

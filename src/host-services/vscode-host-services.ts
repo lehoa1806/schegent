@@ -103,7 +103,7 @@ function createLifecycleService(context: VSCodeHostServicesContext): HostLifecyc
           disposable.dispose();
         } catch {
           // Host teardown is best-effort; individual dispose failures must
-          // not prevent later disposables from running.
+          // not prevent later disposables from being invoked.
         }
       }
     }
