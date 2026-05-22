@@ -72,7 +72,7 @@ interface CallSpy {
 
 function makeDeps(retryCap: number, spy: CallSpy) {
   const persistTransition = vi.fn(async (_p: WorkflowRun, n: WorkflowRun) => n);
-  const setPaused = vi.fn(async () => {
+  const setQueuePausedState = vi.fn(async () => {
     spy.queuePauseCalled = true;
   });
   const pause = vi.fn(async () => {});
@@ -81,7 +81,7 @@ function makeDeps(retryCap: number, spy: CallSpy) {
       setRun: vi.fn(async () => {})
     } as unknown as FakeStore,
     queue: {
-      setPaused,
+      setQueuePausedState,
       pause
     } as unknown as never,
     statusBar: { update: vi.fn() } as unknown as never,

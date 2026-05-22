@@ -289,6 +289,7 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      await this.reconcileQueuePauseStateIfDivergent();
       return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
     }
     if (persistedVersion === SCHEMA_VERSION) {
@@ -299,13 +300,15 @@ export class WorkspaceStateStore {
         const runRepairEvents = await this.normalizeRunForInitialize(true);
         await this.migrateQueueRegistryIfNeeded();
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+        await this.reconcileQueuePauseStateIfDivergent();
         return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
       }
       const runRepairEvents = await this.normalizeRunForInitialize(false);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      const reconciled = await this.reconcileQueuePauseStateIfDivergent();
       return {
-        migrated: v6Events.length > 0 || runRepairEvents.length > 0,
+        migrated: v6Events.length > 0 || runRepairEvents.length > 0 || reconciled,
         v6MigrationEvents: v6Events,
         runRepairEvents
       };
@@ -318,6 +321,7 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      await this.reconcileQueuePauseStateIfDivergent();
       return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
     }
     throw new Error(
@@ -325,10 +329,34 @@ export class WorkspaceStateStore {
     );
   }
 
-  /**
-   * Feature 011 — STATE_SCHEMA_VERSION 1 → 2 forward migration.
-   * Fills the three new `WorkflowRun` fields on legacy records.
-   */
+  // BUG-001 self-heal: pre-fix persisted v6 state may have a stale legacy
+  // `QueueState.paused` diverging from the authoritative
+  // `QueueRegistry.entries[0].state`. Reconcile legacy → registry per FR-020.
+  private async reconcileQueuePauseStateIfDivergent(): Promise<boolean> {
+    const persistedQueue = this.memento.get<QueueState>(KEYS.queue);
+    const persistedRegistry = this.memento.get<QueueRegistry>(KEYS.queueRegistry);
+    if (!persistedQueue || !persistedRegistry) return false;
+    const defaultEntry = persistedRegistry.entries.find((e) => e.id === DEFAULT_QUEUE_ID);
+    if (!defaultEntry) return false;
+    const legacyPaused = persistedQueue.paused === true;
+    const registryPaused = defaultEntry.state === 'manually-paused';
+    if (legacyPaused === registryPaused) return false;
+    const correctedReason = registryPaused ? persistedQueue.pausedReason ?? null : null;
+    await this.memento.update(KEYS.queue, {
+      ...persistedQueue,
+      paused: registryPaused,
+      pausedReason: correctedReason,
+      updatedAt: Date.now()
+    });
+    this.logger?.warn(
+      `workspace-state: reconciled divergent queue pause state (legacy=${legacyPaused} registry=${registryPaused}) → registry`
+    );
+    this.notify(KEYS.queue);
+    return true;
+  }
+
+  // Feature 011 — STATE_SCHEMA_VERSION 1 → 2: fills the three new
+  // `WorkflowRun` fields on legacy records.
   private async normalizeRunForInitialize(
     applyLegacyMigration: boolean
   ): Promise<readonly WorkflowRunRepairedAuditEvent[]> {
@@ -373,18 +401,9 @@ export class WorkspaceStateStore {
     }
   }
 
-  /**
-   * Feature 030 — STATE_SCHEMA_VERSION 5 → 6 forward migration. Runs AFTER
-   * the v2 → v3 lift and the v4 → v5 pauseSource backfill, so the persisted
-   * registry shape is well-formed when this migration considers it. Runs
-   * BEFORE snapshot construction and watchdog start (per the CLAUDE.md
-   * hard rule). Returns the audit events for the caller to forward through
-   * `appendAudit`; the writer is constructed later in the activation chain.
-   *
-   * `persistedNumeric` is the numeric schema version read at the top of
-   * `initialize()`. When it is missing (fresh workspace) or already 6, the
-   * migration is a no-op. Idempotent.
-   */
+  // Feature 030 — v5 → v6 forward migration. Runs after v2→v3 lift and
+  // v4→v5 pauseSource backfill; before snapshot/watchdog. Returns audit
+  // events forwarded by the caller via `appendAudit`. Idempotent.
   private async migrateV5ToV6IfNeeded(
     persistedNumeric: number | undefined
   ): Promise<readonly StateMigratedV5ToV6AuditEvent[]> {

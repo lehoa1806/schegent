@@ -123,7 +123,7 @@ export async function runPauseQueue(arg: unknown, ctx: QueueOpsCtx): Promise<voi
       ? ((arg as { reason: string }).reason as string)
       : null;
   try {
-    await ctx.queue.setPaused(true, reason);
+    await ctx.queue.setQueuePausedState(true, undefined, reason, 'operator');
     ctx.notifier.info('Schegent: queue paused.');
   } catch (err) {
     ctx.logger.error(`runPauseQueue failed: ${(err as Error).message}`);
@@ -134,7 +134,7 @@ export async function runPauseQueue(arg: unknown, ctx: QueueOpsCtx): Promise<voi
 export async function runResumeQueue(ctx: QueueOpsCtx): Promise<void> {
   if (!ensurePrimary(ctx)) return;
   try {
-    await ctx.queue.setPaused(false, null);
+    await ctx.queue.setQueuePausedState(false, undefined, null, 'operator');
     ctx.notifier.info('Schegent: queue resumed.');
   } catch (err) {
     ctx.logger.error(`runResumeQueue failed: ${(err as Error).message}`);

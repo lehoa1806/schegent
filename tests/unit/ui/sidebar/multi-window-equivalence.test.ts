@@ -173,7 +173,7 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
       moveDown: async () => ({ ok: true }),
       clearCompleted: async () => ({ removed: 0 }),
       clearFailed: async () => ({ removed: 0 }),
-      setPaused: async () => undefined
+      setQueuePausedState: async () => ({ ok: true, queueId: 'default' })
     };
     const router = new MessageRouter({
       executeCommand: (async () => undefined) as RouterDeps['executeCommand'],

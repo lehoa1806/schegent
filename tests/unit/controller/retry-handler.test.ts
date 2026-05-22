@@ -82,7 +82,7 @@ interface TestDeps {
   watchdog: DelayedRetryWatchdog | null;
   watchdogCalls: Array<{ cause: string; durationOverrideMs?: number; skipStatusCheck?: boolean }>;
   storeCalls: Array<{ prev: WorkflowRun; next: WorkflowRun }>;
-  setPausedCalls: Array<[boolean, string]>;
+  setQueuePausedStateCalls: Array<[boolean, string | undefined, string | null | undefined, string | undefined]>;
   pauseTaskCalls: Array<[string, string]>;
   auditAppendCalls: Array<Record<string, unknown>>;
   warnCalls: string[];
@@ -100,7 +100,7 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
     } : opts.watchdog,
     watchdogCalls: [],
     storeCalls: [],
-    setPausedCalls: [],
+    setQueuePausedStateCalls: [],
     pauseTaskCalls: [],
     auditAppendCalls: [],
     warnCalls: [],
@@ -118,9 +118,17 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
   const deps: RetryHandlerDeps = {
     store: {} as RetryHandlerDeps['store'],
     queue: {
-      setPaused: vi.fn(async (paused: boolean, reason: string) => {
-        tracker.setPausedCalls.push([paused, reason]);
-      }),
+      setQueuePausedState: vi.fn(
+        async (
+          paused: boolean,
+          queueId: string | undefined,
+          reason: string | null | undefined,
+          pauseSource: string | undefined
+        ) => {
+          tracker.setQueuePausedStateCalls.push([paused, queueId, reason, pauseSource]);
+          return { ok: true, queueId: queueId ?? 'default' };
+        }
+      ),
       pause: vi.fn(async (featureId: string, cause: string) => {
         tracker.pauseTaskCalls.push([featureId, cause]);
       })
@@ -297,8 +305,10 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       expect(result.pendingRetryAt).toBeNull();
       expect(result.pendingRetryCause).toBeNull();
 
-      // Queue paused with the correct reason format.
-      expect(tracker.setPausedCalls).toEqual([[true, `retry-cap-exhausted:${run.id}`]]);
+      // Queue paused with the correct reason format and pauseSource.
+      expect(tracker.setQueuePausedStateCalls).toEqual([
+        [true, undefined, `retry-cap-exhausted:${run.id}`, 'retry-cap']
+      ]);
       // In-flight task paused with `phase-paused`.
       expect(tracker.pauseTaskCalls).toEqual([[run.featureId, 'phase-paused']]);
 
@@ -324,7 +334,9 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       const result = await handler.handleDelayedRetry(run, 1, phaseResult, 'transient_error', null, null);
 
       expect(result.delayedRetryCount).toBe(2);
-      expect(tracker.setPausedCalls).toEqual([[true, `retry-cap-exhausted:${run.id}`]]);
+      expect(tracker.setQueuePausedStateCalls).toEqual([
+        [true, undefined, `retry-cap-exhausted:${run.id}`, 'retry-cap']
+      ]);
     });
   });
 

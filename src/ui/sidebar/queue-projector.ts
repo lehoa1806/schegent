@@ -184,6 +184,6 @@ function extractLastErrorMessage(value: FeatureRequest['lastError']): string | n
 }
 
 export function truncateLabel(description: string): string {
-  if (description.length <= 80) return description;
-  return `${description.slice(0, 77)}...`;
+  if (description.length <= 300) return description;
+  return `${description.slice(0, 297)}...`;
 }

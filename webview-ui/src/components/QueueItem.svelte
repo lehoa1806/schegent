@@ -106,28 +106,79 @@
     if (!showReorderControls) return;
     void postMoveItemDown(item.id);
   }
+
+  let dragEnabled = $state(false);
+
+  function onHandleMouseDown(): void {
+    if (showReorderControls) dragEnabled = true;
+  }
+
+  function onHandleMouseUp(): void {
+    dragEnabled = false;
+  }
+
+  function onDragEnd(): void {
+    dragEnabled = false;
+  }
 </script>
 
 <li
   class="item status-{item.status}"
   data-testid="queue-item-{item.id}"
   data-queue-status={item.status}
-  draggable={showReorderControls}
+  draggable={showReorderControls && dragEnabled}
   ondragstart={onDragStart}
   ondragover={onDragOver}
   ondrop={onDrop}
+  ondragend={onDragEnd}
 >
-  {#if showReorderControls}
-    <span
-      class="drag-handle"
-      data-testid="queue-item-drag-handle-{item.id}"
-      aria-hidden="true"
-      title="Drag to reorder"
-    >⋮⋮</span>
-  {/if}
-  <span class="label" title={item.label}>{item.label}</span>
-  <span class="meta">
-    <span class="pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
+  <div class="row row-1">
+    <div class="row-1-left">
+      {#if showReorderControls}
+        <span
+          class="drag-handle"
+          data-testid="queue-item-drag-handle-{item.id}"
+          aria-hidden="true"
+          title="Drag to reorder"
+          onmousedown={onHandleMouseDown}
+          onmouseup={onHandleMouseUp}
+          onmouseleave={onHandleMouseUp}
+        >⋮⋮</span>
+      {/if}
+      <span class="id" title={item.id}>{item.id}</span>
+      <span class="time" data-testid="queue-item-enqueued-{item.id}">{enqueuedAtLabel}</span>
+    </div>
+    <div class="row-1-right">
+      <span class="pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
+      <span class="actions-slot">
+        {#if showReorderControls}
+          <button
+            type="button"
+            class="reorder-btn"
+            data-testid="queue-item-reorder-up-{item.id}"
+            title="Move up"
+            aria-label="Move task up"
+            onclick={onMoveUp}
+          >▲</button>
+          <button
+            type="button"
+            class="reorder-btn"
+            data-testid="queue-item-reorder-down-{item.id}"
+            title="Move down"
+            aria-label="Move task down"
+            onclick={onMoveDown}
+          >▼</button>
+        {/if}
+        <QueueItemActions {item} {isPrimary} />
+      </span>
+    </div>
+  </div>
+
+  <div class="row row-2">
+    <span class="label" title={item.label}>{item.label}</span>
+  </div>
+
+  <div class="row row-3 meta">
     <span class="chip queue-chip" data-testid="queue-item-queue-{item.id}">{queueName}</span>
     {#if pauseCauseLabel}
       <span
@@ -152,10 +203,10 @@
       <span class="chip paused-chip" data-testid="queue-item-paused-{item.id}"
         title={item.pausedReason ?? ''}>{item.pausedReason}</span>
     {/if}
-    <span class="time" data-testid="queue-item-enqueued-{item.id}">{enqueuedAtLabel}</span>
     <span class="time time-updated" data-testid="queue-item-updated-{item.id}"
       title="Last update">↻ {updatedAtLabel}</span>
-  </span>
+  </div>
+
   {#if showLastError && item.lastErrorSummary}
     <button
       type="button"
@@ -175,66 +226,83 @@
       >{item.lastErrorSummary}</div>
     {/if}
   {/if}
-  <span class="actions-slot">
-    {#if showReorderControls}
-      <button
-        type="button"
-        class="reorder-btn"
-        data-testid="queue-item-reorder-up-{item.id}"
-        title="Move up"
-        aria-label="Move task up"
-        onclick={onMoveUp}
-      >▲</button>
-      <button
-        type="button"
-        class="reorder-btn"
-        data-testid="queue-item-reorder-down-{item.id}"
-        title="Move down"
-        aria-label="Move task down"
-        onclick={onMoveDown}
-      >▼</button>
-    {/if}
-    <QueueItemActions {item} {isPrimary} />
-  </span>
 </li>
 
 <style>
   .item {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto auto auto;
-    column-gap: var(--schegent-gap);
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     padding: 8px var(--schegent-pad);
     border-radius: var(--schegent-radius);
+    border: 1px solid transparent;
   }
   .item:hover {
     background: var(--schegent-list-hover);
+    border-color: var(--schegent-border);
+  }
+  .row-1 {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .row-1-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0; /* allows truncation */
+  }
+  .row-1-right {
+    display: flex;
+    align-items: center;
+    gap: var(--schegent-gap);
+    flex-shrink: 0;
+  }
+  .id {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.85em;
+    color: var(--schegent-muted-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .time {
+    font-size: 0.85em;
+    color: var(--schegent-muted-fg);
+    white-space: nowrap;
+  }
+  .row-2 {
+    display: flex;
+    padding-left: 4px;
   }
   .label {
-    grid-column: 1;
-    grid-row: 1;
-    white-space: normal;
+    white-space: pre-wrap;
     word-break: break-word;
+    color: var(--schegent-fg);
+    font-size: 0.95em;
+    line-height: 1.4;
   }
   .meta {
-    grid-column: 1;
-    grid-row: 2;
     display: flex;
     flex-wrap: wrap;
     gap: var(--schegent-gap);
     align-items: center;
     color: var(--schegent-muted-fg);
     font-size: 0.85em;
+    padding-left: 4px;
   }
   .pill {
     border: 1px solid var(--schegent-border);
     border-radius: 999px;
-    padding: 0 6px;
+    padding: 0 8px;
+    font-size: 0.85em;
+    font-weight: 500;
   }
   .status-in-flight .pill {
     color: var(--schegent-color-active);
     border-color: currentColor;
+    background: color-mix(in srgb, var(--schegent-color-active) 10%, transparent);
   }
   .status-completed .pill {
     color: var(--schegent-color-completed);
@@ -277,25 +345,21 @@
     opacity: 0.85;
   }
   .error-toggle {
-    grid-column: 1 / span 2;
-    grid-row: 3;
-    justify-self: start;
+    align-self: flex-start;
     background: transparent;
     color: var(--schegent-muted-fg);
     border: 1px dashed var(--schegent-border);
     border-radius: var(--schegent-radius);
     padding: 0 6px;
-    margin-top: 2px;
     font: inherit;
+    font-size: 0.85em;
     cursor: pointer;
+    margin-left: 4px;
   }
   .error-toggle:hover {
     color: var(--schegent-fg);
   }
   .error-body {
-    grid-column: 1 / span 2;
-    grid-row: 4;
-    margin-top: 2px;
     padding: 4px 6px;
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
@@ -305,30 +369,21 @@
     font-size: 0.85em;
     white-space: pre-wrap;
     word-break: break-word;
+    margin-left: 4px;
   }
   .actions-slot {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    align-self: center;
-    justify-self: end;
     display: inline-flex;
-    flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
   }
-  /* Feature 030 (US2, T034) — drag-and-drop + arrow reorder controls. */
   .drag-handle {
-    grid-column: 1;
-    grid-row: 1;
-    justify-self: start;
-    align-self: center;
-    margin-right: 4px;
     padding: 0 4px;
     color: var(--schegent-muted-fg);
     cursor: grab;
     user-select: none;
     font-size: 0.9em;
     letter-spacing: -2px;
+    flex-shrink: 0;
   }
   .item[draggable='true']:active .drag-handle {
     cursor: grabbing;

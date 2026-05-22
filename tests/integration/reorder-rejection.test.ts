@@ -157,8 +157,12 @@ async function makeHarness(): Promise<Harness> {
       moveDown: (id: string) => manager.moveDown(id),
       clearCompleted: () => manager.clearCompleted(),
       clearFailed: () => manager.clearFailed(),
-      setPaused: (paused: boolean, reason?: string | null) =>
-        manager.setPaused(paused, reason ?? null),
+      setQueuePausedState: (
+        paused: boolean,
+        queueId?: string,
+        reason?: string | null,
+        pauseSource?: 'operator' | 'cascade' | 'retry-cap'
+      ) => manager.setQueuePausedState(paused, queueId, reason ?? null, pauseSource ?? 'operator'),
       modifyTask: (taskId: string, description: string) =>
         manager.modifyTask(taskId, description),
       reorderTask: (taskId: string, newPosition: number) =>

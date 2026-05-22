@@ -239,7 +239,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
 
   it('rejects with rejected-paused when the queue is paused', async () => {
     const h = await trackedHarness();
-    await h.queue.setPaused(true, 'operator-paused');
+    await h.queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
 
     const result = await h.service.scheduleOrEnqueue({
       description: 'feature x',

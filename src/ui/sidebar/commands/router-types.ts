@@ -22,11 +22,11 @@ export interface QueueOps {
   moveDown(id: string): Promise<{ ok: boolean; reason?: string }>;
   clearCompleted(): Promise<{ removed: number }>;
   clearFailed(): Promise<{ removed: number }>;
-  setPaused(paused: boolean, reason?: string | null): Promise<void>;
-  setQueuePausedState?(
+  setQueuePausedState(
     paused: boolean,
     queueId?: string,
-    reason?: string | null
+    reason?: string | null,
+    pauseSource?: 'operator' | 'cascade' | 'retry-cap'
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
   modifyTask?(
     taskId: string,

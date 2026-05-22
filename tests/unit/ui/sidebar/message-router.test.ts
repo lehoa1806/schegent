@@ -57,8 +57,14 @@ class FakeQueueOps {
   clearCompletedResult: { removed: number } = { removed: 0 };
   clearFailedCalls: number = 0;
   clearFailedResult: { removed: number } = { removed: 0 };
-  setPausedCalls: Array<{ paused: boolean; reason: string | null }> = [];
-  setPausedThrows: Error | null = null;
+  setQueuePausedStateCalls: Array<{
+    paused: boolean;
+    queueId: string | undefined;
+    reason: string | null | undefined;
+    pauseSource: 'operator' | 'cascade' | 'retry-cap' | undefined;
+  }> = [];
+  setQueuePausedStateResult: { ok: boolean; reason?: string; queueId?: string } = { ok: true };
+  setQueuePausedStateThrows: Error | null = null;
 
   async remove(id: string): Promise<boolean> {
     this.removed.push(id);
@@ -95,9 +101,15 @@ class FakeQueueOps {
     this.clearFailedCalls++;
     return this.clearFailedResult;
   }
-  async setPaused(paused: boolean, reason: string | null = null): Promise<void> {
-    this.setPausedCalls.push({ paused, reason });
-    if (this.setPausedThrows) throw this.setPausedThrows;
+  async setQueuePausedState(
+    paused: boolean,
+    queueId?: string,
+    reason?: string | null,
+    pauseSource?: 'operator' | 'cascade' | 'retry-cap'
+  ): Promise<{ ok: boolean; reason?: string; queueId?: string }> {
+    this.setQueuePausedStateCalls.push({ paused, queueId, reason, pauseSource });
+    if (this.setQueuePausedStateThrows) throw this.setQueuePausedStateThrows;
+    return this.setQueuePausedStateResult;
   }
 }
 
@@ -524,9 +536,11 @@ describe('MessageRouter.dispatch', () => {
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_PAUSE_QUEUE calls queueOps.setPaused(true)', async () => {
+    it('CMD_PAUSE_QUEUE calls queueOps.setQueuePausedState(true)', async () => {
       await dispatch(router, { type: CMD_PAUSE_QUEUE, correlationId: 'pq1' }, acks);
-      expect(queueOps.setPausedCalls).toEqual([{ paused: true, reason: null }]);
+      expect(queueOps.setQueuePausedStateCalls).toEqual([
+        { paused: true, queueId: undefined, reason: null, pauseSource: 'operator' }
+      ]);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
@@ -536,13 +550,17 @@ describe('MessageRouter.dispatch', () => {
         { type: CMD_PAUSE_QUEUE, correlationId: 'pq2', payload: { reason: 'rate-limited' } },
         acks
       );
-      expect(queueOps.setPausedCalls).toEqual([{ paused: true, reason: 'rate-limited' }]);
+      expect(queueOps.setQueuePausedStateCalls).toEqual([
+        { paused: true, queueId: undefined, reason: 'rate-limited', pauseSource: 'operator' }
+      ]);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_RESUME_QUEUE calls queueOps.setPaused(false)', async () => {
+    it('CMD_RESUME_QUEUE calls queueOps.setQueuePausedState(false)', async () => {
       await dispatch(router, { type: CMD_RESUME_QUEUE, correlationId: 'rq1' }, acks);
-      expect(queueOps.setPausedCalls).toEqual([{ paused: false, reason: null }]);
+      expect(queueOps.setQueuePausedStateCalls).toEqual([
+        { paused: false, queueId: undefined, reason: null, pauseSource: 'operator' }
+      ]);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
@@ -638,7 +656,7 @@ describe('MessageRouter.dispatch', () => {
       await dispatch(built.router, { type: CMD_PAUSE_QUEUE, correlationId: 'sec2' }, localAcks);
       expect(localAcks[0].msg.status).toBe('rejected');
       expect(localAcks[0].msg.reason).toBe('secondary-window-readonly');
-      expect(built.queueOps.setPausedCalls).toEqual([]);
+      expect(built.queueOps.setQueuePausedStateCalls).toEqual([]);
     });
 
     it('rejects CMD_REMOVE_QUEUE_ITEM when not primary (gated mutating cmd)', async () => {

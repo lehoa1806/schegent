@@ -3,6 +3,7 @@
   import { formatRelativeTime } from '../lib/format';
   import QueueItemActions from './QueueItemActions.svelte';
   import type { DeleteConfirmationCopy } from '../lib/deletion-confirmation';
+  import { postReorderTask } from '../lib/reorder-task';
 
   interface Props {
     orderedItems: readonly QueueItem[];
@@ -19,6 +20,28 @@
     openConfirmDialog,
     onTaskSelect
   }: Props = $props();
+
+  function onDragStart(ev: DragEvent, item: QueueItem): void {
+    if (item.status !== 'pending') return;
+    if (ev.dataTransfer) {
+      ev.dataTransfer.setData('text/plain', item.id);
+      ev.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function onDragOver(ev: DragEvent, item: QueueItem): void {
+    if (item.status !== 'pending') return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+  }
+
+  function onDrop(ev: DragEvent, item: QueueItem): void {
+    if (item.status !== 'pending') return;
+    ev.preventDefault();
+    const sourceId = ev.dataTransfer?.getData('text/plain') ?? '';
+    if (sourceId.length === 0 || sourceId === item.id) return;
+    void postReorderTask(sourceId, item.position);
+  }
 </script>
 
 <div class="queue-list" data-testid="dashboard-queue-list">
@@ -34,7 +57,19 @@
           class="item status-{item.status} {selectedTaskId === item.id ? 'activity-selected' : ''}"
           data-testid="dashboard-queue-item-{item.id}"
           aria-current={selectedTaskId === item.id ? 'true' : undefined}
+          draggable={item.status === 'pending'}
+          ondragstart={(ev) => onDragStart(ev, item)}
+          ondragover={(ev) => onDragOver(ev, item)}
+          ondrop={(ev) => onDrop(ev, item)}
         >
+          {#if item.status === 'pending'}
+            <span
+              class="drag-handle"
+              data-testid="queue-item-drag-handle-{item.id}"
+              aria-hidden="true"
+              title="Drag to reorder"
+            >⋮⋮</span>
+          {/if}
           <button
             type="button"
             class="item-body item-select"
@@ -79,10 +114,11 @@
     background: var(--vscode-list-hoverBackground);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
-    padding: 8px 12px;
+    padding: 12px 16px;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
     transition: transform 0.2s;
   }
   .item:hover {
@@ -171,4 +207,17 @@
   }
   .empty-icon { font-size: 2em; margin-bottom: 8px; opacity: 0.5; }
   .empty-text { font-style: italic; margin: 0; }
+  .drag-handle {
+    color: var(--schegent-muted-fg);
+    cursor: grab;
+    user-select: none;
+    font-size: 1.1em;
+    letter-spacing: -2px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .item[draggable='true']:active .drag-handle {
+    cursor: grabbing;
+  }
 </style>

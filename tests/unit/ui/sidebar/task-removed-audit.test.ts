@@ -40,7 +40,7 @@ class FakeQueueOpsMinimal implements QueueOps {
   moveDown = vi.fn(async () => ({ ok: true }));
   clearCompleted = vi.fn(async () => ({ removed: 0 }));
   clearFailed = vi.fn(async () => ({ removed: 0 }));
-  setPaused = vi.fn(async () => undefined);
+  setQueuePausedState = vi.fn(async () => ({ ok: true, queueId: 'default' }));
 
   async remove(id: string): Promise<boolean> {
     this.removeCalls.push(id);

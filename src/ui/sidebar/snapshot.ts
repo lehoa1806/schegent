@@ -122,11 +122,12 @@ export interface QueueSummary {
   readonly state: 'active' | 'manually-paused';
   /**
    * Feature 028 — `'cascade'` when the pause was a side effect of a phase
-   * pause; `'operator'` when an operator paused the queue directly; `null`
-   * when the queue is active. Drives the cascade badge in
-   * QueueGlobalActions.svelte.
+   * pause; `'operator'` when an operator paused the queue directly;
+   * `'retry-cap'` (Feature 030 BUG-001) when the retry-handler paused
+   * the queue after exhausting the delayed-retry cap; `null` when the
+   * queue is active. Drives the cascade badge in QueueGlobalActions.svelte.
    */
-  readonly pauseSource: 'operator' | 'cascade' | null;
+  readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
   readonly schedule: {
     readonly expression: string;
     readonly kind: 'relative' | 'absolute';

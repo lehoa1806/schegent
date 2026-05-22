@@ -17,7 +17,7 @@
  *   - State persistence (`persistTransition`)
  *   - Audit emissions (`appendPhaseControlAudit`, `appendBreakpointAudit`)
  *   - Status bar updates
- *   - Queue mutations (`cascadedPause`, `pause`, `setPaused`, `finish`)
+ *   - Queue mutations (`cascadedPause`, `pause`, `setQueuePausedState`, `finish`)
  *   - Lock retention (`session.retain()`)
  *   - Aggressive-pause kill ordering (CLAUDE.md 033 FR-001)
  *   - Single `-c` append site (CLAUDE.md 032 FR-001)

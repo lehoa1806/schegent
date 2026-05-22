@@ -44,7 +44,7 @@ export interface PhaseLogServiceDeps {
   };
 }
 
-const DEFAULT_PER_FIELD_BYTES = 4096;
+const DEFAULT_PER_FIELD_BYTES = 65536;
 const DEFAULT_MAX_ENTRIES = 500;
 
 export interface PhaseLogService {

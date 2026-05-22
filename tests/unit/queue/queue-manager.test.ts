@@ -143,20 +143,20 @@ describe('QueueManager.cancel', () => {
   });
 });
 
-describe('QueueManager.setPaused', () => {
+describe('QueueManager.setQueuePausedState', () => {
   it('toggles the paused flag', async () => {
-    await queue.setPaused(true);
+    await queue.setQueuePausedState(true);
     expect(store.getQueue().paused).toBe(true);
-    await queue.setPaused(false);
+    await queue.setQueuePausedState(false);
     expect(store.getQueue().paused).toBe(false);
   });
 
   it('is a no-op when state already matches', async () => {
     await queue.enqueue('feature A');
-    await queue.setPaused(true);
+    await queue.setQueuePausedState(true);
     const before = store.getQueue().updatedAt;
     await new Promise((r) => setTimeout(r, 5));
-    await queue.setPaused(true);
+    await queue.setQueuePausedState(true);
     expect(store.getQueue().updatedAt).toBe(before);
   });
 });
@@ -280,12 +280,41 @@ describe('QueueManager.finish extended fields', () => {
   });
 });
 
-describe('QueueManager.setPaused extended', () => {
+describe('QueueManager.setQueuePausedState extended', () => {
   it('records pausedReason', async () => {
-    await queue.setPaused(true, 'credit-recovery');
+    await queue.setQueuePausedState(true, undefined, 'credit-recovery');
     expect(store.getQueue().pausedReason).toBe('credit-recovery');
-    await queue.setPaused(false, null);
+    await queue.setQueuePausedState(false, undefined, null);
     expect(store.getQueue().pausedReason).toBeNull();
+  });
+});
+
+describe('QueueManager.setQueuePausedState BUG-001 self-heal', () => {
+  it('resume heals a stale legacy paused=true when registry is already active', async () => {
+    // Simulate the BUG-001 divergent state: legacy boolean stuck `true`
+    // (e.g. from a pre-fix retry-cap-exhausted write) while the registry
+    // entry is already 'active'. Resume must visibly succeed and clear the
+    // legacy boolean so the dispatcher and submit gate recover.
+    const initialQueue = store.getQueue();
+    await (store as unknown as { memento: { update: (k: string, v: unknown) => Promise<void> } }).memento.update(
+      'schegent.queue',
+      { ...initialQueue, paused: true, pausedReason: 'retry-cap-exhausted:r-old' }
+    );
+    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+
+    const result = await queue.setQueuePausedState(false, undefined, null, 'operator');
+
+    expect(result.ok).toBe(true);
+    expect(result.queueId).toBe(DEFAULT_QUEUE_ID);
+    expect(store.getQueue().paused).toBe(false);
+    expect(store.getQueue().pausedReason).toBeNull();
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+  });
+
+  it('returns not-paused when both legacy and registry are already consistent-active', async () => {
+    const result = await queue.setQueuePausedState(false, undefined, null, 'operator');
+    expect(result).toEqual({ ok: false, reason: 'not-paused' });
   });
 });
 
@@ -427,6 +456,58 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
     const positions = queue.list().map((r) => ({ id: r.id, position: r.position }));
     expect(positions.find((p) => p.id === b.id)!.position).toBe(0);
     expect(positions.find((p) => p.id === c.id)!.position).toBe(1);
+  });
+
+  it('clearCompleted also clears a lingering pause when no in-flight remains', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'r-a');
+    await queue.finish(a.id, 'completed');
+    // Simulate a lingering retry-cap pause whose originating run is gone.
+    await queue.setQueuePausedState(true, undefined, 'retry-cap-exhausted:r-a', 'retry-cap');
+    expect(store.getQueue().paused).toBe(true);
+    const result = await queue.clearCompleted();
+    expect(result.removed).toBe(1);
+    expect(store.getQueue().paused).toBe(false);
+    expect(store.getQueue().pausedReason).toBeNull();
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+    expect(store.getQueueRegistry().entries[0]?.pauseSource).toBeNull();
+  });
+
+  it('clearFailed also clears a lingering pause when no in-flight remains', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'r-a');
+    await queue.finish(a.id, 'failed', 'boom');
+    await queue.setQueuePausedState(true, undefined, 'retry-cap-exhausted:r-a', 'retry-cap');
+    const result = await queue.clearFailed();
+    expect(result.removed).toBe(1);
+    expect(store.getQueue().paused).toBe(false);
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+  });
+
+  it('clear preserves the pause state when an in-flight task remains', async () => {
+    // Two in-flight is impossible (cap-of-1), but the protection invariant
+    // is: if ANY in-flight task exists, the pause stays so the dispatcher
+    // does not promote the next pending task behind the running one.
+    const a = await queue.enqueue('A');
+    const b = await queue.enqueue('B');
+    await queue.markInFlight(a.id, 'r-a');
+    await queue.finish(a.id, 'completed');
+    await queue.markInFlight(b.id, 'r-b');
+    // b is in-flight; pause the queue.
+    await queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
+    expect(store.getQueue().paused).toBe(true);
+    await queue.clearCompleted();
+    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('manually-paused');
+  });
+
+  it('clear is a no-op on pause state when nothing was removed', async () => {
+    await queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
+    // No completed/failed items present.
+    const result = await queue.clearCompleted();
+    expect(result.removed).toBe(0);
+    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueueRegistry().entries[0]?.state).toBe('manually-paused');
   });
 });
 

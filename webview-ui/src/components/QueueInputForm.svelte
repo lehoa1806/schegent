@@ -4,7 +4,7 @@
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { CMD_START } from '../lib/messages';
 
-  const MAX_TEXTAREA_LINES = 8;
+  const MAX_TEXTAREA_LINES = 12;
 
   interface Props {
     availablePipelines: readonly PipelineDefinition[];
@@ -18,7 +18,7 @@
   let selectedPipelineId = $state<string | undefined>(undefined);
   let operatorTouchedPipeline = $state(false);
   let textareaEl = $state<HTMLTextAreaElement | undefined>(undefined);
-  let insertionPosition = $state<string>('end');
+
   let submitInFlightId = $state<string | null>(null);
   let submitFeedback = $state<
     | { kind: 'accepted'; queueName: string | null }
@@ -26,9 +26,6 @@
     | null
   >(null);
 
-  const insertionOptions = $derived(
-    Array.from({ length: pendingCount + 1 }, (_, index) => index)
-  );
 
   const defaultSelectedPipelineId = $derived<string | undefined>(
     availablePipelines.length === 0
@@ -71,8 +68,7 @@
       description: trimmedDescription,
       ...(selectedPipelineId === 'standard'
         ? {}
-        : { pipelineId: selectedPipelineId }),
-      ...(insertionPosition !== 'end' ? { position: Number(insertionPosition) } : {})
+        : { pipelineId: selectedPipelineId })
     });
     submitInFlightId = correlationId;
     submitFeedback = null;
@@ -125,28 +121,14 @@
             </select>
           {/if}
         </div>
-        <div class="position-selector">
-          <select
-            bind:value={insertionPosition}
-            class="pipeline-select"
-            title="Insertion Position"
-            data-testid="dashboard-insertion-position"
-          >
-            <option value="end">End</option>
-            {#each insertionOptions as option}
-              <option value={String(option)}>{option + 1}</option>
-            {/each}
-          </select>
-        </div>
       </div>
       <button
         type="submit"
-        class="submit-button compose-submit"
+        class="submit-button"
         data-testid="dashboard-queue-input-submit"
         disabled={submitDisabled}
         title="Enqueue Feature"
       >
-        <span>Submit Task</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
       </button>
     </div>
@@ -194,7 +176,7 @@
   }
   .compose-box textarea {
     width: 100%;
-    min-height: 50px;
+    min-height: 100px;
     background: transparent;
     border: none;
     color: var(--schegent-fg);
@@ -253,14 +235,5 @@
   .submit-button:active:not(:disabled) {
     transform: scale(0.9);
     opacity: 0.85;
-  }
-  .submit-button.compose-submit {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border-radius: var(--schegent-radius);
-    width: auto;
-    padding: 6px 14px;
-    font-weight: 600;
   }
 </style>

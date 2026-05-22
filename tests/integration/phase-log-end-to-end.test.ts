@@ -103,7 +103,8 @@ function makeService(h: Harness, isInFlight: boolean) {
     }),
     // In these tests RUN_ID is used as both the snapshot id and the
     // directory name, so the resolver simply returns the same value.
-    resolveRunId: (taskId) => (taskId === RUN_ID ? RUN_ID : null)
+    resolveRunId: (taskId) => (taskId === RUN_ID ? RUN_ID : null),
+    caps: { perFieldBytes: 4096 }
   });
 }
 
@@ -130,7 +131,8 @@ function makeServiceWithSplitIds(h: Harness, isInFlight: boolean) {
       availablePipelines: [{ id: PIPELINE_ID }],
       availablePhases: [{ id: PHASE_ID }]
     }),
-    resolveRunId: (taskId) => (taskId === TASK_ID ? RUN_ID : null)
+    resolveRunId: (taskId) => (taskId === TASK_ID ? RUN_ID : null),
+    caps: { perFieldBytes: 4096 }
   });
 }
 

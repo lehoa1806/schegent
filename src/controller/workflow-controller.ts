@@ -574,7 +574,7 @@ export class SchegentWorkflowController {
       const queueState = this.store.getQueue();
       const expectedReason = `retry-cap-exhausted:${run.id}`;
       if (queueState.paused && queueState.pausedReason === expectedReason) {
-        await this.queue.setPaused(false, null);
+        await this.queue.setQueuePausedState(false, undefined, null);
       }
     }
     await this.appendPhaseControlAudit('phase-restarted', updated, {
@@ -787,7 +787,7 @@ export class SchegentWorkflowController {
     const expectedReason = `retry-cap-exhausted:${run.id}`;
     const queueUnpaused = queueState.paused && queueState.pausedReason === expectedReason;
     if (queueUnpaused) {
-      await this.queue.setPaused(false, null);
+      await this.queue.setQueuePausedState(false, undefined, null);
     }
 
     const priorCount = run.delayedRetryCount;

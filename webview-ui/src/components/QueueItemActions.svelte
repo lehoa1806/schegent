@@ -203,8 +203,8 @@
 <style>
   .actions {
     display: inline-flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-direction: row;
+    gap: 4px;
     align-items: center;
   }
   button {

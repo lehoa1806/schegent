@@ -56,10 +56,12 @@ export interface QueueSnapshot {
     } | null;
     readonly taskCount: number;
     // Feature 028 — distinguishes operator-initiated queue pauses from
-    // those induced by an active-phase pause / breakpoint fire. `null`
-    // iff `state !== 'manually-paused'`. UI uses this to label the
-    // queue badge as "cascaded" vs the existing manual indicator.
-    readonly pauseSource?: 'operator' | 'cascade' | null;
+    // those induced by an active-phase pause / breakpoint fire. Feature
+    // 030 BUG-001 adds `'retry-cap'` to label retry-handler pauses
+    // triggered when the delayed-retry budget is exhausted. `null` iff
+    // `state !== 'manually-paused'`. UI uses this to label the queue
+    // badge as "cascaded" / "retry-cap" vs the existing manual indicator.
+    readonly pauseSource?: 'operator' | 'cascade' | 'retry-cap' | null;
   }[];
   readonly pauseState: QueuePauseState;
   readonly updatedAt: string;

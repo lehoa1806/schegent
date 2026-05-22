@@ -55,7 +55,7 @@ describe('queue auto-drain prerequisites (US1 / T028)', () => {
   });
 
   it('queue exposes pausedReason in pause state (T030)', async () => {
-    await queue.setPaused(true, 'rate-limit cooldown');
+    await queue.setQueuePausedState(true, undefined, 'rate-limit cooldown', 'operator');
     const state = store.getQueue();
     expect(state.paused).toBe(true);
     expect(state.pausedReason).toBe('rate-limit cooldown');

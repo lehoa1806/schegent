@@ -27,7 +27,8 @@ import {
   findQueue,
   setQueuePaused,
   setQueueSchedule,
-  QueueRegistryViolation
+  QueueRegistryViolation,
+  type QueuePauseSource
 } from './queue-registry';
 import {
   type FeatureRequest,
@@ -72,6 +73,9 @@ export interface QueueMutationDetail extends MutationResult {
 
 // Feature 030 — single-queue mode removed the multi-queue `deleteNamedQueue`
 // surface. The `QueueDeleteDisposition` discriminant is no longer needed.
+
+// BUG-001 (FR-022): idempotent rejection reasons → DEBUG, not WARN.
+const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set(['not-paused', 'already-paused']);
 
 export class QueueManager {
   private readonly store: WorkspaceStateStore;
@@ -263,21 +267,23 @@ export class QueueManager {
     }
   }
 
-  // Feature 030 — single-queue mode removed the multi-queue management
-  // methods `createNamedQueue`, `renameNamedQueue`, `deleteNamedQueue`.
-  // The canonical queue is always 'default' and the registry is the
-  // single-entry shape enforced by `validateQueueRegistry` (v6). Mutating
-  // the registry from runtime code is no longer a supported operation.
-
+  // Feature 030 — single-queue mode: multi-queue management methods removed;
+  // canonical queue is always 'default' (v6 registry shape).
+  // Canonical single-writer for the unified queue's pause state (BUG-001
+  // FR-020/FR-021): atomic dual-write of registry state + pauseSource and
+  // the legacy `QueueState.paused` boolean. `pauseSource` defaults to
+  // 'operator'; pass 'cascade' from `cascadedPause` and 'retry-cap' from
+  // the retry-handler. On clear, all sources are uniformly cleared.
   public async setQueuePausedState(
     paused: boolean,
     queueId?: string,
-    pausedReason: string | null = null
+    pausedReason: string | null = null,
+    pauseSource: Exclude<QueuePauseSource, null> = 'operator'
   ): Promise<QueueMutationDetail> {
     const op = paused ? 'queue-manager.pause' : 'queue-manager.resume';
     const fields: Record<string, unknown> = paused
-      ? { queueId: queueId ?? null, reason: pausedReason, source: 'operator' }
-      : { queueId: queueId ?? null, source: 'operator' };
+      ? { queueId: queueId ?? null, reason: pausedReason, source: pauseSource }
+      : { queueId: queueId ?? null, source: pauseSource };
     return this.logMutation(op, fields, async () => {
       try {
         const resolvedQueueId = queueId ?? this.store.getDefaultQueueId();
@@ -285,20 +291,32 @@ export class QueueManager {
         const existing = findQueue(registry, resolvedQueueId);
         if (!existing) return { ok: false, reason: 'unknown-queue-id' };
         const alreadyPaused = existing.state === 'manually-paused';
-        // Feature 028 — operator-pause wins over a pre-existing cascade pause:
-        // promote the source from 'cascade' to 'operator' so a later
-        // `cascadedResume` cannot auto-clear an explicit operator pause.
-        if (paused && alreadyPaused && existing.pauseSource === 'operator') {
+        // Idempotency: paused-true is a no-op only when the source matches.
+        // Distinct sources (cascade → operator, etc.) overwrite attribution
+        // so the resume side knows what to clear.
+        if (paused && alreadyPaused && existing.pauseSource === pauseSource) {
           return { ok: false, reason: 'already-paused' };
         }
-        if (!paused && !alreadyPaused) return { ok: false, reason: 'not-paused' };
+        if (!paused && !alreadyPaused) {
+          // BUG-001 self-heal: registry already active but legacy boolean
+          // stale (set by a pre-fix writer). Heal so operator Resume visibly
+          // recovers the queue instead of being a confusing noop.
+          if (resolvedQueueId === DEFAULT_QUEUE_ID) {
+            const queue = this.store.getQueue();
+            if (queue.paused === true) {
+              await this.store.setQueue({ ...queue, paused: false, pausedReason: null });
+              return { ok: true, queueId: resolvedQueueId };
+            }
+          }
+          return { ok: false, reason: 'not-paused' };
+        }
 
         const now = Date.now();
         await this.store.setQueueRegistry(
           setQueuePaused(registry, {
             id: resolvedQueueId,
             paused,
-            pauseSource: 'operator',
+            pauseSource,
             now
           })
         );
@@ -599,12 +617,6 @@ export class QueueManager {
     return due.map((entry) => entry.id);
   }
 
-  public async setPaused(paused: boolean, pausedReason: string | null = null): Promise<void> {
-    const queue = this.store.getQueue();
-    if (queue.paused === paused && queue.pausedReason === pausedReason) return;
-    await this.store.setQueue({ ...queue, paused, pausedReason });
-  }
-
   public async retry(featureId: string): Promise<MutationResult> {
     const queue = this.store.getQueue();
     const idx = queue.requests.findIndex((r) => r.id === featureId);
@@ -689,6 +701,14 @@ export class QueueManager {
     if (filtered.length === before) return { removed: 0 };
     const repositioned = filtered.map((r, i) => ({ ...r, position: i }));
     await this.store.setQueue({ ...queue, requests: repositioned });
+    // BUG-001 escape hatch: when the operator clears completed/failed items
+    // and no in-flight task remains, also release any lingering pause so a
+    // stale `retry-cap-exhausted` pause whose originating run is gone does
+    // not strand future tasks. Skipped while a task is in flight to avoid
+    // disturbing an active phase's pause state.
+    if (!this.hasInFlight() && this.store.getQueue().paused) {
+      await this.setQueuePausedState(false, undefined, null, 'operator');
+    }
     return { removed: before - filtered.length };
   }
 
@@ -741,10 +761,20 @@ export class QueueManager {
     fn: () => Promise<QueueMutationDetail>
   ): Promise<QueueMutationDetail> {
     const result = await fn();
+    // FR-023: emit the canonical resolved queueId, never caller-supplied null.
+    const callerQueueId = fields.queueId;
+    const resolvedQueueId =
+      result.queueId ??
+      (typeof callerQueueId === 'string' && callerQueueId.length > 0
+        ? callerQueueId
+        : this.store.getDefaultQueueId());
+    const payload = { ...fields, queueId: resolvedQueueId };
     if (result.ok) {
-      this.logger?.info(op, { ...fields, queueId: result.queueId ?? fields.queueId ?? null });
+      this.logger?.info(op, payload);
+    } else if (result.reason && IDEMPOTENT_REJECT_REASONS.has(result.reason)) {
+      this.logger?.debug(`${op} noop`, { ...payload, reason: result.reason, noop: true });
     } else {
-      this.logger?.warn(`${op} failed`, { ...fields, reason: result.reason });
+      this.logger?.warn(`${op} failed`, { ...payload, reason: result.reason });
     }
     return result;
   }

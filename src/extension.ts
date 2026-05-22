@@ -826,7 +826,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         }
       };
     },
-    caps: { perFieldBytes: 4096 }
+    caps: { perFieldBytes: 65536 }
   });
   disposables.push({
     dispose: () => {

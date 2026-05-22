@@ -179,7 +179,12 @@ export class RetryHandler {
     };
     const persisted = await this.deps.persistTransition(run, updated);
     this.deps.statusBar.update({ kind: 'paused', phase: persisted.currentPhase });
-    await this.deps.queue.setPaused(true, `retry-cap-exhausted:${persisted.id}`);
+    await this.deps.queue.setQueuePausedState(
+      true,
+      undefined,
+      `retry-cap-exhausted:${persisted.id}`,
+      'retry-cap'
+    );
     // Mark the in-flight task as paused so queue list shows 'paused' status.
     await this.deps.queue.pause(persisted.featureId, 'phase-paused');
     await this.appendAudit('queue-paused', {

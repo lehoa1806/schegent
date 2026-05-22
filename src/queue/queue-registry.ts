@@ -57,12 +57,19 @@ export type QueueRegistryState = 'active' | 'manually-paused';
  *     hit an active-phase pause. Cascade-pause is matched by an
  *     auto-resume on task resume; an operator pause that happens while a
  *     cascade pause is active wins (the source flips to `'operator'`).
+ *   - `'retry-cap'`: the host paused the queue because a delayed-retry
+ *     reached the configured cap (`retry-cap-exhausted:<runId>`). Added by
+ *     Feature 030 BUG-001 so the retry-handler can write through the
+ *     canonical `QueueManager.setQueuePausedState` funnel without losing
+ *     source attribution. Cleared by the same operator-resume path that
+ *     clears `'operator'` pauses, AND by the workflow-controller's
+ *     restart-active-phase / manual delayed-retry paths.
  *   - `null`: the queue is not manually paused.
  *
  * Invariant (enforced by `validateQueueRegistry`):
  *   `pauseSource === null` iff `state !== 'manually-paused'`.
  */
-export type QueuePauseSource = 'operator' | 'cascade' | null;
+export type QueuePauseSource = 'operator' | 'cascade' | 'retry-cap' | null;
 
 export interface QueueRegistryEntry {
   readonly id: string;
@@ -233,7 +240,10 @@ export function validateQueueRegistry(registry: QueueRegistry): void {
       );
     }
     const expectsSource = e.state === 'manually-paused';
-    const hasSource = e.pauseSource === 'operator' || e.pauseSource === 'cascade';
+    const hasSource =
+      e.pauseSource === 'operator' ||
+      e.pauseSource === 'cascade' ||
+      e.pauseSource === 'retry-cap';
     if (expectsSource && !hasSource) {
       throw new QueueRegistryViolation(
         'invalid-queue-state',

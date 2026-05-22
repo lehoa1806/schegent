@@ -252,7 +252,12 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     await controller.startNew(feature, null);
 
     // Manually pause the queue with a reason that does not match this run.
-    await queue.setPaused(true, 'retry-cap-exhausted:some-other-run-id-9999');
+    await queue.setQueuePausedState(
+      true,
+      undefined,
+      'retry-cap-exhausted:some-other-run-id-9999',
+      'retry-cap'
+    );
 
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
@@ -269,7 +274,7 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    await queue.setPaused(true, 'operator-paused');
+    await queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
 
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
