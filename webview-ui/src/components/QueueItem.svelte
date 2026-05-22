@@ -20,41 +20,58 @@
   // arrow buttons so the queue ordering stays operator-stable.
   const showReorderControls = $derived(item.status === 'pending');
   const enqueuedAtLabel = $derived(formatRelativeTime(item.enqueuedAt));
-  const updatedAtLabel = $derived(formatRelativeTime(item.updatedAt));
-  const showRetryBadge = $derived(item.retryCount > 0);
-  const showPausedReason = $derived(item.pausedReason !== null && item.pausedReason.length > 0);
   const showLastError = $derived(
     item.lastErrorSummary !== null && item.lastErrorSummary.length > 0
   );
+
+  // BUG-007 — conditional row-3 meta-chip block. The card renders rows 1+2
+  // by default (id+time+status / prompt); row 3 only appears when there's
+  // diagnostic context worth surfacing: an in-flight task's current phase,
+  // a non-zero retry counter, or a pause indicator with cause. Each chip
+  // is independently gated so an in-flight task with `retryCount: 0` only
+  // shows the phase chip, etc.
   const showCurrentPhase = $derived(
     item.status === 'in-flight' && item.currentPhase !== null
   );
-  const queueName = $derived(
-    snapshotStore.queue.queues?.find((queue) => queue.id === (item.queueId ?? 'default'))?.name ??
-      'Default queue'
+  const showRetryBadge = $derived(item.retryCount > 0);
+  const showPausedReason = $derived(
+    item.pauseCause !== null && item.pauseCause !== undefined
   );
-  const pauseCauseLabel = $derived(
-    item.pauseCause === 'queue-paused'
-      ? 'Queue paused'
-      : item.pauseCause === 'phase-paused'
-        ? 'Paused (operator)'
-        : item.pauseCause === 'breakpoint'
-          ? 'Paused (breakpoint)'
-          : item.pauseCause === 'manually-paused-task'
-            ? 'Task paused'
-            : null
+  const hasMetaChips = $derived(showCurrentPhase || showRetryBadge || showPausedReason);
+  const phaseChipLabel = $derived(
+    item.currentPhase !== null ? formatPhaseLabel(item.currentPhase) : ''
   );
-  const pauseCauseTitle = $derived(
-    item.pauseCause === 'queue-paused'
-      ? 'Queue-level pause; resume the queue to continue this task'
-      : item.pauseCause === 'phase-paused'
-        ? 'Operator paused the active phase; resume to continue this task'
-        : item.pauseCause === 'breakpoint'
-          ? 'Pipeline halted at a future-phase breakpoint; resume to invoke the marked phase'
-          : item.pauseCause === 'manually-paused-task'
-            ? 'Task-level pause; resume the task to continue'
-            : null
-  );
+  const pauseCauseLabel = $derived.by(() => {
+    switch (item.pauseCause) {
+      case 'queue-paused':
+        return 'Queue paused';
+      case 'phase-paused':
+        return 'Paused (operator)';
+      case 'manually-paused-task':
+        return 'Task paused';
+      case 'breakpoint':
+        return 'Paused (breakpoint)';
+      default:
+        return '';
+    }
+  });
+  const pauseCauseTitle = $derived.by(() => {
+    // Operator-friendly tooltip text — describe the remediation rather
+    // than just restating the label. The unit test pins specific
+    // substrings so the wording stays predictable.
+    switch (item.pauseCause) {
+      case 'queue-paused':
+        return 'The queue is paused — resume the queue to continue.';
+      case 'phase-paused':
+        return 'Operator paused the active phase.';
+      case 'manually-paused-task':
+        return 'The task is paused — resume the task to continue.';
+      case 'breakpoint':
+        return 'Paused at a phase breakpoint.';
+      default:
+        return item.pausedReason ?? '';
+    }
+  });
 
   let errorOpen = $state(false);
   function toggleError(): void {
@@ -142,7 +159,6 @@
           title="Drag to reorder"
           onmousedown={onHandleMouseDown}
           onmouseup={onHandleMouseUp}
-          onmouseleave={onHandleMouseUp}
         >⋮⋮</span>
       {/if}
       <span class="id" title={item.id}>{item.id}</span>
@@ -178,34 +194,29 @@
     <span class="label" title={item.label}>{item.label}</span>
   </div>
 
-  <div class="row row-3 meta">
-    <span class="chip queue-chip" data-testid="queue-item-queue-{item.id}">{queueName}</span>
-    {#if pauseCauseLabel}
-      <span
-        class="chip paused-chip"
-        data-testid="queue-item-pause-cause-{item.id}"
-        title={pauseCauseTitle ?? ''}
-      >
-        {pauseCauseLabel}
-      </span>
-    {/if}
-    {#if showCurrentPhase && item.currentPhase}
-      {@const phaseTile = snapshotStore.phaseByName(item.currentPhase)}
-      <span class="chip phase-chip" data-testid="queue-item-phase-{item.id}">
-        {formatPhaseLabel(item.currentPhase, phaseTile?.displayName)}
-      </span>
-    {/if}
-    {#if showRetryBadge}
-      <span class="badge retry-badge" data-testid="queue-item-retry-badge-{item.id}"
-        title="Retry count">×{item.retryCount}</span>
-    {/if}
-    {#if showPausedReason}
-      <span class="chip paused-chip" data-testid="queue-item-paused-{item.id}"
-        title={item.pausedReason ?? ''}>{item.pausedReason}</span>
-    {/if}
-    <span class="time time-updated" data-testid="queue-item-updated-{item.id}"
-      title="Last update">↻ {updatedAtLabel}</span>
-  </div>
+  {#if hasMetaChips}
+    <div class="row row-3 meta" data-testid="queue-item-meta-{item.id}">
+      {#if showCurrentPhase}
+        <span
+          class="chip phase-chip"
+          data-testid="queue-item-phase-{item.id}"
+        >{phaseChipLabel}</span>
+      {/if}
+      {#if showPausedReason}
+        <span
+          class="chip paused-chip"
+          data-testid="queue-item-pause-cause-{item.id}"
+          title={pauseCauseTitle}
+        >{pauseCauseLabel}</span>
+      {/if}
+      {#if showRetryBadge}
+        <span
+          class="badge retry-badge"
+          data-testid="queue-item-retry-{item.id}"
+        >retry: {item.retryCount}</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if showLastError && item.lastErrorSummary}
     <button
@@ -275,13 +286,21 @@
   .row-2 {
     display: flex;
     padding-left: 4px;
+    min-width: 0;
   }
   .label {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--schegent-fg);
     font-size: 0.95em;
     line-height: 1.4;
+    min-width: 0;
+    flex: 1 1 auto;
   }
   .meta {
     display: flex;
