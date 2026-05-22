@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   EMPTY_ACTIVITY_FEED_SELECTION,
   reconcileActivityFeedSelection,
+  resolveColdStartFallback,
   resolveLiveSelection,
   selectActivityFeedQueue,
   selectActivityFeedTask
@@ -191,5 +192,119 @@ describe('activity-feed-selection helpers', () => {
 
     expect(selection.taskId).toBe('remaining');
     expect(selection.phaseId).toBe('speckit-plan');
+  });
+});
+
+// Feature 021 T045 (BUG-001 Defect A) — cold-start fallback unit
+// coverage. Asserts the four cases from the bugfix patch in
+// `specs/021-activity-feed-navigate/tasks.md`.
+describe('resolveColdStartFallback (Feature 021 T043 / BUG-001 Defect A)', () => {
+  it('(a) returns the recent task with on-disk iterations when one exists', () => {
+    const snap = snapshot({
+      recent: Object.freeze([
+        item({
+          id: 'run-with-logs',
+          status: 'completed',
+          queueId: 'default',
+          completedAt: '2026-05-10T12:00:00.000Z',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-plan'
+        })
+      ]) as readonly QueueItem[]
+    });
+    const fallback = resolveColdStartFallback(snap, (taskId) => taskId === 'run-with-logs');
+
+    expect(fallback).not.toBeNull();
+    expect(fallback?.queueId).toBe('default');
+    expect(fallback?.taskId).toBe('run-with-logs');
+    expect(fallback?.pipelineId).toBe('standard');
+    expect(fallback?.phaseId).toBe('speckit-plan');
+    expect(fallback?.iterationN).toBeNull();
+    expect(fallback?.followMode).toBe('manual');
+    expect(fallback?.manualLevel).toBe('task');
+  });
+
+  it('(b) returns null when no recent task has on-disk iterations', () => {
+    const snap = snapshot({
+      recent: Object.freeze([
+        item({
+          id: 'run-no-logs',
+          status: 'completed',
+          queueId: 'default',
+          completedAt: '2026-05-10T12:00:00.000Z',
+          currentPipelineId: 'standard'
+        })
+      ]) as readonly QueueItem[]
+    });
+    const predicate = vi.fn(() => false);
+
+    expect(resolveColdStartFallback(snap, predicate)).toBeNull();
+    expect(predicate).toHaveBeenCalledWith('run-no-logs');
+  });
+
+  it('(c) tiebreaks on enqueuedAt when updatedAt values are equal', () => {
+    const sharedUpdated = '2026-05-10T12:00:00.000Z';
+    const snap = snapshot({
+      recent: Object.freeze([
+        item({
+          id: 'run-older',
+          status: 'completed',
+          queueId: 'default',
+          enqueuedAt: '2026-05-10T09:00:00.000Z',
+          updatedAt: sharedUpdated,
+          completedAt: sharedUpdated,
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-specify'
+        }),
+        item({
+          id: 'run-newer',
+          status: 'completed',
+          queueId: 'default',
+          enqueuedAt: '2026-05-10T11:00:00.000Z',
+          updatedAt: sharedUpdated,
+          completedAt: sharedUpdated,
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-plan'
+        })
+      ]) as readonly QueueItem[]
+    });
+    const fallback = resolveColdStartFallback(snap, () => true);
+
+    expect(fallback?.taskId).toBe('run-newer');
+    expect(fallback?.phaseId).toBe('speckit-plan');
+  });
+
+  it('(d) the helper is independent of inFlight state — the caller guards against live runs', () => {
+    // The T044 wiring guard (in PhaseLogFeed.svelte) refuses to invoke
+    // the helper when `resolveLiveSelection` returns a non-null
+    // selection. The helper itself simply ranks the recent tasks; this
+    // test pins that behaviour so the wiring remains the
+    // single point of guard logic.
+    const snap = snapshot({
+      inFlight: item({
+        id: 'run-active',
+        status: 'in-flight',
+        queueId: 'default',
+        currentPhase: 'speckit-plan',
+        currentPipelineId: 'standard'
+      }),
+      recent: Object.freeze([
+        item({
+          id: 'run-with-logs',
+          status: 'completed',
+          queueId: 'default',
+          completedAt: '2026-05-10T12:00:00.000Z',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-plan'
+        })
+      ]) as readonly QueueItem[]
+    });
+    const live = resolveLiveSelection(snap);
+    expect(live).not.toBeNull();
+    // If the caller obeys the guard, it will not call the helper. We
+    // still pin the helper's pure behaviour: when invoked with a
+    // populated recent list it always picks the ranked winner.
+    const fallback = resolveColdStartFallback(snap, () => true);
+    expect(fallback?.taskId).toBe('run-with-logs');
   });
 });

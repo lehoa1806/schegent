@@ -62,7 +62,7 @@ const DEFAULTS: Record<string, unknown> = {
   'cli.path': 'claude',
   'logging.verbose': false,
   'loop.maxIterations': 10,
-  'invocation.timeoutSeconds': 1800,
+  'invocation.timeoutSeconds': 5400,
   'watchdog.pollIntervalMinutes': 30,
   'audit.rotation.sizeMB': 5,
   'audit.rotation.maxAgeDays': 30,

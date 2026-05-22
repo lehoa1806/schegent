@@ -47,10 +47,27 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
   });
 
   it('discriminated union is exhaustive — each literal has a runtime guard that accepts a minimal command of that type', () => {
+    // Most guards accept the bare `{ type, correlationId }` envelope. A
+    // small number require a non-empty payload because they carry
+    // operator input — register their minimal valid fixtures here. The
+    // drift contract is still: "every literal has a runtime guard that
+    // accepts SOME minimal command of that type", not "the bare envelope
+    // is always sufficient".
+    const PAYLOAD_REQUIRED_FIXTURES: Partial<
+      Record<(typeof Authoritative.COMMAND_TYPES)[number], Record<string, unknown>>
+    > = {
+      [Authoritative.CMD_SET_CONFIRM_SUPPRESSION]: {
+        actionKey: 'queue.clean-all',
+        suppressed: true
+      }
+    };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];
-      const minimal = { type: literal, correlationId: 'c-test' };
-      expect(guard(minimal), `guard for ${literal} must accept a minimal {type} fixture`).toBe(true);
+      const payload = PAYLOAD_REQUIRED_FIXTURES[literal];
+      const minimal = payload === undefined
+        ? { type: literal, correlationId: 'c-test' }
+        : { type: literal, correlationId: 'c-test', payload };
+      expect(guard(minimal), `guard for ${literal} must accept a minimal fixture`).toBe(true);
       expect(guard({ type: 'NEVER_VALID_LITERAL' }), `guard for ${literal} must reject foreign literal`).toBe(false);
     }
   });

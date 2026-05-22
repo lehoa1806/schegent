@@ -1,0 +1,248 @@
+// Feature 063 — T045 integration test. Asserts that `CMD_RESET`
+// atomically clears the suppression memento alongside every other
+// workspace-state key (FR-022a). The bridge mirrors the production
+// wiring: `CMD_RESET` → `executeCommand('schegent.reset')` → `runReset`
+// → `store.reset()` — but with the VS Code information-message
+// confirmation short-circuited because the operator-facing
+// confirmation now lives in the webview (`useConfirm('workspace.reset')`).
+//
+// The test populates the suppression memento with 3 keys, fires
+// `CMD_RESET`, and verifies:
+//
+//   (a) every populated suppression key is gone from the persisted state;
+//   (b) the suppression memento write happens in the same atomic
+//       `Promise.all` batch as the rest of the reset, i.e. exactly ONE
+//       observation of `update(KEYS.confirmSuppression, undefined)`;
+//   (c) the projector surface drops the suppression set after reset.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { MessageRouter } from '../../src/ui/sidebar/message-router';
+import type { RouterDeps } from '../../src/ui/sidebar/message-router';
+import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import { SanitizedLogger } from '../../src/lib/logger';
+import {
+  WorkspaceStateStore,
+  type Memento
+} from '../../src/state/workspace-state';
+import { CMD_RESET } from '../../src/ui/sidebar/messages';
+import type { CommandAckMessage } from '../../src/ui/sidebar/messages';
+
+const SUPPRESSION_KEY = 'schegent.ui.confirmSuppression';
+
+class MockMemento implements Memento {
+  public writes: Array<{ key: string; value: unknown }> = [];
+  private map = new Map<string, unknown>();
+  get<T>(key: string): T | undefined {
+    return this.map.get(key) as T | undefined;
+  }
+  update(key: string, value: unknown): Thenable<void> {
+    this.writes.push({ key, value });
+    if (value === undefined) this.map.delete(key);
+    else this.map.set(key, value);
+    return Promise.resolve();
+  }
+}
+
+interface SetupResult {
+  router: MessageRouter;
+  store: WorkspaceStateStore;
+  projector: StateProjector;
+  memento: MockMemento;
+  acks: CommandAckMessage[];
+  postAck: (msg: CommandAckMessage) => Promise<boolean>;
+  cleanup: () => Promise<void>;
+}
+
+async function setup(): Promise<SetupResult> {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-reset-supp-'));
+  const memento = new MockMemento();
+  const store = new WorkspaceStateStore(memento);
+  await store.initialize();
+  const logger = new SanitizedLogger();
+  const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
+  const projector = new StateProjector({ store, audit, ownerId: 'test-owner' });
+
+  const acks: CommandAckMessage[] = [];
+  const postAck = vi.fn(async (msg: CommandAckMessage) => {
+    acks.push(msg);
+    return true;
+  });
+
+  // Bridge: the production handler does `exec(ctx, 'schegent.reset')`,
+  // which extension.ts wires to `runReset`. We model the post-confirm
+  // tail of `runReset` directly because the operator confirmation now
+  // lives webview-side (`useConfirm('workspace.reset')`); the VS Code
+  // information-message branch is irrelevant here.
+  const executeCommand = vi.fn(async (commandId: string) => {
+    if (commandId === 'schegent.reset') {
+      await store.reset();
+      projector.kick();
+    }
+    return undefined;
+  });
+
+  const deps: RouterDeps = {
+    executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
+    queueRemover: { remove: vi.fn(async () => true) },
+    isPrimary: () => true,
+    isTrusted: () => true,
+    logger
+  };
+
+  return {
+    router: new MessageRouter(deps),
+    store,
+    projector,
+    memento,
+    acks,
+    postAck,
+    cleanup: async () => {
+      projector.dispose();
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
+  };
+}
+
+async function populateSuppression(
+  store: WorkspaceStateStore,
+  keys: readonly string[]
+): Promise<void> {
+  for (const key of keys) {
+    await store.setConfirmSuppression(key, true);
+  }
+}
+
+describe('CMD_RESET clears confirmation suppression (T045, FR-022a)', () => {
+  let env: SetupResult;
+  beforeEach(async () => {
+    env = await setup();
+  });
+  afterEach(async () => {
+    await env.cleanup();
+  });
+
+  it('removes all 3 suppression keys when CMD_RESET dispatches', async () => {
+    const seeded = ['queue.clean-all', 'history.rerun', 'workspace.reset'];
+    await populateSuppression(env.store, seeded);
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toHaveLength(3);
+
+    // Snapshot the write log AFTER seeding so the spy only sees the reset.
+    env.memento.writes = [];
+
+    await env.router.dispatch(
+      { type: CMD_RESET, correlationId: 'c-reset', payload: { confirmed: true as const } },
+      env.postAck
+    );
+
+    expect(env.acks).toHaveLength(1);
+    expect(env.acks[0].status).toBe('accepted');
+
+    // Memento is gone (or set to undefined).
+    expect(env.memento.get(SUPPRESSION_KEY)).toBeUndefined();
+    // Accessor returns the empty state (the operator sees prompts again).
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toEqual([]);
+    // None of the originally-seeded keys remain.
+    for (const key of seeded) {
+      expect(env.store.getConfirmSuppression().suppressedActionKeys).not.toContain(key);
+    }
+  });
+
+  it('the suppression memento is cleared in the same atomic batch as the other reset writes', async () => {
+    await populateSuppression(env.store, [
+      'queue.clean-all',
+      'history.rerun',
+      'queue.pause'
+    ]);
+    env.memento.writes = [];
+
+    await env.router.dispatch(
+      { type: CMD_RESET, correlationId: 'c-batch', payload: { confirmed: true as const } },
+      env.postAck
+    );
+
+    // Exactly ONE write touching the suppression key during reset.
+    const suppressionWrites = env.memento.writes.filter((w) => w.key === SUPPRESSION_KEY);
+    expect(suppressionWrites).toHaveLength(1);
+    expect(suppressionWrites[0].value).toBeUndefined();
+
+    // The write is part of the same atomic batch as the queue/run/watchdog
+    // writes — every key in the reset() Promise.all appears in the spy
+    // captured during this single dispatch.
+    const touched = new Set(env.memento.writes.map((w) => w.key));
+    expect(touched.has('schegent.queue')).toBe(true);
+    expect(touched.has('schegent.run')).toBe(true);
+    expect(touched.has('schegent.lock')).toBe(true);
+    expect(touched.has('schegent.watchdog')).toBe(true);
+    expect(touched.has('schegent.history')).toBe(true);
+    expect(touched.has(SUPPRESSION_KEY)).toBe(true);
+  });
+
+  it('the projector surface drops the suppression set after reset', async () => {
+    await populateSuppression(env.store, [
+      'queue.clean-all',
+      'queue.clear-done',
+      'run.modify-task'
+    ]);
+    const before = env.projector.project();
+    expect(before.confirmSuppression!.suppressedActionKeys).toHaveLength(3);
+
+    await env.router.dispatch(
+      { type: CMD_RESET, correlationId: 'c-projector', payload: { confirmed: true as const } },
+      env.postAck
+    );
+
+    const after = env.projector.project();
+    // Either the field is absent or the array is empty — both are valid
+    // "no suppression" projections per snapshot-confirm-suppression-projection.test.ts.
+    if (after.confirmSuppression !== undefined) {
+      expect(after.confirmSuppression.suppressedActionKeys).toEqual([]);
+    }
+  });
+
+  it('reset is a no-op when the suppression memento was already empty', async () => {
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toEqual([]);
+    env.memento.writes = [];
+
+    await env.router.dispatch(
+      { type: CMD_RESET, correlationId: 'c-empty', payload: { confirmed: true as const } },
+      env.postAck
+    );
+
+    expect(env.acks[0].status).toBe('accepted');
+    // Even on an empty state the reset writes `undefined` to clear the slot,
+    // which is harmless and idempotent.
+    const suppressionWrites = env.memento.writes.filter((w) => w.key === SUPPRESSION_KEY);
+    expect(suppressionWrites).toHaveLength(1);
+    expect(suppressionWrites[0].value).toBeUndefined();
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toEqual([]);
+  });
+
+  it('reset removes a fully-populated 11-key suppression set', async () => {
+    const all = [
+      'queue.clean-all',
+      'queue.clear-done',
+      'queue.remove-item',
+      'queue.cancel-item',
+      'queue.pause',
+      'queue.resume',
+      'run.retry-phase-now',
+      'run.restart-canceled',
+      'run.modify-task',
+      'history.rerun',
+      'workspace.reset'
+    ];
+    await populateSuppression(env.store, all);
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toHaveLength(11);
+
+    await env.router.dispatch(
+      { type: CMD_RESET, correlationId: 'c-all', payload: { confirmed: true as const } },
+      env.postAck
+    );
+
+    expect(env.store.getConfirmSuppression().suppressedActionKeys).toEqual([]);
+  });
+});

@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import HistorySection from '../HistorySection.svelte';
 import type { HistoryEntry } from '../../lib/snapshot-types';
 
 const postCommandSpy = vi.fn();
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
+}));
+
+// Feature 063 (T036) — Rerun now gates through the shared useConfirm
+// helper. Tests treat the prompt as auto-accepted so the existing IPC
+// dispatch assertions stay scoped to the post-confirm payload.
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
 }));
 
 import {
@@ -83,6 +91,7 @@ describe('HistorySection', () => {
       props: { history: [entry({ runId: 'r-99' })], isPrimary: true }
     });
     await fireEvent.click(getByTestId('history-item-rerun-r-99'));
+    await tick();
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RERUN_FROM_HISTORY, { runId: 'r-99' });
   });
 
@@ -91,6 +100,7 @@ describe('HistorySection', () => {
       props: { history: [entry({ runId: 'r-77' })], isPrimary: false }
     });
     await fireEvent.click(getByTestId('history-item-rerun-r-77'));
+    await tick();
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
 

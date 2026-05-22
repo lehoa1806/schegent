@@ -13,6 +13,15 @@ vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
 
+// Feature 063 (T028, T034) — the per-row destructive actions now gate
+// through the shared `useConfirm` helper. These tests treat the prompt as
+// auto-accepted so the existing IPC dispatch assertions stay focused on
+// the actual command payloads. A dedicated useConfirm.test.ts covers the
+// modal lifecycle, suppression, and lock semantics.
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
+}));
+
 // BUG-002 (T119) — capture the most recent `onceAck` listener so each
 // test can synthesize an accepted / rejected ACK and assert the inline
 // rejection text the operator sees.
@@ -65,14 +74,13 @@ function buildItem(overrides: Partial<QueueItem> = {}): QueueItem {
   });
 }
 
-// Simulate Dashboard-level auto-confirm: when onRequestConfirm is called,
-// immediately invoke the confirm handler (as if the operator clicked Delete).
-function autoConfirm(_copy: unknown, onConfirm: () => void): void {
-  onConfirm();
-}
-
 async function confirmRemove(getByTestId: (id: string) => HTMLElement, id = 'q-1'): Promise<void> {
   await fireEvent.click(getByTestId(`queue-item-remove-${id}`));
+  // Feature 063 (T028) — the click fans out through `useConfirm`, which
+  // is mocked at the top of this file to resolve `true` synchronously.
+  // We still need a microtask flush so the awaited handler can dispatch
+  // CMD_REMOVE_QUEUE_ITEM before the assertion runs.
+  await tick();
 }
 
 describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
@@ -163,7 +171,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
 
     it('pending ✖ confirms then posts CMD_REMOVE_QUEUE_ITEM (NOT CMD_CANCEL)', async () => {
       const { getByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-1', confirmed: true });
@@ -192,7 +200,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
   describe('BUG-002 (T119) SC-010 pending-row remove regressions', () => {
     it('confirming ✖ on a visible pending row dispatches CMD_REMOVE_QUEUE_ITEM with the row id and marks pending', async () => {
       const { getByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending', id: 'q-7' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending', id: 'q-7' }), isPrimary: true }
       });
       await confirmRemove(getByTestId, 'q-7');
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_REMOVE_QUEUE_ITEM, { id: 'q-7', confirmed: true });
@@ -228,7 +236,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
 
     it('accepted ACK leaves no inline rejection text', async () => {
       const { getByTestId, queryByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
@@ -239,7 +247,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
 
     it('rejected ACK with task-not-in-pending-state surfaces pending-only message', async () => {
       const { getByTestId, queryByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
@@ -253,7 +261,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
 
     it('rejected ACK with unknown-task-id surfaces the no-longer-exists message', async () => {
       const { getByTestId, queryByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
       expect(lastAckListener).not.toBeNull();
@@ -266,7 +274,7 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
 
     it('a follow-up click clears stale rejection text before dispatching again', async () => {
       const { getByTestId, queryByTestId } = render(QueueItemActions, {
-        props: { item: buildItem({ status: 'pending' }), isPrimary: true, onRequestConfirm: autoConfirm }
+        props: { item: buildItem({ status: 'pending' }), isPrimary: true }
       });
       await confirmRemove(getByTestId);
       lastAckListener?.({ status: 'rejected', reason: 'task-not-in-pending-state' });

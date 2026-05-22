@@ -18,6 +18,13 @@ vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
 
+// Feature 063 — the "edit a pending task" flow now routes through
+// `useConfirm('run.modify-task', …)`. Auto-confirm for this dispatch
+// test; the prompt itself is covered by use-confirm.test.ts.
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
+}));
+
 vi.mock('../../lib/snapshot-store.svelte', () => ({
   snapshotStore: {
     isPrimary: true,

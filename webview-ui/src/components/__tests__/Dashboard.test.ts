@@ -7,6 +7,7 @@ import {
   CMD_START_QUEUE,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
+  CMD_CLEAR_ALL,
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED
 } from '../../lib/messages';
@@ -37,6 +38,14 @@ const postCommandSpy = vi.fn(
 );
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
+}));
+
+// Feature 063 — all destructive controls in Dashboard.svelte route through
+// `useConfirm(...)`. These wiring tests assert the post-confirm IPC path,
+// so the mock auto-confirms; suppression and dialog rendering are tested
+// elsewhere (use-confirm.test.ts, ConfirmDialog.test.ts).
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
 }));
 
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
@@ -503,7 +512,10 @@ describe('Dashboard FR-033..FR-038 layout (T058)', () => {
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED);
     });
 
-    it('Clean click clears completed AND failed (fires both IPCs, no new IPC introduced)', async () => {
+    // Feature 063 (T023): the Clean button is now "Clean All" and posts
+    // a single `CMD_CLEAR_ALL` after operator confirmation, never the
+    // legacy compound CMD_CLEAR_COMPLETED + CMD_CLEAR_FAILED pair.
+    it('Clean All click posts CMD_CLEAR_ALL exactly once and does not post the legacy pair', async () => {
       const snap = buildSnapshot({
         queue: buildQueue({
           recent: Object.freeze([
@@ -519,8 +531,9 @@ describe('Dashboard FR-033..FR-038 layout (T058)', () => {
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       await fireEvent.click(getByTestId('dashboard-queue-clean'));
       const calls = postCommandSpy.mock.calls.map((c) => c[0]);
-      expect(calls).toContain(CMD_CLEAR_COMPLETED);
-      expect(calls).toContain(CMD_CLEAR_FAILED);
+      expect(calls).toContain(CMD_CLEAR_ALL);
+      expect(calls).not.toContain(CMD_CLEAR_COMPLETED);
+      expect(calls).not.toContain(CMD_CLEAR_FAILED);
     });
   });
 
@@ -858,7 +871,7 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
       expect(btn.textContent?.trim()).toBe('Clear Done');
     });
 
-    it('Clean button renders "Clean" as visible content', () => {
+    it('Clean All button renders "Clean All" as visible content', () => {
       const snap = buildSnapshot({
         queue: buildQueue({
           recent: Object.freeze([buildQueueItem({ id: 'q-f', status: 'failed' })])
@@ -866,7 +879,7 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
       });
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       const btn = getByTestId('dashboard-queue-clean');
-      expect(btn.textContent?.trim()).toBe('Clean');
+      expect(btn.textContent?.trim()).toBe('Clean All');
     });
   });
 

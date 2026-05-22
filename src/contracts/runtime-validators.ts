@@ -61,6 +61,8 @@ import {
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
+  CMD_CLEAR_ALL,
+  CMD_SET_CONFIRM_SUPPRESSION,
   type SidebarCommand
 } from './sidebar-ipc';
 
@@ -133,6 +135,10 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateNoPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
     case CMD_CLEAR_FAILED:
       return validateNoPayload(CMD_CLEAR_FAILED, obj, correlationId);
+    case CMD_CLEAR_ALL:
+      return validateOptionalEmptyPayload(CMD_CLEAR_ALL, obj, correlationId);
+    case CMD_SET_CONFIRM_SUPPRESSION:
+      return validateSetConfirmSuppression(obj, correlationId);
     case CMD_OPEN_DASHBOARD:
       return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
     case CMD_RETRY_ACTIVE_RUN:
@@ -961,16 +967,38 @@ function validateOptionalEmptyPayload(
   correlationId: string
 ): IpcValidationResult {
   const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type, correlationId } as SidebarCommand);
-  }
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('invalid-payload', { type, correlationId });
-  }
-  if (Object.keys(payload as object).length !== 0) {
-    return fail('unexpected-payload-fields', { type, correlationId });
+  if (payload !== undefined) {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      return fail('invalid-payload', { type, correlationId });
+    }
+    if (Object.keys(payload).length > 0) {
+      return fail('unexpected-payload-fields', { type, correlationId });
+    }
   }
   return ok({ type, correlationId, payload: {} } as SidebarCommand);
+}
+
+function validateSetConfirmSuppression(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'] as Record<string, unknown> | undefined;
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    typeof payload.actionKey !== 'string' ||
+    typeof payload.suppressed !== 'boolean'
+  ) {
+    return fail('invalid-payload', { type: CMD_SET_CONFIRM_SUPPRESSION, correlationId });
+  }
+  return ok({
+    type: CMD_SET_CONFIRM_SUPPRESSION,
+    correlationId,
+    payload: {
+      actionKey: payload.actionKey,
+      suppressed: payload.suppressed
+    }
+  } as SidebarCommand);
 }
 
 function ok(command: SidebarCommand): IpcValidationResult {

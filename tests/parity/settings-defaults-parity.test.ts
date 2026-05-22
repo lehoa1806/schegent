@@ -222,6 +222,7 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'trust.allowCustomRetryConditions',
       'trust.allowPipelineOverrides'
     ]);
+    const uiKeys = new Set<string>(['ui.confirmations.enable']);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -232,7 +233,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         backendRunnerKey.has(key) ||
         cliApplicationKeys.has(key) ||
         multiRootKeys.has(key) ||
-        trustScopeKeys.has(key);
+        trustScopeKeys.has(key) ||
+        uiKeys.has(key);
       if (!covered) orphans.push(key);
     }
 

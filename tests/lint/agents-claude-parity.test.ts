@@ -53,7 +53,8 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'reintroduce a multi-queue registry',
   'cap the dynamic rate-limit backoff',
   'persist a `workflowrun`',
-  "append `-c`"
+  "append `-c`",
+  'awaiting `useconfirm'
 ];
 
 function readClaudeMd(): string {

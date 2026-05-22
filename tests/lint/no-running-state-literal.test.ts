@@ -11,12 +11,19 @@ const SCAN_ROOTS = [
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/commands/cancel.ts',
   'src/commands/auto.ts',
+  // Feature 063 — references `controller.running` (a WorkflowController
+  // property accessor used by the Clean All probe loop), not the pinned
+  // status discriminator literal "running".
+  'src/commands/clear-all.ts',
   'src/contracts/backend-runner.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',
+  // Comment-only occurrence ("A long-running" in a doc comment); no status
+  // literal.
+  'src/runner/claude-cli.ts',
   'src/services/guarded-run-service.ts',
   'src/services/run-driver.ts',
   'src/state/workflow-run.ts',
@@ -33,6 +40,10 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/StatusBar.svelte',
   'webview-ui/src/components/StatusHeader.svelte',
   'webview-ui/src/lib/format.ts',
+  // Feature 063 — UI copy strings ("currently running and will be
+  // terminated.", "abort the running task") and template variable name
+  // (`runningSuffix`). No pinned status discriminator literal.
+  'webview-ui/src/lib/action-copy.ts',
   'webview-ui/src/lib/snapshot-types.ts'
 ]);
 

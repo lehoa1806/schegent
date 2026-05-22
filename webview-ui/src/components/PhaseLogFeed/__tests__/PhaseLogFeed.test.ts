@@ -393,3 +393,161 @@ describe('Feature 021 — shared Activity Feed selection callbacks', () => {
     expect(onJumpToCurrent).toHaveBeenCalledTimes(1);
   });
 });
+
+// Feature 021 T046 (BUG-001 Defect A) — cold-start cascade.
+//
+// At dashboard mount, when `queue.inFlight === null` but `queue.recent`
+// contains tasks with on-disk phase-log iterations, the component must
+// (a) probe each candidate via `readPhaseLog`, (b) commit the first
+// candidate whose probe returns `iterations.length > 0` through the
+// store's `setSelection` path. When `queue.recent` is empty, the
+// existing "No selection" empty state must remain (preserves SC-007).
+
+function buildRecentItem(overrides: Partial<QueueItem> & { id: string }): QueueItem {
+  return Object.freeze({
+    id: overrides.id,
+    label: overrides.label ?? overrides.id,
+    enqueuedAt: overrides.enqueuedAt ?? '2026-05-10T10:00:00.000Z',
+    startedAt: overrides.startedAt ?? '2026-05-10T10:05:00.000Z',
+    updatedAt: overrides.updatedAt ?? '2026-05-10T11:00:00.000Z',
+    completedAt: overrides.completedAt ?? '2026-05-10T11:00:00.000Z',
+    status: overrides.status ?? 'completed',
+    retryCount: 0,
+    lastErrorSummary: null,
+    pausedReason: null,
+    currentPhase: overrides.currentPhase ?? 'speckit-plan',
+    position: 0,
+    queueId: overrides.queueId ?? 'q-1',
+    currentPipelineId: overrides.currentPipelineId ?? 'standard'
+  } as QueueItem);
+}
+
+function snapshotWithRecent(recent: readonly QueueItem[]): WorkflowSnapshot {
+  const base = buildSnapshot();
+  return Object.freeze({
+    ...base,
+    queue: Object.freeze({
+      ...base.queue,
+      inFlight: null,
+      recent
+    } as QueueProjection)
+  });
+}
+
+describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
+  it('commits the resolved selection via setSelection when inFlight is null and a recent task has on-disk iterations', async () => {
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: snapshotWithRecent([buildRecentItem({ id: 'run-recent-A' })]),
+        store
+      }
+    });
+    // Allow the mount-time $effect to fire and the speculative
+    // readPhaseLog probe to resolve.
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    expect(setSelectionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueId: 'q-1',
+        taskId: 'run-recent-A',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: null
+      })
+    );
+  });
+
+  it('does not call setSelection on mount when queue.recent is empty (preserves SC-007 empty state)', async () => {
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: snapshotWithRecent([]),
+        store
+      }
+    });
+    await tick();
+    await tick();
+    await tick();
+    expect(setSelectionSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips the fallback when queue.inFlight is non-null (live-following cascade is unchanged)', async () => {
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    // buildSnapshot() returns an inFlight task by default.
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: buildSnapshot(),
+        store
+      }
+    });
+    await tick();
+    await tick();
+    await tick();
+    expect(setSelectionSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips candidates whose probe returns no iterations and falls through to the next', async () => {
+    // First probe: no iterations. Second probe: one iteration.
+    readSpy.mockReset();
+    readSpy
+      .mockResolvedValueOnce({
+        outcome: 'success',
+        manifest: {
+          iterations: [],
+          selectedIteration: null,
+          entries: [],
+          skippedLines: 0,
+          truncatedCount: 0,
+          verboseDiagnosticsState: { kind: 'enabled-no-sessions-for-tuple' },
+          isInFlight: false
+        }
+      })
+      .mockResolvedValue({
+        outcome: 'success',
+        manifest: {
+          iterations: [1],
+          selectedIteration: 1,
+          entries: [makePushEntry(1, 'recent-log', 'system')],
+          skippedLines: 0,
+          truncatedCount: 0,
+          verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+          isInFlight: false
+        }
+      });
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: snapshotWithRecent([
+          buildRecentItem({
+            id: 'run-empty',
+            updatedAt: '2026-05-10T12:00:00.000Z',
+            completedAt: '2026-05-10T12:00:00.000Z'
+          }),
+          buildRecentItem({
+            id: 'run-with-logs',
+            updatedAt: '2026-05-10T11:30:00.000Z',
+            completedAt: '2026-05-10T11:30:00.000Z'
+          })
+        ]),
+        store
+      }
+    });
+    // Two probes; allow more ticks to drain the cascade.
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    expect(setSelectionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 'run-with-logs' })
+    );
+  });
+});
