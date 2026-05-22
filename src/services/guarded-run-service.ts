@@ -20,10 +20,35 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
   FeatureRequest,
   FeatureRequestFailure,
-  FeatureRequestRerun
+  FeatureRequestRerun,
+  QueueLifecycle,
+  ScheduledStartSource
 } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { PipelineCatalog } from '../config/pipeline-config';
+import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
+import type { EnqueueStartIntent } from '../contracts/sidebar-ipc';
+
+// Feature 065 — `scheduleOrEnqueue` accepts an optional `startIntent` to
+// drive the host policy table (see contracts/sidebar-ipc.diff.md).
+// The horizon limit per FR-009c.
+export const SCHEDULED_START_MAX_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Feature 065 — typed error thrown by `scheduleOrEnqueue` when a programmatic
+ * caller requests `scheduledStartAt > now + 7d`. Programmatic callers can
+ * pattern-match by class to surface a user-facing rejection.
+ */
+export class ScheduledStartHorizonError extends Error {
+  public readonly requestedScheduledStartAt: number;
+  public readonly callerId?: string;
+  constructor(requestedScheduledStartAt: number, callerId?: string) {
+    super('scheduled-start-horizon-exceeded');
+    this.name = 'ScheduledStartHorizonError';
+    this.requestedScheduledStartAt = requestedScheduledStartAt;
+    if (callerId !== undefined) this.callerId = callerId;
+  }
+}
 
 export type GuardedVia =
   | 'command-palette'
@@ -41,6 +66,16 @@ export interface GuardedScheduleRequest {
   queueId?: string | null;
   position?: number | null;
   rerun?: FeatureRequestRerun | null;
+  // Feature 065 — optional start-mode intent (additive). Omission is
+  // valid; the host's policy table routes it to the chooser default or
+  // the warn-level automation default. See sidebar-ipc.diff.md.
+  startIntent?: EnqueueStartIntent;
+  // Feature 065 — `'automation'` callers without an explicit `startIntent`
+  // are detected here so the warn-level `automation-enqueue-no-start-mode`
+  // audit event can carry a `callerId`. Human-facing flows pass `'human'`
+  // or leave this undefined.
+  callerKind?: 'human' | 'automation';
+  callerId?: string;
 }
 
 export interface GuardedScheduleResult {
@@ -48,9 +83,13 @@ export interface GuardedScheduleResult {
     | 'enqueued'
     | 'rejected-foreign-lock'
     | 'rejected-paused'
-    | 'rejected-validation';
+    | 'rejected-validation'
+    | 'rejected-horizon-exceeded';
   reason?: string;
   queueItemId?: string;
+  // Feature 065 — `'now'` when the host coerced or routed to `running`;
+  // `'idle-pending'` when the host landed the task in `idle-pending`.
+  lifecycleAfter?: QueueLifecycle;
 }
 
 export interface GuardedStartRequest {
@@ -81,12 +120,19 @@ export interface GuardedRunServiceDeps {
   readonly controller: Pick<SchegentWorkflowController, 'running' | 'startNew' | 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
-  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue'>;
+  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'setQueue'>;
   readonly cliPathProvider: () => Promise<string> | string;
   readonly workspaceRoot: string;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
   readonly catalogProvider?: () => PipelineCatalog;
+  // Feature 065 — coordinator that owns the in-process scheduled-start timer.
+  // Optional for backward-compat; when omitted, the policy table falls back
+  // to the simpler enqueue-only behavior.
+  readonly scheduledStartCoordinator?: Pick<
+    ScheduledStartCoordinator,
+    'arm' | 'cancel' | 'change'
+  >;
 }
 
 export class GuardedRunService {
@@ -131,6 +177,19 @@ export class GuardedRunService {
       return { outcome: 'rejected-paused', reason };
     }
 
+    // Feature 065 — host policy table for the optional `startIntent`. The
+    // horizon and past-coercion checks MUST run BEFORE the enqueue so a
+    // rejection leaves the persisted queue state untouched (per FR-009c /
+    // SC-008 — "0% of attempts over the 7-day horizon land in idle-pending").
+    const policy = this.resolveStartIntentPolicy(req);
+    if (policy.kind === 'rejected-horizon') {
+      await this.emitHorizonRejection(req, policy.requestedScheduledStartAt);
+      throw new ScheduledStartHorizonError(
+        policy.requestedScheduledStartAt,
+        req.callerId
+      );
+    }
+
     try {
       const feature = await this.deps.queue.enqueue(validated.value, {
         ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
@@ -138,11 +197,364 @@ export class GuardedRunService {
         ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
         ...(req.rerun ? { rerun: req.rerun } : {})
       });
-      return { outcome: 'enqueued', queueItemId: feature.id };
+      const lifecycleAfter = await this.applyStartIntentPolicy(req, policy);
+      return { outcome: 'enqueued', queueItemId: feature.id, lifecycleAfter };
     } catch (err) {
       const reason = this.deps.logger.sanitize((err as Error).message ?? 'enqueue-failed');
       await this.emitRejection('schedule', 'rejected-validation', reason, req.via);
       return { outcome: 'rejected-validation', reason };
+    }
+  }
+
+  /**
+   * Feature 065 (T041) — operator-restart paths invoked from
+   * `CMD_START_QUEUE` when the webview provides a `startIntent`. Routes
+   * one of three FR-015 affordances:
+   *   - `cancel-schedule` → clear scheduledStartAt/Source, emit
+   *     `scheduled-start-canceled { operator-cancel }`, lifecycle stays
+   *     `idle-pending` (task preserved).
+   *   - `scheduled` (change) → coordinator.change() emits canceled+armed,
+   *     persisted scheduledStartAt/Source updated, lifecycle stays
+   *     `idle-pending`.
+   *   - `now` (convert-to-now) → cancel timer if armed, clear fields,
+   *     emit `idle-pending-exited { operator-start-now }`, lifecycle
+   *     becomes `running`.
+   *
+   * No queue mutation (enqueue) — the task is already in the queue. The
+   * caller (`schegent.startQueue`) is responsible for invoking the auto-drain
+   * pass after the lifecycle settles.
+   */
+  public async applyStartQueueIntent(
+    intent: { startMode: 'now' | 'scheduled' | 'cancel-schedule'; scheduledStartAt?: number; source: 'operator-restart' },
+    opts: { queueId?: string } = {}
+  ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
+    const queueId = opts.queueId ?? 'default';
+    const current = this.deps.store.getQueue();
+    const now = this.clock();
+    const coordinator = this.deps.scheduledStartCoordinator;
+
+    if (intent.startMode === 'cancel-schedule') {
+      // Cancel: keep task; clear scheduled-start fields; lifecycle stays
+      // idle-pending. The coordinator emits `scheduled-start-canceled`
+      // with `operator-cancel`.
+      if (current.scheduledStartAt === null) return { outcome: 'noop' };
+      if (coordinator) {
+        await coordinator.cancel(queueId, 'operator-cancel');
+      }
+      await this.deps.store.setQueue({
+        ...current,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        updatedAt: now
+      });
+      return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
+    }
+
+    if (intent.startMode === 'scheduled') {
+      const requested = intent.scheduledStartAt;
+      if (typeof requested !== 'number' || !Number.isFinite(requested)) {
+        return { outcome: 'noop' };
+      }
+      if (requested <= now) {
+        // Past timestamps on the restart path collapse to convert-to-now.
+        return this.applyStartQueueIntent(
+          { startMode: 'now', source: 'operator-restart' },
+          opts
+        );
+      }
+      if (requested > now + SCHEDULED_START_MAX_HORIZON_MS) {
+        await this.emitHorizonRejection(
+          { via: 'webview' as GuardedVia, queueId } as GuardedScheduleRequest,
+          requested
+        );
+        return { outcome: 'rejected-horizon', requestedScheduledStartAt: requested };
+      }
+      const source: ScheduledStartSource = 'operator-restart';
+      await this.deps.store.setQueue({
+        ...current,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: requested,
+        scheduledStartSource: source,
+        updatedAt: now
+      });
+      if (coordinator) {
+        if (current.scheduledStartAt !== null) {
+          await coordinator.change(queueId, requested, source);
+        } else {
+          await coordinator.arm(queueId, requested, source);
+        }
+      }
+      return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
+    }
+
+    // startMode === 'now' (convert-to-now)
+    if (current.scheduledStartAt !== null && coordinator) {
+      await coordinator.cancel(queueId, 'operator-cancel');
+    }
+    const wasIdlePending = current.queueLifecycle === 'idle-pending';
+    await this.deps.store.setQueue({
+      ...current,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
+      updatedAt: now
+    });
+    if (wasIdlePending) {
+      await this.appendScheduleAudit('idle-pending-exited', {
+        queueId,
+        exitReason: 'operator-start-now',
+        scheduledStartSource: 'operator-restart',
+        transitionReason: 'operator-start-now'
+      });
+    }
+    return { outcome: 'applied', lifecycleAfter: 'running' };
+  }
+
+  /**
+   * Feature 065 — pre-flight evaluation of the `startIntent` against the host
+   * policy table. Pure: no state mutation, no audit emission. Returns the
+   * resolved policy that `applyStartIntentPolicy` consumes after the enqueue
+   * succeeds, OR a `rejected-horizon` discriminator that the caller surfaces
+   * before any persisted write.
+   */
+  private resolveStartIntentPolicy(
+    req: GuardedScheduleRequest
+  ):
+    | { kind: 'no-intent-human' }
+    | { kind: 'no-intent-automation'; callerId?: string }
+    | { kind: 'append-tail-no-chooser' }
+    | { kind: 'now'; source: ScheduledStartSource; coercedFromPast: boolean; originalScheduledStartAt?: number }
+    | { kind: 'scheduled'; scheduledStartAt: number; source: ScheduledStartSource }
+    | { kind: 'rejected-horizon'; requestedScheduledStartAt: number } {
+    // Feature 065 (T033 / FR-006) — running queue silent enqueue. A
+    // queue that is already `running` ignores any `startIntent` payload
+    // (chooser surfaces should not be presented in this state, but
+    // defense-in-depth here too). No scheduled-start-* events are
+    // emitted on this path and lifecycle is preserved.
+    const currentLifecycle = this.deps.store.getQueue().queueLifecycle;
+    if (currentLifecycle === 'running') {
+      return { kind: 'append-tail-no-chooser' };
+    }
+    const intent = req.startIntent;
+    if (intent === undefined) {
+      if (req.callerKind === 'automation') {
+        const result: { kind: 'no-intent-automation'; callerId?: string } = {
+          kind: 'no-intent-automation'
+        };
+        if (req.callerId !== undefined) result.callerId = req.callerId;
+        return result;
+      }
+      return { kind: 'no-intent-human' };
+    }
+    const source = intent.source as ScheduledStartSource;
+    if (intent.startMode === 'now') {
+      return { kind: 'now', source, coercedFromPast: false };
+    }
+    const requested = intent.scheduledStartAt;
+    if (typeof requested !== 'number' || !Number.isFinite(requested)) {
+      // Treat malformed timestamps as the no-intent default rather than
+      // throwing — the IPC validator should have rejected them before
+      // they reach this layer, so this is a defense-in-depth fallback.
+      return { kind: 'no-intent-human' };
+    }
+    const now = this.clock();
+    if (requested <= now) {
+      return {
+        kind: 'now',
+        source,
+        coercedFromPast: true,
+        originalScheduledStartAt: requested
+      };
+    }
+    if (requested > now + SCHEDULED_START_MAX_HORIZON_MS) {
+      return { kind: 'rejected-horizon', requestedScheduledStartAt: requested };
+    }
+    return { kind: 'scheduled', scheduledStartAt: requested, source };
+  }
+
+  /**
+   * Feature 065 — applies the resolved policy after a successful enqueue.
+   * Mutates the persisted `QueueState` (`queueLifecycle`,
+   * `scheduledStartAt`, `scheduledStartSource`) and arms the scheduled-start
+   * coordinator timer when relevant. Emits the required audit events.
+   * Returns the lifecycle the queue lands in.
+   */
+  private async applyStartIntentPolicy(
+    req: GuardedScheduleRequest,
+    policy: ReturnType<GuardedRunService['resolveStartIntentPolicy']>
+  ): Promise<QueueLifecycle> {
+    if (policy.kind === 'rejected-horizon') {
+      // Unreachable: caller rejects horizon before this method runs.
+      return 'active-empty';
+    }
+    const now = this.clock();
+    const current = this.deps.store.getQueue();
+    const queueId = req.queueId ?? 'default';
+    if (policy.kind === 'append-tail-no-chooser') {
+      // Feature 065 (FR-006) — `running` queue silent enqueue. Lifecycle
+      // is preserved; no scheduledStartAt fields are touched; no
+      // scheduled-start-* / idle-pending-* audit events are emitted.
+      // The task was already appended to the queue via `queue.enqueue`.
+      void now;
+      void current;
+      void queueId;
+      return 'running';
+    }
+    if (policy.kind === 'now') {
+      if (policy.coercedFromPast && policy.originalScheduledStartAt !== undefined) {
+        await this.appendScheduleAudit('scheduled-start-past-timestamp-coerced-to-now', {
+          queueId,
+          requestedScheduledStartAt: policy.originalScheduledStartAt,
+          coercedAt: now,
+          scheduledStartSource: policy.source,
+          transitionReason: 'past-timestamp'
+        });
+      }
+      const wasIdlePending = current.queueLifecycle === 'idle-pending';
+      if (wasIdlePending && current.scheduledStartAt !== null && this.deps.scheduledStartCoordinator) {
+        await this.deps.scheduledStartCoordinator.cancel(queueId, 'operator-cancel');
+      }
+      await this.deps.store.setQueue({
+        ...current,
+        queueLifecycle: 'running',
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        updatedAt: now
+      });
+      if (wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-exited', {
+          queueId,
+          exitReason: 'operator-start-now',
+          scheduledStartSource: policy.source,
+          transitionReason: 'operator-start-now'
+        });
+      }
+      return 'running';
+    }
+    if (policy.kind === 'scheduled') {
+      const wasIdlePending = current.queueLifecycle === 'idle-pending';
+      // If the queue was previously in idle-pending with an armed timer, the
+      // arm() call on the coordinator already supersedes the prior timer; we
+      // emit no extra `scheduled-start-canceled` here. The
+      // change-schedule-from-restart path is owned by T042.
+      await this.deps.store.setQueue({
+        ...current,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: policy.scheduledStartAt,
+        scheduledStartSource: policy.source,
+        updatedAt: now
+      });
+      if (this.deps.scheduledStartCoordinator) {
+        await this.deps.scheduledStartCoordinator.arm(
+          queueId,
+          policy.scheduledStartAt,
+          policy.source
+        );
+      }
+      if (!wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-entered', {
+          queueId,
+          scheduledStartAt: policy.scheduledStartAt,
+          scheduledStartSource: policy.source,
+          transitionReason: policy.source
+        });
+      }
+      return 'idle-pending';
+    }
+    if (policy.kind === 'no-intent-human') {
+      const wasIdlePending = current.queueLifecycle === 'idle-pending';
+      if (!wasIdlePending) {
+        await this.deps.store.setQueue({
+          ...current,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: now
+        });
+        await this.appendScheduleAudit('idle-pending-entered', {
+          queueId,
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          transitionReason: 'operator-no-start-mode'
+        });
+      }
+      return 'idle-pending';
+    }
+    // no-intent-automation
+    const wasIdlePending = current.queueLifecycle === 'idle-pending';
+    if (!wasIdlePending) {
+      await this.deps.store.setQueue({
+        ...current,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        updatedAt: now
+      });
+      await this.appendScheduleAudit('idle-pending-entered', {
+        queueId,
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        transitionReason: 'automation-no-start-mode'
+      });
+    }
+    const payload: Record<string, unknown> = {
+      queueId,
+      transitionReason: 'automation-no-start-mode'
+    };
+    if (policy.callerId !== undefined) payload.callerId = policy.callerId;
+    await this.appendScheduleAudit('automation-enqueue-no-start-mode', payload);
+    return 'idle-pending';
+  }
+
+  /**
+   * Feature 065 — emit the `scheduled-start-horizon-rejected` warn-level
+   * event for a programmatic over-horizon attempt. Persistence is untouched
+   * so SC-008 ("0% lands in idle-pending") holds.
+   */
+  private async emitHorizonRejection(
+    req: GuardedScheduleRequest,
+    requestedScheduledStartAt: number
+  ): Promise<void> {
+    const queueId = req.queueId ?? 'default';
+    const payload: Record<string, unknown> = {
+      queueId,
+      requestedScheduledStartAt,
+      transitionReason: 'horizon-exceeded',
+      scheduledStartSource: req.startIntent?.source ?? 'programmatic-scheduled'
+    };
+    if (req.callerId !== undefined) payload.callerId = req.callerId;
+    await this.appendScheduleAudit('scheduled-start-horizon-rejected', payload);
+  }
+
+  private async appendScheduleAudit(
+    eventType:
+      | 'scheduled-start-armed'
+      | 'scheduled-start-fired'
+      | 'scheduled-start-canceled'
+      | 'scheduled-start-superseded'
+      | 'scheduled-start-horizon-rejected'
+      | 'scheduled-start-past-timestamp-coerced-to-now'
+      | 'idle-pending-entered'
+      | 'idle-pending-exited'
+      | 'automation-enqueue-no-start-mode',
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.deps.audit) return;
+    try {
+      const now = this.clock();
+      await this.deps.audit.append({
+        runId: '',
+        phase: 'scheduled-start',
+        iteration: 0,
+        eventType,
+        outcome: 'info',
+        payload: { ...payload, occurredAt: payload.occurredAt ?? now }
+      });
+    } catch (err) {
+      this.deps.logger.warn(
+        `guarded-run-service: schedule audit append failed (${eventType}): ${(err as Error).message}`
+      );
     }
   }
 

@@ -82,6 +82,11 @@ export async function runRetryActiveRun(
       );
       return;
     }
+    // Feature 065 — retry-active-run intentionally omits `startIntent`.
+    // The host path runs against an already-`running` queue (we just
+    // verified `!hasInFlight()` for the in-flight slot, but the queue
+    // lifecycle remains `running` while there's a queued task); per
+    // FR-006 the host appends silently with no chooser surface.
     const result = await ctx.guarded.scheduleOrEnqueue({
       description: lastHistory.originalDescription,
       scheduledAt: Date.now(),

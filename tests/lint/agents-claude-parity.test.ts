@@ -54,7 +54,12 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'cap the dynamic rate-limit backoff',
   'persist a `workflowrun`',
   "append `-c`",
-  'awaiting `useconfirm'
+  'awaiting `useconfirm',
+  // Feature 065 — new hard-rule anchors.
+  'auto-promote a queue in `idle-pending`',
+  'persist `scheduledstartat` without also persisting',
+  'emit a schedule-related audit event',
+  'emit the literal `\'running\'` as a `queuelifecycle`'
 ];
 
 function readClaudeMd(): string {

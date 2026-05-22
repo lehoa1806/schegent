@@ -4,6 +4,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService, GuardedScheduleResult, GuardedVia } from '../services/guarded-run-service';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import type { EnqueueStartIntent } from '../contracts/sidebar-ipc';
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 
 export interface EnqueueCommandArgs {
@@ -18,6 +19,28 @@ export interface EnqueueCommandArgs {
    */
   queueId?: string;
   position?: number;
+  /**
+   * Feature 065 — optional explicit start-intent. The host policy table
+   * in `GuardedRunService.resolveStartIntentPolicy()` decides whether to
+   * promote immediately, arm a scheduled start, or land the task in
+   * idle-pending with no schedule. Omission is the legacy/safe default
+   * (idle-pending with `automation-enqueue-no-start-mode` for
+   * automation callers).
+   */
+  startIntent?: EnqueueStartIntent;
+  /**
+   * Feature 065 — whether the enqueue originated from a human-facing UI
+   * (`'human'`) or from automation (wake-up runner, programmatic IPC,
+   * hooks — `'automation'`). Required for the host's safe-default audit
+   * trail when `startIntent` is absent.
+   */
+  callerKind?: 'human' | 'automation';
+  /**
+   * Feature 065 — caller identifier for the
+   * `automation-enqueue-no-start-mode` audit event. Recorded only when
+   * `callerKind === 'automation'` and `startIntent` is absent.
+   */
+  callerId?: string;
 }
 
 export interface RunEnqueueCtx {
@@ -70,7 +93,10 @@ export async function runEnqueue(
     via: ctx.via,
     pipelineId: args?.pipelineId ?? null,
     queueId: DEFAULT_QUEUE_ID,
-    position: args?.position ?? null
+    position: args?.position ?? null,
+    ...(args?.startIntent ? { startIntent: args.startIntent } : {}),
+    ...(args?.callerKind ? { callerKind: args.callerKind } : {}),
+    ...(args?.callerId ? { callerId: args.callerId } : {})
   });
 
   let queueId: string | null = null;

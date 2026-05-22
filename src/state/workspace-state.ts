@@ -23,7 +23,9 @@ import {
 import {
   migrateLegacyQueueState,
   migrateV5ToV6,
-  type StateMigratedV5ToV6AuditEvent
+  migrateV6ToV7,
+  type StateMigratedV5ToV6AuditEvent,
+  type StateMigratedV6ToV7AuditEvent
 } from './queue-state-migrator';
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
 import type { SanitizedLogger } from '../lib/logger';
@@ -58,13 +60,35 @@ function ensureExtendedQueueShape(persisted: QueueState): QueueState {
     ? persisted.requests.map((r) => ensureExtendedFeatureRequest(r as FeatureRequest))
     : [];
   const normalizedRequests = compactRequestPositions(requests);
+  const paused = persisted.paused ?? false;
+  const inFlightId = persisted.inFlightId ?? null;
+  const persistedLifecycle = (persisted as QueueState).queueLifecycle;
+  const queueLifecycle = persistedLifecycle ?? deriveLifecycleFromLegacyShape(paused, inFlightId, normalizedRequests.length);
+  const scheduledStartAt = (persisted as QueueState).scheduledStartAt ?? null;
+  const scheduledStartSource = (persisted as QueueState).scheduledStartSource ?? null;
+  const migrationNotice = (persisted as QueueState).migrationNotice;
   return {
-    paused: persisted.paused ?? false,
+    paused,
     pausedReason: (persisted as QueueState).pausedReason ?? null,
-    inFlightId: persisted.inFlightId ?? null,
+    inFlightId,
     updatedAt: persisted.updatedAt ?? Date.now(),
-    requests: normalizedRequests
+    requests: normalizedRequests,
+    queueLifecycle,
+    scheduledStartAt: queueLifecycle === 'idle-pending' ? scheduledStartAt : null,
+    scheduledStartSource: queueLifecycle === 'idle-pending' ? scheduledStartSource : null,
+    ...(migrationNotice ? { migrationNotice } : {})
   };
+}
+
+function deriveLifecycleFromLegacyShape(
+  paused: boolean,
+  inFlightId: string | null,
+  pendingCount: number
+): QueueState['queueLifecycle'] {
+  if (inFlightId !== null) return 'running';
+  if (paused) return 'operator-paused';
+  if (pendingCount > 0) return 'idle-pending';
+  return 'active-empty';
 }
 
 export const KEYS = {
@@ -238,6 +262,9 @@ export interface InitializeResult {
   // (extension.ts) forwards these through `appendAudit` after the
   // `auditWriter` is constructed. Empty array when no migration occurred.
   v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
+  // Feature 065 — emitted by the v6 → v7 migrator when it ran. Same
+  // forwarding contract as `v6MigrationEvents` above.
+  v7MigrationEvents: readonly StateMigratedV6ToV7AuditEvent[];
   // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
   runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
@@ -294,8 +321,9 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       await this.reconcileQueuePauseStateIfDivergent();
-      return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
+      return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
     }
     if (persistedVersion === SCHEMA_VERSION) {
       if (persistedNumeric !== STATE_SCHEMA_VERSION) {
@@ -305,16 +333,19 @@ export class WorkspaceStateStore {
         const runRepairEvents = await this.normalizeRunForInitialize(true);
         await this.migrateQueueRegistryIfNeeded();
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+        const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
         await this.reconcileQueuePauseStateIfDivergent();
-        return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
+        return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
       }
       const runRepairEvents = await this.normalizeRunForInitialize(false);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const reconciled = await this.reconcileQueuePauseStateIfDivergent();
       return {
-        migrated: v6Events.length > 0 || runRepairEvents.length > 0 || reconciled,
+        migrated: v6Events.length > 0 || v7Events.length > 0 || runRepairEvents.length > 0 || reconciled,
         v6MigrationEvents: v6Events,
+        v7MigrationEvents: v7Events,
         runRepairEvents
       };
     }
@@ -326,8 +357,9 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(true);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
+      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       await this.reconcileQueuePauseStateIfDivergent();
-      return { migrated: true, v6MigrationEvents: v6Events, runRepairEvents };
+      return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
     }
     throw new Error(
       `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
@@ -347,10 +379,23 @@ export class WorkspaceStateStore {
     const registryPaused = defaultEntry.state === 'manually-paused';
     if (legacyPaused === registryPaused) return false;
     const correctedReason = registryPaused ? persistedQueue.pausedReason ?? null : null;
+    const inFlight = persistedQueue.inFlightId ?? null;
+    const pendingCount = (persistedQueue.requests ?? []).filter((r) => r.status === 'pending').length;
+    const correctedLifecycle: QueueState['queueLifecycle'] =
+      inFlight !== null
+        ? 'running'
+        : registryPaused
+        ? 'operator-paused'
+        : pendingCount > 0
+        ? 'idle-pending'
+        : 'active-empty';
     await this.memento.update(KEYS.queue, {
       ...persistedQueue,
       paused: registryPaused,
       pausedReason: correctedReason,
+      queueLifecycle: correctedLifecycle,
+      scheduledStartAt: correctedLifecycle === 'idle-pending' ? persistedQueue.scheduledStartAt ?? null : null,
+      scheduledStartSource: correctedLifecycle === 'idle-pending' ? persistedQueue.scheduledStartSource ?? null : null,
       updatedAt: Date.now()
     });
     this.logger?.warn(
@@ -415,9 +460,9 @@ export class WorkspaceStateStore {
     const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? null;
     const queueState = this.memento.get<QueueState>(KEYS.queue) ?? null;
     // Treat missing/legacy numeric version as v5 so the migration runs once
-    // on first activation after the schema bump. A persisted numeric === 6
+    // on first activation after the schema bump. A persisted numeric >= 6
     // skips (idempotent no-op).
-    const effectiveVersion = persistedNumeric === 6 ? 6 : 5;
+    const effectiveVersion = persistedNumeric !== undefined && persistedNumeric >= 6 ? 6 : 5;
     const result = migrateV5ToV6(
       { schemaVersion: effectiveVersion, queueRegistry: registry, queueState },
       Date.now()
@@ -465,6 +510,37 @@ export class WorkspaceStateStore {
     return result.auditEvents;
   }
 
+  // Feature 065 — v6 → v7 forward migration. Runs after v5→v6 coalesce; before
+  // snapshot/watchdog reconciliation. Returns audit events forwarded by the
+  // caller via `appendAudit`. Idempotent: a v7-shape record returns no events.
+  private async migrateV6ToV7IfNeeded(
+    persistedNumeric: number | undefined
+  ): Promise<readonly StateMigratedV6ToV7AuditEvent[]> {
+    const queueState = this.memento.get<QueueState>(KEYS.queue) ?? null;
+    // No persisted queue yet (fresh workspace) — nothing to migrate; the empty
+    // QueueState is already born in v7 shape via `getQueue()` and `setQueue()`.
+    if (queueState === null) return [];
+    // If the persisted numeric is already v7 AND the record carries the
+    // discriminator, idempotent no-op.
+    const alreadyV7 =
+      persistedNumeric === 7
+      && typeof (queueState as QueueState).queueLifecycle === 'string';
+    if (alreadyV7) return [];
+    const result = migrateV6ToV7(queueState, Date.now());
+    if (!result.migrated) return [];
+    // Fresh-workspace suppression: when there are no pending tasks AND no
+    // in-flight AND not paused, the derived lifecycle is `active-empty` and
+    // emitting an audit event would be misleading (matches the v5→v6
+    // fresh-workspace heuristic).
+    const isFreshWorkspace =
+      result.queueState.requests.length === 0
+      && result.queueState.inFlightId === null
+      && result.queueState.paused === false;
+    await this.memento.update(KEYS.queue, result.queueState);
+    if (isFreshWorkspace) return [];
+    return result.auditEvents;
+  }
+
   public getQueue(): QueueState {
     const persisted = this.memento.get<QueueState>(KEYS.queue);
     if (!persisted) {
@@ -473,18 +549,26 @@ export class WorkspaceStateStore {
         inFlightId: null,
         paused: false,
         pausedReason: null,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        queueLifecycle: 'active-empty',
+        scheduledStartAt: null,
+        scheduledStartSource: null
       };
     }
     return ensureExtendedQueueShape(persisted);
   }
 
   public setQueue(queue: QueueState): Promise<void> {
-    const next = {
+    // Feature 065 — normalize via `ensureExtendedQueueShape` so a partial
+    // QueueState (legacy callers / tests using `as never`) is persisted in
+    // v7 shape (carries `queueLifecycle` + nullable `scheduledStart*`).
+    // Without this, the next initialize() re-runs the v6→v7 migrator and
+    // breaks idempotency.
+    const next = ensureExtendedQueueShape({
       ...queue,
       requests: compactRequestPositions(queue.requests),
       updatedAt: Date.now()
-    };
+    });
     return this.serialize(KEYS.queue, () => this.memento.update(KEYS.queue, next)).then(() => {
       this.notify(KEYS.queue);
     });

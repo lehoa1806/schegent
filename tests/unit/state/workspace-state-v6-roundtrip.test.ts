@@ -98,7 +98,10 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 400
+      updatedAt: 400,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     await memento.update(KEYS.queueRegistry, v5Registry);
     await memento.update(KEYS.queue, v5Queue);
@@ -148,7 +151,10 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 100
+      updatedAt: 100,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     await memento.update(KEYS.queueRegistry, v5Registry);
     await memento.update(KEYS.queue, v5Queue);
@@ -181,7 +187,10 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 200
+      updatedAt: 200,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     } satisfies QueueState);
     // Synthetic run with a non-default queueId; only that field is asserted.
     await memento.update(KEYS.run, {

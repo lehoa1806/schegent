@@ -207,7 +207,8 @@ describe('MessageRouter.dispatch', () => {
       description: 'add login',
       pipelineId: undefined,
       queueId: 'default',
-      position: 2
+      position: 2,
+      callerKind: 'human'
     });
     expect(acks).toHaveLength(1);
     expect(acks[0].msg.status).toBe('accepted');
@@ -245,7 +246,8 @@ describe('MessageRouter.dispatch', () => {
       description: 'fix login bug',
       pipelineId: 'speckit-bugfix',
       queueId: 'default',
-      position: 1
+      position: 1,
+      callerKind: 'human'
     });
     expect(acks[0].msg.status).toBe('accepted');
   });
@@ -269,7 +271,8 @@ describe('MessageRouter.dispatch', () => {
       description: 'new feature',
       pipelineId: undefined,
       queueId: 'default',
-      position: 0
+      position: 0,
+      callerKind: 'human'
     });
     expect(acks[0].msg.status).toBe('accepted');
   });
@@ -300,7 +303,8 @@ describe('MessageRouter.dispatch', () => {
       description: 'second task',
       pipelineId: undefined,
       queueId: 'queue-A',
-      position: 0
+      position: 0,
+      callerKind: 'human'
     });
     expect(acks[0].msg.status).toBe('accepted');
     expect(acks[0].msg.reason).toBeUndefined();

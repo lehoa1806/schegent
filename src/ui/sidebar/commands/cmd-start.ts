@@ -7,13 +7,24 @@ import { ack } from './handler-helpers';
 // lands as pending rather than returning the legacy already-in-flight reject.
 // The host re-validates description, rerun pair, pipelineId, foreign-lock,
 // queue-paused state, target queue id, position, and task-per-queue cap.
+//
+// Feature 065 — when the chooser commits a start-mode selection, the
+// optional `startIntent` payload is threaded through to `schegent.enqueue`
+// and ultimately to `GuardedRunService.scheduleOrEnqueue()`. `CMD_START`
+// originates from a human-facing surface, so `callerKind` is `'human'` —
+// omission of `startIntent` lands the task safely in `idle-pending` with
+// `scheduledStartAt: null` (per FR-009 dismiss path).
 export const handler: CommandHandler<StartCommand> = async (ctx, command) => {
   const enqueueResult = (await Promise.resolve(
     ctx.deps.executeCommand('schegent.enqueue', {
       description: command.payload.description,
       pipelineId: command.payload.pipelineId,
       queueId: command.payload.queueId,
-      position: command.payload.position
+      position: command.payload.position,
+      ...(command.payload.startIntent
+        ? { startIntent: command.payload.startIntent }
+        : {}),
+      callerKind: 'human'
     })
   )) as
     | {

@@ -6,8 +6,39 @@
   import type { AuditCategory } from '../lib/snapshot-types';
 
   const entries = $derived(snapshotStore.auditTail);
-  const reversed = $derived(entries.slice().reverse());
-  const empty = $derived(entries.length === 0);
+  // Feature 064 — reference set of run ids reachable in the current
+  // snapshot. Queue items expose `id` (which IS the run id because the
+  // controller sets `WorkflowSnapshot.activeRunId = run.id`); history
+  // entries expose `runId`. See data-model.md §Snapshot run reference set.
+  const knownRunIds = $derived.by(() => {
+    const ids = new Set<string>();
+    const snap = snapshotStore.snapshot;
+    if (!snap) return ids;
+    if (snap.activeRunId) ids.add(snap.activeRunId);
+    if (snap.queue.inFlight?.id) ids.add(snap.queue.inFlight.id);
+    for (const item of snap.queue.pending) {
+      if (item.id) ids.add(item.id);
+    }
+    for (const item of snap.queue.recent) {
+      if (item.id) ids.add(item.id);
+    }
+    for (const h of snap.history) {
+      if (h.runId) ids.add(h.runId);
+    }
+    return ids;
+  });
+  // Feature 064 — Activity Feed is task-scoped + reachable runId only.
+  // Legacy tolerance (FR-013 / contracts/audit-tail-entry.md §Backward
+  // compatibility): an entry whose `scope` is `undefined` is treated as
+  // `'task'`.
+  const visible = $derived(
+    entries.filter((entry) => {
+      const scope = entry.scope ?? 'task';
+      return scope === 'task' && knownRunIds.has(entry.runId);
+    })
+  );
+  const reversed = $derived(visible.slice().reverse());
+  const empty = $derived(visible.length === 0);
 
   const ICONS: Record<AuditCategory, string> = {
     'phase-transition': '→',
@@ -26,7 +57,7 @@
 <section class="tail" aria-label="Audit tail" data-testid="audit-tail">
   <header class="title">Audit tail</header>
   {#if empty}
-    <p class="empty" data-testid="audit-empty">No audit entries yet.</p>
+    <p class="empty" data-testid="audit-empty">No active task activity. System events appear in the System tab.</p>
   {:else}
     <ol>
       {#each reversed as entry (entry.id)}

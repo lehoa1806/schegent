@@ -146,6 +146,22 @@ export interface QueueSummary {
   readonly taskCount: number;
 }
 
+// Feature 065 — webview mirror of the host `QueueLifecycle` / `ScheduledStartSource`
+// literals. Kept in sync with repo/src/queue/feature-request.ts.
+export type QueueLifecycle =
+  | 'running'
+  | 'operator-paused'
+  | 'idle-pending'
+  | 'active-empty';
+
+export type ScheduledStartSource =
+  | 'operator-chooser'
+  | 'operator-restart'
+  | 'wake-up-runner'
+  | 'programmatic-now'
+  | 'programmatic-scheduled'
+  | 'migration-default';
+
 export interface QueueProjection {
   readonly inFlight: QueueItem | null;
   readonly pending: readonly QueueItem[];
@@ -153,6 +169,12 @@ export interface QueueProjection {
   readonly queues?: readonly QueueSummary[];
   readonly paused: boolean;
   readonly pausedReason?: string | null;
+  // Feature 065 — additive lifecycle / scheduled-start projection.
+  readonly lifecycle?: QueueLifecycle;
+  readonly scheduledStartAt?: number | null;
+  readonly scheduledStartSource?: ScheduledStartSource | null;
+  // Feature 065 (T054a / FR-020) — one-time post-migration operator notice.
+  readonly migrationNotice?: 'pending' | 'dismissed';
 }
 
 export interface AuditTailEntry {
@@ -161,6 +183,9 @@ export interface AuditTailEntry {
   readonly phase: PhaseName | null;
   readonly category: AuditCategory;
   readonly summary: string;
+  // --- Feature 064 additive fields ---
+  readonly runId: string;
+  readonly scope: 'task' | 'system';
 }
 
 export interface LiveActivity {

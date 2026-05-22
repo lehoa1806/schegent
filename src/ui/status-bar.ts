@@ -28,8 +28,17 @@ export interface StatusModel {
   pendingCount?: number;
 }
 
+// Feature 065 / FR-017a / SC-009 — transient indicator window. The
+// status-bar surface MUST show a transient "scheduled start fired" hint
+// for between 3000 and 5000 ms. Callers may request any non-finite or
+// out-of-window value; we clamp.
+const TRANSIENT_MIN_MS = 3000;
+const TRANSIENT_MAX_MS = 5000;
+
 export class SchegentStatusBar {
   private readonly item: StatusBarItemLike;
+  private transientTimer: ReturnType<typeof setTimeout> | null = null;
+  private preTransientText: string | null = null;
 
   constructor(item: StatusBarItemLike) {
     this.item = item;
@@ -39,11 +48,47 @@ export class SchegentStatusBar {
   }
 
   public update(model: StatusModel): void {
-    this.item.text = formatText(model);
+    const nextText = formatText(model);
+    if (this.transientTimer !== null) {
+      // A transient is active — let it own `item.text` and capture the
+      // intended steady-state text so the restore is correct.
+      this.preTransientText = nextText;
+      this.item.tooltip = formatTooltip(model);
+      return;
+    }
+    this.item.text = nextText;
     this.item.tooltip = formatTooltip(model);
   }
 
+  // Feature 065 (T049b) — transient indicator for `scheduled-start-fired`.
+  // The duration is clamped to the FR-017a 3000..5000 ms window. The
+  // callsite in extension wiring uses 4000 ms — the chosen mid-point.
+  public showTransient(text: string, durationMs: number): void {
+    const clamped = Math.min(
+      TRANSIENT_MAX_MS,
+      Math.max(TRANSIENT_MIN_MS, Number.isFinite(durationMs) ? durationMs : TRANSIENT_MIN_MS)
+    );
+    if (this.transientTimer !== null) {
+      clearTimeout(this.transientTimer);
+      this.transientTimer = null;
+    } else {
+      this.preTransientText = this.item.text;
+    }
+    this.item.text = text;
+    this.transientTimer = setTimeout(() => {
+      this.transientTimer = null;
+      if (this.preTransientText !== null) {
+        this.item.text = this.preTransientText;
+        this.preTransientText = null;
+      }
+    }, clamped);
+  }
+
   public dispose(): void {
+    if (this.transientTimer !== null) {
+      clearTimeout(this.transientTimer);
+      this.transientTimer = null;
+    }
     this.item.dispose();
   }
 }

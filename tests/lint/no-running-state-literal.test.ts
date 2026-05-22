@@ -15,17 +15,36 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // property accessor used by the Clean All probe loop), not the pinned
   // status discriminator literal "running".
   'src/commands/clear-all.ts',
+  // Feature 065 — comment-only references to `queueLifecycle === 'running'`
+  // describing the lifecycle target after a coerce / convert-to-now path.
+  'src/commands/retry-active-run.ts',
+  'src/commands/schedule.ts',
+  // Feature 065 — checks `result.lifecycleAfter === 'running'` after the
+  // GuardedRunService applies a convert-to-now startIntent.
+  'src/commands/start-queue.ts',
   'src/contracts/backend-runner.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',
+  // Feature 065 — `QueueLifecycle = 'running' | ...` union (FR-001..FR-005).
+  // The literal is the lifecycle discriminator, not the pinned task-status
+  // projection, and is required by the lifecycle entity.
+  'src/queue/feature-request.ts',
   // Comment-only occurrence ("A long-running" in a doc comment); no status
   // literal.
   'src/runner/claude-cli.ts',
   'src/services/guarded-run-service.ts',
   'src/services/run-driver.ts',
+  // Feature 065 — coordinator owns the in-process scheduled-start timer and
+  // emits 'already-running' as a superseder literal in the audit payload.
+  'src/services/scheduled-start-coordinator.ts',
+  // Feature 065 — v6→v7 derivation table maps (inFlight, paused, pending)
+  // tuples to a `queueLifecycle` value; `'running'` appears as a target.
+  'src/state/queue-state-migrator.ts',
+  // Feature 065 — host activation path reads `queueLifecycle` and re-arms.
+  'src/state/workspace-state.ts',
   'src/state/workflow-run.ts',
   'src/state/workflow-run-migrator.ts',
   'src/telemetry/platform/platform-ps.ts',
@@ -36,6 +55,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/ui/sidebar/state-projector.ts',
   'src/ui/status-bar.ts',
   'webview-ui/src/components/ControlPanel.svelte',
+  // Feature 065 — switches on the `QueueLifecycle` discriminator
+  // (FR-001..FR-005) to render the lifecycle label and dot color. The
+  // literal is the lifecycle union member, not the pinned task-status
+  // projection.
+  'webview-ui/src/components/QueueListView.svelte',
+  // Feature 065 — comment-only references to the `running` queue lifecycle
+  // describing the chooser dispatch rules. No pinned status literal.
+  'webview-ui/src/components/QueueInputForm.svelte',
   'webview-ui/src/components/MonitorPill.svelte',
   'webview-ui/src/components/StatusBar.svelte',
   'webview-ui/src/components/StatusHeader.svelte',

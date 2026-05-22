@@ -136,6 +136,16 @@ export interface RouterDeps {
     actionKey: string,
     suppressed: boolean
   ) => Promise<void>;
+  /**
+   * Feature 065 (T054a / FR-020) — `CMD_DISMISS_MIGRATION_NOTICE` handler
+   * hook. Flips the persisted queue state's `migrationNotice` field from
+   * `'pending'` to `'dismissed'` via a single persisted-state write.
+   * MUST NOT touch `scheduledStartSource` on any queue record (those
+   * clear only on the operator's next explicit start, per FR-020).
+   * Optional so unit tests that do not exercise this command can omit
+   * the wiring.
+   */
+  readonly dismissMigrationNotice?: () => Promise<void>;
   readonly saveWakeUpSettings?: (
     payload: Readonly<{
       enabled: boolean;

@@ -160,7 +160,28 @@ export interface QueueProjection {
   readonly queues: readonly QueueSummary[];
   readonly paused: boolean;
   readonly pausedReason: string | null;
+  // Feature 065 — additive lifecycle / scheduled-start projection.
+  readonly lifecycle: QueueLifecycle;
+  readonly scheduledStartAt: number | null;
+  readonly scheduledStartSource: ScheduledStartSource | null;
+  /**
+   * Feature 065 (T054a / FR-020) — one-time operator notice surfaced on the
+   * first workspace open after the v6 → v7 migration when at least one
+   * queue migrated into `idle-pending` (i.e. the migrator wrote
+   * `scheduledStartSource: 'migration-default'`). `'pending'` causes the
+   * webview to render the non-modal notice; `'dismissed'` (or undefined)
+   * suppresses it. The dismiss is routed through the existing
+   * `WebviewMessage` channel and translates to a single persisted-state
+   * write that flips this field to `'dismissed'`. The dismiss MUST NOT
+   * touch `scheduledStartSource` (those clear only on the operator's next
+   * explicit start).
+   */
+  readonly migrationNotice?: 'pending' | 'dismissed';
 }
+
+import type { QueueLifecycle, ScheduledStartSource } from '../../queue/feature-request';
+
+import type { AuditScope } from '../../contracts/audit-events';
 
 export interface AuditTailEntry {
   readonly id: string;
@@ -168,6 +189,9 @@ export interface AuditTailEntry {
   readonly phase: PhaseName | null;
   readonly category: AuditCategory;
   readonly summary: string;
+  // --- Feature 064 additive fields ---
+  readonly runId: string;
+  readonly scope: AuditScope;
 }
 
 export interface LiveActivity {
@@ -479,7 +503,10 @@ export function buildIdleSnapshot(opts: {
       recent: Object.freeze([]) as readonly QueueItem[],
       queues: Object.freeze([]) as readonly QueueSummary[],
       paused: false,
-      pausedReason: null
+      pausedReason: null,
+      lifecycle: 'active-empty' as const,
+      scheduledStartAt: null,
+      scheduledStartSource: null
     }),
     phaseOverrides: Object.freeze([]),
     manualPauseAt: null,

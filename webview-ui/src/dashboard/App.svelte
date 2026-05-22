@@ -1,6 +1,7 @@
 <script lang="ts">
   import Dashboard from '../components/Dashboard.svelte';
   import PipelineBuilder from '../components/PipelineBuilder.svelte';
+  import SystemTab from '../components/SystemTab.svelte';
   import SettingsSurface from '../components/SettingsSurface.svelte';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import {
@@ -36,6 +37,8 @@
         <Dashboard {snapshot} />
       {:else if route === 'pipeline-builder'}
         <PipelineBuilder {snapshot} />
+      {:else if route === 'system'}
+        <SystemTab />
       {:else if route === 'settings'}
         <SettingsSurface {snapshot} />
       {/if}

@@ -1,7 +1,9 @@
-// Feature 012 T030 — top-level three-route flat nav.
+// Feature 064 T013 — top-level four-route flat nav (was three-route under
+// Feature 012 T030; extended to include a peer System tab between
+// Pipeline Builder and Settings).
 //
 // Covers:
-//   - Three nav buttons render in order: Operations, Pipeline Builder, Settings.
+//   - Four nav buttons render in order: Operations, Pipeline Builder, System, Settings.
 //   - Each carries the stable data-testid from the navigation contract.
 //   - Clicking each route switches the rendered content surface.
 //   - No `dashboard-tabs` (legacy two-tier) markup remains anywhere.
@@ -51,8 +53,8 @@ function buildSnapshot(): WorkflowSnapshot {
 
 afterEach(() => cleanup());
 
-describe('Feature 012 T030 — flat three-route top-level nav', () => {
-  it('renders three nav buttons in order with stable data-testids', () => {
+describe('Feature 064 T013 — flat four-route top-level nav', () => {
+  it('renders four nav buttons in order with stable data-testids', () => {
     // Push a ready snapshot so the nav (and routes) render.
     snapshotStore.apply({
       type: 'STATE_SNAPSHOT',
@@ -60,10 +62,11 @@ describe('Feature 012 T030 — flat three-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
     const buttons = container.querySelectorAll('[data-testid^="dashboard-route-"]');
-    expect(buttons.length).toBe(3);
+    expect(buttons.length).toBe(4);
     expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-operations');
     expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
-    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-settings');
+    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-system');
+    expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-settings');
   });
 
   it('switches the visible surface when each route is clicked', async () => {
@@ -79,12 +82,17 @@ describe('Feature 012 T030 — flat three-route top-level nav', () => {
     const pbBtn = container.querySelector(
       '[data-testid="dashboard-route-pipeline-builder"]'
     ) as HTMLButtonElement;
+    const sysBtn = container.querySelector(
+      '[data-testid="dashboard-route-system"]'
+    ) as HTMLButtonElement;
     const setBtn = container.querySelector(
       '[data-testid="dashboard-route-settings"]'
     ) as HTMLButtonElement;
 
     await fireEvent.click(pbBtn);
     expect(container.querySelector('[data-testid="dashboard-route-pipeline-builder"].active')).not.toBeNull();
+    await fireEvent.click(sysBtn);
+    expect(container.querySelector('[data-testid="dashboard-route-system"].active')).not.toBeNull();
     await fireEvent.click(setBtn);
     expect(container.querySelector('[data-testid="dashboard-route-settings"].active')).not.toBeNull();
     await fireEvent.click(opBtn);

@@ -7,7 +7,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number }> = [
   // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped +15 to accommodate the
   // FR-028 retry-decision projection sink wired into PhaseRunner construction.
-  { path: 'src/extension.ts', maxLines: 1_400 },
+  // Feature 065 (T055 / 2026-05-22) — bumped +50 (1400 → 1450) to absorb the
+  // host wiring for the new enqueue/start separation surface: the
+  // `ScheduledStartCoordinator` lifecycle, the `dismissMigrationNotice` IPC
+  // hook, the status-bar `showTransient` subscriber, and the v6 → v7 migration
+  // re-arm path. The feature legitimately extends extension.ts; the alternative
+  // (a second activation aggregator file) was rejected to avoid splintering the
+  // host registration order.
+  { path: 'src/extension.ts', maxLines: 1_450 },
   { path: 'src/controller/workflow-controller.ts', maxLines: 1_050 },
   { path: 'src/contracts/runtime-validators.ts', maxLines: 1_100 },
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_100 },

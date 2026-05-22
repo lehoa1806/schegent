@@ -6,6 +6,40 @@ export type FeatureRequestStatus =
   | 'canceled'
   | 'failed';
 
+/**
+ * Queue lifecycle discriminator. Single source of truth for whether
+ * `AutoDrainCoordinator` may promote the next pending task.
+ *
+ * - `running`         — `inFlightId !== null`; an in-flight task is draining.
+ * - `operator-paused` — operator paused the queue; auto-drain is suppressed.
+ * - `idle-pending`    — entered from `active-empty` via an enqueue without an
+ *                       explicit start. May carry a scheduled trigger.
+ * - `active-empty`    — no in-flight, no operator pause, no pending start
+ *                       intent — the steady-state default.
+ *
+ * Transition graph and lockstep invariants live in
+ * [data-model.md §QueueLifecycle](../../specs/065-enqueue-start-separation/data-model.md).
+ */
+export type QueueLifecycle =
+  | 'running'
+  | 'operator-paused'
+  | 'idle-pending'
+  | 'active-empty';
+
+/**
+ * Why the queue is currently (or was previously) in `idle-pending`. Used as the
+ * `scheduledStartSource` field on `QueueState` and as the `source` field on
+ * `EnqueueStartIntent`/`StartQueueIntent`. Cleared to `null` on the operator's
+ * next explicit start (per FR-020).
+ */
+export type ScheduledStartSource =
+  | 'operator-chooser'
+  | 'operator-restart'
+  | 'wake-up-runner'
+  | 'programmatic-now'
+  | 'programmatic-scheduled'
+  | 'migration-default';
+
 export interface FeatureRequestFailure {
   readonly code?: string;
   readonly message: string;
@@ -49,6 +83,20 @@ export interface QueueState {
   paused: boolean;
   pausedReason: string | null;
   updatedAt: number;
+  // ─── v7 additive fields (feature 065) ──────────────────────────
+  // `paused` and `pausedReason` are retained as legacy mirrors:
+  //   paused === (queueLifecycle === 'operator-paused')
+  queueLifecycle: QueueLifecycle;
+  scheduledStartAt: number | null;
+  scheduledStartSource: ScheduledStartSource | null;
+  /**
+   * Set to `'pending'` by the v6→v7 migrator when at least one queue record
+   * lands in `idle-pending` with `scheduledStartSource: 'migration-default'`.
+   * Flipped to `'dismissed'` once the operator dismisses the one-time notice
+   * via the existing inbound `WebviewMessage` channel (per FR-020 / T054a).
+   * Default for a never-migrated queue is `'dismissed'` (nothing to surface).
+   */
+  migrationNotice?: 'pending' | 'dismissed';
 }
 
 export const MAX_DESCRIPTION_LENGTH = 32_000;

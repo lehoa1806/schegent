@@ -183,7 +183,10 @@ const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
     inFlightId: null,
     paused: false,
     pausedReason: null,
-    updatedAt: 0
+    updatedAt: 0,
+    queueLifecycle: 'active-empty' as const,
+    scheduledStartAt: null,
+    scheduledStartSource: null
   }),
   getLock: () => null,
   subscribe: () => ({ dispose: () => { /* noop */ } })
@@ -804,7 +807,16 @@ export class StateProjector {
         recent: Object.freeze(queueProjection.recent.slice()),
         queues: Object.freeze(queueProjection.queues.slice()),
         paused: queue.paused,
-        pausedReason: sanitizeAndCap(queue.pausedReason, sanitize)
+        pausedReason: sanitizeAndCap(queue.pausedReason, sanitize),
+        // Feature 065 — additive lifecycle / scheduled-start projection.
+        lifecycle: queue.queueLifecycle,
+        scheduledStartAt: queue.scheduledStartAt,
+        scheduledStartSource: queue.scheduledStartSource,
+        // Feature 065 (T054a / FR-020) — propagate the one-time migration
+        // notice flag. Only present (and truthy) on the first publication
+        // after a v6 → v7 migration touched at least one queue; the
+        // dismiss path writes `'dismissed'`, which then propagates here.
+        ...(queue.migrationNotice ? { migrationNotice: queue.migrationNotice } : {})
       }) as QueueProjection,
       phaseOverrides: Object.freeze(
         (run?.phaseOverrides ?? []).map((override) =>

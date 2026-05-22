@@ -115,6 +115,14 @@ export const CMD_CLEAR_ALL = 'CMD_CLEAR_ALL' as const;
 // `WorkspaceState`. Member of `MUTATING_COMMAND_REASONS` for audit
 // completeness, even though it does not touch run state.
 export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as const;
+// Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
+// notice that surfaces when at least one queue migrated into `idle-pending`.
+// NON-mutating: the handler performs a single `setQueue({...migrationNotice:
+// 'dismissed'})` write that flips a UI flag and does NOT touch workflow,
+// queue, or task state. NOT a member of `MUTATING_COMMANDS` — the dismiss
+// is non-destructive UX state per FR-020 and parity with the other
+// `CMD_OPEN_*` non-mutating commands.
+export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -171,7 +179,8 @@ export const COMMAND_TYPES = [
   CMD_REVEAL_WAKEUP_SESSION_LOG,
   CMD_START_QUEUE,
   CMD_CLEAR_ALL,
-  CMD_SET_CONFIRM_SUPPRESSION
+  CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_DISMISS_MIGRATION_NOTICE
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -186,6 +195,23 @@ export interface CommandBase<T extends CommandType> {
   readonly correlationId: string;
 }
 
+// Feature 065 — start-intent types (StartMode, EnqueueStartIntent,
+// StartQueueIntent, IpcScheduledStartSource) live in a sibling module
+// to keep this file within its LOC budget. Re-exported here for
+// backward-compat with consumers that import from sidebar-ipc.ts.
+export type {
+  StartMode,
+  IpcScheduledStartSource,
+  EnqueueStartIntent,
+  StartQueueIntent
+} from './start-intent-types';
+
+import type { EnqueueStartIntent, StartQueueIntent } from './start-intent-types';
+import {
+  isValidEnqueueStartIntent,
+  isValidStartQueueIntent
+} from './start-intent-types';
+
 export interface StartCommand extends CommandBase<typeof CMD_START> {
   readonly payload: {
     readonly description: string;
@@ -197,6 +223,10 @@ export interface StartCommand extends CommandBase<typeof CMD_START> {
     // appends at the end of that queue.
     readonly queueId?: string;
     readonly position?: number;
+    // Feature 065 — optional start-mode intent (additive). Omission is
+    // valid; the host's policy table routes it to the chooser default or
+    // the warn-level automation default. See sidebar-ipc.diff.md.
+    readonly startIntent?: EnqueueStartIntent;
   };
 }
 
@@ -252,6 +282,12 @@ export interface SetConfirmSuppressionCommand
     readonly suppressed: boolean;
   };
 }
+
+// Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
+// notice. Payload is empty (the dismiss applies to the single workspace queue;
+// the host writes `migrationNotice: 'dismissed'` via `setQueue({...})`).
+export interface DismissMigrationNoticeCommand
+  extends CommandBase<typeof CMD_DISMISS_MIGRATION_NOTICE> {}
 
 export interface PauseQueueCommand extends CommandBase<typeof CMD_PAUSE_QUEUE> {
   readonly payload?: { readonly queueId?: string; readonly reason?: string };
@@ -597,8 +633,12 @@ export interface RevealWakeupSessionLogCommand
 // BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
 // the oldest pending task to in-flight. Rejected when no pending tasks
 // exist, when the queue is paused, or when a run is already in-flight.
+//
+// Feature 065 — optional `startIntent` payload (additive). Carries
+// `startMode` for now/scheduled/cancel-schedule and the `'operator-restart'`
+// source literal. Omission preserves the legacy "no-op promote" semantics.
 export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
-  readonly payload?: Record<string, never>;
+  readonly payload?: { readonly startIntent?: StartQueueIntent } | Record<string, never>;
 }
 
 export interface RevealWakeupSessionLogResponseSuccess {
@@ -716,7 +756,8 @@ export type SidebarCommand =
   | RevealWakeupSessionLogCommand
   | StartQueueCommand
   | ClearAllCommand
-  | SetConfirmSuppressionCommand;
+  | SetConfirmSuppressionCommand
+  | DismissMigrationNoticeCommand;
 
 // -- Host messages (host → webview) -----------------------------------------
 
@@ -786,8 +827,17 @@ function isObjectWithType<T extends string>(value: unknown, type: T): boolean {
 }
 
 export function isCmdStart(value: unknown): value is StartCommand {
-  return isObjectWithType(value, CMD_START);
+  if (!isObjectWithType(value, CMD_START)) return false;
+  // Feature 065 — optional `startIntent` validation. Omission is always
+  // valid; presence requires shape per the IPC diff doc.
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === undefined || payload === null) return true;
+  if (typeof payload !== 'object') return false;
+  const intent = (payload as { startIntent?: unknown }).startIntent;
+  if (intent === undefined) return true;
+  return isValidEnqueueStartIntent(intent);
 }
+
 export function isCmdCancel(value: unknown): value is CancelCommand {
   return isObjectWithType(value, CMD_CANCEL);
 }
@@ -931,16 +981,20 @@ export function isCmdRevealWakeupSessionLog(value: unknown): value is RevealWake
   return isObjectWithType(value, CMD_REVEAL_WAKEUP_SESSION_LOG);
 }
 // BUG-002 (FR-012a) — start-queue guard.
+// Feature 065 — also accepts `payload.startIntent` (additive) per
+// sidebar-ipc.diff.md. Empty-object payload remains valid for back-compat.
 export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
   if (!isObjectWithType(value, CMD_START_QUEUE)) return false;
   const payload = (value as { payload?: unknown }).payload;
-  return payload === undefined
-    || (
-      payload !== null
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && Object.keys(payload).length === 0
-    );
+  if (payload === undefined) return true;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const keys = Object.keys(payload);
+  if (keys.length === 0) return true;
+  if (keys.length === 1 && keys[0] === 'startIntent') {
+    const intent = (payload as { startIntent?: unknown }).startIntent;
+    return intent === undefined || isValidStartQueueIntent(intent);
+  }
+  return false;
 }
 // Feature 063 — Clean All guard. Accepts `payload` absent or as an empty
 // object; rejects arrays and non-empty payloads.
@@ -975,6 +1029,14 @@ export function isCmdSetConfirmSuppression(
   return typeof actionKey === 'string'
     && actionKey.length > 0
     && typeof suppressed === 'boolean';
+}
+
+// Feature 065 (T054a / FR-020) — dismiss-migration-notice guard. Discriminator-only
+// (no payload).
+export function isCmdDismissMigrationNotice(
+  value: unknown
+): value is DismissMigrationNoticeCommand {
+  return isObjectWithType(value, CMD_DISMISS_MIGRATION_NOTICE);
 }
 
 // Exhaustive guard registry. The drift test asserts the keys of this
@@ -1030,5 +1092,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_REVEAL_WAKEUP_SESSION_LOG]: isCmdRevealWakeupSessionLog,
   [CMD_START_QUEUE]: isCmdStartQueue,
   [CMD_CLEAR_ALL]: isCmdClearAll,
-  [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression
+  [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
+  [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice
 });

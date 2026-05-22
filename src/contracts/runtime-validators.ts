@@ -63,8 +63,13 @@ import {
   CMD_START_QUEUE,
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_DISMISS_MIGRATION_NOTICE,
   type SidebarCommand
 } from './sidebar-ipc';
+import {
+  isValidEnqueueStartIntent,
+  isValidStartQueueIntent
+} from './start-intent-types';
 
 export interface IpcValidationError {
   readonly ok: false;
@@ -139,6 +144,10 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateOptionalEmptyPayload(CMD_CLEAR_ALL, obj, correlationId);
     case CMD_SET_CONFIRM_SUPPRESSION:
       return validateSetConfirmSuppression(obj, correlationId);
+    case CMD_DISMISS_MIGRATION_NOTICE:
+      // Feature 065 (T054a / FR-020). No payload — the empty discriminator
+      // is enough; the host idempotency-guards the flip to 'dismissed'.
+      return validateNoPayload(CMD_DISMISS_MIGRATION_NOTICE, obj, correlationId);
     case CMD_OPEN_DASHBOARD:
       return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
     case CMD_RETRY_ACTIVE_RUN:
@@ -197,9 +206,11 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_CLEAR_PHASE_BREAKPOINT, obj, correlationId);
-    // BUG-002 (FR-012a) — start-queue accepts no payload or empty `{}`.
+    // Feature 065 (BUG-002 / FR-012a) — start-queue accepts no payload,
+    // an empty `{}`, or `{ startIntent: StartQueueIntent }`. The empty
+    // forms preserve the feature 020 / FR-012a legacy semantic.
     case CMD_START_QUEUE:
-      return validateOptionalEmptyPayload(CMD_START_QUEUE, obj, correlationId);
+      return validateStartQueue(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
@@ -211,7 +222,11 @@ function validateStart(obj: Record<string, unknown>, correlationId: string): Ipc
     return fail('missing-payload', { type: CMD_START, correlationId });
   }
   const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['description', 'pipelineId', 'queueId', 'position'])) {
+  // BUG-002 (Feature 065) — `startIntent` is an optional payload field;
+  // shape is validated below via `isValidEnqueueStartIntent`. Keep this
+  // allowlist in lockstep with the `isCmdStart` predicate in
+  // `sidebar-ipc.ts`.
+  if (hasUnexpectedKeys(p, ['description', 'pipelineId', 'queueId', 'position', 'startIntent'])) {
     return fail('unexpected-payload-fields', { type: CMD_START, correlationId });
   }
   const description = p['description'];
@@ -240,6 +255,10 @@ function validateStart(obj: Record<string, unknown>, correlationId: string): Ipc
   ) {
     return fail('invalid-position', { type: CMD_START, correlationId });
   }
+  const startIntent = p['startIntent'];
+  if (startIntent !== undefined && !isValidEnqueueStartIntent(startIntent)) {
+    return fail('invalid-start-intent', { type: CMD_START, correlationId });
+  }
   return ok({
     type: CMD_START,
     correlationId,
@@ -247,7 +266,8 @@ function validateStart(obj: Record<string, unknown>, correlationId: string): Ipc
       description: trimmed,
       ...(pipelineId ? { pipelineId } : {}),
       ...(queueId ? { queueId } : {}),
-      ...(position !== undefined ? { position } : {})
+      ...(position !== undefined ? { position } : {}),
+      ...(startIntent !== undefined ? { startIntent } : {})
     }
   });
 }
@@ -445,7 +465,8 @@ type NoPayloadType =
   | typeof CMD_RETRY_PHASE_NOW
   | typeof CMD_PAUSE_PHASE
   | typeof CMD_RESUME_PHASE
-  | typeof CMD_OPEN_VERBOSE_SETTING;
+  | typeof CMD_OPEN_VERBOSE_SETTING
+  | typeof CMD_DISMISS_MIGRATION_NOTICE;
 
 // Feature 017 — BUG-001. Both CMD_CANCEL and CMD_RESTART_CANCELED_TASK
 // carry a single `taskId: string` payload.
@@ -959,8 +980,10 @@ function validateStopPhaseLogTail(
 }
 
 // BUG-002 (FR-012a) — generic validator for commands that accept either
-// no payload at all or an empty object `{}`. Shared by CMD_START_QUEUE
-// and structurally identical to the inline pattern in validateWakeUpNow.
+// no payload at all or an empty object `{}`. Shared by feature 020's
+// legacy CMD_START_QUEUE consumers (no longer routed through this fn,
+// kept for CMD_CLEAR_ALL) and structurally identical to the inline
+// pattern in validateWakeUpNow.
 function validateOptionalEmptyPayload(
   type: string,
   obj: Record<string, unknown>,
@@ -976,6 +999,41 @@ function validateOptionalEmptyPayload(
     }
   }
   return ok({ type, correlationId, payload: {} } as SidebarCommand);
+}
+
+// Feature 065 (BUG-002) — purpose-built parser for CMD_START_QUEUE that
+// accepts no payload, empty `{}`, or `{ startIntent: StartQueueIntent }`.
+// Mirrors the predicate path `isCmdStartQueue` in `sidebar-ipc.ts` and
+// must remain in lockstep with it; the lockstep is verified by T020.
+// The empty-payload semantic is preserved for feature 020 / FR-012a
+// callers that did not opt into the optional `startIntent` field.
+function validateStartQueue(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === undefined) {
+    return ok({ type: CMD_START_QUEUE, correlationId, payload: {} } as SidebarCommand);
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    return fail('invalid-payload', { type: CMD_START_QUEUE, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['startIntent'])) {
+    return fail('unexpected-payload-fields', { type: CMD_START_QUEUE, correlationId });
+  }
+  const startIntent = p['startIntent'];
+  if (startIntent === undefined) {
+    return ok({ type: CMD_START_QUEUE, correlationId, payload: {} } as SidebarCommand);
+  }
+  if (!isValidStartQueueIntent(startIntent)) {
+    return fail('invalid-start-intent', { type: CMD_START_QUEUE, correlationId });
+  }
+  return ok({
+    type: CMD_START_QUEUE,
+    correlationId,
+    payload: { startIntent }
+  } as SidebarCommand);
 }
 
 function validateSetConfirmSuppression(

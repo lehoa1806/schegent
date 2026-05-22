@@ -235,6 +235,32 @@ export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
 // contracts/cmd-clear-all.md §Idempotency).
 export const QUEUE_FULL_RESET_EVENT_TYPES = ['queue-cleared-all'] as const;
 
+// Feature 065 — scheduled-start lifecycle and idle-pending transition events.
+// Emitted by `ScheduledStartCoordinator`, the sidebar message router (intent
+// validation), and `GuardedRunService` (horizon rejection / past-timestamp
+// coercion / no-start-mode automation default). All payloads are structural
+// (timestamps, queue id, source enums, counts) and pass `SECRET_PATTERNS`
+// unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the
+// 028/030/031/032/034 additive precedent). See
+// specs/065-enqueue-start-separation/contracts/audit-events.diff.md.
+export const SCHEDULE_EVENT_TYPES = [
+  'scheduled-start-armed',
+  'scheduled-start-fired',
+  'scheduled-start-canceled',
+  'scheduled-start-superseded',
+  'scheduled-start-horizon-rejected',
+  'scheduled-start-past-timestamp-coerced-to-now',
+  'idle-pending-entered',
+  'idle-pending-exited',
+  'automation-enqueue-no-start-mode'
+] as const;
+
+// Feature 065 — emitted by `WorkspaceStateStore.initialize()` (via
+// extension.ts) after a v6 → v7 lift completes. The payload is structural
+// (counts + version literals + timestamp) and passes `SECRET_PATTERNS`
+// unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump.
+export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -255,7 +281,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...STATE_MIGRATION_EVENT_TYPES,
   ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
   ...TRUST_GATE_EVENT_TYPES,
-  ...QUEUE_FULL_RESET_EVENT_TYPES
+  ...QUEUE_FULL_RESET_EVENT_TYPES,
+  ...SCHEDULE_EVENT_TYPES,
+  ...MIGRATION_V7_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -278,6 +306,8 @@ export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[numbe
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
+export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
+export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
@@ -421,4 +451,83 @@ export const KNOWN_AUDIT_EVENT_TYPE_SET: ReadonlySet<string> = new Set<string>(A
 
 export function isKnownAuditEventType(value: string): value is AuditEventType {
   return KNOWN_AUDIT_EVENT_TYPE_SET.has(value);
+}
+
+// Feature 064 — closed-union audit scope for the snapshot projection. Each
+// `AuditTailEntry` carries a scope literal so the webview can split the
+// audit tail into the Activity Feed (task-scoped + reachable runId) and
+// the System tab (system-scoped, always visible). See
+// specs/064-system-tab-audit-split/contracts/audit-event-classification.md.
+export type AuditScope = 'task' | 'system';
+
+// Feature 064 — frozen set of event-type literals that are classified as
+// `'system'` scope. Mirrors the authoritative classification table at
+// specs/064-system-tab-audit-split/contracts/audit-event-classification.md.
+// Event types not present here resolve to `'task'` scope (FR-011), which
+// preserves the warn-and-preserve parser discipline for unknown event
+// types (CLAUDE.md hard rule).
+export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.freeze(
+  new Set<AuditEventType>([
+    // Queue mutation
+    'queue-cleared-all',
+    'queue-created',
+    'queue-renamed',
+    'queue-deleted',
+    'queue-resumed',
+    'queue-settings-saved',
+    'task-enqueued',
+    'task-modified',
+    'task-removed',
+    'task-reordered',
+    'task-moved',
+    'task-canceled',
+    'task-restarted-from-canceled',
+    'schedule-set',
+    'schedule-cleared',
+    'schedule-fired',
+    // Pause / queue-level lifecycle (LIFECYCLE_EVENT_TYPES subset)
+    'pause',
+    'resume',
+    // Delayed-retry / runner-level scheduling (DELAYED_RETRY_EVENT_TYPES)
+    'retry-scheduled',
+    'retry-manual',
+    'retry-recovered',
+    'queue-paused',
+    // Audit pipeline housekeeping
+    'audit-rotated',
+    'audit-retention-applied',
+    'audit-hydration-warning',
+    'audit-schema-warning',
+    // State migration / repair
+    'state-migrated',
+    'workflow-run-repaired',
+    'state-migrated-v6-to-v7',
+    // Feature 065 — scheduled-start lifecycle / idle-pending transitions
+    'scheduled-start-armed',
+    'scheduled-start-fired',
+    'scheduled-start-canceled',
+    'scheduled-start-superseded',
+    'scheduled-start-horizon-rejected',
+    'scheduled-start-past-timestamp-coerced-to-now',
+    'idle-pending-entered',
+    'idle-pending-exited',
+    'automation-enqueue-no-start-mode',
+    // Wake-up daemon lifecycle
+    'wakeup-daemon-installed',
+    'wakeup-daemon-updated',
+    'wakeup-daemon-uninstalled',
+    'wakeup-daemon-install-failed',
+    'wakeup-workspace-roots-updated',
+    'wakeup-daemon-uninstall-failed-on-deactivate',
+    // Workspace / trust gates
+    'multi-root.warning-shown',
+    'trust.capability-denied'
+  ])
+);
+
+// Feature 064 — pure classifier mapping an event-type literal to the
+// snapshot scope. Unknown event types default to `'task'` scope (FR-011).
+// O(1), side-effect free.
+export function classifyAuditEvent(eventType: string): AuditScope {
+  return SYSTEM_SCOPED_EVENT_TYPES.has(eventType as AuditEventType) ? 'system' : 'task';
 }

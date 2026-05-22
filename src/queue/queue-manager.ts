@@ -107,14 +107,57 @@ export interface QueueMutationDetail extends MutationResult {
 // BUG-001 (FR-022): idempotent rejection reasons → DEBUG, not WARN.
 const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set(['not-paused', 'already-paused']);
 
+/**
+ * Feature 065 — minimal hook that the QueueManager's pause/resume paths
+ * use to cancel an outstanding scheduled-start timer when the queue
+ * leaves `idle-pending` via an operator pause (FR-019). Kept structural
+ * so unit tests can satisfy it without importing the coordinator.
+ */
+export interface ScheduledStartCancelHook {
+  cancel(queueId: string, reason: 'pause-cancel'): Promise<void> | void;
+}
+
+/**
+ * Feature 065 — minimal hook for emitting `scheduled-start-canceled`,
+ * `idle-pending-entered`, `idle-pending-exited` from the pause/resume
+ * writer when a lifecycle transition occurs. Kept structural so unit
+ * tests can supply a vi.fn().
+ */
+export interface LifecycleAuditHook {
+  append(entry: {
+    runId: string;
+    phase: string;
+    iteration: number;
+    eventType: string;
+    outcome: 'info' | 'success';
+    payload: Record<string, unknown>;
+  }): Promise<unknown>;
+}
+
 export class QueueManager {
   private readonly store: WorkspaceStateStore;
   /** Feature 019 — optional debug logger; absent in unit tests. */
   private readonly logger: SanitizedLogger | null;
+  // Feature 065 — late-injected optional dependencies used by the
+  // pause/resume writer to cancel outstanding schedules and emit the
+  // lifecycle audit trail. Both are optional so existing callers and
+  // tests that don't touch the pause path are unaffected.
+  private scheduledStartCancelHook: ScheduledStartCancelHook | null = null;
+  private lifecycleAuditHook: LifecycleAuditHook | null = null;
 
   constructor(store: WorkspaceStateStore, logger?: SanitizedLogger) {
     this.store = store;
     this.logger = logger ?? null;
+  }
+
+  /** Feature 065 — wire the schedule-cancel hook (called from `extension.ts`). */
+  public setScheduledStartCancelHook(hook: ScheduledStartCancelHook | null): void {
+    this.scheduledStartCancelHook = hook;
+  }
+
+  /** Feature 065 — wire the lifecycle audit hook (called from `extension.ts`). */
+  public setLifecycleAuditHook(hook: LifecycleAuditHook | null): void {
+    this.lifecycleAuditHook = hook;
   }
 
   public list(): FeatureRequest[] {
@@ -352,7 +395,72 @@ export class QueueManager {
         );
         if (resolvedQueueId === DEFAULT_QUEUE_ID) {
           const queue = this.store.getQueue();
-          await this.store.setQueue({ ...queue, paused, pausedReason });
+          // Feature 065 (T036/T037) — lifecycle transition + scheduled-start
+          // cancellation rules. On pause: if entering from idle-pending with
+          // an armed schedule, cancel the in-process timer and clear the
+          // persisted scheduledStartAt/Source atomically with the lifecycle
+          // change. On resume: derive the new lifecycle from inFlightId and
+          // pending.length per FR-019.
+          if (paused) {
+            const wasIdlePending = queue.queueLifecycle === 'idle-pending';
+            const hadSchedule = queue.scheduledStartAt !== null;
+            if (wasIdlePending && hadSchedule && this.scheduledStartCancelHook) {
+              try {
+                await this.scheduledStartCancelHook.cancel(resolvedQueueId, 'pause-cancel');
+              } catch (err) {
+                this.logger?.warn(
+                  `scheduled-start cancel on pause failed: ${(err as Error).message}`
+                );
+              }
+            }
+            await this.store.setQueue({
+              ...queue,
+              paused,
+              pausedReason,
+              queueLifecycle: 'operator-paused',
+              scheduledStartAt: null,
+              scheduledStartSource: null
+            });
+            // Note: `scheduled-start-canceled` is emitted by the coordinator's
+            // own `cancel()` method (above), not duplicated here. We only emit
+            // `idle-pending-exited` AFTER the cancel to preserve the ordering
+            // invariant required by FR-019.
+            if (wasIdlePending && this.lifecycleAuditHook) {
+              await this.appendLifecycleAudit('idle-pending-exited', {
+                queueId: resolvedQueueId,
+                exitReason: 'pause',
+                transitionReason: 'pause'
+              });
+            }
+          } else {
+            // Resume: derive next lifecycle from queue contents.
+            const hasInFlight = queue.inFlightId !== null;
+            const hasPending = queue.requests.some((r) => r.status === 'pending');
+            const nextLifecycle = hasInFlight
+              ? 'running'
+              : hasPending
+                ? 'idle-pending'
+                : 'active-empty';
+            await this.store.setQueue({
+              ...queue,
+              paused,
+              pausedReason,
+              queueLifecycle: nextLifecycle,
+              scheduledStartAt: null,
+              scheduledStartSource: null
+            });
+            if (
+              nextLifecycle === 'idle-pending' &&
+              this.lifecycleAuditHook
+            ) {
+              await this.appendLifecycleAudit('idle-pending-entered', {
+                queueId: resolvedQueueId,
+                scheduledStartAt: null,
+                scheduledStartSource: null,
+                transitionReason: 'resume-from-pause'
+              });
+            }
+          }
         }
         if (paused) {
           await this.pauseMatchingRunForQueue(resolvedQueueId, now);
@@ -889,6 +997,35 @@ export class QueueManager {
       await this.setQueuePausedState(false, undefined, null, 'operator');
     }
     return { removed: before - filtered.length };
+  }
+
+  /**
+   * Feature 065 — emit a `scheduled-start-*` / `idle-pending-*` lifecycle
+   * audit event via the late-injected hook. Best-effort; failures are
+   * logged but do not abort the pause/resume operation.
+   */
+  private async appendLifecycleAudit(
+    eventType:
+      | 'scheduled-start-canceled'
+      | 'idle-pending-entered'
+      | 'idle-pending-exited',
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.lifecycleAuditHook) return;
+    try {
+      await this.lifecycleAuditHook.append({
+        runId: '',
+        phase: 'scheduled-start',
+        iteration: 0,
+        eventType,
+        outcome: 'info',
+        payload: { ...payload, occurredAt: payload.occurredAt ?? Date.now() }
+      });
+    } catch (err) {
+      this.logger?.warn(
+        `lifecycle audit append failed (${eventType}): ${(err as Error).message}`
+      );
+    }
   }
 
   private async pauseMatchingRunForQueue(queueId: string, now: number): Promise<void> {

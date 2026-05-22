@@ -33,6 +33,10 @@ export class AutoDrainCoordinator {
 
   public async drainIfIdle(): Promise<void> {
     const queueState = this.store.getQueue();
+    // Feature 065 (T010 / FR-003): an `idle-pending` queue MUST NOT
+    // auto-promote. The scheduler (or an explicit operator restart via
+    // `CMD_START_QUEUE`) owns the transition out of `idle-pending`.
+    if (queueState.queueLifecycle === 'idle-pending') return;
     if (queueState.paused) return;
     if (!this.queue.hasCapacity()) return;
     const next = this.queue.peekNextPending();

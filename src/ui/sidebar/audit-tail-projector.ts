@@ -5,6 +5,7 @@
 // the sidebar.
 
 import type { AuditEntry, AuditEventType, AuditOutcome } from '../../audit/audit-entry';
+import { classifyAuditEvent } from '../../contracts/audit-events';
 import type { Phase } from '../../controller/phase';
 import { truncateLabel } from './queue-projector';
 import type { AuditCategory, AuditTailEntry, PhaseName } from './snapshot';
@@ -15,7 +16,9 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
     timestamp: entry.timestamp,
     phase: phaseForTail(entry.phase),
     category: categorize(entry.eventType, entry.outcome),
-    summary: summarize(entry)
+    summary: summarize(entry),
+    runId: entry.runId,
+    scope: classifyAuditEvent(entry.eventType)
   });
 }
 

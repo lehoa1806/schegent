@@ -64,21 +64,24 @@ All four fields fall back to the prior built-in defaults when omitted, so existi
 
 The compact sidebar emits **only** `CMD_OPEN_DASHBOARD`. Any other operator-initiated mutation (cancel, resume, queue actions, history rerun, retry-active-run) is sent from the Dashboard webview or the VS Code Command Palette. This narrow surface is enforced by `tests/integration/sidebar-activation.host.test.ts`, which scans the sidebar bundle and asserts the four allowed `data-testid` containers (`sidebar-status-row`, `sidebar-stats-strip`, `sidebar-current-task`, `sidebar-open-dashboard-button`) plus `app-root` and rejects any reappearance of removed sidebar testids.
 
-### Top-level routes (spec 012)
+### Top-level routes (spec 012 / spec 064)
 
-The Dashboard exposes three peer top-level routes from
+The Dashboard exposes four peer top-level routes from
 `dashboard/App.svelte` (the legacy two-tier `Operations / Settings` parent
-with inner tabs is gone):
+with inner tabs is gone; Feature 064 added `System` as a sibling between
+`Pipeline Builder` and `Settings`):
 
 | Route | Component | Purpose |
 |---|---|---|
-| Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, audit tail, and phase log feed. |
+| Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, and phase log feed. |
 | Pipeline Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
+| System | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
 | Settings | `components/SettingsSurface.svelte` | Three sub-tabs: **General**, **Fatal Signatures**, and **Wake up**. |
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
 (`$derived(snapshotStore.snapshot)`); every route receives the snapshot
-as a `{snapshot}` prop.
+as a `{snapshot}` prop (the System route reads `auditTail` directly
+from the store).
 
 ### Settings sub-tabs (spec 012 reduction)
 
@@ -480,6 +483,137 @@ preceded by a matching `useConfirm(...)` await.
 
 One new audit event type is additive (no `AUDIT_SCHEMA_VERSION` bump):
 `queue-cleared-all { pendingCount, completedCount, failedCount, canceledCount, hadActiveRun, hadCascadePause }`.
+
+### IPC additions (spec 064 — System tab and task-scoped Activity Feed)
+
+Feature 064 adds **no new IPC commands** and **no new audit event types**.
+It is a pure presentation-layer split powered by two additive fields on
+each `AuditTailEntry`:
+
+- `runId: string` — copied byte-for-byte from `AuditEntry.runId` by the
+  projector. The Activity Feed uses it to gate visibility on the live-run
+  reference set (`activeRunId ∪ queue.inFlight.id ∪ queue.pending[*].id
+  ∪ queue.recent[*].id ∪ history[*].runId`).
+- `scope: 'task' | 'system'` — produced by `classifyAuditEvent(eventType)`
+  in [`../src/contracts/audit-events.ts`](../src/contracts/audit-events.ts).
+  The closed `SYSTEM_SCOPED_EVENT_TYPES` set is the single source of
+  truth; a TS `never` exhaustiveness assertion in
+  [`../tests/unit/audit-events/event-classification.test.ts`](../tests/unit/audit-events/event-classification.test.ts)
+  fails `tsc` if a new `AuditEventType` literal is added without being
+  classified. Unknown event types default to `'task'` (FR-011), preserving
+  the existing "Never drop unknown audit event types from the parser"
+  invariant.
+
+Both fields are added inside the existing frozen-object return of
+[`projectAuditEntry`](../src/ui/sidebar/audit-tail-projector.ts). No
+`AUDIT_SCHEMA_VERSION` bump (additive fields on a projected shape only),
+no `STATE_SCHEMA_VERSION` bump. Legacy snapshots without `scope` are
+treated as `'task'` per FR-013 (the AuditTail/SystemTab tests pin both
+legacy-tolerance directions).
+
+The `SystemTab.svelte` component is owned by Feature 064 and lives at
+[`src/components/SystemTab.svelte`](src/components/SystemTab.svelte).
+It is the dashboard's exclusive surface for system-scoped audit entries
+and is **never** gated by runId reachability — `queue-cleared-all` and
+other lifecycle/housekeeping events always render here (FR-015).
+
+### IPC additions (spec 065 — Enqueue/Start separation)
+
+Feature 065 separates enqueue from start. Tasks land in the queue
+without auto-promotion; the operator (or a scheduled-start timer)
+explicitly chooses when the queue begins draining. The webview owns
+three new surfaces and one cross-component shared store:
+
+**Components** (owned by feature 065):
+
+- [`src/components/StartModeChooser.svelte`](src/components/StartModeChooser.svelte)
+  — non-modal inline chooser surfaced when the operator triggers a Start
+  on an `idle-pending` queue. Exposes "Start now" and "Start in
+  HH:MM:SS" affordances. Emits an `onCommit(startIntent)` callback the
+  parent translates into `CMD_START` or `CMD_START_QUEUE` with the
+  optional `startIntent` payload. The chooser carries a
+  `mode: 'idle-pending-restart' | 'empty-enqueue'` prop that selects
+  whether the "Cancel schedule" affordance is available.
+- [`src/components/ScheduledStartIndicator.svelte`](src/components/ScheduledStartIndicator.svelte)
+  — countdown surface rendered when `queue.scheduledStartAt != null`.
+  Renders 1-second cadence when expanded in the sidebar and the
+  status-bar projection (`SchegentStatusBar.showTransient`) handles the
+  3–5s transient indicator on schedule-fire per FR-017a / SC-009.
+  Exposes Cancel, Change, and "Start now" actions that emit the same
+  `startIntent` shape via the existing `CMD_START_QUEUE` channel.
+- [`src/components/SystemTab.svelte`](src/components/SystemTab.svelte)
+  audit filter set extended (additive) for `scheduled-start-*`,
+  `idle-pending-*`, and `automation-enqueue-no-start-mode` event types.
+
+**Shared store**:
+
+- [`src/lib/tick-store.ts`](src/lib/tick-store.ts) — a single `setInterval`-
+  backed Svelte store that fans out one timer tick per second to every
+  visible `ScheduledStartIndicator`. Mounting N indicators consumes one
+  timer (not N) per FR-017's per-renderer cost constraint. The store is
+  reference-counted so it idles when no indicator is on screen.
+
+**Helpers**:
+
+- [`src/lib/start-mode.ts`](src/lib/start-mode.ts) — pure helpers that
+  parse the chooser's `HH:MM:SS` input into a `scheduledStartAt`
+  timestamp and validate the lockstep invariant (a `'later'` mode
+  always carries a positive offset; a `'now'` mode never carries one).
+- [`src/lib/remote-lifecycle-change-store.svelte.ts`](src/lib/remote-lifecycle-change-store.svelte.ts)
+  — track multi-window queue-state churn so the chooser closes silently
+  in the losing window during cross-window contention (Q13 / scenario 13).
+
+**IPC shape (additive, no new commands beyond `CMD_DISMISS_MIGRATION_NOTICE`)**:
+
+`CMD_START` and `CMD_START_QUEUE` accept an optional `startIntent`
+field:
+
+```ts
+type StartIntent = {
+  startMode: 'now' | 'later';
+  scheduledStartAt?: number; // epoch ms, required when startMode === 'later'
+  source:
+    | 'operator-restart'
+    | 'operator-chooser'
+    | 'wake-up-runner'
+    | 'programmatic'
+    | 'migration-default';
+};
+```
+
+`startIntent` is optional for backwards compatibility (FR-024). A
+command without a `startIntent` field is treated as `startMode: 'now'`
+from the existing source attribution. The new `CMD_DISMISS_MIGRATION_NOTICE`
+is the **only** new command type; it is deliberately excluded from
+`MUTATING_COMMAND_TYPES` because the dismiss is non-destructive UX
+state per FR-020.
+
+No `AUDIT_SCHEMA_VERSION` bump (event types are additive within the
+existing envelope). `STATE_SCHEMA_VERSION` is bumped to 7 by the
+v6 → v7 migrator that introduces `queueLifecycle`, `scheduledStartAt`,
+`scheduledStartSource`, and `migrationNotice` on the persisted queue
+record. See
+[`docs/operations/single-task-queue-migration.md`](../docs/operations/single-task-queue-migration.md)
+for the migration walkthrough.
+
+### Audit surfaces
+
+The Dashboard exposes the audit tail through **two complementary
+surfaces**, both reading from the same `snapshot.auditTail` array:
+
+| Surface | Component | Visibility filter | Empty-state copy |
+|---|---|---|---|
+| **Activity Feed** (under Operations) | [`src/components/AuditTail.svelte`](src/components/AuditTail.svelte) | `entry.scope === 'task' && knownRunIds.has(entry.runId)` (legacy tolerance: `scope ?? 'task'`) | "No active task activity. System events appear in the System tab." |
+| **System tab** (peer route) | [`src/components/SystemTab.svelte`](src/components/SystemTab.svelte) | `entry.scope === 'system'` (no runId gate) | "No system events yet." |
+
+Both surfaces order entries newest-first. The on-disk
+`.schegent/audit.log` is untouched — the split is purely the webview's
+read-side classification of an existing append-only log. The
+disk-integrity regression at
+[`../tests/integration/clean-all-disk-integrity.test.ts`](../tests/integration/clean-all-disk-integrity.test.ts)
+hashes the log before/after a Clean All cycle and asserts the prefix is
+byte-identical (SC-005). The `AUDIT_TAIL_MAX = 50` ring-buffer cap is
+unchanged (FR-012).
 
 ### Activity Feed navigation (spec 021)
 

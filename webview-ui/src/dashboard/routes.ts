@@ -1,17 +1,21 @@
-// Feature 012 T031 — flat top-level dashboard route enum.
+// Feature 012 T031 / Feature 064 T014 — flat top-level dashboard route enum.
 //
-// The Dashboard surface exposes exactly three sibling routes. The legacy
-// two-tier nav (a parent "Operations" route containing inner "Operations |
-// Pipeline Builder" sub-tabs) is gone — `pipeline-builder` is now a peer.
+// The Dashboard surface exposes four sibling routes (was three under Feature
+// 012). Feature 064 introduced `system` as a peer between `pipeline-builder`
+// and `settings` to host the new System tab (audit entries tagged
+// `scope === 'system'`). The legacy two-tier nav is gone — every route is a
+// flat sibling.
 //
 // See specs/012-claude-autocompact-override/contracts/dashboard-navigation.md
-// for the invariants this module pins.
+// and specs/064-system-tab-audit-split/contracts/dashboard-navigation.md for
+// the invariants this module pins.
 
-export type DashboardRoute = 'operations' | 'pipeline-builder' | 'settings';
+export type DashboardRoute = 'operations' | 'pipeline-builder' | 'system' | 'settings';
 
 export const DASHBOARD_ROUTES: readonly DashboardRoute[] = [
   'operations',
   'pipeline-builder',
+  'system',
   'settings'
 ] as const;
 
@@ -21,5 +25,6 @@ export const DASHBOARD_ROUTE_LABELS: Readonly<Record<DashboardRoute, string>> =
   Object.freeze({
     operations: 'Operations',
     'pipeline-builder': 'Pipeline Builder',
+    system: 'System',
     settings: 'Settings'
   });

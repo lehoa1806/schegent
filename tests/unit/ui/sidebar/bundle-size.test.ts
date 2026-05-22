@@ -22,7 +22,15 @@ const MAX_JS_BYTES = 200 * 1024;
 // sub-components. The sidebar `index.css` is well inside the cap; only
 // `dashboard.css` is at the new boundary. Lift again only when a feature
 // intentionally adds operator-visible UI.
-const MAX_CSS_BYTES = 60 * 1024;
+//
+// Feature 065 (T055 / 2026-05-22) lifted 60 KB → 70 KB to absorb the
+// operator-visible enqueue/start surfaces: `ScheduledStartIndicator.svelte`,
+// `StartModeChooser.svelte`, `SystemTab.svelte`, the migration notice block
+// in `QueueListView.svelte`, the idle-pending start button, and the
+// status-bar transient indicator styles. The actual post-build size is
+// ~66.5 KB; the 70 KB cap leaves headroom for the remaining T059–T066
+// polish tasks (label tweaks, dot colors) without re-lifting mid-feature.
+const MAX_CSS_BYTES = 70 * 1024;
 const MAX_DASHBOARD_JS_BYTES = 250 * 1024;
 const SIDEBAR_GROWTH_BUDGET_BYTES = 8 * 1024;
 

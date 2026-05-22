@@ -46,7 +46,8 @@ export type LegacyQueueMigrationAuditEvent =
       readonly fromSchemaVersion: 2;
       readonly toSchemaVersion: 3;
     }
-  | StateMigratedV5ToV6AuditEvent;
+  | StateMigratedV5ToV6AuditEvent
+  | StateMigratedV6ToV7AuditEvent;
 
 /**
  * Feature 030 — emitted by `migrateV5ToV6()` when the persisted state is
@@ -125,7 +126,10 @@ export function migrateLegacyQueueState(
       inFlightId: effectiveInFlightId,
       paused,
       pausedReason,
-      updatedAt
+      updatedAt,
+      queueLifecycle: deriveLifecycle(effectiveInFlightId, paused, lifted.requests.length),
+      scheduledStartAt: null,
+      scheduledStartSource: null
     },
     registry: paused
       ? {
@@ -161,7 +165,10 @@ function emptyQueueState(now: number): QueueState {
     inFlightId: null,
     paused: false,
     pausedReason: null,
-    updatedAt: now
+    updatedAt: now,
+    queueLifecycle: 'active-empty',
+    scheduledStartAt: null,
+    scheduledStartSource: null
   };
 }
 
@@ -422,12 +429,17 @@ export function migrateV5ToV6(state: V5State, now: number = Date.now()): Migrate
     updatedAt: now
   };
 
+  const pendingCountAfter = nextRequests.filter((r) => r.status === 'pending').length;
+  const newInFlightId = keptInFlight?.id ?? null;
   const newQueueState: QueueState = {
     requests: nextRequests,
-    inFlightId: keptInFlight?.id ?? null,
+    inFlightId: newInFlightId,
     paused: inheritedPaused,
     pausedReason: inheritedPaused ? queueState.pausedReason ?? null : null,
-    updatedAt: now
+    updatedAt: now,
+    queueLifecycle: deriveLifecycle(newInFlightId, inheritedPaused, pendingCountAfter),
+    scheduledStartAt: null,
+    scheduledStartSource: null
   };
 
   const sourceQueueCount = sourceEntries.length;
@@ -462,3 +474,103 @@ function emptyQueueStateV6(now: number): QueueState {
 // Re-exported for tests / migration call sites; avoids leaking the private
 // helper while keeping a single canonical empty shape.
 export { emptyQueueStateV6 };
+
+// ---------------------------------------------------------------------------
+// Feature 065 — v6 → v7 migration: lift the legacy QueueState shape into the
+// explicit `QueueLifecycle` discriminator + scheduled-start fields. Pending
+// tasks MUST be preserved byte-for-byte (SC-005). Forward-only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Audit-event payload emitted by `migrateV6ToV7()`. Carried through
+ * `LegacyQueueMigrationAuditEvent` so existing migrator call-sites surface it
+ * via the same audit channel as the v5→v6 event.
+ */
+export interface StateMigratedV6ToV7AuditEvent {
+  readonly type: 'state-migrated-v6-to-v7';
+  readonly fromVersion: 6;
+  readonly toVersion: 7;
+  readonly occurredAt: number;
+  readonly counts: {
+    readonly running: number;
+    readonly operatorPaused: number;
+    readonly idlePending: number;
+    readonly activeEmpty: number;
+  };
+}
+
+export interface MigrateV6ToV7Result {
+  readonly queueState: QueueState;
+  readonly migrated: boolean;
+  readonly auditEvents: readonly StateMigratedV6ToV7AuditEvent[];
+}
+
+/**
+ * Derive `QueueLifecycle` from the legacy (inFlightId, paused, pendingCount)
+ * triple per the v6→v7 derivation table in contracts/state-schema.diff.md.
+ */
+export function deriveLifecycle(
+  inFlightId: string | null,
+  paused: boolean,
+  pendingCount: number
+): QueueState['queueLifecycle'] {
+  if (inFlightId !== null) return 'running';
+  if (paused) return 'operator-paused';
+  if (pendingCount > 0) return 'idle-pending';
+  return 'active-empty';
+}
+
+/**
+ * Migrate a v6 persisted `QueueState` to the v7 shape. Idempotent: if the
+ * record already carries `queueLifecycle`, it is returned unchanged with
+ * `migrated: false`. The migration preserves every pending task byte-for-byte
+ * (SC-005) and emits a single audit event with derived-lifecycle counts.
+ */
+export function migrateV6ToV7(
+  queueState: QueueState | null | undefined,
+  now: number = Date.now()
+): MigrateV6ToV7Result {
+  const baseState = queueState ?? emptyQueueState(now);
+  // Already migrated — preserve as-is.
+  if (
+    typeof (baseState as QueueState).queueLifecycle === 'string'
+    && (baseState as QueueState).queueLifecycle !== undefined
+  ) {
+    return {
+      queueState: baseState,
+      migrated: false,
+      auditEvents: []
+    };
+  }
+  const paused = baseState.paused === true;
+  const inFlightId = baseState.inFlightId ?? null;
+  const pendingCount = baseState.requests.filter((r) => r.status === 'pending').length;
+  const lifecycle = deriveLifecycle(inFlightId, paused, pendingCount);
+  const scheduledStartSource: QueueState['scheduledStartSource'] =
+    lifecycle === 'idle-pending' ? 'migration-default' : null;
+  const migrated: QueueState = {
+    requests: baseState.requests,
+    inFlightId,
+    paused,
+    pausedReason: baseState.pausedReason ?? null,
+    updatedAt: baseState.updatedAt ?? now,
+    queueLifecycle: lifecycle,
+    scheduledStartAt: null,
+    scheduledStartSource,
+    ...(lifecycle === 'idle-pending' ? { migrationNotice: 'pending' as const } : {})
+  };
+  const counts = {
+    running: lifecycle === 'running' ? 1 : 0,
+    operatorPaused: lifecycle === 'operator-paused' ? 1 : 0,
+    idlePending: lifecycle === 'idle-pending' ? 1 : 0,
+    activeEmpty: lifecycle === 'active-empty' ? 1 : 0
+  } as const;
+  const event: StateMigratedV6ToV7AuditEvent = {
+    type: 'state-migrated-v6-to-v7',
+    fromVersion: 6,
+    toVersion: 7,
+    occurredAt: now,
+    counts
+  };
+  return { queueState: migrated, migrated: true, auditEvents: [event] };
+}

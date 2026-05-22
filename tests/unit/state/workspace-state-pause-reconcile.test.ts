@@ -56,7 +56,10 @@ function makeQueueState(paused: boolean, pausedReason: string | null = null): Qu
     inFlightId: null,
     paused,
     pausedReason,
-    updatedAt: NOW
+    updatedAt: NOW,
+    queueLifecycle: paused ? 'operator-paused' : 'active-empty',
+    scheduledStartAt: null,
+    scheduledStartSource: null
   };
 }
 

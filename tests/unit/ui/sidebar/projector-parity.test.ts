@@ -77,7 +77,10 @@ describe('projector decomposition — cross-module parity (T095)', () => {
       inFlightId: 'q-1',
       paused: false,
       pausedReason: null,
-      updatedAt: 1_700_000_002_000
+      updatedAt: 1_700_000_002_000,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
 
     const qp = projectQueue(queue, {

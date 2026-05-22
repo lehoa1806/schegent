@@ -72,6 +72,9 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       pausedReason: null,
       inFlightId: null,
       updatedAt: 0,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
       requests: [
         {
           id: 'q-failed',
@@ -167,6 +170,9 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       pausedReason: null,
       inFlightId: null,
       updatedAt: 0,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
       requests: [
         {
           id: 'q-with-secret-error',

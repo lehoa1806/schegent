@@ -57,7 +57,9 @@ function syntheticTail(n: number): AuditTailEntry[] {
         timestamp: new Date(1_700_000_000_000 + i * 100).toISOString(),
         phase: 'speckit-plan' as const,
         category: 'cli-invocation' as const,
-        summary: `synthetic event ${i} with a moderately verbose summary line for realism`
+        summary: `synthetic event ${i} with a moderately verbose summary line for realism`,
+        runId: `run-${i}`,
+        scope: 'task' as const
       })
     );
   }
@@ -145,6 +147,9 @@ describe('Render budget regression (SC-006)', () => {
       pausedReason: null,
       inFlightId: null,
       updatedAt: 1_700_000_000_000,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
       requests: queueRequests
     });
     await store.setRun(runningRun(2, 'speckit-plan'));

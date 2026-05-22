@@ -9,6 +9,13 @@ export interface ScheduleCommandArgs {
   pipelineId?: string;
   queueId?: string;
   position?: number;
+  /**
+   * Feature 065 — wall-clock target for the scheduled start (Unix ms).
+   * When omitted the host applies the safe default: `Date.now()` (i.e.
+   * effectively "scheduled now" — the host coerces past timestamps and
+   * the lifecycle lands in `running`).
+   */
+  scheduledStartAt?: number;
 }
 
 interface PipelinePickItem extends vscode.QuickPickItem {
@@ -44,13 +51,23 @@ export async function runSchedule(
       if (!input) return;
       description = input.trim();
     }
+    // Feature 065 — schedule command is a programmatic scheduled enqueue.
+    // Resolve the target instant from the caller arg; fall back to now
+    // (the host coerces past timestamps to running, per FR-014a).
+    const scheduledStartAt = args?.scheduledStartAt ?? Date.now();
     const result = await ctx.guardedRunService.scheduleOrEnqueue({
       description,
       scheduledAt: Date.now(),
       via: 'command-palette',
       pipelineId: pipelineId ?? null,
       queueId: args?.queueId ?? null,
-      position: args?.position ?? null
+      position: args?.position ?? null,
+      startIntent: {
+        startMode: 'scheduled',
+        scheduledStartAt,
+        source: 'programmatic-scheduled'
+      },
+      callerKind: 'human'
     });
     switch (result.outcome) {
       case 'enqueued':

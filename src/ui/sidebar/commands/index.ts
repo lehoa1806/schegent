@@ -5,6 +5,7 @@ import {
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_DISABLE_PHASE,
+  CMD_DISMISS_MIGRATION_NOTICE,
   CMD_ENABLE_PHASE,
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
@@ -54,6 +55,7 @@ import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
 import { handler as disablePhase } from './cmd-disable-phase';
+import { handler as dismissMigrationNotice } from './cmd-dismiss-migration-notice';
 import { handler as enablePhase } from './cmd-enable-phase';
 import { handler as modifyTask } from './cmd-modify-task';
 import { handler as moveQueueItemDown } from './cmd-move-queue-item-down';
@@ -113,6 +115,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
   [CMD_DISABLE_PHASE, disablePhase as CommandHandler],
+  [CMD_DISMISS_MIGRATION_NOTICE, dismissMigrationNotice as CommandHandler],
   [CMD_ENABLE_PHASE, enablePhase as CommandHandler],
   [CMD_MODIFY_TASK, modifyTask as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_DOWN, moveQueueItemDown as CommandHandler],

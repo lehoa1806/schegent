@@ -34,7 +34,16 @@ beforeEach(async () => {
 });
 
 function emptyQueue(): QueueState {
-  return { requests: [], inFlightId: null, paused: false, pausedReason: null, updatedAt: 0 };
+  return {
+    requests: [],
+    inFlightId: null,
+    paused: false,
+    pausedReason: null,
+    updatedAt: 0,
+    queueLifecycle: 'active-empty',
+    scheduledStartAt: null,
+    scheduledStartSource: null
+  };
 }
 
 function sampleRun(): WorkflowRun {
@@ -368,6 +377,9 @@ describe('Persistence migration (T065 / SC-013)', () => {
       pausedReason: 'rate-limited',
       inFlightId: null,
       updatedAt: 1700000000000,
+      queueLifecycle: 'operator-paused',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
       requests: [
         {
           id: 'q-new',

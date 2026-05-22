@@ -12,6 +12,14 @@
     pendingCount: number;
   }
 
+  // Feature 065 (T028, revised per BUG-001 / 2026-05-23) — enqueue and
+  // start are orthogonal at the UI level. Submitting a task ALWAYS
+  // dispatches `CMD_START` without `startIntent`; the host appends to
+  // the queue and, when the prior lifecycle was `active-empty`, lands
+  // the queue in `idle-pending` with `scheduledStartAt = null`. The
+  // start-mode chooser is no longer presented at submit-time; it is
+  // reachable exclusively via the queue-level "Start queue" affordance
+  // in `QueueListView` (FR-018).
   const { availablePipelines, defaultPipelineId, pendingCount }: Props = $props();
 
   let description = $state('');
@@ -25,7 +33,6 @@
     | { kind: 'rejected'; reason: string }
     | null
   >(null);
-
 
   const defaultSelectedPipelineId = $derived<string | undefined>(
     availablePipelines.length === 0
@@ -51,6 +58,7 @@
   });
 
   const trimmedDescription = $derived(description.trim());
+
   const submitDisabled = $derived(
     trimmedDescription.length === 0 ||
       availablePipelines.length === 0 ||
@@ -61,15 +69,12 @@
     operatorTouchedPipeline = true;
   }
 
-  function onSubmit(event: Event): void {
-    event.preventDefault();
-    if (submitDisabled) return;
-    const { correlationId } = postCommand(CMD_START, {
-      description: trimmedDescription,
-      ...(selectedPipelineId === 'standard'
-        ? {}
-        : { pipelineId: selectedPipelineId })
-    });
+  function dispatchStart(draft: { description: string; pipelineId?: string }): void {
+    const payload: Record<string, unknown> = { description: draft.description };
+    if (draft.pipelineId !== undefined && draft.pipelineId !== 'standard') {
+      payload['pipelineId'] = draft.pipelineId;
+    }
+    const { correlationId } = postCommand(CMD_START, payload as never);
     submitInFlightId = correlationId;
     submitFeedback = null;
     snapshotStore.onceAck(correlationId, (ack) => {
@@ -85,6 +90,15 @@
         return;
       }
       submitFeedback = { kind: 'rejected', reason: ack.reason ?? 'rejected' };
+    });
+  }
+
+  function onSubmit(event: Event): void {
+    event.preventDefault();
+    if (submitDisabled) return;
+    dispatchStart({
+      description: trimmedDescription,
+      pipelineId: selectedPipelineId
     });
   }
 </script>
@@ -146,6 +160,7 @@
       </div>
     {/if}
   </form>
+
 </section>
 
 <style>
@@ -159,6 +174,7 @@
     backdrop-filter: blur(12px);
     display: flex;
     flex-direction: column;
+    gap: 12px;
   }
   .compose-box {
     display: flex;

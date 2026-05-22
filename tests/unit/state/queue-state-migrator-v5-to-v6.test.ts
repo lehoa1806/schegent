@@ -71,7 +71,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: 'r3',
       paused: false,
       pausedReason: null,
-      updatedAt: 400
+      updatedAt: 400,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
 
@@ -130,7 +133,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 400
+      updatedAt: 400,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
     expect(result.state.queueRegistry.entries[0].state).toBe('manually-paused');
@@ -158,7 +164,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: 'r-in-flight',
       paused: false,
       pausedReason: null,
-      updatedAt: 100
+      updatedAt: 100,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
     const moved = result.state.queueState.requests.find((r) => r.id === 'r-in-flight');
@@ -189,7 +198,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 400
+      updatedAt: 400,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
     // Ordering: high (createdAt 100) → bg (200) → default (300). Within each
@@ -208,7 +220,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: NOW
+      updatedAt: NOW,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(
       { schemaVersion: 6, queueRegistry: registry, queueState: queue },
@@ -255,7 +270,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: 'rA',
       paused: false,
       pausedReason: null,
-      updatedAt: 300
+      updatedAt: 300,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
     const statuses = new Map(
@@ -284,7 +302,10 @@ describe('migrateV5ToV6 (030)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 300
+      updatedAt: 300,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
     expect(result.auditEvents).toHaveLength(1);

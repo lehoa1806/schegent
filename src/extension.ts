@@ -32,6 +32,8 @@ import { Notifier } from './ui/notifications';
 import { runAuto } from './commands/auto';
 import { runEnqueue } from './commands/enqueue';
 import { runSchedule } from './commands/schedule';
+import { runStartQueueCommand, type StartQueueCommandArg } from './commands/start-queue';
+import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
 import { runResume } from './commands/resume';
 import { runCancel } from './commands/cancel';
 import { runClearAll } from './commands/clear-all';
@@ -79,6 +81,7 @@ import { loadCatalog, type CatalogConfigReader } from './config/pipeline-config-
 import { projectPhasePrecedence } from './config/phase-precedence';
 import type { PipelineCatalog } from './config/pipeline-config';
 import { GuardedRunService } from './services/guarded-run-service';
+import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import {
   createPhaseLogService,
   PhaseLogTailRegistry,
@@ -301,10 +304,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // they are forwarded through `auditWriter.append` once the writer exists
   // (constructed below). Empty array when no migration occurred.
   let v6MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV5ToV6AuditEvent[] = [];
+  // Feature 065 — v6 → v7 migration audit events; same forwarding contract.
+  let v7MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV6ToV7AuditEvent[] = [];
   let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
   try {
     const initResult = await store.initialize();
     v6MigrationEvents = initResult.v6MigrationEvents;
+    v7MigrationEvents = initResult.v7MigrationEvents;
     runRepairEvents = initResult.runRepairEvents;
   } catch (err) {
     void vscode.window.showErrorMessage(
@@ -366,51 +372,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger
   );
 
-  // Feature 030 — forward any v5 → v6 migration audit events through the
-  // sanitized `auditWriter.append` pipeline. Empty array when no migration
-  // occurred (fresh workspace OR already-v6 state).
-  for (const event of v6MigrationEvents) {
-    try {
-      await auditWriter.append({
-        runId: '',
-        phase: 'state-migration',
-        iteration: 0,
-        eventType: event.type,
-        payload: {
-          fromVersion: event.fromVersion,
-          toVersion: event.toVersion,
-          sourceQueueCount: event.sourceQueueCount,
-          pendingTaskCount: event.pendingTaskCount,
-          inFlightTaskCount: event.inFlightTaskCount,
-          inheritedPausedState: event.inheritedPausedState,
-          coalesceRule: event.coalesceRule
-        },
-        outcome: 'success'
-      });
-    } catch (err) {
-      logger.warn(`state-migrated audit append failed: ${(err as Error).message}`);
-    }
-  }
-  for (const event of runRepairEvents) {
-    try {
-      await auditWriter.append({
-        runId: event.runId,
-        phase: 'state-migration',
-        iteration: 0,
-        eventType: event.type,
-        payload: {
-          pipelineId: event.pipelineId,
-          repair: event.repair,
-          removedPhaseCount: event.removedPhaseCount,
-          removedBreakpointCount: event.removedBreakpointCount,
-          remainingPhaseCount: event.remainingPhaseCount
-        },
-        outcome: 'success'
-      });
-    } catch (err) {
-      logger.warn(`workflow-run-repaired audit append failed: ${(err as Error).message}`);
-    }
-  }
+  // Forward all state-migration audit events (v5→v6, v6→v7, workflow-run
+  // repair) through the sanitized audit writer. Helper preserves the
+  // append-error best-effort semantics — never blocks activation.
+  await forwardMigrationAuditEvents(
+    { v6MigrationEvents, v7MigrationEvents, runRepairEvents },
+    auditWriter,
+    logger
+  );
 
   // Feature 058 — one-shot activation guard for multi-root workspaces.
   // Emits `multi-root.warning-shown` (folder count + canonical folder
@@ -599,6 +568,67 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     cliPathProvider: () => cliPath,
     workspaceRoot
+  });
+
+  // Feature 065 (T009, T011) — the scheduled-start coordinator owns the
+  // single in-process `setTimeout` driving `idle-pending → running`
+  // transitions. `reArm()` runs once at activation (after the v7 lift)
+  // to re-arm any persisted future schedule or, if the target moment has
+  // already elapsed while the host was offline, fire the FR-012 transition
+  // immediately. `onFire` clears the persisted schedule fields and invokes
+  // the existing auto-drain path so promotion goes through the normal
+  // lock-acquire route.
+  const scheduledStartCoordinator = new ScheduledStartCoordinator({
+    store,
+    auditWriter,
+    logger,
+    onFire: async (_queueId: string) => {
+      const queueState = store.getQueue();
+      await store.setQueue({
+        ...queueState,
+        queueLifecycle: 'active-empty',
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        updatedAt: Date.now()
+      });
+      await controller.drainQueuedWork();
+    },
+    // Feature 065 (T049b) — surface the transient FR-017a / SC-009 hint
+    // on the status bar when a scheduled start fires. 4000 ms is the
+    // mid-point of the 3000..5000 ms window mandated by FR-017a.
+    onFiredObserver: () => {
+      statusBar.showTransient('schegent: scheduled start fired', 4000);
+    },
+    // Feature 065 (T053 / FR-014) — at fire time, probe whether the
+    // workspace lock is held by a competing process. When true, the
+    // coordinator emits `scheduled-start-superseded { lock-unavailable }`
+    // and clears the schedule. The next normal auto-drain heartbeat will
+    // retry promotion under the existing rule; operator is NOT prompted.
+    isForeignLockHeld: () => lock.isForeignLockHeld()
+  });
+  try {
+    await scheduledStartCoordinator.reArm();
+  } catch (err) {
+    logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
+  }
+
+  // Feature 065 (T036/T037) — late-wire the pause/resume cancel + audit
+  // hooks so QueueManager.setQueuePausedState can clear an outstanding
+  // schedule and emit the lifecycle audit trail without taking a
+  // construction-time dependency on the coordinator.
+  queue.setScheduledStartCancelHook({
+    cancel: (queueId, reason) => scheduledStartCoordinator.cancel(queueId, reason)
+  });
+  queue.setLifecycleAuditHook({
+    append: (entry) =>
+      auditWriter.append({
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration,
+        eventType: entry.eventType,
+        outcome: entry.outcome,
+        payload: entry.payload
+      } as never)
   });
 
   const watchdog = new CreditWatchdog(
@@ -953,6 +983,22 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       await store.setConfirmSuppression(actionKey, suppressed);
       projector.kick();
     },
+    // Feature 065 (T054a / FR-020) — `CMD_DISMISS_MIGRATION_NOTICE`
+    // persistence. Flip the queue's `migrationNotice` field via a single
+    // `setQueue({...})` write that preserves every other field including
+    // `scheduledStartSource` (FR-020 invariant: those clear only on the
+    // operator's next explicit start). Idempotent — if the notice is
+    // already absent / dismissed, the write is a no-op.
+    dismissMigrationNotice: async () => {
+      const cur = store.getQueue();
+      if (cur.migrationNotice !== 'pending') return;
+      await store.setQueue({
+        ...cur,
+        migrationNotice: 'dismissed',
+        updatedAt: Date.now()
+      });
+      projector.kick();
+    },
     // Feature 014 — Wake up save protocol (primary-only; transactional).
     saveWakeUpSettings: async (payload) => saveWakeUpHandler(payload),
     wakeUpNow,
@@ -1122,13 +1168,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // pending task to in-flight when the queue is idle and no run is
     // active. Safe to call redundantly — the coordinator's internal
     // capacity checks short-circuit when a run is already in-flight.
-    vscode.commands.registerCommand('schegent.startQueue', async () => {
-      try {
-        await controller.drainQueuedWork();
-      } catch (err) {
-        logger.warn(`startQueue: ${(err as Error).message}`);
-      }
-    }),
+    vscode.commands.registerCommand('schegent.startQueue', (arg?: StartQueueCommandArg) =>
+      runStartQueueCommand(arg, { guardedRunService, controller, logger })
+    ),
     vscode.commands.registerCommand('schegent.cancel', (arg?: { taskId?: string }) =>
       runCancel({
         controller,

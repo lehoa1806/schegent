@@ -36,14 +36,25 @@
  *       queue is born `manually-paused` with `pauseSource: 'operator'`.
  *       Forward-only. Migrator: `migrateV5ToV6()` in
  *       `src/state/queue-state-migrator.ts`.
+ *   7 — feature 065: introduces the explicit `QueueLifecycle` discriminator
+ *       and the scheduled-start fields on `QueueState`
+ *       (`queueLifecycle`, `scheduledStartAt`, `scheduledStartSource`).
+ *       Pre-feature `QueueState` records are forward-lifted by
+ *       `migrateV6ToV7()` in `src/state/queue-state-migrator.ts`. The
+ *       lift preserves every pending task byte-for-byte and derives
+ *       `queueLifecycle` from the legacy (`inFlightId`, `paused`,
+ *       `pending.length`) triple. The `paused` boolean remains as a
+ *       legacy mirror of `queueLifecycle === 'operator-paused'`.
+ *       Forward-only. Down-migration is unsupported.
  */
-export const STATE_SCHEMA_VERSION = 6 as const;
+export const STATE_SCHEMA_VERSION = 7 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
 export const STATE_SCHEMA_VERSION_V4 = 4 as const;
 export const STATE_SCHEMA_VERSION_V5 = 5 as const;
 export const STATE_SCHEMA_VERSION_V6 = 6 as const;
+export const STATE_SCHEMA_VERSION_V7 = 7 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

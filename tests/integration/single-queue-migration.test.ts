@@ -133,7 +133,10 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
       inFlightId: 'r-in-flight',
       paused: false,
       pausedReason: null,
-      updatedAt: 400
+      updatedAt: 400,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     await memento.update(KEYS.queueRegistry, v5Registry);
     await memento.update(KEYS.queue, v5Queue);
@@ -303,7 +306,10 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 200
+      updatedAt: 200,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     await memento.update(KEYS.queueRegistry, v5Registry);
     await memento.update(KEYS.queue, v5Queue);

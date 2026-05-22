@@ -106,6 +106,9 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
       pausedReason: null,
       inFlightId: null,
       updatedAt: 1_700_000_000_000,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null,
       requests: [
         {
           id: 'q-1',

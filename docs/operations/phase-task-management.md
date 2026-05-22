@@ -36,6 +36,14 @@ The dashboard queue manager can create, rename, pause, resume, and delete
 named queues. The default queue cannot be deleted. A queue with an in-flight
 task cannot be deleted.
 
+Queue lifecycle states (feature 065): `idle` (no pending tasks or
+no-start-mode appends), `idle-pending` (first pending task has a
+`scheduledStartAt` — countdown visible), `running` (a task is in-flight),
+`paused` (operator pause), `manually-paused` (cascade pause from
+feature 028). See the **Scheduling** section below for the
+enqueue/start separation chooser and the audit events the System tab
+filter chips surface.
+
 When deleting a queue, the confirmation modal defaults to **Cancel tasks**.
 Choosing **Move tasks** requires a target queue and moves pending tasks
 atomically; if the target would exceed the pending-task cap, the operation is
@@ -176,6 +184,76 @@ The schedule watchdog runs on the primary VS Code host only. When a schedule
 fires, the watchdog clears it, emits audit metadata, unpauses the queue, and
 asks the controller to drain queued work. If the host fires more than 60
 seconds after the target, it records delayed-trigger diagnostics.
+
+### Enqueue/Start separation (feature 065)
+
+Feature 065 introduces an explicit **start-mode chooser** on every enqueue
+into an empty (`idle`) queue and adds a per-task `scheduledStartAt`. The
+chooser offers three options:
+
+- **Start now** — the queue transitions to `running` immediately. Audit
+  emits the existing `task-enqueued` plus `phase-start`.
+- **Start in… / Start at…** — the queue moves to `idle-pending` and the
+  task is persisted with `scheduledStartAt`. An inline countdown ticks
+  one-second cadence when expanded and one-minute cadence when collapsed.
+  Cancel / change / convert-to-now affordances render alongside the
+  countdown.
+- **Just add (no start)** — the queue remains `idle` and the task is
+  persisted with no schedule. The operator must press **Start** later.
+
+While the queue is `running` or `paused`, the chooser does NOT appear:
+new enqueues are silent appends to the pending queue (feature-030
+sequential semantics). The `idle-pending` lifecycle is unique to feature
+065 and only applies when the first-pending task has a `scheduledStartAt`.
+
+When the scheduled fire time passes, the `ScheduledStartCoordinator`
+flips the queue from `idle-pending` to `running`, transitions the head
+pending task to in-flight, and the status-bar transient surfaces for
+3–5 seconds on fire (per Q15 / FR-017a). If the host fires more than
+60 seconds after target, the same delayed-trigger diagnostic from the
+per-queue scheduler is emitted.
+
+The v6 → v7 state migration adds `queueLifecycle`, `scheduledStartAt`,
+`scheduledStartSource`, and the one-time `migrationNotice` banner flag
+to every existing queue. Pending tasks are preserved byte-for-byte
+(SC-005). The dashboard renders a dismissable migration notice on the
+next activation; dismissal flows through the new (read-side)
+`CMD_DISMISS_MIGRATION_NOTICE` IPC — intentionally **not** a member of
+`MUTATING_COMMANDS`.
+
+### Audit events to grep in the System tab
+
+All eight are additive (no `AUDIT_SCHEMA_VERSION` bump) and route through
+the existing single-sanitization point in `audit-log-writer.ts`. Each
+carries the consistent core payload `{ queueId, eventType, occurredAt,
+transitionReason }` per FR-023a:
+
+- `scheduled-start-armed` — emitted when a task transitions queue to
+  `idle-pending` with `scheduledStartAt`.
+- `scheduled-start-fired` — emitted when the coordinator promotes
+  `idle-pending` → `running` at fire time.
+- `scheduled-start-cancelled` — emitted when the operator cancels the
+  schedule (queue returns to `idle`, task may stay pending or be deleted
+  depending on path).
+- `scheduled-start-rescheduled` — emitted when the operator changes the
+  scheduled time on an `idle-pending` queue.
+- `idle-pending-enqueued` — emitted when a task is appended to a queue
+  already in `idle-pending` (operator chose append vs. promote).
+- `idle-pending-promoted` — emitted when an `idle-pending` queue
+  transitions to `running` via operator action (convert-to-now or
+  explicit Start).
+- `automation-enqueue-no-start-mode` — emitted when a programmatic /
+  wake-up enqueue path supplies no `startIntent`; feature-030 sequential
+  semantics apply and the task lands in `pending` without a schedule.
+- `migration-default-applied` — emitted once per queue on the v6 → v7
+  upgrade boundary, attributing the lifecycle default with
+  `scheduledStartSource: 'migration-default'`.
+
+The chooser, countdown, indicator, and System tab filter chips are
+operator-visible surfaces and do not require feature flags. The chooser
+respects `schegent.queue.globalConcurrencyCap = 1`: a second
+`Start now` while another queue is running surfaces a non-modal
+"queue state changed elsewhere" notice and falls back to silent append.
 
 ## Phase Messages
 

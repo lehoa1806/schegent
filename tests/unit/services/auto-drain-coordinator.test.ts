@@ -7,9 +7,19 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
+import type { QueueLifecycle } from '../../../src/queue/feature-request';
 
-function makeStore(queueState: { paused: boolean; inFlightId: string | null }) {
-  return { getQueue: vi.fn(() => queueState) };
+function makeStore(queueState: {
+  paused: boolean;
+  inFlightId: string | null;
+  queueLifecycle?: QueueLifecycle;
+}) {
+  return {
+    getQueue: vi.fn(() => ({
+      queueLifecycle: queueState.queueLifecycle ?? 'active-empty',
+      ...queueState
+    }))
+  };
 }
 
 function makeQueue(next: { id: string; description: string } | null, hasCapacity = true) {
@@ -92,6 +102,90 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     const store = makeStore({ paused: false, inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lock = makeLock(false);
+    const controller = makeController();
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      lock: lock as never,
+      controller: controller as never
+    });
+    await coord.drainIfIdle();
+    expect(controller.startNew).not.toHaveBeenCalled();
+  });
+});
+
+// Feature 065 (T010) — the `idle-pending` gate MUST short-circuit the
+// drain so a chooser-driven (or future-scheduled) start never auto-promotes
+// behind the operator's back.
+describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
+  it('idle-pending lifecycle returns early before peekNextPending/tryAcquire', async () => {
+    const store = makeStore({
+      paused: false,
+      inFlightId: null,
+      queueLifecycle: 'idle-pending'
+    });
+    const queue = makeQueue({ id: 'q-2', description: 'next' });
+    const lock = makeLock(true);
+    const controller = makeController();
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      lock: lock as never,
+      controller: controller as never
+    });
+    await coord.drainIfIdle();
+    expect(queue.peekNextPending).not.toHaveBeenCalled();
+    expect(queue.hasCapacity).not.toHaveBeenCalled();
+    expect(lock.tryAcquire).not.toHaveBeenCalled();
+    expect(controller.startNew).not.toHaveBeenCalled();
+  });
+
+  it('running lifecycle proceeds through the existing checks (FR-005 carve-out)', async () => {
+    const store = makeStore({
+      paused: false,
+      inFlightId: 'q-1',
+      queueLifecycle: 'running'
+    });
+    const queue = makeQueue({ id: 'q-2', description: 'next' });
+    const lock = makeLock(true);
+    const controller = makeController();
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      lock: lock as never,
+      controller: controller as never
+    });
+    await coord.drainIfIdle();
+    expect(controller.startNew).toHaveBeenCalled();
+  });
+
+  it('active-empty lifecycle proceeds through the existing checks', async () => {
+    const store = makeStore({
+      paused: false,
+      inFlightId: null,
+      queueLifecycle: 'active-empty'
+    });
+    const queue = makeQueue({ id: 'q-2', description: 'next' });
+    const lock = makeLock(true);
+    const controller = makeController();
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      lock: lock as never,
+      controller: controller as never
+    });
+    await coord.drainIfIdle();
+    expect(controller.startNew).toHaveBeenCalled();
+  });
+
+  it('operator-paused short-circuits via the legacy paused gate (not the new lifecycle gate)', async () => {
+    const store = makeStore({
+      paused: true,
+      inFlightId: null,
+      queueLifecycle: 'operator-paused'
+    });
+    const queue = makeQueue({ id: 'q-2', description: 'next' });
+    const lock = makeLock(true);
     const controller = makeController();
     const coord = new AutoDrainCoordinator({
       store: store as never,

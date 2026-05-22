@@ -66,7 +66,9 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
     const { ctx, executeCommandSpy } = buildCtx();
     await startQueueHandler(ctx, makeCmd());
     expect(executeCommandSpy).toHaveBeenCalledTimes(1);
-    expect(executeCommandSpy).toHaveBeenCalledWith('schegent.startQueue');
+    // Feature 065 — handler threads an optional startIntent payload; when
+    // the chooser is not in play the second arg is `undefined`.
+    expect(executeCommandSpy).toHaveBeenCalledWith('schegent.startQueue', undefined);
   });
 
   it('posts ack("accepted") on success', async () => {
@@ -120,8 +122,10 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
   it('does not send a queueId payload (single-queue migration)', async () => {
     const { ctx, executeCommandSpy } = buildCtx();
     await startQueueHandler(ctx, makeCmd());
-    // schegent.startQueue is called with no additional arguments —
-    // it always operates on the unified default queue (feature 030).
-    expect(executeCommandSpy.mock.calls[0]).toEqual(['schegent.startQueue']);
+    // schegent.startQueue is called with no queueId payload — it always
+    // operates on the unified default queue (feature 030). Feature 065
+    // adds an optional `startIntent` second-arg; when absent the value
+    // is `undefined`.
+    expect(executeCommandSpy.mock.calls[0]).toEqual(['schegent.startQueue', undefined]);
   });
 });

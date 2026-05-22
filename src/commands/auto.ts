@@ -25,7 +25,18 @@ export async function runAuto(
   ctx: RunAutoCtx
 ): Promise<void> {
   try {
-    const outcome = await runEnqueue(args, {
+    // Feature 065 — `schegent.auto` is a one-click "auto" command-palette
+    // entry; preserve pre-feature behaviour by promoting to running
+    // immediately (operator-chooser source for the audit trail).
+    const argsWithIntent: EnqueueCommandArgs = {
+      ...(args ?? {}),
+      startIntent: args?.startIntent ?? {
+        startMode: 'now',
+        source: 'operator-chooser'
+      },
+      callerKind: args?.callerKind ?? 'human'
+    };
+    const outcome = await runEnqueue(argsWithIntent, {
       guardedRunService: ctx.guardedRunService,
       store: ctx.store,
       audit: ctx.audit ?? null,

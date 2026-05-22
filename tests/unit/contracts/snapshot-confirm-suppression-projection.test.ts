@@ -28,7 +28,10 @@ const EMPTY_QUEUE: QueueState = {
   inFlightId: null,
   paused: false,
   pausedReason: null,
-  updatedAt: 0
+  updatedAt: 0,
+  queueLifecycle: 'active-empty',
+  scheduledStartAt: null,
+  scheduledStartSource: null
 };
 
 type StoreShape = NonNullable<ConstructorParameters<typeof StateProjector>[0]['store']>;

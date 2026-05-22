@@ -140,8 +140,20 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     expect(entryAfterResume?.state).toBe('active');
     expect(entryAfterResume?.pauseSource).toBeNull();
 
-    // One pump tick later, the auto-drain coordinator must promote the
-    // pending task that was blocked during the paused window.
+    // Feature 065 (T010 / FR-003): after Resume, the queue lands in
+    // `idle-pending` because there is pending work but no in-flight task.
+    // The auto-drain coordinator MUST NOT auto-promote in `idle-pending`
+    // (only the scheduler or an explicit operator CMD_START_QUEUE owns
+    // that transition). Verify the gate fires.
+    await coordinator.drainIfIdle();
+    expect(promotedTasks).toEqual([]);
+    expect(store.getQueue().queueLifecycle).toBe('idle-pending');
+    // Now the operator presses Start now (CMD_START_QUEUE without
+    // startIntent) — the legacy drain path is the one in this test
+    // (no GuardedRunService wired). Simulating via direct lifecycle
+    // mutation followed by drainIfIdle.
+    const q = store.getQueue();
+    await store.setQueue({ ...q, queueLifecycle: 'active-empty' });
     await coordinator.drainIfIdle();
     expect(promotedTasks).toEqual([pending.id]);
 

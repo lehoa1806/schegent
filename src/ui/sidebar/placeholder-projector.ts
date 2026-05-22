@@ -46,7 +46,12 @@ export class PlaceholderProjector implements ProjectorHandle {
       timestamp: producedAt,
       phase: null,
       category: 'system',
-      summary: REASON_SUMMARY[deps.reason]
+      summary: REASON_SUMMARY[deps.reason],
+      // Feature 064 — synthetic placeholder is operator/system guidance, not
+      // bound to a live run. Carry an empty runId and `'system'` scope so the
+      // entry never satisfies the Activity Feed's reachable-runId filter.
+      runId: '',
+      scope: 'system' as const
     });
     const tail = Object.freeze([guidance]) as readonly AuditTailEntry[];
     this.snapshot = Object.freeze({
@@ -61,7 +66,10 @@ export class PlaceholderProjector implements ProjectorHandle {
         recent: Object.freeze([]) as readonly never[],
         queues: Object.freeze([]) as readonly never[],
         paused: false,
-        pausedReason: null
+        pausedReason: null,
+        lifecycle: 'active-empty' as const,
+        scheduledStartAt: null,
+        scheduledStartSource: null
       }),
       phaseOverrides: Object.freeze([]),
       manualPauseAt: null,

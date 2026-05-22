@@ -76,6 +76,8 @@ export async function runRerunFromHistory(arg: unknown, ctx: RerunCtx): Promise<
       );
     }
 
+    // Feature 065 — Rerun is operator-initiated (already confirmed by
+    // selecting the entry in the history pane). Promote immediately.
     const result = await ctx.guarded.scheduleOrEnqueue({
       description: descriptionToRun,
       scheduledAt: Date.now(),
@@ -85,7 +87,12 @@ export async function runRerunFromHistory(arg: unknown, ctx: RerunCtx): Promise<
         originalRunId: runId,
         originalDescription: rerunDescriptionField,
         reason: 'manual'
-      }
+      },
+      startIntent: {
+        startMode: 'now',
+        source: 'operator-chooser'
+      },
+      callerKind: 'human'
     });
     switch (result.outcome) {
       case 'enqueued':

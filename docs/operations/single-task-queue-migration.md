@@ -93,6 +93,75 @@ The new `task-reordered` audit event (FR-019) is emitted on every reorder reques
 6. **Verify paused state**: if any source queue was `manually-paused`, the unified queue is `manually-paused`. The pause cause renders as operator-initiated. Press **Resume** to clear it.
 7. **Verify reorder**: drag a pending task to a new position **or** click an up/down arrow on a pending row. Confirm the visual order updates promptly and a `task-reordered` audit event is written.
 
+## v6 → v7 (Feature 065 — Enqueue/Start Separation)
+
+Feature 065 introduces the **lifecycle discriminator** (`queueLifecycle`) and **scheduled-start** state. The v6 → v7 migrator at [src/state/queue-state-migrator.ts](../../src/state/queue-state-migrator.ts) `migrateV6ToV7IfNeeded()` is forward-only and idempotent (keyed on the presence of `queueLifecycle`).
+
+### What v7 adds
+
+| Field | Meaning |
+|---|---|
+| `queueLifecycle: 'running' \| 'operator-paused' \| 'idle-pending' \| 'active-empty'` | The single, persisted lifecycle discriminator. The legacy `paused: boolean` field is preserved alongside as a derived projection. |
+| `scheduledStartAt: number \| null` | Epoch-ms timestamp for the next armed start. `null` when no schedule is armed. Lockstep invariant: non-null **only** when `queueLifecycle === 'idle-pending'`. |
+| `scheduledStartSource: ScheduledStartSource \| null` | Audit attribution for the armed schedule. `'migration-default'` is the source assigned by the v6 → v7 migrator. |
+| `migrationNotice: 'pending' \| 'dismissed' \| undefined` | One-time operator notice flag (FR-020). Set to `'pending'` by the migrator when at least one queue migrated into `idle-pending`. Cleared to `'dismissed'` by an operator dismiss; never re-armed. |
+
+### Derivation table (idempotent)
+
+Given a v6 `(inFlight, paused, pending)` tuple, the migrator assigns `queueLifecycle` per the lookup at `queue-state-migrator.ts:130`:
+
+| `inFlight` | `paused` | `pending.length > 0` | → `queueLifecycle` |
+|---|---|---|---|
+| non-null | * | * | `'running'` |
+| null | `true` | * | `'operator-paused'` |
+| null | `false` | `true` | `'idle-pending'` |
+| null | `false` | `false` | `'active-empty'` |
+
+When the result is `'idle-pending'`, the migrator additionally writes `scheduledStartSource: 'migration-default'` and `migrationNotice: 'pending'` on the queue. The actual `scheduledStartAt` remains `null` — the operator must explicitly arm a schedule via the chooser or accept the immediate-start affordance.
+
+### Operator-facing changes
+
+- **Lifecycle indicator**: the sidebar queue header surfaces a colored dot + short label ("Running", "Paused", "Idle (pending)", "Active (empty)") so the lifecycle is visible at a glance.
+- **Start Queue button**: when the queue is `idle-pending` with no armed schedule, the "Start queue" button replaces the legacy auto-start affordance. The button opens a non-modal chooser with "Start now" and "Start in…" options.
+- **Migration notice**: a non-modal, dismissible banner appears on the first workspace open after migration, explaining that pending tasks were preserved and pointing to the "Start queue" affordance. Dismissing the banner persists `migrationNotice: 'dismissed'` and is final.
+- **Scheduled start countdown**: when a schedule is armed, the sidebar shows a countdown (expanded: 1s cadence; collapsed in status bar: 1m cadence) with Cancel, Change, and Start now actions.
+
+### What the audit log shows
+
+The v6 → v7 migrator emits a single `state-migrated` entry on success:
+
+```json
+{
+  "eventType": "state-migrated",
+  "outcome": "success",
+  "payload": {
+    "fromVersion": 6,
+    "toVersion": 7,
+    "queueLifecycleAssigned": "idle-pending",
+    "migrationNoticeArmed": true
+  }
+}
+```
+
+In addition, feature 065 introduces a new family of audit events the System tab can filter on:
+
+- `scheduled-start-armed`, `scheduled-start-changed`, `scheduled-start-cancelled`, `scheduled-start-fired`, `scheduled-start-superseded` (lifecycle transitions for the in-process timer)
+- `idle-pending-promoted`, `idle-pending-auto-started` (transitions out of `idle-pending`)
+- `automation-enqueue-no-start-mode` (wake-up / programmatic enqueue without an explicit start mode)
+
+All payloads carry the consistent core `{ queueId, eventType, occurredAt, transitionReason }` per FR-023a. Task descriptions and operator-authored content are **not** included.
+
+### What does NOT change
+
+- `AUDIT_SCHEMA_VERSION` remains `2` — feature 065 adds new event types but does not change the envelope shape (additive).
+- `MAX_QUEUES` remains `1`.
+- The legacy `QueueState.paused` boolean is preserved alongside `queueLifecycle` for forward-compatibility with code paths that have not yet migrated to the discriminator.
+- Pending task ordering and `WorkflowRun` shapes are preserved byte-for-byte (SC-005).
+
+### Downgrade is unsupported
+
+As with v5 → v6, there is no `v7 → v6` path. The same recovery procedure applies: export pending work via the audit log, run **Schegent: Reset Workspace State**, and re-install the earlier build.
+
 ## Sanity-check the queue registry shape
 
 If you want to confirm the workspace-state shape directly (e.g., for debugging), the registry exposed via the snapshot has:

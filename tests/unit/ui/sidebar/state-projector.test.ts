@@ -55,7 +55,16 @@ function makeProjector(
 }
 
 function emptyQueue(): QueueState {
-  return { requests: [], inFlightId: null, paused: false, pausedReason: null, updatedAt: 0 };
+  return {
+    requests: [],
+    inFlightId: null,
+    paused: false,
+    pausedReason: null,
+    updatedAt: 0,
+    queueLifecycle: 'active-empty',
+    scheduledStartAt: null,
+    scheduledStartSource: null
+  };
 }
 
 function pendingRequest(id: string, description: string, position: number, enqueuedAt = 1_000_000): FeatureRequest {
@@ -181,7 +190,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
         pausedReason: null
       }
     ];
-    const queue: QueueState = { requests, inFlightId: 'q-active', paused: false, pausedReason: null, updatedAt: 0 };
+    const queue: QueueState = { requests, inFlightId: 'q-active', paused: false, pausedReason: null, updatedAt: 0, queueLifecycle: 'running', scheduledStartAt: null, scheduledStartSource: null };
     await store.setQueue(queue);
     const p = makeProjector();
     p.start();
@@ -781,7 +790,10 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 0
+      updatedAt: 0,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     };
     await store.setQueue(queue);
     const p = makeProjector();
@@ -819,7 +831,10 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       inFlightId: null,
       paused: false,
       pausedReason: null,
-      updatedAt: 0
+      updatedAt: 0,
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     });
     const p = new StateProjector({
       store,
@@ -877,7 +892,10 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       inFlightId: 'q-active',
       paused: false,
       pausedReason: null,
-      updatedAt: 0
+      updatedAt: 0,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     });
     const p = makeProjector();
     p.start();
@@ -894,7 +912,10 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       inFlightId: 'q-active',
       paused: false,
       pausedReason: null,
-      updatedAt: 0
+      updatedAt: 0,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     });
     const p = makeProjector();
     p.start();

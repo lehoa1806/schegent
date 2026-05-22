@@ -125,7 +125,10 @@ async function makeHarness(): Promise<Harness> {
     inFlightId: null,
     paused: false,
     pausedReason: null,
-    updatedAt: NOW
+    updatedAt: NOW,
+    queueLifecycle: 'active-empty',
+    scheduledStartAt: null,
+    scheduledStartSource: null
   };
   await memento.update(KEYS.queueRegistry, registry);
   await memento.update(KEYS.queue, queue);
