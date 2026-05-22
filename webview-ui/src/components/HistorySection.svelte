@@ -8,6 +8,7 @@
     CMD_OPEN_AUDIT_LOG,
     CMD_OPEN_HISTORY_ITEM_DETAILS
   } from '../lib/messages';
+  import { useConfirm } from '../lib/use-confirm';
 
   interface Props {
     history: readonly HistoryEntry[];
@@ -21,8 +22,16 @@
   const ariaRerun = $derived<'true' | 'false'>(rerunDisabled ? 'true' : 'false');
   const readOnlyAria: 'false' = 'false';
 
-  function onRerun(runId: string): void {
+  async function onRerun(event: MouseEvent, runId: string, taskTitle: string): Promise<void> {
     if (rerunDisabled) return;
+    // Feature 063 (T036) — gate rerun-from-history through the universal
+    // confirmation. The task title surfaces in the modal body so the
+    // operator can confirm they're re-enqueuing the right run.
+    const ok = await useConfirm('history.rerun', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { taskTitle }
+    });
+    if (!ok) return;
     postCommand(CMD_RERUN_FROM_HISTORY, { runId });
   }
 
@@ -74,7 +83,7 @@
               data-testid="history-item-rerun-{entry.runId}"
               aria-label={`Rerun '${entry.descriptionPreview}'`}
               aria-disabled={ariaRerun}
-              onclick={() => onRerun(entry.runId)}
+              onclick={(event) => onRerun(event, entry.runId, entry.descriptionPreview)}
             >Rerun</button>
             <button
               type="button"

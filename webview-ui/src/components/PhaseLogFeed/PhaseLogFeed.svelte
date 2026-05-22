@@ -27,6 +27,12 @@
     ParsedToolArgument,
     ToolArgumentValue
   } from '../../lib/activity-feed/types';
+  import {
+    resolveLiveSelection,
+    getPhaseOptions,
+    queueIdForItem
+  } from '../../lib/activity-feed-selection.svelte';
+  import { readPhaseLog } from '../../lib/phase-log-ipc';
 
   interface Props {
     readonly snapshot: WorkflowSnapshot;
@@ -129,6 +135,121 @@
       }
     };
   });
+
+  // Feature 021 T044 (BUG-001 Defect A) — cold-start fallback wiring.
+  //
+  // After VSCode restart, the Activity Feed selection store is empty
+  // and `snapshot.queue.inFlight === null`, so `resolveLiveSelection`
+  // returns null and the operator sees "No selection" even when recent
+  // tasks have on-disk phase logs. This effect runs at most once per
+  // mount: when the first snapshot arrives, if the live selection is
+  // null AND the store still holds the empty selection, walk
+  // `snapshot.queue.recent` in (updatedAt desc, enqueuedAt desc) order,
+  // probe each candidate with `readPhaseLog`, and commit the first
+  // tuple that yields a non-empty iteration list via `setSelection`.
+  //
+  // Any subsequent operator action (queue/task/phase pick) leaves the
+  // store's selection non-empty, so the guard below prevents the
+  // effect from overriding their choice on a later re-run.
+  let coldStartAttempted = false;
+  $effect(() => {
+    if (coldStartAttempted) return;
+    if (
+      state.selection.queueId !== null ||
+      state.selection.taskId !== null ||
+      state.selection.phaseId !== null
+    ) {
+      // Operator already navigated, OR a prior effect cycle resolved
+      // the fallback — either way, do not re-fire.
+      coldStartAttempted = true;
+      return;
+    }
+    if (resolveLiveSelection(snapshot) !== null) {
+      // Live in-flight task is present; the existing follow-mode
+      // path will resolve the selection — fallback not needed.
+      coldStartAttempted = true;
+      return;
+    }
+    if (snapshot.queue.recent.length === 0) {
+      // Empty queue — preserve the "No selection" empty state.
+      coldStartAttempted = true;
+      return;
+    }
+    coldStartAttempted = true;
+    void attemptColdStartFallback();
+  });
+
+  async function attemptColdStartFallback(): Promise<void> {
+    const ranked = [...snapshot.queue.recent].sort((a, b) => {
+      const at = coldStartTime(a);
+      const bt = coldStartTime(b);
+      if (at !== bt) return bt - at;
+      const ae = Date.parse(a.enqueuedAt);
+      const be = Date.parse(b.enqueuedAt);
+      const aev = Number.isFinite(ae) ? ae : 0;
+      const bev = Number.isFinite(be) ? be : 0;
+      return bev - aev;
+    });
+    for (const item of ranked) {
+      const queueId = queueIdForItem(item);
+      const pipelineId = item.currentPipelineId ?? snapshot.availablePipelines?.[0]?.id ?? null;
+      if (pipelineId === null) continue;
+      const candidatePhase = pickCandidatePhase(item);
+      if (candidatePhase === null) continue;
+      const probe = await readPhaseLog({
+        selection: {
+          queueId,
+          taskId: item.id,
+          pipelineId,
+          phaseId: candidatePhase,
+          iterationN: null
+        }
+      });
+      if (probe.outcome !== 'success') continue;
+      if (probe.manifest.iterations.length === 0) continue;
+      // Found a recent task with on-disk iterations. Bail out if the
+      // operator navigated while the probe was inflight.
+      if (
+        state.selection.queueId !== null ||
+        state.selection.taskId !== null ||
+        state.selection.phaseId !== null
+      ) {
+        return;
+      }
+      store.setSelection({
+        queueId,
+        taskId: item.id,
+        pipelineId,
+        phaseId: candidatePhase,
+        iterationN: null
+      });
+      return;
+    }
+  }
+
+  function pickCandidatePhase(item: WorkflowSnapshot['queue']['recent'][number]): string | null {
+    if (item.currentPhase !== null) return item.currentPhase;
+    const phases = getPhaseOptions(snapshot, {
+      id: item.id,
+      label: item.label,
+      queueId: queueIdForItem(item),
+      pipelineId: item.currentPipelineId ?? null,
+      currentPhase: null,
+      status: item.status,
+      updatedAt: item.completedAt ?? item.updatedAt ?? item.startedAt ?? item.enqueuedAt
+    });
+    const completed = [...phases]
+      .filter((phase) => phase.state === 'completed')
+      .sort((a, b) => b.order - a.order)[0];
+    return completed?.id ?? phases[phases.length - 1]?.id ?? phases[0]?.id ?? null;
+  }
+
+  function coldStartTime(item: WorkflowSnapshot['queue']['recent'][number]): number {
+    const value = item.completedAt ?? item.updatedAt ?? item.startedAt ?? item.enqueuedAt;
+    if (value === null) return 0;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
 
   function handleSelectQueue(queueId: string | null): void {
     if (onSelectQueue) {

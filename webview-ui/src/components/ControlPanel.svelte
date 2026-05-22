@@ -7,11 +7,33 @@
     CMD_RESUME,
     CMD_START
   } from '../lib/messages';
+  import { useConfirm } from '../lib/use-confirm';
+  import { confirmSuppressionStore } from '../lib/confirm-suppression-store.svelte';
+  import { ACTION_COPY, type ActionKey } from '../lib/action-copy';
 
   let pendingId = $state<string | null>(null);
   let showStartForm = $state(false);
   let startDescription = $state('');
-  let confirmReset = $state(false);
+
+  // Feature 063 (T040) — re-enable-prompts panel. Reads the live
+  // suppressed set from the snapshot-backed store; clicking a row posts
+  // `CMD_SET_CONFIRM_SUPPRESSION` with `suppressed: false`. The
+  // suppressed array is sourced from the host memento so a write in
+  // another VS Code window propagates after the next snapshot push.
+  const suppressedActions = $derived<readonly ActionKey[]>(
+    snapshotStore.snapshot?.confirmSuppression?.suppressedActionKeys
+      ?.filter((k): k is ActionKey => k in ACTION_COPY) ?? []
+  );
+
+  function unsuppress(actionKey: ActionKey): void {
+    confirmSuppressionStore.setSuppressed(actionKey, false);
+  }
+
+  function unsuppressAll(): void {
+    for (const key of suppressedActions) {
+      confirmSuppressionStore.setSuppressed(key, false);
+    }
+  }
 
   const status = $derived(snapshotStore.status);
   const isPrimary = $derived(snapshotStore.isPrimary);
@@ -49,10 +71,19 @@
     track(correlationId);
   }
 
-  function sendReset(): void {
+  async function onResetClick(event: MouseEvent): Promise<void> {
+    // Feature 063 (T039) — Reset Workspace is the most destructive
+    // surface and routes through the unsuppressible
+    // `useConfirm('workspace.reset')` flow. The helper enforces
+    // `suppressible: false` so the checkbox never renders for this key.
+    if (resetDisabled) return;
+    const ok = await useConfirm('workspace.reset', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: {}
+    });
+    if (!ok) return;
     const { correlationId } = postCommand(CMD_RESET, { confirmed: true });
     track(correlationId);
-    confirmReset = false;
   }
 
   function onStartFormKey(event: KeyboardEvent): void {
@@ -60,13 +91,6 @@
       event.preventDefault();
       showStartForm = false;
       startDescription = '';
-    }
-  }
-
-  function onResetConfirmKey(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      confirmReset = false;
     }
   }
 </script>
@@ -105,7 +129,7 @@
       data-testid="control-reset"
       title={tooltip}
       disabled={resetDisabled}
-      onclick={() => (confirmReset = true)}
+      onclick={onResetClick}
     >
       Reset
     </button>
@@ -140,29 +164,43 @@
     </form>
   {/if}
 
-  {#if confirmReset}
-    <div
-      class="confirm"
-      data-testid="reset-confirm"
-      role="alertdialog"
-      tabindex="-1"
-      onkeydown={onResetConfirmKey}
+  {#if suppressedActions.length > 0}
+    <section
+      class="suppression-panel"
+      data-testid="confirm-suppression-panel"
+      aria-label="Re-enable confirmation prompts"
     >
-      <p>Reset will clear queue, run state, and lock. Continue?</p>
-      <div class="row">
-        <button type="button" data-testid="reset-confirm-yes" onclick={sendReset}>
-          Yes, reset
-        </button>
+      <header class="suppression-header">
+        <h3>Confirmation prompts</h3>
         <button
           type="button"
-          data-testid="reset-confirm-no"
-          onclick={() => (confirmReset = false)}
-        >
-          No
-        </button>
-      </div>
-    </div>
+          class="suppression-reenable-all"
+          data-testid="confirm-suppression-reenable-all"
+          onclick={unsuppressAll}
+          disabled={!isPrimary}
+          title="Re-enable confirmation prompts for every suppressed action"
+        >Re-enable all</button>
+      </header>
+      <ul class="suppression-list">
+        {#each suppressedActions as actionKey (actionKey)}
+          <li class="suppression-row" data-testid="confirm-suppression-row-{actionKey}">
+            <span class="suppression-title" title={ACTION_COPY[actionKey].title}>
+              {ACTION_COPY[actionKey].title}
+            </span>
+            <button
+              type="button"
+              class="suppression-reenable"
+              data-testid="confirm-suppression-reenable-{actionKey}"
+              onclick={() => unsuppress(actionKey)}
+              disabled={!isPrimary}
+              title="Re-enable the confirmation prompt for this action"
+            >Re-enable</button>
+          </li>
+        {/each}
+      </ul>
+    </section>
   {/if}
+
 </section>
 
 <style>
@@ -198,8 +236,7 @@
     opacity: 0.55;
     cursor: not-allowed;
   }
-  .start-form,
-  .confirm {
+  .start-form {
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -211,8 +248,56 @@
     border-radius: var(--schegent-radius);
     padding: 4px 6px;
   }
-  .confirm p {
+  .suppression-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: var(--schegent-gap);
+    border-top: 1px solid var(--schegent-divider);
+  }
+  .suppression-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--schegent-gap);
+  }
+  .suppression-header h3 {
     margin: 0;
+    font-size: 0.85em;
+    font-weight: 600;
     color: var(--schegent-muted-fg);
+  }
+  .suppression-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .suppression-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--schegent-gap);
+  }
+  .suppression-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85em;
+  }
+  .suppression-reenable,
+  .suppression-reenable-all {
+    background: transparent;
+    color: var(--schegent-muted-fg);
+    border: 1px solid var(--schegent-border);
+    padding: 2px 8px;
+    font-size: 0.8em;
+  }
+  .suppression-reenable:hover:not(:disabled),
+  .suppression-reenable-all:hover:not(:disabled) {
+    color: var(--schegent-fg);
   }
 </style>

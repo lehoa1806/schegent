@@ -12,10 +12,10 @@
     hasInFlight: boolean;
     clearDoneDisabled: boolean;
     cleanDisabled: boolean;
-    onResume: () => void;
-    onPause: () => void;
-    onClearDone: () => void;
-    onClean: () => void;
+    onResume: (event: MouseEvent) => void;
+    onPause: (event: MouseEvent) => void;
+    onClearDone: (event: MouseEvent) => void;
+    onClean: (event: MouseEvent) => void;
   }
 
   const {
@@ -64,14 +64,14 @@
 
   const actionDisabled = $derived(!isPrimary || action === 'idle');
 
-  function onAction(): void {
+  function onAction(event: MouseEvent): void {
     if (actionDisabled) return;
     if (action === 'start') {
       postCommand(CMD_START_QUEUE);
     } else if (action === 'pause') {
-      onPause();
+      onPause(event);
     } else if (action === 'resume') {
-      onResume();
+      onResume(event);
     }
   }
 </script>
@@ -102,10 +102,11 @@
     type="button"
     class="btn btn-destructive"
     data-testid="dashboard-queue-clean"
+    data-action="clean-all"
     onclick={onClean}
     disabled={cleanDisabled || !isPrimary}
-    title="Clear completed and failed tasks from Recent"
-  >Clean</button>
+    title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
+  >Clean All</button>
 </div>
 
 <style>

@@ -2,14 +2,12 @@
   import type { QueueItem } from '../lib/snapshot-types';
   import { formatRelativeTime } from '../lib/format';
   import QueueItemActions from './QueueItemActions.svelte';
-  import type { DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { postReorderTask } from '../lib/reorder-task';
 
   interface Props {
     orderedItems: readonly QueueItem[];
     isPrimary: boolean;
     selectedTaskId: string | null;
-    openConfirmDialog: (copy: DeleteConfirmationCopy, onConfirm: () => void) => void;
     onTaskSelect: (taskId: string) => void;
   }
 
@@ -17,7 +15,6 @@
     orderedItems,
     isPrimary,
     selectedTaskId,
-    openConfirmDialog,
     onTaskSelect
   }: Props = $props();
 
@@ -89,7 +86,7 @@
             </div>
           </button>
           <span class="actions-slot">
-            <QueueItemActions {item} {isPrimary} onRequestConfirm={openConfirmDialog} />
+            <QueueItemActions {item} {isPrimary} />
           </span>
         </li>
       {/each}

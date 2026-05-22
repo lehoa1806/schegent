@@ -19,7 +19,7 @@
     tile: PhaseTile;
     pendingRetry?: DelayedRetryState | null;
     nowMs?: number;
-    onRetryNow?: () => void;
+    onRetryNow?: (event: MouseEvent) => void;
     retryDisabled?: boolean;
   } = $props();
 
@@ -70,9 +70,9 @@
     return `${sp.current}/${sp.total} tasks`;
   }
 
-  function handleRetryClick(): void {
+  function handleRetryClick(event: MouseEvent): void {
     if (retryDisabled) return;
-    onRetryNow?.();
+    onRetryNow?.(event);
   }
 </script>
 
@@ -101,6 +101,11 @@
   {/if}
   {#if tile.state === 'completed' && tile.lastResult}
     <span class="badge result-{tile.lastResult}">{tile.lastResult}</span>
+  {/if}
+  {#if tile.lastRetryDecision && tile.lastRetryDecision.missingKeys.length > 0}
+    <span class="badge missing-keys" title="Missing metrics expected by retryCondition">
+      missing: {tile.lastRetryDecision.missingKeys.join(', ')}
+    </span>
   {/if}
   {#if showPendingRetry}
     <span
@@ -182,6 +187,10 @@
   .badge.result-issues-remain,
   .badge.result-ambiguities-remain {
     color: var(--schegent-color-warning);
+  }
+  .badge.missing-keys {
+    color: var(--schegent-color-warning);
+    border: 1px solid var(--schegent-color-warning);
   }
   .pending-retry {
     flex: 0 0 auto;

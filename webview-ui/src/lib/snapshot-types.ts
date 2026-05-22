@@ -81,6 +81,13 @@ export interface PhaseTile {
     readonly truncated: boolean;
     readonly invalidReason: string | null;
   } | null;
+  /**
+   * Feature 010 (FR-028) — operator-visible projection of the most recent
+   * retryCondition evaluation's missing keys.
+   */
+  readonly lastRetryDecision?: {
+    readonly missingKeys: readonly string[];
+  };
 }
 
 export interface ActiveFeatureSummary {
@@ -111,6 +118,13 @@ export interface QueueItem {
     | null;
   /** Feature 020 — pipeline id under which the task is/was running. */
   readonly currentPipelineId?: string | null;
+  /**
+   * BUG-006 (063) — Activity Feed cold-start fallback predicate. `true`
+   * when the task has entered the phase machinery at least once and may
+   * have audit-log iterations on disk. Optional for back-compat with
+   * snapshots emitted before the field landed.
+   */
+  readonly hasOnDiskLogs?: boolean;
 }
 
 export interface QueueSummary {
@@ -578,6 +592,27 @@ export interface WorkflowSnapshot {
    * as `null` (no telemetry line rendered).
    */
   readonly telemetry?: TelemetrySnapshot | null;
+  /**
+   * Feature 063 (FR-021) — projected suppression set so the webview can
+   * skip the modal when the operator opted out for a given action key.
+   * Optional for legacy-tolerance: an older host bundle may not include
+   * it, and the webview must treat `undefined` the same as "no
+   * suppressions" (modal shown).
+   */
+  readonly confirmSuppression?: {
+    readonly version: 1;
+    readonly suppressedActionKeys: readonly string[];
+  };
+
+  /**
+   * Feature 063 (FR-019, T030) — projected value of the
+   * `schegent.ui.confirmations.enable` config flag. When `false`,
+   * `useConfirm` short-circuits and destructive actions run without
+   * opening the modal. Optional for legacy-tolerance: an older host
+   * bundle may not include it, and the webview must treat `undefined`
+   * the same as `true` (prompts on).
+   */
+  readonly confirmationsEnabled?: boolean;
 }
 
 export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({

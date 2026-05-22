@@ -208,6 +208,55 @@ export function jumpActivityFeedToCurrent(
   return resolveLiveSelection(snapshot) ?? current;
 }
 
+// Feature 021 T043 (BUG-001 Defect A) — cold-start fallback.
+//
+// When the dashboard mounts and the Activity Feed has no live in-flight
+// selection (resolveLiveSelection returned null), pick the most-recently
+// updated recent task that actually has on-disk phase log iterations.
+// The caller supplies `hasOnDiskIterations` because the webview cannot
+// stat the filesystem directly; the host bridges that via a projection
+// or IPC predicate.
+//
+// Tie-breaking rule: order by `updatedAt` desc, then `enqueuedAt` desc
+// for tasks with equal `updatedAt`. This mirrors the dashboard's existing
+// "newest-first" recent-history sort and keeps the fallback deterministic.
+//
+// Returns null when no candidate qualifies — the caller leaves the
+// "No selection" empty state in place.
+export function resolveColdStartFallback(
+  snapshot: WorkflowSnapshot,
+  hasOnDiskIterations: (taskId: string) => boolean
+): ActivityFeedSelection | null {
+  const candidates = snapshot.queue.recent.filter((item) => hasOnDiskIterations(item.id));
+  if (candidates.length === 0) return null;
+  const ranked = [...candidates].sort((a, b) => {
+    const updated = timeValue(coldStartUpdatedAt(b)) - timeValue(coldStartUpdatedAt(a));
+    if (updated !== 0) return updated;
+    return timeValue(b.enqueuedAt) - timeValue(a.enqueuedAt);
+  });
+  const winner = ranked[0];
+  if (!winner) return null;
+  const queueId = queueIdForItem(winner);
+  const taskOption = getTaskOptions(snapshot, queueId).find(
+    (candidate) => candidate.id === winner.id
+  );
+  if (!taskOption) return null;
+  const phase = pickBestPhase(snapshot, taskOption);
+  return {
+    queueId,
+    taskId: taskOption.id,
+    pipelineId: taskOption.pipelineId,
+    phaseId: phase?.id ?? null,
+    iterationN: null,
+    followMode: 'manual',
+    manualLevel: 'task'
+  };
+}
+
+function coldStartUpdatedAt(item: QueueItem): string | null {
+  return item.completedAt ?? item.updatedAt ?? item.startedAt ?? item.enqueuedAt;
+}
+
 export function reconcileActivityFeedSelection(
   snapshot: WorkflowSnapshot,
   current: ActivityFeedSelection

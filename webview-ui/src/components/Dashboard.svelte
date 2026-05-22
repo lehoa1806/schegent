@@ -1,7 +1,6 @@
 <script lang="ts">
   import type {
     QueueItem,
-    QueueSummary,
     PhaseTile,
     WorkflowSnapshot
   } from '../lib/snapshot-types';
@@ -10,13 +9,14 @@
     CMD_PAUSE_QUEUE,
     CMD_RESUME_QUEUE,
     CMD_START_QUEUE,
-    CMD_CLEAR_COMPLETED,
-    CMD_CLEAR_FAILED
+    CMD_CLEAR_ALL,
+    CMD_CLEAR_COMPLETED
   } from '../lib/messages';
   import {
     EMPTY_ACTIVITY_FEED_SELECTION,
     jumpActivityFeedToCurrent,
     reconcileActivityFeedSelection,
+    resolveColdStartFallback,
     selectActivityFeedPhase,
     selectActivityFeedQueue,
     selectActivityFeedTask,
@@ -30,11 +30,11 @@
   // QueueControls, and QueueListView sub-components.
   import PhaseProgression from './PhaseProgression.svelte';
   import PhaseLogFeed from './PhaseLogFeed/PhaseLogFeed.svelte';
-  import ConfirmDeleteDialog from './ConfirmDeleteDialog.svelte';
   import QueueInputForm from './QueueInputForm.svelte';
   import QueueControls from './QueueControls.svelte';
   import QueueListView from './QueueListView.svelte';
-  import type { DeleteConfirmationCopy } from '../lib/deletion-confirmation';
+  import { useConfirm } from '../lib/use-confirm';
+  import { deriveCleanAllContext } from '../lib/queue-derived';
 
   let leftPanelCollapsed = $state(false);
 
@@ -59,17 +59,6 @@
   const availablePipelines = $derived(snapshot.availablePipelines ?? []);
   const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
   const activeTaskId = $derived(queue.inFlight?.id ?? null);
-  const defaultQueueSummary = $derived<QueueSummary>(
-    queue.queues?.[0] ?? {
-      id: 'default',
-      name: 'Default queue',
-      position: 0,
-      state: (queue.paused ? 'manually-paused' : 'active') as QueueSummary['state'],
-      pauseSource: queue.paused ? 'operator' : null,
-      schedule: null,
-      taskCount: queue.pending.length + (queue.inFlight ? 1 : 0)
-    }
-  );
 
   let activityFeedSelection = $state<ActivityFeedSelection>(EMPTY_ACTIVITY_FEED_SELECTION);
   const activityFeedStore = createPhaseLogStore();
@@ -133,15 +122,6 @@
 
   const effectiveTaskId = $derived(selectedFeedTaskId ?? activeTaskId);
 
-  let confirmDialog = $state<{
-    copy: DeleteConfirmationCopy;
-    onConfirm: () => void;
-  } | null>(null);
-
-  function openConfirmDialog(copy: DeleteConfirmationCopy, onConfirm: () => void): void {
-    confirmDialog = { copy, onConfirm };
-  }
-
   const orderedItems = $derived<readonly QueueItem[]>([
     ...(queue.inFlight ? [queue.inFlight] : []),
     ...queue.pending,
@@ -152,13 +132,29 @@
     queue.recent.filter((r) => r.status === 'completed').length
   );
   const failedCount = $derived(queue.recent.filter((r) => r.status === 'failed').length);
+  const canceledCount = $derived(
+    queue.recent.filter((r) => r.status === 'canceled').length
+  );
 
   // BUG-003 / FR-012a — tri-state props for the contextual button.
   const queuePaused = $derived(queue.paused);
   const pendingCount = $derived(queue.pending.length);
   const hasInFlight = $derived(queue.inFlight !== null);
+  const hasActiveRun = $derived((snapshot.activeRunId ?? null) !== null);
   const clearDoneDisabled = $derived(completedCount === 0);
-  const cleanDisabled = $derived(completedCount === 0 && failedCount === 0);
+  // Feature 063 (T023) — Clean All gate: enabled iff ANY of the five reset
+  // surfaces is non-empty. The four queue/run surfaces are visible from
+  // the webview snapshot; watchdog backoff is host-only and is folded into
+  // the host-side no-op guard inside `QueueManager.clearAll()` (T016).
+  const cleanDisabled = $derived(
+    pendingCount === 0 &&
+      completedCount === 0 &&
+      failedCount === 0 &&
+      canceledCount === 0 &&
+      !hasInFlight &&
+      !queuePaused &&
+      !hasActiveRun
+  );
 
   function selectionsEqual(a: ActivityFeedSelection, b: ActivityFeedSelection): boolean {
     return (
@@ -181,6 +177,39 @@
     const next = reconcileActivityFeedSelection(snapshot, activityFeedSelection);
     if (!selectionsEqual(next, activityFeedSelection)) {
       applyActivityFeedSelection(next);
+    }
+  });
+
+  // BUG-006 (063) — Activity Feed cold-start fallback. When the dashboard
+  // mounts after a VS Code restart with no in-flight task and no prior
+  // selection, the Activity Feed defaults to EMPTY_ACTIVITY_FEED_SELECTION
+  // and renders the "No phase selected" empty state — operators read this
+  // as "my logs disappeared." Wire Feature 021's resolveColdStartFallback
+  // so the most-recently-updated recent task with on-disk logs auto-loads.
+  //
+  // Runs once at mount via a `coldStartApplied` latch; subsequent snapshot
+  // updates flow through the reconcile `$effect` above.
+  let coldStartApplied = $state(false);
+  $effect(() => {
+    if (coldStartApplied) return;
+    if (activityFeedSelection.taskId !== null) {
+      coldStartApplied = true;
+      return;
+    }
+    if (snapshot.queue.inFlight !== null) {
+      // Live selection covers this case; reconcile $effect above will
+      // resolve it.
+      coldStartApplied = true;
+      return;
+    }
+    const fallback = resolveColdStartFallback(
+      snapshot,
+      (taskId) =>
+        snapshot.queue.recent.find((item) => item.id === taskId)?.hasOnDiskLogs === true
+    );
+    coldStartApplied = true;
+    if (fallback !== null) {
+      applyActivityFeedSelection(fallback);
     }
   });
 
@@ -231,23 +260,51 @@
     applyActivityFeedSelection(next);
   }
 
-  function onPause(): void {
+  async function onPause(event: MouseEvent): Promise<void> {
+    // Feature 063 (T035) — gate Pause behind the universal confirmation.
+    const ok = await useConfirm('queue.pause', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: {}
+    });
+    if (!ok) return;
     postCommand(CMD_PAUSE_QUEUE);
   }
 
-  function onResume(): void {
+  async function onResume(event: MouseEvent): Promise<void> {
+    // Feature 063 (T035) — gate Resume behind the universal confirmation.
+    const ok = await useConfirm('queue.resume', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: {}
+    });
+    if (!ok) return;
     postCommand(CMD_RESUME_QUEUE);
   }
 
-  function onClearDone(): void {
+  async function onClearDone(event: MouseEvent): Promise<void> {
     if (clearDoneDisabled) return;
+    // Feature 063 (T035) — gate Clear Done behind the universal confirmation
+    // with the impact count rendered inside the body.
+    const ok = await useConfirm('queue.clear-done', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { completedCount }
+    });
+    if (!ok) return;
     postCommand(CMD_CLEAR_COMPLETED);
   }
 
-  function onClean(): void {
+  async function onClean(event: MouseEvent): Promise<void> {
     if (cleanDisabled) return;
-    if (completedCount > 0) postCommand(CMD_CLEAR_COMPLETED);
-    if (failedCount > 0) postCommand(CMD_CLEAR_FAILED);
+    // Feature 063 (US3, T048) — derive the impact inventory through the
+    // shared helper so the same shape is unit-testable in isolation
+    // (clean-all-context.test.ts). The body template inside
+    // ACTION_COPY['queue.clean-all'] consumes every field via
+    // renderActionBody().
+    const ok = await useConfirm('queue.clean-all', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: deriveCleanAllContext(snapshot)
+    });
+    if (!ok) return;
+    postCommand(CMD_CLEAR_ALL);
   }
 </script>
 
@@ -296,7 +353,6 @@
             {orderedItems}
             {isPrimary}
             selectedTaskId={activityFeedSelection.taskId}
-            {openConfirmDialog}
             onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
           />
         </section>
@@ -320,7 +376,6 @@
           delayedRetry={snapshot.delayedRetry}
           selectedPhaseId={activityFeedSelection.phaseId}
           onSelectPhase={(phaseId) => onActivityFeedPhaseSelect(phaseId)}
-          onRequestConfirm={openConfirmDialog}
         />
       </div>
 
@@ -338,14 +393,6 @@
     </div>
   </div>
 </main>
-
-{#if confirmDialog}
-  <ConfirmDeleteDialog
-    copy={confirmDialog.copy}
-    onCancel={() => (confirmDialog = null)}
-    onConfirm={() => { confirmDialog!.onConfirm(); confirmDialog = null; }}
-  />
-{/if}
 
 <style>
   .dashboard {

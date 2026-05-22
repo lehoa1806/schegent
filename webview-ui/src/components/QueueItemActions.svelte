@@ -19,15 +19,14 @@
     CMD_RESTART_CANCELED_TASK
   } from '../lib/messages';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
-  import { taskDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
+  import { useConfirm } from '../lib/use-confirm';
 
   interface Props {
     item: QueueItem;
     isPrimary: boolean;
-    onRequestConfirm?: (copy: DeleteConfirmationCopy, onConfirm: () => void) => void;
   }
 
-  const { item, isPrimary, onRequestConfirm }: Props = $props();
+  const { item, isPrimary }: Props = $props();
 
   const status = $derived(item.status);
   const showRetry = $derived(status === 'failed');
@@ -69,30 +68,46 @@
   function onRetry(): void {
     safePost(() => postCommand(CMD_RETRY_QUEUE_ITEM, { id: item.id }));
   }
-  function onCancelInFlight(): void {
-    // Feature 017 — BUG-001. Carry the per-row taskId so the host resolves
-    // the FeatureRequest by id rather than the singular `store.getRun()`
-    // projection (wrong target when cap > 1 or after pause/resume swap).
-    safePost(() => postCommand(CMD_CANCEL, { taskId: item.id }));
-  }
-  function onRestartCanceled(): void {
-    safePost(() => postCommand(CMD_RESTART_CANCELED_TASK, { taskId: item.id }));
-  }
-  function onRequestRemove(): void {
+  async function onCancelInFlight(event: MouseEvent): Promise<void> {
     if (disabled) return;
-    if (!onRequestConfirm) return;
-    const copy = taskDeleteConfirmation(item);
-    onRequestConfirm(copy, () => {
-      // BUG-002 (T117) — clear any prior rejection text before dispatching
-      // so the operator sees the fresh outcome (or no text on success).
-      removeError = null;
-      const { correlationId } = postCommand(CMD_REMOVE_QUEUE_ITEM, { id: item.id, confirmed: true });
-      snapshotStore.markPending(correlationId);
-      snapshotStore.onceAck(correlationId, (ack) => {
-        if (ack.status === 'rejected') {
-          removeError = humanizeRemoveRejection(ack.reason);
-        }
-      });
+    // Feature 063 — gate the in-flight cancel through the universal
+    // confirmation. The host resolves the FeatureRequest by per-row
+    // taskId (017 BUG-001), so the IPC payload mirrors the legacy path.
+    const ok = await useConfirm('queue.cancel-item', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { taskTitle: item.label, isRunning: true }
+    });
+    if (!ok) return;
+    postCommand(CMD_CANCEL, { taskId: item.id });
+  }
+  async function onRestartCanceled(event: MouseEvent): Promise<void> {
+    if (disabled) return;
+    const ok = await useConfirm('run.restart-canceled', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { taskTitle: item.label }
+    });
+    if (!ok) return;
+    postCommand(CMD_RESTART_CANCELED_TASK, { taskId: item.id });
+  }
+  async function onRequestRemove(event: MouseEvent): Promise<void> {
+    if (disabled) return;
+    const ok = await useConfirm('queue.remove-item', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { taskTitle: item.label }
+    });
+    if (!ok) return;
+    // BUG-002 (T117) — clear any prior rejection text before dispatching
+    // so the operator sees the fresh outcome (or no text on success).
+    removeError = null;
+    const { correlationId } = postCommand(CMD_REMOVE_QUEUE_ITEM, {
+      id: item.id,
+      confirmed: true
+    });
+    snapshotStore.markPending(correlationId);
+    snapshotStore.onceAck(correlationId, (ack) => {
+      if (ack.status === 'rejected') {
+        removeError = humanizeRemoveRejection(ack.reason);
+      }
     });
   }
   function humanizeRemoveRejection(reason: string | undefined): string {
@@ -107,10 +122,16 @@
     }
     return `Cannot remove: ${reason ?? 'rejected'}.`;
   }
-  function onSaveEdit(): void {
+  async function onSaveEdit(event: SubmitEvent): Promise<void> {
+    if (disabled) return;
     const description = editDraft.trim();
     if (description.length === 0) return;
-    safePost(() => postCommand(CMD_MODIFY_TASK, { taskId: item.id, description }));
+    const ok = await useConfirm('run.modify-task', {
+      originatingElement: (event.submitter as HTMLElement | null) ?? null,
+      context: { taskTitle: description }
+    });
+    if (!ok) return;
+    postCommand(CMD_MODIFY_TASK, { taskId: item.id, description });
     editOpen = false;
   }
   // Feature 030 (US3, T045) — `onMoveTask` and the per-row "Move to
@@ -188,7 +209,7 @@
 
 
 {#if editOpen}
-  <form class="inline-form" data-testid="queue-item-edit-form-{item.id}" onsubmit={(event) => { event.preventDefault(); onSaveEdit(); }}>
+  <form class="inline-form" data-testid="queue-item-edit-form-{item.id}" onsubmit={(event) => { event.preventDefault(); onSaveEdit(event); }}>
     <input bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" title="Edit task description" />
     <button type="submit" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
   </form>

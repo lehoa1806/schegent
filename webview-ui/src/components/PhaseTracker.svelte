@@ -4,9 +4,12 @@
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { CMD_RETRY_PHASE_NOW } from '../lib/messages';
   import { postCommand } from '../lib/vscode-api';
+  import { useConfirm } from '../lib/use-confirm';
+  import { formatPhaseLabel } from '../lib/format';
 
   const phases = $derived(snapshotStore.phases);
   const delayedRetry = $derived(snapshotStore.delayedRetry);
+  const activePhase = $derived(phases.find((p) => p.state === 'active') ?? null);
 
   // Feature 011 — tick a clock every 1s so the countdown re-renders.
   // Stopped while no retry is pending so we don't burn rAF cycles when
@@ -24,7 +27,18 @@
     return () => clearInterval(interval);
   });
 
-  function handleRetryNow(): void {
+  async function handleRetryNow(event: MouseEvent): Promise<void> {
+    // Feature 063 (T037) — gate retry-phase-now behind the universal
+    // confirmation. The active phase's display label surfaces in the
+    // body so the operator can confirm which phase will be retried.
+    const phaseName = activePhase
+      ? formatPhaseLabel(activePhase.name, activePhase.displayName)
+      : 'active phase';
+    const ok = await useConfirm('run.retry-phase-now', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { phaseName }
+    });
+    if (!ok) return;
     const { correlationId } = postCommand(CMD_RETRY_PHASE_NOW);
     snapshotStore.markPending(correlationId);
     pendingCorrelationId = correlationId;
