@@ -29,7 +29,7 @@ Order matters — the entries are time-ordered. Look for:
 - The most recent `monitor-stdout-line` or `monitor-stderr-line` (the last line the CLI emitted).
 - A `monitor-stall` entry (the monitor's own detection signal).
 
-If the most recent monitor line is older than `schegent.invocation.timeoutSeconds` (default 1800s), the per-phase timeout would normally have fired. If you don't see a `phase-end` with `outcome: failure`, something prevented the timeout from firing — note the `phase` and `correlationId` and continue.
+If the most recent monitor line is older than `schegent.invocation.timeoutSeconds` (default 5400s), the per-phase idle timeout would normally have fired. The timer resets on every CLI output chunk, so the gap between "now" and the last monitor line is the right thing to compare. If you don't see a `phase-end` with `outcome: failure`, something prevented the timeout from firing — note the `phase` and `correlationId` and continue.
 
 ## Step 3 — Check the workspace lock
 

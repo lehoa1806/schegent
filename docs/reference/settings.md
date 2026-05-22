@@ -63,11 +63,11 @@ Maximum iterations for the Clarify and Analyze loop phases (and any custom loop 
 ### `schegent.invocation.timeoutSeconds`
 
 - **Type:** `number`
-- **Default:** `1800` (30 minutes)
+- **Default:** `5400` (90 minutes)
 - **Scope:** `resource`
 - **Minimum:** `30`
 
-Per-phase CLI invocation timeout in seconds. A phase that exceeds this without emitting output is killed and the run is failed (or retried, depending on the failure classification).
+Per-phase CLI idle timeout in seconds. The timer resets every time the CLI emits a stdout or stderr chunk; a phase is only killed after this many seconds of no output. A long-running phase that streams progress continues indefinitely.
 
 ### `schegent.watchdog.pollIntervalMinutes`
 
@@ -360,7 +360,7 @@ For quick lookup, the full list of keys:
 | `schegent.cli.path` | application | `"claude"` |
 | `schegent.backend.runner` | application | `"claude"` |
 | `schegent.loop.maxIterations` | resource | `10` |
-| `schegent.invocation.timeoutSeconds` | resource | `1800` |
+| `schegent.invocation.timeoutSeconds` | resource | `5400` |
 | `schegent.watchdog.pollIntervalMinutes` | resource | `30` |
 | `schegent.audit.rotation.sizeMB` | resource | `5` |
 | `schegent.audit.rotation.maxAgeDays` | resource | `30` |

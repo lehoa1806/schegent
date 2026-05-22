@@ -12,7 +12,7 @@ Every phase invocation spawns a fresh Claude CLI subprocess. There is no warm po
 | Per-phase prompt | ~3–8 s | Dominated by CLI startup; prompt size is secondary. |
 | Per-phase total wall time | varies widely | Dependent on phase complexity, file scan cost, model tier. |
 
-Tune `schegent.invocation.timeoutSeconds` (default 1800) if your phase invocations regularly approach the timeout. The runner enforces this cap; a timeout is logged as `monitor-invocation-summary` with `outcome: failure`.
+Tune `schegent.invocation.timeoutSeconds` (default 5400) if your phase invocations regularly go idle near the threshold. The timer resets on every CLI output chunk, so a long phase that streams progress will not trip; the cap fires only after that many seconds of silence. A timeout is logged as `monitor-invocation-summary` with `outcome: failure`.
 
 ## State projection budget
 

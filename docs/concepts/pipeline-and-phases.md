@@ -40,7 +40,7 @@ Each phase is a JSON record. Every phase has these fields:
 - **`instruction`** — the phase-specific directive that gets composed into the prompt the Claude CLI receives. Built-in phases ship with carefully-tuned instructions; custom phases are operator-authored (1–8192 chars).
 - **`model`** — optional Claude model id passed as `--model`. When omitted, the runner's default applies.
 - **`effort`** — optional reasoning depth: one of `low`, `medium`, `high`, `xhigh`, `max`. Higher levels take longer and cost more but produce more thorough output.
-- **`timeoutSeconds`** — optional per-phase watchdog override (1–3600). Falls back to `schegent.invocation.timeoutSeconds` (default 1800) if unset.
+- **`timeoutSeconds`** — optional per-phase idle-timeout override (1–5400). The timer resets on every CLI output chunk, so this caps idle time, not wall time. Falls back to `schegent.invocation.timeoutSeconds` (default 5400) if unset.
 - **`loopable`** — whether this phase can be re-invoked automatically in response to a retry condition. Defaults to `false`. When `true`, the runner re-runs the phase until stdout signals `[SCHEGENT_STATUS: CLEAR]` or `schegent.loop.maxIterations` (default 10) is reached.
 - **`retryCondition`** — optional, sandboxed DSL expression evaluated against the phase's audit metrics; controls whether the phase loops on non-fatal outcomes.
 

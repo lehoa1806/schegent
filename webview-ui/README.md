@@ -441,6 +441,46 @@ Snapshot envelope additions:
 forward migrator defaults `phaseBreakpoints: []`, `resumeTargetPhaseId:
 null`, and `pauseSource: 'operator'` for already-paused queues.
 
+### IPC additions (spec 063 — Clean All + universal confirmations)
+
+Feature 063 collapses the old "Clear completed" + "Clear failed" pair
+into a single **Clean All** button and gates every destructive postCommand
+site behind a universal confirmation prompt. Two new **mutating** IPC
+commands:
+
+- `CMD_CLEAR_ALL` — payload `{}`. Routes to `QueueManager.clearAll()` on
+  the primary host, which performs an atomic reset of five surfaces in one
+  state transaction: (1) every queue entry, (2) the active `WorkflowRun`,
+  (3) the queue pause state, (4) any `ScheduleWatchdog` backoff window,
+  (5) all watchdog-pending timers. Emits one `queue-cleared-all` audit
+  event with the pre-clean counts. Replaces the legacy
+  `CMD_CLEAR_COMPLETED` and `CMD_CLEAR_FAILED` commands (both removed).
+- `CMD_SET_CONFIRM_SUPPRESSION` — payload `{ actionKey, suppressed }` where
+  `actionKey` is one of the 11 destructive `ActionKey` members. Persists
+  the per-action "Don't ask again" choice into webview-scoped settings.
+
+Both commands are members of `MUTATING_COMMANDS` (primary-host gated).
+
+Every destructive postCommand site flows through the shared confirmation
+helper at
+[`webview-ui/src/lib/use-confirm.ts`](src/lib/use-confirm.ts) —
+`useConfirm(actionKey, options)` returns `Promise<boolean>`. The helper
+short-circuits in three cases: (a) the global `schegent.ui.confirmations.enable`
+setting is `false`, (b) the per-action suppression flag is set, (c) another
+modal already owns the single-modal lock. Otherwise it imperatively
+mounts the `ConfirmDialog` component and resolves on Confirm/Cancel.
+Static copy for every `ActionKey` lives in
+[`webview-ui/src/lib/action-copy.ts`](src/lib/action-copy.ts) (title, body
+template, confirm label, danger flag); the Clean All entry alone
+substitutes runtime context (`pendingCount`, `inflightTitle`, etc.) via
+`renderActionBody`. The repo-grep regression at
+[`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts)
+fails the build on any destructive `postCommand(...)` call that is not
+preceded by a matching `useConfirm(...)` await.
+
+One new audit event type is additive (no `AUDIT_SCHEMA_VERSION` bump):
+`queue-cleared-all { pendingCount, completedCount, failedCount, canceledCount, hadActiveRun, hadCascadePause }`.
+
 ### Activity Feed navigation (spec 021)
 
 The Dashboard's Activity Feed selection is local webview state. Queue rows,

@@ -115,7 +115,7 @@ jq -c 'select(.eventType == "fatal-signature-matched") | {timestamp, signature, 
 
 **Causes:**
 
-- The phase exceeded `schegent.invocation.timeoutSeconds` (default 1800s = 30 minutes).
+- The CLI produced no stdout/stderr output for `schegent.invocation.timeoutSeconds` (default 5400s = 90 minutes). The timer resets on every output chunk, so this triggers only when the CLI is genuinely idle.
 - The CLI was alive but stalled past the watchdog threshold.
 
 **Fix:**

@@ -12,7 +12,7 @@ The CLI runner emits a `monitor-rate-limited` audit event when stdout matches on
 |---|---|---|
 | `schegent.watchdog.pollIntervalMinutes` | `30` | How often to poll `claude -p /status` while paused. |
 | `schegent.watchdog.enabled` | `true` | Disable to require manual resume. |
-| `schegent.invocation.timeoutSeconds` | `1800` | Per-phase timeout that aborts a stalled invocation. |
+| `schegent.invocation.timeoutSeconds` | `5400` | Per-phase idle timeout that aborts a stalled invocation (resets on each output chunk). |
 
 Polling is observable: every poll emits a `watchdog-poll` audit event. Configuration changes also emit `watchdog-config-changed` so changes are auditable.
 
