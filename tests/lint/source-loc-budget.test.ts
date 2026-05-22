@@ -5,7 +5,9 @@ import { resolve } from 'node:path';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number }> = [
-  { path: 'src/extension.ts', maxLines: 1_350 },
+  // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped +15 to accommodate the
+  // FR-028 retry-decision projection sink wired into PhaseRunner construction.
+  { path: 'src/extension.ts', maxLines: 1_365 },
   { path: 'src/controller/workflow-controller.ts', maxLines: 1_050 },
   { path: 'src/contracts/runtime-validators.ts', maxLines: 1_000 },
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_000 },

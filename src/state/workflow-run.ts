@@ -27,6 +27,25 @@ export interface SanitizedError {
   at: number;
 }
 
+/**
+ * Feature 010 — BUG-001 (FR-028). Snapshot of the most recent
+ * `phase.retry_evaluated` decision projected onto the operator-visible
+ * `WorkflowRun`. Surfaced via the sidebar snapshot so an operator can see
+ * which metrics the controller expected but did not find without enabling
+ * verbose mode. Additive on the `WorkflowRun` shape — absent on legacy
+ * records (no migration required; webview readers tolerate absence).
+ *
+ * `missingKeys` is alphabetically sorted; empty array means the expression
+ * resolved fully against present metrics (per FR-028 — empty, not omitted).
+ */
+export interface LastRetryDecision {
+  readonly phase: Phase;
+  readonly iteration: number;
+  readonly decision: boolean;
+  readonly missingKeys: readonly string[];
+  readonly at: number;
+}
+
 export interface PhaseResult {
   phase: Phase;
   iteration: number;
@@ -158,6 +177,14 @@ export interface WorkflowRun {
    * `manualPauseCause === 'breakpoint-paused'`.
    */
   resumeTargetPhaseId: string | null;
+  /**
+   * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
+   * decision projected onto the operator-visible run. Absent until the
+   * first decision is consulted; absent on legacy persisted records (no
+   * migration required — optional field per the additive-projection
+   * convention).
+   */
+  lastRetryDecision?: LastRetryDecision;
 }
 
 export interface WorkflowRunSummary {

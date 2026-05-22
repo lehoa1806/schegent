@@ -526,6 +526,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // invocation. The closure pulls the live run from the workspace store
   // — same no-cache contract as the settings accessors above.
   const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
+  // Feature 010 — BUG-001 (FR-028). Project the most recent retry decision
+  // onto WorkflowRun.lastRetryDecision so the sidebar surfaces `missingKeys`
+  // without the operator enabling verbose mode. Sink reads the live run and
+  // tolerates a missing run (a decision can only be emitted while a run is
+  // active; if the run has been torn down between emit and sink, drop the
+  // projection — the audit event remains the canonical record).
+  const lastRetryDecisionSink = async (decision: import('./state/workflow-run').LastRetryDecision) => {
+    const current = store.getRun();
+    if (current === null) return;
+    await store.setRun({ ...current, lastRetryDecision: decision });
+  };
   const phaseRunner = new PhaseRunner(
     cliRunner,
     promptBuilder,
@@ -536,7 +547,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     fatalSignaturesAccessor,
     autoCompactOverrideAccessor,
     null,
-    phaseBreakpointAccessor
+    phaseBreakpointAccessor,
+    lastRetryDecisionSink
   );
 
   const controller = new SchegentWorkflowController(

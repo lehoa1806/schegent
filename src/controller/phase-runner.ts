@@ -19,7 +19,7 @@ import {
   composePhaseMessagePath,
   type PhaseMessageResult
 } from './phase-sidecar-reader';
-import { PhaseRetryEvaluator } from './phase-retry-evaluator';
+import { PhaseRetryEvaluator, type LastRetryDecisionSink } from './phase-retry-evaluator';
 import {
   mapOutcome,
   mapTerminationReason,
@@ -138,10 +138,17 @@ export class PhaseRunner {
     private readonly fatalSignaturesAccessor: FatalSignaturesAccessor | null = null,
     private readonly autoCompactOverrideAccessor: AutoCompactOverrideAccessor | null = null,
     private readonly manualPauseAccessor: ManualPauseAccessor | null = null,
-    private readonly phaseBreakpointAccessor: PhaseBreakpointAccessor | null = null
+    private readonly phaseBreakpointAccessor: PhaseBreakpointAccessor | null = null,
+    lastRetryDecisionSink: LastRetryDecisionSink | null = null
   ) {
     this.sidecarReader = new PhaseSidecarReader(auditWriter, logger);
-    this.retryEvaluator = new PhaseRetryEvaluator(auditWriter, logger);
+    this.retryEvaluator = new PhaseRetryEvaluator(
+      auditWriter,
+      logger,
+      undefined,
+      undefined,
+      lastRetryDecisionSink
+    );
   }
 
   public isManualPauseRequested(): boolean {

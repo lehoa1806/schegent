@@ -78,7 +78,7 @@ export const SOFT_CAP_PIPELINE_PHASES = 50;
 export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'speckit-specify': 'Run /speckit-specify with the feature description below. Produce specs/<NNN-name>/spec.md.',
   'speckit-clarify':
-    'Run /speckit-clarify on the active feature spec. Resolve ambiguities. Emit the termination token only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
+    'Run /speckit-clarify on the active feature spec. Resolve ambiguities. Emit the termination token only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress. IMPORTANT: place these metric lines at the top level — never indented under and never immediately after a sub-block heading (`Notes:`, `Findings:`, `Open Questions:`, `Remaining Issues:`) unless a blank line separates them. If you use any sub-block heading, insert a blank line before the next top-level metric line.',
   'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
   'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
   'speckit-analyze':

@@ -156,11 +156,31 @@ export function parseAuditLogBlock(stdout: string): AuditLogParseResult {
       continue;
     }
     if (SUBBLOCK_HEADING.test(line)) {
+      // The `Notes:` heading shares its name with the REQUIRED_FIELDS entry
+      // `notes`. When the line has no inline value, record the field as empty
+      // so the entry still satisfies the REQUIRED_FIELDS check (FR-007).
+      const headingKey = line.slice(0, line.indexOf(':')).trim().toLowerCase();
+      if ((REQUIRED_FIELDS as readonly string[]).includes(headingKey) && !map.has(headingKey)) {
+        map.set(headingKey, '');
+      }
       inSubBlock = true;
       continue;
     }
-    // Sub-block body — list items under a heading. Treat as opaque.
-    if (inSubBlock) continue;
+    // Sub-block body — list items under a heading are opaque. However, a
+    // top-level field or metric line that appears without a blank-line
+    // separator must still be captured (BUG-001, FR-007). Re-detect a
+    // `key: value` shape whose key is either a REQUIRED_FIELDS entry or a
+    // valid metric identifier, and fall through to the top-level handler.
+    if (inSubBlock) {
+      const probeSep = line.indexOf(':');
+      if (probeSep === -1) continue;
+      const probeKey = line.slice(0, probeSep).trim();
+      const isTopLevelKey =
+        (REQUIRED_FIELDS as readonly string[]).includes(probeKey) ||
+        METRIC_IDENT_RE.test(probeKey);
+      if (!isTopLevelKey) continue;
+      inSubBlock = false;
+    }
     const sepIndex = line.indexOf(':');
     if (sepIndex === -1) {
       warnings.push(`[constitution] malformed audit field: ${line.slice(0, 60)}`);

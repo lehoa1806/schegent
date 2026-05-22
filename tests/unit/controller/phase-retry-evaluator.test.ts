@@ -183,7 +183,9 @@ describe('PhaseRetryEvaluator.maybeEmit', () => {
     expect(appends).toHaveLength(1);
     expect(appends[0].payload.decision).toBe(true);
     expect(appends[0].payload.evaluationError).toBeUndefined();
-    expect(appends[0].payload.missingKeys).toBeUndefined();
+    // FR-028 (BUG-001): missingKeys is always emitted; empty array means
+    // "no missing keys" (distinct from omitted/legacy).
+    expect(appends[0].payload.missingKeys).toEqual([]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
@@ -205,7 +207,9 @@ describe('PhaseRetryEvaluator.maybeEmit', () => {
     );
     expect(appends).toHaveLength(1);
     expect(appends[0].payload.decision).toBe(false);
-    expect(appends[0].payload.missingKeys).toBeUndefined();
+    // FR-028 (BUG-001): missingKeys is always emitted; empty array means
+    // "no missing keys" (distinct from omitted/legacy).
+    expect(appends[0].payload.missingKeys).toEqual([]);
   });
 
   it('populates missingKeys on payload and logs warning when evaluation flags missing metrics', async () => {
@@ -229,8 +233,14 @@ describe('PhaseRetryEvaluator.maybeEmit', () => {
     expect(appends).toHaveLength(1);
     expect(appends[0].payload.decision).toBe(false);
     expect(appends[0].payload.missingKeys).toEqual(['issues', 'lint_failures']);
+    // FR-012 + FR-029 (BUG-001): canonical WARN text includes the missing
+    // keys, the prompt diagnostic hint, the sub-block enumeration, and the
+    // FR-007 cross-reference.
     expect(warnSpy).toHaveBeenCalledWith(
-      'retryCondition missing metric(s) on speckit-specify: issues, lint_failures'
+      'retryCondition missing metric(s) on speckit-specify: issues, lint_failures — ' +
+        'phase prompt may not be emitting these keys, or they appeared inside a ' +
+        'sub-block (Notes:/Findings:/Open Questions:/Remaining Issues:) without a ' +
+        'trailing blank line or top-level field separator (see spec FR-007)'
     );
   });
 });

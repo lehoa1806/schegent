@@ -219,3 +219,114 @@ describe('parseAuditLogBlock — metrics extraction (010, T021, US2)', () => {
     expect(Number.isInteger(result.entry?.metrics.resolved_questions)).toBe(true);
   });
 });
+
+// BUG-001 (Bugfix 2026-05-22) — sub-block continuation rule. The parser
+// must re-detect top-level field shape and reset `inSubBlock` so metric
+// lines emitted immediately after a sub-block heading (without a blank
+// line separator) reach the metrics map. See spec FR-007 + SC-010 + T075.
+describe('parseAuditLogBlock — sub-block continuation (010, T075, BUG-001)', () => {
+  function blockWith(extraLines: string[]): string {
+    return [
+      '=== SCHEGENT AUDIT LOG ===',
+      'phase: speckit-clarify',
+      'files_created: []',
+      'files_modified: []',
+      'files_deleted: []',
+      'commands_executed: []',
+      'network_calls: []',
+      'ruleset_switches: []',
+      ...extraLines,
+      '=== END AUDIT LOG ==='
+    ].join('\n');
+  }
+
+  it('captures top-level metric lines after a `Notes:` sub-block heading with no blank line (SC-010 reproduction)', () => {
+    const stdout = blockWith([
+      'notes:',
+      '- Added Clarifications/Session 2026-05-22 with 5 Q&A',
+      'open_questions: 0',
+      'resolved_questions: 5'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({
+      open_questions: 0,
+      resolved_questions: 5
+    });
+  });
+
+  it('captures top-level metric lines after a `Findings:` sub-block heading with no blank line', () => {
+    const stdout = blockWith([
+      'notes: ok',
+      'Findings:',
+      '- some narrative finding',
+      'open_questions: 3',
+      'resolved_questions: 2'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({
+      open_questions: 3,
+      resolved_questions: 2
+    });
+  });
+
+  it('captures top-level metric lines after an `Open Questions:` sub-block heading with no blank line', () => {
+    const stdout = blockWith([
+      'notes: ok',
+      'Open Questions:',
+      '- a leftover question',
+      'metric_a: 1'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({ metric_a: 1 });
+  });
+
+  it('captures top-level metric lines after a `Remaining Issues:` sub-block heading with no blank line', () => {
+    const stdout = blockWith([
+      'notes: ok',
+      'Remaining Issues:',
+      '- one leftover issue',
+      'metric_b: 9'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({ metric_b: 9 });
+  });
+
+  it('does NOT capture list bullets shaped like `- foo` inside the sub-block', () => {
+    const stdout = blockWith([
+      'notes: ok',
+      'Findings:',
+      '- foo',
+      '- bar',
+      'metric_c: 2'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({ metric_c: 2 });
+    expect(result.entry?.metrics).not.toHaveProperty('foo');
+    expect(result.entry?.metrics).not.toHaveProperty('bar');
+  });
+
+  it('matches all four SUBBLOCK_HEADING labels case-insensitively', () => {
+    const stdout = blockWith([
+      'notes: ok',
+      'NOTES:',
+      '- noise',
+      'after_notes: 1',
+      'findings:',
+      '- noise',
+      'after_findings: 2',
+      'OPEN QUESTIONS:',
+      '- noise',
+      'after_open_questions: 3',
+      'remaining issues:',
+      '- noise',
+      'after_remaining_issues: 4'
+    ]);
+    const result = parseAuditLogBlock(stdout);
+    expect(result.entry?.metrics).toMatchObject({
+      after_notes: 1,
+      after_findings: 2,
+      after_open_questions: 3,
+      after_remaining_issues: 4
+    });
+  });
+});

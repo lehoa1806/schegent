@@ -3,6 +3,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
 import type { InvocationResult } from '../parser/stdout-parser';
+import type { LastRetryDecision } from '../state/workflow-run';
 import {
   validate as validateRetryCondition,
   evaluate as evaluateRetryCondition
@@ -33,12 +34,21 @@ export interface PhaseRetryEvaluatorInputs {
  * module accepts the validator and evaluator as constructor deps so
  * tests can inject fakes without re-implementing parser logic.
  */
+/**
+ * Feature 010 — BUG-001 (FR-028). Optional sink invoked once per decision
+ * with the operator-visible projection. Wired by the workflow-controller to
+ * write to `WorkflowRun.lastRetryDecision` via `WorkspaceStateStore.setRun()`.
+ * Unset in unit tests; the evaluator never blocks on a missing sink.
+ */
+export type LastRetryDecisionSink = (decision: LastRetryDecision) => Promise<void> | void;
+
 export class PhaseRetryEvaluator {
   constructor(
     private readonly auditWriter: AuditLogWriter,
     private readonly logger: Pick<SanitizedLogger, 'warn'>,
     private readonly validate: typeof validateRetryCondition = validateRetryCondition,
-    private readonly evaluate: typeof evaluateRetryCondition = evaluateRetryCondition
+    private readonly evaluate: typeof evaluateRetryCondition = evaluateRetryCondition,
+    private readonly decisionSink: LastRetryDecisionSink | null = null
   ) {}
 
   public async maybeEmit(inputs: PhaseRetryEvaluatorInputs): Promise<void> {
@@ -91,18 +101,52 @@ export class PhaseRetryEvaluator {
       return;
     }
 
+    // FR-028: surface missing metric keys on every retry evaluation so the
+    // operator UI can distinguish "no metrics missing" from "field omitted".
+    // Always emit the array (empty when none missing), not omitted; sorted
+    // alphabetically for stable rendering.
+    const missing = [...evalResult.evaluation.missingKeys].sort();
+    const decision = evalResult.evaluation.value;
     const payload: Record<string, unknown> = {
       ...basePayload,
-      decision: evalResult.evaluation.value
+      decision,
+      missingKeys: missing
     };
-    if (evalResult.evaluation.missingKeys.length > 0) {
-      const missing = [...evalResult.evaluation.missingKeys];
-      payload.missingKeys = missing;
+    if (missing.length > 0) {
+      // FR-012 + FR-029: canonical WARN text with cross-reference to FR-007
+      // sub-block continuation rule. Helps operators debug retryCondition
+      // expressions that resolve to zero because the phase prompt did not
+      // emit the keys at the top level, or emitted them inside a sub-block
+      // (Notes:/Findings:/Open Questions:/Remaining Issues:) without a
+      // trailing blank line or top-level field separator.
       this.logger.warn(
-        `retryCondition missing metric(s) on ${phaseDefId}: ${missing.join(', ')}`
+        `retryCondition missing metric(s) on ${phaseDefId}: ${missing.join(', ')} — ` +
+          'phase prompt may not be emitting these keys, or they appeared inside a ' +
+          'sub-block (Notes:/Findings:/Open Questions:/Remaining Issues:) without a ' +
+          'trailing blank line or top-level field separator (see spec FR-007)'
       );
     }
     await this.append(inputs, payload);
+    // FR-028 — project the decision onto WorkflowRun.lastRetryDecision so the
+    // sidebar / run history surfaces `missingKeys` without enabling verbose
+    // mode. The sink is optional and never blocks the audit emission.
+    if (this.decisionSink !== null) {
+      try {
+        await this.decisionSink({
+          phase: inputs.phase,
+          iteration: inputs.iteration,
+          decision,
+          missingKeys: missing,
+          at: Date.now()
+        });
+      } catch (err) {
+        // The projection is best-effort; the canonical record is the audit
+        // event. Log once and continue.
+        this.logger.warn(
+          `retryCondition projection sink failed on ${phaseDefId}: ${(err as Error)?.message ?? 'unknown'}`
+        );
+      }
+    }
   }
 
   private append(
