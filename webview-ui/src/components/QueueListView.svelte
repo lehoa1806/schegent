@@ -67,27 +67,31 @@
               title="Drag to reorder"
             >⋮⋮</span>
           {/if}
-          <button
-            type="button"
-            class="item-body item-select"
-            data-testid="dashboard-queue-item-select-{item.id}"
-            aria-label="Show task {item.id} in Activity Feed"
-            aria-pressed={selectedTaskId === item.id ? 'true' : 'false'}
-            title="Show this task in the Activity Feed"
-            onclick={() => onTaskSelect(item.id)}
-          >
-            <div class="item-identity">
-              <span class="queue-id-chip" data-testid="dashboard-queue-item-id-{item.id}">{item.id}</span>
-              <time class="queue-enqueued" data-testid="dashboard-queue-item-enqueued-{item.id}" datetime={item.enqueuedAt}>{formatRelativeTime(item.enqueuedAt)}</time>
+          <div class="item-body">
+            <div class="row row-1">
+              <button
+                type="button"
+                class="row-1-left item-select"
+                data-testid="dashboard-queue-item-select-{item.id}"
+                aria-label="Show task {item.id} in Activity Feed"
+                aria-pressed={selectedTaskId === item.id ? 'true' : 'false'}
+                title="Show this task in the Activity Feed"
+                onclick={() => onTaskSelect(item.id)}
+              >
+                <span class="queue-id-chip" data-testid="dashboard-queue-item-id-{item.id}">{item.id}</span>
+                <time class="queue-enqueued" data-testid="dashboard-queue-item-enqueued-{item.id}" datetime={item.enqueuedAt}>{formatRelativeTime(item.enqueuedAt)}</time>
+              </button>
+              <div class="row-1-right">
+                <span class="status-pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
+                <span class="actions-slot">
+                  <QueueItemActions {item} {isPrimary} />
+                </span>
+              </div>
+            </div>
+            <div class="row row-2">
               <span class="queue-prompt" data-testid="dashboard-queue-item-label-{item.id}" title={item.label || '(no prompt)'}>{item.label || '(no prompt)'}</span>
             </div>
-            <div class="item-chips">
-              <span class="status-pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
-            </div>
-          </button>
-          <span class="actions-slot">
-            <QueueItemActions {item} {isPrimary} />
-          </span>
+          </div>
         </li>
       {/each}
     </ol>
@@ -113,9 +117,8 @@
     border-radius: var(--schegent-radius);
     padding: 12px 16px;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
+    align-items: flex-start;
+    gap: 8px;
     transition: transform 0.2s;
   }
   .item:hover {
@@ -130,10 +133,36 @@
   .item-body {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    overflow: hidden;
+    gap: 6px;
     flex: 1;
     min-width: 0;
+  }
+  .row {
+    display: flex;
+    min-width: 0;
+  }
+  .row-1 {
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .row-1-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+  .row-1-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+  }
+  .row-2 {
+    padding-left: 2px;
   }
   .item-select {
     background: transparent;
@@ -149,17 +178,6 @@
     outline-offset: 3px;
     border-radius: var(--schegent-radius);
   }
-  .item-identity {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .item-chips {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
   .queue-id-chip {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.72em;
@@ -169,20 +187,30 @@
     border-radius: 999px;
     border: 1px solid var(--sch-glass-border);
     flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
   .queue-enqueued {
     font-size: 0.75em;
     color: var(--schegent-muted-fg);
     flex-shrink: 0;
+    white-space: nowrap;
   }
   .queue-prompt {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     color: var(--schegent-fg);
     font-size: 0.9em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
     min-width: 0;
-    flex: 1;
+    flex: 1 1 auto;
   }
   .status-pill {
     font-size: 0.75em;
