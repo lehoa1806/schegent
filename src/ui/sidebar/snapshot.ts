@@ -81,6 +81,13 @@ export interface PhaseTile {
     readonly truncated: boolean;
     readonly invalidReason: string | null;
   } | null;
+  /**
+   * Feature 010 (FR-028) — operator-visible projection of the most recent
+   * retryCondition evaluation's missing keys.
+   */
+  readonly lastRetryDecision?: {
+    readonly missingKeys: readonly string[];
+  };
 }
 
 export interface ActiveFeatureSummary {
@@ -113,6 +120,16 @@ export interface QueueItem {
    * pipeline.
    */
   readonly currentPipelineId: string | null;
+  /**
+   * BUG-006 (063) — heuristic flag the Activity Feed cold-start fallback
+   * uses to skip tasks that never reached a phase (crashed pre-pipeline).
+   * `true` when the task has entered the phase machinery at least once;
+   * the audit-log iteration directory may exist on disk. The cold-start
+   * fallback in `resolveColdStartFallback` handles empty reads
+   * gracefully, so a conservative `true` is preferred over a precise
+   * filesystem check (which would require fs IO per snapshot emission).
+   */
+  readonly hasOnDiskLogs: boolean;
 }
 
 export interface QueueSummary {
@@ -375,6 +392,16 @@ export interface WorkflowSnapshot {
     readonly retryConditions: boolean;
     readonly pipelineOverrides: boolean;
   };
+  /**
+   * Feature 063 (FR-021) — projected confirmation-prompt suppression
+   * set. Optional for legacy-tolerance: idle snapshots and tests that
+   * stub a minimal store omit it; the webview treats `undefined` the
+   * same as "no suppressions" (modal always shown).
+   */
+  readonly confirmSuppression?: {
+    readonly version: 1;
+    readonly suppressedActionKeys: readonly string[];
+  };
 }
 
 /**
@@ -499,7 +526,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
   loggingVerbose: false,
   loopMaxIterations: 10,
-  invocationTimeoutSeconds: 1800,
+  invocationTimeoutSeconds: 5400,
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,

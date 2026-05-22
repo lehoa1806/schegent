@@ -86,6 +86,18 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
     tile.iteration = Math.max(tile.iteration, run.currentIteration);
   }
 
+  if (run.lastRetryDecision) {
+    const decisionPhaseName = run.lastRetryDecision.phase === 'done' ? null : (run.lastRetryDecision.phase as PhaseName);
+    if (decisionPhaseName) {
+      const idx = phaseIndex(decisionPhaseName, phaseOrder);
+      if (idx >= 0 && idx < tiles.length) {
+        tiles[idx].lastRetryDecision = {
+          missingKeys: [...run.lastRetryDecision.missingKeys]
+        };
+      }
+    }
+  }
+
   return tiles;
 }
 

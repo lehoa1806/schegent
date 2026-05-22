@@ -34,6 +34,7 @@ import { runEnqueue } from './commands/enqueue';
 import { runSchedule } from './commands/schedule';
 import { runResume } from './commands/resume';
 import { runCancel } from './commands/cancel';
+import { runClearAll } from './commands/clear-all';
 import { runRestartCanceledTask } from './commands/restart-canceled-task';
 import { runReset } from './commands/reset';
 import { runShowAuditLog } from './commands/show-audit';
@@ -73,6 +74,7 @@ import { windowsShellOut } from './telemetry/platform/platform-windows';
 import type { TelemetrySnapshot } from './telemetry/telemetry-snapshot';
 import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
 import { HistoryStore } from './state/history-store';
+import { isConfirmationsEnabled } from './state/confirmations-config';
 import { loadCatalog, type CatalogConfigReader } from './config/pipeline-config-loader';
 import { projectPhasePrecedence } from './config/phase-precedence';
 import type { PipelineCatalog } from './config/pipeline-config';
@@ -329,7 +331,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const inheritProcessEnv = config.get<boolean>('cli.inheritEnvironment', true);
   const iterationCap = config.get<number>('loop.maxIterations', 10);
   const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
-  const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 1800);
+  const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
   const rulesPerPhase = config.get<boolean>('rules.injectPerPhase', false);
@@ -710,7 +712,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // every snapshot so a catalog reload triggered by
     // `onDidChangeConfiguration('schegent.phases')` reaches the webview
     // within the FR-017 1s budget. Never persisted; never logged.
-    getPhasePrecedence: () => activePhasePrecedence
+    getPhasePrecedence: () => activePhasePrecedence,
+    // Feature 063 — surface `schegent.ui.confirmations.enable` into the
+    // snapshot so the webview's `useConfirm` helper can short-circuit
+    // without an IPC round-trip. Re-read on every projection; the
+    // `onDidChangeConfiguration` listener below already kicks the
+    // projector for any `schegent.*` change.
+    getConfirmationsEnabled: () => isConfirmationsEnabled()
   });
   projector.start();
   // Feature 033 — bind the deferred telemetry projector reference now that
@@ -937,6 +945,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         }
       );
     },
+    // Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` persistence. The
+    // handler validates the action key against `KNOWN_ACTION_KEYS`
+    // before calling this; we just write through to the memento and
+    // let the projector pick up the change on its next push.
+    setConfirmSuppression: async (actionKey, suppressed) => {
+      await store.setConfirmSuppression(actionKey, suppressed);
+      projector.kick();
+    },
     // Feature 014 — Wake up save protocol (primary-only; transactional).
     saveWakeUpSettings: async (payload) => saveWakeUpHandler(payload),
     wakeUpNow,
@@ -1148,6 +1164,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     ),
     vscode.commands.registerCommand('schegent.moveQueuedItemDown', (arg) =>
       runMoveQueuedItemDown(arg, queueOpsCtx)
+    ),
+    vscode.commands.registerCommand('schegent.clearAll', () =>
+      runClearAll({
+        controller,
+        store,
+        queue,
+        audit: auditWriter,
+        lock,
+        notifier,
+        logger
+      })
     ),
     vscode.commands.registerCommand('schegent.clearCompleted', () =>
       runClearCompleted(queueOpsCtx)

@@ -258,6 +258,13 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'window',
     docLabel: 'Suppress multi-root workspace warning toast'
   },
+  'schegent.ui.confirmations.enable': {
+    key: 'schegent.ui.confirmations.enable',
+    type: 'boolean',
+    default: true,
+    scope: 'window',
+    docLabel: 'Show confirmation prompts for destructive UI actions'
+  },
   'schegent.trust.allowCustomPhases': {
     key: 'schegent.trust.allowCustomPhases',
     type: 'boolean',

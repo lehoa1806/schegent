@@ -48,6 +48,36 @@ export interface ClearResult {
   removed: number;
 }
 
+// Feature 063 (FR-005 / data-model §CleanAllResetOperation) — result of
+// `QueueManager.clearAll()`. The handler passes this through to the
+// audit writer (verbatim) and uses it to decide which toast (if any)
+// to surface to the operator.
+export interface CleanAllResult {
+  readonly removed: {
+    readonly pending: number;
+    readonly completed: number;
+    readonly failed: number;
+    readonly canceled: number;
+  };
+  readonly inflightAborted: boolean;
+  readonly runnerAcked: boolean;
+  readonly pauseCleared: boolean;
+  // Pre-clear pause source on the canonical queue; null if not paused.
+  readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
+  readonly activeRunCleared: boolean;
+  readonly watchdogCleared: boolean;
+  // `true` when ALL pre-state fields were already empty — the handler
+  // uses this to skip emitting an audit event for the no-op case
+  // (contracts/cmd-clear-all.md §Idempotency).
+  readonly wasNoop: boolean;
+}
+
+// Feature 063 — optional runner-ack callback. The handler injects a
+// closure that wraps `WorkflowController.cancelActive()` plus a
+// `runDriver.running`-poll race against a 2s timer. `null` when no
+// in-flight task existed (we never have to wait on the runner).
+export type CleanAllRunnerAckProbe = () => Promise<boolean>;
+
 export interface QueueMutationDetail extends MutationResult {
   queueId?: string;
   taskId?: string;
@@ -660,6 +690,155 @@ export class QueueManager {
 
   public async clearFailed(): Promise<ClearResult> {
     return this.clearByStatus('failed');
+  }
+
+  // Feature 063 — atomic queue + run + pause + watchdog reset (FR-005).
+  //
+  // Callers (the `clear-all-handler`) acquire the workspace lock OUTSIDE
+  // this call (via `WorkspaceLockManager.withLock`) and pass a runner-ack
+  // probe that wraps `controller.cancelActive()` + a 2s ack race. The
+  // method:
+  //   1. Snapshots pre-clear state for the result/audit payload.
+  //   2. Fast-paths an empty workspace as a no-op (no writes, no audit).
+  //   3. Performs the writes via the canonical single-writers
+  //      (`setQueue`, `setQueuePausedState`, `setRun`, `setWatchdog`).
+  //   4. Awaits the runner-ack probe (caller-supplied 2s bound, FR-007).
+  //   5. Returns the structured `CleanAllResult`.
+  //
+  // Cross-contamination invariant (FR-006): this method writes to
+  // `KEYS.queue`, `KEYS.queueRegistry` (via setQueuePausedState),
+  // `KEYS.run`, and `KEYS.watchdog` — and nothing else. The suppression
+  // memento, settings, history, audit log, and features list are not
+  // touched.
+  public async clearAll(probe?: CleanAllRunnerAckProbe | null): Promise<CleanAllResult> {
+    const queueBefore = this.store.getQueue();
+    const runBefore = this.store.getRun();
+    const watchdogBefore = this.store.getWatchdog();
+
+    const removed = {
+      pending: 0,
+      completed: 0,
+      failed: 0,
+      canceled: 0
+    };
+    for (const r of queueBefore.requests) {
+      if (r.status === 'pending') removed.pending++;
+      else if (r.status === 'completed') removed.completed++;
+      else if (r.status === 'failed') removed.failed++;
+      else if (r.status === 'canceled') removed.canceled++;
+    }
+
+    const inflightBefore =
+      queueBefore.inFlightId !== null ||
+      queueBefore.requests.some((r) => r.status === 'in-flight');
+    const pauseBefore = queueBefore.paused;
+    // Read pauseSource from the canonical registry entry (single source
+    // of truth — the legacy `queue.paused` boolean only mirrors it).
+    const registryBefore = this.store.getQueueRegistry();
+    const defaultEntryBefore = registryBefore.entries.find(
+      (e) => e.id === DEFAULT_QUEUE_ID
+    );
+    const pauseSourceBefore: CleanAllResult['pauseSource'] =
+      defaultEntryBefore && defaultEntryBefore.pauseSource
+        ? (defaultEntryBefore.pauseSource as CleanAllResult['pauseSource'])
+        : null;
+    const activeRunBefore = runBefore !== null;
+    const watchdogActiveBefore =
+      watchdogBefore.paused === true ||
+      watchdogBefore.pausedSince !== null ||
+      watchdogBefore.nextPollAt !== null ||
+      watchdogBefore.cause !== null;
+
+    const wasNoop =
+      queueBefore.requests.length === 0 &&
+      !inflightBefore &&
+      !pauseBefore &&
+      !activeRunBefore &&
+      !watchdogActiveBefore;
+
+    if (wasNoop) {
+      return {
+        removed,
+        inflightAborted: false,
+        runnerAcked: false,
+        pauseCleared: false,
+        pauseSource: null,
+        activeRunCleared: false,
+        watchdogCleared: false,
+        wasNoop: true
+      };
+    }
+
+    // 1. Clear queue items (also drops `inFlightId`).
+    await this.store.setQueue({
+      ...queueBefore,
+      requests: [],
+      inFlightId: null,
+      paused: false,
+      pausedReason: null,
+      updatedAt: Date.now()
+    });
+
+    // 2. Clear pause state via the canonical single-writer so the
+    //    registry's `pauseSource` is cleared in lock-step with the
+    //    legacy boolean (BUG-001 invariant retained).
+    if (pauseBefore) {
+      await this.setQueuePausedState(false, DEFAULT_QUEUE_ID, null, 'operator');
+    }
+
+    // 3. Clear the active run snapshot.
+    if (activeRunBefore) {
+      await this.store.setRun(null);
+    }
+
+    // 4. Reset watchdog backoff fields. Preserve `pollIntervalMs` (config)
+    //    and `lastStatusOk` (observability scalar) — only the active-pause
+    //    fields are cleared.
+    if (watchdogActiveBefore) {
+      await this.store.setWatchdog({
+        paused: false,
+        pausedSince: null,
+        nextPollAt: null,
+        pollIntervalMs: watchdogBefore.pollIntervalMs,
+        lastStatusOk: watchdogBefore.lastStatusOk,
+        cause: null
+      });
+    }
+
+    // 5. Bounded runner-ack race (FR-007). Skip when no in-flight task
+    //    existed — `runnerAcked` defaults to `false` and the result
+    //    flag is interpreted by the handler in the "no-op" sense.
+    let runnerAcked = false;
+    if (inflightBefore && probe) {
+      try {
+        runnerAcked = await probe();
+      } catch {
+        runnerAcked = false;
+      }
+    }
+
+    // 6. BUG-003 compensating clear: the probe's `controller.cancelActive()`
+    //    triggers the RunDriver's abort branch, which calls
+    //    `persistTransition(run, { ...run, status: 'canceled' })`. That write
+    //    lands AFTER step 3's `setRun(null)` and repopulates the store with a
+    //    canceled-status run — the Phase Progression panel then renders the
+    //    cleared run as still-active. Re-clear after the probe completes to
+    //    reassert FR-005's "active workflow-run snapshot cleared" invariant.
+    //    Idempotent; safe when no run was present.
+    if (activeRunBefore) {
+      await this.store.setRun(null);
+    }
+
+    return {
+      removed,
+      inflightAborted: inflightBefore,
+      runnerAcked,
+      pauseCleared: pauseBefore,
+      pauseSource: pauseSourceBefore,
+      activeRunCleared: activeRunBefore,
+      watchdogCleared: watchdogActiveBefore,
+      wasNoop: false
+    };
   }
 
   public findById(id: string): FeatureRequest | null {

@@ -123,6 +123,19 @@ export interface RouterDeps {
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` handler hook. Persists
+   * the per-action "Don't ask again" preference to the
+   * `schegent.ui.confirmSuppression` memento. The handler validates the
+   * action key against the closed `KNOWN_ACTION_KEYS` set before
+   * invoking this; an unknown key is rejected without a memento touch.
+   * Optional so unit tests that do not exercise this command can omit
+   * the wiring.
+   */
+  readonly setConfirmSuppression?: (
+    actionKey: string,
+    suppressed: boolean
+  ) => Promise<void>;
   readonly saveWakeUpSettings?: (
     payload: Readonly<{
       enabled: boolean;

@@ -1,5 +1,6 @@
 import {
   CMD_CANCEL,
+  CMD_CLEAR_ALL,
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
@@ -36,6 +37,7 @@ import {
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
   CMD_START,
@@ -47,6 +49,7 @@ import {
 import type { CommandHandler } from './handler-contract';
 
 import { handler as cancel } from './cmd-cancel';
+import { handler as clearAll } from './cmd-clear-all';
 import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
@@ -83,6 +86,7 @@ import { handler as saveModels } from './cmd-save-models';
 import { handler as savePhases } from './cmd-save-phases';
 import { handler as savePipelines } from './cmd-save-pipelines';
 import { handler as saveWakeupSettings } from './cmd-save-wakeup-settings';
+import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
 import { handler as start } from './cmd-start';
@@ -104,6 +108,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   CommandHandler
 >([
   [CMD_CANCEL, cancel as CommandHandler],
+  [CMD_CLEAR_ALL, clearAll as CommandHandler],
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
   [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
@@ -140,6 +145,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_PHASES, savePhases as CommandHandler],
   [CMD_SAVE_PIPELINES, savePipelines as CommandHandler],
   [CMD_SAVE_WAKEUP_SETTINGS, saveWakeupSettings as CommandHandler],
+  [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],

@@ -78,8 +78,13 @@ export const KEYS = {
   run: 'schegent.run',
   lock: 'schegent.lock',
   watchdog: 'schegent.watchdog',
-  history: 'schegent.history'
+  history: 'schegent.history',
+  // Feature 063 (FR-021) — per-action "don't ask again" suppression set.
+  confirmSuppression: 'schegent.ui.confirmSuppression'
 } as const;
+
+import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
+export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
 
 export const HISTORY_CAP = 50;
 
@@ -583,9 +588,16 @@ export class WorkspaceStateStore {
       throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
     }
     const queue = this.getQueue();
-    const pendingInTarget = queue.requests.filter(
-      (item) => item.queueId === queueId && item.status === 'pending'
-    );
+    // BUG-004 — `insertAt` is the logical index into the pending list, and
+    // the position field must mirror that index for the queue projector's
+    // `position ascending` sort to honor FIFO order. Sort pending tasks
+    // by their current sparse position so we know the operator-visible
+    // order, then renormalize every pending position to dense `[0..N-1]`
+    // so the new task's `insertAt` index does not collide with a stale
+    // position left behind by a task that transitioned out of pending.
+    const pendingInTarget = queue.requests
+      .filter((item) => item.queueId === queueId && item.status === 'pending')
+      .sort((a, b) => a.position - b.position);
     if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
       throw new QueueMutationRejected(
         'task-cap-reached',
@@ -607,11 +619,15 @@ export class WorkspaceStateStore {
       pauseCause: null,
       updatedAt: now
     };
-    const shifted = queue.requests.map((item) =>
-      item.queueId === queueId && item.status === 'pending' && item.position >= insertAt
-        ? { ...item, position: item.position + 1, updatedAt: now }
-        : item
-    );
+    const denseIndex = new Map<string, number>();
+    pendingInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
+    const shifted = queue.requests.map((item) => {
+      if (item.queueId !== queueId || item.status !== 'pending') return item;
+      const dense = denseIndex.get(item.id) ?? item.position;
+      const repositioned = dense >= insertAt ? dense + 1 : dense;
+      if (repositioned === item.position) return item;
+      return { ...item, position: repositioned, updatedAt: now };
+    });
     await this.setQueue({
       ...queue,
       requests: [...shifted, nextRequest]
@@ -844,6 +860,18 @@ export class WorkspaceStateStore {
     });
   }
 
+  // Feature 063 (FR-021) — suppression memento accessors. Narrowing and
+  // merge logic lives in `./confirm-suppression.ts` so this file stays
+  // focused on the persistence boundary.
+  public getConfirmSuppression(): import('./confirm-suppression').ConfirmSuppressionState {
+    return readConfirmSuppression(this.memento.get<unknown>(KEYS.confirmSuppression));
+  }
+
+  public async setConfirmSuppression(actionKey: string, suppressed: boolean): Promise<void> {
+    const next = writeConfirmSuppression(this.getConfirmSuppression(), actionKey, suppressed);
+    await this.memento.update(KEYS.confirmSuppression, next);
+  }
+
   public async reset(): Promise<void> {
     await Promise.all([
       this.memento.update(KEYS.queue, undefined),
@@ -855,6 +883,9 @@ export class WorkspaceStateStore {
       this.memento.update(KEYS.lock, undefined),
       this.memento.update(KEYS.watchdog, undefined),
       this.memento.update(KEYS.history, undefined),
+      // Feature 063 (FR-022a) — Reset Workspace clears the suppression
+      // set so reopened operators always see confirmation prompts again.
+      this.memento.update(KEYS.confirmSuppression, undefined),
       this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION)
     ]);
   }

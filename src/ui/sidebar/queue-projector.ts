@@ -113,7 +113,14 @@ function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueIte
     // Feature 020 — surface the active pipeline id so the Activity
     // Feed selector can derive the diagnostics tuple
     // (pipelineId, phaseId, iterationN) without a host round-trip.
-    currentPipelineId: req.pipelineId ?? null
+    currentPipelineId: req.pipelineId ?? null,
+    // BUG-006 (063) — Activity Feed cold-start fallback predicate.
+    // Conservative heuristic: a task that was assigned a pipeline id
+    // entered the phase machinery, so at least one iteration directory
+    // exists (or was about to be created). The cold-start fallback's
+    // contract handles empty reads gracefully, so we prefer a cheap
+    // snapshot-only test over a per-emission filesystem stat.
+    hasOnDiskLogs: req.pipelineId !== null && req.pipelineId !== undefined
   });
 }
 

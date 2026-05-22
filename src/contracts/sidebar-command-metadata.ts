@@ -1,5 +1,6 @@
 import {
   CMD_CANCEL,
+  CMD_CLEAR_ALL,
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
@@ -28,6 +29,7 @@ import {
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
   CMD_START,
@@ -72,7 +74,14 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_CLEAR_PHASE_BREAKPOINT]: 'phase breakpoint write',
   // BUG-002 (FR-012a) — start-queue trigger. Mutating because it promotes
   // a pending task to in-flight and kicks off a controller run.
-  [CMD_START_QUEUE]: 'queue start'
+  [CMD_START_QUEUE]: 'queue start',
+  // Feature 063 — atomic Clean All. Drops every queue item, cancels the
+  // active runner if any, and clears the watchdog backoff window in a
+  // single batched memento write.
+  [CMD_CLEAR_ALL]: 'queue full reset',
+  // Feature 063 — confirmation suppression preference write. Mutating
+  // because it persists to the `schegent.ui.confirmSuppression` memento.
+  [CMD_SET_CONFIRM_SUPPRESSION]: 'confirmation suppression preference write'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

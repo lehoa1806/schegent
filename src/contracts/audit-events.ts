@@ -224,6 +224,17 @@ export const WORKSPACE_LIFECYCLE_EVENT_TYPES = ['multi-root.warning-shown'] as c
 // parser discipline.
 export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
 
+// Feature 063 — atomic queue full-reset event. Emitted by the
+// `CMD_CLEAR_ALL` handler after the batched memento write completes
+// and the runner has either acked the cancel signal or the 2s window
+// has elapsed (FR-007). Payload is structural counts + a boolean +
+// a closed-enum runner-state literal, so `SECRET_PATTERNS` is
+// unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 058 /
+// 059 precedent). No event is emitted when the operation is a no-op
+// (FR-018 cancel path AND the idempotency rule from
+// contracts/cmd-clear-all.md §Idempotency).
+export const QUEUE_FULL_RESET_EVENT_TYPES = ['queue-cleared-all'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -243,7 +254,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_BREAKPOINT_EVENT_TYPES,
   ...STATE_MIGRATION_EVENT_TYPES,
   ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
-  ...TRUST_GATE_EVENT_TYPES
+  ...TRUST_GATE_EVENT_TYPES,
+  ...QUEUE_FULL_RESET_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -265,6 +277,7 @@ export type PhaseBreakpointEventType = (typeof PHASE_BREAKPOINT_EVENT_TYPES)[num
 export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[number];
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
+export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
@@ -295,6 +308,38 @@ export interface TrustCapabilityDeniedPayload {
   readonly workspaceBasename: string;
   readonly reason: string;
   readonly rowIndex?: number;
+}
+
+// Feature 063 — payload for the `queue-cleared-all` audit event. Bounded
+// to structural counts + a boolean + closed-enum runner-state literal.
+// NEVER includes operator descriptions, task ids, queue names, or any
+// free-form text — operator input MUST NOT flow through this event so
+// `SECRET_PATTERNS` invariants are preserved.
+//
+//   - `removedPending` — count of pending tasks dropped (≥0).
+//   - `removedInFlight` — 0 or 1 (single-queue single-runner mode).
+//   - `pauseStateCleared` — `true` if a paused-queue flag was cleared
+//     by the operation, `false` otherwise.
+//   - `runnerState` — the runner's terminal acknowledgement state in
+//     the bounded 2s window (FR-007):
+//       * `'acked'`       — runner acknowledged cancel within window.
+//       * `'timed-out'`   — 2s window elapsed without ack; state was
+//         still flipped atomically and operator was toast-warned.
+//       * `'no-active-run'` — no `WorkflowRun` existed; the cancel
+//         signal was a no-op.
+//   - `watchdogBackoffCleared` — `true` if a non-default watchdog
+//     backoff window was reset by the operation.
+//
+// Emitted only when the Clean All operation actually mutated state.
+// Per the idempotency rule (contracts/cmd-clear-all.md §Idempotency),
+// no event is emitted when the queue was already empty AND there was
+// no active run AND no watchdog backoff and no pause state.
+export interface QueueClearedAllPayload {
+  readonly removedPending: number;
+  readonly removedInFlight: number;
+  readonly pauseStateCleared: boolean;
+  readonly runnerState: 'acked' | 'timed-out' | 'no-active-run';
+  readonly watchdogBackoffCleared: boolean;
 }
 
 export interface RetryEvaluatedPayload {

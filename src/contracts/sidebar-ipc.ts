@@ -103,6 +103,18 @@ export const CMD_REVEAL_WAKEUP_SESSION_LOG = 'CMD_REVEAL_WAKEUP_SESSION_LOG' as 
 // pending task to in-flight via `controller.drainQueuedWork()`. Member of
 // `MUTATING_COMMANDS` and gated by the primary-host check.
 export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
+// Feature 063 — Clean All atomic queue reset. Replaces the separate
+// CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands. Mutating: drops
+// every queue item (pending, in-flight, paused), cancels the active
+// runner if any, and clears the watchdog backoff window in a single
+// batched memento write. Member of `MUTATING_COMMAND_REASONS` and
+// gated by the primary-host + workspace-lock guards.
+export const CMD_CLEAR_ALL = 'CMD_CLEAR_ALL' as const;
+// Feature 063 — per-action confirmation-prompt suppression persistence.
+// Mutating: writes to the `schegent.ui.confirmSuppression` memento via
+// `WorkspaceState`. Member of `MUTATING_COMMAND_REASONS` for audit
+// completeness, even though it does not touch run state.
+export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -157,7 +169,9 @@ export const COMMAND_TYPES = [
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_READ_WAKEUP_SESSION_LOG,
   CMD_REVEAL_WAKEUP_SESSION_LOG,
-  CMD_START_QUEUE
+  CMD_START_QUEUE,
+  CMD_CLEAR_ALL,
+  CMD_SET_CONFIRM_SUPPRESSION
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -220,6 +234,24 @@ export interface MoveQueueItemDownCommand extends CommandBase<typeof CMD_MOVE_QU
 
 export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {}
 export interface ClearFailedCommand extends CommandBase<typeof CMD_CLEAR_FAILED> {}
+
+// Feature 063 — Clean All atomic queue reset. Empty payload object so the
+// router can distinguish "operator confirmed" from a malformed message
+// without introducing optional fields.
+export interface ClearAllCommand extends CommandBase<typeof CMD_CLEAR_ALL> {
+  readonly payload?: Record<string, never>;
+}
+
+// Feature 063 — per-action confirmation-prompt suppression. The actionKey
+// is validated against the closed `ActionKey` union in the suppression
+// handler before any memento write.
+export interface SetConfirmSuppressionCommand
+  extends CommandBase<typeof CMD_SET_CONFIRM_SUPPRESSION> {
+  readonly payload: {
+    readonly actionKey: string;
+    readonly suppressed: boolean;
+  };
+}
 
 export interface PauseQueueCommand extends CommandBase<typeof CMD_PAUSE_QUEUE> {
   readonly payload?: { readonly queueId?: string; readonly reason?: string };
@@ -682,7 +714,9 @@ export type SidebarCommand =
   | ClearPhaseBreakpointCommand
   | ReadWakeupSessionLogCommand
   | RevealWakeupSessionLogCommand
-  | StartQueueCommand;
+  | StartQueueCommand
+  | ClearAllCommand
+  | SetConfirmSuppressionCommand;
 
 // -- Host messages (host → webview) -----------------------------------------
 
@@ -908,6 +942,40 @@ export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
       && Object.keys(payload).length === 0
     );
 }
+// Feature 063 — Clean All guard. Accepts `payload` absent or as an empty
+// object; rejects arrays and non-empty payloads.
+export function isCmdClearAll(value: unknown): value is ClearAllCommand {
+  if (!isObjectWithType(value, CMD_CLEAR_ALL)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  return payload === undefined
+    || (
+      payload !== null
+      && typeof payload === 'object'
+      && !Array.isArray(payload)
+      && Object.keys(payload).length === 0
+    );
+}
+// Feature 063 — confirmation-suppression guard. Validates the discriminator
+// and the payload shape `{ actionKey: string; suppressed: boolean }`.
+// Action-key membership is enforced by the suppression handler against
+// the closed ActionKey union — keeping the per-string check out of the
+// IPC contract layer.
+export function isCmdSetConfirmSuppression(
+  value: unknown
+): value is SetConfirmSuppressionCommand {
+  if (!isObjectWithType(value, CMD_SET_CONFIRM_SUPPRESSION)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+  const { actionKey, suppressed } = payload as {
+    actionKey?: unknown;
+    suppressed?: unknown;
+  };
+  return typeof actionKey === 'string'
+    && actionKey.length > 0
+    && typeof suppressed === 'boolean';
+}
 
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
@@ -960,5 +1028,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_READ_WAKEUP_SESSION_LOG]: isCmdReadWakeupSessionLog,
   [CMD_REVEAL_WAKEUP_SESSION_LOG]: isCmdRevealWakeupSessionLog,
-  [CMD_START_QUEUE]: isCmdStartQueue
+  [CMD_START_QUEUE]: isCmdStartQueue,
+  [CMD_CLEAR_ALL]: isCmdClearAll,
+  [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression
 });

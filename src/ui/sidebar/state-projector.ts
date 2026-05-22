@@ -72,7 +72,7 @@ export interface InitialTailReader {
 
 export interface StateProjectorDeps {
   readonly store?: Pick<WorkspaceStateStore, 'getRun' | 'getQueue' | 'getLock' | 'subscribe'> &
-  Partial<Pick<WorkspaceStateStore, 'getQueueRegistry'>>;
+  Partial<Pick<WorkspaceStateStore, 'getQueueRegistry' | 'getConfirmSuppression'>>;
   readonly audit?: Pick<AuditLogWriter, 'subscribe' | 'logPath'>;
   readonly ownerId?: string;
   /**
@@ -151,6 +151,15 @@ export interface StateProjectorDeps {
   readonly getPhasePrecedence?: () =>
     | import('../../config/phase-precedence').PhasePrecedenceProjection
     | undefined;
+  /**
+   * Feature 063 (T030) — read the current value of the
+   * `schegent.ui.confirmations.enable` config flag. Invoked on every
+   * projection so toggling the workspace setting takes effect on the
+   * next push. Returning `undefined` (or omitting the dep) results in
+   * the field being absent on the snapshot, which the webview treats
+   * as "prompts enabled" (default).
+   */
+  readonly getConfirmationsEnabled?: () => boolean;
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;
@@ -212,6 +221,7 @@ export class StateProjector {
   private readonly getPhasePrecedence?: () =>
     | import('../../config/phase-precedence').PhasePrecedenceProjection
     | undefined;
+  private readonly getConfirmationsEnabled?: () => boolean;
 
   private storeSub: Disposable | null = null;
   private auditSub: AuditDisposable | null = null;
@@ -279,6 +289,7 @@ export class StateProjector {
     this.getWakeupModel = deps.getWakeupModel;
     this.getWakeupSessionLogPath = deps.getWakeupSessionLogPath;
     this.getPhasePrecedence = deps.getPhasePrecedence;
+    this.getConfirmationsEnabled = deps.getConfirmationsEnabled;
     // Feature 059 — populate the initial snapshot via a real `project()`
     // so the first `subscribe()` delivers fresh trust + queue values
     // without requiring `start()` to be called first. The projection is
@@ -682,6 +693,17 @@ export class StateProjector {
     const queue = this.store.getQueue();
     const registry = this.store.getQueueRegistry ? this.store.getQueueRegistry() : undefined;
     const lock = this.store.getLock();
+    // Feature 063 (FR-021) — surface the suppression set for the
+    // webview so the confirmation modal can be skipped per action key.
+    const confirmSuppression = this.store.getConfirmSuppression
+      ? this.store.getConfirmSuppression()
+      : undefined;
+    // Feature 063 (T030) — surface the global confirmations toggle so
+    // the webview's `useConfirm` helper can short-circuit when the
+    // operator has disabled prompts workspace-wide.
+    const confirmationsEnabled = this.getConfirmationsEnabled
+      ? this.getConfirmationsEnabled()
+      : undefined;
     const isPrimary =
       this.forcedIsPrimary !== null
         ? this.forcedIsPrimary
@@ -835,7 +857,14 @@ export class StateProjector {
       workspaceTrust,
       resolvedTrust,
       ...(activePipeline ? { activePipeline } : {}),
-      ...(phasePrecedence !== undefined ? { phasePrecedence } : {})
+      ...(phasePrecedence !== undefined ? { phasePrecedence } : {}),
+      // Feature 063 (FR-021) — confirmation-prompt suppression projection.
+      // Omitted when the store does not implement the accessor (legacy
+      // test seams); the webview defaults to "no suppression" on undefined.
+      ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
+      // Feature 063 (T030) — global confirmations toggle. Omitted when
+      // the host dep is not wired; webview treats `undefined` as `true`.
+      ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
     });
   }
 

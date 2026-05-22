@@ -392,6 +392,12 @@
           "scope": "window",
           "markdownDescription": "Suppress the one-shot multi-root workspace warning toast surfaced at activation. Feature 058 makes the first folder in the active `.code-workspace` the canonical Schegent workspace folder; `.schegent/` state is created there, and other folders are treated as ordinary VS Code roots. Set to `true` to hide the per-activation toast. See `repo/docs/concepts/workspace-lock.md`."
         },
+        "schegent.ui.confirmations.enable": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "markdownDescription": "Show confirmation prompts for destructive UI actions (Clean All, Clear Done, Remove Item, Cancel Item, Pause/Resume, Retry Phase Now, Restart Canceled, Modify Task, Rerun History, Reset Workspace). Feature 063: when `true` (default), every destructive action opens a confirmation dialog with a per-action 'Don't ask again' checkbox; when `false`, prompts are globally disabled and destructive actions run immediately. Per-action suppression is recorded in workspace state and survives reloads. The Reset Workspace action remains unsuppressible regardless of this setting."
+        },
         "schegent.trust.allowCustomPhases": {
           "type": [
             "boolean",
