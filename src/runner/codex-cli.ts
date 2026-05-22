@@ -135,7 +135,25 @@ export class CodexCliRunner implements BackendRunner {
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
 
+    let timedOut = false;
+    let killed = false;
+
+    // Idle timeout: see claude-cli.ts for rationale. Each data event resets
+    // the timer; the CLI is only terminated after `timeoutMs` of no output.
+    let timer: NodeJS.Timeout = setTimeout(() => {
+      timedOut = true;
+      this.terminate(child);
+    }, request.timeoutMs);
+    const resetIdleTimer = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        this.terminate(child);
+      }, request.timeoutMs);
+    };
+
     child.stdout?.on('data', (chunk: string) => {
+      resetIdleTimer();
       stdoutBytes += Buffer.byteLength(chunk, 'utf8');
       if (stdoutBytes <= MAX_BUFFER_BYTES) {
         stdout += chunk;
@@ -145,6 +163,7 @@ export class CodexCliRunner implements BackendRunner {
       this.emitHook({ kind: 'stdout-chunk', chunk });
     });
     child.stderr?.on('data', (chunk: string) => {
+      resetIdleTimer();
       stderrBytes += Buffer.byteLength(chunk, 'utf8');
       if (stderrBytes <= MAX_BUFFER_BYTES) {
         stderr += chunk;
@@ -153,14 +172,6 @@ export class CodexCliRunner implements BackendRunner {
       }
       this.emitHook({ kind: 'stderr-chunk', chunk });
     });
-
-    let timedOut = false;
-    let killed = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      this.terminate(child);
-    }, request.timeoutMs);
 
     // Keep `onAbort` referenced so we can detach after exit. See the
     // matching note in `claude-cli.ts`: the controller shares one signal

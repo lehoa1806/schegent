@@ -284,7 +284,7 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'cli.path': 'claude',
         'logging.verbose': false,
         'loop.maxIterations': 10,
-        'invocation.timeoutSeconds': 1800,
+        'invocation.timeoutSeconds': 5400,
         'watchdog.pollIntervalMinutes': 30,
         'audit.rotation.sizeMB': 5,
         'audit.rotation.maxAgeDays': 30,
@@ -344,7 +344,7 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     });
     const snap = readGeneralSettings(config);
     expect(snap.loopMaxIterations).toBe(10);
-    expect(snap.invocationTimeoutSeconds).toBe(1800);
+    expect(snap.invocationTimeoutSeconds).toBe(5400);
   });
 });
 

@@ -308,8 +308,28 @@ export class ClaudeCliRunner implements BackendRunner {
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
 
+      let timedOut = false;
+      let killed = false;
+
+      // Idle timeout: the timer fires only when no stdout/stderr chunk has
+      // arrived for `timeoutMs`. Each data event resets it. A long-running
+      // phase that streams progress continues indefinitely; a stalled CLI
+      // (no output) is terminated after the configured idle window.
+      let timer: NodeJS.Timeout = setTimeout(() => {
+        timedOut = true;
+        this.terminate(child);
+      }, request.timeoutMs);
+      const resetIdleTimer = (): void => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          timedOut = true;
+          this.terminate(child);
+        }, request.timeoutMs);
+      };
+
       const diagnosticWrites: Promise<void>[] = [];
       child.stdout?.on('data', (chunk: string) => {
+        resetIdleTimer();
         stdoutBytes += Buffer.byteLength(chunk, 'utf8');
         if (stdoutBytes <= MAX_BUFFER_BYTES) {
           stdout += chunk;
@@ -322,6 +342,7 @@ export class ClaudeCliRunner implements BackendRunner {
         }
       });
       child.stderr?.on('data', (chunk: string) => {
+        resetIdleTimer();
         stderrBytes += Buffer.byteLength(chunk, 'utf8');
         if (stderrBytes <= MAX_BUFFER_BYTES) {
           stderr += chunk;
@@ -333,14 +354,6 @@ export class ClaudeCliRunner implements BackendRunner {
           diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
         }
       });
-
-      let timedOut = false;
-      let killed = false;
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        this.terminate(child);
-      }, request.timeoutMs);
 
       // `onAbort` is kept in scope so we can detach it after the exit
       // promise resolves. The controller reuses one AbortController.signal

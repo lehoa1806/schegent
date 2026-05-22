@@ -115,7 +115,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.invocation.timeoutSeconds': {
     key: 'schegent.invocation.timeoutSeconds',
     type: 'number',
-    default: 1800,
+    default: 5400,
     min: 30,
     scope: 'resource',
     docLabel: 'Per-phase invocation timeout (seconds)'

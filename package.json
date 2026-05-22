@@ -160,7 +160,7 @@
         },
         "schegent.invocation.timeoutSeconds": {
           "type": "number",
-          "default": 1800,
+          "default": 5400,
           "minimum": 30,
           "scope": "resource",
           "description": "Per-phase CLI invocation timeout in seconds."

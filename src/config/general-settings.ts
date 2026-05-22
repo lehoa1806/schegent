@@ -138,7 +138,7 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
   'invocation.timeoutSeconds': {
     type: 'number',
     typedField: 'invocationTimeoutSeconds',
-    defaultValue: 1800,
+    defaultValue: 5400,
     min: 30
   },
   'watchdog.pollIntervalMinutes': {
