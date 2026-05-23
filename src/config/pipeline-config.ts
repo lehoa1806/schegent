@@ -57,7 +57,6 @@ export const BUILT_IN_PHASE_IDS = [
   'speckit-analyze',
   'speckit-implement',
   'finalize',
-  'done',
   'bugfix-report',
   'bugfix-patch',
   'bugfix-verify-pre',
@@ -76,26 +75,21 @@ export const SOFT_CAP_PIPELINES = 20;
 export const SOFT_CAP_PIPELINE_PHASES = 50;
 
 export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
-  'speckit-specify': 'Run /speckit-specify with the feature description below. Produce specs/<NNN-name>/spec.md.',
+  'speckit-specify': '/speckit-specify',
   'speckit-clarify':
-    'Run /speckit-clarify on the active feature spec. Resolve ambiguities. Emit the termination token only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress. IMPORTANT: place these metric lines at the top level — never indented under and never immediately after a sub-block heading (`Notes:`, `Findings:`, `Open Questions:`, `Remaining Issues:`) unless a blank line separates them. If you use any sub-block heading, insert a blank line before the next top-level metric line.',
-  'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
-  'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
+    '/speckit-clarify and apply all recommendations. Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
+  'speckit-plan': '/speckit-plan',
+  'speckit-tasks': '/speckit-tasks',
   'speckit-analyze':
-    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL and HIGH issues remain.',
-  'speckit-implement': 'Run /speckit-implement on the active feature.',
+    '/speckit-analyze and fix all findings. Inside the SCHEGENT AUDIT LOG block, emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines so the controller can observe progress.',
+  'speckit-implement': '/speckit-implement',
   finalize:
     'Verify the implementation: run build/typecheck/test commands, summarize results, and emit the termination token if all pass.',
-  done: '(no-op)',
-  'bugfix-report':
-    'Run /speckit-bugfix-report on the active feature. Capture the operator-reported bug and trace it across spec.md, plan.md, and tasks.md. Emit the termination token only when the report is complete.',
-  'bugfix-patch':
-    'Run /speckit-bugfix-patch on the active feature. Apply surgical patches to spec.md, plan.md, and tasks.md so the recorded bug has matching artifact updates. Emit the termination token when the patch is applied.',
-  'bugfix-verify-pre':
-    'Run /speckit-bugfix-verify on the active feature. Verify cross-artifact consistency BEFORE implementation begins. Emit the termination token only when no CRITICAL issues remain.',
-  'bugfix-implement': 'Run /speckit-implement on the active feature using the patched tasks.',
-  'bugfix-verify-post':
-    'Run /speckit-bugfix-verify on the active feature. Verify cross-artifact consistency AFTER implementation completes. Emit the termination token only when no CRITICAL issues remain.'
+  'bugfix-report': '/speckit-bugfix-report',
+  'bugfix-patch': '/speckit-bugfix-patch',
+  'bugfix-verify-pre': '/speckit-bugfix-verify',
+  'bugfix-implement': '/speckit-implement',
+  'bugfix-verify-post': '/speckit-bugfix-verify'
 };
 
 export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
@@ -135,11 +129,6 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'finalize',
     name: 'Finalize',
     instruction: PHASE_INSTRUCTIONS.finalize
-  }),
-  Object.freeze({
-    id: 'done',
-    name: 'Done',
-    instruction: PHASE_INSTRUCTIONS.done
   }),
   Object.freeze({
     id: 'bugfix-report',
@@ -182,8 +171,7 @@ export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
     'speckit-tasks',
     'speckit-analyze',
     'speckit-implement',
-    'finalize',
-    'done'
+    'finalize'
   ]) as readonly string[]
 });
 

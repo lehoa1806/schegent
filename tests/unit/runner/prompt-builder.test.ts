@@ -153,8 +153,7 @@ describe('PromptBuilder.build', () => {
         featureDescription: 'desc',
         featureDir: null
       });
-      expect(prompt).toContain('Run /speckit-specify');
-      expect(prompt).toContain('Produce specs/<NNN-name>/spec.md');
+      expect(prompt).toContain('/speckit-specify');
     });
 
     it('custom PhaseDef.instruction overrides the built-in fallback', () => {

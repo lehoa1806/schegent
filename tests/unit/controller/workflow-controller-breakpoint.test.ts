@@ -73,8 +73,7 @@ const STANDARD_PIPELINE = Object.freeze({
       'speckit-tasks',
       'speckit-analyze',
       'speckit-implement',
-      'finalize',
-      'done'
+      'finalize'
     ].map((id) => Object.freeze(BUILT_IN_PHASES.find((p) => p.id === id)!))
   )
 });

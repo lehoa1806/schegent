@@ -237,7 +237,7 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     // when it isn't already present in the pipeline's declared phases).
     const snapshotIds = (run.pipeline?.phases ?? []).map((p) => p.id);
     expect(snapshotIds.slice(0, BUGFIX_PHASES.length)).toEqual([...BUGFIX_PHASES]);
-    expect(snapshotIds[snapshotIds.length - 1]).toBe('done');
+    expect(snapshotIds.length).toBe(5);
 
     // CLI invocation order matches the 5 bugfix phases in declaration order.
     expect(invocations.map((i) => i.phase)).toEqual([...BUGFIX_PHASES]);

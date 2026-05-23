@@ -38,7 +38,7 @@ const validPhase = (overrides: Partial<PhaseDef> = {}): PhaseDef => ({
 const validPipeline = (overrides: Partial<PipelineDef> = {}): PipelineDef => ({
   id: 'security',
   name: 'Security Audit Pipeline',
-  phases: ['speckit-specify', 'security-audit', 'done'],
+  phases: ['speckit-specify', 'security-audit'],
   ...overrides
 });
 
@@ -140,7 +140,7 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
 });
 
 describe('validatePipelineRaw — error rules from contracts/pipeline-config.md', () => {
-  const knownIds = new Set(['speckit-specify', 'security-audit', 'done']);
+  const knownIds = new Set(['speckit-specify', 'security-audit']);
 
   it('rejects empty phases array', () => {
     const errs = validatePipelineRaw(validPipeline({ phases: [] }), knownIds);
@@ -149,7 +149,7 @@ describe('validatePipelineRaw — error rules from contracts/pipeline-config.md'
 
   it('rejects unknown phase id reference', () => {
     const errs = validatePipelineRaw(
-      validPipeline({ phases: ['speckit-specify', 'made-up-phase', 'done'] }),
+      validPipeline({ phases: ['speckit-specify', 'made-up-phase'] }),
       knownIds
     );
     expect(errs.some((e) => e.field === 'phases[1]')).toBe(true);
@@ -368,11 +368,11 @@ describe('Feature 026 T021 — speckit-bugfix built-in catalog members', () => {
     'bugfix-verify-post'
   ] as const;
 
-  it('(a) BUILT_IN_PHASES.length === 13', () => {
-    // 8 standard (specify, clarify, plan, tasks, analyze, implement,
-    // finalize, done) + 5 bugfix (report, patch, verify-pre, implement,
-    // verify-post) = 13.
-    expect(BUILT_IN_PHASES.length).toBe(13);
+  it('(a) BUILT_IN_PHASES.length === 12', () => {
+    // 7 standard (specify, clarify, plan, tasks, analyze, implement,
+    // finalize) + 5 bugfix (report, patch, verify-pre, implement,
+    // verify-post) = 12.
+    expect(BUILT_IN_PHASES.length).toBe(12);
   });
 
   it('(b) every new bugfix phase id is present in BUILT_IN_PHASE_IDS', () => {

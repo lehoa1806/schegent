@@ -444,7 +444,7 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
     expect(storedRunPipeline).toBeDefined();
     const snapshotIds = (storedRunPipeline?.phases ?? []).map((p) => p.id);
     expect(snapshotIds.slice(0, customPhaseIds.length)).toEqual([...customPhaseIds]);
-    expect(snapshotIds[snapshotIds.length - 1]).toBe('done');
+    expect(snapshotIds.length).toBe(customPhaseIds.length);
 
     // (b) Each phase invocation's phase-start carries both the workspace
     // effort:'xhigh' and the workspace model.

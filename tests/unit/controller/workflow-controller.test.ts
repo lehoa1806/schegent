@@ -159,8 +159,7 @@ describe('SchegentWorkflowController.startNew', () => {
       'speckit-tasks',
       'speckit-analyze',
       'speckit-implement',
-      'finalize',
-      'done'
+      'finalize'
     ]);
   });
 
@@ -175,11 +174,10 @@ describe('SchegentWorkflowController.startNew', () => {
     const customPipeline = Object.freeze({
       id: 'custom-pipe',
       name: 'Custom Pipeline',
-      phases: Object.freeze(['custom-loop', 'done']) as readonly string[]
+      phases: Object.freeze(['custom-loop']) as readonly string[]
     });
-    const builtinDone = BUILT_IN_PHASES.find((p) => p.id === 'done')!;
     const catalog = buildCatalog(
-      [customPhase, builtinDone],
+      [customPhase],
       [customPipeline],
       [],
       'custom-pipe'
@@ -438,11 +436,10 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     expect(run.pipeline?.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
     expect(run.pipeline?.name).toBe('Spec-kit Bugfix');
     const ids = run.pipeline?.phases.map((p) => p.id) ?? [];
-    // The controller appends 'done' if it isn't already present in the pipeline phases list,
-    // but the bugfix pipeline only declares the 5 ordered phases. The snapshot therefore
-    // contains the 5 declared phases + the terminating 'done' phase.
+    // The bugfix pipeline only declares the 5 ordered phases. The snapshot
+    // contains the 5 declared phases.
     expect(ids.slice(0, BUGFIX_PHASES.length)).toEqual(BUGFIX_PHASES);
-    expect(ids[ids.length - 1]).toBe('done');
+    expect(ids.length).toBe(5);
     expect(Object.isFrozen(run.pipeline)).toBe(true);
     expect(Object.isFrozen(run.pipeline?.phases)).toBe(true);
   });
@@ -456,15 +453,15 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     const phasesBefore = snapshotBefore!.phases.map((p) => p.id);
 
     // Replace the controller's catalog with one that defines a DIFFERENT 'speckit-bugfix'
-    // pipeline (single-phase 'done'). The pre-existing run's snapshot must not retarget.
-    const doneDef = BUILT_IN_PHASES.find((p) => p.id === 'done')!;
+    // pipeline (single-phase 'finalize'). The pre-existing run's snapshot must not retarget.
+    const finalizeDef = BUILT_IN_PHASES.find((p) => p.id === 'finalize')!;
     const tamperedBugfix: PipelineDef = Object.freeze({
       id: BUILT_IN_BUGFIX_PIPELINE_ID,
       name: 'Tampered Bugfix',
-      phases: Object.freeze(['done']) as readonly string[]
+      phases: Object.freeze(['finalize']) as readonly string[]
     });
     const tamperedCatalog = buildCatalog(
-      [doneDef],
+      [finalizeDef],
       [tamperedBugfix],
       [],
       BUILT_IN_BUGFIX_PIPELINE_ID
@@ -481,7 +478,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
       (snapshotAfter as unknown as { name: string }).name = 'mutated';
     }).toThrow();
     expect(() => {
-      (snapshotAfter?.phases as unknown as PhaseDef[]).push(doneDef);
+      (snapshotAfter?.phases as unknown as PhaseDef[]).push(finalizeDef);
     }).toThrow();
   });
 
