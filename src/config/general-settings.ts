@@ -170,7 +170,7 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // Feature 056 Track 3 (FR-013..FR-017) — Align host default with
     // package.json contribution default so a fresh workspace and the
     // webview idle snapshot agree on which pipeline is selected.
-    defaultValue: 'speckit-new-feature'
+    defaultValue: 'dev-new-feature'
   },
   fatalSignatures: {
     type: 'array-of-string',

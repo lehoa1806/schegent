@@ -578,7 +578,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
   rulesInjectPerPhase: false,
-  defaultPipelineId: 'speckit-new-feature',
+  defaultPipelineId: 'dev-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   queueGlobalConcurrencyCap: 1,

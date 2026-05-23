@@ -61,7 +61,10 @@ export const BUILT_IN_PHASE_IDS = [
   'bugfix-patch',
   'bugfix-verify-pre',
   'bugfix-implement',
-  'bugfix-verify-post'
+  'bugfix-verify-post',
+  'specify-brainstorm',
+  'superpowers-implement',
+  'superpowers-review-close'
 ] as const;
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -89,7 +92,12 @@ export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'bugfix-patch': '/speckit-bugfix-patch',
   'bugfix-verify-pre': '/speckit-bugfix-verify',
   'bugfix-implement': '/speckit-implement',
-  'bugfix-verify-post': '/speckit-bugfix-verify'
+  'bugfix-verify-post': '/speckit-bugfix-verify',
+  'specify-brainstorm':
+    "Let's brainstorm the idea from the input and run /speckit-specify",
+  'superpowers-implement':
+    "Use git worktree for this feature. Get the 'feature_directory' from .specify/feature.json. Don't re-plan, execute the tasks.md in that 'feature_directory' using subagent-driven development with TDD",
+  'superpowers-review-close': 'Perform code review and finish the development branch'
 };
 
 export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
@@ -154,12 +162,31 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'bugfix-verify-post',
     name: 'Spec-kit Bugfix Verify (post)',
     instruction: PHASE_INSTRUCTIONS['bugfix-verify-post']
+  }),
+  Object.freeze({
+    id: 'specify-brainstorm',
+    name: 'Specify with Brainstorm',
+    instruction: PHASE_INSTRUCTIONS['specify-brainstorm']
+  }),
+  Object.freeze({
+    id: 'superpowers-implement',
+    name: 'Superpowers Implement',
+    instruction: PHASE_INSTRUCTIONS['superpowers-implement']
+  }),
+  Object.freeze({
+    id: 'superpowers-review-close',
+    name: 'Superpowers Review and Close',
+    instruction: PHASE_INSTRUCTIONS['superpowers-review-close']
   })
 ]);
 
 export const BUILT_IN_PIPELINE_ID = 'speckit-new-feature';
 
 export const BUILT_IN_BUGFIX_PIPELINE_ID = 'speckit-bugfix';
+
+export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID = 'dev-new-feature';
+
+export const DEFAULT_PIPELINE_ID = BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID;
 
 export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
   id: BUILT_IN_PIPELINE_ID,
@@ -187,9 +214,24 @@ export const BUILT_IN_BUGFIX_PIPELINE: PipelineDef = Object.freeze({
   ]) as readonly string[]
 });
 
+export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE: PipelineDef = Object.freeze({
+  id: BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID,
+  name: 'Dev New Feature',
+  phases: Object.freeze([
+    'specify-brainstorm',
+    'speckit-clarify',
+    'speckit-plan',
+    'speckit-tasks',
+    'speckit-analyze',
+    'superpowers-implement',
+    'superpowers-review-close'
+  ]) as readonly string[]
+});
+
 export const BUILT_IN_PIPELINES: readonly PipelineDef[] = Object.freeze([
   BUILT_IN_PIPELINE,
-  BUILT_IN_BUGFIX_PIPELINE
+  BUILT_IN_BUGFIX_PIPELINE,
+  BUILT_IN_DEV_NEW_FEATURE_PIPELINE
 ]);
 
 // Feature 059 — default-detection helpers used by the per-capability

@@ -380,10 +380,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   rulesInjectPerPhase: false,
   // Feature 056 Track 3 (FR-013) — host default and package
   // contribution default both point at the built-in
-  // `speckit-new-feature` pipeline; the webview idle snapshot must
+  // `dev-new-feature` pipeline; the webview idle snapshot must
   // agree so a fresh workspace shows a consistent value before the
   // first projection lands.
-  defaultPipelineId: 'speckit-new-feature',
+  defaultPipelineId: 'dev-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   queueGlobalConcurrencyCap: 1,
