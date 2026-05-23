@@ -46,7 +46,7 @@ and task files are the trust boundary on what the CLI ingests.
   binary Workspace Trust, narrowed by three per-capability scopes
   (`schegent.trust.allowCustomPhases`,
   `schegent.trust.allowCustomRetryConditions`,
-  `schegent.trust.allowPipelineOverrides`), and bound by 33 mutating IPC
+  `schegent.trust.allowPipelineOverrides`), and bound by 36 mutating IPC
   commands enforced primary-host-only.
 - **Audit boundary.** Every phase invocation writes a redacted,
   append-only structured event to `.schegent/audit.log` through a single
@@ -195,15 +195,19 @@ Until the operator trusts the workspace, Schegent's capability surface
 is zero. See [`threat-model.md` § Workspace-trust
 gating](./threat-model.md#workspace-trust-gating).
 
-### (b) The `MUTATING_COMMANDS` primary-host gate — 33 commands
+### (b) The `MUTATING_COMMANDS` primary-host gate — 36 commands
 
 Every mutating IPC command (queue mutation, run control, phase control,
-save commands, breakpoints, wake-up actions) must be a member of
-`MUTATING_COMMANDS` in
-[`src/ui/sidebar/message-router.ts:50`](../../src/ui/sidebar/message-router.ts#L50).
-The set currently has **33 entries**:
+save commands, breakpoints, wake-up actions) must be a member of the
+`MUTATING_COMMAND_REASONS` registry in
+[`src/contracts/sidebar-command-metadata.ts:41`](../../src/contracts/sidebar-command-metadata.ts#L41),
+which is re-exported as the `MUTATING_COMMANDS` set in
+[`src/ui/sidebar/message-router.ts:16`](../../src/ui/sidebar/message-router.ts#L16)
+and enforced by `MessageRouter.dispatch()`. The set currently has
+**36 entries**:
 
-- 22 queue + run-control + phase-control commands.
+- 24 queue + run-control + phase-control commands (incl.
+  `CMD_START_QUEUE` per BUG-002 and `CMD_CLEAR_ALL` per spec 063).
 - 2 task-mutation commands (`CMD_MODIFY_TASK`, `CMD_REORDER_TASK`).
 - 2 wake-up commands (`CMD_SAVE_WAKEUP_SETTINGS`, `CMD_WAKE_UP_NOW`).
 - 4 catalog / save commands (`CMD_SAVE_GENERAL_SETTINGS`,
@@ -211,6 +215,8 @@ The set currently has **33 entries**:
 - 1 restart-canceled-task command (`CMD_RESTART_CANCELED_TASK`).
 - 2 phase-breakpoint commands (`CMD_SET_PHASE_BREAKPOINT`,
   `CMD_CLEAR_PHASE_BREAKPOINT`).
+- 1 confirmation-suppression preference command
+  (`CMD_SET_CONFIRM_SUPPRESSION`, spec 063).
 
 When the same workspace is open in multiple VS Code windows, only the
 primary host accepts these commands; secondary windows receive
@@ -590,8 +596,10 @@ Every artifact this white-paper depends on:
   which does not yet exist as a standalone file).
 - [`src/ui/sidebar/csp.ts`](../../src/ui/sidebar/csp.ts) — webview CSP
   literal (`connect-src 'none'` at line 20).
-- [`src/ui/sidebar/message-router.ts`](../../src/ui/sidebar/message-router.ts) —
-  `MUTATING_COMMANDS` registry (33 entries starting at line 50).
+- [`src/contracts/sidebar-command-metadata.ts`](../../src/contracts/sidebar-command-metadata.ts) —
+  `MUTATING_COMMAND_REASONS` registry (36 entries; the source of truth
+  re-exported as `MUTATING_COMMANDS` by
+  [`src/ui/sidebar/message-router.ts:16`](../../src/ui/sidebar/message-router.ts#L16)).
 - [`operations/runtime-log.md`](../operations/runtime-log.md) — the
   runtime-log file sink that mirrors the sanitized Output channel.
 - [`operations/verbose-diagnostic-logging.md`](../operations/verbose-diagnostic-logging.md)
