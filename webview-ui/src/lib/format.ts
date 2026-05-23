@@ -54,3 +54,20 @@ export function formatRelativeTime(iso: string, nowMs: number = Date.now()): str
   if (delta < DAY) return `${Math.floor(delta / HOUR)}h ago`;
   return `${Math.floor(delta / DAY)}d ago`;
 }
+
+// Feature 068 — absolute, human-readable timestamp for System tab cells.
+// Returns "YYYY-MM-DD HH:MM:SS" in the operator's local timezone. Falls
+// back to the raw input when the ISO string fails to parse so the cell
+// never renders as empty.
+export function formatAbsoluteTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso;
+  const d = new Date(t);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}

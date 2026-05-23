@@ -187,6 +187,23 @@ The two hashes must match. The regression test
 [tests/integration/phase-log-on-disk-immutability.test.ts](../../tests/integration/phase-log-on-disk-immutability.test.ts)
 asserts this property on every CI run.
 
+### 6. System tab (spec 064 + 068)
+
+The Dashboard's **System** tab renders system-scoped audit events
+(`queue-cleared-all`, `queue-paused`, scheduled-start transitions, etc.)
+plus `cli-invocation` entries cross-listed from the live tail. Each
+entry now shows an absolute timestamp, the originating `taskId` and
+`phaseId` (or `—` when absent), a category badge, an outcome badge with
+a colored left-border, the full (untruncated) summary, and — for
+`cli-invocation` events — the sanitized CLI command in a monospace,
+whitespace-preserving `<pre>` block.
+
+**Persistence across reload (spec 068, US3):** on webview cold-start the
+host reads the tail of `.schegent/audit.log` (bounded by
+`AUDIT_TAIL_MAX = 50`) and seeds the first snapshot so the System tab is
+non-empty before any live event arrives. Missing or unreadable audit
+files degrade silently to an empty list — no operator-facing modal.
+
 ---
 
 **Related Documentation:**
