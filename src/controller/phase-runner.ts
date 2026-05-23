@@ -370,7 +370,7 @@ export class PhaseRunner {
       };
     }
 
-    const rateLimit = detectCreditError(raw.stderr, raw.exitCode);
+    const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
     const audit = parseAuditLogBlock(raw.stdout);
     // Feature 011 FR-033 — read operator-additive fatal signatures
     // per-invocation (never cached). The built-in floor is preserved

@@ -32,6 +32,8 @@ function assertScheduleOrMigrationSystem(event: ScheduleOrMigrationEvent): void 
     case 'idle-pending-entered':
     case 'idle-pending-exited':
     case 'state-migrated-v6-to-v7':
+    case 'system-pause-scheduled-restore':
+    case 'system-pause-restore-unavailable':
       expect(classifyAuditEvent(event)).toBe('system');
       return;
     default: {
@@ -76,7 +78,9 @@ describe('Feature 065 — schedule/migration audit-event classification', () => 
       'scheduled-start-past-timestamp-coerced-to-now',
       'idle-pending-entered',
       'idle-pending-exited',
-      'state-migrated-v6-to-v7'
+      'state-migrated-v6-to-v7',
+      'system-pause-scheduled-restore',
+      'system-pause-restore-unavailable'
     ];
     const surface = new Set<string>([
       ...SCHEDULE_EVENT_TYPES,

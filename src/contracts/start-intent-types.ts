@@ -12,13 +12,19 @@ export type StartMode = 'now' | 'scheduled' | 'cancel-schedule';
 // ScheduledStartSource literal (re-declared here to keep the IPC
 // contract self-contained; mirrors
 // repo/src/queue/feature-request.ts::ScheduledStartSource).
+//
+// `'system-rate-limit-recovery'` is host-internal (BUG-006/FR-026) and
+// MUST NOT be accepted from IPC; the `isValidEnqueueStartIntent` and
+// `isValidStartQueueIntent` validators below intentionally keep the
+// narrower 6-value allowlist for defense-in-depth.
 export type IpcScheduledStartSource =
   | 'operator-chooser'
   | 'operator-restart'
   | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
-  | 'migration-default';
+  | 'migration-default'
+  | 'system-rate-limit-recovery';
 
 // Optional `startIntent` payload accompanying CMD_START. The host's
 // policy table treats omission as the human-facing chooser default

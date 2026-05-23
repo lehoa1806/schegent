@@ -5,13 +5,23 @@ import {
   type RetryHandlerDeps
 } from '../controller/retry-handler';
 import type { SanitizedLogger } from '../lib/logger';
+import type { GuardedRunService } from './guarded-run-service';
 
 export type RateLimitHandler = (cause: string, run: WorkflowRun) => Promise<void>;
 
 export interface RetryCoordinatorDeps
-  extends Omit<RetryHandlerDeps, 'getWatchdog'> {
+  extends Omit<RetryHandlerDeps, 'getWatchdog' | 'getGuardedRunService'> {
   readonly logger: SanitizedLogger;
   readonly watchdog?: DelayedRetryWatchdog | null;
+  /**
+   * BUG-006 — guarded-run service may be wired later (extension.activate
+   * order). The coordinator stores the latest reference; `RetryHandler`
+   * reads via callback.
+   */
+  readonly guardedRunService?: Pick<
+    GuardedRunService,
+    'transitionToScheduledRestore' | 'emitSystemPauseRestoreUnavailable'
+  > | null;
 }
 
 /**
@@ -21,21 +31,41 @@ export interface RetryCoordinatorDeps
  */
 export class RetryCoordinator {
   private watchdog: DelayedRetryWatchdog | null;
+  private guardedRunService: Pick<
+    GuardedRunService,
+    'transitionToScheduledRestore' | 'emitSystemPauseRestoreUnavailable'
+  > | null;
   private rateLimitHandler: RateLimitHandler | null = null;
   private readonly retryHandler: RetryHandler;
   private readonly logger: SanitizedLogger;
 
   constructor(deps: RetryCoordinatorDeps) {
     this.watchdog = deps.watchdog ?? null;
+    this.guardedRunService = deps.guardedRunService ?? null;
     this.logger = deps.logger;
     this.retryHandler = new RetryHandler({
       ...deps,
-      getWatchdog: () => this.watchdog
+      getWatchdog: () => this.watchdog,
+      getGuardedRunService: () => this.guardedRunService
     });
   }
 
   public setWatchdog(watchdog: DelayedRetryWatchdog | null): void {
     this.watchdog = watchdog;
+  }
+
+  /**
+   * BUG-006 — late injection point. `GuardedRunService` may be constructed
+   * after the controller in `extension.activate()`. Wiring it here enables
+   * the rate-limit → scheduled-restore branch in `scheduleQueuePauseAndFail`.
+   */
+  public setGuardedRunService(
+    service: Pick<
+      GuardedRunService,
+      'transitionToScheduledRestore' | 'emitSystemPauseRestoreUnavailable'
+    > | null
+  ): void {
+    this.guardedRunService = service;
   }
 
   public setRateLimitHandler(handler: RateLimitHandler): void {
@@ -52,7 +82,8 @@ export class RetryCoordinator {
     phaseResult: PhaseResult,
     cause: 'rate_limit' | 'transient_error',
     resetsAtMs: number | null,
-    rateLimitMessage: string | null
+    rateLimitMessage: string | null,
+    originalCause?: string
   ): Promise<WorkflowRun> {
     return this.retryHandler.handleDelayedRetry(
       run,
@@ -60,7 +91,8 @@ export class RetryCoordinator {
       phaseResult,
       cause,
       resetsAtMs,
-      rateLimitMessage
+      rateLimitMessage,
+      originalCause
     );
   }
 

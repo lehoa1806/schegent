@@ -130,6 +130,19 @@ export interface QueueItem {
    * filesystem check (which would require fs IO per snapshot emission).
    */
   readonly hasOnDiskLogs: boolean;
+  /**
+   * Feature 065 / BUG-006 — paused-row enrichment. Present only on tasks
+   * with `status === 'paused'`. Allows the webview to render a "Paused
+   * (rate-limit)" badge with an auto-resume countdown without re-querying
+   * the queue lifecycle. `resetsAtMs` carries the resolved restoration
+   * target (= `QueueState.scheduledStartAt`) when the pause is system-
+   * armed; absent or undefined for operator-paused tasks.
+   */
+  readonly paused?: {
+    readonly pauseSource: 'operator-paused' | 'system-paused';
+    readonly pauseCauseCategory?: 'rate-limit' | 'fatal-signature' | 'operator-canceled';
+    readonly resetsAtMs?: number;
+  };
 }
 
 export interface QueueSummary {

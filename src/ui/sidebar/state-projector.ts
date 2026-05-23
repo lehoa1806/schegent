@@ -740,7 +740,12 @@ export class StateProjector {
       registry,
       // Feature 028 — surface the run's breakpoint pause-cause so the
       // queue-projector can map it to task-level `'breakpoint'`.
-      inFlightManualPauseCause: run?.manualPauseCause ?? null
+      inFlightManualPauseCause: run?.manualPauseCause ?? null,
+      // Feature 065 / BUG-006 — surface the queue lifecycle's
+      // scheduled-restore context so paused tasks carry the system-paused
+      // badge + restoration target.
+      scheduledStartSource: queue.scheduledStartSource ?? null,
+      scheduledStartAt: queue.scheduledStartAt ?? null
     });
     const auditTail: readonly AuditTailEntry[] = this.auditTail.slice();
     const liveActivity = this.computeLiveActivity(status);

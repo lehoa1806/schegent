@@ -263,7 +263,8 @@ export class RunDriver {
               phaseResult,
               postDecision.cause,
               postDecision.resetsAtMs,
-              postDecision.rateLimitMessage
+              postDecision.rateLimitMessage,
+              postDecision.originalCause
             );
             session.retain();
             break;

@@ -33,6 +33,11 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { backoffForCause } from './rate-limit-backoff';
+// BUG-006 — system-armed scheduled-restore transition.
+import type { GuardedRunService } from '../services/guarded-run-service';
+import { SCHEDULED_START_MAX_HORIZON_MS } from '../services/guarded-run-service';
+import { extractResetTimestamp } from '../parser/rate-limit-reset-extractor';
+import { RETRY_BUFFER_MS } from './retry-constants';
 
 export interface DelayedRetryWatchdog {
   pauseAndPoll(
@@ -58,6 +63,19 @@ export interface RetryHandlerDeps {
   auditWriter: Pick<AuditLogWriter, 'append'> | null;
   getRetryCap: () => number;
   persistTransition: (prev: WorkflowRun, next: WorkflowRun) => Promise<WorkflowRun>;
+  /**
+   * BUG-006 — lazy reader for the guarded-run service. Optional for tests
+   * and back-compat; when present, `scheduleQueuePauseAndFail` converts a
+   * rate-limit-family retry-cap-exhausted pause into a system-armed
+   * scheduled restore via `transitionToScheduledRestore`. When omitted,
+   * the legacy operator-paused lifecycle is preserved.
+   */
+  getGuardedRunService?: () => Pick<
+    GuardedRunService,
+    'transitionToScheduledRestore' | 'emitSystemPauseRestoreUnavailable'
+  > | null;
+  /** Injectable clock for tests; default = Date.now */
+  clock?: () => number;
 }
 
 export type DelayedRetryAuditEvent =
@@ -79,6 +97,10 @@ export class RetryHandler {
    * @param resetsAtMs         Parsed pre-buffer reset epoch (null when
    *                           unavailable; fixed-fallback path applies).
    * @param rateLimitMessage   CLI-reported message for debug logging.
+   * @param originalCause      Feature 066 — pre-normalization cause
+   *                           string (e.g., `'out-of-credits'`). Drives
+   *                           the past-timestamp safety guard in
+   *                           `backoffForCause`.
    * @returns                  The persisted post-mutation run.
    */
   async handleDelayedRetry(
@@ -87,14 +109,15 @@ export class RetryHandler {
     phaseResult: PhaseResult,
     cause: DelayedRetryCause,
     resetsAtMs: number | null,
-    rateLimitMessage: string | null
+    rateLimitMessage: string | null,
+    originalCause?: string
   ): Promise<WorkflowRun> {
     const retryCap = this.deps.getRetryCap();
     // FR-006 — the configured cap-th failure trips the delayed-retry pause.
     if (run.delayedRetryCount >= retryCap - 1) {
       return this.scheduleQueuePauseAndFail(run, iteration, phaseResult, cause);
     }
-    const backoff = backoffForCause(cause, resetsAtMs);
+    const backoff = backoffForCause(cause, resetsAtMs, undefined, originalCause);
     const scheduledAt = Date.now() + backoff;
     // Bugfix 2026-05-15 — BUG-002 (FR-017 / SC-009). Surface the
     // CLI-reported rate-limit message + parsed epoch + computed backoff
@@ -159,6 +182,16 @@ export class RetryHandler {
    * Cap reached — pause the queue with reason `retry-cap-exhausted:<runId>`
    * and emit `queue-paused` with `cause` + final `delayedRetryCount`.
    * Sets pendingRetryAt/Cause back to null (terminal — no further retry).
+   *
+   * BUG-006 — when `cause === 'rate_limit'` AND `GuardedRunService` is
+   * wired AND `extractResetTimestamp` returns a finite epoch in the
+   * future within the 7-day horizon, the queue is transitioned to
+   * `idle-pending` with `scheduledStartSource = 'system-rate-limit-recovery'`
+   * instead of the legacy `operator-paused` lifecycle. The in-flight
+   * pointer is preserved so the Activity Feed binding remains stable
+   * across the restore window. When parsing fails or the parsed value is
+   * unusable, the legacy lifecycle is preserved and
+   * `system-pause-restore-unavailable` is emitted alongside `queue-paused`.
    */
   async scheduleQueuePauseAndFail(
     run: WorkflowRun,
@@ -166,12 +199,13 @@ export class RetryHandler {
     phaseResult: PhaseResult,
     cause: DelayedRetryCause
   ): Promise<WorkflowRun> {
+    const clock = this.deps.clock ?? (() => Date.now());
     const retryCap = this.deps.getRetryCap();
     const updated: WorkflowRun = {
       ...run,
       status: 'paused',
       currentIteration: iteration,
-      lastTransitionAt: Date.now(),
+      lastTransitionAt: clock(),
       phasesCompleted: [...run.phasesCompleted, phaseResult],
       pendingRetryAt: null,
       pendingRetryCause: null,
@@ -179,14 +213,91 @@ export class RetryHandler {
     };
     const persisted = await this.deps.persistTransition(run, updated);
     this.deps.statusBar.update({ kind: 'paused', phase: persisted.currentPhase });
+
+    // BUG-006 — evaluate whether the rate-limit branch can perform a
+    // system-armed scheduled restore. All four conditions must hold:
+    //   1. cause is in the rate-limit family (normalized to 'rate_limit').
+    //   2. GuardedRunService is wired (production extension activation).
+    //   3. extractResetTimestamp returns a finite epoch.
+    //   4. The buffered restore target is in the future and inside the
+    //      7-day horizon (SCHEDULED_START_MAX_HORIZON_MS, FR-009c).
+    const guarded = this.deps.getGuardedRunService?.() ?? null;
+    let scheduledRestoreAt: number | null = null;
+    let fallbackReason: 'unparseable-reset' | 'past-reset' | 'over-horizon-reset' | null = null;
+    if (cause === 'rate_limit' && guarded) {
+      const now = clock();
+      const { resetsAtMs } = extractResetTimestamp(
+        phaseResult.stdoutSummary,
+        phaseResult.stderrSummary,
+        now
+      );
+      if (resetsAtMs === null || !Number.isFinite(resetsAtMs)) {
+        fallbackReason = 'unparseable-reset';
+      } else {
+        // Apply the same buffered floor used by `backoffForCause` so the
+        // restore target lines up with what the delayed-retry path would
+        // have computed if there were retry budget left.
+        const buffered = resetsAtMs + RETRY_BUFFER_MS;
+        if (buffered <= now) {
+          fallbackReason = 'past-reset';
+        } else if (buffered > now + SCHEDULED_START_MAX_HORIZON_MS) {
+          fallbackReason = 'over-horizon-reset';
+        } else {
+          scheduledRestoreAt = buffered;
+        }
+      }
+    }
+
+    if (scheduledRestoreAt !== null && guarded) {
+      // System-armed scheduled restore path: preserve the in-flight binding
+      // and emit the additive `system-pause-scheduled-restore` event.
+      await this.deps.queue.pause(
+        persisted.featureId,
+        'phase-paused',
+        /* preserveInFlightForRestore */ true
+      );
+      await guarded.transitionToScheduledRestore({
+        scheduledStartAt: scheduledRestoreAt,
+        scheduledStartSource: 'system-rate-limit-recovery',
+        transitionReason: 'retry-cap-exhausted',
+        pauseCauseCategory: 'rate-limit'
+      });
+      await this.appendAudit('queue-paused', {
+        runId: persisted.id,
+        phase: persisted.currentPhase,
+        iteration,
+        payload: {
+          runId: persisted.id,
+          reason: 'retry-cap-exhausted',
+          cause,
+          delayedRetryCount: persisted.delayedRetryCount,
+          // BUG-006 — record the system-armed restore so operators reading
+          // the audit log alone can derive the lifecycle transition.
+          scheduledRestoreAt,
+          scheduledStartSource: 'system-rate-limit-recovery'
+        },
+        outcome: 'info'
+      });
+      this.deps.notifier.warn(
+        `Schegent: delayed-retry cap (${persisted.delayedRetryCount}) exhausted on ${persisted.currentPhase}. Auto-resume scheduled.`
+      );
+      return persisted;
+    }
+
+    // Legacy / fallback path — operator-paused lifecycle preserved.
     await this.deps.queue.setQueuePausedState(
       true,
       undefined,
       `retry-cap-exhausted:${persisted.id}`,
       'retry-cap'
     );
-    // Mark the in-flight task as paused so queue list shows 'paused' status.
     await this.deps.queue.pause(persisted.featureId, 'phase-paused');
+    if (cause === 'rate_limit' && guarded && fallbackReason !== null) {
+      await guarded.emitSystemPauseRestoreUnavailable({
+        pauseCauseCategory: 'rate-limit',
+        fallbackReason
+      });
+    }
     await this.appendAudit('queue-paused', {
       runId: persisted.id,
       phase: persisted.currentPhase,

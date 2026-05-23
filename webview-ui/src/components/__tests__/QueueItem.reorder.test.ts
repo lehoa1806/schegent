@@ -15,6 +15,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import QueueItem from '../QueueItem.svelte';
 import type { QueueItem as QueueItemSnapshot } from '../../lib/snapshot-types';
 
@@ -30,6 +32,13 @@ vi.mock('../../lib/reorder-task', () => ({
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-stub' }))
+}));
+
+// Feature 063 — destructive remove routes through useConfirm. The
+// keyboard focus-order assertions only inspect the DOM tab order, so
+// auto-confirm any prompt to keep the test deterministic.
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn(async () => true)
 }));
 
 vi.mock('../../lib/snapshot-store.svelte', () => ({
@@ -135,5 +144,120 @@ describe('Feature 030 (US2, T029) — QueueItem reorder affordances', () => {
     expect(queryByTestId('queue-item-drag-handle-task-1')).toBeNull();
     expect(queryByTestId('queue-item-reorder-up-task-1')).toBeNull();
     expect(queryByTestId('queue-item-reorder-down-task-1')).toBeNull();
+  });
+});
+
+// Feature 065 BUG-005 (FR-025) — reorder affordance discoverability.
+// The drag handle MUST be a recognizable icon button (not punctuation
+// glyphs), MUST telegraph interactivity via `cursor: grab`, MUST
+// advertise its purpose via `aria-label`, and the arrow buttons MUST
+// render with non-zero width at every viewport size. Keyboard focus
+// order MUST be drag handle → ▲ → ▼ → ✎ → ✖.
+//
+// The compiled stylesheet's `cursor: grab` cannot be inspected via
+// jsdom's `getComputedStyle` (vite-plugin-svelte does not inject the
+// scoped stylesheet under vitest); we assert against the `<style>`
+// block in the authoring file, mirroring the approach in
+// QueueItem.label-clamp.test.ts.
+const SOURCE_PATH = resolve(__dirname, '..', 'QueueItem.svelte');
+const SOURCE = readFileSync(SOURCE_PATH, 'utf8');
+function extractStyleBlock(svelteSource: string): string {
+  const match = svelteSource.match(/<style[^>]*>([\s\S]*?)<\/style>/);
+  return match ? match[1] : '';
+}
+function findRuleBlock(css: string, selector: string): string | null {
+  const escaped = selector.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const re = new RegExp(`${escaped}\\b[^{]*\\{([^}]*)\\}`);
+  const match = css.match(re);
+  return match ? match[1] : null;
+}
+const REORDER_STYLE_BLOCK = extractStyleBlock(SOURCE);
+
+describe('Feature 065 BUG-005 (FR-025) — reorder affordance discoverability', () => {
+  it('renders the drag handle as a real <button> element with an aria-label', () => {
+    const { getByTestId } = render(QueueItem, { props: { item: item() } });
+    const handle = getByTestId('queue-item-drag-handle-task-1');
+    expect(handle.tagName).toBe('BUTTON');
+    expect(handle.getAttribute('aria-label')).toBe('Drag to reorder');
+  });
+
+  it('drag handle ships a recognizable icon glyph (not punctuation)', () => {
+    const { getByTestId } = render(QueueItem, { props: { item: item() } });
+    const handle = getByTestId('queue-item-drag-handle-task-1');
+    // The handle MUST not render as the literal "⋮⋮" punctuation
+    // glyph cluster the operator previously failed to recognize.
+    expect(handle.textContent ?? '').not.toContain('⋮');
+    // A recognizable icon ships as an <svg> child element with the
+    // .drag-handle-icon class (FR-025 — recognizable icon, not
+    // punctuation).
+    const svg = handle.querySelector('svg.drag-handle-icon');
+    expect(svg).not.toBeNull();
+  });
+
+  it('drag handle style declares cursor: grab to telegraph interactivity', () => {
+    const dragHandleBlock = findRuleBlock(REORDER_STYLE_BLOCK, '.drag-handle');
+    expect(
+      dragHandleBlock,
+      '.drag-handle rule must be present in QueueItem.svelte <style>'
+    ).not.toBeNull();
+    if (!dragHandleBlock) return;
+    expect(dragHandleBlock).toMatch(/cursor:\s*grab/);
+  });
+
+  it('reorder buttons and action slot are pinned with flex-shrink: 0 so they cannot collapse', () => {
+    // Hypothesis B from BUG-005 — if a flex/overflow rule on the
+    // enclosing row clips the cluster, the buttons disappear even
+    // though showReorderControls === true. We pin flex-shrink: 0 on
+    // both .actions-slot and .reorder-btn so the cluster cannot
+    // collapse to zero width at any tested viewport size.
+    const actionsSlotBlock = findRuleBlock(REORDER_STYLE_BLOCK, '.actions-slot');
+    expect(actionsSlotBlock).not.toBeNull();
+    if (actionsSlotBlock) expect(actionsSlotBlock).toMatch(/flex-shrink:\s*0/);
+
+    const reorderBtnBlock = findRuleBlock(REORDER_STYLE_BLOCK, '.reorder-btn');
+    expect(reorderBtnBlock).not.toBeNull();
+    if (reorderBtnBlock) {
+      expect(reorderBtnBlock).toMatch(/flex-shrink:\s*0/);
+      // Hard minimum width — a guarantee that the rendered button
+      // never collapses below 18px regardless of parent constraints.
+      expect(reorderBtnBlock).toMatch(/min-width:\s*18px/);
+    }
+  });
+
+  it('keyboard focus order is drag-handle → ▲ → ▼ → ✎ → ✖', () => {
+    const { container } = render(QueueItem, { props: { item: item() } });
+    // Collect all focusable controls under the queue item in DOM
+    // order. The default keyboard tab traversal follows DOM order
+    // when no positive tabindex is set, so DOM order == tab order.
+    const focusable = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    );
+    const ids = focusable.map((el) => el.getAttribute('data-testid'));
+    // The handle, the two arrow buttons, the edit button, and the
+    // remove button must appear in this exact relative order.
+    const orderedIds = [
+      'queue-item-drag-handle-task-1',
+      'queue-item-reorder-up-task-1',
+      'queue-item-reorder-down-task-1',
+      'queue-item-edit-task-1',
+      'queue-item-remove-task-1'
+    ];
+    const indices = orderedIds.map((id) => ids.indexOf(id));
+    // Every control is present in the focusable set.
+    for (let i = 0; i < orderedIds.length; i++) {
+      expect(indices[i], `${orderedIds[i]} must be focusable`).toBeGreaterThanOrEqual(
+        0
+      );
+    }
+    // Indices are strictly increasing — drag-handle precedes ▲, ▲
+    // precedes ▼, ▼ precedes ✎, ✎ precedes ✖.
+    for (let i = 1; i < indices.length; i++) {
+      expect(
+        indices[i],
+        `${orderedIds[i]} must follow ${orderedIds[i - 1]} in keyboard tab order`
+      ).toBeGreaterThan(indices[i - 1]);
+    }
   });
 });

@@ -70,6 +70,10 @@ export type PostPhaseDecision =
   | {
       readonly kind: 'pause-delayed-retry';
       readonly cause: 'rate_limit' | 'transient_error';
+      // Feature 066 — pre-normalization cause string (e.g.,
+      // `'out-of-credits'`). Threaded through to `backoffForCause` so
+      // the past-timestamp guard can fire on hard-cap quotas.
+      readonly originalCause: string | undefined;
       readonly resetsAtMs: number | null;
       readonly rateLimitMessage: string | null;
       readonly phaseResult: PhaseResult;
@@ -242,9 +246,12 @@ export class PhaseSequencer {
           output.result.kind === 'rate_limited'
             ? output.result.rateLimitMessage ?? null
             : null;
+        const originalCause =
+          output.result.kind === 'rate_limited' ? output.result.cause : decision.cause;
         return {
           kind: 'pause-delayed-retry',
           cause: retryCause,
+          originalCause,
           resetsAtMs,
           rateLimitMessage,
           phaseResult,

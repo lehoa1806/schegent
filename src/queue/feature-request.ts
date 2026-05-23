@@ -38,7 +38,8 @@ export type ScheduledStartSource =
   | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
-  | 'migration-default';
+  | 'migration-default'
+  | 'system-rate-limit-recovery';
 
 export interface FeatureRequestFailure {
   readonly code?: string;

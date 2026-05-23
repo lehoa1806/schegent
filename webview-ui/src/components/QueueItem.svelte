@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { QueueItem } from '../lib/snapshot-types';
   import { formatPhaseLabel, formatRelativeTime } from '../lib/format';
+  import { formatDuration } from '../lib/format-duration';
+  import { nowFine } from '../lib/tick-store';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import QueueItemActions from './QueueItemActions.svelte';
   // Feature 030 (US2, T034) — reorder UX. Drag-and-drop + arrow buttons
@@ -37,7 +39,51 @@
   const showPausedReason = $derived(
     item.pauseCause !== null && item.pauseCause !== undefined
   );
-  const hasMetaChips = $derived(showCurrentPhase || showRetryBadge || showPausedReason);
+  // Feature 065 / BUG-006 (T072) — paused-row badge. The host projector
+  // emits `item.paused` only on rows with `status === 'paused'`. The
+  // badge label distinguishes operator-paused vs. system-paused (rate
+  // limit). For system-paused rows with a finite `resetsAtMs > now`, a
+  // countdown chip is rendered using the shared `nowFine` 1-second
+  // ticker (no per-row `setInterval`).
+  const showPausedBadge = $derived(item.paused !== undefined);
+  const pausedBadgeLabel = $derived.by(() => {
+    if (!item.paused) return '';
+    if (item.paused.pauseSource === 'system-paused') {
+      switch (item.paused.pauseCauseCategory) {
+        case 'rate-limit':
+          return 'Paused (rate-limit)';
+        case 'fatal-signature':
+          return 'Paused (fatal)';
+        case 'operator-canceled':
+          return 'Paused';
+        default:
+          return 'Paused (system)';
+      }
+    }
+    return 'Paused';
+  });
+  const resumeRemainingMs = $derived.by(() => {
+    if (!item.paused) return null;
+    const target = item.paused.resetsAtMs;
+    if (typeof target !== 'number' || !Number.isFinite(target)) return null;
+    const remaining = target - $nowFine;
+    return remaining > 0 ? remaining : 0;
+  });
+  const showResumeCountdown = $derived(
+    item.paused !== undefined &&
+      typeof item.paused.resetsAtMs === 'number' &&
+      Number.isFinite(item.paused.resetsAtMs) &&
+      resumeRemainingMs !== null &&
+      resumeRemainingMs > 0
+  );
+  const resumeCountdownLabel = $derived(
+    resumeRemainingMs !== null && resumeRemainingMs > 0
+      ? `auto-resumes in ${formatDuration(resumeRemainingMs)}`
+      : 'auto-resume due'
+  );
+  const hasMetaChips = $derived(
+    showCurrentPhase || showRetryBadge || showPausedReason || showPausedBadge
+  );
   const phaseChipLabel = $derived(
     item.currentPhase !== null ? formatPhaseLabel(item.currentPhase) : ''
   );
@@ -152,20 +198,87 @@
   <div class="row row-1">
     <div class="row-1-left">
       {#if showReorderControls}
-        <span
+        <button
+          type="button"
           class="drag-handle"
           data-testid="queue-item-drag-handle-{item.id}"
-          aria-hidden="true"
+          aria-label="Drag to reorder"
           title="Drag to reorder"
           onmousedown={onHandleMouseDown}
           onmouseup={onHandleMouseUp}
-        >⋮⋮</span>
+        >
+          <svg
+            class="drag-handle-icon"
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <circle cx="6" cy="3" r="1.2" />
+            <circle cx="6" cy="7" r="1.2" />
+            <circle cx="6" cy="11" r="1.2" />
+            <circle cx="6" cy="15" r="1.2" />
+            <circle cx="10" cy="3" r="1.2" />
+            <circle cx="10" cy="7" r="1.2" />
+            <circle cx="10" cy="11" r="1.2" />
+            <circle cx="10" cy="15" r="1.2" />
+          </svg>
+        </button>
       {/if}
       <span class="id" title={item.id}>{item.id}</span>
-      <span class="time" data-testid="queue-item-enqueued-{item.id}">{enqueuedAtLabel}</span>
     </div>
     <div class="row-1-right">
       <span class="pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
+    </div>
+  </div>
+
+  <div class="row row-2">
+    <span class="label" title={item.label}>{item.label}</span>
+  </div>
+
+  {#if hasMetaChips}
+    <div class="row row-3 meta" data-testid="queue-item-meta-{item.id}">
+      {#if showCurrentPhase}
+        <span
+          class="chip phase-chip"
+          data-testid="queue-item-phase-{item.id}"
+        >{phaseChipLabel}</span>
+      {/if}
+      {#if showPausedReason}
+        <span
+          class="chip paused-chip"
+          data-testid="queue-item-pause-cause-{item.id}"
+          title={pauseCauseTitle}
+        >{pauseCauseLabel}</span>
+      {/if}
+      {#if showPausedBadge}
+        <span
+          class="chip paused-chip paused-badge"
+          data-testid="queue-item-pause-badge-{item.id}"
+          data-pause-source={item.paused?.pauseSource}
+          data-pause-cause-category={item.paused?.pauseCauseCategory ?? ''}
+        >{pausedBadgeLabel}</span>
+        {#if showResumeCountdown}
+          <span
+            class="chip restore-chip"
+            data-testid="queue-item-restore-time-{item.id}"
+            title="Queue auto-resumes when the quota window reopens"
+          >{resumeCountdownLabel}</span>
+        {/if}
+      {/if}
+      {#if showRetryBadge}
+        <span
+          class="badge retry-badge"
+          data-testid="queue-item-retry-{item.id}"
+        >retry: {item.retryCount}</span>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="row row-footer">
+    <div class="row-footer-left">
+      <span class="time" data-testid="queue-item-enqueued-{item.id}">{enqueuedAtLabel}</span>
+    </div>
+    <div class="row-footer-right">
       <span class="actions-slot">
         {#if showReorderControls}
           <button
@@ -189,34 +302,6 @@
       </span>
     </div>
   </div>
-
-  <div class="row row-2">
-    <span class="label" title={item.label}>{item.label}</span>
-  </div>
-
-  {#if hasMetaChips}
-    <div class="row row-3 meta" data-testid="queue-item-meta-{item.id}">
-      {#if showCurrentPhase}
-        <span
-          class="chip phase-chip"
-          data-testid="queue-item-phase-{item.id}"
-        >{phaseChipLabel}</span>
-      {/if}
-      {#if showPausedReason}
-        <span
-          class="chip paused-chip"
-          data-testid="queue-item-pause-cause-{item.id}"
-          title={pauseCauseTitle}
-        >{pauseCauseLabel}</span>
-      {/if}
-      {#if showRetryBadge}
-        <span
-          class="badge retry-badge"
-          data-testid="queue-item-retry-{item.id}"
-        >retry: {item.retryCount}</span>
-      {/if}
-    </div>
-  {/if}
 
   {#if showLastError && item.lastErrorSummary}
     <button
@@ -268,6 +353,30 @@
     display: flex;
     align-items: center;
     gap: var(--schegent-gap);
+    flex-shrink: 0;
+  }
+  /* Feature 065 BUG-004 (FR-024) — the card's final row carries the
+     enqueued timestamp on the left and the action cluster (reorder
+     buttons + QueueItemActions) on the right. The footer wraps cleanly
+     at narrow viewport widths because the right side never shrinks
+     (flex-shrink: 0) and the left side is allowed to shrink/wrap. */
+  .row-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--schegent-gap);
+    flex-wrap: wrap;
+    padding-left: 4px;
+  }
+  .row-footer-left {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .row-footer-right {
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
   }
   .id {
@@ -348,6 +457,16 @@
     color: var(--schegent-muted-fg);
     font-style: italic;
   }
+  .paused-badge[data-pause-source='system-paused'] {
+    color: var(--schegent-color-error);
+    border-color: currentColor;
+    font-style: normal;
+  }
+  .restore-chip {
+    color: var(--schegent-color-active);
+    border-color: currentColor;
+    font-style: normal;
+  }
   .badge {
     display: inline-flex;
     align-items: center;
@@ -390,19 +509,47 @@
     word-break: break-word;
     margin-left: 4px;
   }
+  /* Feature 065 BUG-005 hypothesis B (FR-025) — the action cluster
+     guarantees non-zero width at every operator viewport size. The
+     enclosing flex container (.row-footer-right) is already non-
+     shrinking; .actions-slot mirrors that so the cluster can never
+     collapse even if a future layout change wraps it deeper. */
   .actions-slot {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
   }
+  /* Feature 065 BUG-005 (FR-025) — the drag handle is a recognizable
+     grabber-icon button (was previously rendered as the punctuation
+     glyphs `⋮⋮` inside a <span>, which read as decorative text rather
+     than as an interactive control). The button is keyboard-focusable,
+     advertises its purpose via aria-label, and telegraphs draggability
+     via cursor: grab on hover. */
   .drag-handle {
-    padding: 0 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    padding: 2px;
     color: var(--schegent-muted-fg);
     cursor: grab;
     user-select: none;
-    font-size: 0.9em;
-    letter-spacing: -2px;
     flex-shrink: 0;
+  }
+  .drag-handle:hover {
+    color: var(--schegent-fg);
+  }
+  .drag-handle:focus-visible {
+    outline: 2px solid var(--schegent-color-active);
+    outline-offset: 1px;
+    border-radius: 2px;
+  }
+  .drag-handle-icon {
+    width: 12px;
+    height: 16px;
+    fill: currentColor;
   }
   .item[draggable='true']:active .drag-handle {
     cursor: grabbing;
@@ -421,6 +568,7 @@
     font: inherit;
     line-height: 1;
     cursor: pointer;
+    flex-shrink: 0;
   }
   .reorder-btn:hover {
     color: var(--schegent-fg);

@@ -293,9 +293,19 @@ export class QueueManager {
     await this.store.setQueue({ ...queue, requests, inFlightId });
   }
 
+  /**
+   * Mark a task `paused`. When `preserveInFlightForRestore === true` AND
+   * the task is the queue's current `inFlightId`, the inFlight pointer is
+   * NOT cleared so the queue-projector (T069) can route the paused row
+   * back to the inFlight bucket — preserving the active-feature binding
+   * for the Activity Feed across a system-armed scheduled restore
+   * (BUG-006 / FR-026). Default behavior (operator pause) clears
+   * `inFlightId` exactly as before.
+   */
   public async pause(
     featureId: string,
-    pauseCause: FeatureRequestPauseCause | null = null
+    pauseCause: FeatureRequestPauseCause | null = null,
+    preserveInFlightForRestore: boolean = false
   ): Promise<boolean> {
     const queue = this.store.getQueue();
     const idx = queue.requests.findIndex((r) => r.id === featureId);
@@ -311,7 +321,10 @@ export class QueueManager {
           }
         : r
     );
-    const inFlightId = queue.inFlightId === featureId ? null : queue.inFlightId;
+    const inFlightId =
+      queue.inFlightId === featureId && !preserveInFlightForRestore
+        ? null
+        : queue.inFlightId;
     await this.store.setQueue({ ...queue, requests, inFlightId });
     return true;
   }

@@ -122,6 +122,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'idle-pending-entered': 'system',
   'idle-pending-exited': 'system',
   'automation-enqueue-no-start-mode': 'system',
+  // Feature 065 / BUG-006 — system-armed scheduled-restore on retry-cap rate-limit
+  'system-pause-scheduled-restore': 'system',
+  'system-pause-restore-unavailable': 'system',
   // Feature 065 — v6 → v7 state migration (system)
   'state-migrated-v6-to-v7': 'system'
 };
@@ -269,6 +272,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'idle-pending-entered':
         case 'idle-pending-exited':
         case 'automation-enqueue-no-start-mode':
+        case 'system-pause-scheduled-restore':
+        case 'system-pause-restore-unavailable':
         case 'state-migrated-v6-to-v7': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);

@@ -224,6 +224,85 @@ export class GuardedRunService {
    * caller (`schegent.startQueue`) is responsible for invoking the auto-drain
    * pass after the lifecycle settles.
    */
+  /**
+   * Feature 065 / BUG-006 — transition the queue into `idle-pending` with
+   * a system-armed scheduled-restore timestamp after the retry handler
+   * exhausts retries on a rate-limit-family cause. Atomic: persists
+   * `{queueLifecycle: 'idle-pending', scheduledStartAt, scheduledStartSource}`,
+   * arms the coordinator, and emits both `system-pause-scheduled-restore`
+   * (FR-026) and `idle-pending-entered` with `transitionReason:
+   * 'retry-cap-exhausted'`. Used only by the retry handler; not exposed via
+   * IPC. The caller is expected to have parsed `resetsAtMs` via
+   * `extractResetTimestamp` and to have validated it is in the future and
+   * within the 7-day horizon. If validation fails the caller MUST fall back
+   * to `system-pause-restore-unavailable` + legacy `operator-paused`.
+   */
+  public async transitionToScheduledRestore(args: {
+    scheduledStartAt: number;
+    scheduledStartSource: ScheduledStartSource;
+    transitionReason: 'retry-cap-exhausted';
+    pauseCauseCategory: 'rate-limit';
+    queueId?: string;
+  }): Promise<void> {
+    const queueId = args.queueId ?? 'default';
+    const now = this.clock();
+    const current = this.deps.store.getQueue();
+    const wasIdlePending = current.queueLifecycle === 'idle-pending';
+    await this.deps.store.setQueue({
+      ...current,
+      queueLifecycle: 'idle-pending',
+      scheduledStartAt: args.scheduledStartAt,
+      scheduledStartSource: args.scheduledStartSource,
+      updatedAt: now
+    });
+    if (this.deps.scheduledStartCoordinator) {
+      await this.deps.scheduledStartCoordinator.arm(
+        queueId,
+        args.scheduledStartAt,
+        args.scheduledStartSource
+      );
+    }
+    // FR-023a consistent core payload: queueId, eventType, occurredAt,
+    // transitionReason. `eventType` is supplied by the audit writer;
+    // `occurredAt` is filled in by `appendScheduleAudit` when omitted.
+    await this.appendScheduleAudit('system-pause-scheduled-restore', {
+      queueId,
+      transitionReason: args.transitionReason,
+      scheduledStartAt: args.scheduledStartAt,
+      scheduledStartSource: args.scheduledStartSource,
+      pauseCauseCategory: args.pauseCauseCategory
+    });
+    if (!wasIdlePending) {
+      await this.appendScheduleAudit('idle-pending-entered', {
+        queueId,
+        scheduledStartAt: args.scheduledStartAt,
+        scheduledStartSource: args.scheduledStartSource,
+        transitionReason: args.transitionReason
+      });
+    }
+  }
+
+  /**
+   * Feature 065 / BUG-006 — emit the `system-pause-restore-unavailable`
+   * fallback when `extractResetTimestamp` could not parse a reset timestamp
+   * or the parsed value is outside the 7-day horizon. The caller is
+   * responsible for the legacy `operator-paused` lifecycle transition; this
+   * method is audit-only.
+   */
+  public async emitSystemPauseRestoreUnavailable(args: {
+    pauseCauseCategory: 'rate-limit';
+    fallbackReason: 'unparseable-reset' | 'past-reset' | 'over-horizon-reset';
+    queueId?: string;
+  }): Promise<void> {
+    const queueId = args.queueId ?? 'default';
+    await this.appendScheduleAudit('system-pause-restore-unavailable', {
+      queueId,
+      transitionReason: 'retry-cap-exhausted',
+      pauseCauseCategory: args.pauseCauseCategory,
+      fallbackReason: args.fallbackReason
+    });
+  }
+
   public async applyStartQueueIntent(
     intent: { startMode: 'now' | 'scheduled' | 'cancel-schedule'; scheduledStartAt?: number; source: 'operator-restart' },
     opts: { queueId?: string } = {}
@@ -537,7 +616,10 @@ export class GuardedRunService {
       | 'scheduled-start-past-timestamp-coerced-to-now'
       | 'idle-pending-entered'
       | 'idle-pending-exited'
-      | 'automation-enqueue-no-start-mode',
+      | 'automation-enqueue-no-start-mode'
+      // BUG-006 / FR-026 / FR-027
+      | 'system-pause-scheduled-restore'
+      | 'system-pause-restore-unavailable',
     payload: Record<string, unknown>
   ): Promise<void> {
     if (!this.deps.audit) return;

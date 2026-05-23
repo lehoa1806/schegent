@@ -653,6 +653,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // calls `watchdog.pauseAndPoll(...)` so we wire it back here.
   controller.setWatchdog(watchdog);
 
+  // BUG-006 — late-inject the guarded-run service so the retry handler can
+  // convert a retry-cap-exhausted rate-limit pause into a system-armed
+  // scheduled restore (FR-026). `GuardedRunService` is constructed earlier
+  // in this activate path (search for `new GuardedRunService`).
+  controller.setGuardedRunService(guardedRunService);
+
   const queueScheduleWatchdog = new QueueScheduleWatchdog({
     getRegistry: () => store.getQueueRegistry(),
     queue,

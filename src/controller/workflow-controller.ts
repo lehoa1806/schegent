@@ -183,6 +183,17 @@ export class SchegentWorkflowController {
   }
 
   /**
+   * BUG-006 — late injection point. `GuardedRunService` is constructed
+   * after the controller in `extension.activate()`. Wiring it here enables
+   * the retry-handler's rate-limit-family → scheduled-restore branch.
+   */
+  public setGuardedRunService(
+    service: Parameters<RetryCoordinator['setGuardedRunService']>[0]
+  ): void {
+    this.retryCoordinator.setGuardedRunService(service);
+  }
+
+  /**
    * Dynamic retry cap — reads `schegent.retry.maxAttempts` via the injected
    * callback, falling back to the compile-time DELAYED_RETRY_CAP constant.
    */

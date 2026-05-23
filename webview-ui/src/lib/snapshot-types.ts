@@ -125,6 +125,17 @@ export interface QueueItem {
    * snapshots emitted before the field landed.
    */
   readonly hasOnDiskLogs?: boolean;
+  /**
+   * Feature 065 / BUG-006 — paused-row enrichment for the webview. Present
+   * only on tasks with `status === 'paused'`. Drives the QueueItem badge
+   * (operator-paused vs. system-paused/rate-limit) and the auto-resume
+   * countdown. `resetsAtMs` carries the resolved restoration target.
+   */
+  readonly paused?: {
+    readonly pauseSource: 'operator-paused' | 'system-paused';
+    readonly pauseCauseCategory?: 'rate-limit' | 'fatal-signature' | 'operator-canceled';
+    readonly resetsAtMs?: number;
+  };
 }
 
 export interface QueueSummary {
@@ -160,7 +171,8 @@ export type ScheduledStartSource =
   | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
-  | 'migration-default';
+  | 'migration-default'
+  | 'system-rate-limit-recovery';
 
 export interface QueueProjection {
   readonly inFlight: QueueItem | null;

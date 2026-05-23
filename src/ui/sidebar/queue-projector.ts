@@ -11,7 +11,11 @@
 // for the projector-side cap; the validator file pins its own constant
 // at the same numeric value (with a comment cross-reference).
 
-import type { FeatureRequest, QueueState } from '../../queue/feature-request';
+import type {
+  FeatureRequest,
+  QueueState,
+  ScheduledStartSource
+} from '../../queue/feature-request';
 import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../queue/queue-registry';
 import {
   RECENT_QUEUE_MAX,
@@ -51,6 +55,14 @@ export interface QueueProjectionContext {
     | 'queue-paused-mid-run'
     | 'breakpoint-paused'
     | null;
+  /**
+   * Feature 065 / BUG-006 — queue-lifecycle scheduled-start context, used
+   * to populate the `paused` field on paused tasks (drives the QueueItem
+   * badge + auto-resume countdown). `null` when the queue is not in
+   * `idle-pending` with an armed restore target.
+   */
+  readonly scheduledStartSource?: ScheduledStartSource | null;
+  readonly scheduledStartAt?: number | null;
 }
 
 export interface QueueProjectionResult {
@@ -65,10 +77,27 @@ export function projectQueue(
   ctx: QueueProjectionContext
 ): QueueProjectionResult {
   const requests = queue.requests ?? [];
+  // BUG-006 — paused tasks now participate in the inFlight / pending
+  // projection so the operator can still see them. The single decision
+  // authority for routing is `queue.inFlightId`: a paused task whose id
+  // matches `inFlightId` lands in the inFlight bucket (preserves the
+  // Activity Feed binding across a system-armed scheduled restore); other
+  // paused tasks land in pending, sorted by `position` alongside actual
+  // pending rows. Operator-paused tasks land in pending because the
+  // pause path clears `inFlightId`; system-paused (rate-limit) tasks land
+  // in inFlight because the pause path preserves it (FR-026).
   const inFlightSrc =
-    requests.find((r) => r.id === queue.inFlightId && r.status === 'in-flight') ?? null;
+    requests.find(
+      (r) =>
+        r.id === queue.inFlightId &&
+        (r.status === 'in-flight' || r.status === 'paused')
+    ) ?? null;
   const pendingSrc = requests
-    .filter((r) => r.status === 'pending')
+    .filter(
+      (r) =>
+        r.status === 'pending' ||
+        (r.status === 'paused' && r.id !== queue.inFlightId)
+    )
     .sort((a, b) => a.position - b.position);
   const recentSrc = requests
     .filter((r) => r.status === 'completed' || r.status === 'canceled' || r.status === 'failed')
@@ -86,6 +115,7 @@ export function projectQueue(
 function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueItem {
   const isInFlight = req.status === 'in-flight' && req.id === ctx.inFlightId;
   const lastErrorMessage = extractLastErrorMessage(req.lastError);
+  const pausedField = derivePausedField(req, ctx);
   return Object.freeze({
     id: req.id,
     label: truncateLabel(req.description),
@@ -120,8 +150,43 @@ function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueIte
     // exists (or was about to be created). The cold-start fallback's
     // contract handles empty reads gracefully, so we prefer a cheap
     // snapshot-only test over a per-emission filesystem stat.
-    hasOnDiskLogs: req.pipelineId !== null && req.pipelineId !== undefined
+    hasOnDiskLogs: req.pipelineId !== null && req.pipelineId !== undefined,
+    ...(pausedField !== undefined ? { paused: pausedField } : {})
   });
+}
+
+/**
+ * Feature 065 / BUG-006 — compute the optional `paused` enrichment for a
+ * task projection. Returns:
+ *   - undefined when the task is not paused (the field is omitted).
+ *   - `{pauseSource: 'system-paused', pauseCauseCategory: 'rate-limit',
+ *      resetsAtMs: ctx.scheduledStartAt}` when the queue lifecycle is
+ *      an idle-pending scheduled-restore AND this paused task is the
+ *      one whose inFlightId was preserved.
+ *   - `{pauseSource: 'operator-paused'}` for any other paused task.
+ *
+ * `pauseCauseCategory` is intentionally omitted on the operator-paused
+ * branch — operator-canceled is a separate state and the `phase-paused`
+ * cause does not have a matching category literal.
+ */
+function derivePausedField(
+  req: FeatureRequest,
+  ctx: QueueProjectionContext
+): QueueItem['paused'] {
+  if (req.status !== 'paused') return undefined;
+  const isSystemRateLimitRestore =
+    ctx.scheduledStartSource === 'system-rate-limit-recovery' &&
+    ctx.inFlightId === req.id &&
+    typeof ctx.scheduledStartAt === 'number' &&
+    Number.isFinite(ctx.scheduledStartAt);
+  if (isSystemRateLimitRestore) {
+    return {
+      pauseSource: 'system-paused',
+      pauseCauseCategory: 'rate-limit',
+      resetsAtMs: ctx.scheduledStartAt as number
+    };
+  }
+  return { pauseSource: 'operator-paused' };
 }
 
 function projectQueues(

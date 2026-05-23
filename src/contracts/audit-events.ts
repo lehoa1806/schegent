@@ -252,7 +252,15 @@ export const SCHEDULE_EVENT_TYPES = [
   'scheduled-start-past-timestamp-coerced-to-now',
   'idle-pending-entered',
   'idle-pending-exited',
-  'automation-enqueue-no-start-mode'
+  'automation-enqueue-no-start-mode',
+  // BUG-006 / FR-026: emitted when the retry handler converts a
+  // retry-cap-exhausted rate-limit pause into a system-armed scheduled
+  // restore via `GuardedRunService.transitionToScheduledRestore`.
+  'system-pause-scheduled-restore',
+  // BUG-006 / FR-027: emitted when the retry handler falls back to the
+  // legacy `operator-paused` lifecycle because the reset timestamp could
+  // not be parsed or is outside the 7-day horizon.
+  'system-pause-restore-unavailable'
 ] as const;
 
 // Feature 065 — emitted by `WorkspaceStateStore.initialize()` (via
@@ -512,6 +520,11 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'idle-pending-entered',
     'idle-pending-exited',
     'automation-enqueue-no-start-mode',
+    // BUG-006 — system-armed scheduled restore after retry-cap-exhausted
+    // rate-limit pause (FR-026); fallback when reset is unparseable or
+    // outside the 7-day horizon (FR-027).
+    'system-pause-scheduled-restore',
+    'system-pause-restore-unavailable',
     // Wake-up daemon lifecycle
     'wakeup-daemon-installed',
     'wakeup-daemon-updated',

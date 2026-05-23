@@ -100,6 +100,69 @@ describe('QueueItem task actions', () => {
     // gone entirely; no assertion for its absence is needed.
   });
 
+  // Feature 065 BUG-004 (FR-024) — the queue item card MUST render its
+  // action button cluster on a dedicated final row, separate from the
+  // row that displays the task id, with the enqueued timestamp on the
+  // same final row to the left of the action cluster. These DOM-order
+  // assertions pin the row composition so a future refactor cannot
+  // re-promote the actions back into row-1.
+  describe('Feature 065 BUG-004 (FR-024) — card row composition', () => {
+    it('places the action cluster after the prompt label in DOM order', () => {
+      const { container } = render(QueueItem, { props: { item: item() } });
+      const label = container.querySelector('.label');
+      const actionsSlot = container.querySelector('.actions-slot');
+      expect(label).not.toBeNull();
+      expect(actionsSlot).not.toBeNull();
+      if (!label || !actionsSlot) return;
+      // Node.DOCUMENT_POSITION_FOLLOWING (4) means actionsSlot follows label.
+      const position = label.compareDocumentPosition(actionsSlot);
+      expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      );
+    });
+
+    it('places the enqueued timestamp on the footer row, to the left of the action cluster', () => {
+      const { container, getByTestId } = render(QueueItem, {
+        props: { item: item() }
+      });
+      const timeEl = getByTestId('queue-item-enqueued-task-1');
+      const actionsSlot = container.querySelector('.actions-slot');
+      expect(timeEl).toBeTruthy();
+      expect(actionsSlot).not.toBeNull();
+      if (!actionsSlot) return;
+      // Both live inside .row-footer; timeEl is in .row-footer-left and
+      // the actions cluster is in .row-footer-right. Verify timeEl
+      // precedes the action cluster in DOM order.
+      const position = timeEl.compareDocumentPosition(actionsSlot);
+      expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      );
+      // The timestamp must live inside .row-footer-left, not row-1.
+      expect(timeEl.closest('.row-footer-left')).not.toBeNull();
+      expect(timeEl.closest('.row-1')).toBeNull();
+    });
+
+    it('places the enqueued timestamp after the meta chips when they are rendered', () => {
+      const { container, getByTestId } = render(QueueItem, {
+        props: {
+          item: item({
+            status: 'in-flight',
+            currentPhase: 'speckit-plan',
+            retryCount: 2
+          })
+        }
+      });
+      const metaRow = container.querySelector('.row-3.meta');
+      const timeEl = getByTestId('queue-item-enqueued-task-1');
+      expect(metaRow).not.toBeNull();
+      if (!metaRow) return;
+      const position = metaRow.compareDocumentPosition(timeEl);
+      expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      );
+    });
+  });
+
   it('renders distinct queue, phase, breakpoint, and task pause labels with tooltips', async () => {
     const { getByTestId, rerender } = render(QueueItem, {
       props: { item: item({ pauseCause: 'queue-paused' }) }
