@@ -1457,3 +1457,62 @@ describe('Dashboard submit ACK contract (T124 / BUG-003 / SC-011)', () => {
     expect(feedback.className).toContain('submit-feedback-rejected');
   });
 });
+
+describe('Dashboard cold-start fallback (063 BUG-006 / T076)', () => {
+  it('auto-resolves the Activity Feed selection to the most-recent task with on-disk logs when no task is in flight', async () => {
+    const snap = buildSnapshot({
+      activeFeature: null,
+      queue: buildQueue({
+        inFlight: null,
+        pending: Object.freeze([]) as readonly QueueItem[],
+        recent: Object.freeze([
+          buildQueueItem({
+            id: 'run-recent-logs',
+            label: 'completed feature with logs',
+            status: 'completed',
+            completedAt: '2026-05-10T12:00:00.000Z',
+            updatedAt: '2026-05-10T12:00:00.000Z',
+            hasOnDiskLogs: true
+          })
+        ]) as readonly QueueItem[]
+      })
+    });
+    const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
+    await tick();
+    await tick();
+
+    expect(getByTestId('dashboard-queue-item-run-recent-logs').className).toContain('activity-selected');
+    const breadcrumb = getByTestId('phase-log-breadcrumb');
+    expect(breadcrumb.textContent).toContain('completed feature with logs');
+  });
+
+  it('does NOT auto-select a recent task that lacks on-disk logs', async () => {
+    const snap = buildSnapshot({
+      activeFeature: null,
+      queue: buildQueue({
+        inFlight: null,
+        pending: Object.freeze([]) as readonly QueueItem[],
+        recent: Object.freeze([
+          buildQueueItem({
+            id: 'run-recent-nologs',
+            label: 'completed feature without logs',
+            status: 'completed',
+            completedAt: '2026-05-10T12:00:00.000Z',
+            updatedAt: '2026-05-10T12:00:00.000Z',
+            hasOnDiskLogs: false
+          })
+        ]) as readonly QueueItem[]
+      })
+    });
+    const { getByTestId, queryByTestId } = render(Dashboard, { props: { snapshot: snap } });
+    await tick();
+    await tick();
+
+    const row = queryByTestId('dashboard-queue-item-run-recent-nologs');
+    if (row !== null) {
+      expect(row.className).not.toContain('activity-selected');
+    }
+    // The empty-state path: feed is mounted but no task is bound.
+    expect(getByTestId('dashboard-activity-audit-feed')).not.toBeNull();
+  });
+});

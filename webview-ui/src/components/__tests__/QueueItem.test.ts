@@ -163,6 +163,72 @@ describe('QueueItem task actions', () => {
     });
   });
 
+  // Feature 063 BUG-007 (T078) — row-3 meta-chip block. Pins three
+  // independently gated chips so a future refactor cannot collapse them
+  // back into row-1 or render the row when no diagnostic context exists.
+  describe('Feature 063 BUG-007 (T078) — row-3 meta chips', () => {
+    it('(a) renders a current-phase chip for an in-flight task with currentPhase: "tasks"', () => {
+      const { container, getByTestId, queryByTestId } = render(QueueItem, {
+        props: { item: item({ status: 'in-flight', currentPhase: 'tasks' }) }
+      });
+      const metaRow = getByTestId('queue-item-meta-task-1');
+      const phaseChip = getByTestId('queue-item-phase-task-1');
+      // The phase chip lives inside the row-3 meta block.
+      expect(metaRow.contains(phaseChip)).toBe(true);
+      // formatPhaseLabel("tasks") → "Tasks" (no built-in mapping; the
+      // first letter is uppercased). The raw phase name remains the
+      // identity contract — the chip is present because currentPhase
+      // is "tasks".
+      expect(phaseChip.textContent).toContain('Tasks');
+      // No other chips/badges should appear with this single signal.
+      // The retry-badge testid collides with the QueueItemActions Retry
+      // button, so we assert by class instead.
+      expect(metaRow.querySelector('.retry-badge')).toBeNull();
+      expect(queryByTestId('queue-item-pause-cause-task-1')).toBeNull();
+      // Defensive: no .retry-badge anywhere in the rendered tree.
+      expect(container.querySelector('.retry-badge')).toBeNull();
+    });
+
+    it('(b) renders a retry badge with text "retry: 2" for a failed task with retryCount: 2', () => {
+      const { container, getByTestId, queryByTestId } = render(QueueItem, {
+        props: { item: item({ status: 'failed', retryCount: 2 }) }
+      });
+      const metaRow = getByTestId('queue-item-meta-task-1');
+      // The retry badge shares its testid with the QueueItemActions
+      // Retry button, so locate the badge by class within the row-3
+      // meta block to disambiguate.
+      const retryBadge = metaRow.querySelector('.retry-badge');
+      expect(retryBadge).not.toBeNull();
+      expect(retryBadge?.textContent).toContain('retry: 2');
+      // Phase chip stays hidden because failed !== in-flight, even if
+      // currentPhase were present.
+      expect(queryByTestId('queue-item-phase-task-1')).toBeNull();
+      // Sanity: the badge sits inside the meta row, not stranded
+      // somewhere else in the DOM.
+      expect(container.querySelectorAll('.retry-badge')).toHaveLength(1);
+    });
+
+    it('(c) omits the row-3 meta block entirely for a completed task that was never paused or retried', () => {
+      const { container, queryByTestId } = render(QueueItem, {
+        props: {
+          item: item({
+            status: 'completed',
+            currentPhase: null,
+            retryCount: 0,
+            pauseCause: null,
+            pausedReason: null,
+            completedAt: '2026-05-10T12:00:00.000Z'
+          })
+        }
+      });
+      expect(queryByTestId('queue-item-meta-task-1')).toBeNull();
+      expect(container.querySelector('.row-3')).toBeNull();
+      expect(queryByTestId('queue-item-phase-task-1')).toBeNull();
+      expect(container.querySelector('.retry-badge')).toBeNull();
+      expect(queryByTestId('queue-item-pause-cause-task-1')).toBeNull();
+    });
+  });
+
   it('renders distinct queue, phase, breakpoint, and task pause labels with tooltips', async () => {
     const { getByTestId, rerender } = render(QueueItem, {
       props: { item: item({ pauseCause: 'queue-paused' }) }
