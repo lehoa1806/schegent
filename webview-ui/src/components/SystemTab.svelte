@@ -102,6 +102,9 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
   .title {
     font-size: 0.8em;
@@ -119,6 +122,8 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
   }
   .entry {
