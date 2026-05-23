@@ -53,6 +53,7 @@ function makeQueue(partial: Partial<QueueProjection>): QueueProjection {
     inFlight: null,
     pending: [],
     recent: [],
+    orderedItems: [],
     paused: false,
     ...partial
   };
@@ -66,7 +67,7 @@ function makeSnapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
     activeFeature: null,
     phases: [],
     queue: makeQueue(queue)
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 beforeEach(() => {

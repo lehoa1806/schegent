@@ -180,6 +180,16 @@
     color: var(--schegent-muted-fg);
     line-height: 1.45;
     white-space: pre-wrap;
+    /*
+     * Feature 065 BUG-009 T081 (FR-031) — wrap unbroken strings so a
+     * long task title or URL pasted into the prompt body cannot push
+     * the dialog past the 480px max width (issue #5 in the bug report).
+     * `overflow-wrap: anywhere` covers Safari/Chrome/Firefox; the
+     * additional `word-break: break-word` is the legacy fallback some
+     * VS Code embedded webviews still honor.
+     */
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   .confirm-actions {

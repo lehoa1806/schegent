@@ -33,6 +33,7 @@
     pendingCount={pending.length}
     hasInFlight={inFlight !== null}
     pauseSource={defaultQueuePauseSource}
+    queueLifecycle={queue.lifecycle ?? null}
   />
   {#if empty}
     <p class="empty" data-testid="queue-empty">No queued features.</p>

@@ -40,7 +40,10 @@ const postCommandSpy = vi.fn(
   (..._args: readonly unknown[]) => ({ correlationId: `corr-${++nextCorrelationId}` })
 );
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args)
+  postCommand: (...args: unknown[]) => postCommandSpy(...args),
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 vi.mock('../../lib/phase-log-ipc', () => ({
@@ -100,7 +103,7 @@ function buildIdleSnapshot(): WorkflowSnapshot {
     manualPauseCause: null,
     phaseOverrides: [],
     generalSettings: IDLE_GENERAL_SETTINGS
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 beforeEach(() => {
@@ -141,7 +144,7 @@ describe('Dashboard idle projection after Clean All (T026 / BUG-002)', () => {
       { name: 'speckit-analyze', state: 'not-started' } as PhaseTile,
       { name: 'speckit-implement', state: 'not-started' } as PhaseTile
     ]);
-    const snap = { ...buildIdleSnapshot(), phases } as unknown as WorkflowSnapshot;
+    const snap = { ...buildIdleSnapshot(), phases } as unknown as unknown as WorkflowSnapshot;
     const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
     const list = getByTestId('phase-progression-list');
     const tiles = Array.from(
@@ -207,7 +210,7 @@ describe('Dashboard idle projection after Clean All (T026 / BUG-002)', () => {
       phases: Object.freeze([
         { name: 'speckit-implement', state: 'active' } as PhaseTile
       ])
-    } as unknown as WorkflowSnapshot;
+    } as unknown as unknown as WorkflowSnapshot;
     const { getByTestId, unmount } = render(Dashboard, { props: { snapshot: active } });
     const activeHeader = getByTestId('dashboard-phase-progression-header');
     expect(activeHeader.textContent ?? '').toContain('Active:');

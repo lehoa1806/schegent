@@ -86,7 +86,7 @@ function buildSnapshot(opts: {
   historyRunIds?: readonly string[];
   auditTail: readonly AuditTailEntry[];
 }): WorkflowSnapshot {
-  const queue: QueueProjection = Object.freeze({
+  const queue: QueueProjection = Object.freeze({ orderedItems: [],
     inFlight: opts.inFlightId ? buildQueueItem({ id: opts.inFlightId, status: 'in-flight' }) : null,
     pending: Object.freeze((opts.pendingIds ?? []).map((id) => buildQueueItem({ id }))),
     recent: Object.freeze((opts.recentIds ?? []).map((id) => buildQueueItem({ id }))),
@@ -119,7 +119,7 @@ function buildSnapshot(opts: {
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
     generalSettings: IDLE_GENERAL_SETTINGS
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 function applySnapshot(s: WorkflowSnapshot): void {

@@ -27,6 +27,7 @@ vi.mock('../../lib/reorder-task', () => ({
 
 function makeSnapshot(lifecycle: QueueLifecycle): WorkflowSnapshot {
   const base: QueueProjection = {
+    orderedItems: [],
     inFlight: null,
     pending: [],
     recent: [],
@@ -40,7 +41,7 @@ function makeSnapshot(lifecycle: QueueLifecycle): WorkflowSnapshot {
     activeFeature: null,
     phases: [],
     queue: base
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 afterEach(() => {

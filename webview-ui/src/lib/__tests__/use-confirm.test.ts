@@ -39,7 +39,7 @@ vi.mock('../snapshot-store.svelte', () => ({
         confirmSuppression: {
           suppressedActionKeys: Array.from(state.suppressedKeys)
         }
-      } as unknown as WorkflowSnapshot;
+      } as unknown as unknown as WorkflowSnapshot;
     }
   }
 }));

@@ -398,16 +398,28 @@ describe('QueueManager.moveUp / moveDown', () => {
     expect(await queue.moveDown(b.id)).toEqual({ ok: false, reason: 'at-edge' });
   });
 
+  // Feature 065 BUG-009 T078 (FR-030) — arrow-move now routes through the
+  // unified reorder helper, which interprets positions in the global
+  // `orderedItems` index space and reshuffles ONLY pending rows within
+  // their existing global position slots. The in-flight row's `.position`
+  // is therefore stable. The requests array order is no longer rewritten
+  // in lockstep with `.position`, so the assertion sorts the list by
+  // position to match the projector's view of row order.
   it('reorders only pending items, preserving in-flight in place', async () => {
     const a = await queue.enqueue('A');
     const b = await queue.enqueue('B');
     const c = await queue.enqueue('C');
     await queue.markInFlight(a.id, 'run-1');
     expect((await queue.moveDown(b.id)).ok).toBe(true);
-    const ids = queue.list().map((r) => r.id);
-    expect(ids).toEqual([a.id, c.id, b.id]);
-    const positions = queue.list().map((r) => r.position);
-    expect(positions).toEqual([0, 1, 2]);
+    const orderedByPosition = queue
+      .list()
+      .slice()
+      .sort((x, y) => x.position - y.position)
+      .map((r) => r.id);
+    expect(orderedByPosition).toEqual([a.id, c.id, b.id]);
+    const aRow = queue.list().find((r) => r.id === a.id);
+    expect(aRow?.status).toBe('in-flight');
+    expect(aRow?.position).toBe(0);
   });
 });
 

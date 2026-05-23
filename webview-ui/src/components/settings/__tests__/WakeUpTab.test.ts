@@ -67,6 +67,7 @@ function buildSnapshot(overrides?: {
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -89,7 +90,7 @@ function buildSnapshot(overrides?: {
     availableModels: Object.freeze([]),
     ...(overrides?.wakeUpSettings ? { wakeUpSettings: overrides.wakeUpSettings } : {}),
     ...(overrides?.wakeUpLog ? { wakeUpLog: overrides.wakeUpLog } : {})
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

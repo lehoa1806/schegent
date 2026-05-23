@@ -77,11 +77,12 @@ function mkSnapshot(
     availablePipelines: [],
     availablePhases: [],
     availableModels: []
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 function emptyQueue(): QueueProjection {
   return Object.freeze({
+    orderedItems: [],
     inFlight: null,
     pending: [],
     recent: [],
@@ -104,7 +105,7 @@ describe('deriveCleanAllContext', () => {
   });
 
   it('populated snapshot returns the exact impact inventory the body template substitutes', () => {
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: queueItem({
         id: 'inflight-1',
         status: 'in-flight',
@@ -137,7 +138,7 @@ describe('deriveCleanAllContext', () => {
   });
 
   it('pauseSource prefers queues[0].pauseSource over the legacy paused flag', () => {
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [],
@@ -149,7 +150,7 @@ describe('deriveCleanAllContext', () => {
   });
 
   it("when queues[] is absent, pauseSource falls back to 'operator' iff queue.paused is true", () => {
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [],
@@ -160,7 +161,7 @@ describe('deriveCleanAllContext', () => {
   });
 
   it('when queues[] is absent and queue.paused is false, pauseSource is null', () => {
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [],
@@ -174,7 +175,7 @@ describe('deriveCleanAllContext', () => {
     // If the default queue summary projects pauseSource=null, the helper
     // trusts the summary even if the legacy top-level `paused` flag is
     // out of sync.
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [],
@@ -186,7 +187,7 @@ describe('deriveCleanAllContext', () => {
   });
 
   it('inflightTitle reads the inFlight label, not the id', () => {
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: queueItem({
         id: 'task-uuid-not-used-here',
         status: 'in-flight',
@@ -208,7 +209,7 @@ describe('deriveCleanAllContext', () => {
   it('recent counts ignore non-terminal statuses (in-flight/pending mixed in by mistake)', () => {
     // Defensive: if the host accidentally projects a non-terminal status
     // into recent[], the count should still only reflect terminal rows.
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [

@@ -64,6 +64,7 @@ function buildHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry 
 }
 
 function buildSnapshot(): WorkflowSnapshot {
+  const pending = Object.freeze([buildQueueItem()]) as readonly QueueItem[];
   return Object.freeze({
     schemaVersion: 3,
     isPrimary: true,
@@ -72,9 +73,10 @@ function buildSnapshot(): WorkflowSnapshot {
     phases: Object.freeze([]),
     queue: Object.freeze({
       inFlight: null,
-      pending: Object.freeze([buildQueueItem()]) as readonly QueueItem[],
+      pending,
       recent: Object.freeze([]) as readonly QueueItem[],
-      paused: false
+      paused: false,
+      orderedItems: pending
     }),
     auditTail: Object.freeze([]),
     liveActivity: Object.freeze({

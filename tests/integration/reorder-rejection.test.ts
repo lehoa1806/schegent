@@ -265,13 +265,19 @@ describe('Feature 030 (US2, T028) — reorder rejection paths', () => {
   });
 
   it('no-op reorder (same position) rejects with cause "no-op"', async () => {
-    // T2 is already at position 1 (relative to pending rows). Reorder to
-    // the same position MUST be rejected with cause: 'no-op' per
-    // data-model.md line 206.
+    // Feature 065 BUG-009 T078/T082 (FR-030) — `newPosition` is interpreted
+    // in the global `orderedItems` index space. Fixture: T0(in-flight, 0),
+    // T1(pending, 0), T2(pending, 1), T3(pending, 2). The `sortedAll`
+    // projection is [T0, T1, T2, T3]; T2 sits at global index 2. Counting
+    // non-pending rows preceding global index 2 yields 1 (T0); the
+    // translated pending-array index is 2 - 1 = 1, which equals T2's
+    // current pending-array index (T2 is index 1 in `sortedPending`
+    // [T1, T2, T3]). The translated equality triggers the no-op rejection.
+    // Per data-model.md line 206 and FR-030.
     const ack = await dispatch(harness, {
       type: CMD_REORDER_TASK,
       correlationId: 'reject-noop',
-      payload: { taskId: 'T2', newPosition: 1 }
+      payload: { taskId: 'T2', newPosition: 2 }
     });
     expect(ack.status).toBe('rejected');
     // State unchanged.

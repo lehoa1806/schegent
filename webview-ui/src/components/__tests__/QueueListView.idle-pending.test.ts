@@ -43,6 +43,7 @@ function makeQueue(partial: Partial<QueueProjection>): QueueProjection {
     inFlight: null,
     pending: [],
     recent: [],
+    orderedItems: [],
     paused: false,
     ...partial
   };
@@ -56,7 +57,7 @@ function makeSnapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
     activeFeature: null,
     phases: [],
     queue: makeQueue(queue)
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 function makeItem(id: string, position: number): QueueItem {
@@ -237,7 +238,7 @@ describe('QueueListView — idle-pending Start queue affordance (FR-018 / Q6)', 
     );
     expect(startQueueCalls.length).toBe(1);
 
-    const [, payload] = startQueueCalls[0] as [string, { startIntent: { startMode: string; source: string } }];
+    const [, payload] = startQueueCalls[0] as unknown as [string, { startIntent: { startMode: string; source: string } }];
     expect(payload.startIntent.startMode).toBe('now');
     expect(payload.startIntent.source).toBe('operator-restart');
   });

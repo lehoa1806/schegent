@@ -8,6 +8,7 @@
     CMD_CLEAR_FAILED,
     CMD_OPEN_DASHBOARD
   } from '../lib/messages';
+  import type { QueueLifecycle } from '../lib/snapshot-types';
 
   interface Props {
     paused: boolean;
@@ -24,6 +25,14 @@
      * queue directly; `null` when the queue is active.
      */
     pauseSource?: 'operator' | 'cascade' | null;
+    /**
+     * Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
+     * the `action === 'start'` branch is suppressed so the FR-018 chooser
+     * surface in `QueueListView.svelte` remains the sole dispatcher of
+     * `CMD_START_QUEUE` against an idle-pending queue. Pause/Resume are
+     * unaffected; the suppression is intentionally narrow.
+     */
+    queueLifecycle?: QueueLifecycle | null;
   }
 
   const {
@@ -33,7 +42,8 @@
     failedCount,
     pendingCount,
     hasInFlight,
-    pauseSource = null
+    pauseSource = null,
+    queueLifecycle = null
   }: Props = $props();
 
   const showCascadedBadge = $derived(paused && pauseSource === 'cascade');
@@ -43,6 +53,9 @@
   const clearFailedDisabled = $derived(primaryDisabled || failedCount === 0);
 
   // BUG-003 / FR-012a — tri-state derivation for the contextual button.
+  // Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
+  // the `start` branch is suppressed (resolves to `idle`) so this surface
+  // does not race with the chooser in QueueListView.
   type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
 
   const action = $derived<QueueAction>(
@@ -50,7 +63,7 @@
       ? 'resume'
       : hasInFlight
         ? 'pause'
-        : pendingCount > 0
+        : pendingCount > 0 && queueLifecycle !== 'idle-pending'
           ? 'start'
           : 'idle'
   );

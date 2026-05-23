@@ -29,7 +29,11 @@
   const { item, isPrimary }: Props = $props();
 
   const status = $derived(item.status);
-  const showRetry = $derived(status === 'failed');
+  // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) affordance is available
+  // for BOTH `failed` AND `paused` rows. Paused tasks are "stuck" and need
+  // operator-initiated retry to resurrect them; previously they had no
+  // recovery surface and operators had to remove + re-enqueue.
+  const showRetry = $derived(status === 'failed' || status === 'paused');
   // Feature 030 (US2, T034) — the inline up/down arrows that used to
   // live here moved to QueueItem.svelte and now route through the
   // shared helper at webview-ui/src/lib/reorder-task.ts. The

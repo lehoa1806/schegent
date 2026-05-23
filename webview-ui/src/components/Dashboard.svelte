@@ -122,11 +122,7 @@
 
   const effectiveTaskId = $derived(selectedFeedTaskId ?? activeTaskId);
 
-  const orderedItems = $derived<readonly QueueItem[]>([
-    ...(queue.inFlight ? [queue.inFlight] : []),
-    ...queue.pending,
-    ...queue.recent
-  ]);
+  const orderedItems = $derived<readonly QueueItem[]>(queue.orderedItems ?? []);
 
   const completedCount = $derived(
     queue.recent.filter((r) => r.status === 'completed').length
@@ -344,6 +340,7 @@
             {hasInFlight}
             {clearDoneDisabled}
             {cleanDisabled}
+            queueLifecycle={queue.lifecycle ?? null}
             {onResume}
             {onPause}
             {onClearDone}
@@ -354,6 +351,7 @@
             {isPrimary}
             selectedTaskId={activityFeedSelection.taskId}
             onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
+            testIdPrefix="dashboard-queue-item"
           />
         </section>
       </div>

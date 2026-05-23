@@ -261,6 +261,10 @@ export async function emitReorderAudit(
  * Feature 030 (US2, T032) — resolve target arrow's pending-row position and
  * route through `reorderTaskInUnifiedQueue` so success AND every rejection
  * emit the canonical `task-reordered` audit event with `source: 'arrow'`.
+ *
+ * Feature 065 BUG-009 T078 (FR-030) — delta math uses the source row's
+ * GLOBAL `orderedItems` index (`probe.fromGlobalPosition`), since the
+ * incoming `newPosition` is interpreted in the global index space.
  */
 export async function dispatchArrowMove(
   ctx: HandlerContext,
@@ -273,14 +277,14 @@ export async function dispatchArrowMove(
     return;
   }
   const probe = await ops.reorderTaskInUnifiedQueue(taskId, -1);
-  if (probe.fromPosition < 0) {
+  if (probe.fromGlobalPosition < 0) {
     await emitReorderAudit(ctx, taskId, 'arrow', probe);
     const cause = probe.cause ?? 'reorder-rejected';
     const human = ILLEGAL_STATE_MESSAGES[cause] ?? 'Reorder rejected';
     await handleIllegalState(ctx, cause, human);
     return;
   }
-  const newPos = probe.fromPosition + delta;
+  const newPos = probe.fromGlobalPosition + delta;
   const decision = await ops.reorderTaskInUnifiedQueue(taskId, newPos);
   await emitReorderAudit(ctx, taskId, 'arrow', decision);
   if (decision.outcome === 'success') {

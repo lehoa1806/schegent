@@ -64,6 +64,7 @@ export class PlaceholderProjector implements ProjectorHandle {
         inFlight: null,
         pending: Object.freeze([]) as readonly never[],
         recent: Object.freeze([]) as readonly never[],
+        orderedItems: Object.freeze([]) as readonly never[],
         queues: Object.freeze([]) as readonly never[],
         paused: false,
         pausedReason: null,

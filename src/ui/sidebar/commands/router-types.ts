@@ -47,6 +47,11 @@ export interface QueueOps {
     taskId: string,
     newPosition: number
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  // Feature 065 BUG-009 T078 (FR-030) — `newPosition` is interpreted as
+  // an index into the projector's flattened `orderedItems` array (global
+  // sequence). `fromPosition` / `toPosition` are PENDING-ARRAY indices
+  // (audit coordinate); `fromGlobalPosition` exposes the source row's
+  // global index for the arrow-move handler's `globalPos + delta` math.
   reorderTaskInUnifiedQueue?(
     taskId: string,
     newPosition: number
@@ -55,6 +60,7 @@ export interface QueueOps {
     cause?: 'task-not-pending' | 'invalid-position' | 'no-op';
     fromPosition: number;
     toPosition: number;
+    fromGlobalPosition: number;
     newOrder: readonly string[];
   }>;
 }

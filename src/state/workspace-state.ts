@@ -688,11 +688,11 @@ export class WorkspaceStateStore {
         `Queue ${queueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
       );
     }
-    const insertAt = params.position ?? pendingInTarget.length;
-    if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > pendingInTarget.length) {
+    const insertAt = params.position ?? queue.requests.length;
+    if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
       throw new QueueMutationRejected(
         'position-out-of-range',
-        `Position must be in [0, ${pendingInTarget.length}] (got ${String(params.position)})`
+        `Position must be in [0, ${queue.requests.length}] (got ${String(params.position)})`
       );
     }
     const now = Date.now();
@@ -704,9 +704,12 @@ export class WorkspaceStateStore {
       updatedAt: now
     };
     const denseIndex = new Map<string, number>();
-    pendingInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
+    const allInTarget = queue.requests
+      .filter((item) => item.queueId === queueId)
+      .sort((a, b) => a.position - b.position);
+    allInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
     const shifted = queue.requests.map((item) => {
-      if (item.queueId !== queueId || item.status !== 'pending') return item;
+      if (item.queueId !== queueId) return item;
       const dense = denseIndex.get(item.id) ?? item.position;
       const repositioned = dense >= insertAt ? dense + 1 : dense;
       if (repositioned === item.position) return item;
@@ -788,6 +791,14 @@ export class WorkspaceStateStore {
     return nextTarget;
   }
 
+  // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
+  // PENDING-ARRAY index in the queue's pending sub-array (not as a global
+  // `requests`-array index). The reshuffle is pending-only: pending rows
+  // permute within their existing global position SLOTS, and rows whose
+  // status is NOT `'pending'` keep their `.position` field unchanged. The
+  // caller (`QueueManager.reorderTaskInUnifiedQueue`) is responsible for
+  // translating the operator-emitted global `orderedItems` index into a
+  // pending-array index before invoking this writer.
   public async reorderPendingRequest(taskId: string, position: number): Promise<FeatureRequest> {
     const queue = this.getQueue();
     const target = queue.requests.find((request) => request.id === taskId);
@@ -801,22 +812,34 @@ export class WorkspaceStateStore {
       );
     }
     const queueId = target.queueId ?? DEFAULT_QUEUE_ID;
-    const peers = queue.requests
+    const pendingPeers = queue.requests
       .filter((request) => request.queueId === queueId && request.status === 'pending')
       .sort((a, b) => a.position - b.position);
-    if (!Number.isInteger(position) || position < 0 || position >= peers.length) {
+    if (
+      !Number.isInteger(position) ||
+      position < 0 ||
+      position >= pendingPeers.length
+    ) {
       throw new QueueMutationRejected(
         'position-out-of-range',
-        `Position must be in [0, ${Math.max(0, peers.length - 1)}] (got ${position})`
+        `Position must be in [0, ${Math.max(0, pendingPeers.length - 1)}] (got ${position})`
       );
     }
-    const reordered = peers.filter((request) => request.id !== taskId);
-    reordered.splice(position, 0, target);
+    // The slot space: the global `.position` values currently occupied by
+    // pending rows in this queue. The reshuffle permutes the pending row
+    // ids across these slots — slot positions themselves are not
+    // recomputed, so non-pending rows interleaved at unrelated positions
+    // keep their slots untouched (FR-030 stability invariant).
+    const pendingSlots = pendingPeers.map((peer) => peer.position);
+    const reorderedPending = pendingPeers.filter((request) => request.id !== taskId);
+    reorderedPending.splice(position, 0, target);
+    const now = Date.now();
     const byId = new Map(
-      reordered.map((request, nextPosition) => [
-        request.id,
-        { ...request, position: nextPosition, updatedAt: Date.now() }
-      ])
+      reorderedPending.map((request, i) => {
+        const nextPosition = pendingSlots[i];
+        if (request.position === nextPosition) return [request.id, request];
+        return [request.id, { ...request, position: nextPosition, updatedAt: now }];
+      })
     );
     await this.setQueue({
       ...queue,

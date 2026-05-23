@@ -60,6 +60,7 @@ class SnapshotStore {
         inFlight: null,
         pending: [],
         recent: [],
+        orderedItems: [],
         paused: false
       }
     );

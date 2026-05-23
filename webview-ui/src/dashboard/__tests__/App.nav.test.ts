@@ -16,7 +16,10 @@ import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
+  postCommand: vi.fn(() => ({ correlationId: 'corr-test' })),
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 function buildSnapshot(): WorkflowSnapshot {
@@ -27,6 +30,7 @@ function buildSnapshot(): WorkflowSnapshot {
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -48,7 +52,7 @@ function buildSnapshot(): WorkflowSnapshot {
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
     generalSettings: IDLE_GENERAL_SETTINGS
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 afterEach(() => cleanup());

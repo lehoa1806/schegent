@@ -43,7 +43,10 @@ const postCommandSpy = vi.fn(
   (..._args: readonly unknown[]) => ({ correlationId: `corr-${++nextCorrelationId}` })
 );
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args)
+  postCommand: (...args: unknown[]) => postCommandSpy(...args),
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 // `useConfirm` is mocked so the test controls the confirm/cancel outcome
@@ -85,6 +88,7 @@ function buildQueue(
   const queues =
     (overrides as { queues?: QueueProjection['queues'] }).queues ?? [];
   return {
+    orderedItems: [],
     inFlight,
     pending,
     recent,
@@ -113,7 +117,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     phaseOverrides: [],
     generalSettings: IDLE_GENERAL_SETTINGS,
     ...overrides
-  } as unknown as WorkflowSnapshot;
+  } as unknown as unknown as WorkflowSnapshot;
 }
 
 beforeEach(() => {
@@ -229,6 +233,7 @@ describe('Dashboard Clean All wiring (T025, revised by T051)', () => {
     useConfirmSpy.mockResolvedValue(true);
     const snap = buildSnapshot({
       queue: buildQueue({
+        orderedItems: [],
         inFlight: buildQueueItem({
           id: 'q-i',
           status: 'in-flight',

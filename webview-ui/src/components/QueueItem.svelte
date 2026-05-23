@@ -14,7 +14,36 @@
     postReorderTask
   } from '../lib/reorder-task';
 
-  let { item }: { item: QueueItem } = $props();
+  interface Props {
+    item: QueueItem;
+    /**
+     * BUG-009 (T079) — props added so all queue surfaces (sidebar
+     * `QueueListView`, dashboard "Active Queue" panel) can render via
+     * the shared component. `isSelected` drives the `.activity-selected`
+     * highlight; `onSelect` (when present) makes the id chip clickable
+     * so the Activity Feed can bind to this row.
+     */
+    isSelected?: boolean;
+    onSelect?: () => void;
+    /**
+     * BUG-009 (T079) — per-surface `data-testid` prefix. Defaults to
+     * `'queue-item'` (sidebar contract preserved). The dashboard surface
+     * passes `'dashboard-queue-item'` so its surface-specific tests can
+     * target the root `<li>` and identity chips without colliding with
+     * the sidebar tests when both surfaces mount simultaneously. The
+     * per-row action button testids (Retry / Cancel / Remove) and the
+     * inner status badge testid remain unprefixed because they originate
+     * in the shared `<QueueItemActions>` component and are consumed by
+     * both surfaces with identical names.
+     */
+    testIdPrefix?: string;
+  }
+  let {
+    item,
+    isSelected = false,
+    onSelect,
+    testIdPrefix = 'queue-item'
+  }: Props = $props();
 
   const isPrimary = $derived(snapshotStore.isPrimary);
   // Reorder UX only renders for pending tasks (FR-008). In-flight,
@@ -23,7 +52,7 @@
   const showReorderControls = $derived(item.status === 'pending');
   const enqueuedAtLabel = $derived(formatRelativeTime(item.enqueuedAt));
   const showLastError = $derived(
-    item.lastErrorSummary !== null && item.lastErrorSummary.length > 0
+    item.lastErrorSummary != null && item.lastErrorSummary.length > 0
   );
 
   // BUG-007 — conditional row-3 meta-chip block. The card renders rows 1+2
@@ -186,8 +215,9 @@
 </script>
 
 <li
-  class="item status-{item.status}"
-  data-testid="queue-item-{item.id}"
+  class="item status-{item.status} {isSelected ? 'activity-selected' : ''}"
+  data-testid="{testIdPrefix}-{item.id}"
+  aria-current={isSelected ? 'true' : undefined}
   data-queue-status={item.status}
   draggable={showReorderControls && dragEnabled}
   ondragstart={onDragStart}
@@ -224,7 +254,20 @@
           </svg>
         </button>
       {/if}
-      <span class="id" title={item.id}>{item.id}</span>
+      {#if onSelect}
+        <button
+          type="button"
+          class="item-select id"
+          data-testid="{testIdPrefix}-select-{item.id}"
+          aria-label="Select task {item.id}"
+          title="Select task {item.id}"
+          onclick={onSelect}
+        >
+          <span data-testid="{testIdPrefix}-id-{item.id}">{item.id}</span>
+        </button>
+      {:else}
+        <span class="id" data-testid="{testIdPrefix}-id-{item.id}" title={item.id}>{item.id}</span>
+      {/if}
     </div>
     <div class="row-1-right">
       <span class="pill" data-testid="queue-item-status-{item.id}">{item.status}</span>
@@ -232,7 +275,14 @@
   </div>
 
   <div class="row row-2">
-    <span class="label" title={item.label}>{item.label}</span>
+    <!--
+      BUG-009 (T079) — empty-label fallback. A pending task with no
+      prompt (e.g. a placeholder enqueue) renders the literal
+      `(no prompt)` so the row still has a visible label. The `title`
+      attribute reflects the raw value so screen readers and tooltips
+      stay accurate even when the visible text falls back.
+    -->
+    <span class="label" data-testid="{testIdPrefix}-label-{item.id}" title={item.label}>{item.label.length > 0 ? item.label : '(no prompt)'}</span>
   </div>
 
   {#if hasMetaChips}
@@ -276,7 +326,7 @@
 
   <div class="row row-footer">
     <div class="row-footer-left">
-      <span class="time" data-testid="queue-item-enqueued-{item.id}">{enqueuedAtLabel}</span>
+      <span class="time" data-testid="{testIdPrefix}-enqueued-{item.id}">{enqueuedAtLabel}</span>
     </div>
     <div class="row-footer-right">
       <span class="actions-slot">
@@ -326,16 +376,44 @@
 
 <style>
   .item {
+    background: var(--vscode-list-hoverBackground);
+    border: 1px solid var(--sch-glass-border);
+    border-radius: var(--schegent-radius);
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px var(--schegent-pad);
-    border-radius: var(--schegent-radius);
-    border: 1px solid transparent;
+    gap: 12px;
+    transition: transform 0.2s;
   }
   .item:hover {
-    background: var(--schegent-list-hover);
-    border-color: var(--schegent-border);
+    transform: translateY(-2px);
+    background: var(--vscode-list-hoverBackground);
+  }
+  .item.activity-selected {
+    border-color: var(--schegent-color-active);
+    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--vscode-list-hoverBackground));
+    box-shadow: inset 3px 0 0 var(--schegent-color-active);
+  }
+  .item-select {
+    background: transparent;
+    color: inherit;
+    border: 0;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.85em;
+    color: var(--schegent-muted-fg);
+  }
+  .item-select:focus-visible {
+    outline: 1px solid var(--schegent-focus-border);
+    outline-offset: 3px;
+    border-radius: var(--schegent-radius);
+  }
+  .item-select:hover {
+    color: var(--schegent-fg);
+    text-decoration: underline;
   }
   .row-1 {
     display: flex;

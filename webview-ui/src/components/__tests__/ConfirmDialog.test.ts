@@ -6,6 +6,9 @@
 //
 // Contract reference: specs/063-clean-all-confirmations/contracts/confirm-dialog.md
 
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -294,5 +297,31 @@ describe('ConfirmDialog', () => {
     await fireEvent.keyDown(dialog, { key: ' ' });
     expect(onConfirm).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  // Feature 065 BUG-009 T081 (FR-031) — long unbroken strings in the
+  // prompt body (long task titles, URLs) must wrap inside the dialog
+  // instead of stretching it past the 480px max width. jsdom does not
+  // resolve Svelte's scoped CSS, so we inspect the source `.svelte`
+  // file's `<style>` block — both wrap rules MUST be present on the
+  // `p` selector that styles the dialog body. This coupled assertion
+  // pins the wrap rules so a future style refactor cannot silently
+  // drop them.
+  it('body paragraph CSS includes word-break + overflow-wrap (BUG-009 T081)', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const svelteSource = readFileSync(
+      join(here, '..', 'ConfirmDialog.svelte'),
+      'utf8'
+    );
+    // Extract just the <style> block.
+    const styleMatch = svelteSource.match(/<style>([\s\S]*?)<\/style>/);
+    expect(styleMatch).not.toBeNull();
+    const styleBlock = styleMatch![1];
+    // Find the `p { ... }` rule block.
+    const pRuleMatch = styleBlock.match(/\n\s*p\s*\{([\s\S]*?)\}/);
+    expect(pRuleMatch).not.toBeNull();
+    const pRule = pRuleMatch![1];
+    expect(pRule).toMatch(/word-break:\s*break-word/);
+    expect(pRule).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });

@@ -34,7 +34,10 @@ const postCommandSpy = vi.fn(
   (..._args: readonly unknown[]) => ({ correlationId: `corr-${++nextCorrelationId}` })
 );
 vi.mock('../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args)
+  postCommand: (...args: unknown[]) => postCommandSpy(...args),
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 vi.mock('../lib/phase-log-ipc', () => ({
@@ -121,14 +124,30 @@ function buildDefaultQueueSummary(overrides: Partial<QueueSummary> = {}): QueueS
 }
 
 function buildQueue(overrides: Partial<QueueProjection> = {}): QueueProjection {
-  return Object.freeze({
-    inFlight: null,
+  // Feature 065 BUG-009 T077 (FR-029) — derive `orderedItems` from the
+  // legacy bucket overrides so tests that pass `pending`/`inFlight`/
+  // `recent` without an explicit projection still mount queue rows in
+  // the host-emitted order.
+  const base = {
+    inFlight: null as QueueItem | null,
     pending: Object.freeze([]) as readonly QueueItem[],
     recent: Object.freeze([]) as readonly QueueItem[],
+    orderedItems: Object.freeze([]) as readonly QueueItem[],
     paused: false,
     queues: Object.freeze([buildDefaultQueueSummary()]) as readonly QueueSummary[],
     ...overrides
-  });
+  };
+  if (!('orderedItems' in overrides) || overrides.orderedItems === undefined) {
+    const ordered: QueueItem[] = [];
+    if (base.inFlight !== null) ordered.push(base.inFlight);
+    ordered.push(...[...base.pending].sort((a, b) => a.position - b.position));
+    ordered.push(...base.recent);
+    return Object.freeze({
+      ...base,
+      orderedItems: Object.freeze(ordered) as readonly QueueItem[]
+    });
+  }
+  return Object.freeze(base);
 }
 
 function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {

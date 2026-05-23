@@ -37,7 +37,10 @@ const postCommandSpy = vi.fn(
   (..._args: readonly unknown[]) => ({ correlationId: `corr-${++nextCorrelationId}` })
 );
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args)
+  postCommand: (...args: unknown[]) => postCommandSpy(...args),
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 // Feature 063 — all destructive controls in Dashboard.svelte route through
@@ -141,6 +144,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     },
     phases,
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
       recent: Object.freeze([]) as readonly QueueItem[],
@@ -190,13 +194,31 @@ function buildQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 }
 
 function buildQueue(overrides: Partial<QueueProjection> = {}): QueueProjection {
-  return Object.freeze({
-    inFlight: null,
+  // Feature 065 BUG-009 T077 (FR-029) — `orderedItems` is the canonical
+  // flat projection consumed by `QueueListView`. Tests that pass
+  // `inFlight`/`pending`/`recent` overrides without supplying their own
+  // `orderedItems` get a derived projection in the host-emitted order
+  // (in-flight first, then pending sorted by position, then recent).
+  const base = {
+    inFlight: null as QueueItem | null,
     pending: Object.freeze([]) as readonly QueueItem[],
     recent: Object.freeze([]) as readonly QueueItem[],
+    orderedItems: Object.freeze([]) as readonly QueueItem[],
     paused: false,
     ...overrides
-  });
+  };
+  if (!('orderedItems' in overrides) || overrides.orderedItems === undefined) {
+    const ordered: QueueItem[] = [];
+    if (base.inFlight !== null) ordered.push(base.inFlight);
+    const pendingSorted = [...base.pending].sort((a, b) => a.position - b.position);
+    ordered.push(...pendingSorted);
+    ordered.push(...base.recent);
+    return Object.freeze({
+      ...base,
+      orderedItems: Object.freeze(ordered) as readonly QueueItem[]
+    });
+  }
+  return Object.freeze(base);
 }
 
 function buildQueueSummary(overrides: Partial<QueueSummary> = {}): QueueSummary {
@@ -705,7 +727,7 @@ describe('Dashboard Activity Feed click-to-navigate (021)', () => {
     ]);
     return buildSnapshot({
       phases,
-      activePipeline: Object.freeze({ id: 'standard', name: 'Standard' }),
+      activePipeline: Object.freeze({ id: 'standard', name: 'Standard' , phases: []}),
       availablePhases: Object.freeze([
         Object.freeze({ id: 'speckit-specify', name: 'Specify', instruction: '', loopable: false }),
         Object.freeze({ id: 'speckit-plan', name: 'Plan', instruction: '', loopable: false }),
@@ -1039,8 +1061,8 @@ describe('US1 — Pipeline dropdown reflects a sensible default (016)', () => {
   it('I-1.1 selects defaultPipelineId when the catalog contains that id', async () => {
     const snap = buildSnapshot({
       availablePipelines: Object.freeze([
-        buildPipeline({ id: 'standard', name: 'Standard' }),
-        buildPipeline({ id: 'custom', name: 'Custom' })
+        buildPipeline({ id: 'standard', name: 'Standard' , phases: []}),
+        buildPipeline({ id: 'custom', name: 'Custom' , phases: []})
       ]),
       generalSettings: buildGeneralSettings({ defaultPipelineId: 'custom' })
     });
@@ -1056,8 +1078,8 @@ describe('US1 — Pipeline dropdown reflects a sensible default (016)', () => {
   it('I-1.2 falls back to first catalog entry when default id is missing', async () => {
     const snap = buildSnapshot({
       availablePipelines: Object.freeze([
-        buildPipeline({ id: 'first', name: 'First' }),
-        buildPipeline({ id: 'second', name: 'Second' })
+        buildPipeline({ id: 'first', name: 'First' , phases: []}),
+        buildPipeline({ id: 'second', name: 'Second' , phases: []})
       ]),
       generalSettings: buildGeneralSettings({ defaultPipelineId: 'missing' })
     });
@@ -1094,8 +1116,8 @@ describe('US1 — Pipeline dropdown reflects a sensible default (016)', () => {
   it('I-1.4 operator selection survives a snapshot push with a different defaultPipelineId', async () => {
     const initial = buildSnapshot({
       availablePipelines: Object.freeze([
-        buildPipeline({ id: 'standard', name: 'Standard' }),
-        buildPipeline({ id: 'custom', name: 'Custom' })
+        buildPipeline({ id: 'standard', name: 'Standard' , phases: []}),
+        buildPipeline({ id: 'custom', name: 'Custom' , phases: []})
       ]),
       generalSettings: buildGeneralSettings({ defaultPipelineId: 'standard' })
     });
@@ -1110,9 +1132,9 @@ describe('US1 — Pipeline dropdown reflects a sensible default (016)', () => {
     expect(select.value).toBe('custom');
     const next = buildSnapshot({
       availablePipelines: Object.freeze([
-        buildPipeline({ id: 'standard', name: 'Standard' }),
-        buildPipeline({ id: 'custom', name: 'Custom' }),
-        buildPipeline({ id: 'extra', name: 'Extra' })
+        buildPipeline({ id: 'standard', name: 'Standard' , phases: []}),
+        buildPipeline({ id: 'custom', name: 'Custom' , phases: []}),
+        buildPipeline({ id: 'extra', name: 'Extra' , phases: []})
       ]),
       generalSettings: buildGeneralSettings({ defaultPipelineId: 'extra' })
     });

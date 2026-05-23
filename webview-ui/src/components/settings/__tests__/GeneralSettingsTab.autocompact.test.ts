@@ -50,6 +50,7 @@ function buildSnapshot(gs: GeneralSettings): WorkflowSnapshot {
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -71,7 +72,7 @@ function buildSnapshot(gs: GeneralSettings): WorkflowSnapshot {
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
     generalSettings: gs
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 describe('Feature 012 — GeneralSettingsTab autoCompactPctOverride field', () => {

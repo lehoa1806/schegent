@@ -1,6 +1,7 @@
 <script lang="ts">
   import { postCommand } from '../lib/vscode-api';
   import { CMD_START_QUEUE } from '../lib/messages';
+  import type { QueueLifecycle } from '../lib/snapshot-types';
 
   interface Props {
     isPrimary: boolean;
@@ -12,6 +13,14 @@
     hasInFlight: boolean;
     clearDoneDisabled: boolean;
     cleanDisabled: boolean;
+    /**
+     * Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
+     * the `action === 'start'` branch resolves to `'idle'` so this
+     * dashboard surface does not race with the FR-018 chooser in
+     * `QueueListView.svelte`. Optional for backward compatibility with
+     * callers that have not yet been threaded with the lifecycle.
+     */
+    queueLifecycle?: QueueLifecycle | null;
     onResume: (event: MouseEvent) => void;
     onPause: (event: MouseEvent) => void;
     onClearDone: (event: MouseEvent) => void;
@@ -25,6 +34,7 @@
     hasInFlight,
     clearDoneDisabled,
     cleanDisabled,
+    queueLifecycle = null,
     onResume,
     onPause,
     onClearDone,
@@ -36,6 +46,10 @@
   //  - 'pause':  a run is in-flight and the queue is not paused
   //  - 'resume': the queue is paused (any cause)
   //  - 'idle':   nothing pending, nothing in-flight, not paused — hide button
+  //
+  // Feature 065 BUG-007 / FR-018 — `idle-pending` queues additionally
+  // suppress the `start` branch; the FR-018 chooser in QueueListView is
+  // the sole dispatcher of `CMD_START_QUEUE` for that lifecycle state.
   type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
 
   const action = $derived<QueueAction>(
@@ -43,7 +57,7 @@
       ? 'resume'
       : hasInFlight
         ? 'pause'
-        : pendingCount > 0
+        : pendingCount > 0 && queueLifecycle !== 'idle-pending'
           ? 'start'
           : 'idle'
   );

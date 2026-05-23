@@ -37,6 +37,7 @@ function makeSnapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
     inFlight: null,
     pending: [],
     recent: [],
+    orderedItems: [],
     paused: false,
     ...queue
   };
@@ -47,7 +48,7 @@ function makeSnapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
     activeFeature: null,
     phases: [],
     queue: base
-  } as WorkflowSnapshot;
+  } as unknown as WorkflowSnapshot;
 }
 
 const pipelineDefault = {
@@ -57,7 +58,7 @@ const pipelineDefault = {
 };
 
 const availablePipelines = [
-  { id: 'standard', name: 'Standard' }
+  { id: 'standard', name: 'Standard' , phases: []}
 ];
 
 beforeEach(() => {

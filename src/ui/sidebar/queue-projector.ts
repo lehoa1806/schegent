@@ -69,6 +69,7 @@ export interface QueueProjectionResult {
   inFlight: QueueItem | null;
   pending: QueueItem[];
   recent: QueueItem[];
+  orderedItems: QueueItem[];
   queues: QueueSummary[];
 }
 
@@ -108,6 +109,7 @@ export function projectQueue(
     inFlight: inFlightSrc ? toQueueItem(inFlightSrc, ctx) : null,
     pending: pendingSrc.map((r) => toQueueItem(r, ctx)),
     recent: recentSrc.map((r) => toQueueItem(r, ctx)),
+    orderedItems: requests.slice().sort((a, b) => a.position - b.position).map((r) => toQueueItem(r, ctx)),
     queues: projectQueues(ctx.registry, requests)
   };
 }

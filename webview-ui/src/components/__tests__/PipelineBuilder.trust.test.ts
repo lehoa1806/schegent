@@ -74,6 +74,7 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -101,7 +102,7 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
       retryConditions: opts.retryConditions ?? true,
       pipelineOverrides: opts.pipelineOverrides ?? true
     }
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {

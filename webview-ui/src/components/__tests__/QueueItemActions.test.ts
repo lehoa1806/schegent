@@ -130,6 +130,21 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       expect(container.querySelectorAll('button').length).toBe(2);
     });
 
+    // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) is also available for
+    // paused rows so the operator can resurrect a stuck task without
+    // removing + re-enqueueing it.
+    it('paused row renders Retry plus Delete (BUG-009 T080 — FR-026)', () => {
+      const { container, queryByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'paused' }), isPrimary: true }
+      });
+      const retry = queryByTestId('queue-item-retry-q-1');
+      expect(retry).not.toBeNull();
+      expect(retry?.textContent?.trim()).toBe('↻');
+      expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
+      expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
+      expect(container.querySelectorAll('button').length).toBe(2);
+    });
+
     it('completed row renders Delete', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'completed' }), isPrimary: true }
@@ -186,6 +201,16 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
     it('failed ↻ Retry posts CMD_RETRY_QUEUE_ITEM with the id', async () => {
       const { getByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'failed' }), isPrimary: true }
+      });
+      await fireEvent.click(getByTestId('queue-item-retry-q-1'));
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_RETRY_QUEUE_ITEM, { id: 'q-1' });
+    });
+
+    // Feature 065 BUG-009 T080 (FR-026) — paused-row Retry routes through
+    // the same CMD_RETRY_QUEUE_ITEM dispatch as the failed-row path.
+    it('paused ↻ Retry posts CMD_RETRY_QUEUE_ITEM with the id (BUG-009 T080)', async () => {
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'paused' }), isPrimary: true }
       });
       await fireEvent.click(getByTestId('queue-item-retry-q-1'));
       expect(postCommandSpy).toHaveBeenCalledWith(CMD_RETRY_QUEUE_ITEM, { id: 'q-1' });

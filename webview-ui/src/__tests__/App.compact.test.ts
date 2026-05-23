@@ -26,6 +26,7 @@ function buildSnapshot(): WorkflowSnapshot {
     activeFeature: null,
     phases: Object.freeze(SEVEN_PHASES) as unknown as WorkflowSnapshot['phases'],
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),

@@ -27,6 +27,7 @@ function snapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
     activeFeature: null,
     phases: [],
     queue: {
+      orderedItems: [],
       inFlight: null,
       pending: [],
       recent: [],
@@ -45,7 +46,7 @@ function snapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
     history: [],
     producedAt: '2026-05-10T00:00:00.000Z',
     ...overrides
-  } as WorkflowSnapshot;
+  } as unknown as WorkflowSnapshot;
 }
 
 describe('deriveOperatorHealth', () => {
@@ -67,6 +68,7 @@ describe('deriveOperatorHealth', () => {
           staleSeconds: 120
         },
         queue: {
+          orderedItems: [],
           inFlight: null,
           pending: [],
           recent: [item({ status: 'failed' })],

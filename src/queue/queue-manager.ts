@@ -647,10 +647,23 @@ export class QueueManager {
    *   - otherwise                        → success, newOrder reflects the
    *                                        post-mutation pending ordering
    *
-   * `fromPosition` and `toPosition` are the **pending-row positions**
-   * (0..pendingCount-1), matching the operator-visible reorder UX —
-   * not the raw `FeatureRequest.position` field which can be sparse
-   * once in-flight rows are interleaved.
+   * Feature 065 BUG-009 T078 (FR-030) — `newPosition` is interpreted as an
+   * index into the projector's flattened `orderedItems` array (the same
+   * coordinate system the UI emits the drop event in), NOT as a sparse
+   * pending-only sub-array index. The writer translates the global index
+   * to the underlying pending-array index by counting the non-pending
+   * rows preceding `newPosition` in the same pre-mutation snapshot:
+   *
+   *   translatedPendingIdx = newPosition - countNonPendingBefore(newPosition)
+   *
+   * `fromPosition` and `toPosition` in the result are the **pending-row
+   * positions** (0..pendingCount-1) AFTER translation — matching the
+   * `task-reordered` audit payload contract (host-side history readers
+   * continue to consume pending-array indices, FR-030 invariant).
+   *
+   * `fromGlobalPosition` exposes the source row's index in the global
+   * `orderedItems` projection for the arrow-move handler's
+   * `globalPos + delta` math (it has no audit consumer).
    *
    * The audit emission itself is the caller's responsibility; this
    * function only resolves the disposition + new ordering. The single
@@ -665,13 +678,15 @@ export class QueueManager {
     cause?: 'task-not-pending' | 'invalid-position' | 'no-op';
     fromPosition: number;
     toPosition: number;
+    fromGlobalPosition: number;
     newOrder: readonly string[];
   }> {
     const queue = this.store.getQueue();
-    const pending = queue.requests
-      .filter((r) => r.status === 'pending')
-      .sort((a, b) => a.position - b.position);
-    const pendingOrder = pending.map((r) => r.id);
+    const sortedAll = queue.requests.slice().sort((a, b) => a.position - b.position);
+    const queueOrder = sortedAll.map((r) => r.id);
+    const fromGlobalPosition = queueOrder.indexOf(taskId);
+    const sortedPending = sortedAll.filter((r) => r.status === 'pending');
+    const fromPendingIdx = sortedPending.findIndex((r) => r.id === taskId);
     const target = queue.requests.find((r) => r.id === taskId);
 
     if (!target) {
@@ -680,55 +695,86 @@ export class QueueManager {
         cause: 'invalid-position',
         fromPosition: -1,
         toPosition: newPosition,
-        newOrder: pendingOrder
+        fromGlobalPosition: -1,
+        newOrder: queueOrder
       };
     }
+    // FR-030 source-eligibility guard: only pending rows can be the drag
+    // source. The drag *target* MAY land at any global index (including
+    // positions visually occupied by paused or failed rows); only the
+    // source-side check enforces this guard.
     if (target.status !== 'pending') {
       return {
         outcome: 'rejected',
         cause: 'task-not-pending',
         fromPosition: -1,
         toPosition: newPosition,
-        newOrder: pendingOrder
+        fromGlobalPosition,
+        newOrder: queueOrder
       };
     }
     if (
       !Number.isInteger(newPosition) ||
       newPosition < 0 ||
-      newPosition >= pending.length
+      newPosition >= sortedAll.length
     ) {
-      const fromIdx = pendingOrder.indexOf(taskId);
       return {
         outcome: 'rejected',
         cause: 'invalid-position',
-        fromPosition: fromIdx,
+        fromPosition: fromPendingIdx,
         toPosition: newPosition,
-        newOrder: pendingOrder
+        fromGlobalPosition,
+        newOrder: queueOrder
       };
     }
-    const fromPosition = pendingOrder.indexOf(taskId);
-    if (fromPosition === newPosition) {
+    // Translate the global `orderedItems` index to a pending-array index
+    // by counting how many non-pending rows precede `newPosition` in the
+    // pre-mutation projection snapshot. The translation collapses any
+    // global drop target that falls onto (or just past) a non-pending
+    // row into the adjacent pending-array slot — non-pending rows are
+    // stable anchors under FR-030.
+    let nonPendingBefore = 0;
+    for (let i = 0; i < newPosition; i++) {
+      if (sortedAll[i].status !== 'pending') nonPendingBefore++;
+    }
+    const translatedPendingIdx = newPosition - nonPendingBefore;
+    if (
+      translatedPendingIdx < 0 ||
+      translatedPendingIdx >= sortedPending.length
+    ) {
+      return {
+        outcome: 'rejected',
+        cause: 'invalid-position',
+        fromPosition: fromPendingIdx,
+        toPosition: translatedPendingIdx,
+        fromGlobalPosition,
+        newOrder: queueOrder
+      };
+    }
+    if (translatedPendingIdx === fromPendingIdx) {
       return {
         outcome: 'rejected',
         cause: 'no-op',
-        fromPosition,
-        toPosition: newPosition,
-        newOrder: pendingOrder
+        fromPosition: fromPendingIdx,
+        toPosition: translatedPendingIdx,
+        fromGlobalPosition,
+        newOrder: queueOrder
       };
     }
 
     try {
-      await this.store.reorderPendingRequest(taskId, newPosition);
-      const afterPending = this.store
+      await this.store.reorderPendingRequest(taskId, translatedPendingIdx);
+      const afterAll = this.store
         .getQueue()
-        .requests.filter((r) => r.status === 'pending')
+        .requests.slice()
         .sort((a, b) => a.position - b.position)
         .map((r) => r.id);
       return {
         outcome: 'success',
-        fromPosition,
-        toPosition: newPosition,
-        newOrder: afterPending
+        fromPosition: fromPendingIdx,
+        toPosition: translatedPendingIdx,
+        fromGlobalPosition,
+        newOrder: afterAll
       };
     } catch (err) {
       const reason = this.taskErrorReason(err);
@@ -739,9 +785,10 @@ export class QueueManager {
       return {
         outcome: 'rejected',
         cause,
-        fromPosition,
-        toPosition: newPosition,
-        newOrder: pendingOrder
+        fromPosition: fromPendingIdx,
+        toPosition: translatedPendingIdx,
+        fromGlobalPosition,
+        newOrder: queueOrder
       };
     }
   }
@@ -966,30 +1013,33 @@ export class QueueManager {
     return this.store.getQueue().requests.find((r) => r.id === id) ?? null;
   }
 
+  // Feature 065 BUG-009 T078 (FR-030) — arrow-driven move operates in the
+  // global `orderedItems` index space and routes through the unified
+  // reorder helper so the writer applies the same global → pending-array
+  // index translation as the drag path. The source-status guard (only
+  // pending rows can be moved) is enforced inside the helper.
   private async move(featureId: string, direction: -1 | 1): Promise<MutationResult> {
     const queue = this.store.getQueue();
-    const requests = queue.requests.slice();
-    const idx = requests.findIndex((r) => r.id === featureId);
-    if (idx === -1) return { ok: false, reason: 'not-found' };
-    if (requests[idx].status !== 'pending') return { ok: false, reason: 'illegal-state' };
-    const pendingIndices: number[] = [];
-    for (let i = 0; i < requests.length; i++) {
-      if (requests[i].status === 'pending') pendingIndices.push(i);
+    const sortedAll = queue.requests.slice().sort((a, b) => a.position - b.position);
+    const fromGlobalIdx = sortedAll.findIndex((r) => r.id === featureId);
+    if (fromGlobalIdx === -1) return { ok: false, reason: 'not-found' };
+    if (sortedAll[fromGlobalIdx].status !== 'pending') {
+      return { ok: false, reason: 'illegal-state' };
     }
-    if (pendingIndices.length < 2) return { ok: false, reason: 'no-peer' };
-    const myPendingPosition = pendingIndices.indexOf(idx);
-    const peerPendingPosition = myPendingPosition + direction;
-    if (peerPendingPosition < 0 || peerPendingPosition >= pendingIndices.length) {
+    const pendingCount = sortedAll.filter((r) => r.status === 'pending').length;
+    if (pendingCount < 2) return { ok: false, reason: 'no-peer' };
+    const newGlobalIdx = fromGlobalIdx + direction;
+    if (newGlobalIdx < 0 || newGlobalIdx >= sortedAll.length) {
       return { ok: false, reason: 'at-edge' };
     }
-    const peerIdx = pendingIndices[peerPendingPosition];
-    const now = Date.now();
-    const swapped = requests.slice();
-    swapped[idx] = { ...requests[peerIdx], updatedAt: now };
-    swapped[peerIdx] = { ...requests[idx], updatedAt: now };
-    const repositioned = swapped.map((r, i) => ({ ...r, position: i }));
-    await this.store.setQueue({ ...queue, requests: repositioned });
-    return { ok: true };
+    const decision = await this.reorderTaskInUnifiedQueue(featureId, newGlobalIdx);
+    if (decision.outcome === 'success') return { ok: true };
+    // The arrow stepped onto a non-pending neighbor whose translation
+    // collapses back to the source's current pending-array index. The
+    // pre-FR-030 contract surfaces this as the "edge" sentinel rather
+    // than a no-op rejection.
+    if (decision.cause === 'no-op') return { ok: false, reason: 'at-edge' };
+    return { ok: false, reason: decision.cause ?? 'illegal-state' };
   }
 
   private async clearByStatus(status: FeatureRequestStatus): Promise<ClearResult> {

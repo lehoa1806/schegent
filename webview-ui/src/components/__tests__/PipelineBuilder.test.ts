@@ -58,6 +58,7 @@ function buildSnapshot(
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -80,7 +81,7 @@ function buildSnapshot(
     availableModels: Object.freeze(models),
     generalSettings: IDLE_GENERAL_SETTINGS,
     ...(phasePrecedence !== undefined ? { phasePrecedence } : {})
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 /** Click a tab button by its text content. */

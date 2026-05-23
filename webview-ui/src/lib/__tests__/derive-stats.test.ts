@@ -16,6 +16,7 @@ function tile(overrides: Partial<PhaseTile> & { name: PhaseTile['name']; order: 
 
 function emptyQueue(): QueueProjection {
   return Object.freeze({
+    orderedItems: [],
     inFlight: null,
     pending: Object.freeze([]) as readonly QueueItem[],
     recent: Object.freeze([]) as readonly QueueItem[],
@@ -76,7 +77,7 @@ describe('deriveSidebarStats', () => {
     const phases: ReadonlyArray<PhaseTile> = Object.freeze(
       SEVEN_PHASES.map((p) => tile({ name: p.name, order: p.order, state: 'completed' }))
     );
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
       recent: Object.freeze([
@@ -99,7 +100,7 @@ describe('deriveSidebarStats', () => {
       tile({ name: 'speckit-implement', order: 6 }),
       tile({ name: 'finalize', order: 7 })
     ]);
-    const queue: QueueProjection = Object.freeze({
+    const queue: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: Object.freeze([
         queueItem({ id: 'qa', status: 'pending' }),
@@ -168,13 +169,13 @@ describe('deriveSidebarStats', () => {
   });
 
   it('queue.recent failed accumulation increments failed counter', () => {
-    const q1: QueueProjection = Object.freeze({
+    const q1: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
       recent: Object.freeze([queueItem({ id: 'qa', status: 'failed' })]) as readonly QueueItem[],
       paused: false
     });
-    const q2: QueueProjection = Object.freeze({
+    const q2: QueueProjection = Object.freeze({ orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
       recent: Object.freeze([

@@ -59,6 +59,7 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowS
     activeFeature: null,
     phases: Object.freeze([]),
     queue: Object.freeze({
+      orderedItems: [],
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
@@ -81,7 +82,7 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowS
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
     ...overrides
-  }) as unknown as WorkflowSnapshot;
+  }) as unknown as unknown as WorkflowSnapshot;
 }
 
 function snapshotWithGeneralSettings(): WorkflowSnapshot {
