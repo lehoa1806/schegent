@@ -192,6 +192,54 @@ describe('detectCreditError', () => {
       expect(result.matched).toBe(false);
     });
 
+    // BUG-008 — exit-zero short-circuit. The detector MUST return
+    // matched:false for a successful CLI completion regardless of
+    // stderr/stdout content. The CLI exits 0 even when carrying a
+    // soft-warn `rate_limit_event` payload at ~90% quota
+    // (`rate_limit_info.status === 'allowed_warning'`); without this
+    // gate the stderr regex or stdout scan would hijack the run.
+    describe('BUG-008 exit-zero short-circuit', () => {
+      it('returns no match when stderr carries a courtesy rate-limit phrase but exitCode is 0 (BUG-008 repro)', () => {
+        const result = detectCreditError('', 'rate limit warning approaching cap', 0);
+        expect(result.matched).toBe(false);
+        expect(result.cause).toBe('');
+      });
+
+      it('returns no match when stdout carries an allowed_warning rate_limit_event but exitCode is 0', () => {
+        const stdout =
+          '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1779520200}}';
+        const result = detectCreditError(stdout, '', 0);
+        expect(result.matched).toBe(false);
+        expect(result.cause).toBe('');
+      });
+
+      it('regression — genuine stdout rate_limit_event with rejected status on non-zero exit still matches', () => {
+        const stdout =
+          '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1779520200}}';
+        const result = detectCreditError(stdout, '', 1);
+        expect(result.matched).toBe(true);
+        expect(result.cause).toBe('rate-limit');
+      });
+
+      it('regression — genuine stderr "rate limit" phrase on non-zero exit still matches', () => {
+        const result = detectCreditError('', 'rate limit', 1);
+        expect(result.matched).toBe(true);
+        expect(result.cause).toBe('rate-limit');
+      });
+
+      it('regression — exitCode 429 MATCH path is unaffected (429 is non-zero)', () => {
+        const result = detectCreditError('', '', 429);
+        expect(result.matched).toBe(true);
+        expect(result.cause).toBe('rate-limit');
+      });
+
+      it('sanity — empty inputs with exitCode 0 returns no match', () => {
+        const result = detectCreditError('', '', 0);
+        expect(result.matched).toBe(false);
+        expect(result.cause).toBe('');
+      });
+    });
+
     it('scans within an order of magnitude of a 200-byte input on a 1MB stdout buffer (SC-005)', () => {
       // Build a 1MB stdout buffer with the signal in the last line.
       const padLine = 'a'.repeat(99) + '\n';

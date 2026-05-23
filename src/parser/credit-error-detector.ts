@@ -86,6 +86,17 @@ export function detectCreditError(
   stderr: string,
   exitCode: number | null
 ): CreditDetectionResult {
+  // BUG-008 — a successful CLI completion (exit 0) is never a rate-limit
+  // failure regardless of stderr/stdout content. The CLI exits 0 even
+  // when carrying a soft-warn `rate_limit_event` payload at ~90% quota
+  // (`rate_limit_info.status === 'allowed_warning'`); without this gate
+  // the stderr regex below would match the courtesy warning phrase and
+  // hijack the successful run into a multi-hour delayed-retry backoff.
+  // The existing `exitCode === 429` MATCH path below is unaffected — 429
+  // is by definition non-zero.
+  if (exitCode === 0) {
+    return { matched: false, cause: '' };
+  }
   // Stderr precedence (FR-007) — existing behavior preserved
   // byte-for-byte. Any stderr match short-circuits before stdout is
   // consulted, so the existing fixture matrix routes identically.

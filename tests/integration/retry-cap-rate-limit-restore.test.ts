@@ -301,6 +301,99 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
     expect(h.audit.byType('system-pause-restore-unavailable')).toHaveLength(0);
   });
 
+  // Bugfix 2026-05-23 — BUG-008: FR-028 amendment. A successful CLI
+  // completion (`exitCode === 0`) is NEVER a rate-limit failure
+  // regardless of payload content. The precondition guard at the FR-028
+  // ingress (`scheduleQueuePauseAndFail`) MUST short-circuit BEFORE any
+  // `transitionToScheduledRestore` call. The 4-layer defense in depth
+  // (detector, extractor, parser, retry-handler) makes the synthetic
+  // `cause === 'rate_limit'` + `exitCode === 0` co-occurrence
+  // unreachable in normal flow; the test constructs it explicitly to
+  // assert the ingress guard.
+  describe('BUG-008 — successful invocation (exitCode === 0) MUST NOT activate FR-028', () => {
+    it('(h) success exit 0 with stderr `allowed_warning` courtesy phrase — no FR-028 activation', async () => {
+      const featureId = await enqueueInFlight();
+      const { handler } = makeRetryHandler();
+      const nowMs = 1_750_000_000_000;
+      h.clock.set(nowMs);
+
+      const run = makeRun({ featureId, delayedRetryCount: 2 });
+      const phaseResult: PhaseResult = {
+        ...makePhaseResult('', 'rate limit warning approaching cap'),
+        exitCode: 0
+      };
+
+      await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
+
+      const q = h.store.getQueue();
+      // Lifecycle MUST NOT enter idle-pending; the legacy operator-paused
+      // path is taken because the ingress precondition fails.
+      expect(q.queueLifecycle).toBe('operator-paused');
+      expect(q.scheduledStartAt).toBeNull();
+      expect(q.scheduledStartSource).toBeNull();
+      // Neither additive audit event MAY fire.
+      expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
+      expect(h.audit.byType('system-pause-restore-unavailable')).toHaveLength(0);
+    });
+
+    it('(i) success exit 0 with stdout `allowed_warning` rate_limit_event — no FR-028 activation', async () => {
+      const featureId = await enqueueInFlight();
+      const { handler } = makeRetryHandler();
+      const nowMs = 1_750_000_000_000;
+      h.clock.set(nowMs);
+
+      const resetsAtSec = Math.floor((nowMs + 60 * 60 * 1000) / 1000);
+      const stdout =
+        `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":${resetsAtSec}}}`;
+      const run = makeRun({ featureId, delayedRetryCount: 2 });
+      const phaseResult: PhaseResult = {
+        ...makePhaseResult(stdout, ''),
+        exitCode: 0
+      };
+
+      await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
+
+      const q = h.store.getQueue();
+      expect(q.queueLifecycle).toBe('operator-paused');
+      expect(q.scheduledStartAt).toBeNull();
+      expect(q.scheduledStartSource).toBeNull();
+      expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
+      expect(h.audit.byType('system-pause-restore-unavailable')).toHaveLength(0);
+    });
+
+    it('(j) genuine failure (exit !== 0) with mixed allowed_warning lines + trailing rejected — FR-028 activates on trailing rejected', async () => {
+      const featureId = await enqueueInFlight();
+      const { handler } = makeRetryHandler();
+      const nowMs = 1_750_000_000_000;
+      h.clock.set(nowMs);
+
+      const earlierWarnSec = Math.floor((nowMs + 30 * 60 * 1000) / 1000);
+      const trailingRejectedSec = Math.floor((nowMs + 60 * 60 * 1000) / 1000);
+      // Multiple lines: earlier `allowed_warning` payloads are skipped;
+      // the reverse-iteration scan settles on the trailing `rejected`
+      // payload and uses its `resetsAt`.
+      const stdout = [
+        `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":${earlierWarnSec}}}`,
+        `{"type":"assistant","message":{}}`,
+        `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":${trailingRejectedSec}}}`
+      ].join('\n');
+      const run = makeRun({ featureId, delayedRetryCount: 2 });
+      const phaseResult: PhaseResult = {
+        ...makePhaseResult(stdout, ''),
+        exitCode: 1
+      };
+
+      await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
+
+      const q = h.store.getQueue();
+      expect(q.queueLifecycle).toBe('idle-pending');
+      expect(q.scheduledStartSource).toBe('system-rate-limit-recovery');
+      // The trailing `rejected` `resetsAt` MUST be the chosen epoch.
+      expect(q.scheduledStartAt).toBe(trailingRejectedSec * 1000 + RETRY_BUFFER_MS);
+      expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(1);
+    });
+  });
+
   it('(g) coordinator fire — advancing past restore target transitions lifecycle back to running', async () => {
     const featureId = await enqueueInFlight();
     const { handler } = makeRetryHandler();

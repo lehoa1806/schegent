@@ -221,10 +221,21 @@ export class RetryHandler {
     //   3. extractResetTimestamp returns a finite epoch.
     //   4. The buffered restore target is in the future and inside the
     //      7-day horizon (SCHEDULED_START_MAX_HORIZON_MS, FR-009c).
+    //
+    // Bugfix 2026-05-23 — BUG-008: FR-028 is reserved for genuine
+    // rate-limit failures (non-zero exit). Even though detector-layer
+    // (T073) and parser-layer (T075) guards prevent `cause ===
+    // 'rate_limit'` from co-occurring with `exitCode === 0` in the
+    // normal flow, this ingress guard is the final belt: it ensures no
+    // synthetic-failure-context path can reach
+    // `transitionToScheduledRestore` against a successful invocation.
     const guarded = this.deps.getGuardedRunService?.() ?? null;
+    const invocationExitCode = phaseResult.exitCode;
+    const isGenuineRateLimitFailure =
+      cause === 'rate_limit' && invocationExitCode !== 0;
     let scheduledRestoreAt: number | null = null;
     let fallbackReason: 'unparseable-reset' | 'past-reset' | 'over-horizon-reset' | null = null;
-    if (cause === 'rate_limit' && guarded) {
+    if (isGenuineRateLimitFailure && guarded) {
       const now = clock();
       const { resetsAtMs } = extractResetTimestamp(
         phaseResult.stdoutSummary,
@@ -292,7 +303,12 @@ export class RetryHandler {
       'retry-cap'
     );
     await this.deps.queue.pause(persisted.featureId, 'phase-paused');
-    if (cause === 'rate_limit' && guarded && fallbackReason !== null) {
+    // Bugfix 2026-05-23 — BUG-008: emit `system-pause-restore-unavailable`
+    // only on genuine rate-limit failures (`exitCode !== 0`). A successful
+    // invocation that somehow reached this fallback path is NOT an
+    // FR-028 candidate; emitting the warn-level event would mis-attribute
+    // the pause as a rate-limit restoration gap.
+    if (isGenuineRateLimitFailure && guarded && fallbackReason !== null) {
       await guarded.emitSystemPauseRestoreUnavailable({
         pauseCauseCategory: 'rate-limit',
         fallbackReason

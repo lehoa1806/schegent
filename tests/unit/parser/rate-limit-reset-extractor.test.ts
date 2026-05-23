@@ -130,6 +130,45 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
     const stderr = '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1715000000}}';
     expect(extractResetTimestamp('', stderr, 1700000000_000).resetsAtMs).toBeNull();
   });
+
+  // Bugfix 2026-05-23 — BUG-008: extend the safe-status skip-set so the
+  // upstream soft-warn (`status: "allowed_warning"`, ~90% quota) does not
+  // leak its future `resetsAt` into the dynamic backoff calculation.
+  describe('BUG-008 allowed_warning skip-set extension', () => {
+    it('row 8c (BUG-008): compact "allowed_warning" with resetsAt → resetsAtMs is null', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1779520200}}';
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
+    it('row 8d (BUG-008): pretty-JSON "allowed_warning" with resetsAt → resetsAtMs is null (fast-path guard covers pretty form)', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status": "allowed_warning", "resetsAt":1779520200}}';
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
+    it('row 8e (BUG-008 regression): "rejected" with resetsAt still extracts the epoch', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1779520200}}';
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBe(1779520200_000);
+    });
+
+    it('row 8f (BUG-008 regression): existing "allow" skip behavior preserved', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1779520200}}';
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
+    it('row 8g (BUG-008): mixed stream — earlier "allowed_warning" lines skipped, trailing "rejected" wins', () => {
+      const stdout = [
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1715000000}}',
+        '{"type":"assistant","message":{}}',
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1716000000}}',
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1717000000}}'
+      ].join('\n');
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBe(1717000000_000);
+    });
+  });
 });
 
 describe('extractResetTimestamp — plain-text path (rows 9-22) exercised on stdout AND stderr', () => {

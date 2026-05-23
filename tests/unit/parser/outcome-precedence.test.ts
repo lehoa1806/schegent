@@ -95,7 +95,15 @@ describe('parseInvocation — outcome precedence (T042 / FR-013)', () => {
     }
   });
 
-  it('4. zero exit + rate-limit signature → rate_limited', () => {
+  // Bugfix 2026-05-23 — BUG-008: a successful CLI completion
+  // (`exitCode === 0`) is NEVER a rate-limit failure regardless of
+  // payload content. The detector-layer guard (T073) prevents
+  // `rateLimit.matched === true` from co-occurring with `exitCode === 0`
+  // in the normal flow; the parser-level defensive symmetric check
+  // (T075) covers any synthetic caller that bypasses the detector.
+  // The OLD test asserted the buggy classification — replaced with the
+  // amended precondition expectation.
+  it('4. zero exit + synthetic rate-limit signature → clean (BUG-008: exit-zero short-circuits rate_limited)', () => {
     const result = parseInvocation(
       inputs({
         stdout: clearToken,
@@ -104,9 +112,10 @@ describe('parseInvocation — outcome precedence (T042 / FR-013)', () => {
         rateLimitCause: 'rate-limit-exceeded'
       })
     );
-    expect(result.kind).toBe('rate_limited');
-    if (result.kind === 'rate_limited') {
-      expect(result.cause).toBe('rate-limit-exceeded');
+    expect(result.kind).not.toBe('rate_limited');
+    expect(result.kind).toBe('clean');
+    if (result.kind === 'clean') {
+      expect(result.auditEntry).toBe(validAudit);
     }
   });
 

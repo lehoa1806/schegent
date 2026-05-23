@@ -135,7 +135,15 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     };
   }
 
-  if (inputs.rateLimit.matched) {
+  // Bugfix 2026-05-23 — BUG-008: defensive symmetric check.
+  // `detectCreditError` already returns `matched: false` on `exitCode === 0`,
+  // so this guard is belt-and-suspenders: it prevents a future caller
+  // that constructs a synthetic `rateLimit.matched = true` against a
+  // successful invocation (e.g., a test harness, a replay-from-fixture
+  // path, or a code change in a different layer) from routing through
+  // the `rate_limited` branch. A successful CLI completion is by
+  // definition not a rate-limit failure regardless of payload content.
+  if (inputs.rateLimit.matched && inputs.exitCode !== 0) {
     // Feature 027 — parse the CLI's reported reset epoch (when present)
     // so the controller can schedule a dynamic delayed retry instead of
     // the fixed 60-minute fallback. Bugfix 2026-05-15 — BUG-002: pass

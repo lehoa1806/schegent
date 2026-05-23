@@ -70,6 +70,16 @@ export function extractRateLimitMessage(
 
 const RATE_LIMIT_MESSAGE_MAX_LEN = 240;
 
+// Bugfix 2026-05-23 — BUG-008: the upstream `rate_limit_info.status` enum
+// has three known values — `allow`, `allowed_warning`, `rejected`. Only
+// `rejected` is a hard quota block. `allowed_warning` is the ~90% quota
+// soft-warn the CLI emits on a successful run; it MUST NOT contribute its
+// future `resetsAt` epoch to the dynamic-backoff calculation.
+const SAFE_RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set([
+  'allow',
+  'allowed_warning'
+]);
+
 const PLAIN_TEXT_PATTERN =
   /·[ \t]+resets[ \t]+(\d{1,2}):(\d{2})[ \t]*(am|pm)?[ \t]*\(([^)]+)\)/i;
 const OFFSET_PATTERN = /^([+-])(\d{2}):?(\d{2})$/;
@@ -97,12 +107,20 @@ export function extractResetTimestamp(
       if (trimmed.length < 2 || trimmed.charCodeAt(0) !== 0x7b /* { */) continue;
       if (trimmed.charCodeAt(trimmed.length - 1) !== 0x7d /* } */) continue;
       if (trimmed.indexOf('rate_limit_event') === -1) continue;
-      // The common non-actionable event is `status: "allow"`. Skip the
-      // canonical compact/pretty JSON shapes before JSON.parse; this keeps
-      // large stdout buffers with frequent allow events under the perf budget.
+      // The common non-actionable events are `status: "allow"` and
+      // `status: "allowed_warning"` (the ~90% quota soft-warn — BUG-008).
+      // Skip the canonical compact/pretty JSON shapes before JSON.parse;
+      // this keeps large stdout buffers with frequent safe events under
+      // the perf budget. The explicit `allowed_warning` substrings are
+      // required because `'"status":"allow"'` would prefix-match
+      // `'"status":"allowed_warning"'` in compact form ONLY; the pretty
+      // form `'"status": "allow"'` would NOT prefix-match
+      // `'"status": "allowed_warning"'`. The explicit guards cover both.
       if (
         trimmed.indexOf('"status":"allow"') !== -1 ||
-        trimmed.indexOf('"status": "allow"') !== -1
+        trimmed.indexOf('"status": "allow"') !== -1 ||
+        trimmed.indexOf('"status":"allowed_warning"') !== -1 ||
+        trimmed.indexOf('"status": "allowed_warning"') !== -1
       ) {
         continue;
       }
@@ -118,7 +136,13 @@ export function extractResetTimestamp(
       const info = rec.rate_limit_info;
       if (!info || typeof info !== 'object') continue;
       const infoRec = info as Record<string, unknown>;
-      if (infoRec.status === 'allow') continue;
+      // Bugfix 2026-05-23 — BUG-008: skip both `allow` and `allowed_warning`.
+      // Only `rejected` is a hard quota block; the other two statuses are
+      // informational and MUST NOT leak their `resetsAt` epochs into the
+      // dynamic backoff calculation.
+      if (typeof infoRec.status === 'string' && SAFE_RATE_LIMIT_STATUSES.has(infoRec.status)) {
+        continue;
+      }
       const resetsAt = infoRec.resetsAt;
       if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt) || resetsAt <= 0) continue;
       return { resetsAtMs: resetsAt * 1000 };
