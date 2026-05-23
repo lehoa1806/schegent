@@ -286,6 +286,90 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 });
 
+describe('StateProjector.getCurrentSnapshot — queue.orderedItems (BUG-010 / FR-029 amendment)', () => {
+  // The snapshot construction at state-projector.ts:796-812 previously
+  // omitted `orderedItems` from the `queue` projection, masked by an
+  // `as QueueProjection` cast. The webview's `?? []` fallback then
+  // rendered the Active Queue panel as empty even while a pipeline was
+  // running. These tests pin the construction-site invariant: every
+  // constructed snapshot's `queue.orderedItems` MUST be a defined,
+  // populated array containing the in-flight row plus all pending rows.
+
+  it('populates queue.orderedItems with the in-flight row and the pending row', async () => {
+    const requests: FeatureRequest[] = [
+      inFlightRequest('q-active', 'building...'),
+      pendingRequest('q-1', 'next', 1)
+    ];
+    const queue: QueueState = {
+      requests,
+      inFlightId: 'q-active',
+      paused: false,
+      pausedReason: null,
+      updatedAt: 0,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
+    };
+    await store.setQueue(queue);
+    const p = makeProjector();
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.queue.orderedItems).toBeDefined();
+    expect(Array.isArray(snap.queue.orderedItems)).toBe(true);
+    expect(snap.queue.orderedItems).toHaveLength(2);
+    expect(snap.queue.orderedItems.map((item) => item.id)).toContain('q-active');
+    expect(snap.queue.orderedItems.map((item) => item.id)).toContain('q-1');
+    p.dispose();
+  });
+
+  it('preserves the paused in-flight row in queue.orderedItems (FR-026 stable identifier)', async () => {
+    const pausedInFlight: FeatureRequest = {
+      ...inFlightRequest('q-paused', 'rate-limited'),
+      status: 'paused',
+      pausedReason: 'rate-limit'
+    };
+    const queue: QueueState = {
+      requests: [pausedInFlight, pendingRequest('q-1', 'after', 1)],
+      inFlightId: 'q-paused',
+      paused: true,
+      pausedReason: 'rate-limit',
+      updatedAt: 0,
+      queueLifecycle: 'operator-paused',
+      scheduledStartAt: null,
+      scheduledStartSource: null
+    };
+    await store.setQueue(queue);
+    const p = makeProjector();
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.queue.orderedItems).toBeDefined();
+    expect(snap.queue.orderedItems.map((item) => item.id)).toContain('q-paused');
+    expect(snap.queue.orderedItems).toHaveLength(2);
+    p.dispose();
+  });
+
+  it('emits an empty (but defined) orderedItems array when the queue is active-empty', async () => {
+    await store.setQueue(emptyQueue());
+    const p = makeProjector();
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.queue.orderedItems).toBeDefined();
+    expect(Array.isArray(snap.queue.orderedItems)).toBe(true);
+    expect(snap.queue.orderedItems).toHaveLength(0);
+    expect(snap.queue.orderedItems).not.toBeUndefined();
+    p.dispose();
+  });
+
+  it('emits orderedItems on the idle (no-queue) construction path', () => {
+    const p = makeProjector();
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.queue.orderedItems).toBeDefined();
+    expect(Array.isArray(snap.queue.orderedItems)).toBe(true);
+    p.dispose();
+  });
+});
+
 describe('StateProjector.computeIsPrimary — staleness rules (BUG-005)', () => {
   // Boundary semantic mirrors lock.ts: stale iff (now - heartbeatAt) > STALENESS_THRESHOLD_MS.
   // At exactly the threshold the lock is "just-fresh", not stale.

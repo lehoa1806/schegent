@@ -31,7 +31,6 @@ import {
   type LiveActivity,
   type PhaseName,
   type PhaseTile,
-  type QueueProjection,
   type WakeUpSettings,
   type WakeUpLogProjection,
   type WorkflowSnapshot,
@@ -793,23 +792,26 @@ export class StateProjector {
       status,
       activeFeature,
       phases: Object.freeze(phases.map((p) => Object.freeze(p))),
+      // BUG-010 (2026-05-24): No `as QueueProjection` cast here. The cast
+      // previously masked a missing `orderedItems` field at this construction
+      // site (FR-029) and the webview's `?? []` fallback then rendered the
+      // dashboard Active Queue panel as empty while a pipeline was running.
+      // Cast removal IS the enforcement mechanism (T085 Routing C); see
+      // `repo/tests/lint/no-as-queue-projection-cast.test.ts` (T086) for the
+      // defense-in-depth lint that prevents future reintroduction.
       queue: Object.freeze({
         inFlight: queueProjection.inFlight,
         pending: Object.freeze(queueProjection.pending.slice()),
         recent: Object.freeze(queueProjection.recent.slice()),
+        orderedItems: Object.freeze(queueProjection.orderedItems.slice()),
         queues: Object.freeze(queueProjection.queues.slice()),
         paused: queue.paused,
         pausedReason: sanitizeAndCap(queue.pausedReason, sanitize),
-        // Feature 065 — additive lifecycle / scheduled-start projection.
         lifecycle: queue.queueLifecycle,
         scheduledStartAt: queue.scheduledStartAt,
         scheduledStartSource: queue.scheduledStartSource,
-        // Feature 065 (T054a / FR-020) — propagate the one-time migration
-        // notice flag. Only present (and truthy) on the first publication
-        // after a v6 → v7 migration touched at least one queue; the
-        // dismiss path writes `'dismissed'`, which then propagates here.
-        ...(queue.migrationNotice ? { migrationNotice: queue.migrationNotice } : {})
-      }) as QueueProjection,
+        migrationNotice: queue.migrationNotice
+      }),
       phaseOverrides: Object.freeze(
         (run?.phaseOverrides ?? []).map((override) =>
           Object.freeze({ phaseId: override.phaseId, action: override.action })
