@@ -212,10 +212,25 @@
   function onDragEnd(): void {
     dragEnabled = false;
   }
+
+  /**
+   * Card-level click handler — selects this task in the Activity Feed.
+   * Interactive child elements (buttons, drag handles, links) call
+   * `event.stopPropagation()` so their own handlers fire without also
+   * triggering a task-select.
+   */
+  function onCardClick(event: MouseEvent): void {
+    if (!onSelect) return;
+    // Ignore clicks that originated from an interactive element. This
+    // is a safety net in case a child forgets stopPropagation.
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, a, input, select, textarea')) return;
+    onSelect();
+  }
 </script>
 
 <li
-  class="item status-{item.status} {isSelected ? 'activity-selected' : ''}"
+  class="item status-{item.status} {isSelected ? 'activity-selected' : ''} {onSelect ? 'selectable' : ''}"
   data-testid="{testIdPrefix}-{item.id}"
   aria-current={isSelected ? 'true' : undefined}
   data-queue-status={item.status}
@@ -224,6 +239,9 @@
   ondragover={onDragOver}
   ondrop={onDrop}
   ondragend={onDragEnd}
+  onclick={onCardClick}
+  role={onSelect ? 'button' : undefined}
+  tabindex={onSelect ? 0 : undefined}
 >
   <div class="row row-1">
     <div class="row-1-left">
@@ -383,11 +401,17 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    transition: transform 0.2s;
+    transition: transform 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  }
+  .item.selectable {
+    cursor: pointer;
   }
   .item:hover {
     transform: translateY(-2px);
     background: var(--vscode-list-hoverBackground);
+  }
+  .item.selectable:hover {
+    border-color: color-mix(in srgb, var(--schegent-color-active) 40%, var(--sch-glass-border));
   }
   .item.activity-selected {
     border-color: var(--schegent-color-active);
