@@ -20,7 +20,75 @@ export interface CreditDetectionResult {
   resetsAtMs?: number | null;
 }
 
-export function detectCreditError(stderr: string, exitCode: number | null): CreditDetectionResult {
+// Feature 066 — trailing-window size for the stdout scan. Sized to
+// comfortably contain a stream-json `rate_limit_event` payload (~3
+// lines) plus surrounding context. The window cap keeps detection cost
+// bounded for long sessions (SC-005).
+const STDOUT_TRAILING_WINDOW_LINES = 20;
+
+// Feature 066 — stdout substrings (case-sensitive, as emitted by the
+// upstream CLI). Within a single line `out_of_credits` wins over the
+// generic `rate_limit_event` envelope (FR-006) — the more-specific
+// hard-cap signal must route through the past-timestamp safety guard
+// in `backoffForCause`. Across multiple lines the detector settles on
+// the MOST RECENT signal-bearing line (spec edge case: "Multiple
+// rate-limit lines").
+const STDOUT_OUT_OF_CREDITS_SIGIL = 'out_of_credits';
+const STDOUT_RATE_LIMIT_EVENT_SIGIL = 'rate_limit_event';
+
+function trailingWindow(buffer: string, lineBudget: number): string {
+  if (buffer.length === 0) return buffer;
+  let newlines = 0;
+  for (let i = buffer.length - 1; i >= 0; i--) {
+    if (buffer.charCodeAt(i) === 0x0a) {
+      newlines++;
+      if (newlines >= lineBudget) {
+        return buffer.slice(i + 1);
+      }
+    }
+  }
+  return buffer;
+}
+
+function scanWindowForRateLimit(window: string): string | null {
+  // Walk lines from the end backwards. The FIRST line we encounter
+  // (i.e., the MOST RECENT line) that carries a rate-limit signal
+  // determines the cause. Within that line, `out_of_credits` wins over
+  // the generic `rate_limit_event` envelope (FR-006).
+  let lineEnd = window.length;
+  for (let i = window.length - 1; i >= 0; i--) {
+    if (window.charCodeAt(i) === 0x0a) {
+      const line = window.slice(i + 1, lineEnd);
+      const cause = matchLine(line);
+      if (cause !== null) return cause;
+      lineEnd = i;
+    }
+  }
+  // Handle the head of the window (no leading newline).
+  if (lineEnd > 0) {
+    const cause = matchLine(window.slice(0, lineEnd));
+    if (cause !== null) return cause;
+  }
+  return null;
+}
+
+function matchLine(line: string): string | null {
+  if (line.length === 0) return null;
+  const hasRateLimitEvent = line.includes(STDOUT_RATE_LIMIT_EVENT_SIGIL);
+  const hasOutOfCredits = line.includes(STDOUT_OUT_OF_CREDITS_SIGIL);
+  if (hasOutOfCredits) return 'out-of-credits';
+  if (hasRateLimitEvent) return 'rate-limit';
+  return null;
+}
+
+export function detectCreditError(
+  stdout: string,
+  stderr: string,
+  exitCode: number | null
+): CreditDetectionResult {
+  // Stderr precedence (FR-007) — existing behavior preserved
+  // byte-for-byte. Any stderr match short-circuits before stdout is
+  // consulted, so the existing fixture matrix routes identically.
   for (const { regex, cause } of RATE_LIMIT_MATCHERS) {
     if (regex.test(stderr)) {
       return { matched: true, cause };
@@ -28,6 +96,19 @@ export function detectCreditError(stderr: string, exitCode: number | null): Cred
   }
   if (exitCode === 429) {
     return { matched: true, cause: 'rate-limit' };
+  }
+  // Feature 066 — stdout trailing-window scan (FR-002..FR-006). Stream-
+  // json mode emits `rate_limit_event` (and the embedded
+  // `out_of_credits` overage reason) to stdout; the stderr scan above
+  // misses it. The scan reads the trailing window line-by-line from
+  // the END backwards, so the most recent CLI emission determines the
+  // cause (spec edge case: "Multiple rate-limit lines").
+  if (stdout.length > 0) {
+    const window = trailingWindow(stdout, STDOUT_TRAILING_WINDOW_LINES);
+    const cause = scanWindowForRateLimit(window);
+    if (cause !== null) {
+      return { matched: true, cause };
+    }
   }
   return { matched: false, cause: '' };
 }

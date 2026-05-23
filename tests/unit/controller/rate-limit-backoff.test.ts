@@ -24,11 +24,12 @@ class FixedClock implements BackoffClock {
 
 describe('Feature 034 Item 047 — RateLimitBackoff (extracted from workflow-controller)', () => {
   describe('RATE_LIMIT_FAMILY', () => {
-    it('contains every operator-visible rate-limit cause label (027 FR-016)', () => {
+    it('contains every operator-visible rate-limit cause label (027 FR-016, 066 FR-009)', () => {
       // Pinned matrix — adding a new label requires a matching audit-log
       // consumer update, so the test fails the build when the set drifts.
       expect([...RATE_LIMIT_FAMILY].sort()).toEqual([
         'credits-exhausted',
+        'out-of-credits',
         'out-of-usage',
         'quota-exceeded',
         'rate-limit',
@@ -116,6 +117,61 @@ describe('Feature 034 Item 047 — RateLimitBackoff (extracted from workflow-con
       const got2 = backoffForCause('rate_limit', future, clock);
       // After 1 minute passes, the dynamic wait shrinks by 60_000 ms.
       expect(got1 - got2).toBe(60_000);
+    });
+  });
+
+  // Feature 066 — past-timestamp safety guard for out-of-credits causes.
+  // The CLI returns `resetsAt` as the LAST rolling reset (already in the
+  // past) for hard-cap accounts; without this guard the dynamic path
+  // would clamp to RETRY_FLOOR_MS and produce a 1-minute retry loop.
+  describe('backoffForCause — out-of-credits past-timestamp guard (Feature 066)', () => {
+    const NOW = 1_700_000_000_000;
+    let clock: FixedClock;
+    beforeEach(() => {
+      clock = new FixedClock(NOW);
+    });
+
+    it('returns RATE_LIMIT_BACKOFF_MS when originalCause is out-of-credits AND reset is in the past', () => {
+      const past = NOW - 60 * 60 * 1000; // 1 hour ago
+      expect(backoffForCause('rate_limit', past, clock, 'out-of-credits')).toBe(
+        RATE_LIMIT_BACKOFF_MS
+      );
+    });
+
+    it('returns RATE_LIMIT_BACKOFF_MS when originalCause is out-of-credits AND reset equals now', () => {
+      expect(backoffForCause('rate_limit', NOW, clock, 'out-of-credits')).toBe(
+        RATE_LIMIT_BACKOFF_MS
+      );
+    });
+
+    it('keeps the dynamic 1-minute floor for non-out-of-credits causes when reset is in the past (FR-011 regression)', () => {
+      const past = NOW - 60 * 60 * 1000;
+      expect(backoffForCause('rate_limit', past, clock, 'rate-limit')).toBe(RETRY_FLOOR_MS);
+      expect(backoffForCause('rate_limit', past, clock, 'out-of-usage')).toBe(RETRY_FLOOR_MS);
+      expect(backoffForCause('rate_limit', past, clock, 'credits-exhausted')).toBe(RETRY_FLOOR_MS);
+      expect(backoffForCause('rate_limit', past, clock, 'quota-exceeded')).toBe(RETRY_FLOOR_MS);
+    });
+
+    it('keeps the dynamic floor when originalCause is omitted (pre-066 callers byte-for-byte)', () => {
+      const past = NOW - 60 * 60 * 1000;
+      expect(backoffForCause('rate_limit', past, clock)).toBe(RETRY_FLOOR_MS);
+    });
+
+    it('does NOT fire the guard when reset is in the future, even for out-of-credits', () => {
+      const future = NOW + 5 * 60 * 1000; // 5 minutes ahead
+      const got = backoffForCause('rate_limit', future, clock, 'out-of-credits');
+      // Dynamic path: future - now + RETRY_BUFFER_MS
+      expect(got).toBe(5 * 60 * 1000 + RETRY_BUFFER_MS);
+    });
+
+    it('returns RATE_LIMIT_BACKOFF_MS when resetsAtMs is null AND originalCause is out-of-credits (existing null path unchanged)', () => {
+      expect(backoffForCause('rate_limit', null, clock, 'out-of-credits')).toBe(
+        RATE_LIMIT_BACKOFF_MS
+      );
+    });
+
+    it('toDelayedRetryCause normalizes out-of-credits to rate_limit (FR-009)', () => {
+      expect(toDelayedRetryCause('out-of-credits')).toBe('rate_limit');
     });
   });
 });
