@@ -491,10 +491,11 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     const run = store.getRun()!;
     expect(run.pipeline?.id).toBe(BUILT_IN_PIPELINE_ID);
     expect(run.pipeline?.id).toBe('speckit-new-feature');
-    // Adding the bugfix pipeline to BUILT_IN_PIPELINES did NOT change the default (FR-010
-    // default-preservation): BUILT_IN_PIPELINES.length === 2, defaultPipelineId remains
-    // BUILT_IN_PIPELINE_ID.
-    expect(BUILT_IN_PIPELINES.length).toBe(2);
+    // BUILT_IN_PIPELINES now ships three pipelines (speckit-new-feature, speckit-bugfix,
+    // dev-new-feature). BUILT_IN_CATALOG.defaultPipelineId still resolves to
+    // BUILT_IN_PIPELINE_ID for the legacy headless/no-reader path; the user-facing default
+    // for fresh installs is overridden to 'dev-new-feature' via package.json.
+    expect(BUILT_IN_PIPELINES.length).toBe(3);
     expect(BUILT_IN_CATALOG.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
   });
 

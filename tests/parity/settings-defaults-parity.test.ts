@@ -53,7 +53,7 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     const pkg = readPackageJson();
     const contrib = pkg.contributes.configuration.properties['schegent.defaultPipelineId'];
     expect(contrib).toBeDefined();
-    expect(contrib.default).toBe('speckit-new-feature');
+    expect(contrib.default).toBe('dev-new-feature');
   });
 
   it('package.json retry.maxAttempts has maximum 5 (effective cap)', () => {
@@ -122,7 +122,7 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
       }
     };
     const settings = mod.readGeneralSettings(fakeConfig);
-    expect(settings.defaultPipelineId).toBe('speckit-new-feature');
+    expect(settings.defaultPipelineId).toBe('dev-new-feature');
     expect(settings.retryMaxAttempts).toBe(5);
     expect(settings.queueGlobalConcurrencyCap).toBe(1);
     expect(settings.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
@@ -133,7 +133,7 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
   it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../src/ui/sidebar/snapshot.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('dev-new-feature');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(1);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
@@ -142,7 +142,7 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
 
   it('webview IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('dev-new-feature');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(1);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
