@@ -12,9 +12,13 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped phase-runner.ts +10
 // and phase-retry-evaluator.ts +30 to accommodate the FR-028 retry-decision
 // projection sink (additive constructor params + projection emission with
-// canonical FR-012 warning text). The remaining caps are unchanged.
+// canonical FR-012 warning text).
+//
+// Feature 068 — bumped phase-runner.ts +10 to accommodate the FR-004
+// `cli-invocation` audit emission (additive eventType union member +
+// 7-line emission block right after `runner.invoke()` returns).
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 610 },
+  { path: 'src/controller/phase-runner.ts', max: 620 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }

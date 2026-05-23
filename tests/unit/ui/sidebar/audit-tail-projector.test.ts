@@ -101,3 +101,121 @@ describe('projectAuditEntry (Feature 064 T008)', () => {
     expect(projected.scope).toBe('system');
   });
 });
+
+// Feature 068 — INV-4..INV-9: additive extraction of taskId / phaseId /
+// outcome / command. Existing assertions above must remain green
+// (SC-004 / FR-017).
+describe('projectAuditEntry (Feature 068 additive fields)', () => {
+  it('extracts taskId from payload.taskId (highest priority)', () => {
+    const projected = projectAuditEntry(
+      entry({ payload: { taskId: 't-1', taskID: 't-legacy', queueItemId: 'q-1' } })
+    );
+    expect(projected.taskId).toBe('t-1');
+  });
+
+  it('falls back to payload.taskID when payload.taskId is missing', () => {
+    const projected = projectAuditEntry(
+      entry({ payload: { taskID: 't-legacy', queueItemId: 'q-1' } })
+    );
+    expect(projected.taskId).toBe('t-legacy');
+  });
+
+  it('falls back to payload.queueItemId when payload.taskId/taskID are missing', () => {
+    const projected = projectAuditEntry(entry({ payload: { queueItemId: 'q-1' } }));
+    expect(projected.taskId).toBe('q-1');
+  });
+
+  it('leaves taskId undefined when no payload source is populated', () => {
+    const projected = projectAuditEntry(entry({ payload: { summary: 'x' } }));
+    expect(projected.taskId).toBeUndefined();
+  });
+
+  it('extracts phaseId from payload.phaseId (highest priority)', () => {
+    const projected = projectAuditEntry(
+      entry({ payload: { phaseId: 'plan', phase: 'tasks' } })
+    );
+    expect(projected.phaseId).toBe('plan');
+  });
+
+  it('falls back to payload.phase when payload.phaseId is absent', () => {
+    const projected = projectAuditEntry(
+      entry({ payload: { phase: 'tasks' } })
+    );
+    expect(projected.phaseId).toBe('tasks');
+  });
+
+  it('falls back to envelope phase when payload has neither phaseId nor phase', () => {
+    const projected = projectAuditEntry(
+      entry({ phase: 'speckit-plan', payload: { summary: 'x' } })
+    );
+    expect(projected.phaseId).toBe('speckit-plan');
+  });
+
+  it("leaves phaseId undefined when envelope phase is 'done' and payload has no phase fields", () => {
+    const projected = projectAuditEntry(
+      entry({ phase: 'done', payload: { summary: 'x' } })
+    );
+    expect(projected.phaseId).toBeUndefined();
+  });
+
+  it("normalizes outcome 'success' to 'success'", () => {
+    const projected = projectAuditEntry(entry({ outcome: 'success' }));
+    expect(projected.outcome).toBe('success');
+  });
+
+  it("normalizes outcome 'failure' to 'error'", () => {
+    const projected = projectAuditEntry(entry({ outcome: 'failure' }));
+    expect(projected.outcome).toBe('error');
+  });
+
+  it("leaves outcome undefined when envelope outcome is 'info'", () => {
+    const projected = projectAuditEntry(entry({ outcome: 'info' }));
+    expect(projected.outcome).toBeUndefined();
+  });
+
+  it("extracts command for cli-invocation event when payload.command is a non-empty string", () => {
+    const projected = projectAuditEntry(
+      entry({
+        eventType: 'cli-invocation',
+        payload: { command: 'claude --print --model claude-opus-4-7 ...' }
+      })
+    );
+    expect(projected.command).toBe('claude --print --model claude-opus-4-7 ...');
+  });
+
+  it("leaves command undefined for cli-invocation when payload.command is missing", () => {
+    const projected = projectAuditEntry(
+      entry({ eventType: 'cli-invocation', payload: {} })
+    );
+    expect(projected.command).toBeUndefined();
+  });
+
+  it("leaves command undefined for cli-invocation when payload.command is an empty string", () => {
+    const projected = projectAuditEntry(
+      entry({ eventType: 'cli-invocation', payload: { command: '' } })
+    );
+    expect(projected.command).toBeUndefined();
+  });
+
+  it("ignores payload.command for non-cli-invocation events", () => {
+    const projected = projectAuditEntry(
+      entry({ eventType: 'phase-start', payload: { command: 'should-be-ignored' } })
+    );
+    expect(projected.command).toBeUndefined();
+  });
+
+  it('returns a frozen object after additive fields land', () => {
+    const projected = projectAuditEntry(
+      entry({
+        eventType: 'cli-invocation',
+        payload: { taskId: 't-1', phaseId: 'plan', command: 'claude ...' },
+        outcome: 'success'
+      })
+    );
+    expect(Object.isFrozen(projected)).toBe(true);
+    expect(projected.taskId).toBe('t-1');
+    expect(projected.phaseId).toBe('plan');
+    expect(projected.outcome).toBe('success');
+    expect(projected.command).toBe('claude ...');
+  });
+});

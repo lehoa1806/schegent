@@ -170,6 +170,7 @@ export interface QueueProjection {
   readonly inFlight: QueueItem | null;
   readonly pending: readonly QueueItem[];
   readonly recent: readonly QueueItem[];
+  readonly orderedItems: readonly QueueItem[];
   readonly queues: readonly QueueSummary[];
   readonly paused: boolean;
   readonly pausedReason: string | null;
@@ -205,6 +206,11 @@ export interface AuditTailEntry {
   // --- Feature 064 additive fields ---
   readonly runId: string;
   readonly scope: AuditScope;
+  // --- Feature 068 additive fields ---
+  readonly taskId?: string;
+  readonly phaseId?: string;
+  readonly outcome?: 'success' | 'error' | 'pending';
+  readonly command?: string;
 }
 
 export interface LiveActivity {
@@ -514,6 +520,7 @@ export function buildIdleSnapshot(opts: {
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
       recent: Object.freeze([]) as readonly QueueItem[],
+      orderedItems: Object.freeze([]) as readonly QueueItem[],
       queues: Object.freeze([]) as readonly QueueSummary[],
       paused: false,
       pausedReason: null,

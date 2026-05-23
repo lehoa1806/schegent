@@ -2,7 +2,7 @@ import type { AuditAppendListener, AuditDisposable, AuditLogWriter } from '../..
 import type { AuditEntry } from '../../audit/audit-entry';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
-import { parseAuditLogLine } from '../../parser/audit-log-parser';
+import { readAuditTailColdStart } from './audit-tail-coldstart';
 import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
 import type {
   Disposable,
@@ -66,14 +66,10 @@ export interface ProjectorTimer {
   clearTimeout: (handle: unknown) => void;
 }
 
-export interface InitialTailReader {
-  readTail(filePath: string, maxLines: number): Promise<readonly string[]>;
-}
-
 export interface StateProjectorDeps {
   readonly store?: Pick<WorkspaceStateStore, 'getRun' | 'getQueue' | 'getLock' | 'subscribe'> &
   Partial<Pick<WorkspaceStateStore, 'getQueueRegistry' | 'getConfirmSuppression'>>;
-  readonly audit?: Pick<AuditLogWriter, 'subscribe' | 'logPath'>;
+  readonly audit?: Pick<AuditLogWriter, 'subscribe' | 'logPath' | 'workspaceRoot'>;
   readonly ownerId?: string;
   /**
    * Feature 031 — test seam: when set, forces `isPrimary` to the given
@@ -93,7 +89,6 @@ export interface StateProjectorDeps {
   readonly timer?: ProjectorTimer;
   readonly now?: () => Date;
   readonly monotonicNow?: () => number;
-  readonly initialTailReader?: InitialTailReader;
   // Feature 013 — US4: `sanitize` is now required on the picked logger
   // surface because the projector applies the redaction set to the
   // queue-level `pausedReason` before it reaches the webview.
@@ -194,7 +189,8 @@ const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
 
 const STUB_AUDIT: NonNullable<StateProjectorDeps['audit']> = Object.freeze({
   subscribe: () => ({ dispose: () => { /* noop */ } }),
-  logPath: ''
+  logPath: '',
+  workspaceRoot: ''
 });
 
 export class StateProjector {
@@ -208,7 +204,6 @@ export class StateProjector {
   private readonly timer: ProjectorTimer;
   private readonly now: () => Date;
   private readonly monotonicNow: () => number;
-  private readonly initialTailReader: InitialTailReader | null;
   private readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
 
   private readonly listeners = new Set<ProjectorListener>();
@@ -281,7 +276,6 @@ export class StateProjector {
       const perf = (globalThis as { performance?: { now: () => number } }).performance;
       return perf ? perf.now() : Date.now();
     });
-    this.initialTailReader = deps.initialTailReader ?? null;
     this.logger = deps.logger ?? null;
     this.monitor = deps.monitor ?? null;
     this.history = deps.history ?? null;
@@ -404,32 +398,25 @@ export class StateProjector {
   }
 
   private async hydrateInitialTail(): Promise<void> {
-    if (!this.initialTailReader) return;
-    let lines: readonly string[];
-    try {
-      lines = await this.initialTailReader.readTail(this.audit.logPath, AUDIT_TAIL_MAX);
-    } catch (err) {
-      this.logger?.warn(`projector: failed to read initial audit tail: ${(err as Error).message}`);
-      return;
-    }
+    // Feature 068 (US3 / T025) — delegate cold-start replay to the
+    // canonical reader. See specs/068-enhance-system-log/contracts/
+    // audit-tail-projector.md §2-§3 for the contract (ENOENT silent,
+    // malformed lines warn+skip, AUDIT_TAIL_MAX cap, frozen output).
+    const tail = await readAuditTailColdStart(this.audit.workspaceRoot, this.logger as SanitizedLogger | undefined);
     if (this.disposed) return;
-    let warnedOnce = false;
-    const parsedEntries: AuditEntry[] = [];
-    for (const line of lines) {
-      const entry = parseAuditLogLine(line);
-      if (entry) parsedEntries.push(entry);
-      else if (!warnedOnce) {
-        this.logger?.debug('projector: dropped unparseable audit log line(s)');
-        warnedOnce = true;
-      }
+    if (tail.length === 0) return;
+    // Defensive dedupe by id (contract §3): a live audit event may
+    // arrive between subscribe() and this await resolving. In practice
+    // the cold-start completes first, but the dedupe keeps the merge
+    // safe if ordering ever inverts.
+    const seenIds = new Set(this.auditTail.map((e) => e.id));
+    for (const entry of tail) {
+      if (!seenIds.has(entry.id)) this.auditTail.push(entry);
     }
-    if (this.auditTail.length === 0 && parsedEntries.length > 0) {
-      for (const entry of parsedEntries) this.auditTail.push(projectAuditEntry(entry));
-      if (this.auditTail.length > AUDIT_TAIL_MAX) {
-        this.auditTail.splice(0, this.auditTail.length - AUDIT_TAIL_MAX);
-      }
-      this.scheduleProjection();
+    if (this.auditTail.length > AUDIT_TAIL_MAX) {
+      this.auditTail.splice(0, this.auditTail.length - AUDIT_TAIL_MAX);
     }
+    this.scheduleProjection();
   }
 
   public dispose(): void {

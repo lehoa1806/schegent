@@ -67,7 +67,6 @@ import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
 import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { MessageRouter } from './ui/sidebar/message-router';
-import { FileInitialTailReader } from './ui/sidebar/initial-tail-reader';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
 import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
@@ -709,7 +708,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     audit: auditWriter,
     ownerId,
-    initialTailReader: new FileInitialTailReader(),
     logger,
     monitor,
     history: historyStore,

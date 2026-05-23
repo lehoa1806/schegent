@@ -106,6 +106,9 @@ export class CodexCliRunner implements BackendRunner {
       args.push('--effort', request.effort);
     }
 
+    // Feature 068 — capture assembled command for cli-invocation audit.
+    const command = [request.cliPath, ...args].join(' ');
+
     const child = safeSpawn(this.spawnFn, request.cliPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
@@ -213,7 +216,8 @@ export class CodexCliRunner implements BackendRunner {
       timedOut,
       durationMs: Date.now() - start,
       stdoutTruncated,
-      stderrTruncated
+      stderrTruncated,
+      command
     };
   }
 

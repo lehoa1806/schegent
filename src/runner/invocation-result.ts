@@ -101,4 +101,15 @@ export interface RawInvocationOutput {
    * `stdoutTruncated`.
    */
   stderrTruncated?: boolean;
+  /**
+   * Feature 068 — the assembled CLI command (cliPath + argv) that the
+   * runner spawned. Returned so the controller can emit a single
+   * `cli-invocation` audit event whose `payload.command` mirrors the
+   * exact argv (after redaction via the audit writer's sanitizer). The
+   * prompt body is INCLUDED only when the runner chose the legacy
+   * `-p` transport (otherwise the argv carries a temp-file path or
+   * `--prompt-stdin` placeholder). `undefined` from a non-runner
+   * fixture is equivalent to "no command captured".
+   */
+  command?: string;
 }

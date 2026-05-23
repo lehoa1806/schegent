@@ -223,6 +223,14 @@ next activation; dismissal flows through the new (read-side)
 
 ### Audit events to grep in the System tab
 
+> **Feature 068 (2026-05-23)** — the System tab now restores its tail on
+> workspace reload by reading `.schegent/audit.log` at snapshot bootstrap
+> (cold-start replay, last `AUDIT_TAIL_MAX = 50` entries). Each row also
+> shows structured per-entry metadata (taskId, phaseId, absolute
+> timestamp, outcome badge) and renders the spawned CLI command in a
+> monospace block for `cli-invocation` events. No new event types are
+> introduced — existing audit grep guidance below still applies.
+
 All eight are additive (no `AUDIT_SCHEMA_VERSION` bump) and route through
 the existing single-sanitization point in `audit-log-writer.ts`. Each
 carries the consistent core payload `{ queueId, eventType, occurredAt,

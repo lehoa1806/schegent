@@ -316,6 +316,15 @@ export class PhaseRunner {
       ...(inputs.isContinue === true ? { isContinue: true } : {})
     });
 
+    // Feature 068 — emit cli-invocation; sanitizer redacts secrets.
+    if (typeof raw.command === 'string' && raw.command.length > 0) {
+      await this.appendAudit(inputs, 'cli-invocation', 'info', {
+        ...this.pipelineMeta(inputs),
+        phaseId: inputs.phaseDef?.id ?? inputs.phase,
+        command: raw.command
+      });
+    }
+
     if (raw.timedOut) {
       await this.rawTranscript?.appendEnd({
         runId: inputs.runId,
@@ -590,7 +599,8 @@ export class PhaseRunner {
       | 'phase-end'
       | 'cancel'
       | 'fatal-signature-matched'
-      | 'auto-compact-override-applied',
+      | 'auto-compact-override-applied'
+      | 'cli-invocation',
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>
   ) {

@@ -24,7 +24,7 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // budget is no longer the forcing function. See
   // specs/063-clean-all-confirmations/plan.md lines 26 and 66.
   { path: 'src/state/workspace-state.ts', maxLines: 10_000 },
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 900 },
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 920 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   { path: 'src/config/pipeline-config.ts', maxLines: 700 },

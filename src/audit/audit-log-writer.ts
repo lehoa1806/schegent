@@ -91,6 +91,13 @@ export class AuditLogWriter {
     return path.join(this.config.workspaceRoot, '.schegent', 'audit.log');
   }
 
+  // Feature 068 (US3) — cold-start replay (`readAuditTailColdStart`) is keyed
+  // on the workspace root, not the resolved log path; expose the canonical
+  // root the writer was constructed with so the projector can hand it through.
+  public get workspaceRoot(): string {
+    return this.config.workspaceRoot;
+  }
+
   public subscribe(listener: AuditAppendListener): AuditDisposable {
     this.listeners.add(listener);
     return {

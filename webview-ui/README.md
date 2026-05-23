@@ -517,6 +517,35 @@ It is the dashboard's exclusive surface for system-scoped audit entries
 and is **never** gated by runId reachability — `queue-cleared-all` and
 other lifecycle/housekeeping events always render here (FR-015).
 
+### IPC additions (spec 068 — Enhance System Log)
+
+Feature 068 adds **no new IPC commands** and **no new audit event types**.
+It extends `AuditTailEntry` with four optional fields populated by the
+existing `projectAuditEntry`:
+
+- `taskId?: string` — first-non-empty of `payload.taskId`,
+  `payload.taskID`, `payload.queueItemId`.
+- `phaseId?: string` — first-non-empty of `payload.phaseId`,
+  `payload.phase`, envelope `entry.phase` (when not `'done'`).
+- `outcome?: 'success' | 'error' | 'pending'` — normalized from the
+  envelope `outcome` field; envelope `'failure'` → projected `'error'`.
+- `command?: string` — populated only when `entry.eventType ===
+  'cli-invocation'`; carries the spawned argv joined with spaces. The
+  field flows through the existing audit-writer `logger.sanitizeRecord()`
+  path before persistence (no new redaction).
+
+All four are additive on the frozen projection (no `AUDIT_SCHEMA_VERSION`
+bump). Legacy entries that lack any of these fields render with the
+explicit-absence marker `—` per FR-009. The on-disk JSONL format is
+unchanged; the only new payload field is `cli-invocation.command` and the
+existing parser tolerates it.
+
+The System tab also restores its tail on cold-start by reading
+`.schegent/audit.log` once at snapshot bootstrap (see
+[`../src/ui/sidebar/audit-tail-coldstart.ts`](../src/ui/sidebar/audit-tail-coldstart.ts)).
+The filter is widened so `cli-invocation` entries cross-list in the
+System tab regardless of `scope` (FR-011).
+
 ### IPC additions (spec 065 — Enqueue/Start separation)
 
 Feature 065 separates enqueue from start. Tasks land in the queue

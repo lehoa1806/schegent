@@ -178,6 +178,16 @@ export interface QueueProjection {
   readonly inFlight: QueueItem | null;
   readonly pending: readonly QueueItem[];
   readonly recent: readonly QueueItem[];
+  /**
+   * Feature 065 / BUG-009 (FR-029) — flattened single-source-of-truth row
+   * order for queue-surface rendering. Contains every `FeatureRequest`
+   * from `QueueState.requests` regardless of status (pending, in-flight,
+   * paused, completed, canceled, failed). The legacy `inFlight`/`pending`/
+   * `recent` bucket fields remain populated for backward compatibility,
+   * but new code MUST consume `orderedItems` and treat the buckets as
+   * derived/legacy.
+   */
+  readonly orderedItems: readonly QueueItem[];
   readonly queues?: readonly QueueSummary[];
   readonly paused: boolean;
   readonly pausedReason?: string | null;
@@ -198,6 +208,11 @@ export interface AuditTailEntry {
   // --- Feature 064 additive fields ---
   readonly runId: string;
   readonly scope: 'task' | 'system';
+  // --- Feature 068 additive fields ---
+  readonly taskId?: string;
+  readonly phaseId?: string;
+  readonly outcome?: 'success' | 'error' | 'pending';
+  readonly command?: string;
 }
 
 export interface LiveActivity {

@@ -274,6 +274,12 @@ export class ClaudeCliRunner implements BackendRunner {
       await diagnosticWriter.prepare(verboseTarget);
     }
 
+    // Feature 068 — capture the assembled command (cliPath + argv) so
+    // the controller can emit a `cli-invocation` audit event whose
+    // `payload.command` mirrors the exact spawned argv. The audit
+    // writer's sanitizer runs the field through the redaction set.
+    const command = [request.cliPath, ...args].join(' ');
+
     try {
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
@@ -404,7 +410,8 @@ export class ClaudeCliRunner implements BackendRunner {
         durationMs: Date.now() - start,
         diagnosticWarnings,
         stdoutTruncated,
-        stderrTruncated
+        stderrTruncated,
+        command
       };
     } finally {
       if (tempPromptFile) {
