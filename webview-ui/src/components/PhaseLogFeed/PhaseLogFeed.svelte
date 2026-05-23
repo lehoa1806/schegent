@@ -99,6 +99,16 @@
     return `${sel.queueId}${sel.taskId}${sel.pipelineId}${sel.phaseId}${sel.iterationN}`;
   });
 
+  // Feature 067 — snapshot observer effect. The store de-duplicates
+  // identity-stable snapshots, so this call is safe on every
+  // re-render. When Live Mode is ON AND the in-flight identity tuple
+  // has changed, the store internally cascades through
+  // `jumpToCurrent({ setLiveModeOn: false, origin: 'cascade' })`. When
+  // Live Mode is OFF or the tuple is stable, the call is a no-op.
+  $effect(() => {
+    store.applyInFlightIdentityChange(snapshot);
+  });
+
   // Manually-tracked tail lifecycle. The $effect body re-runs on
   // any reactive read inside `tailFingerprint`, but most of those
   // re-runs see no actual change to the tuple — we compare against
@@ -216,13 +226,17 @@
       ) {
         return;
       }
+      // Feature 067 FR-014 — cold-start is a programmatic cascade,
+      // NOT an operator action. Pass { origin: 'cascade' } so the
+      // store does NOT flip Live Mode OFF when no operator click has
+      // occurred.
       store.setSelection({
         queueId,
         taskId: item.id,
         pipelineId,
         phaseId: candidatePhase,
         iterationN: null
-      });
+      }, { origin: 'cascade' });
       return;
     }
   }
@@ -286,12 +300,17 @@
   // latest iteration. Delegated to the store so the five fields are
   // written in a single setState, avoiding the intermediate fingerprint
   // values the dependent `$effect` would otherwise observe.
+  //
+  // Feature 067 T030 (FR-007, FR-008, FR-010) — the explicit
+  // `setLiveModeOn: true` matches the store's default but documents the
+  // re-engage intent at the call site: clicking Live always flips Live
+  // Mode ON, even when there is no in-flight task to cascade to.
   function handleJumpToCurrent(): void {
     if (onJumpToCurrent) {
       onJumpToCurrent();
       return;
     }
-    void store.jumpToCurrent(snapshot);
+    void store.jumpToCurrent(snapshot, { setLiveModeOn: true });
   }
   // Feature 029 T018 \u2014 flat-text rendering for the "Copy All" button.
   // For `tool-use` entries we use the same parser the renderer uses so

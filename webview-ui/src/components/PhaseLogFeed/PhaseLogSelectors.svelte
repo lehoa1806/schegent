@@ -56,10 +56,13 @@
     }, 1500);
   }
 
-  // T055 — "Jump to current phase" is enabled only when there's an
-  // in-flight task to jump to.
+  // Feature 067 T029 (FR-008, FR-012) — Live button MUST remain
+  // click-receptive whenever the operator may need to re-engage Live
+  // Mode. When `inFlight === null` we render an `aria-disabled` visual
+  // treatment, but the click handler still fires so the store can set
+  // intent ON for the next non-null inFlight push (FR-008).
   const jumpDisabled = $derived(snapshot.queue.inFlight === null);
-  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight phase' : 'Jump to the currently executing phase');
+  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight phase (click to enable Live Mode)' : 'Jump to the currently executing phase');
 
   // Breadcrumb derivations — show the user what's currently selected
   // without requiring dropdowns.
@@ -88,9 +91,10 @@
       : null
   );
 
-  // T055 — defensive guard.
+  // Feature 067 T030 — unconditional dispatch. The store's
+  // `jumpToCurrent` handles both the cascade path (inFlight !== null)
+  // and the intent-only path (inFlight === null) per FR-007/FR-008.
   function handleJumpClick(): void {
-    if (jumpDisabled) return;
     onJumpToCurrent();
   }
 </script>
@@ -114,9 +118,9 @@
 
   <button
     type="button"
-    class="jump-btn"
+    class="jump-btn {jumpDisabled ? 'is-aria-disabled' : ''}"
     data-testid="phase-log-jump-current"
-    disabled={jumpDisabled}
+    aria-disabled={jumpDisabled}
     title={jumpTooltip}
     onclick={handleJumpClick}
   >
@@ -215,19 +219,19 @@
     transition: all 0.2s ease, transform 0.1s ease;
   }
 
-  .jump-btn:hover:not(:disabled) {
+  .jump-btn:hover:not(.is-aria-disabled) {
     background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
     box-shadow: 0 0 10px color-mix(in srgb, var(--schegent-color-active) 30%, transparent);
   }
 
-  .jump-btn:active:not(:disabled) {
+  .jump-btn:active:not(.is-aria-disabled) {
     transform: scale(0.93);
     opacity: 0.8;
   }
 
-  .jump-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
+  .jump-btn.is-aria-disabled {
+    opacity: 0.55;
+    cursor: pointer;
     border-color: var(--schegent-disabled-fg);
     color: var(--schegent-disabled-fg);
     background: transparent;

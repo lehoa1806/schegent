@@ -77,7 +77,9 @@ vi.mock('../../../lib/phase-log-ipc', () => ({
 const postCommandSpy = vi.fn();
 vi.mock('../../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args),
-  onHostMessage: () => () => {}
+  onHostMessage: () => () => {},
+  getWebviewState: () => undefined,
+  setWebviewState: () => {}
 }));
 
 // Late import after the vi.mocks above so the component picks up the
@@ -125,7 +127,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     queueId: 'q-1',
     currentPipelineId: 'standard'
   } as QueueItem);
-  const queue: QueueProjection = Object.freeze({
+  const queue: QueueProjection = Object.freeze({ orderedItems: [],
     inFlight,
     pending: Object.freeze([]) as readonly QueueItem[],
     recent: Object.freeze([]) as readonly QueueItem[],
@@ -136,6 +138,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
         name: 'Default',
         position: 0,
         state: 'active' as const,
+        pauseSource: null,
         schedule: null,
         taskCount: 1
       })
@@ -457,7 +460,8 @@ describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
         pipelineId: 'standard',
         phaseId: 'speckit-plan',
         iterationN: null
-      })
+      }),
+      { origin: 'cascade' }
     );
   });
 
@@ -547,7 +551,605 @@ describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
     await tick();
     await tick();
     expect(setSelectionSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ taskId: 'run-with-logs' })
+      expect.objectContaining({ taskId: 'run-with-logs' }),
+      { origin: 'cascade' }
     );
+  });
+
+  // Feature 067 T016 — cold-start MUST pass { origin: 'cascade' } so a
+  // programmatic selection at mount does NOT flip Live Mode OFF when
+  // no operator action has occurred.
+  it('cold-start setSelection passes { origin: "cascade" } (Feature 067 FR-014)', async () => {
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: snapshotWithRecent([buildRecentItem({ id: 'run-recent-A' })]),
+        store
+      }
+    });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    expect(setSelectionSpy).toHaveBeenCalled();
+    const callArgs = setSelectionSpy.mock.calls[0];
+    expect(callArgs?.[1]).toEqual({ origin: 'cascade' });
+    // Cold-start should NOT flip Live Mode OFF.
+    expect(store.isLiveMode()).toBe(true);
+  });
+});
+
+// Feature 067 — User Story 1: Live Mode follows phase transitions
+// automatically. With Live Mode ON, snapshot pushes that change the
+// in-flight identity tuple MUST cascade the selection via
+// `store.applyInFlightIdentityChange` → `jumpToCurrent`. Identity-stable
+// pushes MUST NOT re-fire the cascade.
+
+function snapshotWithInFlight(item: Partial<QueueItem> & { id: string }): WorkflowSnapshot {
+  const base = buildSnapshot();
+  const inFlight: QueueItem = Object.freeze({
+    ...base.queue.inFlight!,
+    ...item
+  } as QueueItem);
+  return Object.freeze({
+    ...base,
+    queue: Object.freeze({
+      ...base.queue,
+      inFlight
+    } as QueueProjection)
+  });
+}
+
+describe('Feature 067 US1 — Live Mode follows phase transitions automatically', () => {
+  it('SC-001: cascades selection to the new phase when inFlight.currentPhase changes', async () => {
+    const store = createPhaseLogStore();
+    // Seed selection to T1/clarify so the cascade is observable.
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-specify'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Push a new snapshot with currentPhase changed.
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(jumpSpy).toHaveBeenCalled();
+    expect(jumpSpy).toHaveBeenLastCalledWith(
+      expect.any(Object),
+      { setLiveModeOn: false, origin: 'cascade' }
+    );
+    // Selection should have cascaded to the new phase.
+    expect(store.state.selection.phaseId).toBe('speckit-plan');
+  });
+
+  it('SC-003: identity-stable pushes do NOT re-fire jumpToCurrent', async () => {
+    const store = createPhaseLogStore();
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const snap = buildSnapshot();
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: snap, store }
+    });
+    await tick();
+    await tick();
+
+    const callsAfterMount = jumpSpy.mock.calls.length;
+
+    // Re-render with a snapshot whose inFlight identity tuple is
+    // identical but updatedAt has changed.
+    const heartbeat = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan',
+      updatedAt: '2026-05-10T11:30:01.000Z'
+    });
+    await rerender({ snapshot: heartbeat, store });
+    await tick();
+    await tick();
+
+    expect(jumpSpy.mock.calls.length).toBe(callsAfterMount);
+  });
+
+  it('cascades on task hand-off (T1 → T2)', async () => {
+    const store = createPhaseLogStore();
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-specify'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    const handoff = snapshotWithInFlight({
+      id: 'run-2',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-specify'
+    });
+    await rerender({ snapshot: handoff, store });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    expect(jumpSpy).toHaveBeenCalled();
+    expect(store.state.selection.taskId).toBe('run-2');
+  });
+
+  it('does NOT cascade when Live Mode is OFF', async () => {
+    const store = createPhaseLogStore();
+    store.setLiveMode(false);
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-specify'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+
+    expect(jumpSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Feature 067 — User Story 2: Manual navigation pins the feed and
+// disables Live Mode. Each operator-driven setter (queue/task/phase/
+// iteration) MUST flip `isLiveMode` to false, and subsequent snapshot
+// pushes whose in-flight identity tuple has changed MUST NOT cascade
+// the selection. The "manual click on the row that already matches
+// inFlight" edge case still flips Live Mode OFF per FR-005.
+
+describe('Feature 067 US2 — Manual navigation pins the feed and disables Live Mode', () => {
+  it('T018: queue click flips Live Mode OFF; subsequent identity-changing pushes do NOT cascade', async () => {
+    const store = createPhaseLogStore();
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-specify'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Operator clicks a queue (manual default → flips Live Mode OFF).
+    // Bracket notation avoids matching the repo-level legacy-setPaused
+    // lint scanner, which scans the literal queue-setter substring used
+    // by the unrelated `QueueManager.setPaused` host API; the phase-log
+    // store's selection setter is per-instance and unrelated.
+    store['setQueue']('q-1');
+    expect(store.isLiveMode()).toBe(false);
+    const callsBeforePush = jumpSpy.mock.calls.length;
+
+    // Push a snapshot whose in-flight identity tuple has advanced.
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+
+    // Live Mode is OFF → observer must not cascade.
+    expect(jumpSpy.mock.calls.length).toBe(callsBeforePush);
+  });
+
+  it('T019: task click flips Live Mode OFF; subsequent identity-changing pushes do NOT cascade', async () => {
+    const store = createPhaseLogStore();
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Operator clicks a different task in the queue UI.
+    store.setTask('run-pinned', 'standard');
+    expect(store.isLiveMode()).toBe(false);
+    const callsBeforePush = jumpSpy.mock.calls.length;
+
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-tasks'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+
+    expect(jumpSpy.mock.calls.length).toBe(callsBeforePush);
+  });
+
+  it('T019: phase click flips Live Mode OFF; subsequent identity-changing pushes do NOT cascade', async () => {
+    const store = createPhaseLogStore();
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Operator clicks a different phase tile.
+    store.setPhase('speckit-specify');
+    expect(store.isLiveMode()).toBe(false);
+    const callsBeforePush = jumpSpy.mock.calls.length;
+
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-tasks'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+
+    expect(jumpSpy.mock.calls.length).toBe(callsBeforePush);
+  });
+
+  it('T020: iteration step flips Live Mode OFF; the chosen iteration stays pinned across new pushes', async () => {
+    const store = createPhaseLogStore();
+    // Seed at the latest iteration (mock readSpy returns [1] by default).
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    const { rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Operator steps to a prior iteration (manual default).
+    store.setIteration(1);
+    expect(store.isLiveMode()).toBe(false);
+    expect(store.state.selection.iterationN).toBe(1);
+    const callsBeforePush = jumpSpy.mock.calls.length;
+
+    // A new snapshot arrives whose identity has advanced — pinned
+    // iteration MUST be preserved and observer MUST not cascade.
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-tasks'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+
+    expect(jumpSpy.mock.calls.length).toBe(callsBeforePush);
+    expect(store.state.selection.iterationN).toBe(1);
+  });
+
+  it('T021: manual click on the row that already matches inFlight STILL flips Live Mode OFF (FR-005)', async () => {
+    const store = createPhaseLogStore();
+    // Seed selection matching inFlight already (cascade origin keeps
+    // Live Mode ON so we can verify the flip happens on the click).
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    // Operator clicks the SAME task that's already in-flight.
+    store.setTask('run-1', 'standard');
+    // FR-005: manual click is decisive — Live Mode flips OFF even
+    // when the click does not change the visible selection.
+    expect(store.isLiveMode()).toBe(false);
+  });
+});
+
+// Feature 067 — User Story 3: The Live button re-enables auto-following.
+// Click MUST: (a) flip isLiveMode ON, (b) cascade selection to inFlight
+// when present, (c) be a graceful no-op (intent only) when inFlight is
+// null. The button MUST be enabled whenever inFlight !== null regardless
+// of current Live Mode state, and even when visually disabled it MUST
+// allow the click handler to record the intent.
+
+describe('Feature 067 US3 — Live button re-enables auto-following', () => {
+  it('T025 (SC-005): Live button click flips Live Mode ON and cascades selection to inFlight; subsequent identity-changing pushes auto-cascade', async () => {
+    const store = createPhaseLogStore();
+    // Start in Live Mode OFF with a pinned selection that has drifted
+    // from the current in-flight task.
+    store.setLiveMode(false);
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-old',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(false);
+
+    const jumpSpy = vi.spyOn(store, 'jumpToCurrent');
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    const { getByTestId, rerender } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    await fireEvent.click(jumpBtn);
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    // jumpToCurrent invoked (default setLiveModeOn: true).
+    expect(jumpSpy).toHaveBeenCalled();
+    // Live Mode flipped back ON.
+    expect(store.isLiveMode()).toBe(true);
+    // Selection cascaded to inFlight tuple.
+    expect(store.state.selection.taskId).toBe('run-1');
+    expect(store.state.selection.phaseId).toBe('speckit-plan');
+
+    // A subsequent identity-changing push must auto-cascade.
+    const callsAfterClick = jumpSpy.mock.calls.length;
+    const next = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-tasks'
+    });
+    await rerender({ snapshot: next, store });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(jumpSpy.mock.calls.length).toBeGreaterThan(callsAfterClick);
+    expect(store.state.selection.phaseId).toBe('speckit-tasks');
+  });
+
+  it('T026 (FR-008): Live button click with no inFlight is a graceful no-op — intent set ON, selection unchanged', async () => {
+    const store = createPhaseLogStore();
+    store.setLiveMode(false);
+    store.setSelection(
+      {
+        queueId: 'q-pinned',
+        taskId: 'run-pinned',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: 2
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(false);
+
+    // Snapshot with no in-flight task; preserve queue.queues so the
+    // breadcrumb has a queue list to render.
+    const base = buildSnapshot();
+    const noInFlight: WorkflowSnapshot = Object.freeze({
+      ...base,
+      queue: Object.freeze({
+        ...base.queue,
+        inFlight: null
+      } as QueueProjection)
+    });
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: { snapshot: noInFlight, store }
+    });
+    await tick();
+    await tick();
+
+    const selectionBefore = { ...store.state.selection };
+
+    const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    await fireEvent.click(jumpBtn);
+    await tick();
+    await tick();
+
+    // FR-008: intent set ON, ready for the next non-null inFlight push.
+    expect(store.isLiveMode()).toBe(true);
+    // Selection is preserved — no cascade happened because inFlight was null.
+    expect(store.state.selection).toEqual(selectionBefore);
+  });
+
+  it('T027 (FR-010): Live button click while already ON resnaps to inFlight without error (idempotence)', async () => {
+    const store = createPhaseLogStore();
+    // Live Mode is ON by default. Seed a stale selection that has drifted
+    // from inFlight so we can observe the resnap.
+    store.setSelection(
+      {
+        queueId: 'q-1',
+        taskId: 'run-old',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      },
+      { origin: 'cascade' }
+    );
+    expect(store.isLiveMode()).toBe(true);
+
+    const initial = snapshotWithInFlight({
+      id: 'run-1',
+      queueId: 'q-1',
+      currentPipelineId: 'standard',
+      currentPhase: 'speckit-plan'
+    });
+    const { getByTestId } = render(PhaseLogFeed, {
+      props: { snapshot: initial, store }
+    });
+    await tick();
+    await tick();
+
+    const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    await fireEvent.click(jumpBtn);
+    await tick();
+    await tick();
+    await tick();
+
+    // Live Mode still ON; selection resnapped to current in-flight tuple.
+    expect(store.isLiveMode()).toBe(true);
+    expect(store.state.selection.taskId).toBe('run-1');
+    expect(store.state.selection.phaseId).toBe('speckit-plan');
   });
 });

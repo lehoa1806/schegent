@@ -72,6 +72,26 @@ export function onHostMessage<S>(handler: HostMessageHandler<S>): () => void {
   return () => window.removeEventListener('message', listener);
 }
 
+/**
+ * Read the persisted webview state. Returns `undefined` outside a VS Code
+ * webview host (e.g. unit tests). The returned object is the live state
+ * object; treat reads as snapshots and merge through `setWebviewState`
+ * rather than mutating in place.
+ */
+export function getWebviewState<T = unknown>(): T | undefined {
+  return getApi().getState<T>();
+}
+
+/**
+ * Persist the webview state. Pass the full next state object; VS Code
+ * replaces the prior value wholesale (no shallow merge). Callers that
+ * want partial updates MUST read the current state, merge, and write
+ * the merged result.
+ */
+export function setWebviewState(state: unknown): void {
+  getApi().setState(state);
+}
+
 export const __test_only = { uuidv4 };
 
 export type { CommandType };

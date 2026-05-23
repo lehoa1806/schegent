@@ -37,6 +37,7 @@ function makeQueue(over: Partial<QueueProjection> = {}): QueueProjection {
     inFlight: null,
     pending: [],
     recent: [],
+    orderedItems: [],
     queues: [
       { id: 'default', name: 'Default', position: 0, state: 'active', pauseSource: null, schedule: null, taskCount: 0 }
     ],
@@ -123,7 +124,12 @@ describe('Feature 021 — PhaseLogSelectors breadcrumb trail', () => {
 
 // Feature 020 T054 — Jump-to-current-phase affordance contract (US3).
 describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
-  it('is disabled with tooltip when there is no in-flight task', () => {
+  // Feature 067 T029 (FR-008, FR-012) — when there is no in-flight
+  // task the button is visually disabled (`aria-disabled`) but
+  // click-receptive so the store can set Live Mode intent ON for the
+  // next non-null inFlight push. The HTML `disabled` attribute MUST
+  // NOT be set, otherwise the click would never reach the handler.
+  it('is aria-disabled (visually) but click-receptive when there is no in-flight task', () => {
     const { getByTestId } = render(PhaseLogSelectors, {
       props: {
         snapshot: { queue: makeQueue({ inFlight: null }), history: [] },
@@ -142,8 +148,9 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
       }
     });
     const button = getByTestId('phase-log-jump-current') as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    expect(button.title).toBe('No in-flight phase');
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.title).toBe('No in-flight phase (click to enable Live Mode)');
   });
 
   it('is enabled when a task is in-flight', () => {
@@ -210,7 +217,12 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
     expect(onJumpToCurrent).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT invoke onJumpToCurrent when clicked while disabled', async () => {
+  // Feature 067 T030 (FR-008) — clicking while there is no in-flight
+  // task MUST still invoke `onJumpToCurrent` so the store can set
+  // Live Mode intent ON for the next non-null inFlight push. The
+  // store's `jumpToCurrent` handles the no-inFlight case gracefully
+  // (sets isLiveMode=true then early-returns without a cascade).
+  it('invokes onJumpToCurrent even when there is no in-flight task (FR-008 intent-ON)', async () => {
     const onJumpToCurrent = vi.fn();
     const { getByTestId } = render(PhaseLogSelectors, {
       props: {
@@ -230,6 +242,6 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
       }
     });
     await fireEvent.click(getByTestId('phase-log-jump-current'));
-    expect(onJumpToCurrent).not.toHaveBeenCalled();
+    expect(onJumpToCurrent).toHaveBeenCalledTimes(1);
   });
 });

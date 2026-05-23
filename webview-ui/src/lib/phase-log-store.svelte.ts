@@ -33,6 +33,7 @@ import {
   type StartPhaseLogTailRequest,
   type StopPhaseLogTailRequest
 } from './phase-log-ipc';
+import { getWebviewState, setWebviewState } from './vscode-api';
 
 export type PhaseLogSelectionDraft = {
   readonly queueId: string | null;
@@ -53,7 +54,25 @@ export interface PhaseLogStoreState {
   readonly truncatedCount: number;
   readonly loading: boolean;
   readonly errorReason: string | null;
+  /**
+   * Feature 067 — operator intent for Live Mode auto-follow. When
+   * `true`, the snapshot observer cascades the selection to the
+   * in-flight task/phase whenever the identity tuple changes. When
+   * `false`, the operator's pinned selection is preserved across
+   * snapshot pushes. Persisted to `vscode.setState`; survives webview
+   * reload but not VS Code restart (per-instance webview state).
+   */
+  readonly isLiveMode: boolean;
 }
+
+/**
+ * Origin annotation for selection mutations. `'manual'` represents an
+ * operator-initiated change (queue/task/phase click, iteration step) —
+ * Live Mode flips OFF. `'cascade'` represents a programmatic cascade
+ * (snapshot observer, cold-start fallback, jumpToCurrent internals) —
+ * Live Mode is untouched.
+ */
+export type SelectionOrigin = 'manual' | 'cascade';
 
 export interface JumpToCurrentSnapshot {
   readonly queue: {
@@ -68,11 +87,27 @@ export interface JumpToCurrentSnapshot {
 
 export interface PhaseLogStore {
   readonly state: PhaseLogStoreState;
-  setSelection(selection: PhaseLogSelectionDraft): void;
-  setQueue(queueId: string | null): void;
-  setTask(taskId: string | null, pipelineId: string | null): void;
-  setPhase(phaseId: string | null): void;
-  setIteration(iterationN: number | null): void;
+  setSelection(
+    selection: PhaseLogSelectionDraft,
+    options?: { readonly origin?: SelectionOrigin }
+  ): void;
+  setQueue(
+    queueId: string | null,
+    options?: { readonly origin?: SelectionOrigin }
+  ): void;
+  setTask(
+    taskId: string | null,
+    pipelineId: string | null,
+    options?: { readonly origin?: SelectionOrigin }
+  ): void;
+  setPhase(
+    phaseId: string | null,
+    options?: { readonly origin?: SelectionOrigin }
+  ): void;
+  setIteration(
+    iterationN: number | null,
+    options?: { readonly origin?: SelectionOrigin }
+  ): void;
   reload(): Promise<void>;
   reset(): void;
   // Feature 020 T051 — tail lifecycle. `startTail` posts
@@ -90,27 +125,107 @@ export interface PhaseLogStore {
   // re-run, NOT mid-cascade as five sequential `set*` calls would).
   // Returns the resolved selection on success or null when there is
   // no in-flight task.
-  jumpToCurrent(snapshot: JumpToCurrentSnapshot): Promise<PhaseLogSelectionDraft | null>;
+  //
+  // Feature 067 — widened with Live Mode options. When
+  // `setLiveModeOn === true` (default), `isLiveMode` is set to `true`
+  // BEFORE the cascade so the internal `setSelection({ origin:
+  // 'cascade' })` cannot undo it. When `setLiveModeOn === false`, the
+  // boolean is untouched. The `origin` parameter is forwarded to the
+  // internal `setSelection` call but is always overridden to
+  // `'cascade'` to preserve the explicit ON.
+  jumpToCurrent(
+    snapshot: JumpToCurrentSnapshot,
+    options?: {
+      readonly setLiveModeOn?: boolean;
+      readonly origin?: SelectionOrigin;
+    }
+  ): Promise<PhaseLogSelectionDraft | null>;
+  /**
+   * Feature 067 — set the operator's Live Mode intent. Persists via
+   * `vscode.setState`. MUST NOT trigger cascade, tail teardown, or any
+   * other side effect beyond the persistence write.
+   */
+  setLiveMode(next: boolean): void;
+  /** Feature 067 — read the current Live Mode boolean. */
+  isLiveMode(): boolean;
+  /**
+   * Feature 067 — snapshot observer entry point. Compares the
+   * in-flight identity tuple against the last observed value and
+   * triggers a cascade when Live Mode is ON AND the tuple has changed
+   * AND the new tuple is non-null. Idempotent on identity-stable
+   * snapshots. Safe to call unconditionally from a Svelte `$effect`.
+   */
+  applyInFlightIdentityChange(snapshot: JumpToCurrentSnapshot | null): void;
 }
 
-const IDLE_STATE: PhaseLogStoreState = Object.freeze({
-  selection: Object.freeze({
-    queueId: null,
-    taskId: null,
-    pipelineId: null,
-    phaseId: null,
-    iterationN: null
-  }),
+const IDLE_SELECTION: PhaseLogSelectionDraft = Object.freeze({
+  queueId: null,
+  taskId: null,
+  pipelineId: null,
+  phaseId: null,
+  iterationN: null
+});
+
+const IDLE_FRAGMENT = Object.freeze({
+  selection: IDLE_SELECTION,
   tailSessionId: null,
-  entries: Object.freeze([]),
-  iterations: Object.freeze([]),
-  verboseDiagnosticsState: null,
+  entries: Object.freeze([]) as readonly PhaseLogDisplayEntry[],
+  iterations: Object.freeze([]) as readonly number[],
+  verboseDiagnosticsState: null as VerboseDiagnosticsBanner | null,
   isInFlight: false,
   skippedLines: 0,
   truncatedCount: 0,
   loading: false,
-  errorReason: null
+  errorReason: null as string | null
 });
+
+// Feature 067 — module-level snapshot of the last observed in-flight
+// identity tuple. Used by `applyInFlightIdentityChange` to short-circuit
+// on identity-stable snapshots (heartbeat updates that change only
+// `updatedAt`). The value is module-scoped so it persists across store
+// instances within a single webview load; tests reset via
+// `__resetLiveModeForTests()`.
+let lastObservedInFlightIdentity: string | null = null;
+
+/**
+ * Test-only helper. Resets the module-level identity tracker so each
+ * `beforeEach` hook starts from a deterministic baseline. Production
+ * code MUST NOT call this.
+ */
+export function __resetLiveModeForTests(): void {
+  lastObservedInFlightIdentity = null;
+}
+
+/**
+ * Project the in-flight identity tuple onto a stable string. Returns
+ * `null` when there is no in-flight task. Missing fields fall through
+ * to empty-string components so distinct missing-field combinations
+ * produce distinct tuples (a queue without a pipeline is distinguishable
+ * from one with a pipeline of empty id, etc.).
+ */
+export function projectInFlightIdentity(
+  snapshot: JumpToCurrentSnapshot | null
+): string | null {
+  const inFlight = snapshot?.queue?.inFlight ?? null;
+  if (inFlight === null) return null;
+  const queueId = inFlight.queueId ?? 'default';
+  const taskId = inFlight.id;
+  const pipelineId = inFlight.currentPipelineId ?? '';
+  const phaseId = inFlight.currentPhase ?? '';
+  return `${queueId}|${taskId}|${pipelineId}|${phaseId}`;
+}
+
+interface PersistedWebviewState {
+  readonly isLiveMode?: boolean;
+}
+
+function readInitialLiveMode(): boolean {
+  const persisted = getWebviewState<PersistedWebviewState>();
+  if (persisted && typeof persisted.isLiveMode === 'boolean') {
+    return persisted.isLiveMode;
+  }
+  return true;
+}
 
 export function createPhaseLogStore(
   read: (req: {
@@ -144,7 +259,12 @@ export function createPhaseLogStore(
   // does not propagate through closures predictably across async
   // boundaries in Svelte 5 runes, so we mutate `ref.current` on a
   // single `$state` proxy instead.
-  const ref = $state<{ current: PhaseLogStoreState }>({ current: IDLE_STATE });
+  const initialLiveMode = readInitialLiveMode();
+  const initialState: PhaseLogStoreState = Object.freeze({
+    ...IDLE_FRAGMENT,
+    isLiveMode: initialLiveMode
+  });
+  const ref = $state<{ current: PhaseLogStoreState }>({ current: initialState });
   const getState = (): PhaseLogStoreState => ref.current;
   const setState = (next: PhaseLogStoreState): void => {
     ref.current = next;
@@ -276,11 +396,39 @@ export function createPhaseLogStore(
     }
   }
 
+  // Feature 067 — internal `setLiveMode` so the public methods can
+  // call it before the `return { ... }` literal binds the API. Persists
+  // via `vscode.setState`, merging with any prior persisted state so
+  // unrelated webview keys are not clobbered.
+  function setLiveModeInternal(next: boolean): void {
+    setState({ ...getState(), isLiveMode: next });
+    const prior = getWebviewState<Record<string, unknown>>();
+    const merged: Record<string, unknown> = {
+      ...(prior ?? {}),
+      isLiveMode: next
+    };
+    setWebviewState(merged);
+  }
+
+  // Feature 067 — apply `setLiveMode(false)` on operator-initiated
+  // selection mutations. The `origin === 'cascade'` branch is the
+  // single escape hatch used by the snapshot observer, the cold-start
+  // adapter, and `jumpToCurrent`'s internal setSelection call.
+  function maybeFlipLiveModeOff(
+    options?: { readonly origin?: SelectionOrigin }
+  ): void {
+    const origin = options?.origin ?? 'manual';
+    if (origin === 'cascade') return;
+    if (!getState().isLiveMode) return;
+    setLiveModeInternal(false);
+  }
+
   return {
     get state() {
       return ref.current;
     },
-    setSelection(selection) {
+    setSelection(selection, options) {
+      maybeFlipLiveModeOff(options);
       setState({
         ...getState(),
         selection,
@@ -296,7 +444,8 @@ export function createPhaseLogStore(
       teardownPush();
       void loadIfComplete();
     },
-    setQueue(queueId) {
+    setQueue(queueId, options) {
+      maybeFlipLiveModeOff(options);
       // Cascade-clear: pick a queue → wipe task/pipeline/phase/iter.
       patchSelection({
         queueId,
@@ -307,7 +456,8 @@ export function createPhaseLogStore(
       });
       resetEntries();
     },
-    setTask(taskId, pipelineId) {
+    setTask(taskId, pipelineId, options) {
+      maybeFlipLiveModeOff(options);
       // Cascade-clear: pick a task → wipe phase/iter (pipeline is
       // derived from the task, not user-selected).
       patchSelection({
@@ -318,15 +468,45 @@ export function createPhaseLogStore(
       });
       resetEntries();
     },
-    setPhase(phaseId) {
+    setPhase(phaseId, options) {
+      maybeFlipLiveModeOff(options);
       // Cascade-clear: pick a phase → wipe iter (latest-by-default
       // wins on next reload).
       patchSelection({ phaseId, iterationN: null });
       void loadIfComplete();
     },
-    setIteration(iterationN) {
+    setIteration(iterationN, options) {
+      maybeFlipLiveModeOff(options);
       patchSelection({ iterationN });
       void loadIfComplete();
+    },
+    setLiveMode(next) {
+      setLiveModeInternal(next);
+    },
+    isLiveMode() {
+      return getState().isLiveMode;
+    },
+    applyInFlightIdentityChange(snapshot) {
+      // Step 1: compute the next identity tuple.
+      const nextIdentity = projectInFlightIdentity(snapshot);
+      // Step 2: bail when the identity is stable (heartbeat update,
+      // pure pendingPositions update, etc.).
+      if (nextIdentity === lastObservedInFlightIdentity) return;
+      // Step 3: record the new identity BEFORE the conditional branches
+      // so subsequent identity-stable calls are no-ops regardless of
+      // whether the cascade fired this time.
+      lastObservedInFlightIdentity = nextIdentity;
+      // Step 4: Live Mode OFF → preserve the operator's pinned view.
+      if (!getState().isLiveMode) return;
+      // Step 5: no in-flight task → leave selection alone (idle gap).
+      if (nextIdentity === null) return;
+      // Step 6: cascade to the new in-flight identity. The cast is safe
+      // because nextIdentity !== null implies snapshot.queue.inFlight is
+      // non-null per `projectInFlightIdentity`'s contract.
+      void this.jumpToCurrent(snapshot as JumpToCurrentSnapshot, {
+        setLiveModeOn: false,
+        origin: 'cascade'
+      });
     },
     reload() {
       return loadIfComplete();
@@ -334,7 +514,13 @@ export function createPhaseLogStore(
     reset() {
       loadToken++;
       teardownPush();
-      setState(IDLE_STATE);
+      // Preserve `isLiveMode` across `reset()` — the operator's intent
+      // is independent of the in-memory cache; resetting the cache MUST
+      // NOT clobber a deliberate OFF.
+      setState(Object.freeze({
+        ...IDLE_FRAGMENT,
+        isLiveMode: getState().isLiveMode
+      }));
     },
     async startTail(req) {
       // Cap-of-1 mirror: tear down any existing subscription before
@@ -365,7 +551,15 @@ export function createPhaseLogStore(
       setState({ ...getState(), tailSessionId: null });
       return tail.stop({ sessionId });
     },
-    async jumpToCurrent(snapshot) {
+    async jumpToCurrent(snapshot, options) {
+      const setLiveModeOn = options?.setLiveModeOn ?? true;
+      // Feature 067 — call `setLiveMode(true)` BEFORE the early-return
+      // path so the no-inFlight case still sets intent ON for the next
+      // non-null push (FR-008). The cascade itself only runs when
+      // there is a meaningful target.
+      if (setLiveModeOn) {
+        setLiveModeInternal(true);
+      }
       // T056 — atomic cascade. The in-flight QueueItem may have a
       // null `currentPhase` if the run is between phases; in that
       // case there is nothing meaningful to jump to.
@@ -386,7 +580,10 @@ export function createPhaseLogStore(
       };
       // Atomic write so the dependent `$effect` in PhaseLogFeed sees
       // the fully-resolved tuple on its next re-run, instead of five
-      // intermediate states from the discrete `set*` setters.
+      // intermediate states from the discrete `set*` setters. The
+      // `origin: 'cascade'` is forced internally so the prior
+      // `setLiveMode(true)` (if any) is not undone by the manual-flip
+      // path.
       setState({
         ...getState(),
         selection: next,
