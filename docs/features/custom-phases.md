@@ -12,7 +12,9 @@ If you just want to tune a built-in's model, effort, or timeout, you do not need
 
 ## Defining a new phase
 
-Add an entry to `schegent.phases` whose `id` does **not** match a built-in:
+You can define new phases visually via the **Pipeline Builder > Phases** dashboard, or manually by adding an entry to `schegent.phases` whose `id` does **not** match a built-in:
+
+![Phase Builder](../assets/walkthrough/01_phase_builder.png)
 
 ```jsonc
 {
@@ -40,7 +42,9 @@ Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow t
 
 ## Using the new phase in a pipeline
 
-A new phase id is only useful if some pipeline references it. Define a custom pipeline:
+A new phase id is only useful if some pipeline references it. Define a custom pipeline visually in the **Pipelines** dashboard, or manually in your settings:
+
+![Pipeline Builder](../assets/walkthrough/02_pipeline_builder.png)
 
 ```jsonc
 {

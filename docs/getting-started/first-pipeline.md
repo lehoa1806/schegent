@@ -31,8 +31,10 @@ The task appears at the bottom of the **Pending** list in the sidebar.
 If no other task is in-flight and the queue is not paused, the drainer picks up the new task within a few seconds. You will see:
 
 1. The task moves from **Pending** to **In-flight**.
-2. The header changes from "Idle" to "Running: speckit-specify".
+2. The header changes from "Idle" to "Running: speckit-specify" (or similar).
 3. The phase log feed beneath the task starts filling with tool calls, file writes, and messages as Claude executes.
+
+![Operations Dashboard](../assets/walkthrough/04_orchestrator.png)
 
 This is the moment the workspace lock is acquired. If a competing run tries to start, it will queue up behind this one.
 

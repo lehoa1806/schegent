@@ -73,6 +73,8 @@ You can scroll back through past phases. The feed retains the full session as lo
 
 A collapsible panel near the bottom for settings that benefit from being one click away. Each row maps to one or more entries in your VS Code `settings.json`.
 
+![Settings Configuration](../assets/walkthrough/03_settings.png)
+
 The rows are grouped:
 
 ### CLI
@@ -116,6 +118,8 @@ A small footer at the bottom of the sidebar links to:
 ## The dashboard (full window)
 
 Click **Open Dashboard** in the header to launch the full-window console. The dashboard is the same data model, larger. It is the place to monitor a long-running pipeline, or to keep an eye on multiple workspaces if you have several VS Code windows open at once.
+
+![Operations Dashboard](../assets/walkthrough/04_orchestrator.png)
 
 Highlights of the dashboard:
 

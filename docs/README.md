@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../assets/banner.png" alt="Schegent Banner" />
+</p>
+
 # Schegent — Operator Manual
 
 **Schegent** is a VS Code extension that runs the Claude Code CLI as a headless backend to autonomously drive the Spec Driven Development workflow. You enqueue feature work in the sidebar, walk away, and come back to either a finished feature or a paused run waiting for your decision.
@@ -19,6 +23,7 @@ The pages are organized by *what you are trying to do*, not by the order the ext
 
 ## Getting Started
 
+- [Quickstart & Dashboard Walkthrough](getting-started/quickstart.md) — a visual guide to the dashboard, phases, and pipelines.
 - [Installation](getting-started/installation.md) — install the extension, install the Claude CLI, link your account.
 - [Your First Pipeline](getting-started/first-pipeline.md) — enqueue a feature, watch a run from start to finish.
 - [Sidebar Tour](getting-started/sidebar-tour.md) — every panel in the Schegent sidebar, what it shows, and what you can click.
@@ -98,3 +103,9 @@ This manual is versioned alongside the extension. Each major user-visible change
 - File paths are written relative to either the **workspace root** (your project) or **`<globalStorage>`** (per-VS-Code-profile).
 - "Webview" means the Svelte UI that renders inside the VS Code sidebar or dashboard. "Host" means the extension's main process. "Runner" means the spawned Claude CLI subprocess.
 - "Operator" means you — the person using the extension.
+
+## Acknowledgements & Prerequisites
+
+A special thanks to the [GitHub Spec-Kit](https://github.com/github/spec-kit) team and the [Superpowers](https://github.com/superpowers) team for their phenomenal work. Schegent's default pipeline is heavily inspired by and relies on these platforms. 
+
+**Note on pipelines:** To use the *default pipeline* out-of-the-box, we strongly suggest installing the Spec-Kit and Superpowers plugins/platforms. If you choose to define your own custom pipeline, you must ensure that you have installed the specific skills, platforms, and tools required by your custom phases.
