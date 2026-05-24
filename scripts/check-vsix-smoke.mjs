@@ -63,7 +63,7 @@ for (const required of [
   'extension/dist/wakeup-runner.js',
   'extension/dist/webview/index.html',
   'extension/dist/webview/dashboard.html',
-  'extension/resources/sidebar-icon.svg'
+  'extension/assets/sidebar-icon.svg'
 ]) {
   assert(entries.has(required), `${vsixPath}: missing required packaged file ${required}`);
 }

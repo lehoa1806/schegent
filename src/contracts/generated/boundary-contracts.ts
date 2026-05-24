@@ -47,7 +47,10 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_CLEAR_PHASE_BREAKPOINT",
   "CMD_READ_WAKEUP_SESSION_LOG",
   "CMD_REVEAL_WAKEUP_SESSION_LOG",
-  "CMD_START_QUEUE"
+  "CMD_START_QUEUE",
+  "CMD_CLEAR_ALL",
+  "CMD_SET_CONFIRM_SUPPRESSION",
+  "CMD_DISMISS_MIGRATION_NOTICE"
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [
@@ -129,7 +132,20 @@ export const AUDIT_EVENT_TYPES = [
   "state-migrated",
   "workflow-run-repaired",
   "multi-root.warning-shown",
-  "trust.capability-denied"
+  "trust.capability-denied",
+  "queue-cleared-all",
+  "scheduled-start-armed",
+  "scheduled-start-fired",
+  "scheduled-start-canceled",
+  "scheduled-start-superseded",
+  "scheduled-start-horizon-rejected",
+  "scheduled-start-past-timestamp-coerced-to-now",
+  "idle-pending-entered",
+  "idle-pending-exited",
+  "automation-enqueue-no-start-mode",
+  "system-pause-scheduled-restore",
+  "system-pause-restore-unavailable",
+  "state-migrated-v6-to-v7"
 ] as const;
 
 export const SETTINGS_KEYS = [
@@ -158,6 +174,7 @@ export const SETTINGS_KEYS = [
   "schegent.trust.allowCustomPhases",
   "schegent.trust.allowCustomRetryConditions",
   "schegent.trust.allowPipelineOverrides",
+  "schegent.ui.confirmations.enable",
   "schegent.wakeUp.chronologicalTime",
   "schegent.wakeUp.enabled",
   "schegent.wakeUp.model",

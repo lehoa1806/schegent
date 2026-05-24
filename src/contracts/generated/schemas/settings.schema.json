@@ -152,7 +152,7 @@
         {
           "key": "schegent.defaultPipelineId",
           "type": "string",
-          "default": "speckit-new-feature",
+          "default": "dev-new-feature",
           "scope": "resource",
           "enum": null,
           "minimum": null,
@@ -172,7 +172,7 @@
         {
           "key": "schegent.invocation.timeoutSeconds",
           "type": "number",
-          "default": 1800,
+          "default": 5400,
           "scope": "resource",
           "enum": null,
           "minimum": 30,
@@ -338,6 +338,16 @@
           "key": "schegent.trust.allowPipelineOverrides",
           "type": "boolean|null",
           "default": null,
+          "scope": "window",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.ui.confirmations.enable",
+          "type": "boolean",
+          "default": true,
           "scope": "window",
           "enum": null,
           "minimum": null,

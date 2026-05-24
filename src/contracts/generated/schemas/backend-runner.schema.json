@@ -172,6 +172,11 @@
           "name": "stderrTruncated",
           "optional": true,
           "type": "boolean"
+        },
+        {
+          "name": "command",
+          "optional": true,
+          "type": "string"
         }
       ]
     }

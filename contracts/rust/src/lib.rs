@@ -48,6 +48,9 @@ pub const SIDEBAR_COMMAND_TYPES: &[&str] = &[
     "CMD_READ_WAKEUP_SESSION_LOG",
     "CMD_REVEAL_WAKEUP_SESSION_LOG",
     "CMD_START_QUEUE",
+    "CMD_CLEAR_ALL",
+    "CMD_SET_CONFIRM_SUPPRESSION",
+    "CMD_DISMISS_MIGRATION_NOTICE",
 ];
 
 pub const HOST_MESSAGE_TYPES: &[&str] = &[
@@ -130,6 +133,19 @@ pub const AUDIT_EVENT_TYPES: &[&str] = &[
     "workflow-run-repaired",
     "multi-root.warning-shown",
     "trust.capability-denied",
+    "queue-cleared-all",
+    "scheduled-start-armed",
+    "scheduled-start-fired",
+    "scheduled-start-canceled",
+    "scheduled-start-superseded",
+    "scheduled-start-horizon-rejected",
+    "scheduled-start-past-timestamp-coerced-to-now",
+    "idle-pending-entered",
+    "idle-pending-exited",
+    "automation-enqueue-no-start-mode",
+    "system-pause-scheduled-restore",
+    "system-pause-restore-unavailable",
+    "state-migrated-v6-to-v7",
 ];
 
 pub const SETTINGS_KEYS: &[&str] = &[
@@ -158,6 +174,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "schegent.trust.allowCustomPhases",
     "schegent.trust.allowCustomRetryConditions",
     "schegent.trust.allowPipelineOverrides",
+    "schegent.ui.confirmations.enable",
     "schegent.wakeUp.chronologicalTime",
     "schegent.wakeUp.enabled",
     "schegent.wakeUp.model",

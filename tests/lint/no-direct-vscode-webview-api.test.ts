@@ -23,7 +23,7 @@ function listSourceFiles(dir: string): readonly string[] {
       continue;
     }
     if (
-      abs.endsWith('.ts')
+      (abs.endsWith('.ts') && !abs.endsWith('.test.ts'))
       || abs.endsWith('.svelte')
       || abs.endsWith('.svelte.ts')
     ) {

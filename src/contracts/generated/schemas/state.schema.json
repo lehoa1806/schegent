@@ -20,7 +20,7 @@
   "properties": {
     "stateSchemaVersion": {
       "type": "integer",
-      "const": 6
+      "const": 7
     },
     "workflowRunStatuses": {
       "type": "array",
@@ -176,6 +176,11 @@
           "name": "resumeTargetPhaseId",
           "optional": false,
           "type": "string | null"
+        },
+        {
+          "name": "lastRetryDecision",
+          "optional": true,
+          "type": "LastRetryDecision"
         }
       ]
     }

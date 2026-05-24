@@ -58,7 +58,7 @@ export function onHostMessage<S>(handler: HostMessageHandler<S>): () => void {
  * rather than mutating in place.
  */
 export function getWebviewState<T = unknown>(): T | undefined {
-  return getApi().getState<T>();
+  return getHostTransport().getState<T>();
 }
 
 /**
@@ -68,7 +68,7 @@ export function getWebviewState<T = unknown>(): T | undefined {
  * the merged result.
  */
 export function setWebviewState(state: unknown): void {
-  getApi().setState(state);
+  getHostTransport().setState(state);
 }
 
 export const __test_only = { uuidv4 };

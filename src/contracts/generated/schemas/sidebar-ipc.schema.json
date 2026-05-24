@@ -68,7 +68,10 @@
           "CMD_CLEAR_PHASE_BREAKPOINT",
           "CMD_READ_WAKEUP_SESSION_LOG",
           "CMD_REVEAL_WAKEUP_SESSION_LOG",
-          "CMD_START_QUEUE"
+          "CMD_START_QUEUE",
+          "CMD_CLEAR_ALL",
+          "CMD_SET_CONFIRM_SUPPRESSION",
+          "CMD_DISMISS_MIGRATION_NOTICE"
         ]
       },
       "uniqueItems": true
@@ -262,6 +265,11 @@
           "name": "resolvedTrust",
           "optional": false,
           "type": "{ readonly phases: boolean; readonly retryConditions: boolean; readonly pipelineOverrides: boolean; }"
+        },
+        {
+          "name": "confirmSuppression",
+          "optional": true,
+          "type": "{ readonly version: 1; readonly suppressedActionKeys: readonly string[]; }"
         }
       ]
     }

@@ -203,6 +203,26 @@
           "name": "updatedAt",
           "optional": false,
           "type": "number"
+        },
+        {
+          "name": "queueLifecycle",
+          "optional": false,
+          "type": "QueueLifecycle"
+        },
+        {
+          "name": "scheduledStartAt",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "scheduledStartSource",
+          "optional": false,
+          "type": "ScheduledStartSource | null"
+        },
+        {
+          "name": "migrationNotice",
+          "optional": true,
+          "type": "'pending' | 'dismissed'"
         }
       ]
     }

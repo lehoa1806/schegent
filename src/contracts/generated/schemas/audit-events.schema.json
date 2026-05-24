@@ -96,7 +96,20 @@
           "state-migrated",
           "workflow-run-repaired",
           "multi-root.warning-shown",
-          "trust.capability-denied"
+          "trust.capability-denied",
+          "queue-cleared-all",
+          "scheduled-start-armed",
+          "scheduled-start-fired",
+          "scheduled-start-canceled",
+          "scheduled-start-superseded",
+          "scheduled-start-horizon-rejected",
+          "scheduled-start-past-timestamp-coerced-to-now",
+          "idle-pending-entered",
+          "idle-pending-exited",
+          "automation-enqueue-no-start-mode",
+          "system-pause-scheduled-restore",
+          "system-pause-restore-unavailable",
+          "state-migrated-v6-to-v7"
         ]
       },
       "uniqueItems": true
