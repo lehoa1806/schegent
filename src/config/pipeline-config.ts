@@ -64,8 +64,7 @@ export const BUILT_IN_PHASE_IDS = [
   'bugfix-verify-post',
   'specify-brainstorm',
   'superpowers-implement',
-  'superpowers-review-close',
-  'commit'
+  'superpowers-review-close'
 ] as const;
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -99,9 +98,7 @@ export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'superpowers-implement':
     "Use git worktree for this feature. Get the 'feature_directory' from .specify/feature.json. Don't re-plan, execute the tasks.md in that 'feature_directory' using subagent-driven development with TDD",
   'superpowers-review-close':
-    "Analyze the implementation of the active feature\n\nGet the 'feature_directory' from .specify/feature.json. Don't re-plan, analyze the implementation, identify open tasks, evaluate them, and implement them. After that, perform code review and finish the development branch",
-  commit:
-    'Create commits for the pending changes if necessary. Merge all new commits to develop then checkout to develop'
+    "Get the 'feature_directory' from .specify/feature.json. Don't re-plan, analyze the implementation, identify open tasks, evaluate them, and implement them. Mark all implemented tasks to done. After that, perform a code review and finish the development branch. At the end, create commits for the pending changes if necessary. Merge all new commits to develop, then checkout to develop"
 };
 
 export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
@@ -181,11 +178,6 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'superpowers-review-close',
     name: 'Superpowers Review and Close',
     instruction: PHASE_INSTRUCTIONS['superpowers-review-close']
-  }),
-  Object.freeze({
-    id: 'commit',
-    name: 'Commit',
-    instruction: PHASE_INSTRUCTIONS.commit
   })
 ]);
 
@@ -233,8 +225,7 @@ export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE: PipelineDef = Object.freeze({
     'speckit-tasks',
     'speckit-analyze',
     'superpowers-implement',
-    'superpowers-review-close',
-    'commit'
+    'superpowers-review-close'
   ]) as readonly string[]
 });
 
