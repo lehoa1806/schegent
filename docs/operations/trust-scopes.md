@@ -3,7 +3,7 @@
 VS Code's built-in Workspace Trust is a single on/off switch. Schegent
 adds three independently-configurable **trust scopes** on top of it so
 enterprise IT can grant workspace trust (which the seven built-in
-Speckit phases require) while still denying operator-authored prompt
+Spec Driven Development workflow phases require) while still denying operator-authored prompt
 overrides on the same workspace.
 
 The three scopes are:
@@ -205,7 +205,7 @@ jq -c 'select(.eventType=="trust.capability-denied") |
 
 ## Recipes for enterprise IT
 
-### A. Allow only the built-in Speckit phases on every workspace
+### A. Allow only the built-in Spec Driven Development workflow phases on every workspace
 
 Add to your VS Code user-scope settings (or push via the VS Code Settings
 Sync / your MDM channel of choice):
@@ -219,7 +219,7 @@ Sync / your MDM channel of choice):
 ```
 
 Operators can still grant Workspace Trust and run the built-in
-Speckit pipeline; every operator-authored override is denied.
+Spec Driven Development workflow pipeline; every operator-authored override is denied.
 
 ### B. Allow custom phases only on approved workspaces
 

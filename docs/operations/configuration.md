@@ -103,23 +103,7 @@ emitted on the `phase-start` audit event as optional payload fields
 Settings changes mid-run never retarget the in-flight snapshot;
 overrides only take effect on the **next** enqueue.
 
-### Built-in pipeline: `speckit-bugfix` (feature 026)
 
-A second built-in pipeline ships alongside `speckit-new-feature`:
-
-| Phase | Purpose |
-|---|---|
-| `bugfix-report` | Investigate the bug; produce a structured report. |
-| `bugfix-patch` | Author a patch against the affected feature spec. |
-| `bugfix-verify-pre` | Verify the patch reproduces the bug pre-fix. |
-| `bugfix-implement` | Apply the implementation. |
-| `bugfix-verify-post` | Verify the bug is gone post-fix. |
-
-Pipeline id: `speckit-bugfix`. Choose it from the Dashboard's new-task
-pipeline selector. The default selection remains `speckit-new-feature`.
-A `bugfix-verify-pre` or `bugfix-verify-post` failure pauses the run
-via the existing `phase-paused` cause (FR-016) — resume re-invokes the
-same failed verify phase rather than silently advancing.
 
 ## How saves work
 

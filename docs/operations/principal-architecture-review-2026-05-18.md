@@ -2,7 +2,7 @@
 
 Review date: 2026-05-18
 
-Scope: first-party implementation under `repo/`, planning-envelope docs under the workspace root where they govern agent behavior, package manifests, lockfiles, CI workflows, tests, security docs, webview code, host code, and active Speckit plan `specs/056-principal-arch-hardening/plan.md`. Generated `dist/`, `out/`, `.vscode-test/`, and dependency trees were excluded from code-quality judgment except where build and test behavior matters.
+Scope: first-party implementation under `repo/`, planning-envelope docs under the workspace root where they govern agent behavior, package manifests, lockfiles, CI workflows, tests, security docs, webview code, host code, and active Spec Driven Development workflow plan `specs/056-principal-arch-hardening/plan.md`. Generated `dist/`, `out/`, `.vscode-test/`, and dependency trees were excluded from code-quality judgment except where build and test behavior matters.
 
 ## Executive Summary
 
@@ -34,7 +34,7 @@ The main maturity risk is architectural density: the core controller, runner, st
 
 | Document | Purpose | Strengths | Gaps | Staleness Risk | Missing Critical Information |
 |---|---|---|---|---|---|
-| Root `README.md` | Planning-envelope overview | Explains Schegent and Speckit workflow. | Less detailed than implementation docs. | Medium | Clear pointer that implementation commands run from `repo/`. |
+| Root `README.md` | Planning-envelope overview | Explains Schegent and Spec Driven Development workflow. | Less detailed than implementation docs. | Medium | Clear pointer that implementation commands run from `repo/`. |
 | Root `AGENTS.md` / prompt rules | Agent operating contract | Strong hard-rule summary and active plan pointer. | Duplicates implementation security rules. | Medium | Automated drift guard exists for CLAUDE anchors, not all prose. |
 | Root `ARCHITECTURE.md` | Architectural map | Detailed, current enough to orient agents. | Separate from `repo/ARCHITECTURE.md`, creating two truth surfaces. | Medium | Ownership rule for which architecture doc wins on conflict. |
 | Root `docs/security/threat-model.md` | Agent-facing trust model | Covers broad local threats and wake-up scheduler. | Previously had stale `.specify/` runtime wording; fixed. | Medium | Needs an explicit relationship to `repo/docs/security/threat-model.md`. |
@@ -48,7 +48,7 @@ The main maturity risk is architectural density: the core controller, runner, st
 
 ### Core Objective
 
-Schegent is a local VS Code extension that drives the Claude CLI as a headless backend through a Speckit-style multi-phase development workflow. Its target audience is trusted local operators and maintainers who want autonomous spec-to-implementation execution with auditability, resumability, and a constrained VS Code webview control surface.
+Schegent is a local VS Code extension that drives the Claude CLI as a headless backend through a Spec Driven Development workflow. Its target audience is trusted local operators and maintainers who want autonomous spec-to-implementation execution with auditability, resumability, and a constrained VS Code webview control surface.
 
 ### System Context
 
@@ -271,7 +271,7 @@ No external browsing was used for this section; comparisons are conceptual.
 | Temporal/Durable workflow pattern | High | High | Depends on deployment | High | Strong reliability model | Overkill for local-first v1, but useful mental model if parallelism or remote orchestration is added. |
 | MCP-based tool/context routing | High | Medium | Depends on servers | Medium | Standardizes integrations | Potentially useful for future external tool routing, but current local host avoids an extra boundary and should not add MCP without a concrete integration need. |
 
-Strategic position: Schegent's differentiator is a local, auditable, Speckit-native workflow runner with strong VS Code ergonomics. Its weakness is that it owns high-risk local automation without a server-side policy layer; correctness depends on local code invariants and operator trust.
+Strategic position: Schegent's differentiator is a local, auditable, Spec Driven Development workflow runner with strong VS Code ergonomics. Its weakness is that it owns high-risk local automation without a server-side policy layer; correctness depends on local code invariants and operator trust.
 
 ## Phase 5: Additional Perspectives and Edge Cases
 
@@ -311,7 +311,7 @@ Reliability posture is good for a local tool: append-only audit, state invariant
 
 ### DevEx and Maintainability
 
-Local commands are clear and passed in this review. The main DevEx drag is cognitive load: contributors must understand Speckit, VS Code extension APIs, Svelte, local OS schedulers, audit/security hard rules, and multiple documentation layers. A module ownership map and release runbook would improve onboarding.
+Local commands are clear and passed in this review. The main DevEx drag is cognitive load: contributors must understand Spec Driven Development workflow, VS Code extension APIs, Svelte, local OS schedulers, audit/security hard rules, and multiple documentation layers. A module ownership map and release runbook would improve onboarding.
 
 ### Accessibility, Portability, and Compliance
 

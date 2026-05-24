@@ -1,6 +1,6 @@
 # Custom Phases and Pipelines
 
-Beyond overriding the parameters of built-in phases, you can define entirely new phases and chain them into custom pipelines. This is how you adapt Schegent to a workflow that does not look like Speckit's spec-driven flow.
+Beyond overriding the parameters of built-in phases, you can define entirely new phases and chain them into custom pipelines. This is how you adapt Schegent to a workflow that does not look like the Spec Driven Development workflow.
 
 ## When to define a custom phase
 

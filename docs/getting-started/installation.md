@@ -6,7 +6,7 @@ Getting Schegent ready to run takes three pieces: the extension, the Claude CLI,
 
 - **VS Code 1.85 or later.** Schegent uses webview features added in that release.
 - **The Claude Code CLI installed and authenticated.** Schegent does not bundle the CLI; it spawns the binary you have already authorized to your Anthropic account.
-- **A workspace folder open in VS Code.** Schegent does not operate on individual files. It needs a workspace root to write `.schegent/` artefacts and (for the Speckit pipeline) the `specs/` and `docs/` directories.
+- **A workspace folder open in VS Code.** Schegent does not operate on individual files. It needs a workspace root to write `.schegent/` artefacts and (for the Spec Driven Development workflow pipeline) the `specs/` and `docs/` directories.
 
 If you have the CLI installed already and a workspace open, you can skip to [Install the extension](#step-1-install-the-extension).
 

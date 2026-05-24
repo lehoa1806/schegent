@@ -115,7 +115,7 @@ The next morning, expand the Wake-up log card in the sidebar. You should see a r
 
 ### Example 2 — Continuous priming for an unattended overnight pipeline
 
-You enqueue a long Speckit feature run before leaving for the day and want every 4-hour rolling window to stay warm until you check in the next morning.
+You enqueue a long Spec Driven Development workflow feature run before leaving for the day and want every 4-hour rolling window to stay warm until you check in the next morning.
 
 In your user `settings.json`:
 

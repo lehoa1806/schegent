@@ -7,7 +7,7 @@ How to drive a single feature through the Schegent pipeline.
 - Schegent extension installed and active.
 - Workspace open in VS Code.
 - `claude` CLI on `PATH` (or `schegent.cli.path` set in settings).
-- `.specify/` scaffold present (Speckit-initialized repo).
+- `.specify/` scaffold present (Spec Driven Development workflow-initialized repo).
 
 ## Quick path
 

@@ -7,7 +7,7 @@ for hard rules when changing host code.
 ## What This Repo Is
 
 Schegent is a VS Code extension that orchestrates local CLI backends through
-the Speckit pipeline. Source code lives in `src/`, webview code in
+the Spec Driven Development workflow. Source code lives in `src/`, webview code in
 `webview-ui/`, tests in `tests/`, and implementation docs in `docs/`.
 
 ## Verification

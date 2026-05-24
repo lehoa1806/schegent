@@ -1,6 +1,6 @@
 # Schegent — Operator Manual
 
-**Schegent** is a VS Code extension that runs the Claude Code CLI as a headless backend to autonomously drive the Speckit spec-driven development pipeline (`specify → clarify → plan → tasks → analyze → implement → finalize`). You enqueue feature work in the sidebar, walk away, and come back to either a finished feature or a paused run waiting for your decision.
+**Schegent** is a VS Code extension that runs the Claude Code CLI as a headless backend to autonomously drive the Spec Driven Development workflow. You enqueue feature work in the sidebar, walk away, and come back to either a finished feature or a paused run waiting for your decision.
 
 This manual is the operator's reference. It explains every setting, command, audit event, and feature in detail and shows you how to apply them to real workflows.
 
@@ -28,7 +28,7 @@ The pages are organized by *what you are trying to do*, not by the order the ext
 The conceptual model you need to use Schegent effectively. None of these pages contain source code — they explain the rules of the system.
 
 - [Architecture Overview](concepts/architecture-overview.md) — extension host, CLI subprocess, webviews, trust boundaries.
-- [Pipelines & Phases](concepts/pipeline-and-phases.md) — the Speckit pipeline, the seven built-in phases, and how phase overrides work.
+- [Pipelines & Phases](concepts/pipeline-and-phases.md) — the Spec Driven Development workflow pipeline, the built-in phases, and how phase overrides work.
 - [The Queue, Tasks, and Runs](concepts/queue-and-runs.md) — how work is ordered, what an in-flight task is, and the difference between a task and a run.
 - [The Workspace Lock](concepts/workspace-lock.md) — why only one run executes at a time, how pause/resume preserves the lock, and what to do when it gets stuck. Includes the [multi-root workspace semantics](concepts/workspace-lock.md#multi-root-workspaces): the first folder is canonical, `schegent.multiRoot.suppressWarning` silences the activation toast, and the `multi-root.warning-shown` audit event records the chosen folder.
 - [Sessions, Logs, and Audit Evidence](concepts/sessions-and-logs.md) — what gets written to disk for each run, where it lives, and what is sanitized.

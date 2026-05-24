@@ -25,7 +25,7 @@ review cadence and the dependent-artifact manifest.
 ## 1. Executive summary
 
 **What Schegent is.** Schegent is a VS Code extension that drives the
-Claude Code CLI as an autonomous backend through the Speckit
+Claude Code CLI as an autonomous backend through the Spec Driven Development workflow
 spec-driven development pipeline (`specify → clarify → plan → tasks →
 analyze → implement → finalize`). The operator installs the CLI, links
 it to an Anthropic account, opens a workspace, and explicitly trusts
@@ -265,7 +265,7 @@ narrower gate than "trust everything or trust nothing":
   conditions remain available; only operator-authored expressions are
   gated.
 - **`schegent.trust.allowPipelineOverrides`** — gates non-default
-  entries in the pipeline catalog. The built-in Speckit pipeline
+  entries in the pipeline catalog. The built-in Spec Driven Development workflow pipeline
   remains available; only operator-authored pipeline catalog entries
   are gated.
 

@@ -17,7 +17,7 @@ For your first run, pick a small feature. "Add a dark-mode toggle to the setting
 In the Schegent sidebar, click **Enqueue Feature**. A modal opens with three fields:
 
 - **Description** — a one- or two-sentence statement of what you want built. This is what the `speckit-specify` phase will read.
-- **Pipeline** — leave as the default `speckit-new-feature` for a regular feature; pick `speckit-bugfix` for surgical patches to existing spec/plan/tasks.
+- **Pipeline** — leave as the default `speckit-new-feature` for a regular feature.
 - **Phase overrides** *(optional)* — open the disclosure if you want to override the model or effort of a specific phase for this task only. Most of the time you do not need to.
 
 Click **Enqueue**.
@@ -50,7 +50,7 @@ The header above the feed shows the current phase id, the elapsed time, and a li
 
 ## Step 4: Watch the phases advance
 
-The Speckit feature pipeline walks through eight phases in order. For each, you should see roughly this rhythm:
+The Spec Driven Development workflow pipeline walks through eight phases in order. For each, you should see roughly this rhythm:
 
 - **`speckit-specify`** — a fresh spec file appears under `specs/<NNN-name>/spec.md`. The phase ends and the spec is committed to the workspace.
 - **`speckit-clarify`** — the phase may loop a few times as Claude resolves ambiguity markers. The sidebar shows iteration counts when it loops.
@@ -89,7 +89,7 @@ npm test            # or your project's equivalent
 If tests fail, you have two paths:
 
 - **Cosmetic / small fix** — make the fix yourself, commit, and you are done.
-- **Substantial gap** — enqueue a bugfix task with the `speckit-bugfix` pipeline pointed at the spec directory. The bugfix phases will patch the spec, plan, and tasks surgically and re-run implementation against just the failing scope.
+- **Substantial gap** — enqueue a new task with a new description to address the substantial gap.
 
 ## Step 7: Tidy up
 

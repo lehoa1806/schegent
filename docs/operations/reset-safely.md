@@ -38,7 +38,7 @@ It does **not** delete the audit log. `.schegent/audit.log` is preserved by desi
 The `.specify/` directory still contains:
 
 - `audit.log` and rotated archives (preserved).
-- Speckit artifacts (`memory/`, `templates/`, `scripts/`, `extensions.yml`, etc.).
+- Spec Driven Development workflow artifacts (`memory/`, `templates/`, `scripts/`, `extensions.yml`, etc.).
 
 You can now enqueue features fresh — see [start-feature.md](start-feature.md) and [schedule-multiple.md](schedule-multiple.md).
 

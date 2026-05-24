@@ -58,7 +58,7 @@ The Schegent Dashboard is a rich Webview that serves as the central control plan
   - `completed` and `cancelled` rows: no per-row buttons. Terminal-row cleanup is delegated to the global `Clear Done` and `Clean` controls in the Queue Management zone.
 
 ### 4. Phase Progression Tiles
-**Purpose:** Visually tracks the state machine's progression across the Speckit pipeline for the *currently active* feature.
+**Purpose:** Visually tracks the state machine's progression across the Spec Driven Development workflow pipeline for the *currently active* feature.
 - **Tiles (`specify` -> `finalize`):** Each tile represents a distinct pipeline phase. 
 - **UX Responsibility:** The active phase is highlighted (e.g., `IMPLEMENT ⏳`), giving you immediate context on whether the system is writing specs, planning architecture, or emitting code.
 

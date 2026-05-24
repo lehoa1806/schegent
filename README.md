@@ -6,20 +6,16 @@
 [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.85.0-007ACC.svg)](https://code.visualstudio.com/)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg)](https://nodejs.org/)
 
-> Autonomously orchestrate the Claude Code CLI to drive the Speckit
-> spec-driven development pipeline — without leaving VS Code.
+> Autonomously orchestrate the Claude Code CLI to drive the Spec Driven Development
+> workflow pipeline — without leaving VS Code.
 
 **Schegent** is a Visual Studio Code extension that runs the
 [Claude Code CLI](https://docs.claude.com/claude-code) as a headless
-backend and walks it through the seven Speckit phases
-(`specify → clarify → plan → tasks → analyze → implement → finalize`)
+backend and walks it through the seven Spec Driven Development workflow phases
 on your behalf. You enqueue a feature request in the sidebar, walk
 away, and come back to either a completed feature or a paused run
 waiting for an operator decision.
 
-A second built-in pipeline, `speckit-bugfix`, drives a five-phase
-investigate → patch → verify-pre → implement → verify-post cycle for
-bug repair work.
 
 ---
 
@@ -43,7 +39,7 @@ bug repair work.
 
 ## What it does
 
-Schegent treats each Speckit phase as a discrete CLI invocation, then
+Schegent treats each Spec Driven Development workflow phase as a discrete CLI invocation, then
 strings the phases together inside an orchestrator that handles:
 
 - **Queueing and concurrency** — exactly one in-flight run per
@@ -63,7 +59,7 @@ strings the phases together inside an orchestrator that handles:
   rolling-allocation warm so unattended pipelines do not pay the
   cold-start cost.
 
-Schegent does not replace the Speckit slash commands you already use
+Schegent does not replace the Spec Driven Development workflow slash commands you already use
 interactively — it drives the same pipeline non-interactively from a
 queue.
 
@@ -77,21 +73,37 @@ queue.
   - Optional: **Codex CLI** if you select the `codex` backend.
 - A **trusted workspace folder** open in VS Code. Schegent is
   intentionally inert in untrusted workspaces.
+- **Plugins**: Ensure you have installed and set up the **Github Speckit** and **Superpowers** plugins to enable the complete spec-driven development experience.
 
 ## Installation
 
-### From the VS Code Marketplace
+### Building the extension locally
 
-1. Open VS Code.
-2. Open the Extensions view (`Ctrl/Cmd+Shift+X`).
-3. Search for **Schegent** and click **Install**.
+To build your own `.vsix` extension package:
 
-### From a `.vsix` artifact
+1. Clone the repository and navigate to the `repo/` directory:
+   ```bash
+   cd repo
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Build the host and webview bundles:
+   ```bash
+   npm run build
+   ```
+4. Package the extension into a `.vsix` artifact:
+   ```bash
+   npm run package
+   ```
 
-If you have a packaged `.vsix` file:
+### Installing the `.vsix` artifact
+
+Once you have the `.vsix` file:
 
 ```bash
-code --install-extension schegent-<version>.vsix
+code --install-extension schegent-*.vsix
 ```
 
 After install, reload VS Code, open a workspace folder, and accept the

@@ -1,10 +1,10 @@
 # Pipelines & Phases
 
-A **pipeline** is an ordered list of phases that Schegent walks through for a single feature request. Schegent ships with two built-in pipelines — the standard Speckit feature pipeline and a Speckit bugfix pipeline — and lets you define your own. You select a pipeline when you enqueue a task; the default is set by `schegent.defaultPipelineId` (which itself defaults to `speckit-new-feature`).
+A **pipeline** is an ordered list of phases that Schegent walks through for a single feature request. Schegent ships with a built-in pipeline — the standard Spec Driven Development workflow pipeline — and lets you define your own. You select a pipeline when you enqueue a task; the default is set by `schegent.defaultPipelineId` (which itself defaults to `speckit-new-feature`).
 
 This page explains what each built-in phase does, the rules that govern phase execution, and how phase overrides let you tune individual phases without forking the whole pipeline.
 
-## The Speckit feature pipeline (`speckit-new-feature`)
+## The Spec Driven Development workflow pipeline (`speckit-new-feature`)
 
 Eight phases in order. The first six are operator-visible work; the last two are completion sentinels.
 
@@ -19,17 +19,7 @@ Eight phases in order. The first six are operator-visible work; the last two are
 | 7 | `finalize` | no | Re-reads the implemented feature, regenerates any derived documentation, verifies the build and tests pass. |
 | 8 | `done` | no | Terminal sentinel — emits the closing audit events and releases the run cleanly. |
 
-## The Speckit bugfix pipeline (`speckit-bugfix`)
 
-Five phases for surgical patches to existing specs without re-running the full feature pipeline. Use it when an enqueued bug touches the spec/plan/tasks artefacts and needs a focused re-verification rather than a fresh spec.
-
-| # | Phase id | What it does |
-|---|---|---|
-| 1 | `bugfix-report` | Captures the operator-reported bug into the artefact set. |
-| 2 | `bugfix-patch` | Applies the minimal surgical patches to the spec, plan, or tasks. |
-| 3 | `bugfix-verify-pre` | Consistency check before implementation; pauses the run on failure so you can intervene. |
-| 4 | `bugfix-implement` | Executes the patched tasks. |
-| 5 | `bugfix-verify-post` | Consistency check after implementation; pauses on failure. |
 
 ## The phase definition
 
@@ -77,7 +67,7 @@ In your user `settings.json`:
   "schegent.phases": [
     {
       "id": "speckit-implement",
-      "name": "Spec-kit Implement",
+      "name": "Spec Driven Development Implement",
       "instruction": "...",
       "model": "claude-opus-4-7",
       "effort": "high"
@@ -126,7 +116,7 @@ A few things look phase-shaped but are not:
 
 - **Wake-up invocations** are not phases. They are operating-system-scheduled priming pings that never read a pipeline definition.
 - **Manual retry-phase-now actions** are not new phases — they re-run the existing phase, optionally with `--continue` to preserve context.
-- **Bugfix loop iterations** (an extension-point in Speckit) run inside a phase, not as separate phases.
+- **Bugfix loop iterations** (an extension-point in Spec Driven Development workflow) run inside a phase, not as separate phases.
 
 If something does not have a `phase-start` and `phase-end` event in the audit log, it is not a phase.
 
