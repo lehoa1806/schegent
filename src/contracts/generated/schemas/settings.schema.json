@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/settings.schema.json",
+  "title": "Schegent Settings Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "package.json",
+    "src/config/settings-schema.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "settings"
+  ],
+  "properties": {
+    "settings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "type",
+          "default",
+          "scope",
+          "enum",
+          "minimum",
+          "maximum",
+          "pattern"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "default": {},
+          "scope": {
+            "type": "string"
+          },
+          "enum": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "default": [
+        {
+          "key": "schegent.audit.rotation.maxAgeDays",
+          "type": "number",
+          "default": 30,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.audit.rotation.sizeMB",
+          "type": "number",
+          "default": 5,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.backend.runner",
+          "type": "enum",
+          "default": "claude",
+          "scope": "application",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.claude.autoCompactPctOverride",
+          "type": "integer|null",
+          "default": null,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 100,
+          "pattern": null
+        },
+        {
+          "key": "schegent.cli.inheritEnvironment",
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.cli.path",
+          "type": "string",
+          "default": "claude",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.defaultPipelineId",
+          "type": "string",
+          "default": "speckit-new-feature",
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        {
+          "key": "schegent.fatalSignatures",
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.invocation.timeoutSeconds",
+          "type": "number",
+          "default": 1800,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 30,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.logging.runtimeLogFilePath",
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.logging.runtimeLogLevel",
+          "type": "enum",
+          "default": "INFO",
+          "scope": "resource",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.logging.runtimeLogMaxBytes",
+          "type": "integer",
+          "default": 5242880,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 65536,
+          "maximum": 1073741824,
+          "pattern": null
+        },
+        {
+          "key": "schegent.logging.runtimeLogMaxGenerations",
+          "type": "integer",
+          "default": 3,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 0,
+          "maximum": 20,
+          "pattern": null
+        },
+        {
+          "key": "schegent.logging.verbose",
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.loop.maxIterations",
+          "type": "number",
+          "default": 10,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 50,
+          "pattern": null
+        },
+        {
+          "key": "schegent.models",
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.multiRoot.suppressWarning",
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.phases",
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.pipelines",
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.queue.globalConcurrencyCap",
+          "type": "integer",
+          "default": 1,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 1,
+          "pattern": null
+        },
+        {
+          "key": "schegent.retry.maxAttempts",
+          "type": "integer",
+          "default": 5,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 5,
+          "pattern": null
+        },
+        {
+          "key": "schegent.rules.injectPerPhase",
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.trust.allowCustomPhases",
+          "type": "boolean|null",
+          "default": null,
+          "scope": "window",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.trust.allowCustomRetryConditions",
+          "type": "boolean|null",
+          "default": null,
+          "scope": "window",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.trust.allowPipelineOverrides",
+          "type": "boolean|null",
+          "default": null,
+          "scope": "window",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.wakeUp.chronologicalTime",
+          "type": "string",
+          "default": "04:00",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        },
+        {
+          "key": "schegent.wakeUp.enabled",
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.wakeUp.model",
+          "type": "enum",
+          "default": "runner-default",
+          "scope": "application",
+          "enum": [
+            "runner-default",
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-6"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.wakeUp.periodicInterval",
+          "type": "string",
+          "default": "Every 4h",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": "^Every (\\d+)(m|h)$"
+        },
+        {
+          "key": "schegent.wakeUp.schedulerType",
+          "type": "enum",
+          "default": "chronological",
+          "scope": "application",
+          "enum": [
+            "chronological",
+            "periodic"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
+          "key": "schegent.watchdog.pollIntervalMinutes",
+          "type": "number",
+          "default": 30,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": null,
+          "pattern": null
+        }
+      ]
+    }
+  }
+}

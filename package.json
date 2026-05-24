@@ -474,6 +474,7 @@
     "build": "npm run build:webview && npm run build:host",
     "build:host": "node esbuild.config.mjs",
     "build:webview": "npm --prefix webview-ui run build",
+    "contracts:generate": "node scripts/generate-contract-schemas.mjs",
     "dev:webview": "npm --prefix webview-ui run dev",
     "typecheck": "tsc --noEmit",
     "typecheck:webview": "npm --prefix webview-ui run typecheck",

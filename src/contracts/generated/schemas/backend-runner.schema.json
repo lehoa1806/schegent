@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schegent.local/contracts/backend-runner.schema.json",
+  "title": "Schegent Backend Runner Contract",
+  "x-generatedBy": "scripts/generate-contract-schemas.mjs",
+  "x-generatedSchemaVersion": 1,
+  "x-generatedFrom": [
+    "src/contracts/backend-runner.ts",
+    "src/runner/invocation-result.ts"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocationRequestFields",
+    "rawInvocationOutputFields"
+  ],
+  "properties": {
+    "invocationRequestFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "phase",
+          "optional": false,
+          "type": "Phase"
+        },
+        {
+          "name": "iteration",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "prompt",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "timeoutMs",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "cliPath",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "cwd",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "env",
+          "optional": true,
+          "type": "Record<string, string>"
+        },
+        {
+          "name": "inheritProcessEnv",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "model",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "effort",
+          "optional": true,
+          "type": "Effort"
+        },
+        {
+          "name": "cancellationSignal",
+          "optional": true,
+          "type": "{ aborted: boolean; addEventListener(event: 'abort', cb: () => void): void; removeEventListener?(event: 'abort', cb: () => void): void; }"
+        },
+        {
+          "name": "verboseDiagnostics",
+          "optional": true,
+          "type": "VerboseDiagnosticTarget"
+        },
+        {
+          "name": "isContinue",
+          "optional": true,
+          "type": "boolean"
+        }
+      ]
+    },
+    "rawInvocationOutputFields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "optional",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "default": [
+        {
+          "name": "stdout",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "stderr",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "exitCode",
+          "optional": false,
+          "type": "number | null"
+        },
+        {
+          "name": "killed",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "timedOut",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "durationMs",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "diagnosticWarnings",
+          "optional": true,
+          "type": "ReadonlyArray<string>"
+        },
+        {
+          "name": "stdoutTruncated",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "stderrTruncated",
+          "optional": true,
+          "type": "boolean"
+        }
+      ]
+    }
+  }
+}

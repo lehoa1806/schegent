@@ -23,6 +23,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // GuardedRunService applies a convert-to-now startIntent.
   'src/commands/start-queue.ts',
   'src/contracts/backend-runner.ts',
+  'src/contracts/generated/boundary-contracts.ts',
+  'src/contracts/generated/schemas/state.schema.json',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',
