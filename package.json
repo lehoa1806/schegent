@@ -495,6 +495,7 @@
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
   "devDependencies": {
+    "@secretlint/node": "^13.0.2",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",

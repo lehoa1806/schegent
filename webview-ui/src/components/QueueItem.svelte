@@ -229,6 +229,7 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <li
   class="item status-{item.status} {isSelected ? 'activity-selected' : ''} {onSelect ? 'selectable' : ''}"
   data-testid="{testIdPrefix}-{item.id}"
