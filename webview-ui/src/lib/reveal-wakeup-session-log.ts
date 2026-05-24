@@ -21,6 +21,7 @@
 //   * `'timeout'` — synthesized after 5 seconds without any ack.
 
 import { CMD_REVEAL_WAKEUP_SESSION_LOG } from './messages';
+import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -57,8 +58,6 @@ export type PostMessageFn = (message: unknown) => void;
 export function revealWakeupSessionLog(
   postMessage?: PostMessageFn
 ): Promise<RevealWakeupSessionLogResult> {
-  const post = postMessage ?? defaultPostMessage;
-
   return new Promise<RevealWakeupSessionLogResult>((resolve) => {
     const envelopeCorrelationId = freshUuidV4();
     let settled = false;
@@ -99,30 +98,23 @@ export function revealWakeupSessionLog(
       finalise({ status: 'rejected', reason: 'unknown-error' });
     });
 
-    post({
-      type: CMD_REVEAL_WAKEUP_SESSION_LOG,
-      correlationId: envelopeCorrelationId,
-      payload: {}
-    });
+    if (postMessage) {
+      postMessage({
+        type: CMD_REVEAL_WAKEUP_SESSION_LOG,
+        correlationId: envelopeCorrelationId,
+        payload: {}
+      });
+    } else {
+      postCommand(CMD_REVEAL_WAKEUP_SESSION_LOG, undefined, {
+        correlationId: envelopeCorrelationId
+      });
+    }
 
     timer = setTimeout(() => {
       finalise({ status: 'rejected', reason: 'timeout' });
     }, ACK_TIMEOUT_MS);
   });
 }
-
-/**
- * Default `postMessage` — resolves the VS Code webview API lazily so
- * the helper module can be imported in unit-test contexts without an
- * `acquireVsCodeApi` global.
- */
-function defaultPostMessage(message: unknown): void {
-  if (typeof acquireVsCodeApi === 'function') {
-    acquireVsCodeApi().postMessage(message);
-  }
-}
-
-declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 
 /**
  * Generate a canonical RFC 4122 UUIDv4 (lowercase hex, version=4,

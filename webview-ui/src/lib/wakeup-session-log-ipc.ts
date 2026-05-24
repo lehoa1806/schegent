@@ -25,6 +25,7 @@
 //       retryable rejection so the UI can render an error state.
 
 import { CMD_READ_WAKEUP_SESSION_LOG } from './messages';
+import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -97,8 +98,6 @@ export function readWakeupSessionLog(
     });
   }
 
-  const post = postMessage ?? defaultPostMessage;
-
   return new Promise<ReadWakeupSessionLogResult>((resolve) => {
     const envelopeCorrelationId = freshUuidV4();
     let settled = false;
@@ -145,30 +144,21 @@ export function readWakeupSessionLog(
       finalise({ status: 'rejected', reason: 'unknown-error' });
     });
 
-    post({
-      type: CMD_READ_WAKEUP_SESSION_LOG,
-      correlationId: envelopeCorrelationId,
-      payload: { correlationId }
-    });
+    if (postMessage) {
+      postMessage({
+        type: CMD_READ_WAKEUP_SESSION_LOG,
+        correlationId: envelopeCorrelationId,
+        payload: { correlationId }
+      });
+    } else {
+      postCommand(CMD_READ_WAKEUP_SESSION_LOG, { correlationId }, { correlationId: envelopeCorrelationId });
+    }
 
     timer = setTimeout(() => {
       finalise({ status: 'rejected', reason: 'timeout' });
     }, ACK_TIMEOUT_MS);
   });
 }
-
-/**
- * Default `postMessage` — resolves the VS Code webview API lazily so
- * the helper module can be imported in unit-test contexts without an
- * `acquireVsCodeApi` global.
- */
-function defaultPostMessage(message: unknown): void {
-  if (typeof acquireVsCodeApi === 'function') {
-    acquireVsCodeApi().postMessage(message);
-  }
-}
-
-declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 
 /**
  * Generate a canonical RFC 4122 UUIDv4 (lowercase hex, version=4,
