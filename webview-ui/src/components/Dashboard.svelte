@@ -33,10 +33,12 @@
   import QueueInputForm from './QueueInputForm.svelte';
   import QueueControls from './QueueControls.svelte';
   import QueueListView from './QueueListView.svelte';
+  import HistorySection from './HistorySection.svelte';
   import { useConfirm } from '../lib/use-confirm';
   import { deriveCleanAllContext } from '../lib/queue-derived';
 
   let leftPanelCollapsed = $state(false);
+  let queueTab = $state<'queue' | 'history'>('queue');
 
   function toggleLeftPanel(): void {
     leftPanelCollapsed = !leftPanelCollapsed;
@@ -332,27 +334,55 @@
         />
 
         <section class="zone queue-management glass-card queue-list-section" data-testid="dashboard-queue-management">
-          <h2 class="zone-h2">Active Queue</h2>
-          <QueueControls
-            {isPrimary}
-            paused={queuePaused}
-            {pendingCount}
-            {hasInFlight}
-            {clearDoneDisabled}
-            {cleanDisabled}
-            queueLifecycle={queue.lifecycle ?? null}
-            {onResume}
-            {onPause}
-            {onClearDone}
-            {onClean}
-          />
-          <QueueListView
-            {orderedItems}
-            {isPrimary}
-            selectedTaskId={activityFeedSelection.taskId}
-            onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
-            testIdPrefix="dashboard-queue-item"
-          />
+          <div class="queue-tabs" data-testid="dashboard-queue-tabs">
+            <button
+              type="button"
+              class="queue-tab"
+              class:active={queueTab === 'queue'}
+              data-testid="dashboard-queue-tab-queue"
+              onclick={() => (queueTab = 'queue')}
+              aria-selected={queueTab === 'queue'}
+              role="tab"
+            >Active Queue</button>
+            <button
+              type="button"
+              class="queue-tab"
+              class:active={queueTab === 'history'}
+              data-testid="dashboard-queue-tab-history"
+              onclick={() => (queueTab = 'history')}
+              aria-selected={queueTab === 'history'}
+              role="tab"
+            >Recent Runs</button>
+          </div>
+          {#if queueTab === 'queue'}
+            <QueueControls
+              {isPrimary}
+              paused={queuePaused}
+              {pendingCount}
+              {hasInFlight}
+              {clearDoneDisabled}
+              {cleanDisabled}
+              queueLifecycle={queue.lifecycle ?? null}
+              {onResume}
+              {onPause}
+              {onClearDone}
+              {onClean}
+            />
+            <QueueListView
+              {orderedItems}
+              {isPrimary}
+              selectedTaskId={activityFeedSelection.taskId}
+              onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
+              testIdPrefix="dashboard-queue-item"
+            />
+          {:else}
+            <HistorySection
+              history={snapshot.history}
+              {isPrimary}
+              selectedTaskId={activityFeedSelection.taskId}
+              onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
+            />
+          {/if}
         </section>
       </div>
     </div>
@@ -507,6 +537,32 @@
     min-height: 60px;
     overflow: hidden;
   }
+  .queue-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: var(--schegent-gap);
+    border-bottom: 1px solid var(--schegent-divider, var(--sch-glass-border));
+  }
+  .queue-tab {
+    flex: 1;
+    padding: 6px 12px;
+    font-size: 0.9em;
+    font-weight: 600;
+    color: var(--schegent-muted-fg);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+    text-align: center;
+  }
+  .queue-tab:hover {
+    color: var(--schegent-fg);
+  }
+  .queue-tab.active {
+    color: var(--schegent-fg);
+    border-bottom-color: var(--schegent-color-active);
+  }
   .phase-progression-card {
     flex-shrink: 0;
   }
@@ -531,13 +587,6 @@
     color: var(--schegent-muted-fg);
     margin: 0 0 var(--schegent-gap) 0;
     letter-spacing: 0.05em;
-  }
-  .zone-h2 {
-    font-size: 0.95em;
-    font-weight: 600;
-    color: var(--schegent-fg);
-    margin: 0 0 var(--schegent-gap) 0;
-    text-transform: none;
   }
 
   .activity-audit { min-height: 0; overflow: hidden; }

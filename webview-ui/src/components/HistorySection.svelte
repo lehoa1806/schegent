@@ -13,9 +13,11 @@
   interface Props {
     history: readonly HistoryEntry[];
     isPrimary: boolean;
+    selectedTaskId?: string | null;
+    onTaskSelect?: (taskId: string) => void;
   }
 
-  const { history, isPrimary }: Props = $props();
+  const { history, isPrimary, selectedTaskId = null, onTaskSelect }: Props = $props();
 
   const empty = $derived(history.length === 0);
   const rerunDisabled = $derived(!isPrimary);
@@ -45,16 +47,19 @@
 </script>
 
 <section class="history" aria-label="Run history" data-testid="history-section">
-  <header class="title">Recent runs</header>
   {#if empty}
     <p class="empty" data-testid="history-empty">No completed runs yet.</p>
   {:else}
     <ul>
       {#each history as entry (entry.runId)}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <li
           class="entry status-{entry.terminalStatus}"
+          class:selected={selectedTaskId === entry.runId}
           data-testid="history-entry-{entry.runId}"
           data-history-row="{entry.runId}"
+          onclick={() => onTaskSelect?.(entry.runId)}
         >
           <span class="label" title={entry.descriptionPreview}>
             {entry.descriptionPreview}
@@ -110,13 +115,7 @@
 
 <style>
   .history {
-    padding: var(--schegent-pad);
-    border-bottom: 1px solid var(--schegent-divider);
-  }
-  .title {
-    font-size: 0.8em;
-    color: var(--schegent-muted-fg);
-    margin-bottom: 4px;
+    padding: 0;
   }
   .empty {
     color: var(--schegent-muted-fg);
@@ -143,12 +142,34 @@
   .entry:hover {
     background: var(--schegent-list-hover);
   }
+  .entry.selected {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+  }
+  .entry.selected .label {
+    color: inherit;
+  }
+  .entry.selected .meta {
+    color: inherit;
+    opacity: 0.8;
+  }
+  .entry.selected .action {
+    color: inherit;
+    border-color: currentColor;
+    opacity: 0.8;
+  }
+  .entry.selected .action:hover:not([aria-disabled='true']) {
+    opacity: 1;
+  }
   .label {
     grid-column: 1;
     grid-row: 1;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.35;
+    word-break: break-word;
   }
   .meta {
     grid-column: 1;
