@@ -83,7 +83,7 @@ All four are scoped `application` (user/global), not workspace, and never per-fo
 
 | Name & Type | Default | Description |
 |---|---|---|
-| `schegent.wakeUp.model` [string enum] | `"runner-default"` | Pinned Claude model for every wake-up invocation. Allowed values: `"claude-opus-4-7"`, `"claude-sonnet-4-6"`, `"claude-haiku-4-6"`, or the sentinel `"runner-default"` (no `--model` flag — the CLI picks its own default). Saved through the sidebar Settings panel, not the Settings UI. Unsupported values entered manually into `settings.json` are coerced to the sentinel on read and rejected on save. |
+| `schegent.wakeUp.model` [string enum] | `"runner-default"` | Pinned Claude model for every wake-up invocation. Allowed values: `"claude-opus-4-7"`, `"claude-opus-4-8"`, `"claude-sonnet-4-6"`, `"claude-haiku-4-6"`, or the sentinel `"runner-default"` (no `--model` flag — the CLI picks its own default). Saved through the sidebar Settings panel, not the Settings UI. Unsupported values entered manually into `settings.json` are coerced to the sentinel on read and rejected on save. |
 
 ### Sidebar buttons
 

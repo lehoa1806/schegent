@@ -51,6 +51,7 @@
     'claude-sonnet-4-6',
     'claude-opus-4-6',
     'claude-opus-4-7',
+    'claude-opus-4-8',
     'claude-haiku-4-5'
   ];
 
@@ -236,7 +237,7 @@
     if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
   function addPhase(): void {
-    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.' } as MutablePhase];
+    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', model: 'claude-opus-4-8', effort: 'max' } as MutablePhase];
     selectedPhaseIndex = phases.length - 1;
   }
   function removePhase(index: number): void {
