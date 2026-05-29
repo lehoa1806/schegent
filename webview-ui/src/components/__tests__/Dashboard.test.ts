@@ -816,10 +816,9 @@ describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
     it('Queue Management zone header reads "Active Queue"', () => {
       const snap = buildSnapshot();
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      const zone = getByTestId('dashboard-queue-management');
-      const header = zone.querySelector('h2');
-      expect(header).not.toBeNull();
-      expect(header!.textContent?.trim()).toBe('Active Queue');
+      const tab = getByTestId('dashboard-queue-tab-queue');
+      expect(tab).not.toBeNull();
+      expect(tab.textContent?.trim()).toBe('Active Queue');
     });
 
     it('Phase Progression zone header reads "Phase Progression (Active: <id>)" when queue.inFlight is set (FR-017, 016)', () => {
@@ -987,12 +986,12 @@ describe('Dashboard rendered-text contract (T072 / SC-011 / BUG-005)', () => {
   }
 
   describe('FR-033 zone headers must NOT have CSS text-transform applied', () => {
-    it('Queue Management zone header has computed textTransform of "none"', () => {
+    it('Queue Management zone tab has computed textTransform of "none"', () => {
       const snap = buildSnapshot();
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
-      const header = getByTestId('dashboard-queue-management').querySelector<HTMLElement>('h2');
-      expect(header).not.toBeNull();
-      expectNoTextTransform(header!, 'Queue Management zone header');
+      const tab = getByTestId('dashboard-queue-tab-queue');
+      expect(tab).not.toBeNull();
+      expectNoTextTransform(tab, 'Queue Management zone tab');
     });
 
     it('Phase Progression zone header has computed textTransform of "none"', () => {

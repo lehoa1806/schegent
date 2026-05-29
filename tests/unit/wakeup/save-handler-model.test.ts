@@ -107,7 +107,7 @@ describe('Feature 031 T016 — save-handler accepts the `model` field', () => {
   });
 
   it('accepts each member of the closed registry', async () => {
-    const members = ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-6'] as const;
+    const members = ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-6'] as const;
     for (const m of members) {
       const { deps, config } = makeDeps();
       const handler = createSaveWakeUpSettingsHandler(deps);

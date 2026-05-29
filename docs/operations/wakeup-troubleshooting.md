@@ -65,7 +65,7 @@ contract:
 | `rawResponse` | bounded local response text; the UI applies host sanitization before rendering |
 | `errorReason` | failure reason, if any |
 | `correlationId` | (feature 031) UUIDv4 stamped onto the corresponding `session.log` block header. Absent on legacy rows and on lock-skipped rows. |
-| `requestedModel` | (feature 031) the operator's selection literal — `'runner-default'` or a member of the closed registry (`'claude-opus-4-7'`, `'claude-sonnet-4-6'`, `'claude-haiku-4-6'`). Falls back to `'runner-default'` on any unrecognized value at read time. |
+| `requestedModel` | (feature 031) the operator's selection literal — `'runner-default'` or a member of the closed registry (`'claude-opus-4-7'`, `'claude-opus-4-8'`, `'claude-sonnet-4-6'`, `'claude-haiku-4-6'`). Falls back to `'runner-default'` on any unrecognized value at read time. |
 | `actualModel` | (feature 031) what the runner actually invoked. Equal to `requestedModel` for known ids; collapses to `'runner-default'` when an unsupported id was written to the settings mirror (no `--model` flag is appended to the CLI spawn). |
 | `sessionLogBytesAppended` | (feature 031) bytes the session-log writer reported as appended; ground truth from the writer's O_APPEND write. Absent for lock-skipped invocations (no block is written). |
 | `sessionLogTrimmed` | (feature 031) `true` when the soft-cap retention pass ran during this invocation; `false` otherwise. |

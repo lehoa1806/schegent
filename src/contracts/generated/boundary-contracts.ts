@@ -210,6 +210,7 @@ export const WORKFLOW_RUN_STATUSES = [
 
 export const WAKEUP_SUPPORTED_MODELS = [
   "claude-opus-4-7",
+  "claude-opus-4-8",
   "claude-sonnet-4-6",
   "claude-haiku-4-6"
 ] as const;

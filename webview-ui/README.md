@@ -365,7 +365,7 @@ mounts three new components from
 
 - `WakeupModelSelector.svelte` — model dropdown listing
   `Default (runner-chosen)` + the three registry members
-  (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-6`). Save
+  (`claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-6`). Save
   routes through the existing `save-wakeup-settings.ts` helper —
   no new mutating IPC.
 - `WakeupSessionLogPanel.svelte` — lazy expansion panel inline under

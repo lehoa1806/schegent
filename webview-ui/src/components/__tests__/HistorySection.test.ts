@@ -139,4 +139,18 @@ describe('HistorySection', () => {
     expect(src).not.toMatch(/rgb\(/);
     expect(src).not.toMatch(/rgba\(/);
   });
+
+  it('clicking an entry calls onTaskSelect with the runId', async () => {
+    const e = entry({ runId: 'run-select-1' });
+    const selectMock = vi.fn();
+    const { getByTestId } = render(HistorySection, {
+      props: { history: [e], isPrimary: true, onTaskSelect: selectMock }
+    });
+
+    const el = getByTestId('history-entry-run-select-1');
+    await fireEvent.click(el);
+
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledWith('run-select-1');
+  });
 });
