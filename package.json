@@ -2,7 +2,7 @@
   "name": "schegent",
   "displayName": "Schegent",
   "description": "Autonomously orchestrates the Claude Code CLI to drive the spec-driven development pipeline.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "assets/logo.png",
   "publisher": "schegent",
   "license": "MIT",
