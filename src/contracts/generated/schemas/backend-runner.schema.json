@@ -102,6 +102,11 @@
           "name": "isContinue",
           "optional": true,
           "type": "boolean"
+        },
+        {
+          "name": "completionMarker",
+          "optional": true,
+          "type": "string"
         }
       ]
     },
@@ -151,6 +156,11 @@
         {
           "name": "timedOut",
           "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "completedAwaitingExit",
+          "optional": true,
           "type": "boolean"
         },
         {

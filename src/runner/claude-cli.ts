@@ -13,6 +13,12 @@ import { buildSpawnEnv } from './spawn-env';
 const SIGKILL_DELAY_MS = 2_000;
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const PROBE_TIMEOUT_MS = 5_000;
+// Feature 030 BUG-002 — after the request's `completionMarker` appears in
+// stdout, the runner waits at most this long for the process to exit on its
+// own before grace-terminating it. Short enough that a lingering process does
+// not stall the queue; long enough for a well-behaved CLI to flush and exit
+// normally. Distinct from the idle/stall window (`timeoutMs`).
+const COMPLETION_SETTLE_MS = 5_000;
 
 export type SpawnFn = (
   command: string,
@@ -316,32 +322,57 @@ export class ClaudeCliRunner implements BackendRunner {
 
       let timedOut = false;
       let killed = false;
+      // Feature 030 BUG-002 — once the completion marker is seen in stdout, the
+      // CLI has emitted its terminal result; a process that has not exited is
+      // lingering, not stalling. The idle window then shrinks to
+      // `COMPLETION_SETTLE_MS` and, on expiry, the runner grace-terminates and
+      // reports `completedAwaitingExit` (NOT `timedOut`) so the captured result
+      // is classified on its merits rather than discarded as a timeout failure.
+      let sawCompletionMarker = false;
+      let completedAwaitingExit = false;
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
-      // arrived for `timeoutMs`. Each data event resets it. A long-running
-      // phase that streams progress continues indefinitely; a stalled CLI
-      // (no output) is terminated after the configured idle window.
-      let timer: NodeJS.Timeout = setTimeout(() => {
-        timedOut = true;
+      // arrived for the active window. Each data event resets it. Before the
+      // completion marker the window is `timeoutMs` (a long-running phase that
+      // streams progress continues indefinitely; a stalled CLI with no output
+      // is terminated after the configured idle window). After the marker the
+      // window is the short `COMPLETION_SETTLE_MS` settle period.
+      const onIdleExpiry = (): void => {
+        if (sawCompletionMarker) completedAwaitingExit = true;
+        else timedOut = true;
         this.terminate(child);
-      }, request.timeoutMs);
+      };
+      let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
-        timer = setTimeout(() => {
-          timedOut = true;
-          this.terminate(child);
-        }, request.timeoutMs);
+        timer = setTimeout(
+          onIdleExpiry,
+          sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs
+        );
       };
 
       const diagnosticWrites: Promise<void>[] = [];
       child.stdout?.on('data', (chunk: string) => {
-        resetIdleTimer();
         stdoutBytes += Buffer.byteLength(chunk, 'utf8');
         if (stdoutBytes <= MAX_BUFFER_BYTES) {
           stdout += chunk;
         } else {
           stdoutTruncated = true;
         }
+        // Feature 030 BUG-002 — detect the completion marker on the recent tail
+        // (bounded so detection stays O(chunk), not O(total)) so a marker that
+        // spans a chunk boundary is still caught. Once seen, `resetIdleTimer`
+        // arms the short settle window instead of the long idle window.
+        if (
+          request.completionMarker &&
+          !sawCompletionMarker &&
+          stdout
+            .slice(-(chunk.length + request.completionMarker.length))
+            .includes(request.completionMarker)
+        ) {
+          sawCompletionMarker = true;
+        }
+        resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
@@ -378,7 +409,10 @@ export class ClaudeCliRunner implements BackendRunner {
 
       const exitCode = await new Promise<number | null>((resolve) => {
         child.on('exit', (code, signal) => {
-          if (signal && code === null) {
+          // Feature 030 BUG-002 — a grace-terminate after the completion marker
+          // is NOT an operator cancellation, so do not flag it `killed` even
+          // though it exits via our SIGTERM with a null code.
+          if (signal && code === null && !completedAwaitingExit) {
             killed = true;
           }
           resolve(code);
@@ -407,6 +441,7 @@ export class ClaudeCliRunner implements BackendRunner {
         exitCode,
         killed,
         timedOut,
+        completedAwaitingExit,
         durationMs: Date.now() - start,
         diagnosticWarnings,
         stdoutTruncated,
