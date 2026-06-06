@@ -4,7 +4,7 @@ import type { PromptBuilder } from '../runner/prompt-builder';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
-import { parseAuditLogBlock } from '../parser/audit-log-parser';
+import { parseAuditLogBlock, AUDIT_LOG_CLOSE_MARKER } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
 import { detectCreditError } from '../parser/credit-error-detector';
@@ -303,6 +303,7 @@ export class PhaseRunner {
       iteration: inputs.iteration,
       prompt,
       timeoutMs: inputs.timeoutMs,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
       env,
@@ -325,7 +326,27 @@ export class PhaseRunner {
       });
     }
 
-    if (raw.timedOut) {
+    // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
+    // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
+    const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
+    const audit = parseAuditLogBlock(raw.stdout);
+    // Feature 011 FR-033 — operator-additive fatal signatures, read per
+    // invocation (never cached); the built-in floor is preserved.
+    const operatorAdditions =
+      this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
+    const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
+    const result = parseInvocation({
+      stdout: raw.stdout,
+      stderr: raw.stderr,
+      exitCode: raw.exitCode,
+      rateLimit,
+      auditEntry: audit.entry,
+      auditWarnings: audit.warnings,
+      effectiveFatalSignatures
+    });
+
+    // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025).
+    if (raw.timedOut && result.kind !== 'clean') {
       await this.rawTranscript?.appendEnd({
         runId: inputs.runId,
         stdout: raw.stdout,
@@ -378,25 +399,6 @@ export class PhaseRunner {
         phaseMessage: null
       };
     }
-
-    const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
-    const audit = parseAuditLogBlock(raw.stdout);
-    // Feature 011 FR-033 — read operator-additive fatal signatures
-    // per-invocation (never cached). The built-in floor is preserved
-    // by `getEffectiveSignatures()`; operator additions can extend but
-    // not subtract from it (FR-038).
-    const operatorAdditions =
-      this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
-    const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
-    const result = parseInvocation({
-      stdout: raw.stdout,
-      stderr: raw.stderr,
-      exitCode: raw.exitCode,
-      rateLimit,
-      auditEntry: audit.entry,
-      auditWarnings: audit.warnings,
-      effectiveFatalSignatures
-    });
 
     // Feature 013 — T041 (Wave 3): defense-in-depth assertion. The parser
     // hoists the exit-code check above the contract-block branches, but a

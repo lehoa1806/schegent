@@ -102,6 +102,16 @@ export function parseAuditLogLineDetailed(line: string): ParseAuditLineResult {
 const OPEN_MARKER = '=== SCHEGENT AUDIT LOG ===';
 const CLOSE_MARKER = '=== END AUDIT LOG ===';
 
+/**
+ * Feature 030 BUG-002 — the SCHEGENT AUDIT LOG closing sentinel, exported
+ * so the phase layer can hand it to the runner as an `InvocationRequest`
+ * completion marker. The audit block is the constitutionally-required
+ * final output of every phase, so its close marker is a reliable
+ * "phase output complete" signal for grace-terminating a CLI process that
+ * emits its result but does not promptly exit.
+ */
+export const AUDIT_LOG_CLOSE_MARKER = CLOSE_MARKER;
+
 const REQUIRED_FIELDS = [
   'phase',
   'files_created',

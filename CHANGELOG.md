@@ -20,6 +20,41 @@ land here first and graduate into a version section at release time.
 
 ---
 
+## [0.2.0] — 2026-06-07
+
+### Added
+
+- Enqueue/start separation: a start-mode chooser, scheduled starts, and an
+  `idle-pending` queue lifecycle so newly enqueued work waits for an explicit
+  start (065).
+- Persistent **System** tab with structured metadata and a CLI command block
+  (068).
+- Live Mode auto-follow of the active run (067).
+- **Clean All** with a universal confirmation gate (063).
+- Dual-release host abstraction, shared contract-schema generation, and a Rust
+  desktop-prototype shell (064, 066, 068).
+- Tabbed Active Queue / Recent Runs layout; click a task card to select it in
+  the Activity Feed.
+- `claude-opus-4-8` in the model registries.
+
+### Changed
+
+- The per-phase CLI invocation timeout is an idle timeout (resets on output)
+  rather than a wall-clock cap.
+
+### Fixed
+
+- A phase whose CLI completed successfully but did not exit is no longer
+  reported as a timeout failure: the runner detects result-envelope completion
+  and grace-terminates the lingering process, and the phase runner reclassifies
+  a timed-out-but-complete invocation as success, so the queue advances to the
+  next task (030 BUG-002).
+- Rate-limit responses are rejected on a successful CLI exit; out-of-credits
+  backoff is guarded against past reset timestamps (065 BUG-008, 066).
+- Unified queue rendering and reorder semantics (065 BUG-007/009).
+
+---
+
 ## [0.1.0] — 2026-05-18
 
 Initial public release of the Schegent extension.

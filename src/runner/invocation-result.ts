@@ -73,6 +73,18 @@ export interface InvocationRequest {
    * as the next user message.
    */
   isContinue?: boolean;
+  /**
+   * Feature 030 BUG-002 — optional completion sentinel. When set, the
+   * runner watches the streamed stdout for this substring; once seen it
+   * stops waiting out the long idle timeout and instead grace-terminates
+   * the process after a short settle window if it has not exited on its
+   * own. A CLI that emits its terminal result but fails to exit therefore
+   * no longer hangs the run until the idle-timeout fires. The phase layer
+   * supplies the SCHEGENT AUDIT LOG close marker (`=== END AUDIT LOG ===`).
+   * Omitted by non-phase callers (wake-up runner, contract harnesses),
+   * which keep the exit-only completion path unchanged.
+   */
+  completionMarker?: string;
 }
 
 export interface RawInvocationOutput {
@@ -81,6 +93,18 @@ export interface RawInvocationOutput {
   exitCode: number | null;
   killed: boolean;
   timedOut: boolean;
+  /**
+   * Feature 030 BUG-002 — `true` iff the runner observed the request's
+   * `completionMarker` in stdout and then grace-terminated the process
+   * because it had produced its terminal result but did not exit within
+   * the settle window. Distinct from `timedOut` (a genuine no-output idle
+   * stall): a `completedAwaitingExit` invocation carries a complete result
+   * in `stdout` and is classified by its parsed outcome, not as a timeout
+   * failure. `killed` stays `false` on this path so the controller does
+   * not treat it as an operator cancellation. `undefined` from a
+   * non-runner fixture is equivalent to `false`.
+   */
+  completedAwaitingExit?: boolean;
   durationMs: number;
   diagnosticWarnings?: ReadonlyArray<string>;
   /**
