@@ -7,7 +7,7 @@
 // Adds three scalar fields when the source record carries them:
 //   - correlationId    (UUIDv4)
 //   - requestedModel   (operator selection, verbatim — may be invalid)
-//   - actualModel      ('runner-default' | 'claude-opus-4-7' | 'claude-sonnet-4-6' | 'claude-haiku-4-6')
+//   - actualModel      ('runner-default' | 'claude-fable-5' | 'claude-opus-4-7' | 'claude-opus-4-8' | 'claude-sonnet-4-6' | 'claude-haiku-4-6')
 //
 // Explicitly NOT added (preserves the 014 paths-free + audit-enum invariants):
 //   - sessionLogBytesAppended / sessionLogTrimmed (byte counters; JSONL only)
