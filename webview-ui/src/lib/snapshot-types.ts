@@ -432,7 +432,9 @@ export type WakeUpSchedulerType = 'chronological' | 'periodic';
 export const RUNNER_DEFAULT_MODEL = 'runner-default' as const;
 
 export const WAKEUP_SUPPORTED_MODELS = [
+  'claude-fable-5',
   'claude-opus-4-7',
+  'claude-opus-4-8',
   'claude-sonnet-4-6',
   'claude-haiku-4-6'
 ] as const;

@@ -26,6 +26,7 @@
       "items": {
         "type": "string",
         "enum": [
+          "claude-fable-5",
           "claude-opus-4-7",
           "claude-opus-4-8",
           "claude-sonnet-4-6",

@@ -1,8 +1,9 @@
 // Feature 031 T019 — Svelte component tests for WakeupModelSelector.svelte.
 //
 // Coverage:
-//   (a) Renders four options: 'Default (runner-chosen)' + the three
-//       members of WAKEUP_SUPPORTED_MODELS.
+//   (a) Renders one option per member of WAKEUP_SUPPORTED_MODELS plus
+//       the 'Default (runner-chosen)' sentinel (count asserted
+//       dynamically against the host registry length).
 //   (b) Reflects the persisted `model` value from props.
 //   (c) On change + Save click, calls the helper at
 //       `webview-ui/src/lib/save-wakeup-settings.ts` with the new
