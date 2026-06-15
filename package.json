@@ -509,7 +509,7 @@
     "eslint": "^8.57.0",
     "prettier": "^3.2.0",
     "typescript": "^5.4.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.6"
   },
   "repository": {
     "type": "git",
