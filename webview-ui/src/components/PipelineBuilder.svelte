@@ -48,6 +48,8 @@
   );
 
   const PRESEEDED_MODELS = [
+    'claude-sonnet-5',
+    'claude-opus-5',
     'claude-fable-5',
     'claude-sonnet-4-6',
     'claude-opus-4-6',
@@ -238,7 +240,7 @@
     if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
   function addPhase(): void {
-    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', model: 'claude-opus-4-8', effort: 'max' } as MutablePhase];
+    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', model: 'claude-opus-5', effort: 'max' } as MutablePhase];
     selectedPhaseIndex = phases.length - 1;
   }
   function removePhase(index: number): void {

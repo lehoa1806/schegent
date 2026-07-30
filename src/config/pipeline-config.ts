@@ -193,50 +193,59 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
   Object.freeze({
     id: 'speckit-specify',
     name: 'Spec-kit Specify',
-    instruction: PHASE_INSTRUCTIONS['speckit-specify']
+    instruction: PHASE_INSTRUCTIONS['speckit-specify'],
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-clarify',
     name: 'Spec-kit Clarify',
     instruction: PHASE_INSTRUCTIONS['speckit-clarify'],
-    retryCondition: 'open_questions > 0'
+    retryCondition: 'open_questions > 0',
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-plan',
     name: 'Spec-kit Plan',
-    instruction: PHASE_INSTRUCTIONS['speckit-plan']
+    instruction: PHASE_INSTRUCTIONS['speckit-plan'],
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-tasks',
     name: 'Spec-kit Tasks',
-    instruction: PHASE_INSTRUCTIONS['speckit-tasks']
+    instruction: PHASE_INSTRUCTIONS['speckit-tasks'],
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-checklist',
     name: 'Spec-kit Checklist',
-    instruction: PHASE_INSTRUCTIONS['speckit-checklist']
+    instruction: PHASE_INSTRUCTIONS['speckit-checklist'],
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-analyze',
     name: 'Spec-kit Analyze',
     instruction: PHASE_INSTRUCTIONS['speckit-analyze'],
-    retryCondition: 'critical_issues > 0'
+    retryCondition: 'critical_issues > 0',
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-implement',
     name: 'Spec-kit Implement',
-    instruction: PHASE_INSTRUCTIONS['speckit-implement']
+    instruction: PHASE_INSTRUCTIONS['speckit-implement'],
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'speckit-review',
     name: 'Spec-kit Review',
     instruction: PHASE_INSTRUCTIONS['speckit-review'],
-    retryCondition: 'pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0'
+    retryCondition: 'pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0',
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'finalize',
     name: 'Finalize',
-    instruction: PHASE_INSTRUCTIONS.finalize
+    instruction: PHASE_INSTRUCTIONS.finalize,
+    model: 'claude-opus-5'
   }),
   Object.freeze({
     id: 'bugfix-report',

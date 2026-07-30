@@ -204,7 +204,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(securityCall.timeoutMs).toBe(90_000);
 
     const specifyCall = invocations.find((i) => i.phase === 'speckit-specify')!;
-    expect(specifyCall.model).toBeUndefined();
+    expect(specifyCall.model).toBe('claude-opus-5');
     expect(specifyCall.effort).toBeUndefined();
 
     const log = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
@@ -224,7 +224,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       (l) => l.eventType === 'phase-start' && l.payload.phaseId === 'speckit-specify'
     )!;
     expect(specifyStart.payload.pipelineId).toBe('security');
-    expect(specifyStart.payload).not.toHaveProperty('model');
+    expect(specifyStart.payload).toHaveProperty('model', 'claude-opus-5');
     expect(specifyStart.payload).not.toHaveProperty('effort');
     expect(specifyStart.payload).not.toHaveProperty('timeoutMs');
   });
