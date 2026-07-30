@@ -27,7 +27,10 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   { path: 'src/ui/sidebar/state-projector.ts', maxLines: 920 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
-  { path: 'src/config/pipeline-config.ts', maxLines: 700 },
+  // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
+  // built-in phases (speckit-checklist, speckit-review) and enriched
+  // skill-aligned instruction text for clarify, analyze, review, and finalize.
+  { path: 'src/config/pipeline-config.ts', maxLines: 800 },
   { path: 'src/config/general-settings.ts', maxLines: 650 }
 ];
 

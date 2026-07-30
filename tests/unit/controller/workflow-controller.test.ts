@@ -120,7 +120,7 @@ beforeEach(async () => {
 });
 
 describe('SchegentWorkflowController.startNew', () => {
-  it('drives all 7 phases to completion when all return clean', async () => {
+  it('drives all 9 phases to completion when all return clean', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
@@ -129,15 +129,17 @@ describe('SchegentWorkflowController.startNew', () => {
     const run = store.getRun()!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
-    expect(runSpy).toHaveBeenCalledTimes(7);
+    expect(runSpy).toHaveBeenCalledTimes(9);
     const phasesCalled = runSpy.mock.calls.map((c) => (c[0] as { phase: string }).phase);
     expect(phasesCalled).toEqual([
       'speckit-specify',
       'speckit-clarify',
       'speckit-plan',
       'speckit-tasks',
+      'speckit-checklist',
       'speckit-analyze',
       'speckit-implement',
+      'speckit-review',
       'finalize'
     ]);
   });
@@ -157,8 +159,10 @@ describe('SchegentWorkflowController.startNew', () => {
       'speckit-clarify',
       'speckit-plan',
       'speckit-tasks',
+      'speckit-checklist',
       'speckit-analyze',
       'speckit-implement',
+      'speckit-review',
       'finalize'
     ]);
   });
