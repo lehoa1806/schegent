@@ -383,3 +383,125 @@ describe('continue-flag argv composition: transport=stdin', () => {
     expect(seen.args).not.toContain('-c');
   });
 });
+
+// Session ID capture — argv contract tests for `--resume <session-id>`.
+// When `isContinue === true` AND `resumeSessionId` is set, the runner
+// uses `--resume <id>` instead of `-c`. When only `isContinue` is set
+// (no session ID), falls back to `-c`. When `isContinue` is false/absent,
+// no continuation flag is present regardless of `resumeSessionId`.
+describe('continue-flag argv composition: resumeSessionId', () => {
+  it('argv uses --resume <id> when isContinue is true AND resumeSessionId is set', async () => {
+    const child = makeFakeChild();
+    const seen: SpawnCapture = { command: '', args: [], options: {} };
+    const runner = new ClaudeCliRunner(captureSpawn(child, seen));
+    await runner.invoke({
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'retry prompt',
+      timeoutMs: 5_000,
+      cliPath: 'claude',
+      cwd: '/repo',
+      isContinue: true,
+      resumeSessionId: 'sess-abc-123'
+    });
+    expect(seen.args).toEqual([
+      '--dangerously-skip-permissions',
+      '--resume',
+      'sess-abc-123',
+      '-p',
+      'retry prompt'
+    ]);
+    expect(seen.args).not.toContain('-c');
+  });
+
+  it('argv falls back to -c when isContinue is true but resumeSessionId is undefined', async () => {
+    const child = makeFakeChild();
+    const seen: SpawnCapture = { command: '', args: [], options: {} };
+    const runner = new ClaudeCliRunner(captureSpawn(child, seen));
+    await runner.invoke({
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'retry prompt',
+      timeoutMs: 5_000,
+      cliPath: 'claude',
+      cwd: '/repo',
+      isContinue: true
+    });
+    expect(seen.args).toEqual([
+      '--dangerously-skip-permissions',
+      '-c',
+      '-p',
+      'retry prompt'
+    ]);
+    expect(seen.args).not.toContain('--resume');
+  });
+
+  it('argv has NO --resume or -c when isContinue is false even with resumeSessionId', async () => {
+    const child = makeFakeChild();
+    const seen: SpawnCapture = { command: '', args: [], options: {} };
+    const runner = new ClaudeCliRunner(captureSpawn(child, seen));
+    await runner.invoke({
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'fresh prompt',
+      timeoutMs: 5_000,
+      cliPath: 'claude',
+      cwd: '/repo',
+      isContinue: false,
+      resumeSessionId: 'sess-should-not-appear'
+    });
+    expect(seen.args).toEqual([
+      '--dangerously-skip-permissions',
+      '-p',
+      'fresh prompt'
+    ]);
+    expect(seen.args).not.toContain('-c');
+    expect(seen.args).not.toContain('--resume');
+  });
+
+  it('argv uses --resume with prompt-file transport', async () => {
+    // Prime cache for prompt-file transport
+    const helpChild = makeFakeChild();
+    const spawnFn = vi.fn((_command: string, args: readonly string[], _options: SpawnOptions) => {
+      if (args.includes('--help')) {
+        setImmediate(() => {
+          helpChild.stdout.push('  --prompt-file <FILE>  Read prompt from file\n');
+          helpChild.stdout.push(null);
+          helpChild.emit('exit', 0, null);
+        });
+        return helpChild as unknown as ChildProcess;
+      }
+      const invocationChild = makeFakeChild();
+      setImmediate(() => invocationChild.emit('exit', 0, null));
+      return invocationChild as unknown as ChildProcess;
+    });
+    const seen: SpawnCapture = { command: '', args: [], options: {} };
+    const captureFromFactory = vi.fn((command: string, args: readonly string[], options: SpawnOptions) => {
+      if (args.includes('--help')) {
+        return spawnFn(command, args, options);
+      }
+      seen.command = command;
+      seen.args = args;
+      seen.options = options;
+      const invocationChild = makeFakeChild();
+      setImmediate(() => invocationChild.emit('exit', 0, null));
+      return invocationChild as unknown as ChildProcess;
+    });
+    const runner = new ClaudeCliRunner(captureFromFactory as SpawnFn, null, { probeTransport: true });
+    await runner.invoke({
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'retry prompt',
+      timeoutMs: 5_000,
+      cliPath: 'claude',
+      cwd: '/repo',
+      isContinue: true,
+      resumeSessionId: 'sess-file-transport'
+    });
+    expect(seen.args[0]).toBe('--dangerously-skip-permissions');
+    expect(seen.args[1]).toBe('--resume');
+    expect(seen.args[2]).toBe('sess-file-transport');
+    expect(seen.args[3]).toBe('--prompt-file');
+    expect(seen.args).not.toContain('-c');
+  });
+});

@@ -209,6 +209,8 @@ pub const WORKFLOW_RUN_STATUSES: &[&str] = &[
 ];
 
 pub const WAKEUP_SUPPORTED_MODELS: &[&str] = &[
+    "claude-sonnet-5",
+    "claude-opus-5",
     "claude-fable-5",
     "claude-opus-4-7",
     "claude-opus-4-8",

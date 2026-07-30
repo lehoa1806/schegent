@@ -178,6 +178,11 @@
           "type": "string | null"
         },
         {
+          "name": "lastCliSessionId",
+          "optional": true,
+          "type": "string | null"
+        },
+        {
           "name": "lastRetryDecision",
           "optional": true,
           "type": "LastRetryDecision"

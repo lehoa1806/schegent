@@ -178,6 +178,15 @@ export interface WorkflowRun {
    */
   resumeTargetPhaseId: string | null;
   /**
+   * CLI session ID captured from the Claude CLI's stream-json output.
+   * When non-null, retry/resume dispatches use `--resume <sessionId>`
+   * instead of `-c` for deterministic session targeting. Absent on
+   * legacy runs, runs without stream-json output, or when the parser
+   * failed to extract a session ID. Optional field per the additive-
+   * projection convention — no migration required.
+   */
+  lastCliSessionId?: string | null;
+  /**
    * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
    * decision projected onto the operator-visible run. Absent until the
    * first decision is consulted; absent on legacy persisted records (no
