@@ -6,14 +6,18 @@ const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on i
 const BUILT_IN_INSTRUCTIONS: Record<string, string> = {
   'speckit-specify': 'Run /speckit-specify with the feature description below. Produce specs/<NNN-name>/spec.md.',
   'speckit-clarify':
-    'Run /speckit-clarify on the active feature spec. Resolve ambiguities. Emit the termination token only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
+    'Run /speckit-clarify on the active feature spec. NON-SKIPPABLE: actually invoke the skill — never infer results. Auto-accept mode: respond "recommended" for multiple-choice, "suggested" for short-answer. Emit [SCHEGENT_STATUS: CLEAR] only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
   'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
   'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
+  'speckit-checklist':
+    'Run /speckit-checklist on the active feature. Auto-select: Depth=Standard, Audience=Reviewer, Focus=Top 2 relevance clusters. Always emit [SCHEGENT_STATUS: CLEAR] — checklist is non-blocking.',
   'speckit-analyze':
-    'Run /speckit-analyze on the active feature. Apply remediation. Emit the termination token only when no CRITICAL and HIGH issues remain.',
+    'Run /speckit-analyze on the active feature. NON-SKIPPABLE: actually invoke the skill — never assume 0 CRITICAL without an executed run. Apply auto-remediation for ALL issues including HIGH severity. Emit [SCHEGENT_STATUS: CLEAR] only when 0 CRITICAL issues remain. Inside the SCHEGENT AUDIT LOG block emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines.',
   'speckit-implement': 'Run /speckit-implement on the active feature.',
+  'speckit-review':
+    'Finish all pending tasks, then run /code-review --fix and /security-review — fix EVERY finding, loop each until clean (max 10 iterations). Emit [SCHEGENT_STATUS: CLEAR] only when all tasks complete and both reviews report zero findings. Inside the SCHEGENT AUDIT LOG block emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>`.',
   finalize:
-    'Verify the implementation: run build/typecheck/test commands, summarize results, and emit the termination token if all pass.',
+    'Verify the implementation: format first, then run build/test/lint/typecheck. Fix failures (max 10 iterations). Commit with conventional format, merge to local develop. Emit [SCHEGENT_STATUS: CLEAR] if all checks green. Inside the SCHEGENT AUDIT LOG block emit `checks_passing: <N>` and `checks_failing: <N>`.',
   done: '(no-op)'
 };
 

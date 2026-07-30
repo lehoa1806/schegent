@@ -54,8 +54,10 @@ export const BUILT_IN_PHASE_IDS = [
   'speckit-clarify',
   'speckit-plan',
   'speckit-tasks',
+  'speckit-checklist',
   'speckit-analyze',
   'speckit-implement',
+  'speckit-review',
   'finalize',
   'bugfix-report',
   'bugfix-patch',
@@ -79,15 +81,101 @@ export const SOFT_CAP_PIPELINE_PHASES = 50;
 
 export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'speckit-specify': '/speckit-specify',
-  'speckit-clarify':
-    '/speckit-clarify and apply all recommendations. Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
+  'speckit-clarify': [
+    'Run /speckit-clarify on the active feature spec.',
+    '',
+    'NON-SKIPPABLE: You MUST actually invoke /speckit-clarify — never infer "no ambiguities" without an executed run. A "clean" result is valid ONLY when it comes from a real /speckit-clarify Completion Report.',
+    '',
+    'Auto-accept mode: For every question, accept the recommended/suggested answer automatically:',
+    '- For multiple-choice with "Recommended: Option [X]" → respond with that option letter or "recommended".',
+    '- For short-answer with "Suggested:" → respond with "suggested".',
+    '- Process ALL questions in the iteration without pausing. Do NOT ask the user.',
+    '',
+    'Evidence gate: The iteration counts only if /speckit-clarify actually ran and produced evidence — EITHER a Completion Report with a coverage summary table, OR the explicit "No critical ambiguities detected" message.',
+    '',
+    'Result determination (from the actual run output only):',
+    '- If "No critical ambiguities detected" AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If all coverage categories are Clear AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If ANY questions were asked and auto-accepted → emit "Open questions:" followed by a summary (controller will re-loop)',
+    '',
+    'Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.'
+  ].join('\n'),
   'speckit-plan': '/speckit-plan',
   'speckit-tasks': '/speckit-tasks',
-  'speckit-analyze':
-    '/speckit-analyze and fix all findings. Inside the SCHEGENT AUDIT LOG block, emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines so the controller can observe progress.',
+  'speckit-checklist': [
+    'Run /speckit-checklist on the active feature.',
+    '',
+    'Auto-select: Depth=Standard, Audience=Reviewer, Focus=Top 2 relevance clusters. For all clarifying questions, choose the most comprehensive option automatically.',
+    '',
+    'Verify (soft — non-blocking): Confirm the run produced a checklist under <feature_dir>/checklists/. If missing, note the warning but proceed.',
+    '',
+    'Always emit [SCHEGENT_STATUS: CLEAR] when complete — checklist is non-blocking.',
+    '',
+    'Inside the SCHEGENT AUDIT LOG block, emit `checklist_items: <N>` as a top-level integer metric line.'
+  ].join('\n'),
+  'speckit-analyze': [
+    'Run /speckit-analyze on the active feature.',
+    '',
+    'NON-SKIPPABLE: You MUST actually invoke /speckit-analyze at least once — never assume "0 CRITICAL issues" without an executed run. /speckit-analyze is READ-ONLY (writes no files), so a skipped run leaves NO artifact trace. A "clean" result is valid ONLY when it comes from a real Specification Analysis Report whose Metrics block reports Critical Issues Count: 0.',
+    '',
+    'Evidence gate: The iteration counts only if /speckit-analyze actually ran and produced a Specification Analysis Report with its findings table and Metrics block (Total Requirements, Total Tasks, Coverage %, Critical Issues Count).',
+    '',
+    'Result determination (from the actual report only):',
+    '- If 0 CRITICAL issues AND no remediation performed → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If CRITICAL issues exist → apply auto-remediation (see below), then emit "Remaining issues:" listing unresolved criticals',
+    '',
+    'Auto-remediation (when issues exist):',
+    '- Respond "Yes, suggest and apply remediation for ALL issues including HIGH severity."',
+    '- Apply ALL suggested edits to spec.md, plan.md, and/or tasks.md.',
+    '- Do NOT assume remediation fixed everything — the controller will re-loop to verify.',
+    '',
+    'Inside the SCHEGENT AUDIT LOG block, emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines so the controller can observe progress.'
+  ].join('\n'),
   'speckit-implement': '/speckit-implement',
-  finalize:
-    'Verify the implementation: run build/typecheck/test commands, summarize results, and emit the termination token if all pass.',
+  'speckit-review': [
+    'Review the implementation and finish all pending tasks:',
+    '1. Load <feature_dir>/tasks.md and list every task not marked complete.',
+    '2. Cross-check the implementation against spec.md and plan.md for gaps.',
+    '3. Implement every remaining or incomplete task to completion.',
+    '',
+    'Then trigger code review — fix EVERY finding, loop until clean:',
+    '- Run /code-review against the current diff with --fix.',
+    '- Fix every finding regardless of severity or confidence level.',
+    '- After applying fixes, re-run /code-review until zero findings, up to 10 iterations.',
+    '',
+    'Then trigger security review — fix EVERY finding, loop until clean:',
+    '- Run /security-review against the current diff.',
+    '- Apply a fix for every finding.',
+    '- After applying fixes, re-run /security-review until zero findings, up to 10 iterations.',
+    '',
+    'False-positive carve-out: The only finding you may leave unedited is a demonstrated false positive with a recorded one-line justification.',
+    '',
+    'Result determination:',
+    '- If all tasks complete AND both reviews report zero findings → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If any findings remain → emit "Remaining issues:" listing residuals',
+    '',
+    'Inside the SCHEGENT AUDIT LOG block, emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>` as top-level integer metric lines.'
+  ].join('\n'),
+  finalize: [
+    'Verify the implementation and drive it to green:',
+    '',
+    '1. Format FIRST: Run the project formatter in write mode (e.g. cargo fmt, npm run format) exactly once before the check set.',
+    '2. Run the full check set — build, tests, lint, typecheck. Capture pass/fail for each.',
+    '3. If any check fails: diagnose root cause, apply a real fix, re-run affected checks, repeat until all green (max 10 iterations). Do NOT mask failures (no skipped tests, no eslint-disable, no loosened types).',
+    '4. Standard fallbacks when plan.md lists no explicit commands:',
+    '   - Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check',
+    '   - Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit',
+    '   - Python: test runner, ruff/flake8, mypy/pyright',
+    '',
+    '5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>',
+    '6. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>',
+    '',
+    'Result determination:',
+    '- If all checks green → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If checks still failing after 10 iterations → emit "Remaining issues:" listing failures',
+    '',
+    'Inside the SCHEGENT AUDIT LOG block, emit `checks_passing: <N>` and `checks_failing: <N>` as top-level integer metric lines.'
+  ].join('\n'),
   'bugfix-report': '/speckit-bugfix-report',
   'bugfix-patch': '/speckit-bugfix-patch',
   'bugfix-verify-pre': '/speckit-bugfix-verify',
@@ -124,6 +212,11 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     instruction: PHASE_INSTRUCTIONS['speckit-tasks']
   }),
   Object.freeze({
+    id: 'speckit-checklist',
+    name: 'Spec-kit Checklist',
+    instruction: PHASE_INSTRUCTIONS['speckit-checklist']
+  }),
+  Object.freeze({
     id: 'speckit-analyze',
     name: 'Spec-kit Analyze',
     instruction: PHASE_INSTRUCTIONS['speckit-analyze'],
@@ -133,6 +226,12 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'speckit-implement',
     name: 'Spec-kit Implement',
     instruction: PHASE_INSTRUCTIONS['speckit-implement']
+  }),
+  Object.freeze({
+    id: 'speckit-review',
+    name: 'Spec-kit Review',
+    instruction: PHASE_INSTRUCTIONS['speckit-review'],
+    retryCondition: 'pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0'
   }),
   Object.freeze({
     id: 'finalize',
@@ -197,8 +296,10 @@ export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
     'speckit-clarify',
     'speckit-plan',
     'speckit-tasks',
+    'speckit-checklist',
     'speckit-analyze',
     'speckit-implement',
+    'speckit-review',
     'finalize'
   ]) as readonly string[]
 });
