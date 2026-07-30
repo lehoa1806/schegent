@@ -158,7 +158,7 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     for (const entry of [...starts, ...ends]) {
       expect(entry.payload.pipelineId).toBe('speckit-new-feature');
       expect(typeof entry.payload.phaseId).toBe('string');
-      expect(entry.payload).not.toHaveProperty('model');
+      expect(entry.payload).toHaveProperty('model', 'claude-opus-5');
       expect(entry.payload).not.toHaveProperty('effort');
       expect(entry.payload).not.toHaveProperty('timeoutMs');
     }

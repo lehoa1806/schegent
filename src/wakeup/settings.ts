@@ -29,6 +29,8 @@ export type SchedulerType = 'chronological' | 'periodic';
  * CLI." Together the registry + sentinel form `WakeUpModelSelection`.
  */
 export type WakeUpModelId =
+  | 'claude-sonnet-5'
+  | 'claude-opus-5'
   | 'claude-fable-5'
   | 'claude-opus-4-7'
   | 'claude-opus-4-8'
@@ -36,6 +38,8 @@ export type WakeUpModelId =
   | 'claude-haiku-4-6';
 
 export const WAKEUP_SUPPORTED_MODELS: ReadonlyArray<WakeUpModelId> = Object.freeze([
+  'claude-sonnet-5',
+  'claude-opus-5',
   'claude-fable-5',
   'claude-opus-4-7',
   'claude-opus-4-8',
