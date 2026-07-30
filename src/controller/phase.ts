@@ -5,8 +5,10 @@ export const BUILT_IN_PHASE_IDS = [
   'speckit-clarify',
   'speckit-plan',
   'speckit-tasks',
+  'speckit-checklist',
   'speckit-analyze',
   'speckit-implement',
+  'speckit-review',
   'finalize',
   'done'
 ] as const;
@@ -20,12 +22,14 @@ export const INVOCABLE_PHASES: readonly BuiltInPhaseId[] = [
   'speckit-clarify',
   'speckit-plan',
   'speckit-tasks',
+  'speckit-checklist',
   'speckit-analyze',
   'speckit-implement',
+  'speckit-review',
   'finalize'
 ] as const;
 
-export const LOOP_PHASES: ReadonlySet<string> = new Set<string>(['speckit-clarify', 'speckit-analyze']);
+export const LOOP_PHASES: ReadonlySet<string> = new Set<string>(['speckit-clarify', 'speckit-analyze', 'speckit-review']);
 
 export type PhaseOutcome =
   | 'clean'
@@ -92,10 +96,14 @@ export function nextSuccessor(phase: Phase, pipeline?: PipelineLike): Phase {
     case 'speckit-plan':
       return 'speckit-tasks';
     case 'speckit-tasks':
+      return 'speckit-checklist';
+    case 'speckit-checklist':
       return 'speckit-analyze';
     case 'speckit-analyze':
       return 'speckit-implement';
     case 'speckit-implement':
+      return 'speckit-review';
+    case 'speckit-review':
       return 'finalize';
     case 'finalize':
       return 'done';
