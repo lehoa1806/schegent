@@ -67,7 +67,7 @@ function makeCliRunner(): { runner: ClaudeCliRunner; counts: Map<string, number>
   const invoke = vi.fn(async (req: InvocationRequest): Promise<RawInvocationOutput> => {
     const prev = counts.get(req.phase) ?? 0;
     counts.set(req.phase, prev + 1);
-    const loopOnce = (req.phase === 'speckit-clarify' || req.phase === 'speckit-analyze') && prev === 0;
+    const loopOnce = (req.phase === 'speckit-clarify' || req.phase === 'speckit-analyze' || req.phase === 'speckit-review') && prev === 0;
     return {
       stdout: loopOnce ? issuesStdout(req.phase) : cleanStdout(req.phase),
       stderr: '',
@@ -115,7 +115,7 @@ afterEach(async () => {
 });
 
 describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
-  it('drives 7 phases with clarify+analyze loops and emits audit entries tagged pipelineId="speckit-new-feature"', async () => {
+  it('drives 9 phases with clarify+analyze+review loops and emits audit entries tagged pipelineId="speckit-new-feature"', async () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner } = makeCliRunner();
@@ -154,7 +154,7 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     const starts = lines.filter((l) => l.eventType === 'phase-start');
     const ends = lines.filter((l) => l.eventType === 'phase-end');
     expect(starts.length).toBe(ends.length);
-    expect(starts.length).toBeGreaterThanOrEqual(7);
+    expect(starts.length).toBeGreaterThanOrEqual(9);
     for (const entry of [...starts, ...ends]) {
       expect(entry.payload.pipelineId).toBe('speckit-new-feature');
       expect(typeof entry.payload.phaseId).toBe('string');
@@ -164,14 +164,16 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     }
 
     const phaseSequence = starts.map((l) => l.payload.phaseId);
-    expect(phaseSequence.slice(0, 7)).toEqual([
+    expect(phaseSequence.slice(0, 9)).toEqual([
       'speckit-specify',
       'speckit-clarify',
       'speckit-clarify',
       'speckit-plan',
       'speckit-tasks',
+      'speckit-checklist',
       'speckit-analyze',
-      'speckit-analyze'
+      'speckit-analyze',
+      'speckit-implement'
     ]);
   });
 });

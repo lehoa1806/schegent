@@ -3,31 +3,37 @@ import { transition, isLoopPhase, nextSuccessor, INVOCABLE_PHASES } from '../../
 import { BUILT_IN_PIPELINE, BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 
 describe('Phase enum and transitions', () => {
-  it('lists the seven invocable phases', () => {
+  it('lists the nine invocable phases', () => {
     expect(INVOCABLE_PHASES).toEqual([
       'speckit-specify',
       'speckit-clarify',
       'speckit-plan',
       'speckit-tasks',
+      'speckit-checklist',
       'speckit-analyze',
       'speckit-implement',
+      'speckit-review',
       'finalize'
     ]);
   });
 
-  it('marks clarify and analyze as loop phases', () => {
+  it('marks clarify, analyze, and review as loop phases', () => {
     expect(isLoopPhase('speckit-clarify')).toBe(true);
     expect(isLoopPhase('speckit-analyze')).toBe(true);
+    expect(isLoopPhase('speckit-review')).toBe(true);
     expect(isLoopPhase('speckit-plan')).toBe(false);
+    expect(isLoopPhase('speckit-checklist')).toBe(false);
   });
 
   it('walks the linear successor chain', () => {
     expect(nextSuccessor('speckit-specify')).toBe('speckit-clarify');
     expect(nextSuccessor('speckit-clarify')).toBe('speckit-plan');
     expect(nextSuccessor('speckit-plan')).toBe('speckit-tasks');
-    expect(nextSuccessor('speckit-tasks')).toBe('speckit-analyze');
+    expect(nextSuccessor('speckit-tasks')).toBe('speckit-checklist');
+    expect(nextSuccessor('speckit-checklist')).toBe('speckit-analyze');
     expect(nextSuccessor('speckit-analyze')).toBe('speckit-implement');
-    expect(nextSuccessor('speckit-implement')).toBe('finalize');
+    expect(nextSuccessor('speckit-implement')).toBe('speckit-review');
+    expect(nextSuccessor('speckit-review')).toBe('finalize');
     expect(nextSuccessor('finalize')).toBe('done');
     expect(nextSuccessor('done')).toBe('done');
   });

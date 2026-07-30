@@ -177,7 +177,7 @@ describe('Audit/history-emit parity post-Wave-7 (T103)', () => {
     await controller.startNew(feature, null);
 
     const phaseRuns = callOrder.filter((s) => s.startsWith('run:'));
-    expect(phaseRuns).toHaveLength(7);
+    expect(phaseRuns).toHaveLength(9);
     const lastRunIdx = callOrder.lastIndexOf(phaseRuns[phaseRuns.length - 1]);
     const appendIdx = callOrder.indexOf('history.append');
     expect(appendIdx).toBeGreaterThan(lastRunIdx);

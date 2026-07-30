@@ -368,12 +368,12 @@ describe('Feature 026 T021 — speckit-bugfix built-in catalog members', () => {
     'bugfix-verify-post'
   ] as const;
 
-  it('(a) BUILT_IN_PHASES.length === 15', () => {
-    // 7 standard (specify, clarify, plan, tasks, analyze, implement,
-    // finalize) + 5 bugfix (report, patch, verify-pre, implement,
-    // verify-post) + 3 superpowers (specify-brainstorm, superpowers-implement,
-    // superpowers-review-close) = 15.
-    expect(BUILT_IN_PHASES.length).toBe(15);
+  it('(a) BUILT_IN_PHASES.length === 17', () => {
+    // 9 standard (specify, clarify, plan, tasks, checklist, analyze,
+    // implement, review, finalize) + 5 bugfix (report, patch, verify-pre,
+    // implement, verify-post) + 3 superpowers (specify-brainstorm,
+    // superpowers-implement, superpowers-review-close) = 17.
+    expect(BUILT_IN_PHASES.length).toBe(17);
   });
 
   it('(b) every new bugfix phase id is present in BUILT_IN_PHASE_IDS', () => {
