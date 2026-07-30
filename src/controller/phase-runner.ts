@@ -69,6 +69,14 @@ export interface PhaseRunInputs {
    * a fresh conversation, not a continuation.
    */
   isContinue?: boolean;
+  /**
+   * Session ID capture — optional session ID from a prior CLI invocation.
+   * When set AND `isContinue === true`, forwarded to
+   * `InvocationRequest.resumeSessionId` so the runner uses
+   * `--resume <id>` instead of `-c`. When omitted, the runner
+   * falls back to `-c` (most-recent session).
+   */
+  resumeSessionId?: string;
 }
 
 export interface PhaseRunOutput {
@@ -81,6 +89,12 @@ export interface PhaseRunOutput {
   auditEntryId: string | null;
   warnings: string[];
   phaseMessage?: PhaseMessageResult | null;
+  /**
+   * Session ID capture — the CLI session ID extracted from this
+   * invocation's stream-json output. Forwarded by the controller to
+   * persist on `WorkflowRun.lastCliSessionId`.
+   */
+  cliSessionId?: string;
 }
 
 export interface VerboseDiagnosticsAccessor {
@@ -254,9 +268,15 @@ export class PhaseRunner {
       // Feature 032 — strict-boolean continuation telemetry. Always
       // present on the payload (never omitted); a missing or
       // non-`=== true` `inputs.isContinue` records `false`. Matches the
-      // strict gate used by the runner's `-c` argv append so the audit
-      // record and the spawned argv stay in lock-step.
-      isContinue: inputs.isContinue === true
+      // strict gate used by the runner's `-c` / `--resume` argv append
+      // so the audit record and the spawned argv stay in lock-step.
+      isContinue: inputs.isContinue === true,
+      // Session ID capture — record the targeted session ID when a
+      // deterministic `--resume <id>` dispatch was used. Absent when no
+      // session ID was provided (falls back to `-c`).
+      ...(typeof inputs.resumeSessionId === 'string'
+        ? { resumeSessionId: inputs.resumeSessionId }
+        : {})
     };
     if (inputs.phaseDef?.model) startPayload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
@@ -313,8 +333,14 @@ export class PhaseRunner {
       ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
       ...(verboseDiagnostics ? { verboseDiagnostics } : {}),
       // Feature 032 — forward the controller's session-continuation
-      // hint. The runner uses strict `=== true` to gate the `-c` append.
-      ...(inputs.isContinue === true ? { isContinue: true } : {})
+      // hint. The runner uses strict `=== true` to gate the `-c` /
+      // `--resume` append.
+      ...(inputs.isContinue === true ? { isContinue: true } : {}),
+      // Session ID capture — forward the persisted session ID so the
+      // runner uses `--resume <id>` instead of `-c`.
+      ...(typeof inputs.resumeSessionId === 'string'
+        ? { resumeSessionId: inputs.resumeSessionId }
+        : {})
     });
 
     // Feature 068 — emit cli-invocation; sanitizer redacts secrets.
@@ -494,7 +520,8 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
       warnings: 'warnings' in result ? result.warnings : [],
-      phaseMessage
+      phaseMessage,
+      cliSessionId: raw.cliSessionId
     };
   }
 

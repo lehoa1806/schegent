@@ -17,8 +17,12 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Feature 068 — bumped phase-runner.ts +10 to accommodate the FR-004
 // `cli-invocation` audit emission (additive eventType union member +
 // 7-line emission block right after `runner.invoke()` returns).
+//
+// Session ID capture — bumped phase-runner.ts +30 to accommodate
+// `resumeSessionId` on inputs, `cliSessionId` on outputs, forwarding
+// into InvocationRequest, and the `phase-start` audit payload update.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 620 },
+  { path: 'src/controller/phase-runner.ts', max: 650 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }

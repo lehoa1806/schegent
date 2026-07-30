@@ -74,6 +74,19 @@ export interface InvocationRequest {
    */
   isContinue?: boolean;
   /**
+   * Session ID capture — optional session ID from a prior CLI invocation.
+   * When set AND `isContinue === true`, the runner uses
+   * `--resume <resumeSessionId>` instead of `-c` for deterministic
+   * session targeting. When omitted or undefined, the runner falls back
+   * to `-c` (most-recent session).
+   *
+   * The field is OPTIONAL on the interface to preserve backwards-compat
+   * with all existing `InvocationRequest` construction sites. The gate
+   * condition is `typeof resumeSessionId === 'string'`; non-string
+   * values do not trigger the `--resume` append.
+   */
+  resumeSessionId?: string;
+  /**
    * Feature 030 BUG-002 — optional completion sentinel. When set, the
    * runner watches the streamed stdout for this substring; once seen it
    * stops waiting out the long idle timeout and instead grace-terminates
@@ -136,4 +149,13 @@ export interface RawInvocationOutput {
    * fixture is equivalent to "no command captured".
    */
   command?: string;
+  /**
+   * Session ID capture — the CLI session ID extracted from the stream-json
+   * output of this invocation. When present, the controller persists it
+   * on `WorkflowRun.lastCliSessionId` so future retry/resume dispatches
+   * can target the exact session via `--resume <id>`. `undefined` from a
+   * non-runner fixture or a non-stream-json invocation is equivalent to
+   * "no session ID captured"; the caller falls back to `-c`.
+   */
+  cliSessionId?: string;
 }

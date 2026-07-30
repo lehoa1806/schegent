@@ -9,6 +9,7 @@ import type {
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
+import { extractCliSessionId } from '../parser/session-id-extractor';
 
 const SIGKILL_DELAY_MS = 2_000;
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -213,15 +214,22 @@ export class ClaudeCliRunner implements BackendRunner {
     let baseArgs: string[];
     let stdio: SpawnOptions['stdio'];
 
-    // Feature 032 — session-continuation hint. When set, the runner
-    // appends the short-form `-c` (Claude CLI `--continue`) flag
-    // immediately after `--dangerously-skip-permissions` and immediately
-    // before the transport-specific flag. The gate condition is strict
-    // `=== true`; truthy non-boolean values do NOT trigger the append.
-    // See `src/runner/invocation-result.ts` `InvocationRequest.isContinue`
-    // for the contract, and `specs/032-context-preserving-retries/` for
-    // the full design.
-    const continuePrefix: string[] = request.isContinue === true ? ['-c'] : [];
+    // Feature 032 — session-continuation hint. When `resumeSessionId`
+    // is set, the runner uses `--resume <id>` for deterministic session
+    // targeting instead of `-c` (which resumes the most recent session).
+    // Falls back to `-c` when `isContinue === true` but no session ID
+    // is available. See `src/runner/invocation-result.ts`
+    // `InvocationRequest.isContinue` / `resumeSessionId` for the
+    // contract, and `specs/032-context-preserving-retries/` for the
+    // original `-c` design.
+    let continuePrefix: string[];
+    if (request.isContinue === true && typeof request.resumeSessionId === 'string') {
+      continuePrefix = ['--resume', request.resumeSessionId];
+    } else if (request.isContinue === true) {
+      continuePrefix = ['-c'];
+    } else {
+      continuePrefix = [];
+    }
 
     switch (transport) {
       case 'prompt-file': {
@@ -435,6 +443,12 @@ export class ClaudeCliRunner implements BackendRunner {
         diagnosticWarnings = result.warnings.length > 0 ? result.warnings : undefined;
       }
 
+      // Session ID capture — extract the CLI session ID from stream-json
+      // stdout so the controller can persist it for future retry/resume.
+      // Returns undefined when stdout is not stream-json or when no
+      // session_id field was found (the caller falls back to `-c`).
+      const cliSessionId = extractCliSessionId(stdout) ?? undefined;
+
       return {
         stdout,
         stderr,
@@ -446,7 +460,8 @@ export class ClaudeCliRunner implements BackendRunner {
         diagnosticWarnings,
         stdoutTruncated,
         stderrTruncated,
-        command
+        command,
+        cliSessionId
       };
     } finally {
       if (tempPromptFile) {

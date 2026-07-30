@@ -104,6 +104,11 @@
           "type": "boolean"
         },
         {
+          "name": "resumeSessionId",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "completionMarker",
           "optional": true,
           "type": "string"
@@ -185,6 +190,11 @@
         },
         {
           "name": "command",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "cliSessionId",
           "optional": true,
           "type": "string"
         }

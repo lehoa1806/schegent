@@ -159,6 +159,13 @@ export class RunDriver {
           const activePhaseDef = preDecision.activePhaseDef;
           const dispatchIsContinue = pendingIsContinue;
           pendingIsContinue = false;
+          // Session ID capture — when this dispatch is a continuation
+          // of a prior conversation, forward the persisted session ID
+          // so the runner uses `--resume <id>` instead of `-c`.
+          const dispatchResumeSessionId =
+            dispatchIsContinue && typeof run.lastCliSessionId === 'string'
+              ? run.lastCliSessionId
+              : undefined;
           const output = await this.deps.runner.run({
             phase: run.currentPhase,
             phaseDef: activePhaseDef,
@@ -187,7 +194,8 @@ export class RunDriver {
               aborted: boolean;
               addEventListener(event: 'abort', cb: () => void): void;
             },
-            isContinue: dispatchIsContinue
+            isContinue: dispatchIsContinue,
+            resumeSessionId: dispatchResumeSessionId
           });
           if (
             this.removedActivePhaseAborts.delete(
@@ -250,6 +258,15 @@ export class RunDriver {
             output.phaseMessage && output.phaseMessage.entryCount > 0
               ? output.phaseMessage.entries
               : null;
+
+          // Session ID capture — persist the captured session ID onto
+          // the run so future retry/resume dispatches can target the
+          // exact session via `--resume <id>`. Only overwrite if the
+          // runner returned a non-undefined value (stream-json was
+          // active and a session_id was found).
+          if (output.cliSessionId !== undefined) {
+            run = { ...run, lastCliSessionId: output.cliSessionId };
+          }
 
           const phaseResult: PhaseResult = {
             ...postDecision.phaseResult,
