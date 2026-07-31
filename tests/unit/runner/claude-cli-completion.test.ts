@@ -17,9 +17,11 @@ import { AUDIT_LOG_CLOSE_MARKER } from '../../../src/parser/audit-log-parser';
 interface FakeChild extends EventEmitter {
   stdout: Readable;
   stderr: Readable;
-  stdin: null;
+  stdin: NodeJS.WritableStream | null;
   killed: boolean;
-  kill(signal?: NodeJS.Signals | number): boolean;
+  exitCode: number | null;
+  signalCode: string | null;
+  kill: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeChild(emitExitOnKill: boolean): FakeChild {
@@ -28,6 +30,8 @@ function makeFakeChild(emitExitOnKill: boolean): FakeChild {
   child.stderr = new Readable({ read() { /* no-op */ } });
   child.stdin = null;
   child.killed = false;
+  child.exitCode = null;
+  child.signalCode = null;
   child.kill = vi.fn((_sig?: NodeJS.Signals | number) => {
     child.killed = true;
     // Simulate the OS delivering the signal: the process exits with a null
