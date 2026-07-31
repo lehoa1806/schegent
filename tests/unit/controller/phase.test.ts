@@ -17,9 +17,10 @@ describe('Phase enum and transitions', () => {
     ]);
   });
 
-  it('marks clarify, analyze, and review as loop phases', () => {
+  it('marks clarify, analyze, implement, and review as loop phases', () => {
     expect(isLoopPhase('speckit-clarify')).toBe(true);
     expect(isLoopPhase('speckit-analyze')).toBe(true);
+    expect(isLoopPhase('speckit-implement')).toBe(true);
     expect(isLoopPhase('speckit-review')).toBe(true);
     expect(isLoopPhase('speckit-plan')).toBe(false);
     expect(isLoopPhase('speckit-checklist')).toBe(false);

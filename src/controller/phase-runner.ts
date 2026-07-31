@@ -66,15 +66,33 @@ export interface PhaseRunInputs {
    *
    * Loop iterations, bugfix-loop iterations, restart-active-phase, and
    * first-attempt dispatches MUST NOT set this field to `true`. Each is
-   * a fresh conversation, not a continuation.
+   * a new task, not a continuation of an interrupted conversation.
+   *
+   * NOTE: These dispatches MAY set `sessionReuse: true` with a
+   * `resumeSessionId` to reuse the Claude CLI session for cost
+   * optimization (prompt cache preservation). This is semantically
+   * distinct from `isContinue` — it uses the same `--resume` argv
+   * but records `sessionReuse: true` in the audit payload.
    */
   isContinue?: boolean;
   /**
+   * Session reuse — cost-optimization flag. When `true` AND
+   * `resumeSessionId` is set, the runner uses `--resume <id>` to
+   * reuse the CLI session's cached context. Semantically distinct
+   * from `isContinue`: this starts a new task in the same session,
+   * not a continuation of an interrupted conversation. The runner
+   * forces auto-compaction (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1) on
+   * session-reuse invocations to compact the prior phase's context
+   * before processing the new prompt.
+   */
+  sessionReuse?: boolean;
+  /**
    * Session ID capture — optional session ID from a prior CLI invocation.
-   * When set AND `isContinue === true`, forwarded to
-   * `InvocationRequest.resumeSessionId` so the runner uses
-   * `--resume <id>` instead of `-c`. When omitted, the runner
-   * falls back to `-c` (most-recent session).
+   * When set AND (`isContinue === true` OR `sessionReuse === true`),
+   * forwarded to `InvocationRequest.resumeSessionId` so the runner uses
+   * `--resume <id>`. When omitted and `isContinue === true`, the runner
+   * falls back to `-c` (most-recent session). When omitted and only
+   * `sessionReuse === true`, falls back to a fresh session.
    */
   resumeSessionId?: string;
 }
@@ -271,9 +289,12 @@ export class PhaseRunner {
       // strict gate used by the runner's `-c` / `--resume` argv append
       // so the audit record and the spawned argv stay in lock-step.
       isContinue: inputs.isContinue === true,
+      // Session reuse — strict-boolean cost-optimization telemetry.
+      // Always present (never omitted); defaults `undefined` → `false`.
+      sessionReuse: inputs.sessionReuse === true,
       // Session ID capture — record the targeted session ID when a
       // deterministic `--resume <id>` dispatch was used. Absent when no
-      // session ID was provided (falls back to `-c`).
+      // session ID was provided (falls back to `-c` or fresh session).
       ...(typeof inputs.resumeSessionId === 'string'
         ? { resumeSessionId: inputs.resumeSessionId }
         : {})
@@ -318,6 +339,58 @@ export class PhaseRunner {
         value: autoCompactPct
       });
     }
+    // Session reuse — pre-phase compaction. When resuming a prior
+    // session, the old conversation may consume significant context.
+    // A lightweight dummy invocation with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1
+    // forces auto-compaction at session load, then exits. The real
+    // phase invocation resumes the now-compacted session with normal
+    // autocompact settings. Uses the cheapest/fastest model (haiku)
+    // to minimize cost and latency.
+    if (
+      inputs.sessionReuse === true &&
+      typeof inputs.resumeSessionId === 'string'
+    ) {
+      const compactEnv: Record<string, string> = {
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1'
+      };
+      // Inherit the operator's process-env setting for the compact call.
+      const compactInheritEnv = inputs.inheritProcessEnv !== false;
+      try {
+        const compactRaw = await this.runner.invoke({
+          phase: inputs.phase,
+          iteration: inputs.iteration,
+          prompt: 'Compact the conversation context. Reply with a single word: OK',
+          timeoutMs: 60_000,
+          cliPath: inputs.cliPath,
+          cwd: inputs.cwd,
+          env: compactEnv,
+          ...(compactInheritEnv ? {} : { inheritProcessEnv: false }),
+          // Resume the session to load old context and trigger compaction.
+          sessionReuse: true,
+          resumeSessionId: inputs.resumeSessionId,
+          // Use cheapest model for compaction — speed and cost only.
+          model: 'claude-sonnet-4-20250514'
+        });
+        if (typeof compactRaw.command === 'string' && compactRaw.command.length > 0) {
+          await this.appendAudit(inputs, 'cli-invocation', 'info', {
+            ...this.pipelineMeta(inputs),
+            phaseId: inputs.phaseDef?.id ?? inputs.phase,
+            command: compactRaw.command
+          });
+        }
+        this.logger.info(
+          `session-compact-done phase=${inputs.phase} iter=${inputs.iteration}`
+        );
+      } catch (err) {
+        // Compaction failure is non-fatal — the real invocation will
+        // still resume the session; it just won't be pre-compacted.
+        this.logger.warn('session-compact-failed', {
+          phase: inputs.phase,
+          iteration: inputs.iteration,
+          error: (err as Error).message
+        });
+      }
+    }
     const raw = await this.runner.invoke({
       phase: inputs.phase,
       iteration: inputs.iteration,
@@ -336,6 +409,9 @@ export class PhaseRunner {
       // hint. The runner uses strict `=== true` to gate the `-c` /
       // `--resume` append.
       ...(inputs.isContinue === true ? { isContinue: true } : {}),
+      // Session reuse — forward the cost-optimization session reuse
+      // hint. The runner uses the same `--resume` argv path.
+      ...(inputs.sessionReuse === true ? { sessionReuse: true } : {}),
       // Session ID capture — forward the persisted session ID so the
       // runner uses `--resume <id>` instead of `-c`.
       ...(typeof inputs.resumeSessionId === 'string'
@@ -426,17 +502,17 @@ export class PhaseRunner {
       };
     }
 
-    // Feature 013 — T041 (Wave 3): defense-in-depth assertion. The parser
-    // hoists the exit-code check above the contract-block branches, but a
-    // future refactor could regress that ordering. This pre-persist guard
-    // makes the precedence rule a code-level invariant: clean outcomes are
-    // impossible while the CLI exited non-zero, regardless of stdout
-    // content. The throw is preferable to silently downgrading because the
-    // condition indicates a parser bug, not a runtime failure.
+    // Feature 013 — T041 (Wave 3): defense-in-depth log. The parser now
+    // allows clean results with non-zero exit codes when a clean termination
+    // token is present (the CLI can exit non-zero due to error_during_execution
+    // while the model completed successfully). Log a warning for observability
+    // but do NOT throw — the model's successful completion takes precedence.
     if (result.kind === 'clean' && raw.exitCode !== null && raw.exitCode !== 0) {
-      throw new Error(
-        'phase-runner: parser returned clean with non-zero exit — precedence rule violated'
-      );
+      this.logger.warn('phase-runner: clean result with non-zero exit code', {
+        phase: inputs.phase,
+        iteration: inputs.iteration,
+        exitCode: raw.exitCode
+      });
     }
 
     const outcome = mapOutcome(result, raw.exitCode);

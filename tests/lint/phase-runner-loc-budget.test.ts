@@ -21,8 +21,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Session ID capture — bumped phase-runner.ts +30 to accommodate
 // `resumeSessionId` on inputs, `cliSessionId` on outputs, forwarding
 // into InvocationRequest, and the `phase-start` audit payload update.
+//
+// Session reuse — bumped phase-runner.ts +80 to accommodate the
+// `sessionReuse` field on PhaseRunInputs, `sessionReuse` audit payload
+// telemetry, pre-phase compaction invocation (lightweight dummy call
+// with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1 before the real invocation),
+// and `sessionReuse` forwarding into InvocationRequest.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 650 },
+  { path: 'src/controller/phase-runner.ts', max: 730 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }

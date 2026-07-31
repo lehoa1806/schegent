@@ -12,8 +12,8 @@ const BUILT_IN_INSTRUCTIONS: Record<string, string> = {
   'speckit-checklist':
     'Run /speckit-checklist on the active feature. Auto-select: Depth=Standard, Audience=Reviewer, Focus=Top 2 relevance clusters. Always emit [SCHEGENT_STATUS: CLEAR] — checklist is non-blocking.',
   'speckit-analyze':
-    'Run /speckit-analyze on the active feature. NON-SKIPPABLE: actually invoke the skill — never assume 0 CRITICAL without an executed run. Apply auto-remediation for ALL issues including HIGH severity. Emit [SCHEGENT_STATUS: CLEAR] only when 0 CRITICAL issues remain. Inside the SCHEGENT AUDIT LOG block emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines.',
-  'speckit-implement': 'Run /speckit-implement on the active feature.',
+    'Run /speckit-analyze on the active feature. NON-SKIPPABLE: actually invoke the skill — never assume 0 CRITICAL without an executed run. Apply auto-remediation for ALL issues including HIGH severity. Emit [SCHEGENT_STATUS: CLEAR] only when 0 CRITICAL issues remain. REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block you MUST emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines (NOT nested under Notes: or Findings:). These MUST appear even when 0. Missing metrics cause incorrect phase advancement.',
+  'speckit-implement': 'Run /speckit-implement on the active feature. After implementation completes, load tasks.md and count every task NOT marked complete. Emit [SCHEGENT_STATUS: CLEAR] only when 0 pending tasks remain. Inside the SCHEGENT AUDIT LOG block emit `pending_tasks: <N>` as a top-level integer metric line so the controller can observe progress.',
   'speckit-review':
     'Finish all pending tasks, then run /code-review --fix and /security-review — fix EVERY finding, loop each until clean (max 10 iterations). Emit [SCHEGENT_STATUS: CLEAR] only when all tasks complete and both reviews report zero findings. Inside the SCHEGENT AUDIT LOG block emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>`.',
   finalize:

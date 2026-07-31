@@ -93,6 +93,38 @@ describe('detectCreditError', () => {
     });
   });
 
+  // BUG-009 — the CLI emits "You've hit your session limit" on stderr
+  // when the five-hour session quota is exhausted.
+  describe('session-limit matcher (BUG-009)', () => {
+    it('matches "You\'ve hit your session limit" with cause session-limit', () => {
+      const result = detectCreditError(
+        '',
+        "You've hit your session limit · resets 6:50am (Asia/Saigon)",
+        1
+      );
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('session-limit');
+    });
+
+    it('matches "session limit" case-insensitively', () => {
+      const result = detectCreditError('', 'SESSION LIMIT exceeded', 1);
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('session-limit');
+    });
+
+    it('does NOT match on exit code 0 (BUG-008 gate)', () => {
+      const result = detectCreditError(
+        '',
+        "You've hit your session limit · resets 6:50am (Asia/Saigon)",
+        0
+      );
+      expect(result.matched).toBe(false);
+    });
+
+    it('is at matcher index 4 (after quota-exceeded)', () => {
+      expect(RATE_LIMIT_MATCHERS[4].cause).toBe('session-limit');
+    });
+  });
   // Feature 066 — US2 acceptance scenarios. The detector now scans the
   // trailing ~20-line window of stdout for the stream-json
   // `rate_limit_event` envelope and the `out_of_credits` overage

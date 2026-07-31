@@ -42,6 +42,13 @@ export const PHASE_EVENT_TYPES = ['phase-start', 'phase-end'] as const;
 // Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030
 // precedent). Historical records lack the field and are
 // backwards-compatible per the warn-and-preserve parser discipline.
+//
+// Session reuse — extended with `sessionReuse: boolean`. The field is
+// MANDATORY (always present on the payload); `undefined` on
+// `PhaseRunInputs.sessionReuse` records `false`. Indicates the
+// invocation reused a prior CLI session via `--resume <id>` for cost
+// optimization (prompt cache preservation). Semantically distinct
+// from `isContinue`. Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export interface PhaseStartPayload {
   readonly pipelineId: string;
   readonly phaseId: string;
@@ -49,6 +56,7 @@ export interface PhaseStartPayload {
   readonly effort?: string;
   readonly timeoutMs?: number;
   readonly isContinue: boolean;
+  readonly sessionReuse: boolean;
 }
 
 export const RUNNER_EVENT_TYPES = ['cli-invocation', 'file-write'] as const;

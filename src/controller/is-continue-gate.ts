@@ -15,7 +15,9 @@
  *     via `consume()`. Subsequent iterations within the same drive
  *     invocation see `false`.
  *   - `restartActivePhase`, `startNew`, loop iterations, and bugfix-loop
- *     iterations MUST NOT arm the flag.
+ *     iterations MUST NOT arm the flag. (These dispatches may use
+ *     `sessionReuse` independently for cost optimization — see
+ *     `PhaseRunInputs.sessionReuse` in `./phase-runner`.)
  *   - The flag is NEVER persisted — it lives only for the duration of
  *     one `RunDriver.drive()` invocation.
  *

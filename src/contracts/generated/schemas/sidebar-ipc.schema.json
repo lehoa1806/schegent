@@ -177,6 +177,11 @@
           "type": "readonly AuditTailEntry[]"
         },
         {
+          "name": "debugLogTail",
+          "optional": false,
+          "type": "readonly DebugLogEntry[]"
+        },
+        {
           "name": "liveActivity",
           "optional": false,
           "type": "LiveActivity"

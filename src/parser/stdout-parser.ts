@@ -149,7 +149,11 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     // the fixed 60-minute fallback. Bugfix 2026-05-15 — BUG-002: pass
     // stderr too so the canonical plain-mode emission (`You're out of
     // extra usage · resets <time> (<tz>)` on stderr) is reachable.
-    const { resetsAtMs } = extractResetTimestamp(inputs.stdout, inputs.stderr, Date.now());
+    const { resetsAtMs } = extractResetTimestamp(inputs.stdout, inputs.stderr, Date.now(), {
+      // BUG-009 — this branch is gated by `exitCode !== 0`, so
+      // `allowed_warning` records carry load-bearing reset epochs.
+      includeWarningStatus: true
+    });
     const rateLimitMessage = extractRateLimitMessage(inputs.stdout, inputs.stderr);
     return {
       kind: 'rate_limited',
@@ -162,17 +166,24 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
 
   // Feature 013 — FR-013/T040 (Wave 3): a non-zero CLI exit that survived
   // the fatal-signature and rate-limit gates above maps to `transient_error`
-  // REGARDLESS of contract-block presence. Prior to this hoist, a non-zero
-  // exit with a clear token in stdout could be misclassified as `clean`
-  // because the exit-code check lived inside the `blocksPresent === 0`
-  // branch. The precedence rule is: fatal > rate_limited > exit-code floor
-  // > contract blocks > remaining-issues default.
+  // UNLESS the model produced a clean termination token. The CLI can exit
+  // non-zero due to internal execution errors (e.g., `error_during_execution`
+  // subtype) while the model successfully completed its task. When a clean
+  // token is present, we fall through to the contract-block parsing below
+  // so the successful result is preserved.
+  //
+  // Precedence: fatal > rate_limited > exit-code floor (without clean token)
+  //             > contract blocks > remaining-issues default.
   if (inputs.exitCode !== null && inputs.exitCode !== 0) {
-    return {
-      kind: 'transient_error',
-      exitCode: inputs.exitCode,
-      auditEntry: inputs.auditEntry
-    };
+    if (!detectTerminationToken(inputs.stdout)) {
+      return {
+        kind: 'transient_error',
+        exitCode: inputs.exitCode,
+        auditEntry: inputs.auditEntry
+      };
+    }
+    // Clean termination token found — fall through to contract-block
+    // parsing. The model completed successfully despite the non-zero exit.
   }
 
   const tokenMatched = detectTerminationToken(inputs.stdout);

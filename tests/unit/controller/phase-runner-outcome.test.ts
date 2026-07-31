@@ -88,34 +88,44 @@ const baseInputs = {
   runId: 'run-1'
 };
 
-describe('PhaseRunner.run — defense-in-depth assertion (T043 / FR-014)', () => {
-  it('throws when parser returns clean with non-zero exit', async () => {
+describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)', () => {
+  it('succeeds with clean outcome when parser returns clean with non-zero exit', async () => {
     const cliRunner = makeFakeRunner(async () =>
       makeRawOutput({ exitCode: 1 })
     );
+    const logger = new SanitizedLogger();
+    const warnSpy = vi.spyOn(logger, 'warn');
     const runner = new PhaseRunner(
       cliRunner,
       new PromptBuilder(),
       makeFakeAuditWriter(),
-      new SanitizedLogger()
+      logger
     );
-    await expect(runner.run(baseInputs)).rejects.toThrow(
-      /precedence rule violated/
+    const output = await runner.run(baseInputs);
+    expect(output.outcome).toBe('clean');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'phase-runner: clean result with non-zero exit code',
+      expect.objectContaining({ exitCode: 1 })
     );
   });
 
-  it('throws with the exact assertion message identifying the parser as the violator', async () => {
+  it('logs warning with exit code details for observability', async () => {
     const cliRunner = makeFakeRunner(async () =>
       makeRawOutput({ exitCode: 137 })
     );
+    const logger = new SanitizedLogger();
+    const warnSpy = vi.spyOn(logger, 'warn');
     const runner = new PhaseRunner(
       cliRunner,
       new PromptBuilder(),
       makeFakeAuditWriter(),
-      new SanitizedLogger()
+      logger
     );
-    await expect(runner.run(baseInputs)).rejects.toThrow(
-      'phase-runner: parser returned clean with non-zero exit — precedence rule violated'
+    const output = await runner.run(baseInputs);
+    expect(output.outcome).toBe('clean');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'phase-runner: clean result with non-zero exit code',
+      expect.objectContaining({ exitCode: 137 })
     );
   });
 });

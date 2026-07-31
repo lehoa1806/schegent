@@ -4,6 +4,7 @@ import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from './snapshot-types';
 import type {
   AuditTailEntry,
   CliMonitorState,
+  DebugLogEntry,
   DelayedRetryState,
   GeneralSettings,
   HistoryEntry,
@@ -85,6 +86,10 @@ class SnapshotStore {
 
   get auditTail(): readonly AuditTailEntry[] {
     return this._snapshot?.auditTail ?? [];
+  }
+
+  get debugLogTail(): readonly DebugLogEntry[] {
+    return this._snapshot?.debugLogTail ?? [];
   }
 
   get activeFeatureLabel(): string | null {

@@ -129,9 +129,22 @@ export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
     '- Apply ALL suggested edits to spec.md, plan.md, and/or tasks.md.',
     '- Do NOT assume remediation fixed everything — the controller will re-loop to verify.',
     '',
-    'Inside the SCHEGENT AUDIT LOG block, emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines so the controller can observe progress.'
+    'REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines (NOT nested under Notes:, Findings:, or any other heading). These lines MUST appear even when the count is 0. Example:',
+    'critical_issues: 0',
+    'high_issues: 2',
+    'The controller uses these metrics to decide whether to re-loop. Missing metrics cause incorrect advancement.'
   ].join('\n'),
-  'speckit-implement': '/speckit-implement',
+  'speckit-implement': [
+    'Run /speckit-implement on the active feature.',
+    '',
+    'After implementation completes, load <feature_dir>/tasks.md and count every task NOT marked complete.',
+    '',
+    'Result determination:',
+    '- If 0 pending tasks remain → emit [SCHEGENT_STATUS: CLEAR]',
+    '- If any tasks are still pending → emit "Remaining issues:" listing the incomplete tasks',
+    '',
+    'REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.'
+  ].join('\n'),
   'speckit-review': [
     'Review the implementation and finish all pending tasks:',
     '1. Load <feature_dir>/tasks.md and list every task not marked complete.',
@@ -232,6 +245,7 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'speckit-implement',
     name: 'Spec-kit Implement',
     instruction: PHASE_INSTRUCTIONS['speckit-implement'],
+    retryCondition: 'pending_tasks > 0',
     model: 'claude-opus-5'
   }),
   Object.freeze({

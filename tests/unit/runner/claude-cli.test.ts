@@ -48,7 +48,7 @@ describe('ClaudeCliRunner.invoke', () => {
       cwd: '/repo'
     });
     expect(seen.command).toBe('claude');
-    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'do work']);
+    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'do work', '--output-format', 'stream-json']);
     expect(seen.options.shell).toBe(false);
   });
 
@@ -274,7 +274,7 @@ describe('ClaudeCliRunner.invoke', () => {
       cliPath: 'claude',
       cwd: '/repo'
     });
-    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'p']);
+    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'p', '--output-format', 'stream-json']);
     expect(seen.args).not.toContain('--model');
     expect(seen.args).not.toContain('--effort');
   });
@@ -322,20 +322,20 @@ describe('ClaudeCliRunner.invoke', () => {
     });
     // Existing -p block stays first.
     expect(seen.args.slice(0, 3)).toEqual(['--dangerously-skip-permissions', '-p', 'p']);
-    // The three diagnostic flags appear in order.
+    // --output-format stream-json is always present (session ID capture).
+    // The verbose diagnostics add --debug-file and --verbose on top.
     const debugIdx = seen.args.indexOf('--debug-file');
-    const outputFmtIdx = seen.args.indexOf('--output-format');
     const verboseIdx = seen.args.indexOf('--verbose');
     expect(debugIdx).toBeGreaterThan(seen.args.indexOf('p'));
-    expect(outputFmtIdx).toBeGreaterThan(debugIdx);
-    expect(verboseIdx).toBeGreaterThan(outputFmtIdx);
+    expect(verboseIdx).toBeGreaterThan(debugIdx);
     // --debug-file carries the canonical path.
     expect(seen.args[debugIdx + 1]).toBe(
       '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/debug.json'
     );
-    // --output-format stream-json paired.
-    expect(seen.args[outputFmtIdx + 1]).toBe('stream-json');
-    // --debug-file appears exactly once (idempotent injection).
+    // --output-format stream-json paired (always present, before diagnostics).
+    expect(seen.args).toContain('--output-format');
+    expect(seen.args[seen.args.indexOf('--output-format') + 1]).toBe('stream-json');
+    // Each flag appears exactly once.
     expect(seen.args.filter((a) => a === '--debug-file')).toHaveLength(1);
     expect(seen.args.filter((a) => a === '--output-format')).toHaveLength(1);
     expect(seen.args.filter((a) => a === '--verbose')).toHaveLength(1);
@@ -359,7 +359,9 @@ describe('ClaudeCliRunner.invoke', () => {
       cwd: '/repo'
     });
     expect(seen.args).not.toContain('--debug-file');
-    expect(seen.args).not.toContain('--output-format');
+    // --output-format stream-json is always present (session ID capture).
+    expect(seen.args).toContain('--output-format');
+    expect(seen.args).toContain('stream-json');
     expect(seen.args).not.toContain('--verbose');
   });
 });

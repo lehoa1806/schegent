@@ -79,6 +79,7 @@ export class PlaceholderProjector implements ProjectorHandle {
       resumeTargetPhaseId: null,
       activeRunId: null,
       auditTail: tail.slice(-AUDIT_TAIL_MAX),
+      debugLogTail: Object.freeze([]),
       liveActivity: IDLE_LIVE_ACTIVITY,
       workflowElapsedMs: null,
       monitor: null,

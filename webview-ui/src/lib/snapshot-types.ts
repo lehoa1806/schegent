@@ -42,6 +42,14 @@ export type AuditCategory =
   | 'warning'
   | 'system';
 
+/** Debug log entry projected from the host's WebviewLogSink ring buffer. */
+export interface DebugLogEntry {
+  readonly id: number;
+  readonly timestamp: string;
+  readonly level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  readonly message: string;
+}
+
 export type FreshnessState = 'live' | 'slowing' | 'stalled' | 'paused' | 'idle';
 
 export type MonitorStatus =
@@ -572,6 +580,7 @@ export interface WorkflowSnapshot {
    */
   readonly activeRunId?: string | null;
   readonly auditTail: readonly AuditTailEntry[];
+  readonly debugLogTail?: readonly DebugLogEntry[];
   readonly liveActivity: LiveActivity;
   readonly workflowElapsedMs: number | null;
   readonly monitor: CliMonitorState | null;

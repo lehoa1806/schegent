@@ -33,7 +33,8 @@ describe('Feature 034 Item 047 — RateLimitBackoff (extracted from workflow-con
         'out-of-usage',
         'quota-exceeded',
         'rate-limit',
-        'rate_limit'
+        'rate_limit',
+        'session-limit'
       ]);
     });
   });

@@ -58,13 +58,15 @@ function inputs(overrides: {
 }
 
 describe('parseInvocation — outcome precedence (T042 / FR-013)', () => {
-  it('1. non-zero exit + clear token + audit entry → transient_error', () => {
+  it('1. non-zero exit + clear token + audit entry → clean (clean token overrides exit code)', () => {
     const result = parseInvocation(
       inputs({ stdout: clearToken, exitCode: 1 })
     );
-    expect(result.kind).toBe('transient_error');
-    if (result.kind === 'transient_error') {
-      expect(result.exitCode).toBe(1);
+    // Clean termination token overrides non-zero exit code — the model
+    // completed successfully despite CLI error_during_execution.
+    expect(result.kind).toBe('clean');
+    if (result.kind === 'clean') {
+      expect(result.auditEntry).toBe(validAudit);
     }
   });
 
@@ -129,11 +131,13 @@ describe('parseInvocation — outcome precedence (T042 / FR-013)', () => {
     }
   });
 
-  it('6. non-zero exit + clear token + no audit → transient_error (exit floor wins over malformed)', () => {
+  it('6. non-zero exit + clear token + no audit → malformed (clean token overrides exit, but missing audit)', () => {
     const result = parseInvocation(
       inputs({ stdout: clearToken, exitCode: 2, auditEntry: null })
     );
-    expect(result.kind).toBe('transient_error');
+    // Clean termination token overrides exit code, but no audit entry
+    // causes the clean-without-audit branch to fire → malformed.
+    expect(result.kind).toBe('malformed');
   });
 
   it('7. non-zero exit + fatal + clear token → malformed (fatal still wins above exit)', () => {

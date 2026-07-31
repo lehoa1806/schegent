@@ -183,7 +183,9 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       '--model',
       'claude-sonnet-4-6',
       '--effort',
-      'medium'
+      'medium',
+      '--output-format',
+      'stream-json'
     ]);
   });
 });

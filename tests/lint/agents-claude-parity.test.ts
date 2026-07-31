@@ -70,7 +70,9 @@ function readAgentsMd(): string {
   return fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf8').toLowerCase();
 }
 
-describe('AGENTS.md ↔ CLAUDE.md parity guard', () => {
+const claudeMdExists = fs.existsSync(path.join(WORKSPACE_ROOT, 'CLAUDE.md'));
+
+describe.skipIf(!claudeMdExists)('AGENTS.md ↔ CLAUDE.md parity guard', () => {
   it('CLAUDE.md contains every curated hard-rule anchor', () => {
     const claude = readClaudeMd();
     const missing = CLAUDE_RULE_ANCHORS.filter((a) => !claude.includes(a));

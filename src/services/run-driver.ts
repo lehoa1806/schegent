@@ -94,6 +94,11 @@ export class RunDriver {
     let run = initial;
     let previousPhaseMessage: Readonly<Record<string, string>> | null = null;
     let pendingIsContinue = this.deps.isContinueGate.consume();
+    // Session reuse: after the first invocation returns a session ID,
+    // all subsequent invocations in this drive cycle resume it for
+    // cost optimization (prompt cache preservation). Distinct from
+    // isContinue (which is for interrupted conversation resumption).
+    let pendingSessionReuse = false;
 
     try {
       await this.deps.lock.withLock('drive-run', async (session) => {
@@ -159,13 +164,17 @@ export class RunDriver {
           const activePhaseDef = preDecision.activePhaseDef;
           const dispatchIsContinue = pendingIsContinue;
           pendingIsContinue = false;
-          // Session ID capture — when this dispatch is a continuation
-          // of a prior conversation, forward the persisted session ID
-          // so the runner uses `--resume <id>` instead of `-c`.
+          // Session reuse: use --resume for both isContinue (interrupted
+          // conversation) AND session reuse (cost optimization). isContinue
+          // takes precedence when both are true.
+          const shouldResumeSession = dispatchIsContinue || pendingSessionReuse;
           const dispatchResumeSessionId =
-            dispatchIsContinue && typeof run.lastCliSessionId === 'string'
+            shouldResumeSession && typeof run.lastCliSessionId === 'string'
               ? run.lastCliSessionId
               : undefined;
+          // Session reuse flag: only set when NOT an isContinue dispatch
+          // (isContinue has its own audit semantics).
+          const dispatchSessionReuse = pendingSessionReuse && !dispatchIsContinue;
           const output = await this.deps.runner.run({
             phase: run.currentPhase,
             phaseDef: activePhaseDef,
@@ -195,6 +204,7 @@ export class RunDriver {
               addEventListener(event: 'abort', cb: () => void): void;
             },
             isContinue: dispatchIsContinue,
+            sessionReuse: dispatchSessionReuse,
             resumeSessionId: dispatchResumeSessionId
           });
           if (
@@ -266,6 +276,9 @@ export class RunDriver {
           // active and a session_id was found).
           if (output.cliSessionId !== undefined) {
             run = { ...run, lastCliSessionId: output.cliSessionId };
+            // Enable session reuse for subsequent invocations in this
+            // drive cycle now that we have a valid session ID.
+            pendingSessionReuse = true;
           }
 
           const phaseResult: PhaseResult = {
