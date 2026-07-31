@@ -55,6 +55,10 @@ export interface QueueProjectionContext {
     | 'queue-paused-mid-run'
     | 'breakpoint-paused'
     | null;
+  /** The id of the run currently held in the orchestrator store (may be failed/paused). */
+  readonly activeRunTaskId?: string | null;
+  /** The current phase of the run currently held in the orchestrator store. */
+  readonly activeRunPhase?: PhaseName | null;
   /**
    * Feature 065 / BUG-006 — queue-lifecycle scheduled-start context, used
    * to populate the `paused` field on paused tasks (drives the QueueItem
@@ -115,7 +119,8 @@ export function projectQueue(
 }
 
 function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueItem {
-  const isInFlight = req.status === 'in-flight' && req.id === ctx.inFlightId;
+  const isInFlight = (req.status === 'in-flight' || req.status === 'paused') && req.id === ctx.inFlightId;
+  const isActiveRun = req.id === ctx.activeRunTaskId;
   const lastErrorMessage = extractLastErrorMessage(req.lastError);
   const pausedField = derivePausedField(req, ctx);
   return Object.freeze({
@@ -138,7 +143,7 @@ function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueIte
       req.pausedReason !== null && req.pausedReason !== undefined
         ? ctx.sanitize(req.pausedReason)
         : null,
-    currentPhase: isInFlight ? ctx.inFlightPhase : null,
+    currentPhase: isInFlight ? ctx.inFlightPhase : isActiveRun ? (ctx.activeRunPhase ?? null) : null,
     queueId: req.queueId ?? DEFAULT_QUEUE_ID,
     position: req.position,
     pauseCause: derivePauseCause(req, ctx.registry, isInFlight ? ctx.inFlightManualPauseCause ?? null : null),

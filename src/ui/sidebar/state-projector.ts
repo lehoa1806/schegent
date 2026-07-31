@@ -740,7 +740,9 @@ export class StateProjector {
       // scheduled-restore context so paused tasks carry the system-paused
       // badge + restoration target.
       scheduledStartSource: queue.scheduledStartSource ?? null,
-      scheduledStartAt: queue.scheduledStartAt ?? null
+      scheduledStartAt: queue.scheduledStartAt ?? null,
+      activeRunTaskId: run?.featureId ?? null,
+      activeRunPhase: run?.currentPhase ?? null
     });
     const auditTail: readonly AuditTailEntry[] = this.auditTail.slice();
     const liveActivity = this.computeLiveActivity(status);
