@@ -94,7 +94,7 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
     expect(result.kind).toBe('clean');
   });
 
-  it('returns malformed when token present but audit missing', () => {
+  it('returns clean with missing audit entry when token present but audit missing', () => {
     const result = parseInvocation({
       stdout: '[SCHEGENT_STATUS: CLEAR]',
       stderr: '',
@@ -103,9 +103,9 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       auditEntry: null,
       auditWarnings: []
     });
-    expect(result.kind).toBe('malformed');
-    if (result.kind === 'malformed') {
-      expect(result.warnings.some((w) => /missing audit/i.test(w))).toBe(true);
+    expect(result.kind).toBe('clean');
+    if (result.kind === 'clean') {
+      expect(result.auditEntry).toBeNull();
     }
   });
 

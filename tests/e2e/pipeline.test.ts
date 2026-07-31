@@ -155,8 +155,10 @@ describe('Feature 034 Item 055 — deterministic Speckit pipeline E2E', () => {
       'speckit-clarify',
       'speckit-plan',
       'speckit-tasks',
+      'speckit-checklist',
       'speckit-analyze',
       'speckit-implement',
+      'speckit-review',
       'finalize'
     ]);
   }, 60_000);

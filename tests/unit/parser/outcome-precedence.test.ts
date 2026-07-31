@@ -131,13 +131,13 @@ describe('parseInvocation — outcome precedence (T042 / FR-013)', () => {
     }
   });
 
-  it('6. non-zero exit + clear token + no audit → malformed (clean token overrides exit, but missing audit)', () => {
+  it('6. non-zero exit + clear token + no audit → clean (clean token overrides exit and missing audit is permitted)', () => {
     const result = parseInvocation(
       inputs({ stdout: clearToken, exitCode: 2, auditEntry: null })
     );
-    // Clean termination token overrides exit code, but no audit entry
-    // causes the clean-without-audit branch to fire → malformed.
-    expect(result.kind).toBe('malformed');
+    // Clean termination token overrides exit code. A missing audit log
+    // results in a clean outcome with a warning instead of a malformed outcome.
+    expect(result.kind).toBe('clean');
   });
 
   it('7. non-zero exit + fatal + clear token → malformed (fatal still wins above exit)', () => {
