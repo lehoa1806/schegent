@@ -823,6 +823,17 @@ export class QueueManager {
     if (target.status !== 'failed' && target.status !== 'canceled' && target.status !== 'paused') {
       return { ok: false, reason: 'illegal-state' };
     }
+    // Check whether the task's run context is still the active workspace
+    // run. If so, preserve runId and startedAt so the auto-drain
+    // coordinator can resume the failed phase instead of restarting the
+    // entire pipeline from scratch.
+    const activeRun = this.store.getRun();
+    const canResume =
+      target.status === 'failed' &&
+      target.runId !== null &&
+      activeRun !== null &&
+      activeRun.id === target.runId &&
+      (activeRun.status === 'failed' || activeRun.status === 'paused');
     const now = Date.now();
     const updated: FeatureRequest = {
       ...target,
@@ -831,9 +842,9 @@ export class QueueManager {
       lastError: null,
       pausedReason: null,
       completedAt: null,
-      startedAt: null,
+      startedAt: canResume ? target.startedAt : null,
       updatedAt: now,
-      runId: null
+      runId: canResume ? target.runId : null
     };
     const without = queue.requests.filter((_, i) => i !== idx);
     const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');

@@ -31,7 +31,7 @@ function makeLock(acquired: boolean) {
 }
 
 function makeController() {
-  return { startNew: vi.fn(async () => undefined) };
+  return { startNew: vi.fn(async () => undefined), resumeExisting: vi.fn(async () => false) };
 }
 
 describe('AutoDrainCoordinator (T099 / T102)', () => {

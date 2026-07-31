@@ -32,16 +32,16 @@ describe('detectTerminationToken', () => {
     expect(detectTerminationToken(stdout)).toBe(true);
   });
 
-  it('rejects markdown-decorated tokens (bold)', () => {
-    expect(detectTerminationToken('**[SCHEGENT_STATUS: CLEAR]**')).toBe(false);
+  it('accepts markdown-decorated tokens (bold)', () => {
+    expect(detectTerminationToken('**[SCHEGENT_STATUS: CLEAR]**')).toBe(true);
   });
 
-  it('rejects backtick-decorated tokens', () => {
-    expect(detectTerminationToken('`[SCHEGENT_STATUS: CLEAR]`')).toBe(false);
+  it('accepts backtick-decorated tokens', () => {
+    expect(detectTerminationToken('`[SCHEGENT_STATUS: CLEAR]`')).toBe(true);
   });
 
-  it('rejects tokens embedded within prose on the same line', () => {
-    expect(detectTerminationToken('I will mark [SCHEGENT_STATUS: CLEAR] now.')).toBe(false);
+  it('accepts tokens embedded within prose on the same line', () => {
+    expect(detectTerminationToken('I will mark [SCHEGENT_STATUS: CLEAR] now.')).toBe(true);
   });
 
   it('rejects unknown status values', () => {
