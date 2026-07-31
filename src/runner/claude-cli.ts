@@ -521,14 +521,14 @@ export class ClaudeCliRunner implements BackendRunner {
   }
 
   private terminate(child: ChildProcess): void {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       try {
         child.kill('SIGTERM');
       } catch {
         // child may already be exiting
       }
       setTimeout(() => {
-        if (!child.killed) {
+        if (child.exitCode === null && child.signalCode === null) {
           try {
             child.kill('SIGKILL');
           } catch {

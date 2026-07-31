@@ -8,7 +8,9 @@ interface FakeChild extends EventEmitter {
   stdout: Readable;
   stderr: Readable;
   killed: boolean;
-  kill(signal: NodeJS.Signals | number): boolean;
+  exitCode: number | null;
+  signalCode: string | null;
+  kill: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeChild(): FakeChild {
@@ -16,6 +18,8 @@ function makeFakeChild(): FakeChild {
   child.stdout = new Readable({ read() { /* no-op */ } });
   child.stderr = new Readable({ read() { /* no-op */ } });
   child.killed = false;
+  child.exitCode = null;
+  child.signalCode = null;
   child.kill = vi.fn((_sig?: NodeJS.Signals | number) => {
     child.killed = true;
     return true;
