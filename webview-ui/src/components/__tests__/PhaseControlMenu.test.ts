@@ -15,6 +15,10 @@ vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
 
+vi.mock('../../lib/use-confirm', () => ({
+  useConfirm: vi.fn().mockResolvedValue(true)
+}));
+
 beforeEach(() => {
   postCommandSpy.mockReset();
 });

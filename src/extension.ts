@@ -762,6 +762,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getDebugLogTail: () => webviewLogSink.getEntries()
   });
   projector.start();
+  webviewLogSink.setOnAppend(() => projector.kick());
   // Feature 033 — bind the deferred telemetry projector reference now that
   // the projector exists. The sampler's `onSample` closure consults this
   // pointer on every emission (and is a no-op until binding).

@@ -10,12 +10,14 @@ import type { QueueManager } from '../queue/queue-manager';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import type { SanitizedLogger } from '../lib/logger';
 
 export interface AutoDrainCoordinatorDeps {
   readonly store: Pick<WorkspaceStateStore, 'getQueue'>;
   readonly queue: Pick<QueueManager, 'peekNextPending' | 'hasCapacity'>;
-  readonly lock: Pick<WorkspaceLockManager, 'tryAcquire'>;
+  readonly lock: Pick<WorkspaceLockManager, 'tryAcquire' | 'release'>;
   readonly controller: Pick<SchegentWorkflowController, 'startNew'>;
+  readonly logger?: SanitizedLogger;
 }
 
 export class AutoDrainCoordinator {
@@ -23,12 +25,14 @@ export class AutoDrainCoordinator {
   private readonly queue: AutoDrainCoordinatorDeps['queue'];
   private readonly lock: AutoDrainCoordinatorDeps['lock'];
   private readonly controller: AutoDrainCoordinatorDeps['controller'];
+  private readonly logger: SanitizedLogger | null;
 
   constructor(deps: AutoDrainCoordinatorDeps) {
     this.store = deps.store;
     this.queue = deps.queue;
     this.lock = deps.lock;
     this.controller = deps.controller;
+    this.logger = deps.logger ?? null;
   }
 
   public async drainIfIdle(): Promise<void> {
@@ -43,6 +47,17 @@ export class AutoDrainCoordinator {
     if (!next) return;
     const acquired = await this.lock.tryAcquire();
     if (!acquired.acquired) return;
-    await this.controller.startNew(next, null);
+    try {
+      await this.controller.startNew(next, null);
+    } catch (err) {
+      // Release the lock we acquired — if startNew throws before
+      // RunDriver.drive() enters its own withLock scope, the lock
+      // would remain held until STALENESS_THRESHOLD_MS (15s).
+      await this.lock.release().catch(() => undefined);
+      this.logger?.warn(
+        `auto-drain: controller.startNew failed: ${(err as Error).message}`
+      );
+    }
   }
 }
+

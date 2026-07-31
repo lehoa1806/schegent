@@ -33,7 +33,7 @@ const VALID_LEVELS = new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']);
 // SanitizedLogger emits lines in the format:
 //   [2026-07-30T20:14:02.071Z] DEBUG router: inbound {"type":"..."}
 // Group 1: ISO timestamp, Group 2: level, Group 3: message body.
-const LINE_PATTERN = /^\[([^\]]+)\]\s+(DEBUG|INFO|WARN|ERROR)\s+(.*)$/;
+const LINE_PATTERN = /^\[([^\]]+)\]\s+(DEBUG|INFO|WARN|ERROR)\s+([\s\S]*)$/;
 
 export const DEBUG_LOG_TAIL_MAX = 200;
 
@@ -44,9 +44,15 @@ export class WebviewLogSink implements LogSink {
   private size = 0;
   private counter = 0;
 
+  private onAppend?: () => void;
+
   constructor(capacity: number = DEBUG_LOG_TAIL_MAX) {
     this.capacity = Math.max(1, capacity);
     this.buffer = new Array<DebugLogEntry>(this.capacity);
+  }
+
+  public setOnAppend(callback: () => void): void {
+    this.onAppend = callback;
   }
 
   appendLine(line: string): void {
@@ -66,6 +72,7 @@ export class WebviewLogSink implements LogSink {
     this.buffer[this.head] = entry;
     this.head = (this.head + 1) % this.capacity;
     if (this.size < this.capacity) this.size++;
+    this.onAppend?.();
   }
 
   /**

@@ -2,11 +2,13 @@ import type { Phase, PhaseOutcome } from './phase';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { AuditEntry } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import { parseAuditLogBlock, AUDIT_LOG_CLOSE_MARKER } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
+import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { TerminationReason } from '../state/workflow-run';
 import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
@@ -428,17 +430,19 @@ export class PhaseRunner {
       });
     }
 
+    const parsedStdout = unwrapStreamJson(raw.stdout);
+
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
-    const audit = parseAuditLogBlock(raw.stdout);
+    const audit = parseAuditLogBlock(parsedStdout);
     // Feature 011 FR-033 — operator-additive fatal signatures, read per
     // invocation (never cached); the built-in floor is preserved.
     const operatorAdditions =
       this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
     const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
     const result = parseInvocation({
-      stdout: raw.stdout,
+      stdout: parsedStdout,
       stderr: raw.stderr,
       exitCode: raw.exitCode,
       rateLimit,
@@ -467,7 +471,7 @@ export class PhaseRunner {
         result: { kind: 'malformed', warnings: ['timeout'], auditEntry: null },
         outcome: 'timeout',
         terminationReason: 'timeout',
-        stdoutSummary: this.logger.sanitize(summarize(raw.stdout)),
+        stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
         stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
@@ -493,7 +497,7 @@ export class PhaseRunner {
         result: { kind: 'malformed', warnings: ['cancelled'], auditEntry: null },
         outcome: 'failed',
         terminationReason: 'cancel',
-        stdoutSummary: this.logger.sanitize(summarize(raw.stdout)),
+        stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
         stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
@@ -591,7 +595,7 @@ export class PhaseRunner {
       result,
       outcome,
       terminationReason,
-      stdoutSummary: this.logger.sanitize(summarize(raw.stdout)),
+      stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
       stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
@@ -697,7 +701,7 @@ export class PhaseRunner {
     });
   }
 
-  private appendAudit(
+  private async appendAudit(
     inputs: PhaseRunInputs,
     eventType:
       | 'phase-start'
@@ -708,15 +712,34 @@ export class PhaseRunner {
       | 'cli-invocation',
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>
-  ) {
-    return this.auditWriter.append({
-      runId: inputs.runId,
-      phase: inputs.phase,
-      iteration: inputs.iteration,
-      eventType,
-      payload,
-      outcome
-    });
+  ): Promise<AuditEntry> {
+    try {
+      return await this.auditWriter.append({
+        runId: inputs.runId,
+        phase: inputs.phase,
+        iteration: inputs.iteration,
+        eventType,
+        payload,
+        outcome
+      });
+    } catch (err) {
+      this.logger.warn(
+        `phase-runner audit append failed (${eventType}): ${(err as Error).message}`
+      );
+      // Return a sentinel entry so callers that access `.id` still work.
+      // The audit record is lost but the workflow continues — a crashed
+      // workflow is worse than a missing audit entry.
+      return {
+        id: `audit-write-failed-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        runId: inputs.runId,
+        phase: inputs.phase,
+        iteration: inputs.iteration,
+        eventType,
+        payload,
+        outcome
+      } as AuditEntry;
+    }
   }
-
 }
+

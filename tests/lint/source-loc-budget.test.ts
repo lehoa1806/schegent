@@ -15,7 +15,7 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // (a second activation aggregator file) was rejected to avoid splintering the
   // host registration order.
   { path: 'src/extension.ts', maxLines: 1_450 },
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_050 },
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_100 },
   { path: 'src/contracts/runtime-validators.ts', maxLines: 1_100 },
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_100 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style

@@ -13,6 +13,7 @@
     clearPhaseBreakpoint
   } from '../lib/phase-breakpoint-ipc';
   import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
+  import { useConfirm } from '../lib/use-confirm';
   import type { PhaseName, PhaseTile } from '../lib/snapshot-types';
 
   interface Props {
@@ -118,8 +119,13 @@
     restartPhase(currentPhase);
   }
 
-  function onSkip(): void {
+  async function onSkip(event: MouseEvent): Promise<void> {
     if (overrideDisabled || currentPhase === null) return;
+    const confirmed = await useConfirm('run.skip-phase', {
+      originatingElement: event.currentTarget as HTMLElement,
+      context: { phaseName: currentPhase }
+    });
+    if (!confirmed) return;
     skipPhase(currentPhase);
   }
 

@@ -17,7 +17,8 @@ export type ActionKey =
   | 'run.restart-canceled'
   | 'run.modify-task'
   | 'history.rerun'
-  | 'workspace.reset';
+  | 'workspace.reset'
+  | 'run.skip-phase';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -50,6 +51,7 @@ export type ActionCopyContext = {
   'run.modify-task': { readonly taskTitle: string };
   'history.rerun': { readonly taskTitle: string };
   'workspace.reset': Record<string, never>;
+  'run.skip-phase': { readonly phaseName: string };
 };
 
 // Authoritative copy table (v1, English). Adding a new key here AND to
@@ -124,6 +126,12 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
       'Wipes all Schegent state for this workspace — queue, run history, prompt suppressions, and project-level UI preferences. This cannot be undone.',
     confirmLabel: 'Reset Workspace',
     severity: 'destructive'
+  },
+  'run.skip-phase': {
+    title: 'Skip active phase?',
+    bodyTemplate: 'Cancels the ongoing execution of **{phaseName}** and advances to the next step.',
+    confirmLabel: 'Skip Phase',
+    severity: 'caution'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -185,8 +193,9 @@ export function renderActionBody<K extends ActionKey>(
           ctx.isRunning ? ' It is currently running and will be terminated.' : ''
         );
     }
-    case 'run.retry-phase-now': {
-      const ctx = context as ActionCopyContext['run.retry-phase-now'];
+    case 'run.retry-phase-now':
+    case 'run.skip-phase': {
+      const ctx = context as ActionCopyContext['run.retry-phase-now' | 'run.skip-phase'];
       return entry.bodyTemplate.replace('{phaseName}', ctx.phaseName);
     }
     case 'queue.pause':

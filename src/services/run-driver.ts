@@ -67,7 +67,7 @@ export class RunDriver {
   private cancellationController: AbortController | null = null;
   private isRunning = false;
   private carriedIssues: Array<{ tag?: string; summary: string }> | string[] = [];
-  private readonly removedActivePhaseAborts = new Set<string>();
+  private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
 
   constructor(private readonly deps: RunDriverDeps) {}
@@ -80,8 +80,8 @@ export class RunDriver {
     this.cancellationController?.abort();
   }
 
-  public noteActivePhaseRemovalAbort(runId: string, phaseId: string): void {
-    this.removedActivePhaseAborts.add(this.phaseRemovalAbortKey(runId, phaseId));
+  public noteActivePhaseOverrideAbort(runId: string, phaseId: string): void {
+    this.overriddenActivePhaseAborts.add(this.phaseOverrideAbortKey(runId, phaseId));
   }
 
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
@@ -208,8 +208,8 @@ export class RunDriver {
             resumeSessionId: dispatchResumeSessionId
           });
           if (
-            this.removedActivePhaseAborts.delete(
-              this.phaseRemovalAbortKey(run.id, run.currentPhase)
+            this.overriddenActivePhaseAborts.delete(
+              this.phaseOverrideAbortKey(run.id, run.currentPhase)
             )
           ) {
             const latestRun = this.deps.store.getRun();
@@ -350,13 +350,25 @@ export class RunDriver {
             this.deps.notifier.warn(
               `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
             );
-            await this.deps.queue.finish(run.featureId, 'failed', {
-              code: sanitized.code,
-              message: sanitized.message,
-              phase: sanitized.phase ?? undefined,
-              correlationId: run.id
-            });
-            await this.deps.historyRecorder.record(run, description, 'failed');
+            try {
+              await this.deps.queue.finish(run.featureId, 'failed', {
+                code: sanitized.code,
+                message: sanitized.message,
+                phase: sanitized.phase ?? undefined,
+                correlationId: run.id
+              });
+            } catch (qErr) {
+              this.deps.logger.warn(
+                `run-driver: queue.finish (failed) failed: ${(qErr as Error).message}`
+              );
+            }
+            try {
+              await this.deps.historyRecorder.record(run, description, 'failed');
+            } catch (hErr) {
+              this.deps.logger.warn(
+                `run-driver: history record (failed) failed: ${(hErr as Error).message}`
+              );
+            }
             break;
           }
 
@@ -442,8 +454,20 @@ export class RunDriver {
           await this.deps.emitRunEndedBreakpointAudit(run);
           this.deps.statusBar.update({ kind: 'completed' });
           this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
-          await this.deps.queue.finish(run.featureId, 'completed');
-          await this.deps.historyRecorder.record(run, description, 'completed');
+          try {
+            await this.deps.queue.finish(run.featureId, 'completed');
+          } catch (qErr) {
+            this.deps.logger.warn(
+              `run-driver: queue.finish (completed) failed: ${(qErr as Error).message}`
+            );
+          }
+          try {
+            await this.deps.historyRecorder.record(run, description, 'completed');
+          } catch (hErr) {
+            this.deps.logger.warn(
+              `run-driver: history record (completed) failed: ${(hErr as Error).message}`
+            );
+          }
         }
       });
     } finally {
@@ -454,7 +478,7 @@ export class RunDriver {
     }
   }
 
-  private phaseRemovalAbortKey(runId: string, phaseId: string): string {
+  private phaseOverrideAbortKey(runId: string, phaseId: string): string {
     return `${runId}:${phaseId}`;
   }
 }
