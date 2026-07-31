@@ -165,6 +165,19 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
       rateLimitMessage
     };
   }
+  // Feature 030 BUG-00x — apiError takes precedence over missing audit log
+  // and is handled regardless of exitCode. If an API error (e.g. overloaded)
+  // interrupted the stream, the payload is fatally malformed.
+  if (inputs.apiError) {
+    // Drop the noisy '[constitution] missing audit log' if the stream was aborted
+    const filteredWarnings = warnings.filter(w => !w.startsWith('[constitution]'));
+    filteredWarnings.push(`[api_error] ${inputs.apiError.terminalReason || 'unknown'}`);
+    return {
+      kind: 'malformed',
+      warnings: filteredWarnings,
+      auditEntry: inputs.auditEntry
+    };
+  }
 
   // Feature 013 — FR-013/T040 (Wave 3): a non-zero CLI exit that survived
   // the fatal-signature and rate-limit gates above maps to `transient_error`
@@ -174,18 +187,10 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // token is present, we fall through to the contract-block parsing below
   // so the successful result is preserved.
   //
-  // Precedence: fatal > rate_limited > exit-code floor (without clean token)
+  // Precedence: fatal > rate_limited > api_error > exit-code floor (without clean token)
   //             > contract blocks > remaining-issues default.
   if (inputs.exitCode !== null && inputs.exitCode !== 0) {
     if (!detectTerminationToken(inputs.stdout)) {
-      if (inputs.apiError) {
-        warnings.push(`[api_error] ${inputs.apiError.terminalReason || 'unknown'}`);
-        return {
-          kind: 'malformed',
-          warnings,
-          auditEntry: inputs.auditEntry
-        };
-      }
       return {
         kind: 'transient_error',
         exitCode: inputs.exitCode,
