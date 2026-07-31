@@ -17,7 +17,9 @@ CRUD, scheduling, task edit/move/reorder, or phase skip/disable/enable.
   current phase override, and keeps diagnostics/audit history intact.
 - **Skip / Disable / Enable** write per-run phase overrides only. The frozen
   pipeline snapshot is never mutated, so settings reloads affect future runs
-  only.
+  only. Skipping an **active** phase cancels the runner immediately and advances
+  to the next step. Skipping a **paused** phase automatically resumes the
+  pipeline so the skip can take effect.
 - **Delete Phase** removes a phase from the selected task after confirmation.
   The host persists `PhaseOverride.action = 'removed'` on that run only,
   hides the phase from the progression snapshot, and skips it at future

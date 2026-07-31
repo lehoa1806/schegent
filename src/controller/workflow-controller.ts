@@ -25,6 +25,7 @@ import {
   type PhaseDef,
   type PipelineCatalog
 } from '../config/pipeline-config';
+import { LockHeldError } from '../lib/errors';
 import { DELAYED_RETRY_CAP } from './retry-constants';
 import type { DelayedRetryWatchdog } from './retry-handler';
 import { RunDriver } from '../services/run-driver';
@@ -136,7 +137,8 @@ export class SchegentWorkflowController {
       store,
       queue,
       lock,
-      controller: this
+      controller: this,
+      logger
     });
     this.retryCoordinator = new RetryCoordinator({
       store,
@@ -231,6 +233,7 @@ export class SchegentWorkflowController {
     featureDir: string | null,
     options: StartNewOptions = {}
   ): Promise<void> {
+    this.logger.info(`Workflow operation triggered: startNew`, { featureId: feature.id, featureDir, options });
     let run: WorkflowRun | null = null;
     try {
       const pipelineSnapshot = this.resolvePipelineSnapshot(
@@ -277,21 +280,29 @@ export class SchegentWorkflowController {
     description: string,
     err: unknown
   ): Promise<void> {
-    const message = this.sanitizeUnexpectedError(err).slice(0, 240);
+    const isLockHeld = err instanceof LockHeldError;
+    const message = isLockHeld 
+      ? `Another VS Code window holds the workspace lock`
+      : this.sanitizeUnexpectedError(err).slice(0, 240);
+      
     const latestRun = this.store.getRun();
     const activeRun =
       startedRun && latestRun?.id === startedRun.id
         ? latestRun
         : startedRun;
     const lastError: SanitizedError = {
-      code: 'unexpected-controller-error',
+      code: isLockHeld ? 'lock-held' : 'unexpected-controller-error',
       message,
       phase: activeRun?.currentPhase ?? null,
       iteration: activeRun?.currentIteration ?? null,
       at: Date.now()
     };
 
-    this.logger.error(`workflow ${feature.id} failed unexpectedly: ${message}`);
+    if (isLockHeld) {
+      this.logger.warn(`workflow ${feature.id} rejected: workspace lock held by ${this.logger.sanitize((err as LockHeldError).ownerId)}`);
+    } else {
+      this.logger.error(`workflow ${feature.id} failed unexpectedly: ${message}`);
+    }
 
     let terminalRun: WorkflowRun | null = null;
     if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
@@ -338,7 +349,7 @@ export class SchegentWorkflowController {
       );
     }
 
-    if (terminalRun) {
+    if (terminalRun && !isLockHeld) {
       try {
         await this.historyRecorder.record(terminalRun, description, 'failed');
       } catch (historyErr) {
@@ -410,6 +421,7 @@ export class SchegentWorkflowController {
   }
 
   public async resumeExisting(): Promise<boolean> {
+    this.logger.info(`Workflow operation triggered: resumeExisting`);
     const run = this.store.getRun();
     if (!run) return false;
     if (run.status === 'completed' || run.status === 'canceled') return false;
@@ -456,6 +468,7 @@ export class SchegentWorkflowController {
   }
 
   public async pauseActivePhase(): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: pauseActivePhase`);
     const run = this.store.getRun();
     // Allow pausing both running phases AND phases in delayed-retry countdown
     const isInRetryCountdown = run?.status === 'paused' && run.pendingRetryAt !== null;
@@ -513,6 +526,7 @@ export class SchegentWorkflowController {
   }
 
   public async resumeActivePhase(): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: resumeActivePhase`);
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     if (run.manualPauseAt === null && run.pendingRetryAt === null) {
@@ -560,6 +574,7 @@ export class SchegentWorkflowController {
   }
 
   public async restartActivePhase(): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: restartActivePhase`);
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     // Cancel any active watchdog timer and clear retry state immediately
@@ -604,14 +619,33 @@ export class SchegentWorkflowController {
   }
 
   public async skipPhase(phaseId: string): Promise<MutationResult> {
-    return this.setPhaseOverride(phaseId, 'skipped', 'phase-skipped');
+    this.logger.info(`Workflow operation triggered: skipPhase`, { phaseId });
+    const result = await this.setPhaseOverride(phaseId, 'skipped', 'phase-skipped');
+    if (!result.ok) return result;
+
+    const run = this.store.getRun();
+    if (run && run.currentPhase === phaseId) {
+      if (run.status === 'running') {
+        // Feature 071 — Jump to next step. Cancel the active runner so the
+        // skip takes effect immediately instead of waiting for the phase to finish.
+        this.runDriver.noteActivePhaseOverrideAbort(run.id, phaseId);
+        this.cancelActive();
+      } else if (run.status === 'paused') {
+        // Feature 071 — If the phase is currently paused, resume it so the
+        // engine evaluates the override and advances to the next phase.
+        await this.resumeActivePhase();
+      }
+    }
+    return result;
   }
 
   public async disablePhase(phaseId: string): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: disablePhase`, { phaseId });
     return this.setPhaseOverride(phaseId, 'disabled', 'phase-disabled');
   }
 
   public async enablePhase(phaseId: string): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: enablePhase`, { phaseId });
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     if (!this.phaseExists(run, phaseId)) {
@@ -639,6 +673,7 @@ export class SchegentWorkflowController {
   //   - phase must NOT carry a skipped/disabled/removed override.
   //   - phase must NOT already have a breakpoint armed.
   public async setPhaseBreakpoint(runId: string, phaseId: string): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: setPhaseBreakpoint`, { runId, phaseId });
     const run = this.store.getRun();
     if (!run || run.id !== runId) return { ok: false, reason: 'run-not-in-flight' };
     if (!this.phaseExists(run, phaseId)) return { ok: false, reason: 'phase-unknown' };
@@ -669,6 +704,7 @@ export class SchegentWorkflowController {
 
   // Feature 028 US2 — clear a previously-armed breakpoint.
   public async clearPhaseBreakpoint(runId: string, phaseId: string): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: clearPhaseBreakpoint`, { runId, phaseId });
     const run = this.store.getRun();
     if (!run || run.id !== runId) return { ok: false, reason: 'run-not-in-flight' };
     if (!run.phaseBreakpoints.some((entry) => entry.phaseId === phaseId)) {
@@ -703,6 +739,7 @@ export class SchegentWorkflowController {
      */
     sessionCleaned?: boolean;
   }> {
+    this.logger.info(`Workflow operation triggered: deleteTask`, { taskId });
     const feature = this.queue.findById(taskId);
     if (feature?.status === 'in-flight') {
       const run = this.store.getRun();
@@ -742,6 +779,7 @@ export class SchegentWorkflowController {
     taskId: string,
     phaseId: string
   ): Promise<MutationResult & { priorPhaseState?: string; runId?: string }> {
+    this.logger.info(`Workflow operation triggered: removeTaskPhase`, { taskId, phaseId });
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     if (run.featureId !== taskId) return { ok: false, reason: 'unknown-task-id' };
@@ -768,7 +806,7 @@ export class SchegentWorkflowController {
     };
     await this.store.setRun(updated);
     if (run.currentPhase === phaseId && run.status === 'running') {
-      this.runDriver.noteActivePhaseRemovalAbort(run.id, phaseId);
+      this.runDriver.noteActivePhaseOverrideAbort(run.id, phaseId);
       this.cancelActive();
     }
     return { ok: true, priorPhaseState, runId: updated.id };
@@ -781,6 +819,7 @@ export class SchegentWorkflowController {
    * §Manual override.
    */
   public async retryPhaseNow(): Promise<MutationResult> {
+    this.logger.info(`Workflow operation triggered: retryPhaseNow`);
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-active-run' };
     if (run.pendingRetryAt === null || run.pendingRetryCause === null) {

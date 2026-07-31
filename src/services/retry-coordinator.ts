@@ -139,9 +139,15 @@ export class RetryCoordinator {
       );
       return;
     }
-    await this.watchdog.pauseAndPoll(run.pendingRetryCause, {
-      durationOverrideMs: delay,
-      skipStatusCheck: true
-    });
+    try {
+      await this.watchdog.pauseAndPoll(run.pendingRetryCause, {
+        durationOverrideMs: delay,
+        skipStatusCheck: true
+      });
+    } catch (err) {
+      this.logger.warn(
+        `resumeExistingFromActivation: watchdog.pauseAndPoll failed for run ${run.id}: ${(err as Error).message}`
+      );
+    }
   }
 }

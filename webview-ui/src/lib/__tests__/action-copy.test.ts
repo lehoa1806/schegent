@@ -26,11 +26,12 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   'run.restart-canceled',
   'run.modify-task',
   'history.rerun',
-  'workspace.reset'
+  'workspace.reset',
+  'run.skip-phase'
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
-  it('contains exactly the 11 contractual ActionKey entries', () => {
+  it('contains exactly the 12 contractual ActionKey entries', () => {
     expect(Object.keys(ACTION_COPY).sort()).toEqual([...EXPECTED_KEYS].sort());
   });
 
@@ -137,9 +138,11 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(renderActionBody('queue.resume', {})).toBe(ACTION_COPY['queue.resume'].bodyTemplate);
   });
 
-  it('run.retry-phase-now: substitutes the phaseName', () => {
-    const body = renderActionBody('run.retry-phase-now', { phaseName: 'speckit-plan' });
-    expect(body).toContain('**speckit-plan**');
+  it('run.retry-phase-now / run.skip-phase: substitutes the phaseName', () => {
+    const body1 = renderActionBody('run.retry-phase-now', { phaseName: 'speckit-plan' });
+    expect(body1).toContain('**speckit-plan**');
+    const body2 = renderActionBody('run.skip-phase', { phaseName: 'speckit-plan' });
+    expect(body2).toContain('**speckit-plan**');
   });
 
   it('run.restart-canceled / run.modify-task / history.rerun: substitute taskTitle', () => {

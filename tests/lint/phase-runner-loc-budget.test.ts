@@ -27,8 +27,11 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // telemetry, pre-phase compaction invocation (lightweight dummy call
 // with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1 before the real invocation),
 // and `sessionReuse` forwarding into InvocationRequest.
+// Error Handling Audit (Bugfix 2026-07-31) — bumped phase-runner.ts +30 to
+// accommodate the try-catch resilience wrapper around appendAudit so a
+// full disk or permissions error does not crash the entire workflow.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 730 },
+  { path: 'src/controller/phase-runner.ts', max: 760 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }
