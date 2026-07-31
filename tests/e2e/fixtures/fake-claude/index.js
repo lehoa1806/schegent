@@ -45,7 +45,12 @@ function readPrompt() {
       return fs.readFileSync(0, 'utf8');
     }
     if (argv[i] === '-p') {
-      return argv[i + 1] || '';
+      const next = argv[i + 1];
+      // If the next arg is an option flag (e.g. --output-format), the prompt is on stdin.
+      if (next && next.startsWith('-')) {
+        return fs.readFileSync(0, 'utf8');
+      }
+      return next || '';
     }
   }
   return '';
@@ -59,8 +64,10 @@ const KNOWN_PHASES = [
   'speckit-clarify',
   'speckit-plan',
   'speckit-tasks',
+  'speckit-checklist',
   'speckit-analyze',
   'speckit-implement',
+  'speckit-review',
   'finalize'
 ];
 

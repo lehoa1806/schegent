@@ -138,13 +138,13 @@ export interface AuditLogParseResult {
 export function parseAuditLogBlock(stdout: string): AuditLogParseResult {
   const warnings: string[] = [];
   const lines = stdout.split(/\r?\n/);
-  const openIndex = lines.findIndex((line) => line.trim() === OPEN_MARKER);
+  const openIndex = lines.findIndex((line) => line.includes(OPEN_MARKER));
   if (openIndex === -1) {
     warnings.push('[constitution] missing audit log');
     return { entry: null, warnings };
   }
   const closeIndex = lines.findIndex(
-    (line, idx) => idx > openIndex && line.trim() === CLOSE_MARKER
+    (line, idx) => idx > openIndex && line.includes(CLOSE_MARKER)
   );
   if (closeIndex === -1) {
     warnings.push('[constitution] unterminated audit log');

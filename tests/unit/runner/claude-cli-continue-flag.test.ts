@@ -1,11 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
 import type { ChildProcess } from 'child_process';
 import {
   ClaudeCliRunner,
-  type SpawnFn,
-  _resetPromptTransportCacheForTests
+  type SpawnFn
 } from '../../../src/runner/claude-cli';
 
 /**
@@ -49,9 +48,7 @@ function captureSpawn(child: FakeChild, capture: SpawnCapture): SpawnFn {
   };
 }
 
-beforeEach(() => {
-  _resetPromptTransportCacheForTests();
-});
+
 
 describe('ClaudeCliRunner -c append gate (feature 032)', () => {
   it('appends -c exactly once when isContinue is true', async () => {
@@ -179,13 +176,13 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       '--dangerously-skip-permissions',
       '-c',
       '-p',
-      'p',
       '--model',
       'claude-sonnet-4-6',
       '--effort',
       'medium',
       '--output-format',
-      'stream-json'
+      'stream-json',
+      '--verbose'
     ]);
   });
 });

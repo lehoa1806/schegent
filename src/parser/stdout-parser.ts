@@ -7,7 +7,7 @@ import {
 import { extractRateLimitMessage, extractResetTimestamp } from './rate-limit-reset-extractor';
 
 export type InvocationResult =
-  | { kind: 'clean'; auditEntry: AuditEntryFields }
+  | { kind: 'clean'; auditEntry: AuditEntryFields | null }
   | { kind: 'open_questions'; questions: string[]; auditEntry: AuditEntryFields | null }
   | {
       kind: 'remaining_issues';
@@ -101,6 +101,8 @@ function extractBulletsAfter(stdout: string, headingRegex: RegExp): string[] {
   return items;
 }
 
+import type { ApiErrorMetadata } from './stream-json-unwrapper';
+
 export interface ParseInputs {
   stdout: string;
   stderr: string;
@@ -108,12 +110,12 @@ export interface ParseInputs {
   rateLimit: { matched: boolean; cause: string };
   auditEntry: AuditEntryFields | null;
   auditWarnings: string[];
+  apiError?: ApiErrorMetadata | null;
   /**
    * Feature 011 FR-033 — operator-additive fatal signatures merged with
    * the code-resident floor. When omitted the parser uses the built-in
    * floor only, preserving the pre-011 behavior for callers that have
-   * not yet been updated.
-   */
+   * not been updated (e.g. tests).  */
   effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
 }
 
@@ -176,6 +178,14 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   //             > contract blocks > remaining-issues default.
   if (inputs.exitCode !== null && inputs.exitCode !== 0) {
     if (!detectTerminationToken(inputs.stdout)) {
+      if (inputs.apiError) {
+        warnings.push(`[api_error] ${inputs.apiError.terminalReason || 'unknown'}`);
+        return {
+          kind: 'malformed',
+          warnings,
+          auditEntry: inputs.auditEntry
+        };
+      }
       return {
         kind: 'transient_error',
         exitCode: inputs.exitCode,
@@ -208,7 +218,7 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     if (tokenMatched) {
       return inputs.auditEntry
         ? { kind: 'clean', auditEntry: inputs.auditEntry }
-        : { kind: 'malformed', warnings, auditEntry: null };
+        : { kind: 'clean', auditEntry: null };
     }
     if (remainingIssues.length > 0) {
       return { kind: 'remaining_issues', issues: remainingIssues, auditEntry: inputs.auditEntry };
@@ -219,7 +229,7 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   if (tokenMatched) {
     if (!inputs.auditEntry) {
       warnings.push('[constitution] missing audit log on clean response');
-      return { kind: 'malformed', warnings, auditEntry: null };
+      return { kind: 'clean', auditEntry: null };
     }
     return { kind: 'clean', auditEntry: inputs.auditEntry };
   }

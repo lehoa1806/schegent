@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
-import { randomUUID } from 'crypto';
 import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
 import type {
   BackendRunner,
@@ -13,7 +12,6 @@ import { extractCliSessionId } from '../parser/session-id-extractor';
 
 const SIGKILL_DELAY_MS = 2_000;
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
-const PROBE_TIMEOUT_MS = 5_000;
 // Feature 030 BUG-002 — after the request's `completionMarker` appears in
 // stdout, the runner waits at most this long for the process to exit on its
 // own before grace-terminating it. Short enough that a lingering process does
@@ -33,121 +31,9 @@ export interface RunnerHandle {
   cancel(): void;
 }
 
-// Feature 013 Wave 8 (US8 / T110): Claude CLI prompt-transport
-// detection. Three transports, in decreasing argv-exposure order:
-//   - `p-flag` (legacy default): prompt body visible in process listing.
-//   - `prompt-file`: prompt written to a 0600-perm temp file; argv
-//     carries only the file path.
-//   - `stdin`: prompt piped over stdin; argv carries neither the body
-//     nor a file path.
-export type PromptTransport = 'prompt-file' | 'stdin' | 'p-flag';
-
-// Feature 041: closed enum discriminating the two paths by which
-// `detectPromptTransport` resolves to the legacy `'p-flag'` fallback.
-//   - `probe-error`: spawn errored OR probe timed out.
-//   - `missing-markers`: probe exited cleanly but help text contained
-//     neither `--prompt-file` nor `--prompt-stdin`.
-export type TransportFallbackReason = 'probe-error' | 'missing-markers';
-
-const transportCache = new Map<string, PromptTransport>();
-
-// Feature 041: cliPaths for which the runner has already emitted the
-// fallback warn. Module-level so two `ClaudeCliRunner` instances
-// pointing at the same cliPath share the warn-once invariant.
-const warnedFallback = new Set<string>();
-
-/**
- * Feature 054 — Public reset for the prompt-transport cache.
- *
- * Originally test-only (`_resetPromptTransportCacheForTests`); promoted
- * to a public API so the `schegent.redetectClaudeTransport` command
- * can clear the cache mid-session and force the next `invoke` to
- * re-probe `--help`. The test alias is preserved for backward
- * compatibility with existing call sites.
- */
-export function resetPromptTransportCache(): void {
-  transportCache.clear();
-  warnedFallback.clear();
-}
-
-/** @deprecated Use {@link resetPromptTransportCache}. Kept for existing tests. */
-export const _resetPromptTransportCacheForTests = resetPromptTransportCache;
-
-async function runHelpProbe(cliPath: string, spawnFn: SpawnFn): Promise<string> {
-  const child = safeSpawn(spawnFn, cliPath, ['--help'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false
-  });
-  let stdout = '';
-  child.stdout?.setEncoding('utf8');
-  child.stdout?.on('data', (chunk: string) => {
-    if (stdout.length < MAX_BUFFER_BYTES) stdout += chunk;
-  });
-  // Feature 041 — Option α: throw on probe-error (spawn error OR
-  // timeout) so the catch block in detectPromptTransport routes to
-  // the `probe-error` reason instead of indistinguishably collapsing
-  // into `missing-markers`. The kill sequence is unchanged; the
-  // existing 013-era "returns p-flag when the help spawn errors"
-  // contract still holds because the catch block still falls back
-  // to `'p-flag'`.
-  let timedOut = false;
-  let errored = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      // child may already be exiting
-    }
-  }, PROBE_TIMEOUT_MS);
-  await new Promise<void>((resolve) => {
-    child.on('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    child.on('error', () => {
-      errored = true;
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-  if (timedOut) {
-    throw new Error('claude-cli: --help probe timed out');
-  }
-  if (errored) {
-    throw new Error('claude-cli: --help probe errored');
-  }
-  return stdout;
-}
-
-export async function detectPromptTransport(
-  cliPath: string,
-  spawnFn: SpawnFn,
-  onFallback?: (reason: TransportFallbackReason) => void
-): Promise<PromptTransport> {
-  const cached = transportCache.get(cliPath);
-  if (cached) return cached;
-  let detected: PromptTransport = 'p-flag';
-  let fallbackReason: TransportFallbackReason | null = null;
-  try {
-    const helpOutput = await runHelpProbe(cliPath, spawnFn);
-    if (helpOutput.includes('--prompt-file')) {
-      detected = 'prompt-file';
-    } else if (helpOutput.includes('--prompt-stdin')) {
-      detected = 'stdin';
-    } else {
-      fallbackReason = 'missing-markers';
-    }
-  } catch {
-    detected = 'p-flag';
-    fallbackReason = 'probe-error';
-  }
-  if (fallbackReason !== null && onFallback) {
-    onFallback(fallbackReason);
-  }
-  transportCache.set(cliPath, detected);
-  return detected;
-}
+// Prompt transport detection has been removed. The CLI natively
+// supports reading the prompt securely from stdin when -p is passed
+// without a trailing prompt body argument.
 
 function safeSpawn(
   spawnFn: SpawnFn,
@@ -166,34 +52,25 @@ function safeSpawn(
 /**
  * Claude CLI implementation of `BackendRunner` (see
  * `src/contracts/backend-runner.ts`). The runner spawns
- * `claude --dangerously-skip-permissions -p <prompt>` and streams chunks
- * through the monitor hook. Output is capped at `MAX_BUFFER_BYTES` per
+ * `claude --dangerously-skip-permissions -p` and streams chunks
+ * through the monitor hook. The prompt is passed via `stdin`
+ * to avoid argv exposure. Output is capped at `MAX_BUFFER_BYTES` per
  * stream; truncation is silent. Timeout and cancellation both terminate
  * the subprocess via `terminate()`.
- *
- * Feature 013 Wave 8: when constructed with `{ probeTransport: true }`,
- * the first invoke probes `claude --help` and selects a safer transport
- * (`--prompt-file` or stdin) when supported. The legacy `-p` argv
- * transport remains the fallback. Tests default to `probeTransport:
- * false` so existing spawn fixtures keep working unchanged.
  */
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
-  private readonly probeTransport: boolean;
-  private readonly logger: SanitizedLogger;
   private active: ChildProcess | null = null;
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
-    options: { probeTransport?: boolean } = {},
-    logger: SanitizedLogger = new SanitizedLogger()
+    _options: { probeTransport?: boolean } = {},
+    _logger: SanitizedLogger = new SanitizedLogger()
   ) {
     this.spawnFn = spawnFn;
     this.monitorHook = monitorHook;
-    this.probeTransport = options.probeTransport ?? false;
-    this.logger = logger;
   }
 
   public get hasActiveProcess(): boolean {
@@ -202,17 +79,6 @@ export class ClaudeCliRunner implements BackendRunner {
 
   public async invoke(request: InvocationRequest): Promise<RawInvocationOutput> {
     const start = Date.now();
-    const transport: PromptTransport = this.probeTransport
-      ? await detectPromptTransport(
-          request.cliPath,
-          this.spawnFn,
-          (reason) => this.emitFallbackWarn(request.cliPath, reason)
-        )
-      : 'p-flag';
-
-    let tempPromptFile: string | null = null;
-    let baseArgs: string[];
-    let stdio: SpawnOptions['stdio'];
 
     // Feature 032 — session-continuation hint. When `resumeSessionId`
     // is set, the runner uses `--resume <id>` for deterministic session
@@ -237,41 +103,12 @@ export class ClaudeCliRunner implements BackendRunner {
       continuePrefix = [];
     }
 
-    switch (transport) {
-      case 'prompt-file': {
-        const fs = await import('fs/promises');
-        const os = await import('os');
-        const path = await import('path');
-        tempPromptFile = path.join(os.tmpdir(), `schegent-prompt-${randomUUID()}.txt`);
-        await fs.writeFile(tempPromptFile, request.prompt, {
-          encoding: 'utf8',
-          mode: 0o600
-        });
-        baseArgs = [
-          '--dangerously-skip-permissions',
-          ...continuePrefix,
-          '--prompt-file',
-          tempPromptFile
-        ];
-        stdio = ['ignore', 'pipe', 'pipe'];
-        break;
-      }
-      case 'stdin': {
-        baseArgs = ['--dangerously-skip-permissions', ...continuePrefix, '--prompt-stdin'];
-        stdio = ['pipe', 'pipe', 'pipe'];
-        break;
-      }
-      case 'p-flag':
-      default:
-        baseArgs = [
-          '--dangerously-skip-permissions',
-          ...continuePrefix,
-          '-p',
-          request.prompt
-        ];
-        stdio = ['ignore', 'pipe', 'pipe'];
-        break;
-    }
+    const baseArgs = [
+      '--dangerously-skip-permissions',
+      ...continuePrefix,
+      '-p'
+    ];
+    const stdio: SpawnOptions['stdio'] = ['pipe', 'pipe', 'pipe'];
 
     const args = [...baseArgs];
     if (request.model && request.model.trim().length > 0) {
@@ -285,6 +122,9 @@ export class ClaudeCliRunner implements BackendRunner {
     // this, session reuse cannot activate because no session ID is ever
     // captured.
     args.push('--output-format', 'stream-json');
+    // Claude CLI >= 2.1.220 requires --verbose when using --output-format stream-json
+    // in print mode (-p), otherwise it throws an error.
+    args.push('--verbose');
 
     // FR-018 / FR-024 / FR-026: when the operator opted in, append the
     // diagnostic flags. No client-side flag validation — unrecognized flags
@@ -294,7 +134,6 @@ export class ClaudeCliRunner implements BackendRunner {
     let diagnosticWriter: VerboseDiagnosticWriter | null = null;
     if (verboseTarget) {
       args.push('--debug-file', verboseTarget.debugFile);
-      args.push('--verbose');
       diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger());
       await diagnosticWriter.prepare(verboseTarget);
     }
@@ -315,7 +154,7 @@ export class ClaudeCliRunner implements BackendRunner {
       this.active = child;
       this.emitHook({ kind: 'started', pid: child.pid ?? null });
 
-      if (transport === 'stdin' && child.stdin) {
+      if (child.stdin) {
         try {
           child.stdin.write(request.prompt);
           child.stdin.end();
@@ -475,15 +314,7 @@ export class ClaudeCliRunner implements BackendRunner {
         cliSessionId
       };
     } finally {
-      if (tempPromptFile) {
-        try {
-          const fs = await import('fs/promises');
-          await fs.unlink(tempPromptFile);
-        } catch {
-          // best-effort cleanup; the temp file is in os.tmpdir() and will
-          // be reaped by the OS eventually.
-        }
-      }
+      // tempPromptFile cleanup logic removed.
     }
   }
 
@@ -493,24 +324,6 @@ export class ClaudeCliRunner implements BackendRunner {
       this.monitorHook(event);
     } catch {
       // Hook errors must not propagate into runner control flow.
-    }
-  }
-
-  // Feature 041 — emit exactly one fallback warn per cliPath per
-  // process. The module-level `warnedFallback` set is keyed on
-  // `cliPath` so two runner instances pointing at the same CLI share
-  // the warn-once invariant. Logger throws are swallowed (mirrors
-  // `emitHook` above) to keep runner control flow intact.
-  private emitFallbackWarn(cliPath: string, reason: TransportFallbackReason): void {
-    if (warnedFallback.has(cliPath)) return;
-    warnedFallback.add(cliPath);
-    try {
-      this.logger.warn(
-        'claude-cli: prompt-transport fell back to argv -p; upgrading claude is recommended',
-        { cliPath, reason }
-      );
-    } catch {
-      // Logger errors must not propagate into runner control flow.
     }
   }
 

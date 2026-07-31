@@ -12,7 +12,7 @@ import {
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
-import { resetPromptTransportCache } from './runner/claude-cli';
+
 import { createBackendRunner, resolveBackendKind } from './runner/backend-runner-factory';
 import { PromptBuilder } from './runner/prompt-builder';
 import { PhaseRunner } from './controller/phase-runner';
@@ -1294,9 +1294,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // mid-session). Read-only — does not mutate workspace state, so
     // not gated by MUTATING_COMMANDS.
     vscode.commands.registerCommand('schegent.redetectClaudeTransport', () => {
-      resetPromptTransportCache();
       notifier.info(
-        'Schegent: Claude CLI prompt transport will be re-detected on the next phase run.'
+        'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
       );
     })
   );

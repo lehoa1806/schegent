@@ -7,6 +7,7 @@ import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
 interface FakeChild extends EventEmitter {
   stdout: Readable;
   stderr: Readable;
+  stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
   killed: boolean;
   exitCode: number | null;
   signalCode: string | null;
@@ -17,6 +18,7 @@ function makeFakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.stdout = new Readable({ read() { /* no-op */ } });
   child.stderr = new Readable({ read() { /* no-op */ } });
+  child.stdin = { write: vi.fn(), end: vi.fn() };
   child.killed = false;
   child.exitCode = null;
   child.signalCode = null;
@@ -28,7 +30,7 @@ function makeFakeChild(): FakeChild {
 }
 
 describe('ClaudeCliRunner.invoke', () => {
-  it('passes the prompt as the third argument under -p', async () => {
+  it('passes the prompt over stdin natively under -p', async () => {
     const child = makeFakeChild();
     const seen: { command: string; args: ReadonlyArray<string>; options: SpawnOptions } = {
       command: '',
@@ -52,8 +54,10 @@ describe('ClaudeCliRunner.invoke', () => {
       cwd: '/repo'
     });
     expect(seen.command).toBe('claude');
-    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'do work', '--output-format', 'stream-json']);
+    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', '--output-format', 'stream-json', '--verbose']);
     expect(seen.options.shell).toBe(false);
+    expect(child.stdin.write).toHaveBeenCalledWith('do work');
+    expect(child.stdin.end).toHaveBeenCalled();
   });
 
   it('can spawn with only Schegent-controlled env when inheritance is disabled', async () => {
@@ -252,13 +256,13 @@ describe('ClaudeCliRunner.invoke', () => {
       model: 'claude-opus-4-7',
       effort: 'high'
     });
-    expect(seen.args.slice(0, 3)).toEqual(['--dangerously-skip-permissions', '-p', 'do work']);
+    expect(seen.args.slice(0, 2)).toEqual(['--dangerously-skip-permissions', '-p']);
     expect(seen.args).toContain('--model');
     expect(seen.args).toContain('claude-opus-4-7');
     expect(seen.args).toContain('--effort');
     expect(seen.args).toContain('high');
-    expect(seen.args.indexOf('--model')).toBeGreaterThan(seen.args.indexOf('do work'));
-    expect(seen.args.indexOf('--effort')).toBeGreaterThan(seen.args.indexOf('do work'));
+    expect(seen.args.indexOf('--model')).toBeGreaterThan(seen.args.indexOf('-p'));
+    expect(seen.args.indexOf('--effort')).toBeGreaterThan(seen.args.indexOf('-p'));
   });
 
   it('omits --model and --effort when not set (T028, US1)', async () => {
@@ -278,7 +282,7 @@ describe('ClaudeCliRunner.invoke', () => {
       cliPath: 'claude',
       cwd: '/repo'
     });
-    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', 'p', '--output-format', 'stream-json']);
+    expect(seen.args).toEqual(['--dangerously-skip-permissions', '-p', '--output-format', 'stream-json', '--verbose']);
     expect(seen.args).not.toContain('--model');
     expect(seen.args).not.toContain('--effort');
   });
@@ -325,13 +329,13 @@ describe('ClaudeCliRunner.invoke', () => {
       }
     });
     // Existing -p block stays first.
-    expect(seen.args.slice(0, 3)).toEqual(['--dangerously-skip-permissions', '-p', 'p']);
+    expect(seen.args.slice(0, 2)).toEqual(['--dangerously-skip-permissions', '-p']);
     // --output-format stream-json is always present (session ID capture).
     // The verbose diagnostics add --debug-file and --verbose on top.
     const debugIdx = seen.args.indexOf('--debug-file');
     const verboseIdx = seen.args.indexOf('--verbose');
-    expect(debugIdx).toBeGreaterThan(seen.args.indexOf('p'));
-    expect(verboseIdx).toBeGreaterThan(debugIdx);
+    expect(debugIdx).toBeGreaterThan(seen.args.indexOf('-p'));
+    expect(debugIdx).toBeGreaterThan(verboseIdx);
     // --debug-file carries the canonical path.
     expect(seen.args[debugIdx + 1]).toBe(
       '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/debug.json'
@@ -345,7 +349,7 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(seen.args.filter((a) => a === '--verbose')).toHaveLength(1);
   });
 
-  it('omits diagnostic flags when verboseDiagnostics is absent (010, T035, US3/FR-024)', async () => {
+  it('omits diagnostic flags when verboseDiagnostics is absent, but keeps --verbose for stream-json (010, T035, US3/FR-024)', async () => {
     const child = makeFakeChild();
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_command, args) => {
@@ -366,6 +370,6 @@ describe('ClaudeCliRunner.invoke', () => {
     // --output-format stream-json is always present (session ID capture).
     expect(seen.args).toContain('--output-format');
     expect(seen.args).toContain('stream-json');
-    expect(seen.args).not.toContain('--verbose');
+    expect(seen.args).toContain('--verbose');
   });
 });

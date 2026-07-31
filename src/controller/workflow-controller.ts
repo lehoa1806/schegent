@@ -634,6 +634,28 @@ export class SchegentWorkflowController {
         // Feature 071 — If the phase is currently paused, resume it so the
         // engine evaluates the override and advances to the next phase.
         await this.resumeActivePhase();
+      } else if (run.status === 'failed' && run.pendingRetryAt !== null) {
+        // Feature 071 — If the phase is in backoff, clear the backoff state and
+        // wake up the pipeline so the skip takes effect immediately.
+        await this.store.setRun({
+          ...run,
+          pendingRetryAt: null,
+          pendingRetryCause: null
+        });
+        await this.store.setWatchdog({
+          paused: false,
+          pausedSince: null,
+          nextPollAt: null,
+          pollIntervalMs: 0,
+          cause: null,
+          lastStatusOk: null
+        });
+        this.retryCoordinator.cancelPendingTimer();
+        setImmediate(() => {
+          void this.resumeExisting().catch((err) =>
+            this.logger.warn(`skipPhase resume failed: ${(err as Error).message}`)
+          );
+        });
       }
     }
     return result;

@@ -430,25 +430,26 @@ export class PhaseRunner {
       });
     }
 
-    const parsedStdout = unwrapStreamJson(raw.stdout);
+    const unwrappedStream = unwrapStreamJson(raw.stdout);
 
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
-    const audit = parseAuditLogBlock(parsedStdout);
+    const audit = parseAuditLogBlock(unwrappedStream.text);
     // Feature 011 FR-033 — operator-additive fatal signatures, read per
     // invocation (never cached); the built-in floor is preserved.
     const operatorAdditions =
       this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
     const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
     const result = parseInvocation({
-      stdout: parsedStdout,
+      stdout: unwrappedStream.text,
       stderr: raw.stderr,
       exitCode: raw.exitCode,
       rateLimit,
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
-      effectiveFatalSignatures
+      effectiveFatalSignatures,
+      apiError: unwrappedStream.apiError
     });
 
     // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025).
@@ -471,7 +472,7 @@ export class PhaseRunner {
         result: { kind: 'malformed', warnings: ['timeout'], auditEntry: null },
         outcome: 'timeout',
         terminationReason: 'timeout',
-        stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
+        stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
         stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
@@ -497,7 +498,7 @@ export class PhaseRunner {
         result: { kind: 'malformed', warnings: ['cancelled'], auditEntry: null },
         outcome: 'failed',
         terminationReason: 'cancel',
-        stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
+        stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
         stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
@@ -595,7 +596,7 @@ export class PhaseRunner {
       result,
       outcome,
       terminationReason,
-      stdoutSummary: this.logger.sanitize(summarize(parsedStdout)),
+      stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
       stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
