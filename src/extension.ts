@@ -26,6 +26,7 @@ import {
   RuntimeLogSink,
   createRuntimeLogAccessor
 } from './lib/runtime-log';
+import { WebviewLogSink } from './lib/webview-log-sink';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
 import { Notifier } from './ui/notifications';
@@ -158,6 +159,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     fallbackLogger: logger
   });
   logger.addSink(runtimeLogSink);
+  const webviewLogSink = new WebviewLogSink();
+  logger.addSink(webviewLogSink);
 
   // Stage 1 — always-on sidebar registration. Must happen before any workspace-folder
   // or store-initialize guard so the view is available even when the workspace is empty
@@ -216,7 +219,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         sidebarProvider.setProjector(replacement);
       },
       runtimeLogSink,
-      runtimeLogAccessor
+      runtimeLogAccessor,
+      webviewLogSink
     });
     if (!wiring) return;
     stage2 = wiring.stage2;
@@ -280,6 +284,7 @@ interface Stage2Inputs {
   readonly onInitFailure: () => void;
   readonly runtimeLogSink: RuntimeLogSink;
   readonly runtimeLogAccessor: ReturnType<typeof createRuntimeLogAccessor>;
+  readonly webviewLogSink: WebviewLogSink;
 }
 
 async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
@@ -291,7 +296,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     onInitFailure,
     runtimeLogSink,
-    runtimeLogAccessor
+    runtimeLogAccessor,
+    webviewLogSink
   } = inputs;
   const disposables: vscode.Disposable[] = [];
 
@@ -752,7 +758,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // without an IPC round-trip. Re-read on every projection; the
     // `onDidChangeConfiguration` listener below already kicks the
     // projector for any `schegent.*` change.
-    getConfirmationsEnabled: () => isConfirmationsEnabled()
+    getConfirmationsEnabled: () => isConfirmationsEnabled(),
+    getDebugLogTail: () => webviewLogSink.getEntries()
   });
   projector.start();
   // Feature 033 — bind the deferred telemetry projector reference now that

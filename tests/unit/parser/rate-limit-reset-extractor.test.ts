@@ -169,6 +169,51 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
       expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBe(1717000000_000);
     });
   });
+
+  // BUG-009 — when `includeWarningStatus` is true, `allowed_warning`
+  // records yield their `resetsAt` epoch (the caller knows the invocation
+  // failed). Default behavior (BUG-008) is preserved.
+  describe('BUG-009 includeWarningStatus opt-in', () => {
+    it('compact "allowed_warning" with includeWarningStatus: true → extracts resetsAtMs', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBe(1779520200_000);
+    });
+
+    it('pretty "allowed_warning" with includeWarningStatus: true → extracts resetsAtMs', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status": "allowed_warning", "resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBe(1779520200_000);
+    });
+
+    it('"allow" is still skipped even with includeWarningStatus: true', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBeNull();
+    });
+
+    it('default (no opts) still skips "allowed_warning" (BUG-008 preserved)', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs
+      ).toBeNull();
+    });
+
+    it('"rejected" still works with includeWarningStatus: true', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBe(1779520200_000);
+    });
+  });
 });
 
 describe('extractResetTimestamp — plain-text path (rows 9-22) exercised on stdout AND stderr', () => {

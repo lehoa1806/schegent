@@ -7,7 +7,13 @@ export const RATE_LIMIT_MATCHERS: ReadonlyArray<{ regex: RegExp; cause: string }
   // unrelated "out of bandwidth/space/etc." strings do NOT match.
   { regex: /out of (?:extra )?usage/i, cause: 'out-of-usage' },
   { regex: /credits?.{0,20}(exhausted|insufficient|depleted)/i, cause: 'credits-exhausted' },
-  { regex: /quota.{0,20}exceeded/i, cause: 'quota-exceeded' }
+  { regex: /quota.{0,20}exceeded/i, cause: 'quota-exceeded' },
+  // BUG-009 — the CLI emits "You've hit your session limit · resets
+  // <time> (<tz>)" on stderr when the five-hour session quota is
+  // exhausted. Without this matcher the error is misclassified as
+  // `transient_error` and the dynamic-backoff reset time is never
+  // extracted.
+  { regex: /session.?limit/i, cause: 'session-limit' }
 ]);
 
 export interface CreditDetectionResult {

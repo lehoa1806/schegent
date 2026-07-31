@@ -84,7 +84,9 @@ describe('continue-flag argv composition: transport=p-flag', () => {
       '--dangerously-skip-permissions',
       '-c',
       '-p',
-      'do work'
+      'do work',
+      '--output-format',
+      'stream-json'
     ]);
   });
 
@@ -104,7 +106,9 @@ describe('continue-flag argv composition: transport=p-flag', () => {
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
       '-p',
-      'do work'
+      'do work',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('-c');
   });
@@ -124,7 +128,9 @@ describe('continue-flag argv composition: transport=p-flag', () => {
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
       '-p',
-      'do work'
+      'do work',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('-c');
   });
@@ -302,7 +308,9 @@ describe('continue-flag argv composition: restart-equivalent (isContinue=false)'
     });
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
-      '--prompt-stdin'
+      '--prompt-stdin',
+      '--output-format',
+      'stream-json'
     ]);
   });
 });
@@ -343,7 +351,9 @@ describe('continue-flag argv composition: transport=stdin', () => {
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
       '-c',
-      '--prompt-stdin'
+      '--prompt-stdin',
+      '--output-format',
+      'stream-json'
     ]);
   });
 
@@ -378,7 +388,9 @@ describe('continue-flag argv composition: transport=stdin', () => {
     });
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
-      '--prompt-stdin'
+      '--prompt-stdin',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('-c');
   });
@@ -409,7 +421,9 @@ describe('continue-flag argv composition: resumeSessionId', () => {
       '--resume',
       'sess-abc-123',
       '-p',
-      'retry prompt'
+      'retry prompt',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('-c');
   });
@@ -431,7 +445,9 @@ describe('continue-flag argv composition: resumeSessionId', () => {
       '--dangerously-skip-permissions',
       '-c',
       '-p',
-      'retry prompt'
+      'retry prompt',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('--resume');
   });
@@ -453,7 +469,9 @@ describe('continue-flag argv composition: resumeSessionId', () => {
     expect(seen.args).toEqual([
       '--dangerously-skip-permissions',
       '-p',
-      'fresh prompt'
+      'fresh prompt',
+      '--output-format',
+      'stream-json'
     ]);
     expect(seen.args).not.toContain('-c');
     expect(seen.args).not.toContain('--resume');

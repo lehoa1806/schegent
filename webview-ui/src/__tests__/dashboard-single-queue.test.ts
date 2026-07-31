@@ -194,14 +194,15 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
 }
 
 describe('Feature 030 (US3, T037) — Dashboard single-queue UI', () => {
-  it('renders without a role="tab" navigation (no Queue tab-bar)', () => {
+  it('renders only the history/queue toggle tabs, no multi-queue tab-bar', () => {
     const snap = buildSnapshot();
     const { container } = render(Dashboard, { props: { snapshot: snap } });
     const tabs = container.querySelectorAll('[role="tab"]');
+    // We now have two tabs for the Queue / History toggle, but no multi-queue tabs.
     expect(
       tabs.length,
-      `Expected zero role="tab" elements, found ${tabs.length}`
-    ).toBe(0);
+      `Expected 2 role="tab" elements (Queue/History toggle), found ${tabs.length}`
+    ).toBe(2);
     const tablist = container.querySelectorAll('[role="tablist"]');
     expect(
       tablist.length,

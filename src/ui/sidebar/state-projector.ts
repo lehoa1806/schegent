@@ -25,6 +25,7 @@ import {
   buildIdleSnapshot,
   type AuditCategory,
   type AuditTailEntry,
+  type DebugLogEntry,
   type FreshnessState,
   type GeneralSettings,
   type HistoryEntry,
@@ -154,6 +155,12 @@ export interface StateProjectorDeps {
    * as "prompts enabled" (default).
    */
   readonly getConfirmationsEnabled?: () => boolean;
+  /**
+   * Read the current debug-log ring buffer for the System tab.
+   * Invoked on every projection. Returns a frozen chronologically
+   * ordered snapshot of recent SanitizedLogger output.
+   */
+  readonly getDebugLogTail?: () => readonly DebugLogEntry[];
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;
@@ -219,6 +226,7 @@ export class StateProjector {
     | import('../../config/phase-precedence').PhasePrecedenceProjection
     | undefined;
   private readonly getConfirmationsEnabled?: () => boolean;
+  private readonly getDebugLogTail?: () => readonly DebugLogEntry[];
 
   private storeSub: Disposable | null = null;
   private auditSub: AuditDisposable | null = null;
@@ -286,6 +294,7 @@ export class StateProjector {
     this.getWakeupSessionLogPath = deps.getWakeupSessionLogPath;
     this.getPhasePrecedence = deps.getPhasePrecedence;
     this.getConfirmationsEnabled = deps.getConfirmationsEnabled;
+    this.getDebugLogTail = deps.getDebugLogTail;
     // Feature 059 — populate the initial snapshot via a real `project()`
     // so the first `subscribe()` delivers fresh trust + queue values
     // without requiring `start()` to be called first. The projection is
@@ -840,6 +849,7 @@ export class StateProjector {
       // `CMD_CLEAR_PHASE_BREAKPOINT` targeting from the dashboard.
       activeRunId: run?.id ?? null,
       auditTail: Object.freeze(auditTail),
+      debugLogTail: Object.freeze(this.getDebugLogTail ? this.getDebugLogTail() : []),
       liveActivity,
       workflowElapsedMs,
       monitor: monitorState,

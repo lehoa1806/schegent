@@ -80,6 +80,26 @@ const SAFE_RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set([
   'allowed_warning'
 ]);
 
+// BUG-009 — when the caller knows the invocation failed (non-zero exit),
+// `allowed_warning` records carry a valid `resetsAt` that should be
+// extracted. This strict set only skips `allow`.
+const STRICT_SAFE_STATUSES: ReadonlySet<string> = new Set([
+  'allow'
+]);
+
+/**
+ * BUG-009 — optional parameters for `extractResetTimestamp`.
+ */
+export interface ExtractResetTimestampOptions {
+  /**
+   * When true, include `allowed_warning` records in the stream-json scan.
+   * Callers set this when the CLI exited non-zero, meaning the warning
+   * accompanies a genuine failure and its `resetsAt` is load-bearing.
+   * Default: false (BUG-008 behavior preserved).
+   */
+  includeWarningStatus?: boolean;
+}
+
 const PLAIN_TEXT_PATTERN =
   /·[ \t]+resets[ \t]+(\d{1,2}):(\d{2})[ \t]*(am|pm)?[ \t]*\(([^)]+)\)/i;
 const OFFSET_PATTERN = /^([+-])(\d{2}):?(\d{2})$/;
@@ -90,8 +110,12 @@ const ONE_DAY_MS = 24 * MS_PER_HOUR;
 export function extractResetTimestamp(
   stdout: string,
   stderr: string,
-  now: number
+  now: number,
+  opts?: ExtractResetTimestampOptions
 ): ExtractResetTimestampResult {
+  const safeSet = opts?.includeWarningStatus
+    ? STRICT_SAFE_STATUSES
+    : SAFE_RATE_LIMIT_STATUSES;
   // Stream-json path (preferred) — stdout ONLY. The CLI emits stream-json
   // on stdout when `--output-format stream-json` is active; stream-json on
   // stderr is not part of the CLI contract.
@@ -111,18 +135,29 @@ export function extractResetTimestamp(
       // `status: "allowed_warning"` (the ~90% quota soft-warn — BUG-008).
       // Skip the canonical compact/pretty JSON shapes before JSON.parse;
       // this keeps large stdout buffers with frequent safe events under
-      // the perf budget. The explicit `allowed_warning` substrings are
-      // required because `'"status":"allow"'` would prefix-match
-      // `'"status":"allowed_warning"'` in compact form ONLY; the pretty
-      // form `'"status": "allow"'` would NOT prefix-match
-      // `'"status": "allowed_warning"'`. The explicit guards cover both.
-      if (
-        trimmed.indexOf('"status":"allow"') !== -1 ||
-        trimmed.indexOf('"status": "allow"') !== -1 ||
+      // the perf budget.
+      //
+      // BUG-009 — when `includeWarningStatus` is true the safeSet only
+      // contains `"allow"`, so `allowed_warning` records fall through to
+      // JSON.parse and yield their `resetsAt`. The `allowed_warning`
+      // substring check is conditional on the safeSet.
+
+      // Always skip `"status":"allow"` (exact) — need to NOT skip
+      // `"allowed_warning"`. Check for `allowed_warning` first (longer
+      // match); if present, only skip when the safeSet includes it.
+      const hasAllowedWarning =
         trimmed.indexOf('"status":"allowed_warning"') !== -1 ||
-        trimmed.indexOf('"status": "allowed_warning"') !== -1
-      ) {
-        continue;
+        trimmed.indexOf('"status": "allowed_warning"') !== -1;
+
+      if (hasAllowedWarning) {
+        if (safeSet.has('allowed_warning')) continue;
+        // Fall through — parse the record to extract resetsAt.
+      } else {
+        // No `allowed_warning` substring. Check for bare `"allow"`.
+        const hasAllow =
+          trimmed.indexOf('"status":"allow"') !== -1 ||
+          trimmed.indexOf('"status": "allow"') !== -1;
+        if (hasAllow) continue;
       }
       let obj: unknown;
       try {
@@ -136,11 +171,10 @@ export function extractResetTimestamp(
       const info = rec.rate_limit_info;
       if (!info || typeof info !== 'object') continue;
       const infoRec = info as Record<string, unknown>;
-      // Bugfix 2026-05-23 — BUG-008: skip both `allow` and `allowed_warning`.
-      // Only `rejected` is a hard quota block; the other two statuses are
-      // informational and MUST NOT leak their `resetsAt` epochs into the
-      // dynamic backoff calculation.
-      if (typeof infoRec.status === 'string' && SAFE_RATE_LIMIT_STATUSES.has(infoRec.status)) {
+      // Bugfix 2026-05-23 — BUG-008 / BUG-009: use the caller-selected
+      // safe-set. Default skips both `allow` and `allowed_warning`;
+      // `includeWarningStatus` narrows to `allow` only.
+      if (typeof infoRec.status === 'string' && safeSet.has(infoRec.status)) {
         continue;
       }
       const resetsAt = infoRec.resetsAt;

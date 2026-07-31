@@ -104,6 +104,11 @@
           "type": "boolean"
         },
         {
+          "name": "sessionReuse",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "resumeSessionId",
           "optional": true,
           "type": "string"

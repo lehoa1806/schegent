@@ -240,7 +240,10 @@ export class RetryHandler {
       const { resetsAtMs } = extractResetTimestamp(
         phaseResult.stdoutSummary,
         phaseResult.stderrSummary,
-        now
+        now,
+        // BUG-009 — `isGenuineRateLimitFailure` guarantees `exitCode !== 0`,
+        // so `allowed_warning` records carry load-bearing reset epochs.
+        { includeWarningStatus: true }
       );
       if (resetsAtMs === null || !Number.isFinite(resetsAtMs)) {
         fallbackReason = 'unparseable-reset';

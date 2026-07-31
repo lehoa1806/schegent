@@ -1,3 +1,6 @@
+import type { DebugLogEntry } from '../../lib/webview-log-sink';
+export type { DebugLogEntry };
+
 export const SCHEMA_VERSION = 3 as const;
 
 export const BUILT_IN_PHASE_NAMES = [
@@ -336,6 +339,12 @@ export interface WorkflowSnapshot {
    */
   readonly activeRunId: string | null;
   readonly auditTail: readonly AuditTailEntry[];
+  /**
+   * Debug log tail — recent SanitizedLogger output projected for the
+   * System tab. Populated from the WebviewLogSink ring buffer. Always
+   * present; empty array when no logs have been captured.
+   */
+  readonly debugLogTail: readonly DebugLogEntry[];
   readonly liveActivity: LiveActivity;
   readonly workflowElapsedMs: number | null;
   readonly monitor: CliMonitorState | null;
@@ -535,6 +544,7 @@ export function buildIdleSnapshot(opts: {
     resumeTargetPhaseId: null,
     activeRunId: null,
     auditTail: Object.freeze([]) as readonly AuditTailEntry[],
+    debugLogTail: Object.freeze([]) as readonly DebugLogEntry[],
     liveActivity: IDLE_LIVE_ACTIVITY,
     workflowElapsedMs: null,
     monitor: null,

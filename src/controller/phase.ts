@@ -29,7 +29,7 @@ export const INVOCABLE_PHASES: readonly BuiltInPhaseId[] = [
   'finalize'
 ] as const;
 
-export const LOOP_PHASES: ReadonlySet<string> = new Set<string>(['speckit-clarify', 'speckit-analyze', 'speckit-review']);
+export const LOOP_PHASES: ReadonlySet<string> = new Set<string>(['speckit-clarify', 'speckit-analyze', 'speckit-implement', 'speckit-review']);
 
 export type PhaseOutcome =
   | 'clean'

@@ -222,8 +222,14 @@ export class ClaudeCliRunner implements BackendRunner {
     // `InvocationRequest.isContinue` / `resumeSessionId` for the
     // contract, and `specs/032-context-preserving-retries/` for the
     // original `-c` design.
+    //
+    // Session reuse — when `sessionReuse === true`, the same `--resume`
+    // argv path is used for cost-optimization (prompt cache reuse).
+    // Unlike `isContinue`, session reuse does NOT fall back to `-c`
+    // when no session ID is available — it starts a fresh session.
     let continuePrefix: string[];
-    if (request.isContinue === true && typeof request.resumeSessionId === 'string') {
+    const shouldResume = request.isContinue === true || request.sessionReuse === true;
+    if (shouldResume && typeof request.resumeSessionId === 'string') {
       continuePrefix = ['--resume', request.resumeSessionId];
     } else if (request.isContinue === true) {
       continuePrefix = ['-c'];
@@ -274,7 +280,13 @@ export class ClaudeCliRunner implements BackendRunner {
     if (request.effort && request.effort.trim().length > 0) {
       args.push('--effort', request.effort);
     }
-    // FR-018 / FR-024 / FR-026: when the operator opted in, append the three
+    // Session reuse — always request stream-json output so the session
+    // ID can be extracted from stdout via `extractCliSessionId()`. Without
+    // this, session reuse cannot activate because no session ID is ever
+    // captured.
+    args.push('--output-format', 'stream-json');
+
+    // FR-018 / FR-024 / FR-026: when the operator opted in, append the
     // diagnostic flags. No client-side flag validation — unrecognized flags
     // surface through the CLI's own exit-code / error path and feed the
     // existing fail-fast classification.
@@ -282,7 +294,6 @@ export class ClaudeCliRunner implements BackendRunner {
     let diagnosticWriter: VerboseDiagnosticWriter | null = null;
     if (verboseTarget) {
       args.push('--debug-file', verboseTarget.debugFile);
-      args.push('--output-format', 'stream-json');
       args.push('--verbose');
       diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger());
       await diagnosticWriter.prepare(verboseTarget);

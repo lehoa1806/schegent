@@ -74,11 +74,33 @@ export interface InvocationRequest {
    */
   isContinue?: boolean;
   /**
+   * Session reuse — cost-optimization flag. When `true` AND
+   * `resumeSessionId` is set, the runner uses `--resume <id>` to
+   * reuse the CLI session's cached context across phase transitions
+   * and loop iterations. Semantically distinct from `isContinue`:
+   * session reuse starts a new task in the same session for prompt-
+   * cache savings, not a continuation of an interrupted conversation.
+   *
+   * The gate condition is strict `=== true`; truthy non-boolean
+   * values do not trigger the `--resume` append. When both
+   * `isContinue` and `sessionReuse` are `true`, `isContinue` takes
+   * precedence (they share the same `--resume` argv path, but the
+   * audit semantics differ).
+   *
+   * NOT persisted on `WorkflowRun`; derived per-dispatch by the
+   * controller. NOT serialized into the audit payload directly —
+   * the `phase-start` audit event carries its own strict
+   * `sessionReuse: boolean` field.
+   */
+  sessionReuse?: boolean;
+  /**
    * Session ID capture — optional session ID from a prior CLI invocation.
-   * When set AND `isContinue === true`, the runner uses
-   * `--resume <resumeSessionId>` instead of `-c` for deterministic
-   * session targeting. When omitted or undefined, the runner falls back
-   * to `-c` (most-recent session).
+   * When set AND (`isContinue === true` OR `sessionReuse === true`),
+   * the runner uses `--resume <resumeSessionId>` instead of `-c` for
+   * deterministic session targeting. When omitted or undefined and
+   * `isContinue === true`, the runner falls back to `-c` (most-recent
+   * session). When omitted and only `sessionReuse === true`, the
+   * runner falls back to a fresh session (no `--resume`, no `-c`).
    *
    * The field is OPTIONAL on the interface to preserve backwards-compat
    * with all existing `InvocationRequest` construction sites. The gate

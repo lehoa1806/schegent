@@ -50,7 +50,9 @@ export const RATE_LIMIT_FAMILY: ReadonlySet<string> = new Set([
   'out-of-usage',
   'credits-exhausted',
   'quota-exceeded',
-  'out-of-credits'
+  'out-of-credits',
+  // BUG-009 — five-hour session-quota exhaustion.
+  'session-limit'
 ]);
 
 /** Feature 066 — sentinel cause string for the past-timestamp guard. */

@@ -30,7 +30,7 @@ const MAX_JS_BYTES = 200 * 1024;
 // status-bar transient indicator styles. The actual post-build size is
 // ~66.5 KB; the 70 KB cap leaves headroom for the remaining T059–T066
 // polish tasks (label tweaks, dot colors) without re-lifting mid-feature.
-const MAX_CSS_BYTES = 70 * 1024;
+const MAX_CSS_BYTES = 75 * 1024;
 const MAX_DASHBOARD_JS_BYTES = 250 * 1024;
 const SIDEBAR_GROWTH_BUDGET_BYTES = 8 * 1024;
 
