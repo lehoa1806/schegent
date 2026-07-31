@@ -16,7 +16,7 @@ export interface AutoDrainCoordinatorDeps {
   readonly store: Pick<WorkspaceStateStore, 'getQueue'>;
   readonly queue: Pick<QueueManager, 'peekNextPending' | 'hasCapacity'>;
   readonly lock: Pick<WorkspaceLockManager, 'tryAcquire' | 'release'>;
-  readonly controller: Pick<SchegentWorkflowController, 'startNew'>;
+  readonly controller: Pick<SchegentWorkflowController, 'startNew' | 'resumeExisting'>;
   readonly logger?: SanitizedLogger;
 }
 
@@ -48,6 +48,16 @@ export class AutoDrainCoordinator {
     const acquired = await this.lock.tryAcquire();
     if (!acquired.acquired) return;
     try {
+      // If the pending task still carries a runId (preserved by the
+      // retry path when the active workspace run matches), try to resume
+      // the existing run so the pipeline picks up from the failed phase
+      // instead of restarting from scratch.
+      if (next.runId) {
+        const resumed = await this.controller.resumeExisting();
+        if (resumed) return;
+        // Fall through to startNew if the run cannot be resumed
+        // (e.g. the persisted run no longer matches).
+      }
       await this.controller.startNew(next, null);
     } catch (err) {
       // Release the lock we acquired — if startNew throws before

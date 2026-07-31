@@ -44,7 +44,7 @@ export type InvocationResult =
       fatalSource?: FatalSource;
     };
 
-const TERMINATION_REGEX = /^\s*\[SCHEGENT_STATUS:\s*(CLEAR|DONE|RESOLVED)\]\s*$/i;
+const TERMINATION_REGEX = /\[SCHEGENT_STATUS:\s*(CLEAR|DONE|RESOLVED)\]/i;
 const OPEN_HEADING_REGEX = /^\s*(Open|Remaining)\s+(questions|clarifications):\s*$/i;
 const ISSUES_HEADING_REGEX =
   /^\s*(Remaining issues|Failed with \d+ errors?|Failing with \d+ issues?):?\s*$/i;

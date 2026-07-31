@@ -221,14 +221,18 @@ export class ClaudeCliRunner implements BackendRunner {
         // (bounded so detection stays O(chunk), not O(total)) so a marker that
         // spans a chunk boundary is still caught. Once seen, `resetIdleTimer`
         // arms the short settle window instead of the long idle window.
-        if (
-          request.completionMarker &&
-          !sawCompletionMarker &&
-          stdout
-            .slice(-(chunk.length + request.completionMarker.length))
-            .includes(request.completionMarker)
-        ) {
-          sawCompletionMarker = true;
+        if (!sawCompletionMarker) {
+          const matchesMainMarker =
+            request.completionMarker &&
+            stdout
+              .slice(-(chunk.length + request.completionMarker.length))
+              .includes(request.completionMarker);
+          const matchesStatusMarker = stdout
+            .slice(-(chunk.length + 20))
+            .includes('[SCHEGENT_STATUS:');
+          if (matchesMainMarker || matchesStatusMarker) {
+            sawCompletionMarker = true;
+          }
         }
         resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', chunk });

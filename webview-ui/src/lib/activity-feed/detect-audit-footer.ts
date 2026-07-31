@@ -8,7 +8,7 @@ import type { AuditFooterDetection, AuditFooterStatus } from './types';
 
 const OPEN_MARKER = '=== SCHEGENT AUDIT LOG ===';
 const CLOSE_MARKER = '=== END SCHEGENT AUDIT LOG ===';
-const STATUS_RE = /^\[SCHEGENT_STATUS:\s*([A-Z_]+)\s*\]/m;
+const STATUS_RE = /\[SCHEGENT_STATUS:\s*([A-Z_]+)\s*\]/;
 
 function normalizeStatus(raw: string): AuditFooterStatus {
   if (raw === 'CLEAR') return 'CLEAR';

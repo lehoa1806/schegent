@@ -459,7 +459,19 @@ export class SchegentWorkflowController {
       lastError: null,
       pipeline,
       pendingRetryAt: null,
-      pendingRetryCause: null
+      pendingRetryCause: null,
+      // When resuming a run that was terminally failed (operator retry),
+      // reset the retry cap so the phase gets a fresh set of attempts.
+      // Also clear stale manual-pause fields that may linger from the
+      // failed state.
+      ...(run.status === 'failed'
+        ? {
+            delayedRetryCount: 0,
+            manualPauseAt: null,
+            manualPauseCause: null,
+            resumeTargetPhaseId: null
+          }
+        : {})
     };
     await this.store.setRun(next);
     await this.queue.markInFlight(feature.id, next.id);
@@ -654,6 +666,27 @@ export class SchegentWorkflowController {
         setImmediate(() => {
           void this.resumeExisting().catch((err) =>
             this.logger.warn(`skipPhase resume failed: ${(err as Error).message}`)
+          );
+        });
+      } else if (run.status === 'failed') {
+        // Terminal failure (no backoff pending). Clear the error state,
+        // reset the retry cap, and wake up the pipeline so the skip
+        // override takes effect and the run advances to the next phase.
+        await this.store.setRun({
+          ...run,
+          status: 'running',
+          lastError: null,
+          delayedRetryCount: 0,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          manualPauseAt: null,
+          manualPauseCause: null,
+          resumeTargetPhaseId: null,
+          lastTransitionAt: Date.now()
+        });
+        setImmediate(() => {
+          void this.resumeExisting().catch((err) =>
+            this.logger.warn(`skipPhase resume (terminal) failed: ${(err as Error).message}`)
           );
         });
       }
