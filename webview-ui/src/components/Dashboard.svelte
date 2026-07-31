@@ -97,13 +97,13 @@
       if (item.status === 'completed') {
         state = 'completed';
       } else if (item.status === 'failed' || item.status === 'canceled') {
-        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
+        const currentIdx = phaseDefs.findIndex((p) => p.name === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';
         }
       } else if (item.status === 'in-flight') {
-        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
+        const currentIdx = phaseDefs.findIndex((p) => p.name === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';
