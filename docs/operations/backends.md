@@ -15,6 +15,33 @@ use and cancels every cached adapter during extension deactivation.
 | `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | Spawns `codex exec --json --sandbox workspace-write`. Prompt is piped over stdin (never appears in argv). Model uses `--model`; effort uses `--config model_reasoning_effort=<level>`. Session continuation is not supported. |
 | `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
 
+## Supported CLI versions
+
+The blocking gate qualifies adapter argv, parsing, outcome precedence, session
+ownership, truncation, and safety invariants against deterministic fixtures.
+The installed CLI version is recorded separately so operators can compare a
+failure report with the latest qualified band.
+
+| Backend | Supported version band | Last qualified | Qualification baseline |
+|---|---|---|---|
+| Claude Code | `>=2.1.220 <2.2.0` | 2026-08-01 | Installed `2.1.220`; adapter/unit/eval/full-CI gate |
+| Codex CLI | `>=0.142.5 <0.143.0` | 2026-08-01 | Installed `0.142.5`; adapter/unit/eval/full-CI gate |
+| Agy CLI | `>=1.1.9 <1.2.0` | 2026-08-01 | Installed `1.1.9`; adapter/unit/eval/full-CI gate |
+
+Schegent does not currently reject an unqualified version at runtime. Versions
+outside these bands are best-effort: run `<cli> --version`, attach that output
+to any report, and complete the deterministic adapter/evaluation gate before
+expanding a supported band. Authenticated live-provider calls remain opt-in;
+they are never part of a pull-request gate and must use isolated credentials.
+
+Backend executable probes do not prove provider reachability. Cloud-backed
+phase execution may still require network access, valid credentials, quota,
+and working proxy/DNS/TLS configuration. Schegent is local-first rather than
+an offline-execution promise; see
+[Local-first does not mean offline execution](../concepts/local-first-not-offline.md)
+for the queue-only degraded-mode boundary and future capability-discovery
+requirements.
+
 Switch backends from the VS Code settings UI (`Schegent: Backend: Runner`)
 or by editing `package.json` / `.vscode/settings.json`:
 

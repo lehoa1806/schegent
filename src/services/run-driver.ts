@@ -26,6 +26,7 @@ import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
 } from '../runner/backend-runner-factory';
+import { resolveSessionDispatch } from './session-dispatch-policy';
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -349,30 +350,14 @@ export class RunDriver {
               : activePhaseDef;
           const requestedContinue = pendingIsContinue;
           pendingIsContinue = false;
-          const ownedResumeSessionId =
-            run.lastCliSessionRunnerKind === effectiveRunnerKind &&
-            typeof run.lastCliSessionId === 'string'
-              ? run.lastCliSessionId
-              : undefined;
-          const ownsResumeSession = ownedResumeSessionId !== undefined;
-          // Continuation must always target the exact persisted session owned
-          // by this backend. Passing isContinue without an owned ID lets the
-          // Claude runner fall back to `-c` (the most recent conversation),
-          // which can attach unrelated workspace context.
-          const dispatchIsContinue = requestedContinue && ownsResumeSession;
-          // Session reuse: use --resume for both isContinue (interrupted
-          // conversation) AND session reuse (cost optimization). isContinue
-          // takes precedence when both are true.
-          const shouldResumeSession = dispatchIsContinue || pendingSessionReuse;
-          const dispatchResumeSessionId =
-            shouldResumeSession && ownsResumeSession
-              ? ownedResumeSessionId
-              : undefined;
-          const dispatchSessionReuse = pendingSessionReuse && !dispatchIsContinue;
-          // The saved recovery prompt is safe to use for a fresh invocation;
-          // only the backend session attachment is suppressed when ownership
-          // cannot be proven.
-          const dispatchResumePrompt = requestedContinue ? run.resumePrompt : undefined;
+          const sessionDispatch = resolveSessionDispatch({
+            requestedContinue,
+            pendingSessionReuse,
+            resumePrompt: run.resumePrompt,
+            persistedSessionId: run.lastCliSessionId,
+            persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
+            effectiveRunnerKind
+          });
           if (run.resumePrompt !== undefined) {
             const nextRun = { ...run };
             delete nextRun.resumePrompt;
@@ -411,10 +396,10 @@ export class RunDriver {
               aborted: boolean;
               addEventListener(event: 'abort', cb: () => void): void;
             },
-            isContinue: dispatchIsContinue,
-            sessionReuse: dispatchSessionReuse,
-            resumeSessionId: dispatchResumeSessionId,
-            resumePrompt: dispatchResumePrompt
+            isContinue: sessionDispatch.isContinue,
+            sessionReuse: sessionDispatch.sessionReuse,
+            resumeSessionId: sessionDispatch.resumeSessionId,
+            resumePrompt: sessionDispatch.resumePrompt
           });
           if (
             this.overriddenActivePhaseAborts.delete(

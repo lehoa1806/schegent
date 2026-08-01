@@ -1,0 +1,54 @@
+{
+  "tasks": [
+    {
+      "runId": "visual-run-complete",
+      "taskId": "visual-task-complete",
+      "description": "Bound backend output capture",
+      "startTime": "2026-07-31T14:01:00.000Z",
+      "endTime": "2026-07-31T14:09:00.000Z",
+      "durationMs": 480000,
+      "status": "completed",
+      "isRunning": false,
+      "phasesTotal": 3,
+      "phasesCompleted": 3,
+      "phasesSkipped": 0,
+      "totalCostUsd": 0.42,
+      "totalBackendInvocations": 6,
+      "source": "task-lifecycle",
+      "phases": [
+        { "runId": "visual-run-complete", "phaseType": "speckit-specify", "iteration": 1, "startTime": "2026-07-31T14:01:00.000Z", "endTime": "2026-07-31T14:03:00.000Z", "durationMs": 120000, "backendInvocations": 1, "costUsd": 0.08, "outcome": "completed" },
+        { "runId": "visual-run-complete", "phaseType": "speckit-plan", "iteration": 1, "startTime": "2026-07-31T14:03:00.000Z", "endTime": "2026-07-31T14:06:00.000Z", "durationMs": 180000, "backendInvocations": 2, "costUsd": 0.14, "outcome": "completed" },
+        { "runId": "visual-run-complete", "phaseType": "speckit-implement", "iteration": 1, "startTime": "2026-07-31T14:06:00.000Z", "endTime": "2026-07-31T14:09:00.000Z", "durationMs": 180000, "backendInvocations": 3, "costUsd": 0.2, "outcome": "completed" }
+      ]
+    },
+    {
+      "runId": "visual-run-active",
+      "taskId": "visual-task-active",
+      "description": "Harden deterministic visual coverage",
+      "startTime": "2026-08-01T09:00:00.000Z",
+      "durationMs": 366000,
+      "isRunning": true,
+      "phasesTotal": 7,
+      "phasesCompleted": 2,
+      "phasesSkipped": 0,
+      "totalCostUsd": 0.31,
+      "totalBackendInvocations": 5,
+      "source": "task-lifecycle",
+      "phases": [
+        { "runId": "visual-run-active", "phaseType": "speckit-specify", "iteration": 1, "startTime": "2026-08-01T09:00:00.000Z", "endTime": "2026-08-01T09:02:00.000Z", "durationMs": 120000, "backendInvocations": 1, "costUsd": 0.09, "outcome": "completed" },
+        { "runId": "visual-run-active", "phaseType": "speckit-clarify", "iteration": 2, "startTime": "2026-08-01T09:02:00.000Z", "endTime": "2026-08-01T09:04:00.000Z", "durationMs": 120000, "backendInvocations": 2, "costUsd": 0.11, "outcome": "completed" },
+        { "runId": "visual-run-active", "phaseType": "speckit-plan", "iteration": 2, "startTime": "2026-08-01T09:04:00.000Z", "durationMs": 126000, "backendInvocations": 2, "costUsd": 0.11 }
+      ]
+    }
+  ],
+  "phaseTypeAggregates": [
+    { "phaseType": "speckit-specify", "executionCount": 2, "totalDurationMs": 240000, "avgDurationMs": 120000, "p50DurationMs": 120000, "p90DurationMs": 120000, "p99DurationMs": 120000, "longestDurationMs": 120000, "shortestDurationMs": 120000, "totalBackendInvocations": 2, "totalCostUsd": 0.17 },
+    { "phaseType": "speckit-plan", "executionCount": 2, "totalDurationMs": 306000, "avgDurationMs": 153000, "p50DurationMs": 153000, "p90DurationMs": 174600, "p99DurationMs": 179460, "longestDurationMs": 180000, "shortestDurationMs": 126000, "totalBackendInvocations": 4, "totalCostUsd": 0.25 }
+  ],
+  "costTimeline": [
+    { "date": "2026-07-31", "dailyCostUsd": 0.42, "cumulativeCostUsd": 0.42 },
+    { "date": "2026-08-01", "dailyCostUsd": 0.31, "cumulativeCostUsd": 0.73 }
+  ],
+  "oldestIncludedTimestamp": "2026-07-31T14:01:00.000Z",
+  "meta": { "includesArchives": false, "totalScannedEntries": 73, "parseWarnings": 0 }
+}

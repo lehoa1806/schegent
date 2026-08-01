@@ -70,7 +70,9 @@ queue.
   the published extension).
 - At least one supported backend CLI installed and authenticated: **Claude
   Code** (`schegent.cli.path`), **Codex** (`schegent.codex.path`), or **Agy**
-  (`schegent.agy.path`). Claude is the default backend.
+  (`schegent.agy.path`). Claude is the default backend. Cloud-backed execution
+  may require provider connectivity; Schegent is
+  [local-first, not an offline-execution promise](docs/concepts/local-first-not-offline.md).
 - A **trusted workspace folder** open in VS Code. Schegent is
   intentionally inert in untrusted workspaces.
 - **Plugins**: Ensure you have installed and set up the **Github Speckit** and **Superpowers** plugins to enable the complete spec-driven development experience.
@@ -175,7 +177,8 @@ The full operator manual lives under [`docs/`](docs/). Start with:
 
 By topic:
 
-- **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md).
+- **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md), [local-first versus offline](docs/concepts/local-first-not-offline.md).
+- **Architecture decisions** — [remote, multi-user, and parallel execution expansion gate](docs/architecture/remote-multi-user-expansion-gate.md).
 - **Features** — [phase overrides](docs/features/phase-overrides.md), [custom phases](docs/features/custom-phases.md), [phase breakpoints](docs/features/phase-breakpoints.md), [wake-up scheduler](docs/features/wake-up-scheduler.md), [verbose diagnostics](docs/features/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
 - **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
 - **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).
@@ -331,7 +334,10 @@ you control. To report a security issue, see [SECURITY.md](SECURITY.md).
 # install deps (also installs webview-ui)
 npm install
 
-# host, webview, and test-source typechecks + lint + unit tests
+# install the pinned browser used by visual regression tests
+npx playwright install chromium
+
+# typechecks + lint + unit/eval/visual tests
 npm run ci:fast
 
 # full build (host + webview)
@@ -351,9 +357,12 @@ Useful targets:
 | `npm run lint` | ESLint over `src/` and `tests/`. |
 | `npm run test` | Vitest unit suites (host + webview). |
 | `npm run test:coverage` | Unit suites with coverage. |
+| `npm run test:evals` | Deterministic backend-outcome evaluation corpus. |
+| `npm run test:visual` | Production-webview screenshot matrix (five surfaces × three themes). |
+| `npm run test:perf` | Blocking performance and sustained-evidence budgets. |
 | `npm run test:e2e` | End-to-end VS Code suite. |
 | `npm run test:integration` | Integration suite (boots a real VS Code instance). |
-| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit + E2E + build + exact package + isolated integration). |
+| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit/eval/visual/perf/E2E + build + exact package + isolated integration). |
 | `npm run package` | `vsce package --no-dependencies`. |
 | `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |
 
