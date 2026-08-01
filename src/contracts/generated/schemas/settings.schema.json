@@ -27,7 +27,9 @@
           "enum",
           "minimum",
           "maximum",
-          "pattern"
+          "pattern",
+          "itemType",
+          "itemPattern"
         ],
         "properties": {
           "key": {
@@ -82,6 +84,26 @@
                 "type": "null"
               }
             ]
+          },
+          "itemType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "itemPattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -94,7 +116,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.audit.rotation.maxAgeDays",
@@ -104,7 +128,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.audit.rotation.sizeMB",
@@ -114,7 +140,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.backend.runner",
@@ -128,7 +156,9 @@
           ],
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.claude.autoCompactPctOverride",
@@ -138,7 +168,37 @@
           "enum": null,
           "minimum": 1,
           "maximum": 100,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.cli.environmentAllowlist",
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": "string",
+          "itemPattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        {
+          "key": "schegent.cli.environmentMode",
+          "type": "enum",
+          "default": "inherit",
+          "scope": "application",
+          "enum": [
+            "inherit",
+            "minimal",
+            "allowlist"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.cli.inheritEnvironment",
@@ -148,7 +208,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.cli.path",
@@ -158,7 +220,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.codex.path",
@@ -168,7 +232,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.defaultPipelineId",
@@ -178,7 +244,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.fatalSignatures",
@@ -188,7 +256,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": "string",
+          "itemPattern": null
         },
         {
           "key": "schegent.invocation.timeoutSeconds",
@@ -198,7 +268,9 @@
           "enum": null,
           "minimum": 30,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.logging.runtimeLogFilePath",
@@ -208,7 +280,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.logging.runtimeLogLevel",
@@ -223,7 +297,9 @@
           ],
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.logging.runtimeLogMaxBytes",
@@ -233,7 +309,9 @@
           "enum": null,
           "minimum": 65536,
           "maximum": 1073741824,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.logging.runtimeLogMaxGenerations",
@@ -243,7 +321,33 @@
           "enum": null,
           "minimum": 0,
           "maximum": 20,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.logging.sessionRetentionMaxAgeDays",
+          "type": "integer",
+          "default": 30,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 3650,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.logging.sessionRetentionMaxBytes",
+          "type": "integer",
+          "default": 536870912,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1048576,
+          "maximum": 10737418240,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.logging.verbose",
@@ -253,7 +357,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.loop.maxIterations",
@@ -263,7 +369,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": 50,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.models",
@@ -273,7 +381,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": "string",
+          "itemPattern": null
         },
         {
           "key": "schegent.multiRoot.suppressWarning",
@@ -283,7 +393,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.phases",
@@ -293,7 +405,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": "object",
+          "itemPattern": null
         },
         {
           "key": "schegent.pipelines",
@@ -303,7 +417,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": "object",
+          "itemPattern": null
         },
         {
           "key": "schegent.queue.globalConcurrencyCap",
@@ -313,7 +429,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": 1,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.retry.maxAttempts",
@@ -323,7 +441,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": 5,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.rules.injectPerPhase",
@@ -333,7 +453,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.trust.allowCustomPhases",
@@ -343,7 +465,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.trust.allowCustomRetryConditions",
@@ -353,7 +477,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.trust.allowPipelineOverrides",
@@ -363,7 +489,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.ui.confirmations.enable",
@@ -373,7 +501,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.wakeUp.chronologicalTime",
@@ -383,7 +513,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.wakeUp.enabled",
@@ -393,7 +525,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.wakeUp.model",
@@ -412,7 +546,9 @@
           ],
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.wakeUp.periodicInterval",
@@ -422,7 +558,9 @@
           "enum": null,
           "minimum": null,
           "maximum": null,
-          "pattern": "^Every (\\d+)(m|h)$"
+          "pattern": "^Every (\\d+)(m|h)$",
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.wakeUp.schedulerType",
@@ -435,7 +573,9 @@
           ],
           "minimum": null,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         },
         {
           "key": "schegent.watchdog.pollIntervalMinutes",
@@ -445,7 +585,9 @@
           "enum": null,
           "minimum": 1,
           "maximum": null,
-          "pattern": null
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
         }
       ]
     }

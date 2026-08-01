@@ -236,3 +236,44 @@ describe('Feature 019 — runtime log controls — rejection + reset flows', () 
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('session-artifact retention controls', () => {
+  it('renders usage and warns when retained bytes reach 80% of budget', () => {
+    const base = buildSnapshot(buildGeneralSettings('INFO', ''));
+    const snap = Object.freeze({
+      ...base,
+      sessionArtifacts: Object.freeze({
+        artifactCount: 4,
+        totalBytes: 450 * 1024 * 1024,
+        lastSweepAt: '2026-08-01T00:00:00.000Z',
+        lastSweepFailures: 0
+      })
+    }) as WorkflowSnapshot;
+
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const usage = container.querySelector('[data-testid="session-artifact-usage"]');
+
+    expect(usage?.textContent).toContain('4 runs');
+    expect(usage?.textContent).toContain('450.0 MiB');
+    expect(usage?.textContent).toContain('88%');
+    expect(usage?.classList.contains('usage-warning')).toBe(true);
+  });
+
+  it('saves the age limit through the documented IPC key', async () => {
+    const snap = buildSnapshot(buildGeneralSettings('INFO', ''));
+    const { container } = render(GeneralSettingsTab, { props: { snapshot: snap } });
+    const input = container.querySelector(
+      '[data-testid="general-settings-input-sessionRetentionMaxAgeDays"]'
+    ) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '45' } });
+    const save = container.querySelector(
+      '[data-testid="general-settings-save-sessionRetentionMaxAgeDays"]'
+    ) as HTMLButtonElement;
+    await fireEvent.click(save);
+
+    expect(postCommandSpy).toHaveBeenCalledOnce();
+    expect(postCommandSpy.mock.calls[0][1]).toEqual({
+      updates: { 'logging.sessionRetentionMaxAgeDays': 45 }
+    });
+  });
+});

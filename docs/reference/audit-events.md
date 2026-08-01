@@ -178,6 +178,14 @@ The host attempted to parse an existing `audit.log` line and could not. The line
 
 The host encountered an `audit.log` entry with an unknown `schemaVersion`. The entry is preserved (warn-and-preserve discipline).
 
+### `session-retention-applied`
+
+The unredacted session-artifact retention sweep ran. The payload contains only
+aggregate counts, byte totals, policy limits, and failure counts. It never
+contains run identifiers, filenames, workspace paths, prompts, or transcript
+content. The active structured `audit.log` is outside the sweep root and is
+never pruned by this event's service.
+
 ## Retry condition
 
 ### `phase.retry_evaluated`

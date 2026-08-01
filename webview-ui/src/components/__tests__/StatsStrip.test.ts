@@ -152,6 +152,31 @@ describe('StatsStrip', () => {
     expect(health!.textContent?.toLowerCase()).toContain('activity stalled');
   });
 
+  it('surfaces unavailable structured evidence in the health indicator', () => {
+    applySnap(buildSnapshot(SEVEN_NOT_STARTED, [], [], {
+      evidenceHealth: {
+        overall: 'unavailable',
+        audit: {
+          status: 'unavailable', continuationPolicy: 'fail-closed', failureCount: 1,
+          lastFailureAt: '2026-08-01T00:00:00.000Z', cause: 'disk-full'
+        },
+        rawTranscript: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        runtimeLog: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        }
+      }
+    }));
+
+    const { container } = render(StatsStrip);
+    const health = container.querySelector('[data-testid="sidebar-health"]');
+    expect(health?.textContent?.toLowerCase()).toContain('evidence unavailable');
+    expect(health?.classList.contains('health-blocked')).toBe(true);
+  });
+
   it('renders only phase name when active phase has no sub-progress', () => {
     const phases: readonly PhaseTile[] = [
       tile({ name: 'speckit-specify', order: 1, state: 'active' }),

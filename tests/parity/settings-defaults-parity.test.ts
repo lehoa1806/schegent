@@ -219,6 +219,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // `cli.path` (application-scoped, read once at activation).
     const cliApplicationKeys = new Set<string>([
       'cli.inheritEnvironment',
+      'cli.environmentMode',
+      'cli.environmentAllowlist',
       'codex.path',
       'agy.path'
     ]);

@@ -5,6 +5,10 @@ import type { AuditEntry } from './audit-entry';
 import { AUDIT_SCHEMA_VERSION } from '../contracts/audit-events';
 import type { SanitizedLogger } from '../lib/logger';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import {
+  normalizeEvidenceFailureCause,
+  type EvidenceHealthReporter
+} from '../services/evidence-health/evidence-health-monitor';
 
 export interface AuditLogConfig {
   workspaceRoot: string;
@@ -62,7 +66,11 @@ export class AuditLogWriter {
   private readonly listeners = new Set<AuditAppendListener>();
   private gitignoreEnsure: Promise<void> | null = null;
 
-  constructor(config: Partial<AuditLogConfig> & { workspaceRoot: string }, logger: SanitizedLogger) {
+  constructor(
+    config: Partial<AuditLogConfig> & { workspaceRoot: string },
+    logger: SanitizedLogger,
+    private readonly evidenceHealth?: EvidenceHealthReporter
+  ) {
     this.config = {
       workspaceRoot: config.workspaceRoot,
       rotationSizeBytes: config.rotationSizeBytes ?? DEFAULT_SIZE,
@@ -146,15 +154,21 @@ export class AuditLogWriter {
     );
     this.writeChain = next.catch((err) => {
       const code = (err as NodeJS.ErrnoException).code;
-      this.logger.warn(
-        `audit append failed: ${(err as Error).message}`,
-        {
-          eventId: sanitized.id,
-          eventType: sanitized.eventType,
-          runId: sanitized.runId,
-          ...(typeof code === 'string' ? { errno: code } : {})
-        }
-      );
+      const shouldWarn = this.evidenceHealth?.reportFailure(
+        'audit',
+        normalizeEvidenceFailureCause(code ?? (err as Error).message)
+      ) ?? true;
+      if (shouldWarn) {
+        this.logger.warn(
+          'audit append failed; structured evidence is unavailable',
+          {
+            eventId: sanitized.id,
+            eventType: sanitized.eventType,
+            runId: sanitized.runId,
+            ...(typeof code === 'string' ? { errno: code } : {})
+          }
+        );
+      }
     });
     try {
       await next;

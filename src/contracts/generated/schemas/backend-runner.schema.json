@@ -79,6 +79,11 @@
           "type": "boolean"
         },
         {
+          "name": "processEnvAllowlist",
+          "optional": true,
+          "type": "readonly string[]"
+        },
+        {
           "name": "model",
           "optional": true,
           "type": "string"

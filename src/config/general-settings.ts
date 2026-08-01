@@ -60,6 +60,8 @@ export interface GeneralSettings {
   readonly retryMaxAttempts: number;
   readonly runtimeLogMaxBytes: number;
   readonly runtimeLogMaxGenerations: number;
+  readonly sessionRetentionMaxAgeDays: number;
+  readonly sessionRetentionMaxBytes: number;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -79,6 +81,8 @@ export interface GeneralSettings {
     readonly retryMaxAttempts: SettingScope;
     readonly runtimeLogMaxBytes: SettingScope;
     readonly runtimeLogMaxGenerations: SettingScope;
+    readonly sessionRetentionMaxAgeDays: SettingScope;
+    readonly sessionRetentionMaxBytes: SettingScope;
   };
 }
 
@@ -100,7 +104,9 @@ type AllowedKey =
   | 'logging.runtimeLogFilePath'
   | 'retry.maxAttempts'
   | 'logging.runtimeLogMaxBytes'
-  | 'logging.runtimeLogMaxGenerations';
+  | 'logging.runtimeLogMaxGenerations'
+  | 'logging.sessionRetentionMaxAgeDays'
+  | 'logging.sessionRetentionMaxBytes';
 
 type RuntimeType =
   | 'string'
@@ -245,6 +251,20 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     defaultValue: 3,
     min: 0,
     max: 20
+  },
+  'logging.sessionRetentionMaxAgeDays': {
+    type: 'number-int-range',
+    typedField: 'sessionRetentionMaxAgeDays',
+    defaultValue: 30,
+    min: 1,
+    max: 3650
+  },
+  'logging.sessionRetentionMaxBytes': {
+    type: 'number-int-range',
+    typedField: 'sessionRetentionMaxBytes',
+    defaultValue: 512 * 1024 * 1024,
+    min: 1024 * 1024,
+    max: 10 * 1024 * 1024 * 1024
   }
 });
 

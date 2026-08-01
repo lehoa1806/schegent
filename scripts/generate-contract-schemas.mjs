@@ -232,7 +232,9 @@ function settingsPropertyFromPackage(key, property) {
     enum: property.enum ?? null,
     minimum: property.minimum ?? null,
     maximum: property.maximum ?? null,
-    pattern: property.pattern ?? null
+    pattern: property.pattern ?? null,
+    itemType: property.items?.type ?? null,
+    itemPattern: property.items?.pattern ?? null
   };
 }
 
@@ -327,7 +329,7 @@ const schemas = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern'],
+          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern', 'itemType', 'itemPattern'],
           properties: {
             key: { type: 'string' },
             type: { type: 'string' },
@@ -336,7 +338,9 @@ const schemas = {
             enum: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] },
             minimum: { anyOf: [{ type: 'number' }, { type: 'null' }] },
             maximum: { anyOf: [{ type: 'number' }, { type: 'null' }] },
-            pattern: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+            pattern: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            itemType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            itemPattern: { anyOf: [{ type: 'string' }, { type: 'null' }] }
           }
         },
         default: settings

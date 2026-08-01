@@ -14,6 +14,7 @@ export interface SessionCompactionInputs {
   readonly cliPath: string;
   readonly cwd: string;
   readonly inheritProcessEnv?: boolean;
+  readonly processEnvAllowlist?: readonly string[];
   readonly cancellationSignal?: {
     aborted: boolean;
     addEventListener(event: 'abort', cb: () => void): void;
@@ -43,6 +44,9 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       cwd: inputs.cwd,
       env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
       ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
+      ...(inputs.processEnvAllowlist !== undefined
+        ? { processEnvAllowlist: inputs.processEnvAllowlist }
+        : {}),
       cancellationSignal: inputs.cancellationSignal,
       sessionReuse: true,
       resumeSessionId: inputs.resumeSessionId,

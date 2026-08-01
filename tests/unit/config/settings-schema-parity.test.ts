@@ -31,7 +31,7 @@ interface PackageProperty {
   readonly maximum?: number;
   readonly enum?: readonly string[];
   readonly pattern?: string;
-  readonly items?: { readonly type?: string };
+  readonly items?: { readonly type?: string; readonly pattern?: string };
 }
 
 function loadPackageProperties(): Record<string, PackageProperty> {
@@ -147,6 +147,22 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
       }
     }
     expect(mismatches, `pattern mismatches: ${mismatches.join('; ')}`).toEqual([]);
+  });
+
+  it('array item constraints agree between schema and package', () => {
+    const mismatches: string[] = [];
+    for (const key of schemaKeys) {
+      if (!(key in props)) continue;
+      const entry = SETTINGS_SCHEMA[key];
+      const pkg = props[key];
+      if ((entry.itemType ?? null) !== (pkg.items?.type ?? null)) {
+        mismatches.push(`${key}: itemType schema=${entry.itemType ?? null} package=${pkg.items?.type ?? null}`);
+      }
+      if ((entry.itemPattern ?? null) !== (pkg.items?.pattern ?? null)) {
+        mismatches.push(`${key}: itemPattern schema=${entry.itemPattern ?? null} package=${pkg.items?.pattern ?? null}`);
+      }
+    }
+    expect(mismatches, `array item mismatches: ${mismatches.join('; ')}`).toEqual([]);
   });
 
   it('scope agrees between schema and package', () => {
