@@ -200,20 +200,26 @@ function normalizeAuditLog(raw: string): string {
 }
 
 describe('Verbose diagnostic logging end-to-end (010, T037, US3)', () => {
-  it('the structured audit log is byte-identical between verbose-on and verbose-off (SC-005)', async () => {
-    const rootA = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-on-'));
-    const rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-off-'));
-    try {
-      await runOnce({ verbose: true, emitDiagnosticChunks: true, workspaceRoot: rootA });
-      await runOnce({ verbose: false, workspaceRoot: rootB });
-      const logA = normalizeAuditLog(await readAuditLog(rootA));
-      const logB = normalizeAuditLog(await readAuditLog(rootB));
-      expect(logA).toBe(logB);
-    } finally {
-      await fs.rm(rootA, { recursive: true, force: true });
-      await fs.rm(rootB, { recursive: true, force: true });
-    }
-  });
+  it(
+    'the structured audit log is byte-identical between verbose-on and verbose-off (SC-005)',
+    async () => {
+      const rootA = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-on-'));
+      const rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-off-'));
+      try {
+        await runOnce({ verbose: true, emitDiagnosticChunks: true, workspaceRoot: rootA });
+        await runOnce({ verbose: false, workspaceRoot: rootB });
+        const logA = normalizeAuditLog(await readAuditLog(rootA));
+        const logB = normalizeAuditLog(await readAuditLog(rootB));
+        expect(logA).toBe(logB);
+      } finally {
+        await fs.rm(rootA, { recursive: true, force: true });
+        await fs.rm(rootB, { recursive: true, force: true });
+      }
+    },
+    // This evidence test performs two complete phase runs plus disk cleanup.
+    // Loaded CI workers can exceed Vitest's 5s unit-test default.
+    15_000
+  );
 
   it('verbose-on produces three diagnostic files at the canonical path (FR-019/020/021)', async () => {
     const { capturedRequests, runId } = await runOnce({

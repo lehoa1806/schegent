@@ -56,7 +56,7 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-016 | In-memory output and raw-capture docs described old silent truncation/streaming behavior. | Medium | Performance, monitoring, and raw-transcript docs now describe bounded head/tail parsing, fail-closed classification, and complete spool-backed capture. | Done |
 | F-017 | Ten test paths were excluded from the primary TypeScript no-emit check, including a stale path. | Medium | `tsconfig.tests.json` now checks the full host test tree, stale per-test exclusions are gone, and local/PR/push/full-gate entry points enforce it before lint. | Done |
 | F-018 | The packaged VSIX contained development-only files. | Medium | Packaging now uses an exact 20-entry allowlist, compressed/uncompressed size limits, a junk-file regression, and automatic temporary-artifact cleanup. | Done |
-| F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Current lines: `extension.ts` 1462, `workflow-controller.ts` 1198, `runtime-validators.ts` 1127, `sidebar-ipc.ts` 1214, `state-projector.ts` 902. Budget tests prevent further growth but do not reduce coupling. | Planned |
+| F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Focused owners now hold phase control, lifecycle audit, activation wiring, projector timing/tail state, validator domains, and IPC type families. The original files fell to 1301, 727, 745, 883, and 871 lines respectively, with lower enforced budgets. | Done |
 | F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | A deterministic real-child profile exceeds both parser caps, proves exact raw capture, exercises terminal modes/restart/retention/large phase hydration, and publishes a larger scheduled soak report. | Done |
 | F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | A workspace-scoped monitor now projects per-sink and overall health, coalesces warnings, fails execution closed when structured audit is unavailable, and keeps optional raw/runtime failures visibly degraded. | Done |
 | F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | E2E covers orchestration outcomes, not prompt/result quality across models or CLI versions. | Planned |
@@ -79,8 +79,8 @@ flowchart LR
   P5 --> P6["P6: Final evidence and integration"]
 ```
 
-P0 is release-blocking for Feature 074. P1-P4 are the implementation backlog
-for the principal audit. P5 contains lower-risk quality investment and explicit
+P0 was release-blocking for Feature 074. P1-P4 are complete. P5 contains
+lower-risk quality investment and explicit
 product-boundary decisions. P6 is the final proof gate.
 
 ## P0 — Close Feature 074 safely
@@ -332,6 +332,31 @@ After each extraction:
 - add a module-ownership table to `ARCHITECTURE.md`;
 - lower, never raise, the affected line budget;
 - run focused tests, `npm run typecheck`, `npm run lint`, then `npm run ci`.
+
+### Completion evidence (2026-08-01)
+
+- All seven planned responsibility slices were completed across separately
+  gated commits, adding named owners for phase-control policy, workflow
+  lifecycle audit construction, backend/config composition,
+  UI wiring, activity timing, audit-tail state, validator domains, and IPC wire
+  type families. `ARCHITECTURE.md` records each ownership boundary.
+- The dense entry points moved from the plan baseline to: `extension.ts`
+  1462 → 1301 lines, `workflow-controller.ts` 1198 → 727,
+  `runtime-validators.ts` 1127 → 745, `sidebar-ipc.ts` 1214 → 883, and
+  `state-projector.ts` 902 → 871. Enforced budgets are now 1305, 730, 775,
+  885, and 875 respectively.
+- The runtime validator remains the single exhaustive command registry while
+  phase-log, wake-up, queue, and metrics rules have focused modules. The
+  sidebar IPC surface remains backward compatible while five domain type
+  families live behind its stable exports.
+- Contract reconciliation exposed and fixed a pre-existing metrics guard typo
+  (`includeArchived` versus `includeArchives`) with a regression assertion.
+  Generated schemas remained fresh. A disk-heavy evidence test also received
+  an explicit 15-second integration timeout after reproducing a 5.005-second
+  default-timeout false failure under full-suite contention.
+- The final P4 gate passed 3351 host tests (10 skipped), 883 webview tests,
+  14 performance tests, 3 E2E tests, the exact 20-file VSIX policy, and all
+  11 isolated real-host integration modules.
 
 ## P5 — Evaluation, visual confidence, and product-boundary decisions
 

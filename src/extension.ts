@@ -30,35 +30,12 @@ import {
   warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
+import { registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
 import { Notifier } from './ui/notifications';
-import { runAuto } from './commands/auto';
-import { runEnqueue } from './commands/enqueue';
-import { runSchedule } from './commands/schedule';
-import { runStartQueueCommand, type StartQueueCommandArg } from './commands/start-queue';
 import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
-import { runResume } from './commands/resume';
-import { runCancel } from './commands/cancel';
-import { runClearAll } from './commands/clear-all';
-import { runRestartCanceledTask } from './commands/restart-canceled-task';
 import { runReset } from './commands/reset';
-import { runShowAuditLog } from './commands/show-audit';
-import {
-  runRetryQueuedItem,
-  runMoveQueuedItemUp,
-  runMoveQueuedItemDown,
-  runClearCompleted,
-  runClearFailed,
-  runPauseQueue,
-  runResumeQueue
-} from './commands/queue-ops';
-import { runRerunFromHistory } from './commands/rerun-from-history';
-import { runShowActiveRun } from './commands/show-active-run';
-import { runOpenDashboard } from './commands/open-dashboard';
-import { runRetryActiveRun } from './commands/retry-active-run';
-import { runRetryPhaseNow } from './commands/retry-phase-now';
-import { DashboardBridge } from './ui/dashboard/dashboard-bridge';
 import { StateProjector } from './ui/sidebar/state-projector';
 import {
   readGeneralSettings,
@@ -879,7 +856,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // which is constructed AFTER the router. The thunk resolves the
   // bridge at call time; pushes before the bridge exists are silently
   // dropped (the dashboard cannot be open yet).
-  let dashboardBridgeRef: DashboardBridge | null = null;
+  let dashboardBridgeRef: ReturnType<typeof registerStage2Ui>['dashboardBridge'] | null = null;
   const phaseLogTailRegistry = new PhaseLogTailRegistry({
     pushToWebview: (envelope) => {
       const bridge = dashboardBridgeRef;
@@ -1170,187 +1147,24 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   activeWakeUpDeps = wakeUpActivationDeps;
   void activateWakeUp(wakeUpActivationDeps);
 
-  const queueOpsCtx = { queue, lock, notifier, logger };
-
-  const dashboardBridge = new DashboardBridge({
+  const uiWiring = registerStage2Ui({
     extensionRoot: context.extensionUri.fsPath,
+    workspaceRoot,
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
-    logger
+    guardedRunService,
+    store,
+    auditWriter,
+    notifier,
+    logger,
+    getCatalog: () => activeCatalog,
+    controller,
+    queue,
+    lock,
+    historyStore,
+    getWorkspaceFolders: () => vscode.workspace.workspaceFolders
   });
-  // Feature 020 — late-bind the registry's push thunk to the bridge.
-  dashboardBridgeRef = dashboardBridge;
-
-  disposables.push(
-    vscode.commands.registerCommand('schegent.auto', (args) =>
-      runAuto(args, {
-        guardedRunService,
-        store,
-        audit: auditWriter,
-        notifier,
-        logger
-      })
-    ),
-    // Feature 017 — BUG-003. Pure-enqueue host command. Dashboard
-    // (`CMD_START`) dispatches here so a submission while the
-    // controller is mid-pipeline lands as pending instead of being
-    // rejected with `controller-already-running`.
-    // BUG-002 (FR-012a) — fire-and-forget drain after successful
-    // enqueue so the first submitted task starts automatically when
-    // the queue is idle. The coordinator's capacity check
-    // short-circuits safely when a run is already in-flight.
-    vscode.commands.registerCommand('schegent.enqueue', async (args) => {
-      const result = await runEnqueue(args, {
-        guardedRunService,
-        store,
-        audit: auditWriter,
-        logger,
-        via: 'dashboard-submit',
-        promptForInput: false
-      });
-      if (result?.result.outcome === 'enqueued') {
-        void controller.drainQueuedWork().catch((err) =>
-          logger.warn(`enqueue: auto-drain failed: ${(err as Error).message}`)
-        );
-      }
-      return result;
-    }),
-    vscode.commands.registerCommand('schegent.schedule', (args) =>
-      runSchedule(args, {
-        guardedRunService,
-        getCatalog: () => activeCatalog,
-        notifier,
-        logger
-      })
-    ),
-    vscode.commands.registerCommand('schegent.resume', (prompt?: string) =>
-      runResume({ store, controller, lock, notifier, logger, prompt })
-    ),
-    // BUG-002 (FR-012a) — queue-start trigger. The webview
-    // `CMD_START_QUEUE` handler delegates here. Promotes the oldest
-    // pending task to in-flight when the queue is idle and no run is
-    // active. Safe to call redundantly — the coordinator's internal
-    // capacity checks short-circuit when a run is already in-flight.
-    vscode.commands.registerCommand('schegent.startQueue', (arg?: StartQueueCommandArg) =>
-      runStartQueueCommand(arg, { guardedRunService, controller, logger })
-    ),
-    vscode.commands.registerCommand('schegent.cancel', (arg?: { taskId?: string }) =>
-      runCancel({
-        controller,
-        store,
-        queue,
-        audit: auditWriter,
-        lock,
-        notifier,
-        logger,
-        taskId: typeof arg?.taskId === 'string' ? arg.taskId : undefined
-      })
-    ),
-    vscode.commands.registerCommand(
-      'schegent.restartCanceledTask',
-      (arg?: { taskId?: string }) =>
-        runRestartCanceledTask({
-          store,
-          queue,
-          audit: auditWriter,
-          notifier,
-          logger,
-          taskId: typeof arg?.taskId === 'string' ? arg.taskId : ''
-        })
-    ),
-    vscode.commands.registerCommand('schegent.showAuditLog', () =>
-      runShowAuditLog({ workspaceRoot, notifier })
-    ),
-    vscode.commands.registerCommand('schegent.retryQueuedItem', (arg) =>
-      runRetryQueuedItem(arg, queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemUp', (arg) =>
-      runMoveQueuedItemUp(arg, queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemDown', (arg) =>
-      runMoveQueuedItemDown(arg, queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.clearAll', () =>
-      runClearAll({
-        controller,
-        store,
-        queue,
-        audit: auditWriter,
-        lock,
-        notifier,
-        logger
-      })
-    ),
-    vscode.commands.registerCommand('schegent.clearCompleted', () =>
-      runClearCompleted(queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.clearFailed', () =>
-      runClearFailed(queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.pauseQueue', (arg) =>
-      runPauseQueue(arg, queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.resumeQueue', () =>
-      runResumeQueue(queueOpsCtx)
-    ),
-    vscode.commands.registerCommand('schegent.rerunFromHistory', (arg) =>
-      runRerunFromHistory(arg, {
-        guarded: guardedRunService,
-        history: historyStore,
-        lock,
-        notifier,
-        logger
-      })
-    ),
-    vscode.commands.registerCommand('schegent.showActiveRun', (arg) =>
-      runShowActiveRun(arg, { notifier, logger })
-    ),
-    vscode.commands.registerCommand('schegent.openDashboard', (arg) =>
-      runOpenDashboard(arg, {
-        bridge: dashboardBridge,
-        notifier,
-        logger,
-        getWorkspaceFolders: () => vscode.workspace.workspaceFolders
-      })
-    ),
-    vscode.commands.registerCommand('schegent.retryActiveRun', (arg) =>
-      runRetryActiveRun(arg, {
-        store,
-        controller,
-        queue,
-        history: historyStore,
-        lock,
-        guarded: guardedRunService,
-        notifier,
-        logger
-      })
-    ),
-    vscode.commands.registerCommand('schegent.retryPhaseNow', (arg) =>
-      runRetryPhaseNow(arg, { controller, lock, notifier, logger })
-    ),
-    vscode.commands.registerCommand('schegent.pausePhase', async () => {
-      const result = await controller.pauseActivePhase();
-      if (!result.ok) notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
-    }),
-    vscode.commands.registerCommand('schegent.resumePhase', async (prompt?: string) => {
-      const result = await controller.resumeActivePhase(prompt);
-      if (!result.ok) notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
-    }),
-    vscode.commands.registerCommand('schegent.restartPhase', async () => {
-      const result = await controller.restartActivePhase();
-      if (!result.ok) notifier.warn(`Schegent: restart phase rejected (${result.reason}).`);
-    }),
-    // Feature 054 — operator escape hatch when the cached prompt
-    // transport diverges from CLI reality (e.g. upgraded Claude CLI
-    // mid-session). Read-only — does not mutate workspace state, so
-    // not gated by MUTATING_COMMANDS.
-    vscode.commands.registerCommand('schegent.redetectClaudeTransport', () => {
-      notifier.info(
-        'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
-      );
-    })
-  );
-
+  dashboardBridgeRef = uiWiring.dashboardBridge;
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
   await watchdog.reattachOnActivation();
@@ -1372,7 +1186,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   }
 
   const dispose = async (): Promise<void> => {
-    dashboardBridge.dispose();
+    uiWiring.dispose();
     projector.dispose();
     watchdog.dispose();
     queueScheduleWatchdog.dispose();
