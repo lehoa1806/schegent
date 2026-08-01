@@ -45,13 +45,14 @@ const RETENTION_MAX_ARCHIVE_AGE_FLOOR_MS = 7 * 24 * 60 * 60 * 1000;
 const APPEND_TIMEOUT_MS = 5000;
 
 /**
- * Strict matcher for `audit.log.<YYYYMMDD-HHMMSS>` archive names so the
+ * Strict matcher for current and legacy timestamped archive names so the
  * retention sweep cannot accidentally pick up unrelated `audit.log.*`
  * siblings (e.g. an operator-deposited `audit.log.backup`,
  * `audit.log.bak`, or a future schema variant). The pattern matches the
- * stamp produced by `formatStamp` exactly: 8 digits, dash, 6 digits.
+ * current millisecond/random suffix and the legacy seconds-only form are both
+ * retained safely across upgrades.
  */
-const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}$/;
+const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}(?:-\d{3}-[0-9a-f]{8})?$/;
 
 export type AuditAppendListener = (entry: AuditEntry) => void;
 
@@ -220,7 +221,12 @@ export class AuditLogWriter {
     const ageMs = Date.now() - stat.mtimeMs;
     const ageExceeded = ageMs >= this.config.rotationMaxAgeMs;
     if (!sizeExceeded && !ageExceeded) return;
-    const stamp = formatStamp(new Date());
+    // Milliseconds plus a UUID suffix prevent a burst of rotations in one
+    // second from renaming over an earlier archive. The legacy seconds-only
+    // shape remains recognized by retention for backward compatibility.
+    const rotationTime = new Date();
+    const milliseconds = String(rotationTime.getUTCMilliseconds()).padStart(3, '0');
+    const stamp = `${formatStamp(rotationTime)}-${milliseconds}-${randomUUID().slice(0, 8)}`;
     const archive = `${this.logPath}.${stamp}`;
     try {
       await fs.rename(this.logPath, archive);
@@ -263,7 +269,7 @@ export class AuditLogWriter {
       // Only sweep entries whose suffix matches our own stamp shape so
       // an operator-deposited `audit.log.backup` or `audit.log.bak`
       // cannot be deleted by our retention pass. The strict matcher
-      // mirrors `formatStamp` exactly.
+      // recognizes only current and legacy Schegent archive stamps.
       const stampSuffix = name.slice(prefix.length);
       if (!ARCHIVE_STAMP_RE.test(stampSuffix)) continue;
       const fullPath = path.join(dir, name);

@@ -147,7 +147,7 @@ Credit watchdog poll interval in minutes. The watchdog periodically samples the 
 - **Scope:** `resource`
 - **Minimum:** `1`
 
-Audit log size threshold (megabytes) before rotation. When `.schegent/audit.log` exceeds this size, it rotates to `.schegent/audit.log.<YYYYMMDD-HHMMSS>` and a fresh active file is opened.
+Audit log size threshold (megabytes) before rotation. When `.schegent/audit.log` exceeds this size, it rotates to `.schegent/audit.log.<YYYYMMDD-HHMMSS-mmm-id>` and a fresh active file is opened. The millisecond and short random suffix prevent same-second archive collisions; legacy seconds-only names remain readable and eligible for retention.
 
 ### `schegent.audit.rotation.maxAgeDays`
 

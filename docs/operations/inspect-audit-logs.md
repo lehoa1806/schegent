@@ -7,12 +7,13 @@ The audit log is the operator-facing source of truth for Schegent runs. It's a s
 | Path | Purpose |
 |---|---|
 | `.schegent/audit.log` | Active log file. |
-| `.schegent/audit.log.<YYYYMMDD-HHMMSS>` | Rotated archives, oldest first. |
+| `.schegent/audit.log.<YYYYMMDD-HHMMSS-mmm-id>` | Collision-resistant rotated archives, oldest first. |
 
 > Schegent also writes a separate **raw session transcript** for each workflow
 > run at `.schegent/sessions/raw-<runId>.log`. That file is **not** the audit
 > log — it is a parallel, intentionally unredacted developer-debug artefact
-> with no rotation, no retention, and no sanitization. See
+> with no per-file rotation and no sanitization. Complete inactive-run groups
+> are subject to the shared session-artifact age and byte retention policy. See
 > [inspect-raw-transcripts.md](inspect-raw-transcripts.md) for details.
 
 Rotation triggers when the active file exceeds `schegent.audit.rotation.sizeMB` (default 5 MB) **or** `schegent.audit.rotation.maxAgeDays` (default 30 days), whichever first. Archives are pruned to the most recent `retentionMaxArchives` (10) and trimmed to `retentionMaxArchiveAgeMs` (90 days).

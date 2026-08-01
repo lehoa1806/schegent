@@ -723,7 +723,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.tasks.find((t) => t.runId === 'run-old')).toBeUndefined();
   });
 
-  it('scans archived files matching the audit.log.<YYYYMMDD-HHMMSS> convention when includeArchived is true', async () => {
+  it('scans timestamped audit archives when includeArchived is true', async () => {
     await mkdir(auditDir, { recursive: true });
     await writeFile(auditLog, taskStarted({ id: 'e-1', timestamp: '2026-05-23T12:00:00.000Z', runId: 'run-1' }) + '\n', 'utf8');
     await writeFile(

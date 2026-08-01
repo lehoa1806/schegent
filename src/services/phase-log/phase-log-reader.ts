@@ -212,8 +212,11 @@ export async function readIterationManifest(
   }
 
   if (entries.length > args.caps.maxEntries) {
-    const droppedEntryCount = entries.length - args.caps.maxEntries;
-    const tail = entries.slice(-(args.caps.maxEntries - 1));
+    const retainedEntryCount = Math.max(0, args.caps.maxEntries - 1);
+    const droppedEntryCount = entries.length - retainedEntryCount;
+    const tail = retainedEntryCount > 0
+      ? entries.slice(-retainedEntryCount)
+      : [];
     const head: PhaseLogDisplayEntry = {
       seq: 0,
       kind: 'truncated-head',
