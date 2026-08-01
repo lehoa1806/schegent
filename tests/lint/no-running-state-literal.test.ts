@@ -26,6 +26,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/backend-runner.ts',
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/state.schema.json',
+  // P4 extraction — owns phase mutation policy and therefore transitions a
+  // resumed/restarted phase back to the canonical running workflow status.
+  'src/controller/phase-control-service.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',
