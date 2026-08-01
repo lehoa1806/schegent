@@ -15,10 +15,10 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // (a second activation aggregator file) was rejected to avoid splintering the
   // host registration order.
   { path: 'src/extension.ts', maxLines: 1_500 },
-  // P4 phase-control extraction ratchet: 1,200 → 850. Operator-driven phase
-  // mutations now live behind PhaseControlService; this file owns only the
-  // workflow facade, run dispatch, deletion, retry entry, and persistence.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 850 },
+  // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
+  // This file owns only the workflow facade, run dispatch, deletion, retry
+  // entry, and persistence.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
   { path: 'src/contracts/runtime-validators.ts', maxLines: 1_200 },
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_250 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style

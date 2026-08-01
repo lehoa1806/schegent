@@ -29,10 +29,8 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runner-factory';
 import { resolvePinnedRunnerKind, snapshotPhaseDef } from '../config/pipeline-snapshot';
-import {
-  PhaseControlService,
-  type MutationResult
-} from './phase-control-service';
+import { PhaseControlService, type MutationResult } from './phase-control-service';
+import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -101,7 +99,6 @@ export class SchegentWorkflowController {
   private readonly isContinueGate = new IsContinueGate();
 
   private readonly monitor: Pick<ClaudeCliMonitor, 'onStart'> | null;
-  private readonly auditWriter: Pick<AuditLogWriter, 'append'> | null;
   private catalog: PipelineCatalog;
   private readonly getRetryCapFn: (() => number) | null;
   // Feature 034 — pluggable session-cleanup runner; defaults to the
@@ -114,6 +111,7 @@ export class SchegentWorkflowController {
   private readonly retryCoordinator: RetryCoordinator;
   private readonly runDriver: RunDriver;
   private readonly phaseControlService: PhaseControlService;
+  private readonly lifecycleAuditor: WorkflowLifecycleAuditor;
 
   constructor(
     runner: PhaseRunner,
@@ -127,7 +125,7 @@ export class SchegentWorkflowController {
     deps: WorkflowControllerDeps = {}
   ) {
     this.monitor = deps.monitor ?? null;
-    this.auditWriter = deps.auditWriter ?? null;
+    const auditWriter = deps.auditWriter ?? null;
     this.catalog = deps.catalog ?? BUILT_IN_CATALOG;
     this.getRetryCapFn = deps.getRetryCap ?? null;
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
@@ -149,10 +147,11 @@ export class SchegentWorkflowController {
       notifier,
       logger,
       watchdog: deps.watchdog ?? null,
-      auditWriter: this.auditWriter,
+      auditWriter,
       getRetryCap: () => this.retryCap,
       persistTransition: (prev, next) => this.persistTransition(prev, next)
     });
+    this.lifecycleAuditor = new WorkflowLifecycleAuditor(auditWriter, logger);
     this.runDriver = new RunDriver({
       runner,
       store,
@@ -168,23 +167,15 @@ export class SchegentWorkflowController {
       isContinueGate: this.isContinueGate,
       persistTransition: (prev, next) => this.persistTransition(prev, next),
       appendPhaseControlAudit: (eventType, run, payload) =>
-        this.appendPhaseControlAudit(eventType, run, payload),
-      appendRunnerProbeFailedAudit: async (run, payload) => {
-        if (!this.auditWriter) return;
-        try {
-          await this.auditWriter.append({
-            runId: run.id, phase: run.currentPhase, iteration: run.currentIteration,
-            eventType: 'runner-probe-failed', payload, outcome: 'failure'
-          });
-        } catch (err) {
-          this.logger.warn(`appendRunnerProbeFailedAudit failed: ${(err as Error).message}`);
-        }
-      },
+        this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
+      appendRunnerProbeFailedAudit: (run, payload) =>
+        this.lifecycleAuditor.appendRunnerProbeFailed(run, payload),
       appendBreakpointAudit: (eventType, run, payload) =>
-        this.appendBreakpointAudit(eventType, run, payload),
-      emitRunEndedBreakpointAudit: (run) => this.emitRunEndedBreakpointAudit(run),
+        this.lifecycleAuditor.appendBreakpoint(eventType, run, payload),
+      emitRunEndedBreakpointAudit: (run) =>
+        this.lifecycleAuditor.emitRunEndedBreakpoints(run),
       emitTaskLifecycleAudit: (eventType, run, payload) =>
-        this.emitTaskLifecycleAudit(eventType, run, payload),
+        this.lifecycleAuditor.emitTaskLifecycle(eventType, run, payload),
       onRunTerminal: deps.onRunTerminal,
       scheduleAutoDrain: () => this.scheduleAutoDrain()
     });
@@ -199,16 +190,17 @@ export class SchegentWorkflowController {
       resumeExisting: (customPrompt) => this.resumeExisting(customPrompt),
       auditor: {
         appendPhaseControl: (eventType, run, payload) =>
-          this.appendPhaseControlAudit(eventType, run, payload),
+          this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
         emitTaskPaused: (run) =>
-          this.emitTaskLifecycleAudit('task-execution-paused', run, {
+          this.lifecycleAuditor.emitTaskLifecycle('task-execution-paused', run, {
             taskId: run.featureId,
             runId: run.id,
             pauseCause: 'operator-paused' as const
           }),
-        emitPhaseJumped: (run, phaseId) => this.emitPhaseJumpedAudit(run, phaseId),
+        emitPhaseJumped: (run, phaseId) =>
+          this.lifecycleAuditor.emitPhaseJumped(run, phaseId),
         appendBreakpoint: (eventType, run, payload) =>
-          this.appendBreakpointAudit(eventType, run, payload)
+          this.lifecycleAuditor.appendBreakpoint(eventType, run, payload)
       }
     });
   }
@@ -359,7 +351,7 @@ export class SchegentWorkflowController {
       };
       try {
         terminalRun = await this.persistTransition(activeRun, failed);
-        await this.emitRunEndedBreakpointAudit(terminalRun);
+        await this.lifecycleAuditor.emitRunEndedBreakpoints(terminalRun);
       } catch (persistErr) {
         this.logger.error(
           `failed to persist unexpected workflow failure: ${this.sanitizeUnexpectedError(persistErr)}`
@@ -707,120 +699,6 @@ export class SchegentWorkflowController {
   // work to src/controller/retry-handler.ts. State-shape, audit-payload, and
   // CLAUDE.md hard-rule semantics (pause-cause pair invariant, pre-buffer
   // resetsAtMs in audit, DELAYED_RETRY_CAP bounds attempts) preserved.
-
-  private async appendPhaseControlAudit(
-    eventType:
-      | 'phase-pause-requested'
-      | 'phase-paused'
-      | 'phase-resumed'
-      | 'phase-restarted'
-      | 'phase-skipped'
-      | 'phase-disabled'
-      | 'phase-enabled'
-      | 'phase-removed',
-    run: WorkflowRun,
-    payload: Record<string, unknown>
-  ): Promise<void> {
-    if (!this.auditWriter) return;
-    try {
-      await this.auditWriter.append({
-        runId: run.id,
-        phase: run.currentPhase,
-        iteration: run.currentIteration,
-        eventType,
-        payload,
-        outcome: 'info'
-      });
-    } catch (err) {
-      this.logger.warn(`phase-control audit append failed: ${(err as Error).message}`);
-    }
-  }
-
-  // Feature 072 — emit task-execution-* lifecycle audit events.
-  // Separate from appendPhaseControlAudit to keep the event type union
-  // clean (task-execution-* vs. phase-*).
-  private async emitTaskLifecycleAudit(
-    eventType: 'task-execution-started' | 'task-execution-ended' | 'task-execution-paused',
-    run: WorkflowRun,
-    payload: Record<string, unknown>
-  ): Promise<void> {
-    if (!this.auditWriter) return;
-    try {
-      await this.auditWriter.append({
-        runId: run.id,
-        phase: run.currentPhase,
-        iteration: run.currentIteration,
-        eventType,
-        payload,
-        outcome: 'info'
-      });
-    } catch (err) {
-      this.logger.warn(`task-lifecycle audit append failed (${eventType}): ${(err as Error).message}`);
-    }
-  }
-
-  private async emitPhaseJumpedAudit(run: WorkflowRun, phaseId: string): Promise<void> {
-    if (!this.auditWriter) return;
-    try {
-      await this.auditWriter.append({
-        runId: run.id,
-        phase: phaseId,
-        iteration: run.currentIteration,
-        eventType: 'phase-jumped',
-        outcome: 'info',
-        payload: {
-          phaseId,
-          runId: run.id,
-          pipelineId: run.pipeline?.id ?? '',
-          durationMs: Date.now() - (run.lastTransitionAt ?? Date.now()),
-          iterationN: run.currentIteration,
-          reason: 'operator-jump',
-          phasesSkipped: 1
-        }
-      });
-    } catch (err) {
-      this.logger.warn(`phase-jumped audit append failed: ${(err as Error).message}`);
-    }
-  }
-
-  // Feature 028 — emit `phase-breakpoint-cleared { cause: 'run-ended' }` for
-  // each remaining breakpoint when the run terminates (completed / failed /
-  // canceled). The terminal `WorkflowRun` is the source of truth — the audit
-  // events are an evidence trail. The terminal run's `phaseBreakpoints` may
-  // remain populated or be cleared; the audit log records the lifecycle.
-  private async emitRunEndedBreakpointAudit(run: WorkflowRun): Promise<void> {
-    if (run.phaseBreakpoints.length === 0) return;
-    for (const bp of run.phaseBreakpoints) {
-      await this.appendBreakpointAudit('phase-breakpoint-cleared', run, {
-        runId: run.id,
-        phaseId: bp.phaseId,
-        cause: 'run-ended'
-      });
-    }
-  }
-
-  private async appendBreakpointAudit(
-    eventType:
-      | 'phase-breakpoint-set'
-      | 'phase-breakpoint-cleared'
-      | 'phase-breakpoint-fired',
-    run: WorkflowRun,
-    payload: Record<string, unknown>
-  ): Promise<void> {
-    if (!this.auditWriter) return;
-    try {
-      await this.auditWriter.append({
-        runId: run.id,
-        phase: run.currentPhase,
-        iteration: run.currentIteration,
-        eventType,
-        payload,
-        outcome: 'info'
-      });
-    } catch (err) {
-      this.logger.warn(`breakpoint audit append failed: ${(err as Error).message}`);
-    }
-  }
 
   private async persistTransition(_prev: WorkflowRun, next: WorkflowRun): Promise<WorkflowRun> {
     const latest = this.store.getRun();
