@@ -8,8 +8,15 @@ import { PromptBuilder } from '../../../src/runner/prompt-builder';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
-import type { RawTranscriptWriter } from '../../../src/audit/raw-transcript-writer';
-import type { RawInvocationOutput, InvocationRequest } from '../../../src/runner/invocation-result';
+import type {
+  RawTranscriptCapture,
+  RawTranscriptWriter
+} from '../../../src/audit/raw-transcript-writer';
+import type {
+  InvocationOutputSink,
+  RawInvocationOutput,
+  InvocationRequest
+} from '../../../src/runner/invocation-result';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 
 const cleanStdout = [
@@ -75,6 +82,7 @@ function makeFakeAuditWriter(): AuditLogWriter {
 function makeFakeRawTranscript(): RawTranscriptWriter {
   return {
     appendStart: vi.fn(async () => undefined),
+    createInvocationCapture: vi.fn(async () => null),
     appendEnd: vi.fn(async () => undefined)
   } as unknown as RawTranscriptWriter;
 }
@@ -149,6 +157,110 @@ describe('PhaseRunner.run', () => {
       })
     );
   });
+
+  it('records bounded-output truncation flags on phase-end', async () => {
+    const stdoutBuffer = new ZippedStreamBuffer(4, 12);
+    stdoutBuffer.append('0123456789ABCDEFGHIJ');
+    stdoutBuffer.finalize();
+    const stderrBuffer = new ZippedStreamBuffer(4, 12);
+    stderrBuffer.finalize();
+    cliRunner = makeFakeRunner(async () => ({
+      stdoutBuffer,
+      stderrBuffer,
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      durationMs: 25
+    }));
+    runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    await runner.run(baseInputs);
+
+    const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
+    const end = appendFn.mock.calls.find((call) => call[0].eventType === 'phase-end');
+    expect(end?.[0].payload).toMatchObject({
+      runner: 'claude',
+      stdoutTruncated: true
+    });
+    expect(end?.[0].payload).not.toHaveProperty('stderrTruncated');
+  });
+
+  it('does not classify truncated head/tail output as clean when fatal evidence may be discarded', async () => {
+    const stdoutBuffer = new ZippedStreamBuffer(4, 2_048);
+    stdoutBuffer.append(
+      [
+        'h'.repeat(1_024),
+        'error: unknown option --unsafe-middle',
+        'm'.repeat(4_096),
+        cleanStdout
+      ].join('\n')
+    );
+    stdoutBuffer.finalize();
+    const stderrBuffer = new ZippedStreamBuffer(4, 2_048);
+    stderrBuffer.finalize();
+    expect(stdoutBuffer.truncated).toBe(true);
+    expect(stdoutBuffer.getTrailingLines(100)).not.toContain('error: unknown option');
+    expect(stdoutBuffer.getTrailingLines(100)).toContain('[SCHEGENT_STATUS: CLEAR]');
+
+    cliRunner = makeFakeRunner(async () => ({
+      stdoutBuffer,
+      stderrBuffer,
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      durationMs: 25
+    }));
+    runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    const output = await runner.run(baseInputs);
+
+    expect(output.result).toMatchObject({
+      kind: 'malformed',
+      warnings: ['output-truncated-unclassifiable']
+    });
+    expect(output.outcome).toBe('failed');
+    expect(output.terminationReason).toBe('error');
+  });
+
+  it.each(['Open questions:', 'Remaining issues:'] as const)(
+    'does not advance truncated output classified from %s',
+    async (heading) => {
+      const stdoutBuffer = new ZippedStreamBuffer(4, 2_048);
+      stdoutBuffer.append([
+        'h'.repeat(1_024),
+        'error: unknown option --discarded-middle',
+        'm'.repeat(4_096),
+        heading,
+        '- retained issue'
+      ].join('\n'));
+      stdoutBuffer.finalize();
+      const stderrBuffer = new ZippedStreamBuffer(4, 2_048);
+      stderrBuffer.finalize();
+      cliRunner = makeFakeRunner(async () => ({
+        stdoutBuffer,
+        stderrBuffer,
+        exitCode: 0,
+        killed: false,
+        timedOut: false,
+        durationMs: 25
+      }));
+      runner = new PhaseRunner(
+        cliRunner,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger()
+      );
+
+      const output = await runner.run({ ...baseInputs, phase: 'speckit-clarify' });
+
+      expect(output.result).toMatchObject({
+        kind: 'malformed',
+        warnings: ['output-truncated-unclassifiable']
+      });
+      expect(output.outcome).toBe('failed');
+      expect(output.terminationReason).toBe('error');
+    }
+  );
 
   it('parses a valid phase-message.env sidecar and emits metadata-only audit', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-phase-msg-'));
@@ -695,6 +807,43 @@ describe('PhaseRunner.run', () => {
     });
   });
 
+  it('passes the disk-backed transcript capture to the runner and finalizer', async () => {
+    const capture: RawTranscriptCapture = {
+      failed: false,
+      write: vi.fn(() => true),
+      onceDrain: vi.fn(),
+      finish: vi.fn(async () => undefined),
+      appendStreamTo: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined)
+    };
+    const invoke = vi.fn(async (
+      _request: InvocationRequest,
+      _outputSink?: InvocationOutputSink
+    ) => makeRawOutput());
+    cliRunner = {
+      invoke,
+      cancelActive: vi.fn(() => false),
+      hasActiveProcess: false
+    } as unknown as ClaudeCliRunner;
+    const rawTranscript = makeFakeRawTranscript();
+    (rawTranscript.createInvocationCapture as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(capture);
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger(),
+      rawTranscript
+    );
+
+    await runner.run(baseInputs);
+
+    expect(invoke.mock.calls[0][1]).toBe(capture);
+    expect(rawTranscript.appendEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ capture })
+    );
+  });
+
   it('still calls rawTranscript.appendEnd on the timeout path (T009, US3)', async () => {
     cliRunner = makeFakeRunner(async () =>
       makeRawOutput({ stdout: '', timedOut: true, killed: true, exitCode: null })
@@ -955,11 +1104,19 @@ describe('PhaseRunner.run', () => {
       const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
       const start = appendFn.mock.calls.find((c) => c[0].eventType === 'phase-start');
       const end = appendFn.mock.calls.find((c) => c[0].eventType === 'phase-end');
-      expect(start?.[0].payload).toMatchObject({ pipelineId: 'speckit-new-feature', phaseId: 'speckit-specify' });
+      expect(start?.[0].payload).toMatchObject({
+        pipelineId: 'speckit-new-feature',
+        phaseId: 'speckit-specify',
+        runner: 'claude'
+      });
       expect(start?.[0].payload).not.toHaveProperty('model');
       expect(start?.[0].payload).not.toHaveProperty('effort');
       expect(start?.[0].payload).not.toHaveProperty('timeoutMs');
-      expect(end?.[0].payload).toMatchObject({ pipelineId: 'speckit-new-feature', phaseId: 'speckit-specify' });
+      expect(end?.[0].payload).toMatchObject({
+        pipelineId: 'speckit-new-feature',
+        phaseId: 'speckit-specify',
+        runner: 'claude'
+      });
       expect(end?.[0].payload).not.toHaveProperty('model');
       expect(end?.[0].payload).not.toHaveProperty('effort');
       expect(end?.[0].payload).not.toHaveProperty('timeoutMs');
@@ -1309,22 +1466,219 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     expect(mockRegistry.getOrCreate).toHaveBeenCalledWith('agy');
     expect(altRunner.invoke).toHaveBeenCalled();
     expect(defaultRunner.invoke).not.toHaveBeenCalled();
+    const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
+    const start = appendFn.mock.calls.find((call) => call[0].eventType === 'phase-start');
+    const end = appendFn.mock.calls.find((call) => call[0].eventType === 'phase-end');
+    expect(start?.[0].payload.runner).toBe('agy');
+    expect(end?.[0].payload.runner).toBe('agy');
   });
 
-  it('resets cliSessionId when transitioning between different runners (T020)', async () => {
+  it('rejects a legacy Codex snapshot for a Git-mutating phase before audit or invocation', async () => {
+    mockRegistry.getGlobalDefault.mockReturnValue('codex');
+    runner = new PhaseRunner(mockRegistry, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    await expect(
+      runner.run({
+        ...baseInputs,
+        phase: 'finalize',
+        phaseDef: {
+          id: 'finalize',
+          name: 'Finalize',
+          instruction: 'Commit and merge the work.'
+        }
+      })
+    ).rejects.toThrow("Phase 'finalize' must explicitly use a Git-capable runner");
+
+    expect(mockRegistry.getOrCreate).not.toHaveBeenCalled();
+    expect(auditWriter.append).not.toHaveBeenCalled();
+  });
+
+  it('attributes the controller cap-exhaustion terminal event to the effective runner', async () => {
+    runner = new PhaseRunner(mockRegistry, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    await runner.appendCapExhaustedPhaseEnd({
+      runId: 'run-1',
+      phase: 'speckit-implement',
+      iteration: 10,
+      pipelineId: 'custom',
+      phaseDef: {
+        id: 'phase2',
+        name: 'P2',
+        instruction: '',
+        runner: 'agy'
+      }
+    });
+
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'phase-end',
+        outcome: 'failure',
+        payload: expect.objectContaining({ runner: 'agy', cause: 'cap_exhausted' })
+      })
+    );
+  });
+
+  it('does not invent a resume session for a registry-selected runner', async () => {
     runner = new PhaseRunner(mockRegistry, new PromptBuilder(), auditWriter, new SanitizedLogger());
     
     const inputs = {
       ...baseInputs,
-      phaseDef: { id: 'phase2', name: 'P2', instruction: '', steps: [], runner: 'agy' as any },
-      cliSessionId: 'sess-123'
+      phaseDef: { id: 'phase2', name: 'P2', instruction: '', steps: [], runner: 'agy' as any }
     };
 
     await runner.run(inputs);
     
-    // The previous cliSessionId was from the default runner, but we transitioned to 'agy'.
-    // The PhaseRunner should NOT pass it to the new runner.
     const invokeCall = altRunner.invoke.mock.calls[0][0];
     expect(invokeCall.resumeSessionId).toBeUndefined();
+  });
+
+  it('does not inject or audit Claude auto-compact settings for another runner', async () => {
+    runner = new PhaseRunner(
+      mockRegistry,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger(),
+      null,
+      null,
+      null,
+      { readAutoCompactPctOverride: () => 80 }
+    );
+
+    await runner.run({
+      ...baseInputs,
+      phaseDef: {
+        id: 'phase-agy',
+        name: 'Agy phase',
+        instruction: '',
+        runner: 'agy'
+      }
+    });
+
+    expect(altRunner.invoke.mock.calls[0][0].env).not.toHaveProperty(
+      'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
+    );
+    expect(auditWriter.append).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'auto-compact-override-applied' })
+    );
+  });
+
+  it('audits a failed pre-compaction invocation before continuing with the phase', async () => {
+    let invocation = 0;
+    cliRunner = makeFakeRunner(async () => {
+      invocation += 1;
+      return invocation === 1
+        ? makeRawOutput({ exitCode: 1, command: 'claude --resume owned-session compact' })
+        : makeRawOutput({ command: 'claude --resume owned-session phase' });
+    });
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    const result = await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    expect(result.outcome).toBe('clean');
+    const invocationAudits = (
+      auditWriter.append as ReturnType<typeof vi.fn>
+    ).mock.calls.filter((call) => call[0].eventType === 'cli-invocation');
+    expect(invocationAudits.map((call) => call[0].payload.command)).toEqual([
+      'claude --resume owned-session compact',
+      'claude --resume owned-session phase'
+    ]);
+  });
+
+  it('forwards cancellation to the Claude pre-compaction invocation', async () => {
+    cliRunner = makeFakeRunner(async () => makeRawOutput());
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+    const cancellationSignal = {
+      aborted: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    };
+
+    await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session',
+      cancellationSignal
+    });
+
+    expect(cliRunner.invoke).toHaveBeenCalledTimes(2);
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock.mock.calls[0][0].cancellationSignal).toBe(
+      cancellationSignal
+    );
+    expect(invokeMock.mock.calls[1][0].cancellationSignal).toBe(
+      cancellationSignal
+    );
+  });
+
+  it('records pre-compaction and phase output as separate raw transcript invocations', async () => {
+    const compactionCapture: RawTranscriptCapture = {
+      failed: false,
+      write: vi.fn(() => true),
+      onceDrain: vi.fn(),
+      finish: vi.fn(async () => undefined),
+      appendStreamTo: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined)
+    };
+    const phaseCapture: RawTranscriptCapture = {
+      failed: false,
+      write: vi.fn(() => true),
+      onceDrain: vi.fn(),
+      finish: vi.fn(async () => undefined),
+      appendStreamTo: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined)
+    };
+    const invoke = vi.fn(async (
+      _request: InvocationRequest,
+      _outputSink?: InvocationOutputSink
+    ) => makeRawOutput());
+    cliRunner = {
+      invoke,
+      cancelActive: vi.fn(() => false),
+      hasActiveProcess: false
+    } as unknown as ClaudeCliRunner;
+    const rawTranscript = makeFakeRawTranscript();
+    (rawTranscript.createInvocationCapture as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(compactionCapture)
+      .mockResolvedValueOnce(phaseCapture);
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger(),
+      rawTranscript
+    );
+
+    await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[0][1]).toBe(compactionCapture);
+    expect(invoke.mock.calls[1][1]).toBe(phaseCapture);
+    expect(rawTranscript.appendStart).toHaveBeenCalledTimes(2);
+    expect(rawTranscript.appendEnd).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ capture: compactionCapture })
+    );
+    expect(rawTranscript.appendEnd).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ capture: phaseCapture })
+    );
   });
 });

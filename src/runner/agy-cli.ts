@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
-import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
+import { OutputSinkBackpressure } from './output-sink-backpressure';
+import { waitForChildCompletion } from './child-completion';
+import type {
+  InvocationOutputSink,
+  InvocationRequest,
+  RawInvocationOutput
+} from './invocation-result';
 import type {
   BackendRunner,
   MonitorSidecarEvent,
@@ -20,7 +26,8 @@ import type { Effort } from '../config/pipeline-config';
 //   - Session continuation: `--conversation <id>` instead of `--resume <id>`.
 //   - Effort ceiling: Agy supports `low|medium|high` only; `xhigh` and
 //     `max` are capped to `high` with a WARN log.
-//   - Model names: quoted to handle spaces (e.g., `"model name"`).
+//   - Model names: each value is one argv element, so spaces are preserved
+//     without shell quoting or interpretation.
 //   - Output format: `--output-format stream-json` for session ID extraction.
 //   - Permissions: `--dangerously-skip-permissions` (same as Claude).
 //   - No verbose diagnostics (Agy has no `--debug-file` equivalent).
@@ -117,7 +124,10 @@ export class AgyCliRunner implements BackendRunner {
     return this.active !== null;
   }
 
-  public async invoke(request: InvocationRequest): Promise<RawInvocationOutput> {
+  public async invoke(
+    request: InvocationRequest,
+    outputSink?: InvocationOutputSink
+  ): Promise<RawInvocationOutput> {
     const start = Date.now();
 
     // Session continuation — Agy uses `--conversation <id>` instead of
@@ -137,7 +147,7 @@ export class AgyCliRunner implements BackendRunner {
       '-p'
     ];
 
-    // Model — quote names that may contain spaces.
+    // Model — one argv element preserves names that contain spaces.
     if (request.model && request.model.trim().length > 0) {
       args.push('--model', request.model);
     }
@@ -190,22 +200,31 @@ export class AgyCliRunner implements BackendRunner {
         timedOut = true;
         this.terminate(child);
       }, request.timeoutMs);
+      let idleTimerActive = true;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
+        if (!idleTimerActive) return;
         timer = setTimeout(() => {
           timedOut = true;
           this.terminate(child);
         }, request.timeoutMs);
       };
+      const outputBackpressure = new OutputSinkBackpressure(
+        outputSink,
+        () => clearTimeout(timer),
+        resetIdleTimer
+      );
 
       child.stdout?.on('data', (chunk: string) => {
-        resetIdleTimer();
         stdoutBuffer.append(chunk);
+        outputBackpressure.write('stdout', child.stdout!, chunk);
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', chunk });
       });
       child.stderr?.on('data', (chunk: string) => {
-        resetIdleTimer();
         stderrBuffer.append(chunk);
+        outputBackpressure.write('stderr', child.stderr!, chunk);
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stderr-chunk', chunk });
       });
 
@@ -221,21 +240,22 @@ export class AgyCliRunner implements BackendRunner {
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      const exitCode = await new Promise<number | null>((resolve) => {
-        child.on('exit', (code, signal) => {
-          if (signal && code === null) {
-            killed = true;
-          }
-          resolve(code);
-        });
-        child.on('error', () => resolve(null));
-      });
+      const completion = await waitForChildCompletion(child, outputSink !== undefined);
+      const exitCode = completion.exitCode;
+      if (completion.signal && exitCode === null) killed = true;
+      if (completion.stdioCloseTimedOut) {
+        this._logger.warn(
+          '[AgyCliRunner] stdout/stderr close grace expired after process exit; local pipes closed'
+        );
+      }
 
       if (onAbort !== null) {
         request.cancellationSignal?.removeEventListener?.('abort', onAbort);
       }
+      idleTimerActive = false;
       clearTimeout(timer);
-      const exitSignal = (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
+      const exitSignal = completion.signal ??
+        (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
       this.active = null;
 

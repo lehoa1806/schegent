@@ -10,6 +10,8 @@ interface FakeChild extends EventEmitter {
   stderr: Readable;
   killed: boolean;
   pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
   kill(signal: NodeJS.Signals | number): boolean;
 }
 
@@ -28,6 +30,8 @@ function makeFakeChild(): FakeChild {
   child.stderr = new Readable({ read() { /* no-op */ } });
   child.killed = false;
   child.pid = 4242;
+  child.exitCode = null;
+  child.signalCode = null;
   child.kill = vi.fn((_sig?: NodeJS.Signals | number) => {
     child.killed = true;
     return true;
@@ -36,7 +40,7 @@ function makeFakeChild(): FakeChild {
 }
 
 describe('CodexCliRunner.invoke', () => {
-  it('spawns codex with `exec --no-stream` and pipes the prompt over stdin', async () => {
+  it('spawns codex with structured output and a workspace-write sandbox, piping the prompt over stdin', async () => {
     const child = makeFakeChild();
     const seen: { command: string; args: ReadonlyArray<string>; options: SpawnOptions } = {
       command: '',
@@ -60,7 +64,7 @@ describe('CodexCliRunner.invoke', () => {
       cwd: '/repo'
     });
     expect(seen.command).toBe('codex');
-    expect(seen.args).toEqual(['exec', '--no-stream']);
+    expect(seen.args).toEqual(['exec', '--json', '--sandbox', 'workspace-write']);
     expect(seen.options.shell).toBe(false);
     expect(seen.options.stdio).toEqual(['pipe', 'pipe', 'pipe']);
     const captured = (child.stdin as Writable & { __captured: string[] }).__captured;
@@ -101,7 +105,7 @@ describe('CodexCliRunner.invoke', () => {
     }
   });
 
-  it('forwards --model and --effort when set', async () => {
+  it('forwards --model and maps effort to a Codex configuration override', async () => {
     const child = makeFakeChild();
     let observedArgs: ReadonlyArray<string> = [];
     const spawnFn: SpawnFn = (_cmd, args) => {
@@ -122,12 +126,15 @@ describe('CodexCliRunner.invoke', () => {
     });
     expect(observedArgs).toEqual([
       'exec',
-      '--no-stream',
+      '--json',
+      '--sandbox',
+      'workspace-write',
       '--model',
       'codex-pro',
-      '--effort',
-      'high'
+      '--config',
+      'model_reasoning_effort=high'
     ]);
+    expect(observedArgs).not.toContain('-c');
   });
 
   it('captures stdout and stderr and reports exit code', async () => {
@@ -136,11 +143,15 @@ describe('CodexCliRunner.invoke', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'tool result\n');
         child.stderr.emit('data', 'warn: deprecated flag\n');
-        child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
+    const outputSink = {
+      write: vi.fn(() => true),
+      onceDrain: vi.fn()
+    };
     const result = await runner.invoke({
       phase: 'speckit-specify',
       iteration: 1,
@@ -148,12 +159,14 @@ describe('CodexCliRunner.invoke', () => {
       timeoutMs: 5_000,
       cliPath: 'codex',
       cwd: '/repo'
-    });
+    }, outputSink);
     expect(Array.from(result.stdoutBuffer.decompressStream()).join('')).toContain('tool result');
     expect(Array.from(result.stderrBuffer.decompressStream()).join('')).toContain('warn');
     expect(result.exitCode).toBe(0);
     expect(result.killed).toBe(false);
     expect(result.timedOut).toBe(false);
+    expect(outputSink.write).toHaveBeenCalledWith('stdout', 'tool result\n');
+    expect(outputSink.write).toHaveBeenCalledWith('stderr', 'warn: deprecated flag\n');
   });
 
   it('emits monitor sidecar events for started/stdout/exited', async () => {

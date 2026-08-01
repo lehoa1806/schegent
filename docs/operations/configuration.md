@@ -54,7 +54,9 @@ through VS Code settings and read at activation.
 |---|---|---|
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | Defaults to `true`. Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables; use absolute CLI paths and backend-native auth first. |
-| `schegent.backend.runner` | enum (`claude`, `codex`) | Selects the concrete `BackendRunner` adapter. Default `claude`. See [docs/operations/backends.md](backends.md). |
+| `schegent.backend.runner` | enum (`claude`, `codex`, `agy`) | Selects the default `BackendRunner` adapter. Default `claude`; a phase-level runner override wins. See [Backend Runners](backends.md). |
+| `schegent.codex.path` | string | Path to the `codex` CLI binary. |
+| `schegent.agy.path` | string | Path to the `agy` CLI binary. |
 | `schegent.logging.verbose` | boolean | Captures unredacted per-iteration diagnostics under `.schegent/sessions/`. |
 | `schegent.logging.runtimeLogMaxBytes` | number (default `5_242_880` / 5 MiB) | Size threshold at which the runtime log rotates `<path> → <path>.1 → … → <path>.<maxGens>`. Read uncached on every emit. See [docs/operations/runtime-log.md](runtime-log.md). |
 | `schegent.logging.runtimeLogMaxGenerations` | number (0–10, default `3`) | Number of rotated generations to keep on disk. `0` disables rotation (truncate-in-place). Worst-case disk = active file + `maxGens × maxBytes`. |
@@ -66,6 +68,12 @@ through VS Code settings and read at activation.
 | `schegent.rules.injectPerPhase` | boolean | Reserved legacy toggle; current runner wiring does not inject per-phase rule files. |
 | `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. |
 | `schegent.fatalSignatures` | string[] | Operator-additive fatal-signature substrings; managed via the **Settings → Fatal Signatures** sub-tab. |
+
+The default backend does not override Git capability requirements. The
+`speckit-specify`, `specify-brainstorm`, `superpowers-implement`, `finalize`,
+and `superpowers-review-close` built-ins are pinned to Claude, and
+their phase overrides must explicitly select `claude` or `agy`; Codex's
+`workspace-write` sandbox cannot update `.git`.
 
 ### Phases / Pipelines / Models
 

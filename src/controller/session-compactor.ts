@@ -1,0 +1,75 @@
+import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
+import type { BackendRunner } from '../contracts/backend-runner';
+import type { SanitizedLogger } from '../lib/logger';
+
+const COMPACTION_PROMPT =
+  'Compact the conversation context. Reply with a single word: OK';
+
+export interface SessionCompactionInputs {
+  readonly runner: BackendRunner;
+  readonly rawTranscript: RawTranscriptWriter | null;
+  readonly runId: string;
+  readonly phase: Parameters<RawTranscriptWriter['appendStart']>[0]['phase'];
+  readonly iteration: number;
+  readonly cliPath: string;
+  readonly cwd: string;
+  readonly inheritProcessEnv?: boolean;
+  readonly cancellationSignal?: {
+    aborted: boolean;
+    addEventListener(event: 'abort', cb: () => void): void;
+  };
+  readonly resumeSessionId: string;
+  readonly onCommand: (command: string) => Promise<void>;
+  readonly logger: SanitizedLogger;
+}
+
+/** Run and record Claude pre-compaction as its own transcript invocation. */
+export async function compactClaudeSession(inputs: SessionCompactionInputs): Promise<void> {
+  await inputs.rawTranscript?.appendStart({
+    runId: inputs.runId,
+    phase: inputs.phase,
+    iteration: inputs.iteration,
+    prompt: COMPACTION_PROMPT
+  });
+  const capture = await inputs.rawTranscript?.createInvocationCapture(inputs.runId) ?? null;
+  let raw;
+  try {
+    raw = await inputs.runner.invoke({
+      phase: inputs.phase,
+      iteration: inputs.iteration,
+      prompt: COMPACTION_PROMPT,
+      timeoutMs: 60_000,
+      cliPath: inputs.cliPath,
+      cwd: inputs.cwd,
+      env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
+      ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
+      cancellationSignal: inputs.cancellationSignal,
+      sessionReuse: true,
+      resumeSessionId: inputs.resumeSessionId,
+      model: 'claude-haiku-4-6'
+    }, capture ?? undefined);
+  } catch (err) {
+    await capture?.dispose();
+    throw err;
+  }
+  await inputs.rawTranscript?.appendEnd({
+    runId: inputs.runId,
+    stdout: raw.stdoutBuffer,
+    stderr: raw.stderrBuffer,
+    exitCode: raw.exitCode,
+    killed: raw.killed,
+    timedOut: raw.timedOut,
+    capture
+  });
+  if (typeof raw.command === 'string' && raw.command.length > 0) {
+    await inputs.onCommand(raw.command);
+  }
+  if (raw.exitCode !== 0 || raw.killed || raw.timedOut) {
+    throw new Error(
+      `compaction invocation failed (exit=${raw.exitCode ?? 'signal'}, killed=${raw.killed}, timedOut=${raw.timedOut})`
+    );
+  }
+  inputs.logger.info(
+    `session-compact-done phase=${inputs.phase} iter=${inputs.iteration}`
+  );
+}

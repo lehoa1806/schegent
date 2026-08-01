@@ -4,6 +4,7 @@ import { Readable, Writable } from 'stream';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { AgyCliRunner, type SpawnFn } from '../../../src/runner/agy-cli';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { MAX_STREAM_BUFFER_BYTES } from '../../../src/runner/zipped-stream-buffer';
 
 interface FakeChild extends EventEmitter {
   stdin: Writable;
@@ -162,7 +163,7 @@ describe('AgyCliRunner.invoke', () => {
     }
   });
 
-  it('includes --model when model is specified', async () => {
+  it('passes a model containing spaces as one argv element', async () => {
     const child = makeFakeChild();
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
@@ -178,11 +179,11 @@ describe('AgyCliRunner.invoke', () => {
       timeoutMs: 5_000,
       cliPath: 'agy',
       cwd: '/repo',
-      model: 'claude-sonnet-4-6'
+      model: 'Gemini 3.1 Pro'
     });
     const modelIdx = (seen.args as string[]).indexOf('--model');
     expect(modelIdx).toBeGreaterThan(-1);
-    expect(seen.args[modelIdx + 1]).toBe('claude-sonnet-4-6');
+    expect(seen.args[modelIdx + 1]).toBe('Gemini 3.1 Pro');
   });
 
   it('uses --conversation <id> for session continuation when isContinue + resumeSessionId', async () => {
@@ -274,6 +275,100 @@ describe('AgyCliRunner.invoke', () => {
     const kinds = events.map(e => e.kind);
     expect(kinds).toContain('started');
     expect(kinds).toContain('exited');
+  });
+
+  it('emits stdout/stderr chunks and extracts an Agy conversation_id', async () => {
+    const child = makeFakeChild();
+    const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
+      setImmediate(() => {
+        child.stdout.push('{"type":"result","conversation_id":"agy-conv-123"}\n');
+        child.stderr.push('progress\n');
+        child.emit('close', 0, null);
+      });
+      return child as unknown as ChildProcess;
+    };
+    const events: Array<{ kind: string; chunk?: string }> = [];
+    const runner = new AgyCliRunner(spawnFn, (event) => events.push(event), silentLogger());
+    const outputSink = {
+      write: vi.fn(() => true),
+      onceDrain: vi.fn()
+    };
+
+    const result = await runner.invoke({
+      phase: 'p',
+      iteration: 1,
+      prompt: 'hi',
+      timeoutMs: 5_000,
+      cliPath: 'agy',
+      cwd: '/repo'
+    }, outputSink);
+
+    expect(result.cliSessionId).toBe('agy-conv-123');
+    expect(events).toContainEqual({
+      kind: 'stdout-chunk',
+      chunk: '{"type":"result","conversation_id":"agy-conv-123"}\n'
+    });
+    expect(events).toContainEqual({ kind: 'stderr-chunk', chunk: 'progress\n' });
+    expect(outputSink.write).toHaveBeenCalledWith(
+      'stdout',
+      '{"type":"result","conversation_id":"agy-conv-123"}\n'
+    );
+    expect(outputSink.write).toHaveBeenCalledWith('stderr', 'progress\n');
+  });
+
+  it('caps captured output while preserving truncation observability', async () => {
+    const child = makeFakeChild();
+    const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
+      setImmediate(() => {
+        child.stdout.emit('data', 'x'.repeat(MAX_STREAM_BUFFER_BYTES + 1024));
+        child.emit('exit', 0, null);
+      });
+      return child as unknown as ChildProcess;
+    };
+    const runner = new AgyCliRunner(spawnFn, null, silentLogger());
+
+    const result = await runner.invoke({
+      phase: 'p',
+      iteration: 1,
+      prompt: 'hi',
+      timeoutMs: 5_000,
+      cliPath: 'agy',
+      cwd: '/repo'
+    });
+
+    expect(result.stdoutBuffer.truncated).toBe(true);
+    expect(result.stdoutBuffer.totalBytes).toBe(MAX_STREAM_BUFFER_BYTES + 1024);
+    expect(result.stdoutBuffer.retainedBytes).toBeLessThanOrEqual(MAX_STREAM_BUFFER_BYTES);
+  });
+
+  it('marks idle timeout and terminates the child', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = makeFakeChild();
+      const runner = new AgyCliRunner(
+        () => child as unknown as ChildProcess,
+        null,
+        silentLogger()
+      );
+      const invocation = runner.invoke({
+        phase: 'p',
+        iteration: 1,
+        prompt: 'hi',
+        timeoutMs: 1_000,
+        cliPath: 'agy',
+        cwd: '/repo'
+      });
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      child.emit('exit', null, 'SIGTERM');
+
+      const result = await invocation;
+      expect(result.timedOut).toBe(true);
+      expect(result.killed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects shell: true', async () => {

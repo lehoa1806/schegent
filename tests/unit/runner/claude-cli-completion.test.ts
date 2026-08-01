@@ -56,6 +56,109 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => {
+  it('grace-terminates after a real result emitted within the first five seconds', async () => {
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '\n{"type":"result","subtype":"success"}\n'
+        ),
+        10
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const raw = await p;
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+    expect(raw.killed).toBe(false);
+  });
+
+  it('ignores a replayed terminal result until a resumed turn emits fresh evidence', async () => {
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        10
+      );
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '\n{"type":"result","subtype":"success"}\n'
+        ),
+        10_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const raw = await p;
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+  });
+
+  it('does not treat replay events before an old result as a fresh resumed turn', async () => {
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          '{"type":"system","subtype":"init"}\n' +
+            COMPLETE_OUTPUT +
+            '{"type":"result","subtype":"success"}\n'
+        ),
+        10
+      );
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+        ),
+        10_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const raw = await p;
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+  });
+
   it('grace-terminates a process that emits the completion marker but does not exit', async () => {
     const child = makeFakeChild(true);
     const spawnFn: SpawnFn = () => {

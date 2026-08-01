@@ -18,6 +18,7 @@ import type { TerminationReason } from '../state/workflow-run';
  * audit payloads bounded.
  */
 export const STDOUT_SUMMARY_LIMIT = 4 * 1024;
+export const OUTPUT_TRUNCATED_WARNING = 'output-truncated-unclassifiable';
 
 /**
  * Truncate a stdout/stderr buffer to `STDOUT_SUMMARY_LIMIT` bytes. Pure
@@ -28,7 +29,26 @@ export function summarize(text: string): string {
   return text.slice(0, STDOUT_SUMMARY_LIMIT);
 }
 
-
+/**
+ * A retained head/tail cannot prove that its discarded middle contained no
+ * fatal signature or API error. Never advance on any parser result when either
+ * source buffer is incomplete.
+ */
+export function failClosedOnTruncatedOutput(
+  result: InvocationResult,
+  truncated: boolean
+): InvocationResult {
+  if (!truncated) return result;
+  const existingWarnings = result.kind === 'malformed' ? result.warnings : [];
+  if (existingWarnings.includes(OUTPUT_TRUNCATED_WARNING)) return result;
+  return {
+    kind: 'malformed',
+    warnings: [...existingWarnings, OUTPUT_TRUNCATED_WARNING],
+    auditEntry: result.auditEntry,
+    ...(result.kind === 'malformed' && result.fatalCause ? { fatalCause: result.fatalCause } : {}),
+    ...(result.kind === 'malformed' && result.fatalSource ? { fatalSource: result.fatalSource } : {})
+  };
+}
 export function mapOutcome(result: InvocationResult, exitCode: number | null): PhaseOutcome {
   switch (result.kind) {
     case 'clean':
@@ -45,7 +65,9 @@ export function mapOutcome(result: InvocationResult, exitCode: number | null): P
     case 'malformed':
       // Feature 010 FR-004: a fatal-classification result terminates the
       // phase on the current invocation regardless of exit code.
-      if (result.fatalCause) return 'failed';
+      if (result.fatalCause || result.warnings.includes(OUTPUT_TRUNCATED_WARNING)) {
+        return 'failed';
+      }
       return exitCode !== null && exitCode !== 0 ? 'failed' : 'issues_remain';
   }
 }
@@ -69,7 +91,9 @@ export function mapTerminationReason(
       // the controller's pendingRetryCause is the load-bearing distinguisher).
       return 'error';
     case 'malformed':
-      if (result.fatalCause) return 'error';
+      if (result.fatalCause || result.warnings.includes(OUTPUT_TRUNCATED_WARNING)) {
+        return 'error';
+      }
       return exitCode !== null && exitCode !== 0 ? 'error' : 'remaining_issues';
   }
 }

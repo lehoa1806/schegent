@@ -1,9 +1,10 @@
 # Inspect Raw Session Transcripts
 
 A **raw session transcript** is a per-run, append-only text file that captures
-the verbatim prompt sent to the Claude CLI and the verbatim stdout/stderr/exit
-code returned. It is intended for **local developer debugging only**, parallel
-to and distinct from the structured `.schegent/audit.log`.
+the verbatim prompt sent to the selected backend CLI and the verbatim
+stdout/stderr/exit code returned. It is intended for **local developer
+debugging only**, parallel to and distinct from the structured
+`.schegent/audit.log`.
 
 ## File location
 
@@ -59,6 +60,12 @@ Timestamp: <ISO-8601>
 - **Best-effort**: I/O failures (read-only FS, permission, full disk) are
   caught and surfaced once per `runId` to `.schegent/audit.log` as a warn-level
   log line. They never abort the workflow run.
+- **Bounded-memory capture**: stdout and stderr are teed with stream
+  backpressure into private mode-`0600` files under the OS-managed temporary
+  directory, then streamed into the append-only transcript and removed at
+  invocation end. Abandoned spools are scavenged after their owner process is
+  gone. Sink drain time is excluded from the CLI idle timeout. The transcript
+  does not inherit the parser buffer's head/tail truncation.
 
 ## Quick inspection commands
 
@@ -99,18 +106,16 @@ Guards in place:
 | Never exposed via webview / sidebar / dashboard / output channel | by design (no IPC plumbing reads the file) |
 | Never sanitized — raw is raw | [src/audit/raw-transcript-writer.ts](../../src/audit/raw-transcript-writer.ts) |
 
-## Buffer truncation flag
+## Parser-buffer truncation flag
 
-The Claude CLI runner caps each stream at 4 MiB. When a phase emits
-more than that, the captured `stdout` / `stderr` shown above will be
-truncated at the cap and the discarded suffix vanishes. Feature 042
-made the cap **observable**: the matching `phase-end` audit entry in
-`.schegent/audit.log` carries `stdoutTruncated: true` and/or
-`stderrTruncated: true` whenever the runner discarded chunks. The
-flags are omitted from the payload on the common (non-truncated)
-path — `grep stdoutTruncated .schegent/audit.log` lists every
-run/phase that hit the cap. When you see one, the raw transcript
-above is your only way to retrieve the discarded tail.
+Each backend caps its in-memory parsing buffers at 4 MiB, retaining an ordered
+head and rolling tail. The matching `phase-end` audit entry carries
+`stdoutTruncated: true` and/or `stderrTruncated: true` when this occurs; the
+flags are omitted on the common non-truncated path. A result that would
+otherwise be clean fails closed as the terminal
+`output-truncated-unclassifiable` failure, because fatal evidence could have
+appeared in the discarded middle. The raw transcript remains verbatim and is
+the supported place to inspect those omitted bytes.
 
 ## When to inspect
 

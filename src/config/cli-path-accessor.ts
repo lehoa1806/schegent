@@ -11,15 +11,24 @@ import * as vscode from 'vscode';
  * pipelines can be workspace-shared.
  */
 export function resolveCliPath(runnerKind: string, workspaceRoot: string, fallbackDefaultPath: string): string {
+  const config = vscode.workspace.getConfiguration(
+    'schegent',
+    vscode.Uri.file(workspaceRoot)
+  );
   if (runnerKind === 'agy') {
-    return vscode.workspace
-      .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-      .get<string>('agy.path', 'agy');
+    return readNonBlankPath(config.get<unknown>('agy.path'), 'agy');
   }
   if (runnerKind === 'codex') {
-    return vscode.workspace
-      .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-      .get<string>('codex.path', 'codex');
+    return readNonBlankPath(config.get<unknown>('codex.path'), 'codex');
   }
-  return fallbackDefaultPath; // 'claude' or unrecognized falls back to the default setting
+  return readNonBlankPath(
+    config.get<unknown>('cli.path'),
+    readNonBlankPath(fallbackDefaultPath, 'claude')
+  );
+}
+
+function readNonBlankPath(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : fallback;
 }

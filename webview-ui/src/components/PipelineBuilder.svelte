@@ -16,6 +16,17 @@
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
   const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
+  const GIT_METADATA_WRITE_PHASE_IDS = new Set([
+    'speckit-specify',
+    'specify-brainstorm',
+    'superpowers-implement',
+    'finalize',
+    'superpowers-review-close'
+  ]);
+
+  function runnerOptionDisabled(phaseId: string, runner: string): boolean {
+    return GIT_METADATA_WRITE_PHASE_IDS.has(phaseId) && (runner === '' || runner === 'codex');
+  }
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -67,8 +78,8 @@
   type MutablePhase = {
     id: string; name: string; instruction: string;
     model?: string; effort?: PhaseDefinition['effort'];
-    timeoutSeconds?: number; retryCondition?: string;
-    runner?: string;
+    timeoutSeconds?: number; loopable?: boolean; retryCondition?: string;
+    runner?: PhaseDefinition['runner'];
     [k: string]: unknown;
   };
 
@@ -115,6 +126,7 @@
         model?: string;
         effort?: PhaseDefinition['effort'];
         timeoutSeconds?: number;
+        loopable?: boolean;
         retryCondition?: string;
         runner?: string;
       } = {
@@ -125,8 +137,9 @@
       if (typeof p.model === 'string' && p.model.length > 0) row.model = p.model;
       if (typeof p.effort === 'string' && p.effort.length > 0) row.effort = p.effort;
       if (typeof p.timeoutSeconds === 'number') row.timeoutSeconds = p.timeoutSeconds;
+      if (typeof p.loopable === 'boolean') row.loopable = p.loopable;
       if (typeof p.retryCondition === 'string') row.retryCondition = p.retryCondition;
-      if (typeof p.runner === 'string' && p.runner.length > 0 && p.runner !== '(Default)') row.runner = p.runner;
+      if (p.runner) row.runner = p.runner;
       return row;
     });
     void savePhasesHelper(payload).then((result) => {
@@ -136,6 +149,15 @@
   }
   function saveModels(): void {
     void saveModelsHelper([...models]);
+  }
+
+  function phasePrecedenceLabel(phase: PhaseDefinition): string | null {
+    if (!phase.runner) return null;
+    const layer = snapshot.phasePrecedence?.[`${phase.id}::runner`];
+    if (!layer || layer === 'unset') return null;
+    if (layer === 'built-in') return 'Built-in';
+    if (layer === 'workspace') return 'Workspace';
+    return 'User';
   }
 
 
@@ -524,11 +546,17 @@
                   <label class="form-field" style="flex: 1">
                     <span class="form-label">
                       Runner
+                      {#if phasePrecedenceLabel(phaseRef)}
+                        <span
+                          class="precedence-badge"
+                          data-testid="phases-runner-precedence-{phaseRef.id}"
+                        >{phasePrecedenceLabel(phaseRef)}</span>
+                      {/if}
                     </span>
                     <select class="select-input" data-testid="phases-runner-{phaseRef.id}" value={phases[idx].runner ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].runner = v ? (v as PhaseDefinition['runner']) : undefined; }}>
-                      <option value="">[Inherit / Default]</option>
+                      <option value="" disabled={runnerOptionDisabled(phaseRef.id, '')}>[Inherit / Default]</option>
                       {#each RUNNER_KINDS as runner}
-                        <option value={runner}>{runner}</option>
+                        <option value={runner} disabled={runnerOptionDisabled(phaseRef.id, runner)}>{runner}</option>
                       {/each}
                     </select>
                   </label>
@@ -628,6 +656,7 @@
   .form-field { display: flex; flex-direction: column; gap: 4px; }
   .form-field.full-width { grid-column: 1 / -1; }
   .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
+  .precedence-badge { margin-left: 6px; padding: 1px 5px; border: 1px solid var(--schegent-divider); border-radius: 999px; color: var(--schegent-fg); font-size: 0.8em; font-weight: 500; }
   .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
   .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
   .phases-sequence-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }

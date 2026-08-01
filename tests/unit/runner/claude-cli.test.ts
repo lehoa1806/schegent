@@ -98,13 +98,18 @@ describe('ClaudeCliRunner.invoke', () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {
       setImmediate(() => {
+        child.emit('exit', 0, null);
         child.stdout.emit('data', '[SCHEGENT_STATUS: CLEAR]\n');
         child.stderr.emit('data', 'warn: nothing important\n');
-        child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
+    const outputSink = {
+      write: vi.fn(() => true),
+      onceDrain: vi.fn()
+    };
     const result = await runner.invoke({
       phase: 'speckit-specify',
       iteration: 1,
@@ -112,7 +117,7 @@ describe('ClaudeCliRunner.invoke', () => {
       timeoutMs: 5_000,
       cliPath: 'claude',
       cwd: '/repo'
-    });
+    }, outputSink);
     const stdout = Array.from(result.stdoutBuffer.decompressStream()).join("");
     expect(stdout).toContain('[SCHEGENT_STATUS: CLEAR]');
     const stderr = Array.from(result.stderrBuffer.decompressStream()).join("");
@@ -120,6 +125,44 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
     expect(result.killed).toBe(false);
+    expect(outputSink.write).toHaveBeenCalledWith('stdout', '[SCHEGENT_STATUS: CLEAR]\n');
+    expect(outputSink.write).toHaveBeenCalledWith('stderr', 'warn: nothing important\n');
+  });
+
+  it('does not count raw-output sink backpressure against the idle timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = makeFakeChild();
+      const runner = new ClaudeCliRunner(() => child as unknown as ChildProcess);
+      let releaseDrain: (() => void) | undefined;
+      const invocation = runner.invoke(
+        {
+          phase: 'speckit-implement',
+          iteration: 1,
+          prompt: 'p',
+          timeoutMs: 1_000,
+          cliPath: 'claude',
+          cwd: '/repo'
+        },
+        {
+          write: () => false,
+          onceDrain: (_stream, callback) => {
+            releaseDrain = callback;
+          }
+        }
+      );
+
+      child.stdout.emit('data', 'large-output-chunk');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      releaseDrain?.();
+      child.emit('close', 0, null);
+      const result = await invocation;
+      expect(result.timedOut).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('marks timedOut and kills the child after timeoutMs', async () => {

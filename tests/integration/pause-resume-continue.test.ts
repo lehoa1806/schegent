@@ -94,7 +94,8 @@ function makeCleanOutput(): RawInvocationOutput {
     exitCode: 0,
     killed: false,
     timedOut: false,
-    durationMs: 1
+    durationMs: 1,
+    cliSessionId: 'owned-claude-session'
   };
 }
 
@@ -392,7 +393,8 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
       exitCode: 0,
       killed: false,
       timedOut: false,
-      durationMs: 1
+      durationMs: 1,
+      cliSessionId: 'owned-claude-session'
     });
     harness.setOutcome([
       () => {

@@ -142,7 +142,13 @@
           ],
           "default": "claude",
           "scope": "application",
-          "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in single-shot `exec --no-stream` mode. `agy` spawns the Agy CLI with `--dangerously-skip-permissions` and `--output-format stream-json`. The prompt is piped over stdin for all backends. Per-phase overrides can be set via `schegent.phases[*].runner`. See docs/operations/backends.md for the contract any backend must honor."
+          "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in non-interactive `exec --json` mode with a workspace-write sandbox. `agy` spawns the Agy CLI with `--dangerously-skip-permissions` and `--output-format stream-json`. The prompt is piped over stdin for all backends. Per-phase overrides can be set via `schegent.phases[*].runner`. See docs/operations/backends.md for the contract any backend must honor."
+        },
+        "schegent.codex.path": {
+          "type": "string",
+          "default": "codex",
+          "scope": "application",
+          "description": "Path to the Codex CLI binary. Defaults to `codex` (resolved via PATH)."
         },
         "schegent.agy.path": {
           "type": "string",
@@ -205,15 +211,14 @@
           "type": "array",
           "default": [],
           "scope": "resource",
-          "markdownDescription": "Custom phase definitions. Each phase is a reusable named Claude CLI invocation step. User-defined phases with the same `id` as a built-in phase **shadow** the built-in (replace it). Built-in phase ids are reserved: `specify`, `clarify`, `plan`, `tasks`, `analyze`, `implement`, `finalize`, `done`.",
+          "markdownDescription": "Custom phase definitions. Each phase is a reusable named backend invocation step. User-defined phases with the same `id` as a built-in phase **shadow** the built-in (replace it).",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": [
               "id",
               "name",
-              "instruction",
-              "loopable"
+              "instruction"
             ],
             "properties": {
               "id": {
@@ -231,12 +236,12 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 8192,
-                "markdownDescription": "Phase-specific directive injected into the Claude CLI prompt."
+                "markdownDescription": "Phase-specific directive injected into the selected backend prompt."
               },
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "markdownDescription": "Optional Claude model id passed as `--model <id>` to the CLI for this phase only."
+                "markdownDescription": "Optional backend model id passed to the selected CLI for this phase only."
               },
               "effort": {
                 "type": "string",
@@ -247,7 +252,7 @@
                   "xhigh",
                   "max"
                 ],
-                "markdownDescription": "Optional reasoning effort level passed as `--effort <level>` to the CLI for this phase only."
+                "markdownDescription": "Optional reasoning effort level passed to the selected CLI for this phase only. Agy caps `xhigh` and `max` to `high`."
               },
               "timeoutSeconds": {
                 "type": "integer",
@@ -258,12 +263,21 @@
               "loopable": {
                 "type": "boolean",
                 "default": false,
-                "markdownDescription": "When `true`, the phase re-runs until its stdout signals `[SCHEGENT_STATUS: CLEAR]`."
+                "markdownDescription": "Deprecated compatibility field retained for existing phase settings. Loop behavior is controlled by retryCondition and phase capabilities."
               },
               "retryCondition": {
                 "type": "string",
                 "minLength": 1,
                 "markdownDescription": "Optional retry-condition DSL expression. When set AND the phase invocation produces a well-formed audit-log block, the expression is evaluated against the audit-entry's `metrics` map (extracted from `<identifier>: <number>` lines inside the SCHEGENT AUDIT LOG block). A truthy result loops the phase; a falsy result advances. The DSL supports identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive), signed numeric literals, comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), boolean combinators (`and` / `or` / `&&` / `||`), unary negation (`not` / `!`), and parentheses. Operator precedence (highest to lowest): `not`/`!` > comparisons > `and`/`&&` > `or`/`||`. Arithmetic, function calls, and member access are NOT supported. Invalid expressions are stripped at configuration load with a one-shot host-logger warning; the surrounding phase remains loadable and falls back to default loop semantics. Examples: `\"open_questions > 0\"`, `\"unresolved_findings > 0 or open_questions > 0\"`, `\"not (confidence > 0.85)\"`."
+              },
+              "runner": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "codex",
+                  "agy"
+                ],
+                "markdownDescription": "Optional backend override for this phase. When omitted, `schegent.backend.runner` is used."
               }
             }
           }

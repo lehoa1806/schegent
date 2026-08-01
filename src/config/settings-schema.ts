@@ -95,6 +95,13 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['claude', 'codex', 'agy'],
     docLabel: 'Backend runner selection'
   },
+  'schegent.codex.path': {
+    key: 'schegent.codex.path',
+    type: 'string',
+    default: 'codex',
+    scope: 'application',
+    docLabel: 'Codex CLI binary path'
+  },
   'schegent.agy.path': {
     key: 'schegent.agy.path',
     type: 'string',

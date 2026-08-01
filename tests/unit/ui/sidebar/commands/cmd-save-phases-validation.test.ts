@@ -31,6 +31,7 @@ vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
 import { handler as saveHandler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SavePhasesCommand } from '../../../../../src/ui/sidebar/messages';
+import { SUPPORTED_BACKENDS } from '../../../../../src/runner/backend-runner-factory';
 
 function buildCtx(): {
   ctx: Parameters<typeof saveHandler>[0];
@@ -157,6 +158,109 @@ describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
     expect(updateConfigCalls).toHaveLength(1);
     expect(updateConfigCalls[0].key).toBe('phases');
   });
+
+  it('round-trips a legacy boolean loopable field', async () => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    const phases = [
+      { id: 'legacy-loop', name: 'Legacy loop', instruction: 'Do work', loopable: true }
+    ];
+
+    await saveHandler(ctx, makeCmd(phases));
+
+    expect(acks[0].status).toBe('accepted');
+    expect(updateConfigCalls[0].value).toEqual(phases);
+  });
+
+  it('rejects a non-boolean loopable field', async () => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+
+    await saveHandler(ctx, makeCmd([
+      { id: 'legacy-loop', name: 'Legacy loop', instruction: 'Do work', loopable: 'yes' }
+    ]));
+
+    expect(acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'phase-validation:legacy-loop:loopable:must-be-boolean'
+    });
+    expect(updateConfigCalls).toEqual([]);
+  });
+
+  it.each(SUPPORTED_BACKENDS)('accepts supported runner %s', async (runner) => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    await saveHandler(ctx, makeCmd([
+      { id: 'valid-id', name: 'Test Phase', instruction: 'Do work', runner }
+    ]));
+    expect(acks[0].status).toBe('accepted');
+    expect(updateConfigCalls).toHaveLength(1);
+  });
+
+  it.each(['unknown', '', 42, null])('rejects invalid runner %j', async (runner) => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    await saveHandler(ctx, makeCmd([
+      { id: 'valid-id', name: 'Test Phase', instruction: 'Do work', runner }
+    ]));
+    expect(acks[0].status).toBe('rejected');
+    expect(acks[0].reason).toContain('runner:must-be-one-of-claude,codex,agy');
+    expect(updateConfigCalls).toEqual([]);
+  });
+
+  it.each([
+    'speckit-specify',
+    'specify-brainstorm',
+    'superpowers-implement',
+    'finalize',
+    'superpowers-review-close'
+  ] as const)('accepts protected phase %s with its pinned runner omitted', async (id) => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    await saveHandler(ctx, makeCmd([
+      { id, name: 'Git phase', instruction: 'Commit and merge the work.' }
+    ]));
+
+    expect(acks[0].status).toBe('accepted');
+    expect(updateConfigCalls).toHaveLength(1);
+  });
+
+  it.each([
+    'speckit-specify',
+    'specify-brainstorm',
+    'superpowers-implement',
+    'finalize',
+    'superpowers-review-close'
+  ] as const)('rejects protected phase %s with runner codex', async (id) => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    await saveHandler(ctx, makeCmd([
+      {
+        id,
+        name: 'Git phase',
+        instruction: 'Commit and merge the work.',
+        runner: 'codex'
+      }
+    ]));
+
+    expect(acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: `phase-validation:${id}:runner:git-metadata-write-required`
+    });
+    expect(updateConfigCalls).toEqual([]);
+  });
+
+  it.each(['claude', 'agy'] as const)(
+    'accepts a Git-mutating phase with explicit %s runner',
+    async (runner) => {
+      const { ctx, acks, updateConfigCalls } = buildCtx();
+      await saveHandler(ctx, makeCmd([
+        {
+          id: 'finalize',
+          name: 'Finalize',
+          instruction: 'Commit and merge the work.',
+          runner
+        }
+      ]));
+
+      expect(acks[0].status).toBe('accepted');
+      expect(updateConfigCalls).toHaveLength(1);
+    }
+  );
 
   it('rejects on first invalid phase in a multi-phase payload', async () => {
     const { ctx, acks, updateConfigCalls } = buildCtx();

@@ -1,9 +1,8 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
-
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
-import { SUPPORTED_BACKENDS } from '../runner/backend-runner-factory';
-
+import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { phaseRunnerPolicyError } from './phase-runner-policy';
+import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
@@ -11,6 +10,7 @@ export interface PhaseDef {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
+  readonly loopable?: boolean;
   // Feature 010 — when set and the phase invocation produces a well-formed
   // audit-log block, the controller evaluates this DSL expression against the
   // entry's metrics map to decide loop-vs-advance. Captured in the
@@ -214,7 +214,8 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'speckit-specify',
     name: 'Spec-kit Specify',
     instruction: PHASE_INSTRUCTIONS['speckit-specify'],
-    model: 'claude-opus-5'
+    model: 'claude-opus-5',
+    runner: 'claude'
   }),
   Object.freeze({
     id: 'speckit-clarify',
@@ -266,7 +267,8 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
     id: 'finalize',
     name: 'Finalize',
     instruction: PHASE_INSTRUCTIONS.finalize,
-    model: 'claude-opus-5'
+    model: 'claude-opus-5',
+    runner: 'claude'
   }),
   Object.freeze({
     id: 'bugfix-report',
@@ -296,17 +298,20 @@ export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
   Object.freeze({
     id: 'specify-brainstorm',
     name: 'Specify with Brainstorm',
-    instruction: PHASE_INSTRUCTIONS['specify-brainstorm']
+    instruction: PHASE_INSTRUCTIONS['specify-brainstorm'],
+    runner: 'claude'
   }),
   Object.freeze({
     id: 'superpowers-implement',
     name: 'Superpowers Implement',
-    instruction: PHASE_INSTRUCTIONS['superpowers-implement']
+    instruction: PHASE_INSTRUCTIONS['superpowers-implement'],
+    runner: 'claude'
   }),
   Object.freeze({
     id: 'superpowers-review-close',
     name: 'Superpowers Review and Close',
-    instruction: PHASE_INSTRUCTIONS['superpowers-review-close']
+    instruction: PHASE_INSTRUCTIONS['superpowers-review-close'],
+    runner: 'claude'
   })
 ]);
 
@@ -429,6 +434,7 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'model',
   'effort',
   'timeoutSeconds',
+  'loopable',
   'retryCondition',
   'runner'
 ]);
@@ -438,7 +444,7 @@ const ALLOWED_PIPELINE_FIELDS = new Set(['id', 'name', 'phases']);
 export function isPhaseDef(value: unknown): value is PhaseDef {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return (
+  const structurallyValid = (
     typeof v.id === 'string' &&
     typeof v.name === 'string' &&
     typeof v.instruction === 'string' &&
@@ -446,10 +452,12 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.effort === undefined ||
       (typeof v.effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v.effort))) &&
     (v.timeoutSeconds === undefined || typeof v.timeoutSeconds === 'number') &&
+    (v.loopable === undefined || typeof v.loopable === 'boolean') &&
     (v.retryCondition === undefined ||
       (typeof v.retryCondition === 'string' && v.retryCondition.length > 0)) &&
-    (v.runner === undefined || typeof v.runner === 'string')
+    (v.runner === undefined || isBackendRunnerKind(v.runner))
   );
+  return structurallyValid && phaseRunnerPolicyError(v.id as string, v.runner as BackendRunnerKind | undefined) === null;
 }
 
 export function isPipelineDef(value: unknown): value is PipelineDef {
@@ -505,7 +513,7 @@ export function mergeCatalog(
         });
       }
       layerPhaseIds.add(p.id);
-      phasesMap.set(p.id, p);
+      phasesMap.set(p.id, mergePhaseRunnerPolicy(phasesMap.get(p.id), p));
     }
 
     const layerPipelineIds = new Set<string>();
@@ -649,17 +657,6 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
     }
   }
 
-  if (v.runner !== undefined) {
-    if (typeof v.runner !== 'string' || !(SUPPORTED_BACKENDS as readonly string[]).includes(v.runner)) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'runner',
-        message: `Phase.runner must be one of ${SUPPORTED_BACKENDS.join(', ')}`
-      });
-    }
-  }
-
   if (v.timeoutSeconds !== undefined) {
     if (
       typeof v.timeoutSeconds !== 'number' ||
@@ -676,6 +673,15 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
     }
   }
 
+  if (v.loopable !== undefined && typeof v.loopable !== 'boolean') {
+    errors.push({
+      source: 'phase',
+      id,
+      field: 'loopable',
+      message: 'Phase.loopable must be a boolean when set'
+    });
+  }
+
   if (v.retryCondition !== undefined) {
     if (typeof v.retryCondition !== 'string' || v.retryCondition.length === 0) {
       errors.push({
@@ -687,24 +693,28 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
     }
   }
 
-  // Feature 074 — per-phase backend runner validation.
-  if (v.runner !== undefined) {
-    if (typeof v.runner !== 'string' || v.runner.length === 0) {
+  const runnerValid = v.runner === undefined || isBackendRunnerKind(v.runner);
+  if (!runnerValid) {
+    errors.push({
+      source: 'phase',
+      id,
+      field: 'runner',
+      message: `Phase.runner must be one of ${SUPPORTED_BACKENDS.join(', ')}`
+    });
+  }
+
+  if (typeof v.id === 'string' && runnerValid) {
+    const policyError = phaseRunnerPolicyError(
+      v.id,
+      v.runner as BackendRunnerKind | undefined
+    );
+    if (policyError !== null) {
       errors.push({
         source: 'phase',
         id,
         field: 'runner',
-        message: 'Phase.runner must be a non-empty string when set'
+        message: policyError
       });
-    } else {
-      if (!(SUPPORTED_BACKENDS as readonly string[]).includes(v.runner)) {
-        errors.push({
-          source: 'phase',
-          id,
-          field: 'runner',
-          message: `Phase.runner must be one of ${(SUPPORTED_BACKENDS as readonly string[]).join(', ')}`
-        });
-      }
     }
   }
 

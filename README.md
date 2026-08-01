@@ -68,9 +68,9 @@ queue.
 - **Visual Studio Code** `^1.85.0` (April 2024 or newer).
 - **Node.js** `>= 20` (for building from source; not required to run
   the published extension).
-- **Claude Code CLI** installed and authenticated on `PATH`, or an
-  absolute path provided via `schegent.cli.path`.
-  - Optional: **Codex CLI** if you select the `codex` backend.
+- At least one supported backend CLI installed and authenticated: **Claude
+  Code** (`schegent.cli.path`), **Codex** (`schegent.codex.path`), or **Agy**
+  (`schegent.agy.path`). Claude is the default backend.
 - A **trusted workspace folder** open in VS Code. Schegent is
   intentionally inert in untrusted workspaces.
 - **Plugins**: Ensure you have installed and set up the **Github Speckit** and **Superpowers** plugins to enable the complete spec-driven development experience.
@@ -115,16 +115,15 @@ Open the Schegent sidebar (activity bar icon). The header badge shows
 one of:
 
 - **CLI ready** (green) — Schegent found and authenticated the CLI.
-- **CLI not found** (red) — set `schegent.cli.path` to the absolute
-  path of your `claude` binary.
-- **CLI unauthenticated** (yellow) — run `claude login` in a fresh
-  terminal, then click the badge to re-probe.
+- **CLI not found** (red) — set the path setting for the selected backend.
+- **CLI unauthenticated** (yellow) — authenticate the selected backend in a
+  fresh terminal, then click the badge to re-probe.
 
 ### Fast Troubleshooting
 
 | Symptom | Check | Recovery |
 |---|---|---|
-| Sidebar shows **CLI not found** | `schegent.cli.path` and your shell `PATH` may differ from VS Code's extension-host environment. | Set `schegent.cli.path` to an absolute `claude` or `codex` binary path, then run `Schegent: Re-detect CLI Transport`. |
+| Sidebar shows **CLI not found** | The selected backend path and your shell `PATH` may differ from VS Code's extension-host environment. | Set `schegent.cli.path`, `schegent.codex.path`, or `schegent.agy.path` to the corresponding absolute binary path, then re-probe. |
 | Sidebar shows **CLI unauthenticated** | The backend CLI may not have a valid local session. | Run the backend login command in a normal terminal, then re-probe from Schegent. |
 | Run pauses on rate limit | The CLI returned a recoverable quota/reset signal. | Leave the queue paused for automatic backoff, or resume manually after credits recover. |
 | Secondary VS Code window is read-only | Another window owns the workspace lock. | Use the primary window for mutations, or close/reopen windows after the active run finishes. |
@@ -163,7 +162,7 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 | **Wake-up scheduler** | OS-native, per-user; chronological (`HH:MM`) or periodic (`Every Nm`/`Every Nh`). |
 | **Auto-compact override** | Export `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to control when Claude compacts context, per workspace. |
 | **Multi-window safe** | Secondary VS Code windows are read-only; only the primary host mutates state. |
-| **Backend abstraction** | Pluggable `BackendRunner` contract; `claude` (default) and `codex` (single-shot `exec --no-stream`) ship in-tree. |
+| **Backend abstraction** | Pluggable per-phase `BackendRunner` contract; `claude` (default), `codex`, and `agy` ship in-tree. |
 
 ## Documentation
 
@@ -224,7 +223,9 @@ Frequently used keys:
 |---|---|---|---|
 | `schegent.cli.path` | string | `"claude"` | Path to the Claude CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | `true` | Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables. |
-| `schegent.backend.runner` | enum | `"claude"` | `claude` or `codex`. |
+| `schegent.backend.runner` | enum | `"claude"` | `claude`, `codex`, or `agy`. |
+| `schegent.codex.path` | string | `"codex"` | Path to the Codex CLI binary. |
+| `schegent.agy.path` | string | `"agy"` | Path to the Agy CLI binary. |
 | `schegent.loop.maxIterations` | number | `10` | Max iterations per loopable phase (1–50). |
 | `schegent.invocation.timeoutSeconds` | number | `1800` | Per-phase wall-clock timeout. |
 | `schegent.watchdog.pollIntervalMinutes` | number | `30` | Watchdog cadence during paused runs. |

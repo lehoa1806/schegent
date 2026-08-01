@@ -8,7 +8,7 @@ remains the authoritative source for code-change hard rules.
 ## Purpose
 
 Schegent is a local-first VS Code extension that drives autonomous Speckit
-workflows through CLI backends (Claude Code, Codex). The extension host owns
+workflows through CLI backends (Claude Code, Codex, and Agy). The extension host owns
 orchestration, workspace state, audit evidence, runtime logging, IPC
 validation, and queue control. The Svelte webview is a presentation layer
 that renders host-projected snapshots and dispatches typed commands; the host
@@ -29,7 +29,7 @@ is the single source of truth.
 │    │ + typed IPC commands       │ (shell: false)    │ entry      │
 │    ▼                            ▼                   ▼            │
 │ ┌──────────────┐    ┌────────────────────────┐  ┌────────────┐   │
-│ │ Svelte       │    │ Claude / Codex CLI     │  │ launchd /  │   │
+│ │ Svelte       │    │ Claude/Codex/Agy CLI │  │ launchd /  │   │
 │ │ Webview      │    │ subprocess             │  │ systemd /  │   │
 │ │ (sidebar +   │    │ • stdin prompt         │  │ Task       │   │
 │ │  dashboard)  │    │ • stream-json stdout   │  │ Scheduler  │   │
@@ -68,7 +68,7 @@ src/
 ├── monitor/      subprocess progress, stall detection, monitor events
 ├── parser/       stdout/audit-block/usage/rate-limit/credit-error parsers
 ├── queue/        single-active-run queue registry and scheduling primitives
-├── runner/       Claude/Codex CLI adapters, BackendRunnerFactory, prompt builder
+├── runner/       Claude/Codex/Agy adapters, lazy registry, factory, prompt builder
 ├── services/     auto-drain, guarded-run, history-recorder, phase-log, session-cleanup
 ├── state/        memento-backed run/queue/history state and forward-only migrators
 ├── telemetry/    local process-resource sampling — must not import vscode
@@ -136,7 +136,7 @@ operator action / IPC      ┌────────────────�
                                         │ outcome
                                         ▼
                           ┌──────────────────────────────────┐
-                          │ src/runner/{claude,codex}-cli     │
+                          │ src/runner/{claude,codex,agy}-cli │
                           │   subprocess: shell:false         │
                           │   bounded buffers, env scrubbed   │
                           └─────────────┬────────────────────┘
@@ -199,16 +199,25 @@ prompt assembler, and continue-gate coordinator; see
 
 ### Runner (`src/runner/`)
 
-[backend-runner-factory.ts](src/runner/backend-runner-factory.ts) selects a
-concrete `BackendRunner` per `src/contracts/backend-runner.ts` interface.
+[backend-runner-registry.ts](src/runner/backend-runner-registry.ts) lazily
+constructs and caches a concrete `BackendRunner` per kind through
+[backend-runner-factory.ts](src/runner/backend-runner-factory.ts).
+`PhaseRunner` resolves the effective kind once per invocation from the phase
+override and global default, and `RunDriver` clears backend-owned session
+state before a runner transition.
 
 - [claude-cli.ts](src/runner/claude-cli.ts) — invokes Claude with `shell: false`,
-  bounded stdout and stderr, timeout/cancellation handling, optional safer
+  bounded stdout and stderr for parsing, a backpressured disk tee for the
+  verbatim raw transcript, timeout/cancellation handling, optional safer
   prompt transports, optional verbose-diagnostic flags, and a strict
   `request.isContinue === true` gate for `-c`.
 - [codex-cli.ts](src/runner/codex-cli.ts) — same `BackendRunner` contract;
-  uses stdin transport and `codex exec --no-stream`. Does not invent
+  uses stdin transport and `codex exec --json --sandbox workspace-write`.
+  Does not invent
   Claude-specific continuation or verbose-diagnostic behavior.
+- [agy-cli.ts](src/runner/agy-cli.ts) — uses stdin transport and
+  `--output-format stream-json`, continues with `--conversation <id>`, and
+  caps unsupported `xhigh`/`max` effort values to `high` with a warning.
 - [prompt-builder.ts](src/runner/prompt-builder.ts) — composes the phase
   prompt template, previous-iteration sidecar context, and per-phase
   metadata. Pure module.
@@ -252,7 +261,11 @@ Three distinct sinks with different sanitization postures:
   records are never rewritten.
 - [raw-transcript-writer.ts](src/audit/raw-transcript-writer.ts) —
   verbatim prompts, stdout, stderr, and exit status. Best-effort,
-  intentionally unredacted, never surfaced through webview IPC.
+  intentionally unredacted, never surfaced through webview IPC. Subprocess
+  chunks are backpressured into mode-`0600` stdout/stderr spools under the
+  OS-managed temporary directory, streamed into the append-only transcript at
+  invocation end, and removed; abandoned spools are scavenged by owner PID;
+  the transcript therefore remains complete even when parser buffers truncate.
 - [verbose-diagnostic-writer.ts](src/audit/verbose-diagnostic-writer.ts) —
   opt-in diagnostic payloads. Diagnostic write failures fold into phase
   warnings; they never fail a run.
@@ -514,6 +527,7 @@ migration."
 
 - Workspace locks are released through the lock manager; retained locks are intentional pause exits only.
 - Phase timeout, cancellation, fatal signatures, rate limits, and parser failures map to explicit outcomes.
+- A clean token from truncated parser buffers fails closed as a terminal failure because fatal evidence may exist in the discarded middle.
 - Runtime artifact writes are best-effort unless the artifact is the structured audit record required for evidence.
 - The controller owns `WorkflowRun` mutation. Webview and services request transitions through host commands or controller methods.
 - Settings writes are validated before mutation and attempt rollback on partial failure.
@@ -523,7 +537,7 @@ migration."
 ## Performance Notes
 
 - Hot parsers avoid broad JSON parsing. `rate-limit-reset-extractor` filters common allow events before parse; `invocation-usage` parses only short lines containing both `"type"` and `"result"`.
-- Runner buffers are bounded so malformed or noisy CLI output cannot grow memory without limit.
+- Runner parsing buffers are bounded head/tail windows so malformed or noisy CLI output cannot grow memory without limit; the independent raw-transcript tee applies disk-stream backpressure.
 - The sanitization hot path uses two precompiled regex unions (case-sensitive and case-insensitive) — each `SanitizedLogger.sanitize()` call costs two regex passes, not N (where N is the number of patterns).
 - Snapshot projection and phase-log display projection are pure and testable. The UI consumes already-projected state rather than walking disk state or live controller structures.
 - Performance budgets are pinned in `tests/perf/budgets.json` (feature 049).
