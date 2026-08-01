@@ -315,4 +315,52 @@ export class AgyCliRunner implements BackendRunner {
       }, SIGKILL_DELAY_MS).unref?.();
     }
   }
+
+  public async probeAvailability(cliPath: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        const child = safeSpawn(this.spawnFn, cliPath, ['--help'], {
+          stdio: 'ignore',
+          shell: false,
+          env: process.env
+        });
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => {
+          resolve(code === 0);
+        });
+      } catch (err) {
+        resolve(false);
+      }
+    });
+  }
+
+  public async detectModels(cliPath: string): Promise<readonly string[]> {
+    return new Promise((resolve) => {
+      try {
+        const child = safeSpawn(this.spawnFn, cliPath, ['models'], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          shell: false,
+          env: process.env
+        });
+        let stdout = '';
+        child.stdout?.on('data', (chunk: string) => {
+          stdout += chunk;
+        });
+        child.on('error', () => resolve(['Gemini 3.1 Pro (High)'])); // Fallback
+        child.on('close', (code) => {
+          if (code === 0) {
+            const models = stdout
+              .split('\n')
+              .map((m) => m.trim())
+              .filter((m) => m.length > 0);
+            resolve(models.length > 0 ? models : ['Gemini 3.1 Pro (High)']);
+          } else {
+            resolve(['Gemini 3.1 Pro (High)']);
+          }
+        });
+      } catch (err) {
+        resolve(['Gemini 3.1 Pro (High)']);
+      }
+    });
+  }
 }

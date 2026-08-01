@@ -17,7 +17,8 @@ import type {
   WorkflowSnapshot,
   PhaseDefinition,
   PipelineDefinition,
-  PhasePrecedenceProjection
+  PhasePrecedenceProjection,
+  BackendRunnerKind
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { savePhases as savePhasesHelper } from '../../lib/save-phases';
@@ -78,7 +79,8 @@ function buildSnapshot(
     producedAt: '2026-05-11T00:00:00.000Z',
     availablePipelines: Object.freeze(pipelines),
     availablePhases: Object.freeze(phases),
-    availableModels: Object.freeze(models),
+    availableModels: Object.freeze({ claude: models, codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    availableBackends: Object.freeze(['claude', 'codex', 'agy']) as readonly BackendRunnerKind[],
     generalSettings: IDLE_GENERAL_SETTINGS,
     ...(phasePrecedence !== undefined ? { phasePrecedence } : {})
   }) as unknown as unknown as WorkflowSnapshot;

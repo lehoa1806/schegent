@@ -100,7 +100,7 @@
     if (!initialized && snapshot.availablePipelines && snapshot.availablePhases && snapshot.availableModels) {
       pipelines = JSON.parse(JSON.stringify(snapshot.availablePipelines));
       phases = JSON.parse(JSON.stringify(snapshot.availablePhases));
-      const loaded = JSON.parse(JSON.stringify(snapshot.availableModels));
+      const loaded = JSON.parse(JSON.stringify(snapshot.availableModels.claude || []));
       models = loaded.length > 0 ? loaded : [...PRESEEDED_MODELS];
       initialized = true;
     }
@@ -527,7 +527,7 @@
                     </span>
                     <select class="select-input" data-testid="phases-model-{phaseRef.id}" value={phases[idx].model ?? ''} onchange={(e) => { phases[idx].model = (e.currentTarget as HTMLSelectElement).value || undefined; }}>
                       <option value="">[Inherit / Default Backend Model]</option>
-                      {#each models as model}
+                      {#each snapshot.availableModels[phases[idx].runner || snapshot.defaultRunnerKind || 'claude'] || [] as model}
                         <option value={model}>{model}</option>
                       {/each}
                     </select>
@@ -556,7 +556,7 @@
                     <select class="select-input" data-testid="phases-runner-{phaseRef.id}" value={phases[idx].runner ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].runner = v ? (v as PhaseDefinition['runner']) : undefined; }}>
                       <option value="" disabled={runnerOptionDisabled(phaseRef.id, '')}>[Inherit / Default]</option>
                       {#each RUNNER_KINDS as runner}
-                        <option value={runner} disabled={runnerOptionDisabled(phaseRef.id, runner)}>{runner}</option>
+                        <option value={runner} disabled={runnerOptionDisabled(phaseRef.id, runner)}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
                       {/each}
                     </select>
                   </label>

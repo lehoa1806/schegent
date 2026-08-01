@@ -25,6 +25,8 @@ import type {
   QueueItem,
   QueueProjection,
   QueueSummary,
+  PhaseDefinition,
+  BackendRunnerKind,
   WorkflowSnapshot
 } from '../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../lib/snapshot-types';
@@ -187,7 +189,8 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
       }) as PipelineDefinition
     ]),
     availablePhases: Object.freeze([]),
-    availableModels: Object.freeze([]),
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
     generalSettings
   });
   return Object.freeze({ ...base, ...overrides });

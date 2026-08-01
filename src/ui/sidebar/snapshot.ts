@@ -363,7 +363,8 @@ export interface WorkflowSnapshot {
   readonly activePipeline?: ActivePipelineSummary;
   readonly availablePipelines: readonly PipelineDef[];
   readonly availablePhases: readonly PhaseDef[];
-  readonly availableModels: readonly string[];
+  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableBackends: readonly BackendRunnerKind[];
   /**
    * Feature 011 — delayed-retry state on the active run. Always present
    * (even when there is no active run); fields are null/0 when no retry
@@ -572,7 +573,8 @@ export function buildIdleSnapshot(opts: {
     producedAt: opts.producedAt ?? new Date().toISOString(),
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
-    availableModels: Object.freeze([]),
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
+    availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
     delayedRetry: IDLE_DELAYED_RETRY,
     generalSettings: IDLE_GENERAL_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,

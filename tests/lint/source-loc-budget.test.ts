@@ -25,9 +25,9 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // budget is no longer the forcing function. See
   // specs/063-clean-all-confirmations/plan.md lines 26 and 66.
   { path: 'src/state/workspace-state.ts', maxLines: 10_000 },
-  // P4 audit-tail/activity extraction ratchet: 920 → 875. Mutable tail merge
-  // policy and elapsed/activity algorithms now have focused owners.
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 875 },
+  // P4 audit-tail/activity extraction ratchet: 920 → 900 (Bumped for availableBackends/availableModels).
+  // Mutable tail merge policy and elapsed/activity algorithms now have focused owners.
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 900 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

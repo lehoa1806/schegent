@@ -230,7 +230,12 @@
         {
           "name": "availableModels",
           "optional": false,
-          "type": "readonly string[]"
+          "type": "Record<BackendRunnerKind, readonly string[]>"
+        },
+        {
+          "name": "availableBackends",
+          "optional": false,
+          "type": "readonly BackendRunnerKind[]"
         },
         {
           "name": "delayedRetry",
