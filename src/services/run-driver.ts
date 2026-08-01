@@ -21,6 +21,9 @@ interface RunDriverOptions {
   readonly iterationCap: number;
   readonly timeoutMs: number;
   readonly inheritProcessEnv?: boolean;
+  // Feature 074 — resolve the CLI binary path for a given runner kind.
+  // When undefined, falls back to `cliPath` for all runners.
+  readonly cliPathResolver?: (runnerKind: string) => string;
 }
 
 type PhaseControlEventType =
@@ -87,6 +90,18 @@ export class RunDriver {
 
   public noteActivePhaseOverrideAbort(runId: string, phaseId: string): void {
     this.overriddenActivePhaseAborts.add(this.phaseOverrideAbortKey(runId, phaseId));
+  }
+
+  /**
+   * Feature 074 — resolve the CLI binary path for a given runner kind.
+   * When no per-runner resolver is configured, falls back to the global
+   * `cliPath` (backwards compatible with single-runner mode).
+   */
+  private resolveCliPath(runnerKind?: string): string {
+    if (runnerKind && this.deps.options.cliPathResolver) {
+      return this.deps.options.cliPathResolver(runnerKind);
+    }
+    return this.deps.options.cliPath;
   }
 
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
@@ -194,7 +209,10 @@ export class RunDriver {
             featureDescription: description,
             featureDir: run.featureDir || null,
             carriedIssues: this.carriedIssues,
-            cliPath: this.deps.options.cliPath,
+            // Feature 074 — resolve CLI path per-runner-kind. When a phase
+            // specifies a runner, use the cliPathResolver to pick the
+            // correct binary; otherwise fall back to the global cliPath.
+            cliPath: this.resolveCliPath(activePhaseDef?.runner),
             cwd: this.deps.options.cwd,
             timeoutMs: activePhaseDef?.timeoutSeconds
               ? activePhaseDef.timeoutSeconds * 1000
@@ -462,6 +480,23 @@ export class RunDriver {
             phasesCompleted: [...run.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(run, advanced);
+
+          // Feature 074 — session context reset on runner transition. When
+          // the next phase uses a different runner kind than the current phase,
+          // clear the cached session ID and session reuse flag so the new
+          // runner starts a fresh session. Cross-backend session continuation
+          // is explicitly out of scope (FR-016).
+          if (decision.kind === 'advance') {
+            const currentRunnerKind = activePhaseDef?.runner;
+            const nextPhaseDef = run.pipeline?.phases?.find(
+              (p: { id: string }) => p.id === decision.nextPhase
+            );
+            const nextRunnerKind = nextPhaseDef?.runner;
+            if (currentRunnerKind !== nextRunnerKind) {
+              pendingSessionReuse = false;
+              run = { ...run, lastCliSessionId: undefined };
+            }
+          }
         }
 
         if (run.currentPhase === 'done' && run.status === 'running') {

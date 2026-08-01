@@ -87,6 +87,16 @@
       },
       "default": [
         {
+          "key": "schegent.agy.path",
+          "type": "string",
+          "default": "agy",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
           "key": "schegent.audit.rotation.maxAgeDays",
           "type": "number",
           "default": 30,
@@ -113,7 +123,8 @@
           "scope": "application",
           "enum": [
             "claude",
-            "codex"
+            "codex",
+            "agy"
           ],
           "minimum": null,
           "maximum": null,

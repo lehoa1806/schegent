@@ -24,7 +24,7 @@ describe('projectPhasePrecedence', () => {
   it('emits composite keys of the form `<phaseId>::<fieldKey>` for every entry', () => {
     const out = projectPhasePrecedence([phase('a')], [], []);
     for (const k of Object.keys(out)) {
-      expect(k).toMatch(/^[a-z][a-z0-9-]{0,63}::(model|effort|timeoutSeconds|retryCondition)$/);
+      expect(k).toMatch(/^[a-z][a-z0-9-]{0,63}::(model|effort|timeoutSeconds|retryCondition|runner)$/);
     }
   });
 
@@ -100,7 +100,7 @@ describe('projectPhasePrecedence', () => {
     const keys = Object.keys(out);
     const ids = new Set(keys.map((k) => k.split('::')[0]));
     expect(ids).toEqual(new Set(['a', 'b', 'c']));
-    expect(keys.length).toBe(12); // 3 ids × 4 fieldKeys
+    expect(keys.length).toBe(15); // 3 ids × 5 fieldKeys
   });
 
   it('does not mutate frozen inputs (purity)', () => {

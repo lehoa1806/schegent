@@ -92,8 +92,15 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     type: 'enum',
     default: 'claude',
     scope: 'application',
-    enum: ['claude', 'codex'],
+    enum: ['claude', 'codex', 'agy'],
     docLabel: 'Backend runner selection'
+  },
+  'schegent.agy.path': {
+    key: 'schegent.agy.path',
+    type: 'string',
+    default: 'agy',
+    scope: 'application',
+    docLabel: 'Agy CLI binary path'
   },
   'schegent.loop.maxIterations': {
     key: 'schegent.loop.maxIterations',

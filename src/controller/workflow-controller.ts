@@ -41,6 +41,8 @@ export interface WorkflowControllerOptions {
   timeoutMs: number;
   inheritProcessEnv?: boolean;
   perPhaseRulesEnabled: boolean;
+  // Feature 074 — resolve the CLI binary path for a given runner kind.
+  cliPathResolver?: (runnerKind: string) => string;
 }
 
 // Feature 034 Item 047 — `DelayedRetryWatchdog` shape moved to
