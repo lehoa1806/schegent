@@ -79,8 +79,8 @@ flowchart LR
   P5 --> P6["P6: Final evidence and integration"]
 ```
 
-P0 was release-blocking for Feature 074. P1-P5 are complete. P6 is the final
-proof gate.
+P0 was release-blocking for Feature 074. P0-P6 are complete; the final
+integrated proof gate is recorded below.
 
 ## P0 — Close Feature 074 safely
 
@@ -445,6 +445,33 @@ For each independently reviewable work package:
    High, and Medium correctness finding before integration.
 7. Commit with one conventional commit per work package and merge locally only
    after the corresponding gate is green.
+
+### P6 completion evidence (2026-08-01)
+
+- Evidence-based code and security review found and resolved two visual-gate
+  gaps before integration: Linux workflows now install the browser's required
+  system dependencies, and the deterministic browser fixture blocks unexpected
+  outbound requests while preserving the loopback-only host boundary. The
+  theme matrix also applies the production VS Code body classes. No unresolved
+  Critical, High, or Medium correctness/security finding remains within the
+  supported product boundary.
+- Root and `webview-ui` dependency audits both completed with zero
+  vulnerabilities at `--audit-level=low`.
+- The complete pre-merge gate passed, then the P5 package was merged into
+  `develop` as `b994b96` and the complete post-merge gate passed again.
+- The integrated `npm run ci` evidence is: 3,360 host tests passed (10
+  skipped), 884 webview tests passed, 10 eval assertions passed, 15 browser
+  screenshots passed, 14 performance tests passed, and 3 deterministic E2E
+  tests passed. Typechecks, Svelte diagnostics, lint, and production builds
+  were clean.
+- Package smoke enforced the exact 20-file allowlist at 691,835 compressed
+  bytes and 1,693,386 uncompressed bytes. The isolated VS Code 1.131.0 host
+  completed all 11 integration modules with zero failures; the 4.50 MB metrics
+  fixture completed first-open/refresh derivation in 31.9/24.9 ms against
+  500/100 ms budgets.
+- P0-P6 were delivered as independently reviewable conventional commits and
+  local merge commits. The unrelated untracked `.vscode/` directory was not
+  staged or modified.
 
 ## Priorities and dependencies
 
