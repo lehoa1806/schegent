@@ -55,7 +55,6 @@ const opts = {
   cwd: '/repo',
   iterationCap: 5,
   timeoutMs: 5_000,
-  perPhaseRulesEnabled: false
 };
 
 const STANDARD_PIPELINE = Object.freeze({

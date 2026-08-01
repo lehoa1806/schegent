@@ -109,7 +109,6 @@ function makeController(
       cwd: tmpRoot,
       iterationCap: 5,
       timeoutMs: 5_000,
-      perPhaseRulesEnabled: false
     },
     sessionCleanup ? { sessionCleanup } : {}
   );

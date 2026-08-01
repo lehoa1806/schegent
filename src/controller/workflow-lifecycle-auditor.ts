@@ -5,6 +5,7 @@ import type {
   BreakpointAuditEvent,
   PhaseControlAuditEvent
 } from './phase-control-service';
+import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
 
 export type TaskLifecycleAuditEvent =
   | 'task-execution-started'
@@ -34,7 +35,7 @@ export class WorkflowLifecycleAuditor {
         phase: run.currentPhase,
         iteration: run.currentIteration,
         eventType,
-        payload,
+        payload: { ...payload },
         outcome: 'info'
       });
     } catch (err) {
@@ -79,6 +80,27 @@ export class WorkflowLifecycleAuditor {
     } catch (err) {
       this.logger.warn(
         `task-lifecycle audit append failed (${eventType}): ${(err as Error).message}`
+      );
+    }
+  }
+
+  public async emitOptionalPhaseFailureContinued(
+    run: WorkflowRun,
+    payload: OptionalPhaseFailureContinuedPayload
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({
+        runId: run.id,
+        phase: payload.phaseId,
+        iteration: payload.iteration,
+        eventType: 'phase-optional-failure-continued',
+        payload: { ...payload },
+        outcome: 'info'
+      });
+    } catch (err) {
+      this.logger.warn(
+        `optional-phase continuation audit append failed: ${(err as Error).message}`
       );
     }
   }

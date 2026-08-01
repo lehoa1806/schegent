@@ -406,26 +406,4 @@ export class ClaudeCliRunner implements BackendRunner {
     }
   }
 
-  public async probeAvailability(cliPath: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      try {
-        const child = safeSpawn(this.spawnFn, cliPath, ['--help'], {
-          stdio: 'ignore',
-          shell: false,
-          env: process.env // standard PATH resolution
-        });
-        child.on('error', () => resolve(false));
-        child.on('close', (code) => {
-          resolve(code === 0);
-        });
-      } catch (err) {
-        resolve(false);
-      }
-    });
-  }
-
-  public async detectModels(_cliPath: string): Promise<readonly string[]> {
-    // Claude CLI does not expose a models command today. Return known closed set.
-    return Object.freeze(['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']);
-  }
 }

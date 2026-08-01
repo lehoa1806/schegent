@@ -334,6 +334,99 @@ describe('PhaseSequencer.decideAfterPhase', () => {
     }
   });
 
+  it.each(['failed', 'timeout'] as const)(
+    'continues after optional terminal %s while preserving the original PhaseResult',
+    (outcome) => {
+      const run = makeRun({
+        currentPhase: 'optional-audit',
+        pipeline: {
+          id: 'custom',
+          name: 'Custom',
+          phases: [
+            {
+              id: 'optional-audit',
+              name: 'Optional Audit',
+              instruction: 'Audit without blocking.',
+              isRequired: false
+            },
+            {
+              id: 'next-phase',
+              name: 'Next Phase',
+              instruction: 'Continue.'
+            }
+          ]
+        }
+      });
+      const output = makeOutput({
+        result: { kind: 'malformed', warnings: [], auditEntry: null },
+        outcome,
+        terminationReason: outcome === 'timeout' ? 'timeout' : 'error',
+        exitCode: outcome === 'timeout' ? null : 7
+      });
+      const activePhaseDef = run.pipeline?.phases[0];
+
+      const decision = sequencer.decideAfterPhase({
+        run,
+        output,
+        iteration: 3,
+        iterationCap: 5,
+        activePhaseDef,
+        latestRun: run,
+        now: NOW
+      });
+
+      expect(decision.kind).toBe('advance-or-loop');
+      if (decision.kind === 'advance-or-loop') {
+        expect(decision.transition).toMatchObject({
+          kind: 'advance',
+          nextPhase: 'next-phase'
+        });
+        expect(decision.phaseResult).toMatchObject({
+          phase: 'optional-audit',
+          iteration: 3,
+          result: outcome,
+          terminationReason: output.terminationReason,
+          exitCode: output.exitCode
+        });
+      }
+    }
+  );
+
+  it('keeps an optional verification phase paused on non-clean output', () => {
+    const run = makeRun({
+      currentPhase: 'bugfix-verify-pre',
+      pipeline: {
+        id: 'bugfix',
+        name: 'Bugfix',
+        phases: [
+          {
+            id: 'bugfix-verify-pre',
+            name: 'Verify',
+            instruction: 'Verify.',
+            isRequired: false
+          }
+        ]
+      }
+    });
+    const output = makeOutput({
+      result: { kind: 'malformed', warnings: [], auditEntry: null },
+      outcome: 'failed',
+      terminationReason: 'error'
+    });
+
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: run.pipeline?.phases[0],
+      latestRun: run,
+      now: NOW
+    });
+
+    expect(decision.kind).toBe('pause-verify');
+  });
+
   it('routes capability-loopable iteration exceedance to fail with capExhausted=true', () => {
     // Build a phaseDef with a truthy retryCondition; iteration === iterationCap
     // → cap_exhausted halt.

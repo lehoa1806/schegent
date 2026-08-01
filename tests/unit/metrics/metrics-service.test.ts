@@ -325,6 +325,87 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(task.phases[0]!.outcome).toBe('completed');
   });
 
+  it('keeps an optional phase failed while the containing task completes (076)', async () => {
+    await mkdir(auditDir, { recursive: true });
+    const lines = [
+      taskStarted({
+        id: 'e-1',
+        timestamp: '2026-05-23T12:00:00.000Z',
+        runId: 'run-optional',
+        taskId: 'task-optional'
+      }),
+      phaseStart({
+        id: 'e-2',
+        timestamp: '2026-05-23T12:00:01.000Z',
+        runId: 'run-optional',
+        phase: 'optional-audit',
+        iteration: 1
+      }),
+      phaseEnd({
+        id: 'e-3',
+        timestamp: '2026-05-23T12:01:00.000Z',
+        runId: 'run-optional',
+        phase: 'optional-audit',
+        iteration: 1,
+        outcome: 'failed'
+      }),
+      line({
+        id: 'e-4',
+        timestamp: '2026-05-23T12:01:00.100Z',
+        runId: 'run-optional',
+        phase: 'optional-audit',
+        iteration: 1,
+        eventType: 'phase-optional-failure-continued',
+        outcome: 'info',
+        payload: {
+          runId: 'run-optional',
+          pipelineId: 'default',
+          phaseId: 'optional-audit',
+          runner: 'claude',
+          iteration: 1,
+          terminationReason: 'error'
+        }
+      }),
+      phaseStart({
+        id: 'e-5',
+        timestamp: '2026-05-23T12:01:01.000Z',
+        runId: 'run-optional',
+        phase: 'required-finish',
+        iteration: 1
+      }),
+      phaseEnd({
+        id: 'e-6',
+        timestamp: '2026-05-23T12:02:00.000Z',
+        runId: 'run-optional',
+        phase: 'required-finish',
+        iteration: 1,
+        outcome: 'clean'
+      }),
+      taskEnded({
+        id: 'e-7',
+        timestamp: '2026-05-23T12:02:01.000Z',
+        runId: 'run-optional',
+        taskId: 'task-optional',
+        terminalStatus: 'completed',
+        durationMs: 121000,
+        phasesTotal: 2,
+        phasesCompleted: 2,
+        phasesSkipped: 0
+      })
+    ];
+    await writeFile(auditLog, `${lines.join('\n')}\n`, 'utf8');
+
+    const result = await readMetrics(workspaceRoot);
+    const task = result.tasks[0]!;
+
+    expect(task.status).toBe('completed');
+    expect(task.phases).toHaveLength(2);
+    expect(task.phases.find((phase) => phase.phaseType === 'optional-audit'))
+      .toMatchObject({ outcome: 'failed', rawOutcome: 'failed' });
+    expect(task.phases.find((phase) => phase.phaseType === 'required-finish'))
+      .toMatchObject({ outcome: 'completed', rawOutcome: 'clean' });
+  });
+
   it('marks a task with a started but no ended event as running, with no status', async () => {
     await mkdir(auditDir, { recursive: true });
     const lines = [

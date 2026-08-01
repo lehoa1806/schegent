@@ -11,24 +11,18 @@ export interface PhaseDef {
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
-  // Feature 010 — when set and the phase invocation produces a well-formed
-  // audit-log block, the controller evaluates this DSL expression against the
-  // entry's metrics map to decide loop-vs-advance. Captured in the
-  // WorkflowRun.pipeline snapshot so mid-run settings edits cannot retarget it
-  // (preserved 009 FR-013).
+  // Retry DSL is captured in the immutable run snapshot (009 FR-013).
   readonly retryCondition?: string;
-  // Feature 074 — per-phase backend runner override. When set, this phase
-  // uses the specified runner instead of the global `schegent.backend.runner`
-  // setting. Precedence: phase-level runner > global default > 'claude'.
+  // Missing means required; false preserves terminal evidence and continues.
+  readonly isRequired?: boolean;
+  // Precedence: phase runner > global default > Claude.
   readonly runner?: BackendRunnerKind;
 }
-
 export interface PipelineDef {
   readonly id: string;
   readonly name: string;
   readonly phases: readonly string[];
 }
-
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
   readonly pipelines: readonly PipelineDef[];
@@ -37,25 +31,21 @@ export interface PipelineCatalog {
   readonly phasesById: ReadonlyMap<string, PhaseDef>;
   readonly pipelinesById: ReadonlyMap<string, PipelineDef>;
 }
-
 export interface ValidationError {
   readonly source: 'phase' | 'pipeline' | 'defaultPipelineId';
   readonly id?: string;
   readonly field?: string;
   readonly message: string;
 }
-
 export interface ValidationWarning {
   readonly source: 'phase' | 'pipeline' | 'limit';
   readonly id?: string;
   readonly message: string;
 }
-
 export interface ValidationReport {
   readonly errors: readonly ValidationError[];
   readonly warnings: readonly ValidationWarning[];
 }
-
 export const BUILT_IN_PHASE_IDS = [
   'speckit-specify',
   'speckit-clarify',
@@ -85,7 +75,6 @@ export const TIMEOUT_MAX = 3600;
 export const SOFT_CAP_PHASES = 50;
 export const SOFT_CAP_PIPELINES = 20;
 export const SOFT_CAP_PIPELINE_PHASES = 50;
-
 export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'speckit-specify': '/speckit-specify',
   'speckit-clarify': [
@@ -436,6 +425,7 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'timeoutSeconds',
   'loopable',
   'retryCondition',
+  'isRequired',
   'runner'
 ]);
 
@@ -455,6 +445,7 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.loopable === undefined || typeof v.loopable === 'boolean') &&
     (v.retryCondition === undefined ||
       (typeof v.retryCondition === 'string' && v.retryCondition.length > 0)) &&
+    (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
     (v.runner === undefined || isBackendRunnerKind(v.runner))
   );
   return structurallyValid && phaseRunnerPolicyError(v.id as string, v.runner as BackendRunnerKind | undefined) === null;
@@ -691,6 +682,15 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
         message: 'Phase.retryCondition must be a non-empty string when set'
       });
     }
+  }
+
+  if (v.isRequired !== undefined && typeof v.isRequired !== 'boolean') {
+    errors.push({
+      source: 'phase',
+      id,
+      field: 'isRequired',
+      message: 'Phase.isRequired must be a boolean when set'
+    });
   }
 
   const runnerValid = v.runner === undefined || isBackendRunnerKind(v.runner);

@@ -53,6 +53,7 @@ export interface PipelineLike {
 export interface PhaseDefLike {
   readonly id: string;
   readonly retryCondition?: string;
+  readonly isRequired?: boolean;
 }
 
 export type TransitionInput = {
@@ -135,6 +136,16 @@ export function transition(input: TransitionInput): TransitionResult {
     return { kind: 'halt', status: 'paused', warnings, cause: 'breakpoint' };
   }
   if (outcome === 'failed' || outcome === 'timeout') {
+    if (phaseDef?.isRequired === false) {
+      const next = nextSuccessor(phase, pipeline);
+      warnings.push(`optional phase ${phase} ${outcome}; continuing`);
+      return {
+        kind: 'advance',
+        nextPhase: next,
+        nextIteration: isLoopPhase(next) ? 1 : 0,
+        warnings
+      };
+    }
     return { kind: 'halt', status: 'failed', warnings };
   }
   if (outcome === 'rate_limited') {

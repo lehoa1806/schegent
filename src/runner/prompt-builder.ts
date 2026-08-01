@@ -42,7 +42,6 @@ export interface PromptInputs {
   featureDescription: string;
   featureDir: string | null;
   carriedIssues?: Array<{ tag?: string; summary: string }> | string[];
-  perPhaseRulesPath?: string | null;
   phaseMessagePath?: string | null;
   previousPhaseMessage?: Readonly<Record<string, string>> | null;
 }
@@ -60,11 +59,6 @@ export class PromptBuilder {
     lines.push(TOKEN_INSTRUCTION);
     lines.push('');
     lines.push(AUDIT_INSTRUCTION);
-
-    if (inputs.perPhaseRulesPath) {
-      lines.push('');
-      lines.push(`Read rule file before acting: ${inputs.perPhaseRulesPath}`);
-    }
 
     if (inputs.phaseMessagePath) {
       lines.push('');

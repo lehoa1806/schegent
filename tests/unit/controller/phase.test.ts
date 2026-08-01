@@ -88,6 +88,62 @@ describe('Phase enum and transitions', () => {
     if (timeout.kind === 'halt') expect(timeout.status).toBe('failed');
   });
 
+  it.each(['failed', 'timeout'] as const)(
+    'advances after a terminal %s outcome when the phase is explicitly optional',
+    (outcome) => {
+      const result = transition({
+        phase: 'speckit-plan',
+        outcome,
+        iteration: 2,
+        iterationCap: 10,
+        phaseDef: { id: 'speckit-plan', isRequired: false }
+      });
+
+      expect(result.kind).toBe('advance');
+      if (result.kind === 'advance') {
+        expect(result.nextPhase).toBe('speckit-tasks');
+      }
+      expect(result.warnings).toEqual([
+        `optional phase speckit-plan ${outcome}; continuing`
+      ]);
+    }
+  );
+
+  it.each([undefined, true] as const)(
+    'keeps failed outcomes fail-stop when isRequired is %s',
+    (isRequired) => {
+      const result = transition({
+        phase: 'speckit-plan',
+        outcome: 'failed',
+        iteration: 1,
+        iterationCap: 10,
+        phaseDef: {
+          id: 'speckit-plan',
+          ...(isRequired === undefined ? {} : { isRequired })
+        }
+      });
+
+      expect(result.kind).toBe('halt');
+      if (result.kind === 'halt') expect(result.status).toBe('failed');
+    }
+  );
+
+  it.each(['rate_limited', 'transient_error'] as const)(
+    'does not bypass retry policy for optional %s outcomes',
+    (outcome) => {
+      const result = transition({
+        phase: 'speckit-plan',
+        outcome,
+        iteration: 1,
+        iterationCap: 10,
+        phaseDef: { id: 'speckit-plan', isRequired: false }
+      });
+
+      expect(result.kind).toBe('halt');
+      if (result.kind === 'halt') expect(result.status).toBe('paused');
+    }
+  );
+
   it('advances skipped phases without treating them as failed', () => {
     const result = transition({
       phase: 'speckit-plan',

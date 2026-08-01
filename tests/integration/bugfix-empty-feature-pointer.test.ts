@@ -173,7 +173,6 @@ async function buildHarness(opts: HarnessOpts): Promise<{
       cwd: opts.workspaceRoot,
       iterationCap: 5,
       timeoutMs: 1000,
-      perPhaseRulesEnabled: false
     },
     { catalog: BUILT_IN_CATALOG, auditWriter: audit }
   );

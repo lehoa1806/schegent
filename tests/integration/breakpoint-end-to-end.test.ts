@@ -153,7 +153,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
     );
 
     // Enqueue task A and start the pipeline. featureDir is set so the

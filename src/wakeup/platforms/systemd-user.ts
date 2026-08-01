@@ -39,25 +39,29 @@ export function systemdUserUnitDir(dirOverride?: string): string {
 export class SystemdUserInstaller implements DaemonInstaller {
   constructor(
     private readonly runner: CommandRunner,
-    private readonly dirOverride?: string
+    private readonly dirOverride?: string,
+    private readonly unitBasename = SYSTEMD_UNIT_BASENAME
   ) {}
+
+  private get serviceName(): string { return `${this.unitBasename}.service`; }
+  private get timerName(): string { return `${this.unitBasename}.timer`; }
 
   async install(opts: InstallOptions): Promise<void> {
     const nodePath = await resolveNodePath(this.runner);
     const dir = systemdUserUnitDir(this.dirOverride);
     await fs.mkdir(dir, { recursive: true });
 
-    const servicePath = path.join(dir, SYSTEMD_SERVICE);
-    const timerPath = path.join(dir, SYSTEMD_TIMER);
+    const servicePath = path.join(dir, this.serviceName);
+    const timerPath = path.join(dir, this.timerName);
     const serviceBody = buildServiceUnit(nodePath, opts.bundle.homeDir, opts.bundle.runnerPath);
-    const timerBody = buildTimerUnit(opts.schedule);
+    const timerBody = buildTimerUnit(opts.schedule, this.serviceName);
 
     await atomicWrite(servicePath, serviceBody);
     await atomicWrite(timerPath, timerBody);
 
     await this.runner.run('systemctl', ['--user', 'daemon-reload']);
-    await this.runner.run('systemctl', ['--user', 'enable', SYSTEMD_TIMER]);
-    const r = await this.runner.run('systemctl', ['--user', 'restart', SYSTEMD_TIMER]);
+    await this.runner.run('systemctl', ['--user', 'enable', this.timerName]);
+    const r = await this.runner.run('systemctl', ['--user', 'restart', this.timerName]);
     if (r.exitCode !== 0) {
       throw new Error(`systemctl restart failed: ${r.stderr.trim() || r.exitCode}`);
     }
@@ -66,9 +70,9 @@ export class SystemdUserInstaller implements DaemonInstaller {
   async uninstall(): Promise<void> {
     // disable --now both stops and disables the timer. We ignore the exit
     // code: not-found / not-loaded variants are non-zero but harmless here.
-    await this.runner.run('systemctl', ['--user', 'disable', '--now', SYSTEMD_TIMER]);
+    await this.runner.run('systemctl', ['--user', 'disable', '--now', this.timerName]);
     const dir = systemdUserUnitDir(this.dirOverride);
-    for (const name of [SYSTEMD_TIMER, SYSTEMD_SERVICE]) {
+    for (const name of [this.timerName, this.serviceName]) {
       try {
         await fs.unlink(path.join(dir, name));
       } catch (err) {
@@ -80,14 +84,14 @@ export class SystemdUserInstaller implements DaemonInstaller {
 
   async inspect(): Promise<DaemonState> {
     const dir = systemdUserUnitDir(this.dirOverride);
-    const timerPath = path.join(dir, SYSTEMD_TIMER);
+    const timerPath = path.join(dir, this.timerName);
     let timerBody: string;
     try {
       timerBody = await fs.readFile(timerPath, 'utf8');
     } catch {
       return { registered: false, schedule: null };
     }
-    const enabled = await this.runner.run('systemctl', ['--user', 'is-enabled', SYSTEMD_TIMER]);
+    const enabled = await this.runner.run('systemctl', ['--user', 'is-enabled', this.timerName]);
     if (enabled.exitCode !== 0) {
       return { registered: false, schedule: null };
     }
@@ -112,12 +116,15 @@ ExecStart=${nodePath} ${runnerPath}
 `;
 }
 
-export function buildTimerUnit(s: NormalizedSchedule): string {
+export function buildTimerUnit(
+  s: NormalizedSchedule,
+  serviceName = SYSTEMD_SERVICE
+): string {
   const header = `[Unit]
 Description=Schegent wake-up pre-warmer timer
 
 [Timer]
-Unit=${SYSTEMD_SERVICE}
+Unit=${serviceName}
 Persistent=true
 `;
   const tail = `

@@ -111,7 +111,7 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
       notifier,
       logger,
       lock,
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
     );
 
     const feature = await queue.enqueue('Add login');

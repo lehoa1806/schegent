@@ -66,7 +66,6 @@ const DEFAULTS: Record<string, unknown> = {
   'watchdog.pollIntervalMinutes': 30,
   'audit.rotation.sizeMB': 5,
   'audit.rotation.maxAgeDays': 30,
-  'rules.injectPerPhase': false,
   defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: []
 };
@@ -96,7 +95,6 @@ describe('Feature 011 — Settings surface (US2)', () => {
     expect(typeof snap.watchdogPollIntervalMinutes).toBe('number');
     expect(typeof snap.auditRotationSizeMB).toBe('number');
     expect(typeof snap.auditRotationMaxAgeDays).toBe('number');
-    expect(typeof snap.rulesInjectPerPhase).toBe('boolean');
     expect(typeof snap.defaultPipelineId).toBe('string');
     expect(Array.isArray(snap.fatalSignatures)).toBe(true);
 

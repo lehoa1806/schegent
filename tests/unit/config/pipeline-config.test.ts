@@ -120,6 +120,17 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
     expect(errs.some((e) => e.field === 'loopable')).toBe(true);
   });
 
+  it.each([true, false])('accepts isRequired: %s', (isRequired) => {
+    expect(validatePhaseRaw(validPhase({ isRequired }))).toEqual([]);
+    expect(isPhaseDef(validPhase({ isRequired }))).toBe(true);
+  });
+
+  it('rejects a non-boolean isRequired value', () => {
+    const phase = { ...validPhase(), isRequired: 'false' } as never;
+    expect(validatePhaseRaw(phase).some((e) => e.field === 'isRequired')).toBe(true);
+    expect(isPhaseDef(phase)).toBe(false);
+  });
+
   it('accepts valid retryCondition', () => {
     const errs = validatePhaseRaw(validPhase({ retryCondition: 'open_questions > 0' }));
     expect(errs.some((e) => e.field === 'retryCondition')).toBe(false);
@@ -420,9 +431,10 @@ describe('Feature 026 T017 — phase Effort + Model validator coverage', () => {
   // (a) ALLOWED_PHASE_FIELDS keeps `model` and `effort` (no widening,
   // no narrowing). The "additional unknown property" test elsewhere
   // already asserts the negative case for unknown keys.
-  it('ALLOWED_PHASE_FIELDS continues to include both `model` and `effort`', () => {
+  it('ALLOWED_PHASE_FIELDS includes model, effort, and isRequired', () => {
     expect(ALLOWED_PHASE_FIELDS.has('model')).toBe(true);
     expect(ALLOWED_PHASE_FIELDS.has('effort')).toBe(true);
+    expect(ALLOWED_PHASE_FIELDS.has('isRequired')).toBe(true);
   });
 
   // (b) EFFORT_LEVELS is the exact 5-element ordered list. A change in

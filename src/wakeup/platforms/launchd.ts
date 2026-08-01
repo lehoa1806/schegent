@@ -25,22 +25,23 @@ import { resolveNodePath } from './node-resolver';
 
 export const LAUNCHD_LABEL = 'com.schegent.wakeup';
 
-function plistPath(homeOverride?: string): string {
+function plistPath(homeOverride?: string, label = LAUNCHD_LABEL): string {
   const home = homeOverride ?? os.homedir();
-  return path.join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+  return path.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
 }
 
 export class LaunchdInstaller implements DaemonInstaller {
   constructor(
     private readonly runner: CommandRunner,
-    private readonly homeOverride?: string
+    private readonly homeOverride?: string,
+    private readonly label = LAUNCHD_LABEL
   ) {}
 
   async install(opts: InstallOptions): Promise<void> {
     const nodePath = await resolveNodePath(this.runner);
-    const plist = plistPath(this.homeOverride);
+    const plist = plistPath(this.homeOverride, this.label);
     await fs.mkdir(path.dirname(plist), { recursive: true });
-    const body = buildPlist(nodePath, opts);
+    const body = buildPlist(nodePath, opts, this.label);
     const tmp = `${plist}.tmp.${process.pid}`;
     await fs.writeFile(tmp, body, 'utf8');
     // Idempotent reload: unload any existing first; failure is fine.
@@ -53,7 +54,7 @@ export class LaunchdInstaller implements DaemonInstaller {
   }
 
   async uninstall(): Promise<void> {
-    const plist = plistPath(this.homeOverride);
+    const plist = plistPath(this.homeOverride, this.label);
     await this.runner.run('launchctl', ['unload', plist]);
     try {
       await fs.unlink(plist);
@@ -63,14 +64,14 @@ export class LaunchdInstaller implements DaemonInstaller {
   }
 
   async inspect(): Promise<DaemonState> {
-    const plist = plistPath(this.homeOverride);
+    const plist = plistPath(this.homeOverride, this.label);
     let body: string;
     try {
       body = await fs.readFile(plist, 'utf8');
     } catch {
       return { registered: false, schedule: null };
     }
-    const listResult = await this.runner.run('launchctl', ['list', LAUNCHD_LABEL]);
+    const listResult = await this.runner.run('launchctl', ['list', this.label]);
     if (listResult.exitCode !== 0) {
       return { registered: false, schedule: null };
     }
@@ -78,7 +79,11 @@ export class LaunchdInstaller implements DaemonInstaller {
   }
 }
 
-export function buildPlist(nodePath: string, opts: InstallOptions): string {
+export function buildPlist(
+  nodePath: string,
+  opts: InstallOptions,
+  label = LAUNCHD_LABEL
+): string {
   const { bundle, schedule } = opts;
   const scheduleBlock = schedule.kind === 'chronological'
     ? `<key>StartCalendarInterval</key>
@@ -93,7 +98,7 @@ export function buildPlist(nodePath: string, opts: InstallOptions): string {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
+  <string>${escapeXml(label)}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${escapeXml(nodePath)}</string>

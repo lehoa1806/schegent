@@ -92,7 +92,6 @@ async function buildHarness(tmpRoot: string) {
       cwd: tmpRoot,
       iterationCap: 5,
       timeoutMs: 30_000,
-      perPhaseRulesEnabled: false
     }
   );
 

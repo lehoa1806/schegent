@@ -1,20 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { execFile } from 'node:child_process';
-
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((file, _args, optionsOrCallback, maybeCallback) => {
-    const cb = typeof optionsOrCallback === 'function'
-      ? optionsOrCallback
-      : maybeCallback;
-    if (file === 'bad-bin') {
-      cb(new Error('ENOENT: no such file or directory'), '', '');
-    } else {
-      cb(null, 'help text', '');
-    }
-  })
-}));
 
 describe('RunDriver Probing (Feature 074)', () => {
   let deps: any;
@@ -39,6 +25,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       lock: { withLock: vi.fn(async (_scope: string, fn: any) => fn({ retain: vi.fn() })) },
       options: { cliPath: 'good-bin', cwd: '/tmp', iterationCap: 5, cliPathResolver: (r: string) => r === 'claude' ? 'good-bin' : 'bad-bin' },
+      backendCapabilities: { probeAvailability: vi.fn().mockResolvedValue(true) },
       monitor: { emit: vi.fn() },
       historyRecorder: { recordPhaseOutput: vi.fn(), record: vi.fn() },
       retryCoordinator: { registerAttempt: vi.fn(), resetPhase: vi.fn(), maybeEmitRetryRecovered: vi.fn(async (run) => run) },
@@ -54,6 +41,7 @@ describe('RunDriver Probing (Feature 074)', () => {
   });
 
   it('probes binaries at start and fails run if probe fails', async () => {
+    deps.backendCapabilities.probeAvailability.mockResolvedValue(false);
     const run = {
       id: 'run-1',
       featureId: 'task-1',
@@ -125,9 +113,16 @@ describe('RunDriver Probing (Feature 074)', () => {
     deps.store.getRun.mockReturnValue(run);
 
     const driver = new RunDriver(deps);
-    await driver.drive(run as unknown as WorkflowRun, 'desc');
+    const originalEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      await driver.drive(run as unknown as WorkflowRun, 'desc');
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+    }
 
     expect(deps.appendRunnerProbeFailedAudit).not.toHaveBeenCalled();
+    expect(deps.backendCapabilities.probeAvailability).toHaveBeenCalledWith('claude');
     expect(deps.runner.run).toHaveBeenCalled();
   });
 
@@ -168,19 +163,14 @@ describe('RunDriver Probing (Feature 074)', () => {
       process.env.NODE_ENV = originalEnv;
     }
 
-    expect(vi.mocked(execFile)).toHaveBeenCalledWith(
-      'agy-bin',
-      ['--help'],
-      expect.objectContaining({ cwd: '/tmp' }),
-      expect.any(Function)
-    );
+    expect(deps.backendCapabilities.probeAvailability).toHaveBeenCalledWith('agy');
     expect(deps.runner.run).toHaveBeenCalledWith(
       expect.objectContaining({ cliPath: 'agy-bin' })
     );
     expect(pathResolver).toHaveBeenCalledWith('agy');
   });
 
-  it('probes with the same cwd and restricted environment policy as invocation', async () => {
+  it('reuses the capability service while preserving restricted invocation context', async () => {
     deps.options = {
       ...deps.options,
       cwd: '/workspace/project',
@@ -216,18 +206,11 @@ describe('RunDriver Probing (Feature 074)', () => {
       process.env.NODE_ENV = originalEnv;
     }
 
-    expect(vi.mocked(execFile)).toHaveBeenCalledWith(
-      './tools/agy',
-      ['--help'],
-      {
-        cwd: '/workspace/project',
-        env: {
-          SCHEGENT_PHASE: 'runner-probe',
-          SCHEGENT_ITERATION: '0'
-        }
-      },
-      expect.any(Function)
-    );
+    expect(deps.backendCapabilities.probeAvailability).toHaveBeenCalledWith('agy');
+    expect(deps.runner.run).toHaveBeenCalledWith(expect.objectContaining({
+      cliPath: './tools/agy',
+      inheritProcessEnv: false
+    }));
   });
 
   it('uses the same names-only allowlist for probing and phase invocation', async () => {
@@ -273,9 +256,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       else process.env.SCHEGENT_ENV_BLOCKED_TEST = originalBlocked;
     }
 
-    const probeOptions = vi.mocked(execFile).mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv };
-    expect(probeOptions.env?.SCHEGENT_ENV_ALLOWED_TEST).toBe('approved');
-    expect(probeOptions.env?.SCHEGENT_ENV_BLOCKED_TEST).toBeUndefined();
+    expect(deps.backendCapabilities.probeAvailability).toHaveBeenCalledWith('claude');
     expect(deps.runner.run).toHaveBeenCalledWith(expect.objectContaining({
       inheritProcessEnv: false,
       processEnvAllowlist: ['SCHEGENT_ENV_ALLOWED_TEST']

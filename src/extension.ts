@@ -12,7 +12,6 @@ import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
-
 import { resolveBackendKind } from './runner/backend-runner-factory';
 import { BackendRunnerRegistry } from './runner/backend-runner-registry';
 import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
@@ -27,6 +26,7 @@ import { SessionArtifactRetentionService } from './services/session-retention/se
 import { SanitizedLogger } from './lib/logger';
 import {
   createRuntimeEvidenceWiring,
+  createBackendDiagnosticsWiring,
   warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
@@ -296,7 +296,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
-  const rulesPerPhase = config.get<boolean>('rules.injectPerPhase', false);
 
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
   const initialLoad = loadAndReportCatalog(catalogReader, logger);
@@ -395,13 +394,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     audit: auditWriter,
     logger
   });
-  // Feature 033 — TelemetrySampler. Polls the active subprocess every 2 s
-  // via `ps` (macOS / Linux) or `powershell.exe` (Windows), feeds parsed
-  // snapshots into `stateProjector.updateTelemetry()`. Constructed BEFORE
-  // the runner so the monitor-hook callback below can call
-  // `sampler.start()` / `sampler.stop()` from the `started` / `exited`
-  // events. `onSample` defers to the projector via a thunk because the
-  // projector is constructed later in this activation.
+  // Sampler is created before its late-bound projector and runner hooks.
   const telemetryShellOut =
     process.platform === 'win32' ? windowsShellOut : psShellOut;
   let telemetryProjector: { updateTelemetry: (snap: TelemetrySnapshot | null) => void } | null =
@@ -414,9 +407,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     }
   });
   disposables.push({ dispose: () => sampler.dispose() });
-  // Feature 074 — per-phase runner selection. The registry lazily constructs
-  // runners on first use and caches them for the workspace lifetime. All
-  // runners share the same monitor hook so the sidecar stays unified.
+  // Invocation runners are lazy and share one monitor hook.
   const backendKind = resolveBackendKind(
     vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
     logger
@@ -445,10 +436,20 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     probeTransport: true,
     logger
   }, backendKind);
-  // Registry lifetime is workspace-bound. Stage 2 teardown must cancel
-  // active subprocesses before releasing the workspace lock; the extension
-  // context can outlive Stage 2 when all workspace folders are removed.
+  // Stage 2 teardown cancels workspace-bound subprocesses.
   disposables.push({ dispose: () => runnerRegistry.cancelAll() });
+  let capabilityProjector: Pick<StateProjector, 'kick'> | null = null;
+  const backendDiagnostics = createBackendDiagnosticsWiring({
+    workspaceRoot,
+    claudePath: cliPath,
+    environmentPolicy: processEnvironmentPolicy,
+    audit: auditWriter,
+    logger,
+    onDidChange: () => capabilityProjector?.kick()
+  });
+  const backendCapabilities = backendDiagnostics.capabilities;
+  const backendPing = backendDiagnostics.ping;
+  disposables.push(backendDiagnostics);
   const historyStore = new HistoryStore(store);
   const promptBuilder = new PromptBuilder();
   const rawTranscript = new RawTranscriptWriter(
@@ -531,7 +532,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       defaultRunnerKind: backendKind,
       isAuditEvidenceAvailable: () =>
         evidenceHealth.getSnapshot().audit.status !== 'unavailable',
-      perPhaseRulesEnabled: rulesPerPhase,
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
@@ -545,6 +545,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       onRunTerminal: async () => {
         await sessionRetention.sweep(protectedSessionRunIds());
       },
+      backendCapabilities,
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
         // cap shares the same window as `DELAYED_RETRY_CAP = 5`. Earlier
@@ -718,33 +719,20 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     history: historyStore,
     getCatalog: () => activeCatalog,
     defaultRunnerKind: backendKind,
-    // Feature 011 — re-read scalar `schegent.*` settings on every
-    // projection. The onDidChangeConfiguration listener below calls
-    // `projector.kick()` for any schegent.* key so the Settings surface
-    // is fresh within FR-017's 1s budget.
+    // Re-read scalar settings on each projection.
     getGeneralSettings: () =>
       readGeneralSettings(
         vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)) as unknown as GeneralSettingsConfig
       ),
     getSessionArtifacts: () => sessionRetention.getUsage(),
     getEvidenceHealth: () => evidenceHealth.getSnapshot(),
-    // Feature 014 (BUG-001 / BUG-002) — read the four `schegent.wakeUp.*`
-    // settings from Global scope on every projection. The
-    // `onDidChangeConfiguration` listener below already calls
-    // `projector.kick()` for any `schegent.*` change, so wake-up edits
-    // also surface within FR-017's 1s budget (mirrored by FR-025 /
-    // SC-010).
+    // Wake-up settings are global and re-read on every projection.
     getWakeUpSettings: () =>
       readWakeUpSettings(
         vscode.workspace.getConfiguration('schegent') as unknown as WakeUpConfig
       ),
     getWakeUpLog: () => wakeUpInvocationLog.projectRecent((msg) => logger.sanitize(msg), 5),
-    // Feature 031 — surface the wake-up `model` selection + the
-    // host-composed session-log path on every snapshot. Both are
-    // DISPLAY-ONLY; the webview never echoes the path back to the host
-    // (the CMD_READ_WAKEUP_SESSION_LOG payload carries `correlationId`
-    // only). Re-reading on every projection keeps the model dropdown in
-    // sync with workspace edits within FR-017's 1s budget.
+    // The session-log path is display-only; read IPC carries identifiers.
     getWakeupModel: () =>
       readWakeUpSettings(
         vscode.workspace.getConfiguration('schegent') as unknown as WakeUpConfig
@@ -761,9 +749,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // `onDidChangeConfiguration` listener below already kicks the
     // projector for any `schegent.*` change.
     getConfirmationsEnabled: () => isConfirmationsEnabled(),
-    getDebugLogTail: () => webviewLogSink.getEntries()
+    getDebugLogTail: () => webviewLogSink.getEntries(),
+    getAvailableModels: () => backendCapabilities.getAvailableModels(),
+    getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
+    getBackendPingState: () => backendPing.getState()
   });
+  capabilityProjector = projector;
   projector.start();
+  // Background-only: activation is not blocked on installed CLI processes.
+  void backendCapabilities.scan();
   disposables.push(evidenceHealth.subscribe((health) => {
     statusBar.setEvidenceHealth(health.overall);
     projector.kick();
@@ -809,6 +803,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           activeCatalog = reload.catalog;
           activePhasePrecedence = reload.phasePrecedence;
           controller.setCatalog(activeCatalog);
+        }
+        if (
+          event.affectsConfiguration('schegent.cli.path') ||
+          event.affectsConfiguration('schegent.codex.path') ||
+          event.affectsConfiguration('schegent.agy.path') ||
+          event.affectsConfiguration('schegent.backend.probeTimeoutSeconds')
+        ) {
+          void backendCapabilities.scan();
         }
         // Feature 011 — any schegent.* change triggers a re-projection
         // so the Settings surface reflects the new value within FR-017.
@@ -1127,7 +1129,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // newly minted) for the metrics-view-opened audit payload
     // (contracts/metrics-view-opened-event.md).
     sessionId: ownerId,
-    metricsViewOpenedState
+    metricsViewOpenedState,
+    backendPingService: backendPing
   });
 
   // Feature 014 — fire-and-forget reconcile + workspace-roots mirror on

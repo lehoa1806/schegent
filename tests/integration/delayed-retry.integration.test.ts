@@ -139,7 +139,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     notifier,
     logger,
     lock,
-    { cliPath: 'noop', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false },
+    { cliPath: 'noop', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 1000 },
     deps
   );
 

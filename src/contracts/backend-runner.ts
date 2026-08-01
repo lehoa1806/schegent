@@ -60,8 +60,4 @@ export interface BackendRunner {
   ): Promise<RawInvocationOutput>;
   /** Cancel any in-flight invocation. Returns true if a process was killed. */
   cancelActive(): boolean;
-  /** Probe if the CLI binary is available on the system PATH/configured path. */
-  probeAvailability(cliPath: string): Promise<boolean>;
-  /** Detect the list of supported models for this backend. */
-  detectModels(cliPath: string): Promise<readonly string[]>;
 }

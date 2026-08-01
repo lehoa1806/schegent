@@ -121,7 +121,7 @@ describe('Task Lifecycle Events Integration (072 T025)', () => {
       { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier,
       logger,
       makeLock(),
-      { cliPath: 'mock', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 10_000, perPhaseRulesEnabled: false },
+      { cliPath: 'mock', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 10_000 },
       { auditWriter }
     );
   });

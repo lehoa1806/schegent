@@ -41,7 +41,11 @@ class FakeMemento implements Memento {
 describe('RunDriver Audit Emissions (Feature 072)', () => {
   let store: WorkspaceStateStore;
   let emitTaskLifecycleAuditSpy: ReturnType<typeof vi.fn>;
-  let phaseRunnerMock: { run: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> };
+  let phaseRunnerMock: {
+    run: ReturnType<typeof vi.fn>;
+    abort: ReturnType<typeof vi.fn>;
+    appendCapExhaustedPhaseEnd: ReturnType<typeof vi.fn>;
+  };
   let onRunTerminalSpy: ReturnType<typeof vi.fn>;
   let deps: RunDriverDeps;
   let driver: RunDriver;
@@ -52,7 +56,11 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     
     emitTaskLifecycleAuditSpy = vi.fn().mockResolvedValue(undefined);
     onRunTerminalSpy = vi.fn().mockResolvedValue(undefined);
-    phaseRunnerMock = { run: vi.fn(), abort: vi.fn() };
+    phaseRunnerMock = {
+      run: vi.fn(),
+      abort: vi.fn(),
+      appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    };
     
     deps = {
       store,
@@ -63,6 +71,8 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       retryCoordinator: { 
         registerAttempt: vi.fn(), 
         clear: vi.fn(),
+        isRetryCapExhaustedOnNextFailure: vi.fn().mockReturnValue(false),
+        handleDelayedRetry: vi.fn(),
         maybeEmitRetryRecovered: vi.fn().mockImplementation(async (r) => r) 
       } as any,
       queue: { finish: vi.fn(), pause: vi.fn() } as any,
@@ -71,6 +81,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       historyRecorder: { record: vi.fn() } as any,
       emitRunEndedBreakpointAudit: vi.fn(),
       emitTaskLifecycleAudit: emitTaskLifecycleAuditSpy,
+      emitOptionalPhaseFailureContinued: vi.fn(),
       appendPhaseControlAudit: vi.fn(),
       appendRunnerProbeFailedAudit: vi.fn(),
       appendBreakpointAudit: vi.fn(),
@@ -123,8 +134,6 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     const run = store.getRun()!;
     await driver.drive(run, 'Test description');
-    
-    console.log('Run after drive:', store.getRun());
     
     expect(emitTaskLifecycleAuditSpy).toHaveBeenCalledTimes(1);
     const [eventType, updatedRun, payload] = emitTaskLifecycleAuditSpy.mock.calls[0];
@@ -201,6 +210,153 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       status: 'completed'
     }));
   });
+
+  it.each(['failed', 'timeout'] as const)(
+    'continues after direct optional %s with terminal evidence and no lastError',
+    async (outcome) => {
+      const runId = `run-optional-${outcome}`;
+      await store.setRun({
+        id: runId,
+        taskId: runId,
+        featureId: runId,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'running',
+        currentPhase: 'optional-audit',
+        currentIteration: 0,
+        pipeline: {
+          id: 'pipe-optional',
+          name: 'Optional pipeline',
+          phases: [{
+            id: 'optional-audit',
+            name: 'Optional audit',
+            instruction: 'Audit',
+            runner: 'claude',
+            isRequired: false
+          }]
+        },
+        phasesCompleted: [],
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        delayedRetryCount: 0,
+        manualPauseAt: null,
+        manualPauseCause: null,
+        phaseBreakpoints: [],
+        phaseOverrides: [],
+        resumeTargetPhaseId: null,
+        isWakeup: false
+      } as any);
+      phaseRunnerMock.run.mockResolvedValueOnce({
+        result: { kind: 'malformed', warnings: [outcome], auditEntry: null },
+        outcome,
+        terminationReason: outcome === 'timeout' ? 'timeout' : 'error',
+        stdoutSummary: '',
+        stderrSummary: 'bounded failure',
+        exitCode: outcome === 'timeout' ? null : 1,
+        warnings: [outcome],
+        auditEntryId: null
+      } as PhaseRunOutput);
+
+      await driver.drive(store.getRun()!, 'optional terminal');
+
+      const finalRun = store.getRun()!;
+      expect(finalRun.status).toBe('completed');
+      expect(finalRun.lastError).toBeUndefined();
+      expect(finalRun.phasesCompleted).toEqual([
+        expect.objectContaining({
+          phase: 'optional-audit',
+          result: outcome,
+          terminationReason: outcome === 'timeout' ? 'timeout' : 'error'
+        })
+      ]);
+      expect(deps.emitOptionalPhaseFailureContinued).toHaveBeenCalledOnce();
+      expect(deps.emitOptionalPhaseFailureContinued).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'running', currentPhase: 'done' }),
+        {
+          runId,
+          pipelineId: 'pipe-optional',
+          phaseId: 'optional-audit',
+          runner: 'claude',
+          iteration: 1,
+          terminationReason: outcome === 'timeout' ? 'timeout' : 'error'
+        }
+      );
+      expect(deps.queue.pause).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['rate_limited', 'rate_limit'],
+    ['transient_error', 'error']
+  ] as const)(
+    'converts optional %s at retry cap into terminal failed evidence without pausing',
+    async (outcome, terminationReason) => {
+      const runId = `run-optional-cap-${outcome}`;
+      await store.setRun({
+        id: runId,
+        taskId: runId,
+        featureId: runId,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'running',
+        currentPhase: 'optional-audit',
+        currentIteration: 1,
+        pipeline: {
+          id: 'pipe-optional',
+          name: 'Optional pipeline',
+          phases: [{
+            id: 'optional-audit',
+            name: 'Optional audit',
+            instruction: 'Audit',
+            runner: 'claude',
+            isRequired: false
+          }]
+        },
+        phasesCompleted: [],
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        delayedRetryCount: 4,
+        manualPauseAt: null,
+        manualPauseCause: null,
+        phaseBreakpoints: [],
+        phaseOverrides: [],
+        resumeTargetPhaseId: null,
+        isWakeup: false
+      } as any);
+      (deps.retryCoordinator.isRetryCapExhaustedOnNextFailure as any)
+        .mockReturnValue(true);
+      phaseRunnerMock.run.mockResolvedValueOnce({
+        result: outcome === 'rate_limited'
+          ? { kind: 'rate_limited', cause: 'rate-limit', resetsAtMs: null, auditEntry: null }
+          : { kind: 'transient_error', warnings: ['transient'], auditEntry: null },
+        outcome,
+        terminationReason,
+        stdoutSummary: '',
+        stderrSummary: 'bounded failure',
+        exitCode: 1,
+        warnings: [],
+        auditEntryId: null
+      } as unknown as PhaseRunOutput);
+
+      await driver.drive(store.getRun()!, 'optional retry cap');
+
+      const finalRun = store.getRun()!;
+      expect(finalRun.status).toBe('completed');
+      expect(finalRun.lastError).toBeUndefined();
+      expect(finalRun.delayedRetryCount).toBe(0);
+      expect(finalRun.phasesCompleted).toEqual([
+        expect.objectContaining({
+          phase: 'optional-audit',
+          result: 'failed',
+          terminationReason
+        })
+      ]);
+      expect(deps.retryCoordinator.handleDelayedRetry).not.toHaveBeenCalled();
+      expect(phaseRunnerMock.appendCapExhaustedPhaseEnd).toHaveBeenCalledOnce();
+      expect(deps.emitOptionalPhaseFailureContinued).toHaveBeenCalledOnce();
+      expect(deps.queue.pause).not.toHaveBeenCalled();
+    }
+  );
 
   it('does not break drive outcome if audit emission fails (T017)', async () => {
     emitTaskLifecycleAuditSpy.mockRejectedValue(new Error('Audit disk write failed'));

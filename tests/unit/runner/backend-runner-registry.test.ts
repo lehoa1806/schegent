@@ -15,9 +15,7 @@ function makeStub(): BackendRunner {
       durationMs: 100,
       command: 'stub'
     }),
-    cancelActive: vi.fn().mockReturnValue(false),
-    probeAvailability: vi.fn().mockResolvedValue(true),
-    detectModels: vi.fn().mockResolvedValue(['mock-model'])
+    cancelActive: vi.fn().mockReturnValue(false)
   };
 }
 

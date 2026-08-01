@@ -177,7 +177,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false },
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
       { catalog }
     );
 
@@ -252,7 +252,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false },
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
       { catalog }
     );
 

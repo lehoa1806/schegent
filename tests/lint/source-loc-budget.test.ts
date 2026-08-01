@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -25,9 +25,12 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // budget is no longer the forcing function. See
   // specs/063-clean-all-confirmations/plan.md lines 26 and 66.
   { path: 'src/state/workspace-state.ts', maxLines: 10_000 },
-  // P4 audit-tail/activity extraction ratchet: 920 → 900 (Bumped for availableBackends/availableModels).
-  // Mutable tail merge policy and elapsed/activity algorithms now have focused owners.
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 900 },
+  // Feature 077 — public facade and every state-projection collaborator have
+  // hard physical-LOC ceilings. Composition, lifecycle, and timing are split.
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 250 },
+  { path: 'src/ui/sidebar/state-projector-runtime.ts', maxLines: 300 },
+  { path: 'src/ui/sidebar/projector-bookkeeping.ts', maxLines: 300 },
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 300 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -54,4 +57,14 @@ describe('large source file LOC budgets', () => {
       ).toBeLessThanOrEqual(budget.maxLines);
     });
   }
+
+  it('every sidebar projector module stays at or below 300 lines', () => {
+    const directory = resolve(REPO_ROOT, 'src/ui/sidebar');
+    const modules = readdirSync(directory)
+      .filter((name) => name.includes('projector') && name.endsWith('.ts'));
+    const offenders = modules
+      .map((name) => ({ name, lines: lineCount(`src/ui/sidebar/${name}`) }))
+      .filter(({ lines }) => lines > 300);
+    expect(offenders).toEqual([]);
+  });
 });

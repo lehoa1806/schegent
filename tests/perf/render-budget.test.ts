@@ -23,7 +23,7 @@ class FakeMemento implements Memento {
 
 const SNAPSHOT_COUNT = 100;
 const TOTAL_BUDGET_MS = 1_600;
-const MEDIAN_BUDGET_MS = 16;
+const MEDIAN_BUDGET_MS = 5;
 
 function runningRun(currentIteration = 0, currentPhase: WorkflowRun['currentPhase'] = 'speckit-plan'): WorkflowRun {
   return {
@@ -121,7 +121,7 @@ describe('Render budget regression (SC-006)', () => {
     expect(
       median,
       `median ${median.toFixed(2)} ms exceeded ${MEDIAN_BUDGET_MS} ms (max sample ${max.toFixed(2)} ms)`
-    ).toBeLessThanOrEqual(MEDIAN_BUDGET_MS);
+    ).toBeLessThan(MEDIAN_BUDGET_MS);
   });
 
   it(`v3: ${SNAPSHOT_COUNT} project() passes with monitor + history + extended queue stay under ${TOTAL_BUDGET_MS} ms (SC-012)`, async () => {
@@ -220,7 +220,7 @@ describe('Render budget regression (SC-006)', () => {
     expect(
       median,
       `v3 median ${median.toFixed(2)} ms exceeded ${MEDIAN_BUDGET_MS} ms (max ${max.toFixed(2)} ms)`
-    ).toBeLessThanOrEqual(MEDIAN_BUDGET_MS);
+    ).toBeLessThan(MEDIAN_BUDGET_MS);
   });
 
   it('hot-path project() with full audit tail and active sub-progress respects per-call budget', async () => {
@@ -256,6 +256,6 @@ describe('Render budget regression (SC-006)', () => {
     expect(
       median,
       `hot-path median ${median.toFixed(2)} ms exceeded ${MEDIAN_BUDGET_MS} ms`
-    ).toBeLessThanOrEqual(MEDIAN_BUDGET_MS);
+    ).toBeLessThan(MEDIAN_BUDGET_MS);
   });
 });

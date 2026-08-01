@@ -121,6 +121,44 @@ beforeEach(() => {
   mocks.state.canonicalBasename = 'test-workspace';
 });
 
+describe('cmd-save-phases optional phase validation (076)', () => {
+  it('accepts and preserves isRequired: false', async () => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+    const phases = [
+      {
+        id: 'optional-audit',
+        name: 'Optional Audit',
+        instruction: 'Audit without blocking.',
+        isRequired: false
+      }
+    ];
+
+    await saveHandler(ctx, makeCmd(phases));
+
+    expect(acks[0].status).toBe('accepted');
+    expect(updateConfigCalls).toEqual([{ key: 'phases', value: phases }]);
+  });
+
+  it('rejects string coercion before persistence', async () => {
+    const { ctx, acks, updateConfigCalls } = buildCtx();
+
+    await saveHandler(ctx, makeCmd([
+      {
+        id: 'optional-audit',
+        name: 'Optional Audit',
+        instruction: 'Audit without blocking.',
+        isRequired: 'false'
+      }
+    ]));
+
+    expect(acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'phase-validation:optional-audit:isRequired:must-be-boolean'
+    });
+    expect(updateConfigCalls).toEqual([]);
+  });
+});
+
 describe('cmd-save-phases trust gate (059, T009) — I-2 reset-to-defaults', () => {
   it('accepts BUILT_IN_PHASES payload even when allowCustomPhases is false', async () => {
     mocks.state.capabilities.set('phases', false);

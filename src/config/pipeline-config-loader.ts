@@ -72,7 +72,8 @@ function coercePhase(raw: unknown, warnings: ValidationWarning[]): PhaseDef | nu
     ...(typeof v.runner === 'string' ? { runner: v.runner as PhaseDef['runner'] } : {}),
     ...(typeof v.timeoutSeconds === 'number' ? { timeoutSeconds: v.timeoutSeconds } : {}),
     ...(typeof v.loopable === 'boolean' ? { loopable: v.loopable } : {}),
-    ...(retryCondition !== undefined ? { retryCondition } : {})
+    ...(retryCondition !== undefined ? { retryCondition } : {}),
+    ...(typeof v.isRequired === 'boolean' ? { isRequired: v.isRequired } : {})
   };
   return def;
 }
