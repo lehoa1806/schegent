@@ -138,6 +138,11 @@
           "type": "WorkflowRunPipeline"
         },
         {
+          "name": "defaultRunnerKind",
+          "optional": true,
+          "type": "import('../runner/backend-runner-factory').BackendRunnerKind"
+        },
+        {
           "name": "delayedRetryCount",
           "optional": false,
           "type": "number"
@@ -181,6 +186,11 @@
           "name": "lastCliSessionId",
           "optional": true,
           "type": "string | null"
+        },
+        {
+          "name": "lastCliSessionRunnerKind",
+          "optional": true,
+          "type": "import('../runner/backend-runner-factory').BackendRunnerKind"
         },
         {
           "name": "lastRetryDecision",

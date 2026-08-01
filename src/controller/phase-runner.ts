@@ -14,6 +14,7 @@ import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { TerminationReason } from '../state/workflow-run';
 import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
+import { assertPhaseRunnerPolicy } from '../config/phase-runner-policy';
 import type { RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
 import { composeVerboseDiagnosticPath } from '../audit/verbose-diagnostic-path';
 import { getEffectiveSignatures } from '../lib/fatal-signature-registry';
@@ -25,10 +26,12 @@ import {
 } from './phase-sidecar-reader';
 import { PhaseRetryEvaluator, type LastRetryDecisionSink } from './phase-retry-evaluator';
 import {
+  failClosedOnTruncatedOutput,
   mapOutcome,
   mapTerminationReason,
   summarize
 } from './phase-outcome-mapper';
+import { compactClaudeSession } from './session-compactor';
 
 // Feature 057 — re-export from `phase-sidecar-reader` so existing import
 // surfaces (workflow-controller, tests) remain stable; canonical owner moved.
@@ -317,6 +320,7 @@ export class PhaseRunner {
     const effectiveRunnerKind = inputs.phaseDef?.runner
       ?? this.runnerRegistry?.getGlobalDefault()
       ?? DEFAULT_BACKEND;
+    assertPhaseRunnerPolicy(inputs.phaseDef?.id ?? inputs.phase, effectiveRunnerKind);
 
     const startPayload: Record<string, unknown> = {
       pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
@@ -347,12 +351,6 @@ export class PhaseRunner {
     await this.appendAudit(inputs, 'phase-start', 'info', startPayload);
 
     this.logger.info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
-    await this.rawTranscript?.appendStart({
-      runId: inputs.runId,
-      phase: inputs.phase,
-      iteration: inputs.iteration,
-      prompt
-    });
     // Feature 010 FR-024: read schegent.logging.verbose at run() entry
     // (never cached on the runner) so a mid-run toggle applies on the
     // next invocation. The accessor is the workspace-setting read site.
@@ -368,59 +366,22 @@ export class PhaseRunner {
       SCHEGENT_PHASE: inputs.phase,
       SCHEGENT_ITERATION: String(inputs.iteration)
     };
-    if (autoCompactPct !== undefined) {
+    if (effectiveRunnerKind === 'claude' && autoCompactPct !== undefined) {
       env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
-      // Feature 012 — optional `auto-compact-override-applied` audit event.
-      // Emitted only when the override is active; the parser warns-and-
-      // preserves unknown event types so this is additive (no schema bump).
       await this.appendAudit(inputs, 'auto-compact-override-applied', 'info', {
+        ...this.pipelineMeta(inputs),
         runId: inputs.runId,
-        phaseId: inputs.phaseDef?.id ?? inputs.phase,
         value: autoCompactPct
       });
     }
-    // Session reuse — pre-phase compaction. When resuming a prior
-    // session, the old conversation may consume significant context.
-    // A lightweight dummy invocation with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1
-    // forces auto-compaction at session load, then exits. The real
-    // phase invocation resumes the now-compacted session with normal
-    // autocompact settings. Uses the cheapest/fastest model (haiku)
-    // to minimize cost and latency.
+    // Compact Claude sessions before cross-phase reuse to bound context bleed.
     if (
+      effectiveRunnerKind === 'claude' &&
       inputs.sessionReuse === true &&
       typeof inputs.resumeSessionId === 'string'
     ) {
-      const compactEnv: Record<string, string> = {
-        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1'
-      };
-      // Inherit the operator's process-env setting for the compact call.
-      const compactInheritEnv = inputs.inheritProcessEnv !== false;
       try {
-        const compactRaw = await this.resolveRunner(inputs).invoke({
-          phase: inputs.phase,
-          iteration: inputs.iteration,
-          prompt: 'Compact the conversation context. Reply with a single word: OK',
-          timeoutMs: 60_000,
-          cliPath: inputs.cliPath,
-          cwd: inputs.cwd,
-          env: compactEnv,
-          ...(compactInheritEnv ? {} : { inheritProcessEnv: false }),
-          // Resume the session to load old context and trigger compaction.
-          sessionReuse: true,
-          resumeSessionId: inputs.resumeSessionId,
-          // Use cheapest model for compaction — speed and cost only.
-          model: 'claude-sonnet-4-20250514'
-        });
-        if (typeof compactRaw.command === 'string' && compactRaw.command.length > 0) {
-          await this.appendAudit(inputs, 'cli-invocation', 'info', {
-            ...this.pipelineMeta(inputs),
-            phaseId: inputs.phaseDef?.id ?? inputs.phase,
-            command: compactRaw.command
-          });
-        }
-        this.logger.info(
-          `session-compact-done phase=${inputs.phase} iter=${inputs.iteration}`
-        );
+        await this.compactSession(inputs);
       } catch (err) {
         // Compaction failure is non-fatal — the real invocation will
         // still resume the session; it just won't be pre-compacted.
@@ -431,33 +392,47 @@ export class PhaseRunner {
         });
       }
     }
-    const raw = await this.resolveRunner(inputs).invoke({
+    await this.rawTranscript?.appendStart({
+      runId: inputs.runId,
       phase: inputs.phase,
       iteration: inputs.iteration,
-      prompt,
-      timeoutMs: inputs.timeoutMs,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
-      cliPath: inputs.cliPath,
-      cwd: inputs.cwd,
-      env,
-      ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
-      cancellationSignal: inputs.cancellationSignal,
-      ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
-      ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
-      ...(verboseDiagnostics ? { verboseDiagnostics } : {}),
-      // Feature 032 — forward the controller's session-continuation
-      // hint. The runner uses strict `=== true` to gate the `-c` /
-      // `--resume` append.
-      ...(inputs.isContinue === true ? { isContinue: true } : {}),
-      // Session reuse — forward the cost-optimization session reuse
-      // hint. The runner uses the same `--resume` argv path.
-      ...(inputs.sessionReuse === true ? { sessionReuse: true } : {}),
-      // Session ID capture — forward the persisted session ID so the
-      // runner uses `--resume <id>` instead of `-c`.
-      ...(typeof inputs.resumeSessionId === 'string'
-        ? { resumeSessionId: inputs.resumeSessionId }
-        : {})
+      prompt
     });
+    const rawTranscriptCapture =
+      await this.rawTranscript?.createInvocationCapture?.(inputs.runId) ?? null;
+    let raw: RawInvocationOutput;
+    try {
+      raw = await this.resolveRunner(inputs).invoke({
+        phase: inputs.phase,
+        iteration: inputs.iteration,
+        prompt,
+        timeoutMs: inputs.timeoutMs,
+        completionMarker: AUDIT_LOG_CLOSE_MARKER,
+        cliPath: inputs.cliPath,
+        cwd: inputs.cwd,
+        env,
+        ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
+        cancellationSignal: inputs.cancellationSignal,
+        ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
+        ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
+        ...(verboseDiagnostics ? { verboseDiagnostics } : {}),
+        // Feature 032 — forward the controller's session-continuation
+        // hint. The runner uses strict `=== true` to gate the `-c` /
+        // `--resume` append.
+        ...(inputs.isContinue === true ? { isContinue: true } : {}),
+        // Session reuse — forward the cost-optimization session reuse
+        // hint. The runner uses the same `--resume` argv path.
+        ...(inputs.sessionReuse === true ? { sessionReuse: true } : {}),
+        // Session ID capture — forward the persisted session ID so the
+        // runner uses `--resume <id>` instead of `-c`.
+        ...(typeof inputs.resumeSessionId === 'string'
+          ? { resumeSessionId: inputs.resumeSessionId }
+          : {})
+      }, rawTranscriptCapture ?? undefined);
+    } catch (err) {
+      await rawTranscriptCapture?.dispose();
+      throw err;
+    }
 
     // Feature 068 — emit cli-invocation; sanitizer redacts secrets.
     if (typeof raw.command === 'string' && raw.command.length > 0) {
@@ -467,6 +442,19 @@ export class PhaseRunner {
         command: raw.command
       });
     }
+
+    // Finalize the disk-backed tee before parsing. This guarantees that
+    // every returned invocation closes and removes its temporary spools even
+    // if a later parser or sidecar operation fails.
+    await this.rawTranscript?.appendEnd({
+      runId: inputs.runId,
+      stdout: raw.stdoutBuffer,
+      stderr: raw.stderrBuffer,
+      exitCode: raw.exitCode,
+      killed: raw.killed,
+      timedOut: raw.timedOut,
+      capture: rawTranscriptCapture
+    });
 
     const unwrappedStream = unwrapStreamJson(raw.stdoutBuffer);
 
@@ -479,7 +467,7 @@ export class PhaseRunner {
     const operatorAdditions =
       this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
     const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
-    const result = parseInvocation({
+    const parsedResult = parseInvocation({
       stdout: unwrappedStream.text,
       stderr: typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100),
       exitCode: raw.exitCode,
@@ -489,17 +477,13 @@ export class PhaseRunner {
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError
     });
+    const result = failClosedOnTruncatedOutput(
+      parsedResult,
+      raw.stdoutBuffer.truncated || raw.stderrBuffer.truncated
+    );
 
     // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025).
     if (raw.timedOut && result.kind !== 'clean') {
-      await this.rawTranscript?.appendEnd({
-        runId: inputs.runId,
-        stdout: raw.stdoutBuffer,
-        stderr: raw.stderrBuffer,
-        exitCode: raw.exitCode,
-        killed: raw.killed,
-        timedOut: raw.timedOut
-      });
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         reason: 'timeout',
@@ -519,14 +503,6 @@ export class PhaseRunner {
     }
 
     if (raw.killed && raw.exitCode === null) {
-      await this.rawTranscript?.appendEnd({
-        runId: inputs.runId,
-        stdout: raw.stdoutBuffer,
-        stderr: raw.stderrBuffer,
-        exitCode: raw.exitCode,
-        killed: raw.killed,
-        timedOut: raw.timedOut
-      });
       const auditEntry = await this.appendAudit(inputs, 'cancel', 'info', {
         ...this.pipelineMeta(inputs),
         reason: 'killed'
@@ -574,15 +550,6 @@ export class PhaseRunner {
     }
 
     const phaseMessage = await this.sidecarReader.parsePhaseMessage(inputs, audit.entry);
-
-    await this.rawTranscript?.appendEnd({
-      runId: inputs.runId,
-      stdout: raw.stdoutBuffer,
-      stderr: raw.stderrBuffer,
-      exitCode: raw.exitCode,
-      killed: raw.killed,
-      timedOut: raw.timedOut
-    });
 
     // Feature 010 — FR-017: emit phase.retry_evaluated for every consulted
     // decision. Skipped when the parser outcome is malformed (the malformed
@@ -642,6 +609,27 @@ export class PhaseRunner {
     };
   }
 
+  private async compactSession(inputs: PhaseRunInputs): Promise<void> {
+    await compactClaudeSession({
+      runner: this.resolveRunner(inputs),
+      rawTranscript: this.rawTranscript,
+      runId: inputs.runId,
+      phase: inputs.phase,
+      iteration: inputs.iteration,
+      cliPath: inputs.cliPath,
+      cwd: inputs.cwd,
+      inheritProcessEnv: inputs.inheritProcessEnv,
+      cancellationSignal: inputs.cancellationSignal,
+      resumeSessionId: inputs.resumeSessionId!,
+      logger: this.logger,
+      onCommand: (command) => this.appendAudit(inputs, 'cli-invocation', 'info', {
+        ...this.pipelineMeta(inputs),
+        phaseId: inputs.phaseDef?.id ?? inputs.phase,
+        command
+      }).then(() => undefined)
+    });
+  }
+
   // Feature 010 FR-019/020/021: construct the absolute paths to the three
   // sibling diagnostic files under
   //   <cwd>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/
@@ -697,13 +685,13 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'durationMs'>
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs'>
   ): Record<string, unknown> {
     return {
-      // Trust the runner-owned process timer for the canonical duration.
-      // CLI-reported stream-json duration is carried separately as
-      // `cliDurationMs` so model/CLI output cannot overwrite host timing.
+      // Runner timing stays canonical; CLI-reported duration is separate.
       durationMs: raw.durationMs,
+      ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
+      ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
       ...(extractInvocationUsageMetrics(raw.stdoutBuffer) ?? {})
     };
   }
@@ -725,6 +713,7 @@ export class PhaseRunner {
     const payload: Record<string, unknown> = {
       pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
+      runner: inputs.phaseDef?.runner ?? this.runnerRegistry?.getGlobalDefault() ?? DEFAULT_BACKEND,
       outcome: 'failed',
       cause: 'cap_exhausted'
     };
@@ -784,4 +773,3 @@ export class PhaseRunner {
     }
   }
 }
-

@@ -106,6 +106,20 @@ describe('projectAuditEntry (Feature 064 T008)', () => {
 // outcome / command. Existing assertions above must remain green
 // (SC-004 / FR-017).
 describe('projectAuditEntry (Feature 068 additive fields)', () => {
+  it('projects runner from phase-start payload for Activity Feed attribution', () => {
+    const projected = projectAuditEntry(
+      entry({ eventType: 'phase-start', payload: { phaseId: 'plan', runner: 'agy' } })
+    );
+    expect(projected.runner).toBe('agy');
+  });
+
+  it('does not project runner from unrelated event types', () => {
+    const projected = projectAuditEntry(
+      entry({ eventType: 'phase-end', payload: { phaseId: 'plan', runner: 'agy' } })
+    );
+    expect(projected.runner).toBeUndefined();
+  });
+
   it('extracts taskId from payload.taskId (highest priority)', () => {
     const projected = projectAuditEntry(
       entry({ payload: { taskId: 't-1', taskID: 't-legacy', queueItemId: 'q-1' } })

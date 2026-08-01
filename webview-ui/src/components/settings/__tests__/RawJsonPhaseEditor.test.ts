@@ -82,6 +82,40 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
     expect(save.disabled).toBe(false);
   });
 
+  it.each(['gemini', 42])('rejects unsupported runner value %j', async (runner) => {
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: PHASE_FIXTURE }
+    });
+    const textarea = container.querySelector(
+      '[data-testid="raw-json-input"]'
+    ) as HTMLTextAreaElement;
+    await fireEvent.input(textarea, {
+      target: { value: JSON.stringify({ ...PHASE_FIXTURE, runner }, null, 2) }
+    });
+
+    const save = container.querySelector(
+      '[data-testid="raw-json-save"]'
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="raw-json-error"]')?.textContent)
+      .toContain('must be one of claude, codex, agy');
+  });
+
+  it.each(['claude', 'codex', 'agy'])('accepts supported runner %s', async (runner) => {
+    const onSave = vi.fn();
+    const phase = { ...PHASE_FIXTURE, runner };
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase, onsave: onSave }
+    });
+
+    const save = container.querySelector(
+      '[data-testid="raw-json-save"]'
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await fireEvent.click(save);
+    expect(onSave).toHaveBeenCalledWith(phase);
+  });
+
   it('round-trips unknown top-level fields without loss (FR-031, SC-008)', async () => {
     const withUnknownField = {
       ...PHASE_FIXTURE,

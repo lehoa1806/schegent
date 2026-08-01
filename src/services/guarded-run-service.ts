@@ -26,8 +26,13 @@ import type {
 } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { PipelineCatalog } from '../config/pipeline-config';
+import { phaseRunnerPolicyError } from '../config/phase-runner-policy';
 import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
 import type { EnqueueStartIntent } from '../contracts/sidebar-ipc';
+import {
+  DEFAULT_BACKEND,
+  type BackendRunnerKind
+} from '../runner/backend-runner-factory';
 
 // Feature 065 — `scheduleOrEnqueue` accepts an optional `startIntent` to
 // drive the host policy table (see contracts/sidebar-ipc.diff.md).
@@ -121,7 +126,8 @@ export interface GuardedRunServiceDeps {
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
   readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'setQueue'>;
-  readonly cliPathProvider: () => Promise<string> | string;
+  readonly cliPathProvider: (runnerKind?: BackendRunnerKind) => Promise<string> | string;
+  readonly defaultRunnerKind?: BackendRunnerKind;
   readonly workspaceRoot: string;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
@@ -659,7 +665,7 @@ export class GuardedRunService {
       return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
     }
 
-    const cliCheck = await this.assertCliAvailable();
+    const cliCheck = await this.assertCliAvailable(req.pipelineId ?? null);
     if (cliCheck.kind === 'invalid') {
       await this.emitRejection('start', 'rejected-validation', cliCheck.reason, req.via);
       return { outcome: 'rejected-validation', reason: cliCheck.reason };
@@ -820,40 +826,53 @@ export class GuardedRunService {
     return `foreign-fresh:${this.deps.logger.sanitize(existing.ownerId)}`;
   }
 
-  private async assertCliAvailable(): Promise<
+  private async assertCliAvailable(pipelineId: string | null): Promise<
     { kind: 'ok' } | { kind: 'invalid'; reason: string }
   > {
-    let cliPath: string;
-    try {
-      cliPath = await this.deps.cliPathProvider();
-    } catch (err) {
-      return {
-        kind: 'invalid',
-        reason: `cli-path-unavailable:${this.deps.logger.sanitize((err as Error).message ?? 'unknown')}`
-      };
+    const catalog =
+      this.deps.catalogProvider?.() ?? this.deps.controller.getCatalog();
+    const pipeline = catalog.pipelinesById.get(
+      pipelineId ?? catalog.defaultPipelineId
+    );
+    const runnerKinds = new Set<BackendRunnerKind>();
+    if (pipeline) {
+      for (const phaseId of pipeline.phases) {
+        const runnerKind =
+          catalog.phasesById.get(phaseId)?.runner ??
+          this.deps.defaultRunnerKind ??
+          DEFAULT_BACKEND;
+        const runnerPolicyError = phaseRunnerPolicyError(phaseId, runnerKind);
+        if (runnerPolicyError !== null) {
+          return {
+            kind: 'invalid',
+            reason: `runner-incompatible:${phaseId}:${runnerKind}`
+          };
+        }
+        runnerKinds.add(runnerKind);
+      }
     }
-    if (!cliPath || cliPath.trim().length === 0) {
-      return { kind: 'invalid', reason: 'cli-path-empty' };
+    if (runnerKinds.size === 0) {
+      runnerKinds.add(this.deps.defaultRunnerKind ?? DEFAULT_BACKEND);
     }
-    if (path.isAbsolute(cliPath)) {
+
+    for (const runnerKind of runnerKinds) {
+      let cliPath: string;
       try {
-        await fs.access(cliPath, fs.constants.X_OK);
-        return { kind: 'ok' };
-      } catch {
+        cliPath = await this.deps.cliPathProvider(runnerKind);
+      } catch (err) {
+        return {
+          kind: 'invalid',
+          reason: `cli-path-unavailable:${this.deps.logger.sanitize((err as Error).message ?? 'unknown')}`
+        };
+      }
+      if (!cliPath || cliPath.trim().length === 0) {
+        return { kind: 'invalid', reason: 'cli-path-empty' };
+      }
+      if (!(await isExecutableAvailable(cliPath))) {
         return { kind: 'invalid', reason: 'cli-not-found' };
       }
     }
-    const which = process.platform === 'win32' ? 'where' : 'which';
-    const ok = await new Promise<boolean>((resolve) => {
-      try {
-        const proc = spawn(which, [cliPath], { stdio: 'ignore' });
-        proc.on('exit', (code) => resolve(code === 0));
-        proc.on('error', () => resolve(false));
-      } catch {
-        resolve(false);
-      }
-    });
-    return ok ? { kind: 'ok' } : { kind: 'invalid', reason: 'cli-not-found' };
+    return { kind: 'ok' };
   }
 
   private async assertScaffoldingPresent(): Promise<
@@ -902,4 +921,25 @@ export class GuardedRunService {
       );
     }
   }
+}
+
+async function isExecutableAvailable(cliPath: string): Promise<boolean> {
+  if (path.isAbsolute(cliPath)) {
+    try {
+      await fs.access(cliPath, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const which = process.platform === 'win32' ? 'where' : 'which';
+  return new Promise<boolean>((resolve) => {
+    try {
+      const proc = spawn(which, [cliPath], { stdio: 'ignore' });
+      proc.on('exit', (code) => resolve(code === 0));
+      proc.on('error', () => resolve(false));
+    } catch {
+      resolve(false);
+    }
+  });
 }

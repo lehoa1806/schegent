@@ -163,6 +163,7 @@ export const SETTINGS_KEYS = [
   "schegent.claude.autoCompactPctOverride",
   "schegent.cli.inheritEnvironment",
   "schegent.cli.path",
+  "schegent.codex.path",
   "schegent.defaultPipelineId",
   "schegent.fatalSignatures",
   "schegent.invocation.timeoutSeconds",

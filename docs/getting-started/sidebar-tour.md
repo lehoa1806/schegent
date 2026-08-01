@@ -80,7 +80,7 @@ The rows are grouped:
 ### CLI
 
 - **CLI path** — bound to `schegent.cli.path`.
-- **Backend** — bound to `schegent.backend.runner` (`claude` or `codex`).
+- **Backend** — bound to `schegent.backend.runner` (`claude`, `codex`, or `agy`).
 - **Re-detect transport** — runs the `schegent.redetectClaudeTransport` command to re-probe how the CLI accepts prompts (argv vs file vs stdin).
 
 ### Models & phases

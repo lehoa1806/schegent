@@ -4,7 +4,9 @@ A consolidated reference for Schegent's performance budgets, retention defaults,
 
 ## CLI startup cost (per phase)
 
-Every phase invocation spawns a fresh Claude CLI subprocess. There is no warm pool. Startup is measured by the time between `monitor-invocation-started` and the first `monitor-stdout-line`.
+Every phase invocation spawns a fresh subprocess for its effective backend.
+There is no warm pool. Startup is measured by the time between
+`monitor-invocation-started` and the first `monitor-stdout-line`.
 
 | Phase | Approximate startup | Notes |
 |---|---|---|
@@ -28,9 +30,23 @@ If you are seeing UI lag with a much larger queue (>100 items), file an issue â€
 
 ## Subprocess output cap
 
-Each invocation captures stdout and stderr up to `MAX_BUFFER_BYTES` (4 MiB per stream). Beyond that, additional bytes are silently truncated. The subprocess continues running; the runner does not abort because the cap was reached. This protects the host from memory-pressure attacks via prompt-controlled stdout.
+Each invocation keeps an ordered head and rolling tail of stdout and stderr up
+to `MAX_BUFFER_BYTES` (4 MiB per stream). Once the cumulative stream exceeds
+that budget, the buffer inserts a truncation marker and sets the matching
+`stdoutTruncated` / `stderrTruncated` audit flag. The subprocess continues
+running; Schegent does not abort merely because the parser buffer reached its
+cap. A result that would otherwise advance fails closed with
+`output-truncated-unclassifiable`, because fatal evidence may have appeared in
+the discarded middle.
 
-If you need a larger buffer, edit `MAX_BUFFER_BYTES` in [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) and re-run the runner test suite.
+The canonical raw transcript remains complete: each runner tees the full byte
+stream with backpressure to private mode-`0600` OS-temporary spools, which are
+streamed into the transcript and removed at invocation end. Spool-drain time is
+excluded from the backend idle timeout, and abandoned spools are scavenged
+after their owner process exits. If you need a larger parser buffer, edit
+`DEFAULT_MAX_BUFFER_BYTES` in
+[src/runner/zipped-stream-buffer.ts](../../src/runner/zipped-stream-buffer.ts)
+and re-run the runner and phase-outcome suites.
 
 ## Audit log rotation
 

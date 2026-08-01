@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { PhaseRunner } from '../controller/phase-runner';
+import { buildSpawnEnv } from '../runner/spawn-env';
 
 const execFileAsync = promisify(execFile);
 import { composePhaseMessagePath } from '../controller/phase-runner';
@@ -18,6 +19,12 @@ import type { PhaseName } from '../ui/sidebar/snapshot';
 import { BUILT_IN_PIPELINE_ID } from '../config/pipeline-config';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
+import type { PhaseDef } from '../config/pipeline-config';
+import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
+import {
+  DEFAULT_BACKEND,
+  type BackendRunnerKind
+} from '../runner/backend-runner-factory';
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -28,6 +35,8 @@ interface RunDriverOptions {
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   // When undefined, falls back to `cliPath` for all runners.
   readonly cliPathResolver?: (runnerKind: string) => string;
+  /** Effective global backend for phases without an explicit override. */
+  readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;
 }
 
@@ -106,9 +115,23 @@ export class RunDriver {
    * When no per-runner resolver is configured, falls back to the global
    * `cliPath` (backwards compatible with single-runner mode).
    */
-  private resolveCliPath(runnerKind?: string): string {
-    if (runnerKind && this.deps.options.cliPathResolver) {
-      return this.deps.options.cliPathResolver(runnerKind);
+  private resolveRunnerKind(
+    phaseDef: PhaseDef | undefined,
+    runDefaultRunnerKind: BackendRunnerKind | undefined
+  ): BackendRunnerKind {
+    // New runs always persist an effective runner on every phase. The run-level
+    // fallback is therefore limited to partially migrated snapshots. The
+    // controller pins a configured default when it first migrates a truly
+    // legacy run, so subsequent dispatches are stable across setting changes.
+    return effectiveRunnerKindForPhase(phaseDef, runDefaultRunnerKind);
+  }
+
+  private resolveCliPath(runnerKind?: BackendRunnerKind): string {
+    const effectiveKind = runnerKind
+      ?? this.deps.options.defaultRunnerKind
+      ?? DEFAULT_BACKEND;
+    if (this.deps.options.cliPathResolver) {
+      return this.deps.options.cliPathResolver(effectiveKind);
     }
     return this.deps.options.cliPath;
   }
@@ -139,23 +162,69 @@ export class RunDriver {
           run.currentIteration === 0 &&
           run.pipeline
         ) {
-          const runners = new Set(run.pipeline.phases.map((p) => p.runner || 'claude'));
+          const runners = new Set(
+            run.pipeline.phases.map((phase) =>
+              this.resolveRunnerKind(phase, run.defaultRunnerKind)
+            )
+          );
           for (const runnerKind of runners) {
             const cliPath = this.resolveCliPath(runnerKind);
             try {
-              await execFileAsync(cliPath, ['--help']);
-            } catch (err: any) {
-              const probeErr = err as Error;
-              this.deps.logger.error(`Probe failed for runner ${runnerKind} at ${cliPath}: ${probeErr.message}`);
-              run = await this.deps.persistTransition(run, { ...run, status: 'failed' });
-              
+              await execFileAsync(cliPath, ['--help'], {
+                cwd: this.deps.options.cwd,
+                env: buildSpawnEnv({
+                  env: {
+                    SCHEGENT_PHASE: 'runner-probe',
+                    SCHEGENT_ITERATION: '0'
+                  },
+                  inheritProcessEnv: this.deps.options.inheritProcessEnv !== false
+                })
+              });
+            } catch (err: unknown) {
+              const probeErr = err instanceof Error ? err : new Error(String(err));
+              const failureMessage =
+                `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
+              this.deps.logger.error(
+                `run-driver: ${failureMessage} ${probeErr.message}`
+              );
+              const sanitized: SanitizedError = {
+                code: 'runner-probe-failed',
+                message: failureMessage,
+                phase: run.currentPhase,
+                iteration: run.currentIteration,
+                at: Date.now()
+              };
+              run = await this.deps.persistTransition(run, {
+                ...run,
+                status: 'failed',
+                lastError: sanitized,
+                lastTransitionAt: Date.now()
+              });
+
               if (this.deps.appendRunnerProbeFailedAudit) {
                 await this.deps.appendRunnerProbeFailedAudit(run, {
                   runnerKind,
-                  cliPath,
-                  errorMessage: probeErr.message,
+                  errorMessage: failureMessage,
                   runId: run.id
                 });
+              }
+              this.deps.statusBar.update({
+                kind: 'failed',
+                phase: run.currentPhase,
+                detail: failureMessage
+              });
+              this.deps.notifier.warn(`Schegent: ${failureMessage}`);
+              try {
+                await this.deps.queue.finish(run.featureId, 'failed', {
+                  code: sanitized.code,
+                  message: sanitized.message,
+                  phase: sanitized.phase ?? undefined,
+                  correlationId: run.id
+                });
+              } catch (queueError) {
+                this.deps.logger.warn(
+                  `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
+                );
               }
               // Feature 072 — emit task-execution-ended
               try {
@@ -167,7 +236,7 @@ export class RunDriver {
                     phasesCompleted: 0,
                     phasesSkipped: 0,
                     phasesTotal: run.pipeline?.phases.length || 0,
-                    lastErrorSummary: `Runner probe failed for ${runnerKind}: ${probeErr.message}`.slice(0, 240)
+                    lastErrorSummary: failureMessage
                   });
                 }
               } catch (auditErr) {
@@ -196,6 +265,16 @@ export class RunDriver {
           });
           if (preDecision.kind === 'skip-phase') {
             const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
+            const nextPhaseDef = decision.kind === 'advance'
+              ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
+              : undefined;
+            const nextRunnerKind = nextPhaseDef
+              ? this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind)
+              : undefined;
+            const sessionOwnerMatchesTarget =
+              nextRunnerKind !== undefined &&
+              run.lastCliSessionRunnerKind === nextRunnerKind;
+            if (!sessionOwnerMatchesTarget) pendingSessionReuse = false;
             const advanced: WorkflowRun = {
               ...run,
               phaseOverrides: nextOverridesAfterSkip(run, phaseOverride),
@@ -203,7 +282,13 @@ export class RunDriver {
               currentIteration:
                 decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
               lastTransitionAt: Date.now(),
-              phasesCompleted: [...run.phasesCompleted, skippedResult]
+              phasesCompleted: [...run.phasesCompleted, skippedResult],
+              ...(sessionOwnerMatchesTarget
+                ? {}
+                : {
+                    lastCliSessionId: undefined,
+                    lastCliSessionRunnerKind: undefined
+                  })
             };
             run = await this.deps.persistTransition(run, advanced);
             previousPhaseMessage = null;
@@ -241,18 +326,45 @@ export class RunDriver {
             }
           }
           const activePhaseDef = preDecision.activePhaseDef;
-          const dispatchIsContinue = pendingIsContinue;
+          const effectiveRunnerKind = this.resolveRunnerKind(
+            activePhaseDef,
+            run.defaultRunnerKind
+          );
+          // A partially migrated pipeline can lack phase.runner even though
+          // the run already has a pinned default. PhaseRunner owns adapter
+          // selection and audit attribution, so pass it the same effective
+          // runner used for CLI-path/session selection. This is an immutable
+          // dispatch view; the persisted pipeline snapshot remains untouched.
+          const dispatchPhaseDef =
+            activePhaseDef && activePhaseDef.runner === undefined
+              ? Object.freeze({ ...activePhaseDef, runner: effectiveRunnerKind })
+              : activePhaseDef;
+          const requestedContinue = pendingIsContinue;
           pendingIsContinue = false;
+          const ownedResumeSessionId =
+            run.lastCliSessionRunnerKind === effectiveRunnerKind &&
+            typeof run.lastCliSessionId === 'string'
+              ? run.lastCliSessionId
+              : undefined;
+          const ownsResumeSession = ownedResumeSessionId !== undefined;
+          // Continuation must always target the exact persisted session owned
+          // by this backend. Passing isContinue without an owned ID lets the
+          // Claude runner fall back to `-c` (the most recent conversation),
+          // which can attach unrelated workspace context.
+          const dispatchIsContinue = requestedContinue && ownsResumeSession;
           // Session reuse: use --resume for both isContinue (interrupted
           // conversation) AND session reuse (cost optimization). isContinue
           // takes precedence when both are true.
           const shouldResumeSession = dispatchIsContinue || pendingSessionReuse;
           const dispatchResumeSessionId =
-            shouldResumeSession && typeof run.lastCliSessionId === 'string'
-              ? run.lastCliSessionId
+            shouldResumeSession && ownsResumeSession
+              ? ownedResumeSessionId
               : undefined;
           const dispatchSessionReuse = pendingSessionReuse && !dispatchIsContinue;
-          const dispatchResumePrompt = dispatchIsContinue ? run.resumePrompt : undefined;
+          // The saved recovery prompt is safe to use for a fresh invocation;
+          // only the backend session attachment is suppressed when ownership
+          // cannot be proven.
+          const dispatchResumePrompt = requestedContinue ? run.resumePrompt : undefined;
           if (run.resumePrompt !== undefined) {
             const nextRun = { ...run };
             delete nextRun.resumePrompt;
@@ -261,7 +373,7 @@ export class RunDriver {
 
           const output = await this.deps.runner.run({
             phase: run.currentPhase,
-            phaseDef: activePhaseDef,
+            phaseDef: dispatchPhaseDef,
             pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
             iteration,
             iterationCap: this.deps.options.iterationCap,
@@ -271,7 +383,7 @@ export class RunDriver {
             // Feature 074 — resolve CLI path per-runner-kind. When a phase
             // specifies a runner, use the cliPathResolver to pick the
             // correct binary; otherwise fall back to the global cliPath.
-            cliPath: this.resolveCliPath(activePhaseDef?.runner),
+            cliPath: this.resolveCliPath(effectiveRunnerKind),
             cwd: this.deps.options.cwd,
             timeoutMs: activePhaseDef?.timeoutSeconds
               ? activePhaseDef.timeoutSeconds * 1000
@@ -306,6 +418,19 @@ export class RunDriver {
             }
             this.cancellationController = new AbortController();
             continue;
+          }
+
+          // Capture the backend-owned session before any pause/breakpoint
+          // branch persists and exits. A completed invocation can disclose
+          // its exact session ID even when the controller immediately pauses;
+          // that ID is what makes a later resume safe and deterministic.
+          if (output.cliSessionId !== undefined) {
+            run = {
+              ...run,
+              lastCliSessionId: output.cliSessionId,
+              lastCliSessionRunnerKind: effectiveRunnerKind
+            };
+            pendingSessionReuse = true;
           }
 
           const postDecision = this.sequencer.decideAfterPhase({
@@ -357,18 +482,6 @@ export class RunDriver {
               ? output.phaseMessage.entries
               : null;
 
-          // Session ID capture — persist the captured session ID onto
-          // the run so future retry/resume dispatches can target the
-          // exact session via `--resume <id>`. Only overwrite if the
-          // runner returned a non-undefined value (stream-json was
-          // active and a session_id was found).
-          if (output.cliSessionId !== undefined) {
-            run = { ...run, lastCliSessionId: output.cliSessionId };
-            // Enable session reuse for subsequent invocations in this
-            // drive cycle now that we have a valid session ID.
-            pendingSessionReuse = true;
-          }
-
           const phaseResult: PhaseResult = {
             ...postDecision.phaseResult,
             startedAt: phaseStartedAt
@@ -410,7 +523,7 @@ export class RunDriver {
                 phase: run.currentPhase,
                 iteration,
                 pipelineId: run.pipeline?.id,
-                phaseDef: activePhaseDef
+                phaseDef: dispatchPhaseDef
               });
             }
             const sanitized: SanitizedError = {
@@ -505,6 +618,11 @@ export class RunDriver {
             const latestRun = this.deps.store.getRun()!;
             const paused: WorkflowRun = {
               ...latestRun,
+              // The invocation just completed after the operator's pause
+              // write. Keep the session ownership captured from its output;
+              // the latest persisted snapshot predates that output.
+              lastCliSessionId: run.lastCliSessionId,
+              lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
               status: 'paused',
               currentPhase:
                 decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
@@ -534,6 +652,17 @@ export class RunDriver {
           );
 
           const decision = postDecision.transition;
+          const nextPhaseDef = decision.kind === 'advance'
+            ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
+            : undefined;
+          const nextRunnerKind = nextPhaseDef
+            ? this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind)
+            : undefined;
+          const crossesRunnerBoundary =
+            decision.kind === 'advance' &&
+            nextRunnerKind !== undefined &&
+            effectiveRunnerKind !== nextRunnerKind;
+          if (crossesRunnerBoundary) pendingSessionReuse = false;
           const advanced: WorkflowRun = {
             ...run,
             currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
@@ -542,26 +671,15 @@ export class RunDriver {
                 ? decision.nextIteration
                 : run.currentIteration,
             lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult]
+            phasesCompleted: [...run.phasesCompleted, phaseResult],
+            ...(crossesRunnerBoundary
+              ? {
+                  lastCliSessionId: undefined,
+                  lastCliSessionRunnerKind: undefined
+                }
+              : {})
           };
           run = await this.deps.persistTransition(run, advanced);
-
-          // Feature 074 — session context reset on runner transition. When
-          // the next phase uses a different runner kind than the current phase,
-          // clear the cached session ID and session reuse flag so the new
-          // runner starts a fresh session. Cross-backend session continuation
-          // is explicitly out of scope (FR-016).
-          if (decision.kind === 'advance') {
-            const currentRunnerKind = activePhaseDef?.runner;
-            const nextPhaseDef = run.pipeline?.phases?.find(
-              (p: { id: string }) => p.id === decision.nextPhase
-            );
-            const nextRunnerKind = nextPhaseDef?.runner;
-            if (currentRunnerKind !== nextRunnerKind) {
-              pendingSessionReuse = false;
-              run = { ...run, lastCliSessionId: undefined };
-            }
-          }
         }
 
         if (run.currentPhase === 'done' && run.status === 'running') {

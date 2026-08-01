@@ -25,7 +25,12 @@ import {
   type Scheduler
 } from '../../../src/state/lock';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
-import type { PipelineCatalog, PipelineDef } from '../../../src/config/pipeline-config';
+import type {
+  PhaseDef,
+  PipelineCatalog,
+  PipelineDef
+} from '../../../src/config/pipeline-config';
+import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
 
 function makeCatalog(pipelineIds: readonly string[]): PipelineCatalog {
   const pipelines: PipelineDef[] = pipelineIds.map((id) => ({
@@ -42,6 +47,53 @@ function makeCatalog(pipelineIds: readonly string[]): PipelineCatalog {
     defaultPipelineId: pipelineIds[0] ?? 'default',
     phasesById: new Map(),
     pipelinesById
+  };
+}
+
+function makeRunnerCatalog(runner: BackendRunnerKind): PipelineCatalog {
+  const phase: PhaseDef = {
+    id: 'custom-phase',
+    name: 'Custom phase',
+    instruction: 'Run it',
+    runner
+  };
+  const pipeline: PipelineDef = {
+    id: 'custom-pipeline',
+    name: 'Custom pipeline',
+    phases: [phase.id]
+  };
+  return {
+    phases: [phase],
+    pipelines: [pipeline],
+    models: [],
+    defaultPipelineId: pipeline.id,
+    phasesById: new Map([[phase.id, phase]]),
+    pipelinesById: new Map([[pipeline.id, pipeline]])
+  };
+}
+
+function makeGitPhaseCatalog(
+  runner?: BackendRunnerKind,
+  phaseId = 'finalize'
+): PipelineCatalog {
+  const phase: PhaseDef = {
+    id: phaseId,
+    name: phaseId,
+    instruction: 'Commit and merge the work.',
+    ...(runner === undefined ? {} : { runner })
+  };
+  const pipeline: PipelineDef = {
+    id: 'git-pipeline',
+    name: 'Git pipeline',
+    phases: [phase.id]
+  };
+  return {
+    phases: [phase],
+    pipelines: [pipeline],
+    models: [],
+    defaultPipelineId: pipeline.id,
+    phasesById: new Map([[phase.id, phase]]),
+    pipelinesById: new Map([[pipeline.id, pipeline]])
   };
 }
 
@@ -98,12 +150,17 @@ function makeAudit() {
 interface FakeController {
   running: boolean;
   startNew: ReturnType<typeof vi.fn>;
+  getCatalog: ReturnType<typeof vi.fn>;
 }
 
-function makeController(initialRunning = false): FakeController {
+function makeController(
+  initialRunning = false,
+  catalog: PipelineCatalog = makeCatalog(['speckit-default'])
+): FakeController {
   const c: FakeController = {
     running: initialRunning,
-    startNew: vi.fn()
+    startNew: vi.fn(),
+    getCatalog: vi.fn(() => catalog)
   };
   c.startNew.mockResolvedValue(undefined);
   return c;
@@ -126,11 +183,13 @@ async function makeHarness(opts?: {
   ownerId?: string;
   controllerRunning?: boolean;
   cliPath?: string;
+  cliPaths?: Partial<Record<BackendRunnerKind, string>>;
+  defaultRunnerKind?: BackendRunnerKind;
   withScaffolding?: boolean;
   catalog?: PipelineCatalog;
 }): Promise<Harness> {
   const ownerId = opts?.ownerId ?? 'self-window';
-  const controller = makeController(opts?.controllerRunning ?? false);
+  const controller = makeController(opts?.controllerRunning ?? false, opts?.catalog);
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
@@ -155,7 +214,11 @@ async function makeHarness(opts?: {
     logger: logger as unknown as import('../../../src/lib/logger').SanitizedLogger,
     audit: audit as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
     store,
-    cliPathProvider: () => cliPath,
+    cliPathProvider: (runnerKind) =>
+      (runnerKind ? opts?.cliPaths?.[runnerKind] : undefined) ?? cliPath,
+    ...(opts?.defaultRunnerKind
+      ? { defaultRunnerKind: opts.defaultRunnerKind }
+      : {}),
     workspaceRoot,
     clock: () => clock.now(),
     ...(opts?.catalog ? { catalogProvider: () => opts.catalog as PipelineCatalog } : {})
@@ -417,6 +480,88 @@ describe('GuardedRunService.startNow (FR-006/FR-009/FR-010)', () => {
     expect(h.store.getLock()).toBeNull();
     expect(h.controller.startNew).not.toHaveBeenCalled();
   });
+
+  it('preflights the selected pipeline runner instead of the unavailable global default', async () => {
+    const h = await trackedHarness({
+      cliPath: '/this/global/claude/does/not/exist',
+      cliPaths: { agy: process.execPath },
+      defaultRunnerKind: 'claude',
+      catalog: makeRunnerCatalog('agy')
+    });
+    const result = await h.service.startNow({
+      description: 'run only on agy',
+      startedAt: h.clock.now(),
+      pipelineId: 'custom-pipeline',
+      via: 'command-palette'
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(h.controller.startNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a Git-mutating phase that would inherit the global Codex runner', async () => {
+    const h = await trackedHarness({
+      defaultRunnerKind: 'codex',
+      catalog: makeGitPhaseCatalog()
+    });
+
+    const result = await h.service.startNow({
+      description: 'finalize work',
+      startedAt: h.clock.now(),
+      pipelineId: 'git-pipeline',
+      via: 'command-palette'
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'rejected-validation',
+      reason: 'runner-incompatible:finalize:codex'
+    });
+    expect(h.store.getLock()).toBeNull();
+    expect(h.controller.startNew).not.toHaveBeenCalled();
+  });
+
+  it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement'])(
+    'rejects worktree-creating phase %s when it would inherit Codex',
+    async (phaseId) => {
+      const h = await trackedHarness({
+        defaultRunnerKind: 'codex',
+        catalog: makeGitPhaseCatalog(undefined, phaseId)
+      });
+
+      const result = await h.service.startNow({
+        description: 'specify work',
+        startedAt: h.clock.now(),
+        pipelineId: 'git-pipeline',
+        via: 'command-palette'
+      });
+
+      expect(result).toMatchObject({
+        outcome: 'rejected-validation',
+        reason: `runner-incompatible:${phaseId}:codex`
+      });
+      expect(h.controller.startNew).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['claude', 'agy'] as const)(
+    'accepts a Git-mutating phase with explicit %s runner',
+    async (runner) => {
+      const h = await trackedHarness({
+        defaultRunnerKind: 'codex',
+        catalog: makeGitPhaseCatalog(runner)
+      });
+
+      const result = await h.service.startNow({
+        description: 'finalize work',
+        startedAt: h.clock.now(),
+        pipelineId: 'git-pipeline',
+        via: 'command-palette'
+      });
+
+      expect(result.outcome).toBe('started');
+      expect(h.controller.startNew).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('rejects with rejected-validation when scaffolding is missing (no lock acquired)', async () => {
     const h = await trackedHarness({ withScaffolding: false });

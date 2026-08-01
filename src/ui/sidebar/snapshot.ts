@@ -214,6 +214,7 @@ export interface AuditTailEntry {
   readonly phaseId?: string;
   readonly outcome?: 'success' | 'error' | 'pending';
   readonly command?: string;
+  readonly runner?: string;
 }
 
 export interface LiveActivity {
@@ -260,6 +261,7 @@ export interface ActivePipelineSummary {
 }
 
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
+import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { GeneralSettings } from '../../config/general-settings';
 import type { WakeUpLogProjection } from '../../wakeup/invocation-log';
 import type { WakeUpSettings, WakeUpModelSelection } from '../../wakeup/settings';
@@ -338,6 +340,8 @@ export interface WorkflowSnapshot {
    * `CMD_CLEAR_PHASE_BREAKPOINT` at the controller.
    */
   readonly activeRunId: string | null;
+  /** Backend inherited by phases whose run snapshot predates runner pinning. */
+  readonly defaultRunnerKind: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];
   /**
    * Debug log tail — recent SanitizedLogger output projected for the
@@ -543,6 +547,7 @@ export function buildIdleSnapshot(opts: {
     phaseBreakpoints: Object.freeze([]),
     resumeTargetPhaseId: null,
     activeRunId: null,
+    defaultRunnerKind: 'claude',
     auditTail: Object.freeze([]) as readonly AuditTailEntry[],
     debugLogTail: Object.freeze([]) as readonly DebugLogEntry[],
     liveActivity: IDLE_LIVE_ACTIVITY,

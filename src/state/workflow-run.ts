@@ -122,6 +122,13 @@ export interface WorkflowRun {
   lastError: SanitizedError | null;
   pipeline?: WorkflowRunPipeline;
   /**
+   * Effective global backend captured when the run is created. Phases in new
+   * snapshots also persist their effective runner, but this run-level value is
+   * the stable fallback for partially migrated snapshots. Missing on records
+   * created before runner pinning; those conservatively fall back to Claude.
+   */
+  defaultRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
+  /**
    * Feature 011 — total delayed-retry attempts for this run. Starts at 0;
    * incremented per FR-002/FR-003; reset to 0 by FR-007/FR-009.
    * MUST be a non-negative integer ≤ DELAYED_RETRY_CAP (5).
@@ -186,6 +193,13 @@ export interface WorkflowRun {
    * projection convention — no migration required.
    */
   lastCliSessionId?: string | null;
+  /**
+   * Backend that created `lastCliSessionId`. Session identifiers are scoped
+   * to a backend provider and MUST only be reused when this value matches the
+   * effective backend of the next dispatch. Missing on legacy records; a
+   * missing owner fails closed by starting a fresh backend session.
+   */
+  lastCliSessionRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
   /**
    * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
    * decision projected onto the operator-visible run. Absent until the
