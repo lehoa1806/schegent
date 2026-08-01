@@ -95,6 +95,8 @@ describe('Feature 011 — general-settings allowlist', () => {
         'logging.runtimeLogFilePath',
         'logging.runtimeLogMaxBytes',
         'logging.runtimeLogMaxGenerations',
+        'logging.sessionRetentionMaxAgeDays',
+        'logging.sessionRetentionMaxBytes',
         'retry.maxAttempts'
       ])
     );

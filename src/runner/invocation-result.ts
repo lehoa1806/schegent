@@ -35,6 +35,14 @@ export interface InvocationRequest {
    * backend CLIs for hardened operator environments.
    */
   inheritProcessEnv?: boolean;
+  /**
+   * Names-only ambient environment allowlist. When present (including an
+   * empty array), the child receives required non-secret bootstrap variables,
+   * matching `LC_*` locale variables, these approved names, and then the
+   * Schegent-controlled `env` overlay. Values are always read from the host
+   * environment at spawn time and are never persisted in configuration.
+   */
+  processEnvAllowlist?: readonly string[];
   model?: string;
   effort?: Effort;
   /**

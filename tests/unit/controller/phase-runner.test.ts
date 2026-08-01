@@ -18,6 +18,7 @@ import type {
   InvocationRequest
 } from '../../../src/runner/invocation-result';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
+import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
 
 const cleanStdout = [
   '[SCHEGENT_STATUS: CLEAR]',
@@ -106,6 +107,28 @@ const baseInputs = {
 describe('PhaseRunner.run', () => {
   beforeEach(() => {
     auditWriter = makeFakeAuditWriter();
+  });
+
+  it('fails closed before CLI invocation when phase-start audit is not durable', async () => {
+    cliRunner = makeFakeRunner(async () => makeRawOutput());
+    vi.mocked(auditWriter.append).mockRejectedValueOnce(
+      Object.assign(new Error('sensitive workspace path omitted'), { code: 'ENOSPC' })
+    );
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    await expect(runner.run(baseInputs)).rejects.toEqual(
+      expect.objectContaining<Partial<RequiredEvidenceUnavailableError>>({
+        name: 'RequiredEvidenceUnavailableError',
+        code: 'audit-evidence-unavailable',
+        eventType: 'phase-start'
+      })
+    );
+    expect(cliRunner.invoke).not.toHaveBeenCalled();
   });
 
   it('returns clean outcome when stdout has token + audit', async () => {
@@ -747,17 +770,22 @@ describe('PhaseRunner.run', () => {
     expect(req.env).toMatchObject({ SCHEGENT_PHASE: 'speckit-specify' });
   });
 
-  it('forwards the strict CLI environment opt-out to the runner', async () => {
+  it('forwards the strict CLI environment policy to the runner', async () => {
     const seenRequests: InvocationRequest[] = [];
     cliRunner = makeFakeRunner(async (req) => {
       seenRequests.push(req);
       return makeRawOutput();
     });
     runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
-    await runner.run({ ...baseInputs, inheritProcessEnv: false });
+    await runner.run({
+      ...baseInputs,
+      inheritProcessEnv: false,
+      processEnvAllowlist: ['HTTPS_PROXY']
+    });
 
     expect(seenRequests).toHaveLength(1);
     expect(seenRequests[0].inheritProcessEnv).toBe(false);
+    expect(seenRequests[0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
     expect(seenRequests[0].env).toMatchObject({ SCHEGENT_PHASE: 'speckit-specify' });
   });
 
@@ -1611,6 +1639,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       ...baseInputs,
       sessionReuse: true,
       resumeSessionId: 'owned-session',
+      inheritProcessEnv: false,
+      processEnvAllowlist: ['HTTPS_PROXY'],
       cancellationSignal
     });
 
@@ -1622,6 +1652,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     expect(invokeMock.mock.calls[1][0].cancellationSignal).toBe(
       cancellationSignal
     );
+    expect(invokeMock.mock.calls[0][0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
+    expect(invokeMock.mock.calls[1][0].processEnvAllowlist).toEqual(['HTTPS_PROXY']);
   });
 
   it('records pre-compaction and phase output as separate raw transcript invocations', async () => {

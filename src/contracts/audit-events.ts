@@ -94,6 +94,10 @@ export const AUDIT_PIPELINE_EVENT_TYPES = [
   'audit-schema-warning'
 ] as const;
 
+// Sensitive local session-artifact lifecycle. Payloads contain aggregate
+// counts/bytes and policy values only — never run ids, filenames, or paths.
+export const SESSION_ARTIFACT_EVENT_TYPES = ['session-retention-applied'] as const;
+
 // Feature 010 — retry-condition decision records.
 // Uses dot-style identifier deliberately to avoid colliding with the
 // existing phase-* dash-style naming (see specs/010-pipeline-resilience/research.md R3).
@@ -307,6 +311,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...LIFECYCLE_EVENT_TYPES,
   ...MONITOR_EVENT_TYPES,
   ...AUDIT_PIPELINE_EVENT_TYPES,
+  ...SESSION_ARTIFACT_EVENT_TYPES,
   ...RETRY_CONDITION_EVENT_TYPES,
   ...DELAYED_RETRY_EVENT_TYPES,
   ...PHASE_CONTROL_EVENT_TYPES,
@@ -333,6 +338,7 @@ export type LoopEventType = (typeof LOOP_EVENT_TYPES)[number];
 export type LifecycleEventType = (typeof LIFECYCLE_EVENT_TYPES)[number];
 export type MonitorAuditEventType = (typeof MONITOR_EVENT_TYPES)[number];
 export type AuditPipelineEventType = (typeof AUDIT_PIPELINE_EVENT_TYPES)[number];
+export type SessionArtifactEventType = (typeof SESSION_ARTIFACT_EVENT_TYPES)[number];
 export type RetryConditionEventType = (typeof RETRY_CONDITION_EVENT_TYPES)[number];
 export type DelayedRetryEventType = (typeof DELAYED_RETRY_EVENT_TYPES)[number];
 export type PhaseControlEventType = (typeof PHASE_CONTROL_EVENT_TYPES)[number];
@@ -607,6 +613,7 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'audit-retention-applied',
     'audit-hydration-warning',
     'audit-schema-warning',
+    'session-retention-applied',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

@@ -57,8 +57,10 @@ grep '"warnings"' .schegent/audit.log | jq '.payload.warnings'
 
 Delete `.schegent/sessions/<runId>/` (or the entire `.schegent/`
 directory) when a debug session is finished. The verbose diagnostic
-files have no automatic retention and are intentionally unredacted —
-review before sharing, never commit.
+files are intentionally unredacted — review before sharing and never commit.
+Complete inactive-run groups are automatically pruned by the shared
+session-artifact age and byte budgets; the Settings surface reports retained
+usage and any contained sweep failures.
 
 ## Canonical reference
 

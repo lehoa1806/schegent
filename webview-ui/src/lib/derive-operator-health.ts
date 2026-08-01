@@ -1,5 +1,6 @@
 import {
   IDLE_DELAYED_RETRY,
+  IDLE_EVIDENCE_HEALTH,
   type DelayedRetryState,
   type QueueItem,
   type WorkflowSnapshot
@@ -26,6 +27,26 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
   const items = queueItems(snapshot);
   const failed = items.filter((item) => item.status === 'failed').length;
   const retryTotal = items.reduce((sum, item) => sum + Math.max(0, item.retryCount ?? 0), 0);
+  const evidenceHealth = snapshot.evidenceHealth ?? IDLE_EVIDENCE_HEALTH;
+
+  if (evidenceHealth.overall === 'unavailable') {
+    return {
+      level: 'blocked',
+      label: 'evidence unavailable',
+      title: 'The required structured audit sink failed; inspect the sanitized runtime or Output log before continuing'
+    };
+  }
+  if (evidenceHealth.overall === 'degraded') {
+    const degraded = [
+      evidenceHealth.rawTranscript.status === 'degraded' ? 'raw transcript' : null,
+      evidenceHealth.runtimeLog.status === 'degraded' ? 'runtime log' : null
+    ].filter((name): name is string => name !== null);
+    return {
+      level: 'attention',
+      label: 'evidence degraded',
+      title: `${degraded.join(' and ')} evidence is incomplete; workflow execution remains available`
+    };
+  }
 
   if (snapshot.liveActivity?.freshness === 'stalled') {
     return {

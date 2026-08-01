@@ -55,6 +55,8 @@ export interface SettingsSchemaEntry {
   readonly pattern?: string;
   /** Element type for `type === 'array'`. */
   readonly itemType?: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'object';
+  /** Optional element pattern for string arrays. */
+  readonly itemPattern?: string;
   /** `true` when `default === null` and the value may be cleared back to null. */
   readonly nullable?: boolean;
 }
@@ -86,6 +88,23 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: true,
     scope: 'application',
     docLabel: 'Backend CLI environment inheritance'
+  },
+  'schegent.cli.environmentMode': {
+    key: 'schegent.cli.environmentMode',
+    type: 'enum',
+    default: 'inherit',
+    scope: 'application',
+    enum: ['inherit', 'minimal', 'allowlist'],
+    docLabel: 'Backend CLI environment policy mode'
+  },
+  'schegent.cli.environmentAllowlist': {
+    key: 'schegent.cli.environmentAllowlist',
+    type: 'array',
+    default: [],
+    itemType: 'string',
+    itemPattern: '^[A-Za-z_][A-Za-z0-9_]*$',
+    scope: 'application',
+    docLabel: 'Backend CLI environment variable name allowlist'
   },
   'schegent.backend.runner': {
     key: 'schegent.backend.runner',
@@ -213,6 +232,24 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: false,
     scope: 'resource',
     docLabel: 'Verbose CLI diagnostic sink'
+  },
+  'schegent.logging.sessionRetentionMaxAgeDays': {
+    key: 'schegent.logging.sessionRetentionMaxAgeDays',
+    type: 'integer',
+    default: 30,
+    min: 1,
+    max: 3650,
+    scope: 'resource',
+    docLabel: 'Unredacted session artifact maximum age (days)'
+  },
+  'schegent.logging.sessionRetentionMaxBytes': {
+    key: 'schegent.logging.sessionRetentionMaxBytes',
+    type: 'integer',
+    default: 536870912,
+    min: 1048576,
+    max: 10737418240,
+    scope: 'resource',
+    docLabel: 'Unredacted session artifact total byte budget'
   },
   'schegent.logging.runtimeLogLevel': {
     key: 'schegent.logging.runtimeLogLevel',
@@ -348,11 +385,9 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
 export const SETTINGS_SCHEMA_KEYS: ReadonlySet<string> = new Set(Object.keys(SETTINGS_SCHEMA));
 
 /**
- * Returns `true` iff `value` satisfies the entry's `type`, `min`, `max`,
- * `enum`, and `nullable` constraints. The check is intentionally narrow
- * — array element validation lives in `general-settings.ts` because the
- * shape requirements vary by key (`fatalSignatures` rejects empty
- * strings; `models` allows them).
+ * Returns `true` iff `value` satisfies the entry's type, bounds, enum,
+ * nullable, and declared array-element constraints. Domain-specific rules
+ * such as non-empty fatal signatures remain in their owning validators.
  */
 export function isSchemaCompliantValue(
   entry: SettingsSchemaEntry,
@@ -382,7 +417,25 @@ export function isSchemaCompliantValue(
     case 'boolean':
       return typeof value === 'boolean';
     case 'array':
-      return Array.isArray(value);
+      if (!Array.isArray(value)) return false;
+      if (entry.itemType === undefined) return true;
+      return value.every((item) => {
+        const typeMatches = (() => {
+          switch (entry.itemType) {
+            case 'string': return typeof item === 'string';
+            case 'integer': return typeof item === 'number' && Number.isInteger(item);
+            case 'number': return typeof item === 'number' && Number.isFinite(item);
+            case 'boolean': return typeof item === 'boolean';
+            case 'object': return typeof item === 'object' && item !== null && !Array.isArray(item);
+            case 'enum': return typeof item === 'string';
+            case undefined: return true;
+          }
+        })();
+        return typeMatches && (
+          entry.itemPattern === undefined ||
+          (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))
+        );
+      });
     case 'enum':
       return (
         typeof value === 'string' &&

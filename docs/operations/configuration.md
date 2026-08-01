@@ -54,6 +54,8 @@ through VS Code settings and read at activation.
 |---|---|---|
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | Defaults to `true`. Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables; use absolute CLI paths and backend-native auth first. |
+| `schegent.cli.environmentMode` | enum (`inherit`, `minimal`, `allowlist`) | Compatibility default is `inherit`. `minimal` passes only Schegent variables; `allowlist` adds required bootstrap variables and approved names. The legacy boolean `false` always forces `minimal`. |
+| `schegent.cli.environmentAllowlist` | string[] | Names only; used in `allowlist` mode. Never store `NAME=value` or a secret value here. |
 | `schegent.backend.runner` | enum (`claude`, `codex`, `agy`) | Selects the default `BackendRunner` adapter. Default `claude`; a phase-level runner override wins. See [Backend Runners](backends.md). |
 | `schegent.codex.path` | string | Path to the `codex` CLI binary. |
 | `schegent.agy.path` | string | Path to the `agy` CLI binary. |

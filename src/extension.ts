@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import { WorkspaceStateStore } from './state/workspace-state';
@@ -16,6 +15,7 @@ import { QueueManager } from './queue/queue-manager';
 
 import { resolveBackendKind } from './runner/backend-runner-factory';
 import { BackendRunnerRegistry } from './runner/backend-runner-registry';
+import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
 import { PromptBuilder } from './runner/prompt-builder';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
@@ -23,12 +23,13 @@ import { QueueScheduleWatchdog } from './controller/schedule-watchdog';
 import { CreditWatchdog } from './watchdog/credit-watchdog';
 import { AuditLogWriter } from './audit/audit-log-writer';
 import { RawTranscriptWriter } from './audit/raw-transcript-writer';
+import { SessionArtifactRetentionService } from './services/session-retention/session-artifact-retention-service';
 import { SanitizedLogger } from './lib/logger';
 import {
-  RuntimeLogSink,
-  createRuntimeLogAccessor
-} from './lib/runtime-log';
-import { WebviewLogSink } from './lib/webview-log-sink';
+  createRuntimeEvidenceWiring,
+  warnIfEnvironmentIsUnrestricted,
+  type RuntimeEvidenceWiring
+} from './activation/backend-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
 import { Notifier } from './ui/notifications';
@@ -123,47 +124,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const logger = new SanitizedLogger();
   const ownerId = `schegent-${process.pid}-${randomUUID().slice(0, 8)}`;
 
-  // Feature 019 — Runtime debug log sink. Wired in Stage 1 so DEBUG records
-  // captured before Stage 2 wiring (or in workspace-less hosts) are routed
-  // through the same filter / suppression machinery. The accessor reads
-  // settings per emit, so toggles in `settings.json` apply on the next
-  // emit without extension reload.
-  // Allowed roots for absolute `runtimeLogFilePath` values. Computed
-  // lazily because workspace folders can change after activation.
-  // `globalStorageUri` is per-extension and persistent; the OS tmpdir
-  // and operator's home directory are stable for the process lifetime.
-  // Anything outside these four roots is rejected at read time —
-  // closes the gap where a malicious workspace settings file could
-  // target `/etc/passwd.log` or another sensitive location.
-  const runtimeLogAccessor = createRuntimeLogAccessor(
-    () => vscode.workspace.getConfiguration('schegent'),
-    () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
-    logger,
-    () => {
-      const roots: string[] = [];
-      const wsRoot = getCanonicalWorkspaceRoot()?.uri.fsPath;
-      if (wsRoot) roots.push(wsRoot);
-      roots.push(context.globalStorageUri.fsPath);
-      try {
-        roots.push(os.tmpdir());
-      } catch {
-        // tmpdir is documented to throw on some embedded platforms.
-      }
-      try {
-        roots.push(os.homedir());
-      } catch {
-        // homedir can throw if the OS user has no home.
-      }
-      return roots;
-    }
-  );
-  const runtimeLogSink = new RuntimeLogSink({
-    accessor: runtimeLogAccessor,
-    fallbackLogger: logger
-  });
-  logger.addSink(runtimeLogSink);
-  const webviewLogSink = new WebviewLogSink();
-  logger.addSink(webviewLogSink);
+  // Stage-1 evidence sinks capture activation diagnostics even without a workspace.
+  const { runtimeLogAccessor, runtimeLogSink, evidenceHealth, webviewLogSink } =
+    createRuntimeEvidenceWiring(context, logger);
 
   // Stage 1 — always-on sidebar registration. Must happen before any workspace-folder
   // or store-initialize guard so the view is available even when the workspace is empty
@@ -223,6 +186,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
       runtimeLogSink,
       runtimeLogAccessor,
+      evidenceHealth,
       webviewLogSink
     });
     if (!wiring) return;
@@ -285,9 +249,10 @@ interface Stage2Inputs {
   readonly workspaceRoot: string;
   readonly store: WorkspaceStateStore;
   readonly onInitFailure: () => void;
-  readonly runtimeLogSink: RuntimeLogSink;
-  readonly runtimeLogAccessor: ReturnType<typeof createRuntimeLogAccessor>;
-  readonly webviewLogSink: WebviewLogSink;
+  readonly runtimeLogSink: RuntimeEvidenceWiring['runtimeLogSink'];
+  readonly runtimeLogAccessor: RuntimeEvidenceWiring['runtimeLogAccessor'];
+  readonly evidenceHealth: RuntimeEvidenceWiring['evidenceHealth'];
+  readonly webviewLogSink: RuntimeEvidenceWiring['webviewLogSink'];
 }
 
 async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
@@ -300,8 +265,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     onInitFailure,
     runtimeLogSink,
     runtimeLogAccessor,
+    evidenceHealth,
     webviewLogSink
   } = inputs;
+  evidenceHealth.reset();
   const disposables: vscode.Disposable[] = [];
 
   const channel = vscode.window.createOutputChannel('Schegent');
@@ -342,7 +309,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // instead of producing a confusing downstream reject. Sync, no I/O.
   validateWorkspaceSettings(config, logger, new Set());
   const cliPath = config.get<string>('cli.path', 'claude');
-  const inheritProcessEnv = config.get<boolean>('cli.inheritEnvironment', true);
+  const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
+    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
+    mode: config.get<unknown>('cli.environmentMode', 'inherit'),
+    allowlist: config.get<unknown>('cli.environmentAllowlist', [])
+  });
   const iterationCap = config.get<number>('loop.maxIterations', 10);
   const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
   const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
@@ -369,6 +340,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     showWarningMessage: (m) => vscode.window.showWarningMessage(m),
     showErrorMessage: (m) => vscode.window.showErrorMessage(m)
   });
+  warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
 
   const queue = new QueueManager(store, logger);
   const auditWriter = new AuditLogWriter(
@@ -377,7 +349,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       rotationSizeBytes: rotationSizeMB * 1024 * 1024,
       rotationMaxAgeMs: rotationMaxAgeDays * 24 * 60 * 60 * 1000
     },
-    logger
+    logger,
+    evidenceHealth
   );
 
   // Forward all state-migration audit events (v5→v6, v6→v7, workflow-run
@@ -388,6 +361,34 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     logger
   );
+
+  const sessionRetention = new SessionArtifactRetentionService({
+    workspaceRoot,
+    logger,
+    audit: auditWriter,
+    policy: () => {
+      const settings = readGeneralSettings(
+        vscode.workspace.getConfiguration(
+          'schegent',
+          vscode.Uri.file(workspaceRoot)
+        ) as unknown as GeneralSettingsConfig
+      );
+      return {
+        maxAgeMs: settings.sessionRetentionMaxAgeDays * 24 * 60 * 60 * 1000,
+        maxBytes: settings.sessionRetentionMaxBytes
+      };
+    }
+  });
+  const protectedSessionRunIds = (): ReadonlySet<string> => {
+    const run = store.getRun();
+    return run !== null && (run.status === 'running' || run.status === 'paused')
+      ? new Set([run.id])
+      : new Set();
+  };
+  // Sweep once at activation. The service is fail-soft and restricts deletion
+  // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
+  // outside that root and is never a candidate.
+  await sessionRetention.sweep(protectedSessionRunIds());
 
   // Feature 058 — one-shot activation guard for multi-root workspaces.
   // Emits `multi-root.warning-shown` (folder count + canonical folder
@@ -473,7 +474,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   disposables.push({ dispose: () => runnerRegistry.cancelAll() });
   const historyStore = new HistoryStore(store);
   const promptBuilder = new PromptBuilder();
-  const rawTranscript = new RawTranscriptWriter(workspaceRoot, logger);
+  const rawTranscript = new RawTranscriptWriter(
+    workspaceRoot,
+    logger,
+    undefined,
+    evidenceHealth
+  );
   // Feature 010 FR-024: read schegent.logging.verbose on every invocation
   // — never cached on a long-lived object — so toggling mid-run applies
   // to the next phase invocation.
@@ -543,8 +549,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       cwd: workspaceRoot,
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
-      inheritProcessEnv,
+      inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
+      processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
+      isAuditEvidenceAvailable: () =>
+        evidenceHealth.getSnapshot().audit.status !== 'unavailable',
       perPhaseRulesEnabled: rulesPerPhase,
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
@@ -556,6 +565,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       historyStore,
       catalog: activeCatalog,
       auditWriter,
+      onRunTerminal: async () => {
+        await sessionRetention.sweep(protectedSessionRunIds());
+      },
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
         // cap shares the same window as `DELAYED_RETRY_CAP = 5`. Earlier
@@ -737,6 +749,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       readGeneralSettings(
         vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)) as unknown as GeneralSettingsConfig
       ),
+    getSessionArtifacts: () => sessionRetention.getUsage(),
+    getEvidenceHealth: () => evidenceHealth.getSnapshot(),
     // Feature 014 (BUG-001 / BUG-002) — read the four `schegent.wakeUp.*`
     // settings from Global scope on every projection. The
     // `onDidChangeConfiguration` listener below already calls
@@ -773,6 +787,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getDebugLogTail: () => webviewLogSink.getEntries()
   });
   projector.start();
+  disposables.push(evidenceHealth.subscribe((health) => {
+    statusBar.setEvidenceHealth(health.overall);
+    projector.kick();
+  }));
   webviewLogSink.setOnAppend(() => projector.kick());
   // Feature 033 — bind the deferred telemetry projector reference now that
   // the projector exists. The sampler's `onSample` closure consults this
@@ -798,6 +816,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           );
           const updatedMinutes = updatedConfig.get<number>('watchdog.pollIntervalMinutes', 30);
           watchdog.setPollInterval(updatedMinutes * 60 * 1000, 'config-change');
+        }
+        if (
+          event.affectsConfiguration('schegent.logging.sessionRetentionMaxAgeDays') ||
+          event.affectsConfiguration('schegent.logging.sessionRetentionMaxBytes')
+        ) {
+          void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
         }
         if (
           event.affectsConfiguration('schegent.phases') ||

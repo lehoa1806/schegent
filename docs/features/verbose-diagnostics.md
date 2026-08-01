@@ -70,12 +70,18 @@ This makes verbose useful for capturing a specific problematic phase: set a brea
 
 ## Cleanup
 
-Diagnostic files do not rotate. They accumulate per run.
+Diagnostic files do not rotate individually. Schegent groups them with the
+run's raw transcript and prunes complete inactive-run groups using the
+configured session-artifact age and byte budgets (30 days and 512 MiB by
+default). Running and paused runs are protected.
 
 To clean them up:
 
 - **Per task** — right-click a history task → **Remove task** → confirm "Yes, remove session tree". The diagnostic files under that runId's session tree are removed best-effort.
 - **All diagnostics** — manual: `rm -rf <workspaceRoot>/.schegent/sessions/*/diagnostics/`.
+- **Automatic policy** — adjust `schegent.logging.sessionRetentionMaxAgeDays`
+  and `schegent.logging.sessionRetentionMaxBytes` in Settings. The Settings
+  panel also reports current retained bytes and sweep failures.
 
 The structured audit log is never affected by diagnostic cleanup.
 

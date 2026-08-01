@@ -229,4 +229,56 @@ describe('RunDriver Probing (Feature 074)', () => {
       expect.any(Function)
     );
   });
+
+  it('uses the same names-only allowlist for probing and phase invocation', async () => {
+    const originalAllowed = process.env.SCHEGENT_ENV_ALLOWED_TEST;
+    const originalBlocked = process.env.SCHEGENT_ENV_BLOCKED_TEST;
+    process.env.SCHEGENT_ENV_ALLOWED_TEST = 'approved';
+    process.env.SCHEGENT_ENV_BLOCKED_TEST = 'secret';
+    deps.options = {
+      ...deps.options,
+      inheritProcessEnv: false,
+      processEnvAllowlist: ['SCHEGENT_ENV_ALLOWED_TEST'],
+      defaultRunnerKind: 'claude'
+    };
+    const run = {
+      id: 'run-allowlist',
+      featureId: 'task-allowlist',
+      startedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-allowlist',
+        name: 'Allowlist',
+        phases: [{ id: 'plan', name: 'Plan', instruction: 'work', runner: 'claude' }]
+      },
+      phasesCompleted: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null
+    };
+    deps.store.getRun.mockReturnValue(run);
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      await new RunDriver(deps).drive(run as unknown as WorkflowRun, 'desc');
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalAllowed === undefined) delete process.env.SCHEGENT_ENV_ALLOWED_TEST;
+      else process.env.SCHEGENT_ENV_ALLOWED_TEST = originalAllowed;
+      if (originalBlocked === undefined) delete process.env.SCHEGENT_ENV_BLOCKED_TEST;
+      else process.env.SCHEGENT_ENV_BLOCKED_TEST = originalBlocked;
+    }
+
+    const probeOptions = vi.mocked(execFile).mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(probeOptions.env?.SCHEGENT_ENV_ALLOWED_TEST).toBe('approved');
+    expect(probeOptions.env?.SCHEGENT_ENV_BLOCKED_TEST).toBeUndefined();
+    expect(deps.runner.run).toHaveBeenCalledWith(expect.objectContaining({
+      inheritProcessEnv: false,
+      processEnvAllowlist: ['SCHEGENT_ENV_ALLOWED_TEST']
+    }));
+  });
 });

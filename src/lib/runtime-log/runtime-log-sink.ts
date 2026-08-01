@@ -33,12 +33,15 @@ import {
   type RuntimeLogLevel
 } from './runtime-log-level';
 import type { RuntimeLogAccessor } from './runtime-log-settings';
+import type { EvidenceHealthReporter } from '../../services/evidence-health/evidence-health-monitor';
 
 /** Stable causes recorded against a suppressed path. */
 type SuppressionCause =
   | 'ENOENT-parent'
   | 'EACCES'
   | 'EROFS'
+  | 'ENOSPC'
+  | 'EIO'
   | 'unknown';
 
 interface AppendFn {
@@ -77,6 +80,7 @@ export interface RuntimeLogSinkDeps {
   readonly stat?: StatFn;
   readonly writeFile?: WriteFileFn;
   readonly readdir?: ReaddirFn;
+  readonly evidenceHealth?: EvidenceHealthReporter;
 }
 
 /**
@@ -107,6 +111,7 @@ export class RuntimeLogSink implements LogSink {
   private readonly stat: StatFn;
   private readonly writeFile: WriteFileFn;
   private readonly readdir: ReaddirFn;
+  private readonly evidenceHealth?: EvidenceHealthReporter;
 
   /** Per-path suppression set. A path-cause pair appears at most once. */
   private readonly suppressed: Map<string, Set<SuppressionCause>> = new Map();
@@ -153,6 +158,7 @@ export class RuntimeLogSink implements LogSink {
     this.readdir = deps.readdir ?? (async (target: string) => {
       return fs.readdir(target);
     });
+    this.evidenceHealth = deps.evidenceHealth;
   }
 
   /**
@@ -199,7 +205,10 @@ export class RuntimeLogSink implements LogSink {
    */
   public appendLine(line: string): void {
     const settings = this.accessor.read();
-    if (!settings) return;
+    if (!settings) {
+      this.evidenceHealth?.reportFailure('runtimeLog', 'configuration');
+      return;
+    }
     const recordLevel = extractLevel(line);
     if (recordLevel && !shouldEmit(recordLevel, settings.level)) return;
     if (this.isSuppressed(settings.path)) return;
@@ -550,10 +559,13 @@ export class RuntimeLogSink implements LogSink {
     }
     if (set.has(cause)) return;
     set.add(cause);
+    const shouldWarn = this.evidenceHealth?.reportFailure('runtimeLog', cause) ?? true;
     // One WARN per (path, cause) pair via the fallback logger.
-    this.fallback.warn(
-      `runtime-log-sink: append failed for path (${cause}); suppressing until settings change.`
-    );
+    if (shouldWarn) {
+      this.fallback.warn(
+        `runtime-log-sink: append failed for path (${cause}); suppressing until settings change.`
+      );
+    }
   }
 }
 
@@ -593,6 +605,10 @@ function mapSuppressionCause(code: string | null): SuppressionCause {
       return 'EACCES';
     case 'EROFS':
       return 'EROFS';
+    case 'ENOSPC':
+      return 'ENOSPC';
+    case 'EIO':
+      return 'EIO';
     default:
       return 'unknown';
   }

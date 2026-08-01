@@ -109,6 +109,25 @@ describe('validateWorkspaceSettings', () => {
     expect(sink.lines[0]).toMatch(/invalid-enum/);
   });
 
+  it('rejects environment allowlist entries that contain values or shell syntax', () => {
+    const { logger, sink } = makeLogger();
+    const reader = makeReader({
+      'cli.environmentAllowlist': {
+        globalValue: ['HTTPS_PROXY', 'TOKEN=secret', 'BAD-NAME']
+      }
+    });
+
+    const drift = validateWorkspaceSettings(reader, logger, new Set());
+
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toMatchObject({
+      key: 'schegent.cli.environmentAllowlist',
+      kind: 'type-mismatch',
+      layer: 'global'
+    });
+    expect(sink.lines.join('\n')).not.toContain('secret');
+  });
+
   it('reports pattern-mismatch for a chronological time outside HH:MM', () => {
     const { logger, sink } = makeLogger();
     const reader = makeReader({

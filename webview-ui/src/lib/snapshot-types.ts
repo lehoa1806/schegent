@@ -360,6 +360,8 @@ export interface GeneralSettings {
   readonly retryMaxAttempts: number;
   readonly runtimeLogMaxBytes: number;
   readonly runtimeLogMaxGenerations: number;
+  readonly sessionRetentionMaxAgeDays: number;
+  readonly sessionRetentionMaxBytes: number;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -379,6 +381,8 @@ export interface GeneralSettings {
     readonly retryMaxAttempts: SettingScope;
     readonly runtimeLogMaxBytes: SettingScope;
     readonly runtimeLogMaxGenerations: SettingScope;
+    readonly sessionRetentionMaxAgeDays: SettingScope;
+    readonly sessionRetentionMaxBytes: SettingScope;
   };
 }
 
@@ -406,6 +410,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   retryMaxAttempts: 5,
   runtimeLogMaxBytes: 5 * 1024 * 1024,
   runtimeLogMaxGenerations: 3,
+  sessionRetentionMaxAgeDays: 30,
+  sessionRetentionMaxBytes: 512 * 1024 * 1024,
   scopes: Object.freeze({
     cliPath: 'default',
     loggingVerbose: 'default',
@@ -424,7 +430,9 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogFilePath: 'default',
     retryMaxAttempts: 'default',
     runtimeLogMaxBytes: 'default',
-    runtimeLogMaxGenerations: 'default'
+    runtimeLogMaxGenerations: 'default',
+    sessionRetentionMaxAgeDays: 'default',
+    sessionRetentionMaxBytes: 'default'
   })
 });
 
@@ -610,6 +618,8 @@ export interface WorkflowSnapshot {
    * webview must default to `IDLE_GENERAL_SETTINGS` in that case.
    */
   readonly generalSettings?: GeneralSettings;
+  readonly sessionArtifacts?: SessionArtifactsProjection;
+  readonly evidenceHealth?: EvidenceHealthProjection;
   /**
    * Feature 014 (BUG-001 / BUG-002) — typed read of the four
    * `schegent.wakeUp.*` settings projected from Global scope. Optional
@@ -686,6 +696,59 @@ export interface WorkflowSnapshot {
    */
   readonly confirmationsEnabled?: boolean;
 }
+
+export interface SessionArtifactsProjection {
+  readonly artifactCount: number;
+  readonly totalBytes: number;
+  readonly lastSweepAt: string | null;
+  readonly lastSweepFailures: number;
+}
+
+export type EvidenceSinkStatus = 'healthy' | 'degraded' | 'unavailable';
+export type EvidenceOverallStatus = 'healthy' | 'degraded' | 'unavailable';
+export type EvidenceContinuationPolicy = 'fail-closed' | 'continue-degraded';
+
+export interface EvidenceSinkHealthProjection {
+  readonly status: EvidenceSinkStatus;
+  readonly continuationPolicy: EvidenceContinuationPolicy;
+  readonly failureCount: number;
+  readonly lastFailureAt: string | null;
+  readonly cause: string | null;
+}
+
+export interface EvidenceHealthProjection {
+  readonly overall: EvidenceOverallStatus;
+  readonly audit: EvidenceSinkHealthProjection;
+  readonly rawTranscript: EvidenceSinkHealthProjection;
+  readonly runtimeLog: EvidenceSinkHealthProjection;
+}
+
+const HEALTHY_REQUIRED_EVIDENCE: EvidenceSinkHealthProjection = Object.freeze({
+  status: 'healthy',
+  continuationPolicy: 'fail-closed',
+  failureCount: 0,
+  lastFailureAt: null,
+  cause: null
+});
+
+const HEALTHY_OPTIONAL_EVIDENCE: EvidenceSinkHealthProjection = Object.freeze({
+  ...HEALTHY_REQUIRED_EVIDENCE,
+  continuationPolicy: 'continue-degraded'
+});
+
+export const IDLE_EVIDENCE_HEALTH: EvidenceHealthProjection = Object.freeze({
+  overall: 'healthy',
+  audit: HEALTHY_REQUIRED_EVIDENCE,
+  rawTranscript: HEALTHY_OPTIONAL_EVIDENCE,
+  runtimeLog: HEALTHY_OPTIONAL_EVIDENCE
+});
+
+export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze({
+  artifactCount: 0,
+  totalBytes: 0,
+  lastSweepAt: null,
+  lastSweepFailures: 0
+});
 
 export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
   summary: null,

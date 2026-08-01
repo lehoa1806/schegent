@@ -44,8 +44,8 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-004 | Release workflow referenced a missing runbook. | Medium | Root `RELEASE.md` now defines the full gate, dependency policy, release, and rollback procedure. | Done |
 | F-005 | Dependency audit was informational rather than blocking. | Medium | Weekly root and webview audits now fail at `low+`; PR dependency review blocks newly introduced `high+` findings. | Done |
 | F-006 | Mutating IPC safety depended on an isolated hand-maintained router list. | High | Metadata is centralized in `sidebar-command-metadata.ts`, the router derives its set, and naming/pinned-list tests enforce coverage. Residual manual classification is an explicit review duty. | Accepted |
-| F-007 | Backend subprocesses inherited the full VS Code environment with no safer mode. | High | `schegent.cli.inheritEnvironment=false` now provides an environment-scrubbed mode across runners. The default and migration path remain a privacy decision. | In progress |
-| F-008 | Raw and verbose diagnostic artifacts are unredacted and have no automatic retention. | High | Artifacts are private/gitignored and task deletion performs best-effort cleanup, but long-lived workspaces can accumulate them indefinitely. | Planned |
+| F-007 | Backend subprocesses inherited the full VS Code environment with no safer mode. | High | A central `inherit`/`minimal`/names-only `allowlist` policy now covers probes, phases, and pre-compaction while preserving the legacy boolean opt-out and compatibility default. | Done |
+| F-008 | Raw and verbose diagnostic artifacts are unredacted and had no automatic retention. | High | One retention owner now protects active runs, prunes complete inactive groups by age/bytes, emits metadata-only evidence, and exposes usage/failures in Settings. | Done |
 | F-009 | Runner stdout/stderr capture could grow memory without a durable bound. | High | Feature 074 uses a 4 MiB ordered head/tail buffer with explicit truncation state and sustained-stream unit coverage. | Done |
 | F-010 | A fatal error discarded from the middle of truncated output could be misclassified as clean. | Critical | Truncated otherwise-clean/malformed output now fails terminally with `output-truncated-unclassifiable`. | Done |
 | F-011 | Bounded parser buffers could also truncate the canonical raw transcript. | High | Runner chunks are teed with backpressure to private `0600` spools and streamed into the append-only raw transcript. Late spool failures rewind partial copies, and pre-compaction uses a separate invocation transcript. | Done |
@@ -58,7 +58,7 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-018 | The packaged VSIX contained development-only files. | Medium | Packaging now uses an exact 20-entry allowlist, compressed/uncompressed size limits, a junk-file regression, and automatic temporary-artifact cleanup. | Done |
 | F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Current lines: `extension.ts` 1462, `workflow-controller.ts` 1198, `runtime-validators.ts` 1127, `sidebar-ipc.ts` 1214, `state-projector.ts` 902. Budget tests prevent further growth but do not reduce coupling. | Planned |
 | F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | Narrow render/load/parser budgets exist; no deterministic high-volume session/audit scenario covers the whole capture path. | Planned |
-| F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | Audit append self-heals and raw capture is best-effort; operators must correlate warnings manually. | Planned |
+| F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | A workspace-scoped monitor now projects per-sink and overall health, coalesces warnings, fails execution closed when structured audit is unavailable, and keeps optional raw/runtime failures visibly degraded. | Done |
 | F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | E2E covers orchestration outcomes, not prompt/result quality across models or CLI versions. | Planned |
 | F-023 | Browser-level visual regression is not a universal UI gate. | Low | Svelte component, theme, accessibility, and DOM-contract tests exist; no screenshot/browser matrix is present. | Planned |
 | F-024 | Documentation had multiple truth surfaces and the dated audit contained resolved claims. | Medium | A dated addendum preserves the historical review while explicitly superseding resolved claims and linking this canonical open-work register; release and build docs reflect the enforced gates. | Done |
@@ -252,6 +252,21 @@ PATH, locale, home/keychain behavior is tested on macOS, Linux, and Windows.
 
 Acceptance: an operator can determine from one status/audit projection whether
 execution evidence is complete, degraded, or unavailable.
+
+### Completion evidence (2026-08-01)
+
+- Session retention enforces age/byte limits only beneath
+  `.schegent/sessions`, protects active runs, sweeps at activation/terminal
+  transitions/configuration changes, and exposes paths-free usage metadata.
+- Backend probes, phase invocations, and Claude pre-compaction share the
+  `inherit`/`minimal`/names-only `allowlist` environment resolver. Settings
+  reject value-bearing entries and keep the compatibility default explicit.
+- Audit, raw-transcript, and runtime-log sinks report through one health
+  projection. Structured audit is required and fails the active run closed;
+  raw/runtime failures continue degraded. Status-bar and dashboard indicators,
+  warning coalescing, normalized causes, and recovery guidance are covered.
+- Deterministic fault tests cover permission denial, ENOSPC, partial writes,
+  stream and cleanup causes, protected retention, and metadata-only output.
 
 ## P3 — Sustained-run performance and recovery evidence
 

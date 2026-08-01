@@ -54,9 +54,11 @@ Timestamp: <ISO-8601>
   given `runId`.
 - **Append-only**: every invocation appends a new block; nothing is ever
   overwritten or rewritten.
-- **No rotation, no retention**: file growth is bounded only by disk space.
-  Cleanup is the developer's responsibility — these files are debug artefacts,
-  not durable records.
+- **Bounded retention**: raw transcripts are grouped with the same run's
+  session diagnostics and pruned only after the run is inactive. The default
+  limits are 30 days and 512 MiB across session artifacts; configure them with
+  `schegent.logging.sessionRetentionMaxAgeDays` and
+  `schegent.logging.sessionRetentionMaxBytes`.
 - **Best-effort**: I/O failures (read-only FS, permission, full disk) are
   caught and surfaced once per `runId` to `.schegent/audit.log` as a warn-level
   log line. They never abort the workflow run.

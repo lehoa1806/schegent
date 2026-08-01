@@ -49,6 +49,7 @@
           "audit-retention-applied",
           "audit-hydration-warning",
           "audit-schema-warning",
+          "session-retention-applied",
           "phase.retry_evaluated",
           "retry-scheduled",
           "retry-manual",

@@ -89,4 +89,47 @@ describe('deriveOperatorHealth', () => {
       }))
     ).toMatchObject({ level: 'attention', label: 'rate-limit retry' });
   });
+
+  it('prioritizes required audit unavailability over workflow state', () => {
+    expect(deriveOperatorHealth(snapshot({
+      evidenceHealth: {
+        overall: 'unavailable',
+        audit: {
+          status: 'unavailable',
+          continuationPolicy: 'fail-closed',
+          failureCount: 1,
+          lastFailureAt: '2026-08-01T00:00:00.000Z',
+          cause: 'disk-full'
+        },
+        rawTranscript: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        runtimeLog: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        }
+      }
+    }))).toMatchObject({ level: 'blocked', label: 'evidence unavailable' });
+  });
+
+  it('surfaces optional sink degradation as attention', () => {
+    expect(deriveOperatorHealth(snapshot({
+      evidenceHealth: {
+        overall: 'degraded',
+        audit: {
+          status: 'healthy', continuationPolicy: 'fail-closed', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        rawTranscript: {
+          status: 'degraded', continuationPolicy: 'continue-degraded', failureCount: 1,
+          lastFailureAt: '2026-08-01T00:00:00.000Z', cause: 'stream-error'
+        },
+        runtimeLog: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        }
+      }
+    }))).toMatchObject({ level: 'attention', label: 'evidence degraded' });
+  });
 });

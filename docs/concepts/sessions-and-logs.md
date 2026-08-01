@@ -99,7 +99,12 @@ The verbose flag is *not cached*. The host re-reads it at the entry of every pha
 
 ### What rotates and what does not
 
-Diagnostic files **do not rotate**. They accumulate per run. If you leave verbose on for weeks, the per-run directories will grow. Clean them up manually or use the **Task deletion** flow which optionally removes the per-run session tree.
+Diagnostic files **do not rotate** individually. Raw transcripts and diagnostic
+trees are managed as per-run groups: after a run is inactive, the shared
+retention service removes groups older than the configured age and, if needed,
+the oldest groups until the configured byte budget is met. Running and paused
+runs are protected. Manual cleanup and the **Task deletion** flow remain
+available.
 
 ## 4. The runtime debug log
 
@@ -146,6 +151,8 @@ When you delete a task, Schegent gives you a confirmation dialog with an option 
 
 - **Yes, remove** — the runId directory and the raw transcript are deleted best-effort. If a file is locked or unavailable, the audit log records the failure and the queue removal proceeds.
 - **No, keep** — the session tree survives the task removal. You can review or delete it manually later.
+
+Kept session trees still participate in the normal automatic retention policy.
 
 In **either case**, the structured `audit.log` is **never** modified by task deletion. The audit log is append-only evidence: deleting a task records a `task-removed` event with the optional `sessionCleaned` flag; it does not erase the events that came before.
 
