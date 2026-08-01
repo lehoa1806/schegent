@@ -54,17 +54,17 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-014 | Activity Feed selection used a feature-request ID where a run ID was required. | High | Projection now resolves the selected request to its current run identity and has regression coverage. | Done |
 | F-015 | Run-start CLI probing could validate only the global runner instead of every effective pipeline runner. | High | Guarded start and run-driver probing now resolve all distinct effective runner kinds, with legacy snapshot/default pinning covered. | Done |
 | F-016 | In-memory output and raw-capture docs described old silent truncation/streaming behavior. | Medium | Performance, monitoring, and raw-transcript docs now describe bounded head/tail parsing, fail-closed classification, and complete spool-backed capture. | Done |
-| F-017 | Ten test paths are excluded from the primary TypeScript no-emit check, including a stale path. | Medium | `tsconfig.json` contains explicit exclusions; Vitest transpilation does not replace full static checking. | Planned |
-| F-018 | The packaged VSIX contains development-only files. | Medium | Current smoke VSIX includes `test_output.txt`, Cargo manifests, `.github/**`, and Rust contract sources; the smoke gate checks required/forbidden prefixes but not an exact allowlist. | Planned |
+| F-017 | Ten test paths were excluded from the primary TypeScript no-emit check, including a stale path. | Medium | `tsconfig.tests.json` now checks the full host test tree, stale per-test exclusions are gone, and local/PR/push/full-gate entry points enforce it before lint. | Done |
+| F-018 | The packaged VSIX contained development-only files. | Medium | Packaging now uses an exact 20-entry allowlist, compressed/uncompressed size limits, a junk-file regression, and automatic temporary-artifact cleanup. | Done |
 | F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Current lines: `extension.ts` 1462, `workflow-controller.ts` 1198, `runtime-validators.ts` 1127, `sidebar-ipc.ts` 1214, `state-projector.ts` 902. Budget tests prevent further growth but do not reduce coupling. | Planned |
 | F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | Narrow render/load/parser budgets exist; no deterministic high-volume session/audit scenario covers the whole capture path. | Planned |
 | F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | Audit append self-heals and raw capture is best-effort; operators must correlate warnings manually. | Planned |
 | F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | E2E covers orchestration outcomes, not prompt/result quality across models or CLI versions. | Planned |
 | F-023 | Browser-level visual regression is not a universal UI gate. | Low | Svelte component, theme, accessibility, and DOM-contract tests exist; no screenshot/browser matrix is present. | Planned |
-| F-024 | Documentation has multiple truth surfaces and the dated audit now contains resolved claims. | Medium | Implementation docs are current in many areas, but the historical review still reports missing release/dependency controls. | Planned |
+| F-024 | Documentation had multiple truth surfaces and the dated audit contained resolved claims. | Medium | A dated addendum preserves the historical review while explicitly superseding resolved claims and linking this canonical open-work register; release and build docs reflect the enforced gates. | Done |
 | F-025 | Remote, multi-user, or parallel-agent operation would exceed current lock/scheduler/trust assumptions. | Critical for expansion | The single queue/concurrency cap is deliberate. No current local release blocker exists, but expansion requires a new architecture. | Decision |
 | F-026 | True offline execution depends on an offline-capable backend and explicit degraded-mode UX. | Medium | Host/UI/state are local; configured AI CLIs may require network access. | Decision |
-| F-027 | VS Code integration workers can report assertion failures while the launcher exits zero; the metrics refresh budget is also unstable under parallel-host contention. | High | The 2026-08-01 full CI log contained two SC-003 failures at 141.5 ms and 186.4 ms, but `test:integration` and `npm run ci` exited zero. Failure propagation and deterministic performance isolation are required. | Planned |
+| F-027 | VS Code integration workers could report assertion failures while the launcher exited zero; the metrics refresh budget was unstable under parallel-host contention. | High | The launcher now uses one isolated profile/extension directory, requires exactly one schema-validated host result with zero failures, and rejects missing, duplicate, or failing markers. A real-host run completed all 11 modules within both metrics budgets. | Done |
 
 ## Delivery sequence
 
@@ -128,14 +128,13 @@ Priority: immediate. Findings: F-009 through F-016.
   and shared compaction transcript) were fixed with direct regression tests.
   A follow-up review attempt was unavailable because the review workspace ran
   out of credits.
-- The integration launcher exited zero, but two parallel metrics-budget
-  assertions were printed as failures. This does not reopen F-009 through
-  F-016; it is tracked separately as F-027 and must be fixed before the final
-  release gate can be considered trustworthy.
+- The integration false-green discovered during the original run was tracked
+  as F-027 and closed in P1 with an isolated profile plus an authoritative
+  single-host result protocol.
 
 ## P1 — Restore one operational truth and tighten build artifacts
 
-Priority: quick win. Findings: F-017, F-018, F-024.
+Priority: quick win. Findings: F-017, F-018, F-024, F-027.
 
 ### P1.1 Audit status addendum
 
@@ -189,6 +188,25 @@ Acceptance: an injected integration failure makes `npm run ci` non-zero, and
 the metrics budget passes repeatedly without hiding regressions or relying on
 parallel-host scheduling luck.
 
+### Completion evidence (2026-08-01)
+
+- `npm run typecheck:tests` checks every `tests/**/*.ts` source; build-policy
+  tests enforce the local scripts and all three CI workflow entry points.
+- A fresh package passed the exact 20-entry policy at 682,760 compressed bytes
+  and 1,655,993 uncompressed bytes. Unexpected, missing, duplicate, and unsafe
+  entries are rejected, and smoke packaging leaves no repository artifact.
+- The historical review now starts with a dated status addendum and points to
+  this plan for current open work.
+- Unit tests reject missing, duplicate, malformed, and failing integration-host
+  results. The real-host smoke used unique user-data/extensions directories,
+  reported exactly one host with 11 executed modules, and passed both metrics
+  budgets (33.4 ms initial open; 19.5 ms refresh).
+- Compatibility-safe lockfile updates cleared all root and webview dependency
+  advisories; both `npm audit --audit-level=low` commands report zero findings.
+- After the dependency updates, `npm run ci` passed again: 3,315 host tests
+  passed (10 skipped), 878 webview tests passed, 3 E2E tests passed, and the
+  isolated real host completed all 11 integration modules.
+
 ## P2 — Sensitive-data lifecycle and subprocess environment
 
 Priority: High privacy/security. Findings: F-007, F-008, F-021.
@@ -237,7 +255,7 @@ execution evidence is complete, degraded, or unavailable.
 
 ## P3 — Sustained-run performance and recovery evidence
 
-Priority: Medium reliability/performance. Findings: F-020, F-021, F-027.
+Priority: Medium reliability/performance. Findings: F-020, F-021.
 
 ### Tasks
 

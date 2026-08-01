@@ -321,7 +321,7 @@ you control. To report a security issue, see [SECURITY.md](SECURITY.md).
 # install deps (also installs webview-ui)
 npm install
 
-# typecheck + lint + unit tests
+# host, webview, and test-source typechecks + lint + unit tests
 npm run ci:fast
 
 # full build (host + webview)
@@ -337,13 +337,15 @@ Useful targets:
 |---|---|
 | `npm run build` | Build host + webview bundles. |
 | `npm run typecheck` | TypeScript no-emit check. |
+| `npm run typecheck:tests` | TypeScript no-emit check over every test source. |
 | `npm run lint` | ESLint over `src/` and `tests/`. |
 | `npm run test` | Vitest unit suites (host + webview). |
 | `npm run test:coverage` | Unit suites with coverage. |
 | `npm run test:e2e` | End-to-end VS Code suite. |
 | `npm run test:integration` | Integration suite (boots a real VS Code instance). |
-| `npm run ci` | Full pre-merge gate (typecheck + lint + unit + e2e + build + integration). |
+| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit + E2E + build + exact package + isolated integration). |
 | `npm run package` | `vsce package --no-dependencies`. |
+| `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |
 
 The repository targets Node `>= 20` and VS Code `^1.85.0`. Use the
 checked-in `.nvmrc` if you use `nvm` or `fnm`.
