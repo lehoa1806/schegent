@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "clean-completion",
+      "description": "A structurally complete backend response advances cleanly.",
+      "output": {
+        "stdoutLines": ["Implementation complete.", "[SCHEGENT_STATUS: CLEAR]"],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true
+      }
+    },
+    {
+      "id": "clarification-loop",
+      "description": "Open questions pause advancement and retain their structural outcome.",
+      "output": {
+        "stdoutLines": ["Open questions:", "- Which deployment region should be used?"],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "open_questions",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "open_questions",
+        "auditEntryPresent": true,
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "remaining-issues",
+      "description": "Tagged remaining issues stay machine-readable and do not advance.",
+      "output": {
+        "stdoutLines": ["Remaining issues:", "- [security] Rotate the test credential fixture."],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
+        "auditEntryPresent": true,
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "malformed-audit-block",
+      "description": "A missing required audit field is surfaced and ambiguous prose cannot advance.",
+      "output": {
+        "stdoutLines": ["Work may be complete, but no terminal contract was emitted."],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "missing-notes",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "remaining_issues",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
+        "auditEntryPresent": false,
+        "auditWarningIncludes": "audit missing fields: notes",
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "fatal-signature",
+      "description": "A fatal CLI signature wins over an otherwise clean contract.",
+      "output": {
+        "stdoutLines": ["[SCHEGENT_STATUS: CLEAR]"],
+        "stderrLines": ["error: unknown option '--unsafe-flag'"],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "failed",
+        "terminationReason": "error",
+        "auditEntryPresent": true,
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "rate-limit",
+      "description": "A hard backend rate limit maps to the dedicated paused outcome.",
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": ["429 Too Many Requests: rate limit exceeded"],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "truncated-output",
+      "description": "A retained clean tail cannot prove the discarded middle was safe.",
+      "output": {
+        "stdoutLines": ["[SCHEGENT_STATUS: CLEAR]"],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": true
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "failed",
+        "terminationReason": "error",
+        "auditEntryPresent": true,
+        "resultWarningIncludes": "output-truncated-unclassifiable",
+        "mayAdvance": false
+      }
+    },
+    {
+      "id": "session-continuation",
+      "description": "An exact backend-owned session is resumed with the recovery prompt.",
+      "output": {
+        "stdoutLines": ["[SCHEGENT_STATUS: CLEAR]"],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "session": {
+        "requestedContinue": true,
+        "pendingSessionReuse": false,
+        "resumePrompt": "Continue from the operator checkpoint.",
+        "persistedSessionId": "session-owned-001",
+        "persistedSessionRunnerKind": "claude",
+        "effectiveRunnerKind": "claude"
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "session": {
+          "ownsResumeSession": true,
+          "isContinue": true,
+          "sessionReuse": false,
+          "resumeSessionId": "session-owned-001",
+          "resumePrompt": "Continue from the operator checkpoint."
+        }
+      }
+    },
+    {
+      "id": "runner-switch",
+      "description": "A session owned by another backend is never attached after a runner switch.",
+      "output": {
+        "stdoutLines": ["[SCHEGENT_STATUS: CLEAR]"],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "session": {
+        "requestedContinue": true,
+        "pendingSessionReuse": false,
+        "resumePrompt": "Continue safely without foreign session state.",
+        "persistedSessionId": "claude-session-002",
+        "persistedSessionRunnerKind": "claude",
+        "effectiveRunnerKind": "codex"
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "session": {
+          "ownsResumeSession": false,
+          "isContinue": false,
+          "sessionReuse": false,
+          "resumePrompt": "Continue safely without foreign session state."
+        }
+      }
+    }
+  ]
+}

@@ -103,6 +103,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run test
+      - run: npm run test:evals
 
   build:
     name: build
