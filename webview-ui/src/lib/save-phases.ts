@@ -35,6 +35,7 @@ export interface SavePhaseRow {
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
+  readonly isRequired?: boolean;
   readonly runner?: string;
 }
 

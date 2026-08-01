@@ -1,6 +1,18 @@
 export const SCHEMA_VERSION = 3 as const;
 
 export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
+export type BackendPingFailureCause =
+  | 'not-found'
+  | 'not-executable'
+  | 'non-zero-exit'
+  | 'timed-out'
+  | 'already-in-progress'
+  | 'unknown';
+export type BackendPingState =
+  | { readonly status: 'idle' }
+  | { readonly status: 'running'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly timeoutSeconds: number }
+  | { readonly status: 'success'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number }
+  | { readonly status: 'failure'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number; readonly cause: BackendPingFailureCause; readonly exitCode?: number };
 
 export const BUILT_IN_PHASE_NAMES = [
   'speckit-specify',
@@ -19,6 +31,13 @@ export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
 export type PhaseName = string;
 
 export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
+
+export type PhaseResultState =
+  | 'clean'
+  | 'ambiguities-remain'
+  | 'issues-remain'
+  | 'failed'
+  | 'timed-out';
 
 export type WorkflowStatus =
   | 'idle'
@@ -75,7 +94,7 @@ export interface PhaseTile {
   readonly order: number;
   readonly state: PhaseState;
   readonly iteration: number;
-  readonly lastResult: 'clean' | 'ambiguities-remain' | 'issues-remain' | null;
+  readonly lastResult: PhaseResultState | null;
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
   /**
@@ -84,6 +103,7 @@ export interface PhaseTile {
    * empty, consumers fall back to `formatPhaseLabel(tile.name)`.
    */
   readonly displayName?: string;
+  readonly isRequired?: boolean;
   readonly phaseMessage?: {
     readonly fromPhaseId: string;
     readonly entryCount: number;
@@ -281,6 +301,7 @@ export interface PhaseDefinition {
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
+  readonly isRequired?: boolean;
   readonly runner?: BackendRunnerKind;
 }
 
@@ -349,7 +370,6 @@ export interface GeneralSettings {
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
-  readonly rulesInjectPerPhase: boolean;
   readonly defaultPipelineId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
@@ -370,7 +390,6 @@ export interface GeneralSettings {
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
-    readonly rulesInjectPerPhase: SettingScope;
     readonly defaultPipelineId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
@@ -394,7 +413,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
-  rulesInjectPerPhase: false,
   // Feature 056 Track 3 (FR-013) — host default and package
   // contribution default both point at the built-in
   // `dev-new-feature` pipeline; the webview idle snapshot must
@@ -420,7 +438,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     watchdogPollIntervalMinutes: 'default',
     auditRotationSizeMB: 'default',
     auditRotationMaxAgeDays: 'default',
-    rulesInjectPerPhase: 'default',
     defaultPipelineId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',
@@ -606,6 +623,7 @@ export interface WorkflowSnapshot {
   readonly availablePhases: readonly PhaseDefinition[];
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
+  readonly backendPingState?: BackendPingState;
   /**
    * Feature 011 — delayed-retry state on the active run. Optional for
    * legacy-tolerance: an older host bundle may not include it; the

@@ -116,6 +116,43 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
     expect(onSave).toHaveBeenCalledWith(phase);
   });
 
+  it('round-trips isRequired: false without coercion', async () => {
+    const onSave = vi.fn();
+    const phase = { ...PHASE_FIXTURE, isRequired: false };
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase, onsave: onSave }
+    });
+
+    const save = container.querySelector(
+      '[data-testid="raw-json-save"]'
+    ) as HTMLButtonElement;
+    await fireEvent.click(save);
+
+    expect(onSave).toHaveBeenCalledWith(phase);
+  });
+
+  it('rejects a non-boolean isRequired value', async () => {
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: PHASE_FIXTURE }
+    });
+    const textarea = container.querySelector(
+      '[data-testid="raw-json-input"]'
+    ) as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      target: {
+        value: JSON.stringify({ ...PHASE_FIXTURE, isRequired: 'false' }, null, 2)
+      }
+    });
+
+    const save = container.querySelector(
+      '[data-testid="raw-json-save"]'
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="raw-json-error"]')?.textContent)
+      .toContain('must be a boolean');
+  });
+
   it('round-trips unknown top-level fields without loss (FR-031, SC-008)', async () => {
     const withUnknownField = {
       ...PHASE_FIXTURE,

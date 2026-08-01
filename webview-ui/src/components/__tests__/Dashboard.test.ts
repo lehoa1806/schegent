@@ -54,6 +54,7 @@ vi.mock('../../lib/use-confirm', () => ({
 
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import { CMD_ACK } from '../../lib/messages';
+import { readPhaseLog } from '../../lib/phase-log-ipc';
 
 function fireAck(
   correlationId: string,
@@ -97,6 +98,7 @@ vi.mock('../../lib/phase-log-ipc', () => ({
 
 beforeEach(() => {
   postCommandSpy.mockReset();
+  vi.mocked(readPhaseLog).mockClear();
   // Restore the default `{ correlationId: 'corr-N' }` shape after `mockReset()`
   // strips the implementation. Without this, the destructure
   // `const { correlationId } = postCommand(…)` in Dashboard.onSubmit would
@@ -819,6 +821,92 @@ describe('Dashboard Activity Feed click-to-navigate (021)', () => {
   // removed `queue-select-{queueId}` card. Phase-step selection
   // highlighting is exercised by the sibling "clicking a phase step
   // selects that exact Activity Feed phase" test above.
+});
+
+describe('Dashboard History to Activity Feed integration (069)', () => {
+  const historyEntry: HistoryEntry = Object.freeze({
+    runId: 'run-history-only',
+    featureId: 'feature-history-only',
+    descriptionPreview: 'historical feature evidence',
+    terminalStatus: 'completed',
+    startedAt: '2026-05-09T10:00:00.000Z',
+    completedAt: '2026-05-09T10:05:00.000Z',
+    durationMs: 300_000,
+    lastErrorSummary: null,
+    auditLogPointer: '.schegent/audit.log'
+  });
+
+  function buildHistoryOnlySnapshot(): WorkflowSnapshot {
+    return buildSnapshot({
+      activeFeature: null,
+      activeRunId: null,
+      queue: buildQueue({
+        inFlight: null,
+        pending: Object.freeze([]),
+        recent: Object.freeze([]),
+        queues: Object.freeze([
+          buildQueueSummary({ id: 'default', name: 'Default queue', taskCount: 0 })
+        ])
+      }),
+      history: Object.freeze([historyEntry]),
+      activePipeline: Object.freeze({ id: 'standard', name: 'Standard', phases: [] }),
+      availablePhases: Object.freeze([
+        Object.freeze({ id: 'speckit-specify', name: 'Specify', instruction: '' }),
+        Object.freeze({ id: 'speckit-plan', name: 'Plan', instruction: '' })
+      ])
+    });
+  }
+
+  it('loads the selected history-only run into the Activity Feed', async () => {
+    const { getByTestId } = render(Dashboard, {
+      props: { snapshot: buildHistoryOnlySnapshot() }
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-tab-history'));
+    await fireEvent.click(getByTestId('history-entry-run-history-only'));
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(readPhaseLog).toHaveBeenCalledWith({
+        selection: {
+          queueId: 'default',
+          taskId: 'run-history-only',
+          pipelineId: 'standard',
+          phaseId: 'speckit-plan',
+          iterationN: null
+        }
+      });
+    });
+    expect(getByTestId('history-entry-run-history-only').classList.contains('selected')).toBe(true);
+    expect(getByTestId('phase-log-breadcrumb').textContent).toContain('historical feature evidence');
+    expect(getByTestId('phase-log-breadcrumb').textContent).toContain('Plan');
+  });
+
+  it('shows the no-log state when the selected historical session has no retained log', async () => {
+    vi.mocked(readPhaseLog).mockResolvedValueOnce({
+      outcome: 'success',
+      manifest: {
+        iterations: [],
+        selectedIteration: null,
+        entries: Object.freeze([]),
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState: { kind: 'enabled-no-sessions-for-tuple' },
+        isInFlight: false
+      }
+    });
+    const { getByTestId } = render(Dashboard, {
+      props: { snapshot: buildHistoryOnlySnapshot() }
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-tab-history'));
+    await fireEvent.click(getByTestId('history-entry-run-history-only'));
+
+    await vi.waitFor(() => {
+      expect(getByTestId('phase-log-empty-no-log').textContent).toContain('No log for this phase yet');
+    });
+    expect(getByTestId('phase-log-breadcrumb').textContent).toContain('historical feature evidence');
+  });
 });
 
 describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {

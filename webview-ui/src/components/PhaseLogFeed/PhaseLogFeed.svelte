@@ -21,12 +21,7 @@
   import PhaseLogIterationStepper from './PhaseLogIterationStepper.svelte';
   import PhaseLogReadingPane from './PhaseLogReadingPane.svelte';
   import PhaseLogEmptyStates from './PhaseLogEmptyStates.svelte';
-  import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
-  import { parseToolArguments } from '../../lib/activity-feed/parse-tool-arguments';
-  import type {
-    ParsedToolArgument,
-    ToolArgumentValue
-  } from '../../lib/activity-feed/types';
+  import { phaseLogEntriesToText } from '../../lib/activity-feed/phase-log-text-export';
   import {
     resolveLiveSelection,
     getPhaseOptions,
@@ -343,95 +338,10 @@
     }
     void store.jumpToCurrent(snapshot, { setLiveModeOn: true });
   }
-  // Feature 029 T018 \u2014 flat-text rendering for the "Copy All" button.
-  // For `tool-use` entries we use the same parser the renderer uses so
-  // multi-line argument strings (e.g. Write.content) keep their real
-  // newlines and the result reads cleanly when pasted into a bug
-  // report. Scalars render as `  key: value` lines; multi-line values
-  // render as `  key:` followed by the indented content.
-  function toolUseToText(e: PhaseLogDisplayEntry, prefix: string): string {
-    const lines: string[] = [];
-    lines.push(`${prefix}\u25b6 ${e.body.toolName ?? '(tool)'}`);
-    const parsed = parseToolArguments(e);
-    if (!parsed.ok) {
-      lines.push(parsed.rawText);
-      return lines.join('\n');
-    }
-    for (const arg of parsed.args) {
-      argToTextLines(arg, '  ', lines);
-    }
-    return lines.join('\n');
-  }
-  function argToTextLines(
-    arg: ParsedToolArgument,
-    indent: string,
-    out: string[]
-  ): void {
-    const c = arg.classification;
-    if (c.kind === 'scalar') {
-      out.push(`${indent}${arg.key}: ${c.display}`);
-      return;
-    }
-    if (c.kind === 'multiline') {
-      out.push(`${indent}${arg.key}:`);
-      for (const ln of c.text.split('\n')) {
-        out.push(`${indent}  ${ln}`);
-      }
-      return;
-    }
-    if (c.kind === 'object') {
-      out.push(`${indent}${arg.key}:`);
-      for (const child of c.children) {
-        argToTextLines(child, `${indent}  `, out);
-      }
-      return;
-    }
-    if (c.kind === 'array') {
-      out.push(`${indent}${arg.key}:`);
-      for (const item of c.items) {
-        argToTextLines(item, `${indent}  `, out);
-      }
-      if (c.truncatedAt !== undefined) {
-        out.push(`${indent}  \u2026 +${c.truncatedAt - c.items.length} more`);
-      }
-      return;
-    }
-    // Defensive fallback: serialize unknown shapes.
-    out.push(`${indent}${arg.key}: ${jsonOrEmpty(arg.value)}`);
-  }
-  function jsonOrEmpty(v: ToolArgumentValue): string {
-    try {
-      return JSON.stringify(v) ?? '';
-    } catch {
-      return '';
-    }
-  }
-  function entryToText(e: PhaseLogDisplayEntry): string {
-    const prefix = e.ts ? `[${e.ts}] ` : '';
-    switch (e.kind) {
-      case 'assistant-text':
-        return `${prefix}${e.body.text ?? ''}`;
-      case 'tool-use':
-        return toolUseToText(e, prefix);
-      case 'tool-result':
-        return `${prefix}${e.body.isError ? '[ERROR] ' : ''}${e.body.toolResult ?? ''}`;
-      case 'system':
-        return `${prefix}${e.body.systemSummary ?? e.body.systemSubtype ?? ''}`;
-      case 'result':
-        return `${prefix}${e.body.resultSummary ?? ''}`;
-      case 'truncated-head':
-        return `${prefix}(${e.body.droppedEntryCount ?? 0} earlier entries hidden)`;
-      case 'tail-ended':
-        return `${prefix}Tail ended (${e.body.reason ?? 'unknown'})`;
-      default:
-        return prefix;
-    }
-  }
-
   async function handleCopyAll(): Promise<void> {
     const entries = state.entries;
     if (entries.length === 0) return;
-    const text = entries.map(entryToText).join('\n');
+    const text = phaseLogEntriesToText(entries);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
