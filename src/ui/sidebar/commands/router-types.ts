@@ -1,5 +1,6 @@
 import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
+import type { BackendPingService } from '../../../services/backend-ping-service';
 import type {
   CommandAckMessage,
   ReadMetricsRequest,
@@ -179,6 +180,7 @@ export interface RouterDeps {
   readonly metricsService?: {
     read(req: ReadMetricsRequest): Promise<ReadMetricsResponse>;
   };
+  readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**
    * Feature 073 — existing session-scoped correlation id reused (not newly
    * minted) for the `metrics-view-opened` audit payload
