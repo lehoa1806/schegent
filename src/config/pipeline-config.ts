@@ -649,6 +649,17 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
     }
   }
 
+  if (v.runner !== undefined) {
+    if (typeof v.runner !== 'string' || !(SUPPORTED_BACKENDS as readonly string[]).includes(v.runner)) {
+      errors.push({
+        source: 'phase',
+        id,
+        field: 'runner',
+        message: `Phase.runner must be one of ${SUPPORTED_BACKENDS.join(', ')}`
+      });
+    }
+  }
+
   if (v.timeoutSeconds !== undefined) {
     if (
       typeof v.timeoutSeconds !== 'number' ||

@@ -41,6 +41,7 @@ export interface WorkflowControllerOptions {
   timeoutMs: number;
   inheritProcessEnv?: boolean;
   perPhaseRulesEnabled: boolean;
+  skipProbing?: boolean;
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   cliPathResolver?: (runnerKind: string) => string;
 }
@@ -169,6 +170,17 @@ export class SchegentWorkflowController {
       persistTransition: (prev, next) => this.persistTransition(prev, next),
       appendPhaseControlAudit: (eventType, run, payload) =>
         this.appendPhaseControlAudit(eventType, run, payload),
+      appendRunnerProbeFailedAudit: async (run, payload) => {
+        if (!this.auditWriter) return;
+        try {
+          await this.auditWriter.append({
+            runId: run.id, phase: run.currentPhase, iteration: run.currentIteration,
+            eventType: 'runner-probe-failed', payload, outcome: 'failure'
+          });
+        } catch (err) {
+          this.logger.warn(`appendRunnerProbeFailedAudit failed: ${(err as Error).message}`);
+        }
+      },
       appendBreakpointAudit: (eventType, run, payload) =>
         this.appendBreakpointAudit(eventType, run, payload),
       emitRunEndedBreakpointAudit: (run) => this.emitRunEndedBreakpointAudit(run),
@@ -540,11 +552,15 @@ export class SchegentWorkflowController {
       pausedDuringRetry: isInRetryCountdown
     });
     // Feature 072 — emit task-execution-paused for task-level diagnostics.
-    await this.emitTaskLifecycleAudit('task-execution-paused', updated, {
-      taskId: updated.featureId,
-      runId: updated.id,
-      pauseCause: 'operator-paused' as const
-    });
+    try {
+      await this.emitTaskLifecycleAudit('task-execution-paused', updated, {
+        taskId: updated.featureId,
+        runId: updated.id,
+        pauseCause: 'operator-paused' as const
+      });
+    } catch (err) {
+      this.logger.warn(`pauseActivePhase: task-execution-paused audit failed: ${(err as Error).message}`);
+    }
     // Feature 028 — US1: cascade-pause the host queue so no further tasks
     // dispatch while the operator reviews the paused phase. Idempotent when
     // the queue is already operator-paused (operator wins). The audit log

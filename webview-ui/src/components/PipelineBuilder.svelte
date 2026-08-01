@@ -68,6 +68,7 @@
     id: string; name: string; instruction: string;
     model?: string; effort?: PhaseDefinition['effort'];
     timeoutSeconds?: number; retryCondition?: string;
+    runner?: string;
     [k: string]: unknown;
   };
 
@@ -115,6 +116,7 @@
         effort?: PhaseDefinition['effort'];
         timeoutSeconds?: number;
         retryCondition?: string;
+        runner?: string;
       } = {
         id: p.id,
         name: p.name,
@@ -124,6 +126,7 @@
       if (typeof p.effort === 'string' && p.effort.length > 0) row.effort = p.effort;
       if (typeof p.timeoutSeconds === 'number') row.timeoutSeconds = p.timeoutSeconds;
       if (typeof p.retryCondition === 'string') row.retryCondition = p.retryCondition;
+      if (typeof p.runner === 'string' && p.runner.length > 0 && p.runner !== '(Default)') row.runner = p.runner;
       return row;
     });
     void savePhasesHelper(payload).then((result) => {

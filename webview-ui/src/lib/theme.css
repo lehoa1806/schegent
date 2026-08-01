@@ -30,13 +30,13 @@
   --schegent-color-disabled: var(--vscode-charts-purple, #b180d7);
 
   /* Premium Design Tokens */
-  --sch-font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --sch-glass-bg: color-mix(in srgb, var(--vscode-editor-background) 60%, transparent);
-  --sch-glass-border: color-mix(in srgb, var(--vscode-editorWidget-border) 30%, transparent);
-  --sch-glow-active: 0 0 12px var(--vscode-charts-blue);
-  --sch-glow-success: 0 0 12px var(--vscode-charts-green);
-  --sch-accent-gradient: linear-gradient(135deg, var(--vscode-charts-blue), var(--vscode-charts-purple, #b180d7));
-  --sch-card-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+  --sch-font-primary: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --sch-glass-bg: color-mix(in srgb, var(--vscode-editor-background) 95%, transparent);
+  --sch-glass-border: color-mix(in srgb, var(--vscode-editorWidget-border) 10%, transparent);
+  --sch-glow-active: 0 0 0 1px var(--vscode-charts-blue);
+  --sch-glow-success: 0 0 0 1px var(--vscode-charts-green);
+  --sch-accent-gradient: var(--vscode-charts-blue);
+  --sch-card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 
   --schegent-radius: 8px; /* Increased for premium feel */
   --schegent-gap: 12px;
@@ -135,7 +135,7 @@ body,
 button {
   font: inherit;
   color: inherit;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.15);
 }
 
 button:focus-visible,

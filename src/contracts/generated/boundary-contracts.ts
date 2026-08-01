@@ -65,6 +65,7 @@ export const AUDIT_EVENT_TYPES = [
   "phase-end",
   "cli-invocation",
   "file-write",
+  "runner-probe-failed",
   "loop-iteration",
   "pause",
   "resume",

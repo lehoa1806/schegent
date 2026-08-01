@@ -19,6 +19,7 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   const phaseId = extractPhaseId(entry);
   const outcome = normalizeOutcome(entry.outcome);
   const command = entry.eventType === 'cli-invocation' ? extractCommand(entry.payload) : undefined;
+  const runner = entry.eventType === 'phase-start' ? extractRunner(entry.payload) : undefined;
   return Object.freeze({
     id: entry.id,
     timestamp: entry.timestamp,
@@ -30,8 +31,15 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
     taskId,
     phaseId,
     outcome,
-    command
+    command,
+    runner
   });
+}
+
+function extractRunner(payload: Record<string, unknown>): string | undefined {
+  const value = payload.runner;
+  if (typeof value === 'string' && value.length > 0) return value;
+  return undefined;
 }
 
 function extractTaskId(payload: Record<string, unknown>): string | undefined {

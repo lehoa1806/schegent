@@ -59,7 +59,7 @@ export interface PhaseStartPayload {
   readonly sessionReuse: boolean;
 }
 
-export const RUNNER_EVENT_TYPES = ['cli-invocation', 'file-write'] as const;
+export const RUNNER_EVENT_TYPES = ['cli-invocation', 'file-write', 'runner-probe-failed'] as const;
 
 export const LOOP_EVENT_TYPES = ['loop-iteration'] as const;
 

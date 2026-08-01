@@ -65,6 +65,7 @@ pub const AUDIT_EVENT_TYPES: &[&str] = &[
     "phase-end",
     "cli-invocation",
     "file-write",
+    "runner-probe-failed",
     "loop-iteration",
     "pause",
     "resume",

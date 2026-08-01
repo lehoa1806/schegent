@@ -119,7 +119,15 @@
     border-radius: 50%;
     background: var(--schegent-color-system);
   }
-  .freshness-live .dot { background: var(--schegent-color-active); }
+  @keyframes pulseLive {
+    0% { transform: scale(0.9); opacity: 1; }
+    70% { transform: scale(1.3); opacity: 0.6; }
+    100% { transform: scale(0.9); opacity: 1; }
+  }
+  .freshness-live .dot { 
+    background: var(--schegent-color-active); 
+    animation: pulseLive 2s infinite;
+  }
   .freshness-slowing .dot { background: var(--schegent-color-warning); }
   .freshness-stalled .dot { background: var(--schegent-color-error); }
   .freshness-paused .dot { background: var(--schegent-color-warning); }

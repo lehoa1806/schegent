@@ -1,6 +1,6 @@
 # Operator Threat Model
 
-Schegent runs an autonomous local Claude CLI backend with broad capabilities inside your workspace. This page is the operator-facing summary of what Schegent can and cannot do, what risks exist, and what mitigations are in place. It is not exhaustive — it is the model you need to make informed decisions about whether and how to use the extension.
+Schegent runs an autonomous local CLI backend (Claude, Codex, or Agy) with broad capabilities inside your workspace. This page is the operator-facing summary of what Schegent can and cannot do, what risks exist, and what mitigations are in place. It is not exhaustive — it is the model you need to make informed decisions about whether and how to use the extension.
 
 > For a non-contributor-facing projection of this threat model — trust ceiling, audit boundary, network boundary, seven failure modes, and five escape hatches in ≤15 pages — see [Security White-Paper](whitepaper.md).
 
@@ -36,14 +36,14 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 
 Schegent runs as a VS Code extension. When a workspace is trusted, the extension can:
 
-- **Spawn the Claude CLI subprocess** with the configured argv composition.
+- **Spawn the CLI subprocess** (Claude, Codex, or Agy) with the configured argv composition.
 - **Read and write files** in the workspace root (via the CLI's tool calls).
 - **Read and write `.schegent/`** for audit, transcripts, runtime log, diagnostics.
 - **Read and write the VS Code `workspaceState`** for queue, run, pause state.
 - **Read and write the VS Code `globalStorageUri`** for wake-up scheduler state.
 - **Install/update/uninstall OS-native scheduled tasks** (launchd / Task Scheduler / cron / systemd-user) for the wake-up scheduler.
 
-The Claude CLI itself, once spawned, has whatever capabilities its argv and the operator's environment grant it. The CLI's tool calls (`Bash`, `Write`, `Edit`, etc.) are not sandboxed beyond what the CLI itself implements.
+The CLI itself, once spawned, has whatever capabilities its argv and the operator's environment grant it. The CLI's tool calls (`Bash`, `Write`, `Edit`, etc.) are not sandboxed beyond what the CLI itself implements. All backend runners (Claude, Codex, Agy) use the identical `shell: false`, monitor sidecar, and output-cap truncation patterns, meaning switching backends introduces no new trust boundaries.
 
 ## What Schegent does **not** have access to
 
@@ -296,7 +296,7 @@ If the spec / plan / task / phase-instruction text contains injection instructio
 
 ### T9 — Custom-phase bypassing audit or redaction
 
-A custom phase declared in `schegent.phases` could in principle skip the audit + redaction + raw-transcript path that built-in phases flow through. Mitigated by routing every phase invocation — built-in and custom — through the same `appendAudit` + raw transcript writer. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`.
+A custom phase declared in `schegent.phases` could in principle skip the audit + redaction + raw-transcript path that built-in phases flow through. Mitigated by routing every phase invocation — built-in and custom — through the same `appendAudit` + raw transcript writer. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs` / `runner`. Feature 072 task-execution lifecycle events (`task-execution-started`, `task-execution-ended`, etc.) flow through this identical `appendAudit` → `SanitizedLogger` path, introducing no new trust boundary.
 
 ### T10 — Verbose-diagnostic unredacted leak
 

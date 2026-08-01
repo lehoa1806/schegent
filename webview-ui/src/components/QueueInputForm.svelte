@@ -166,12 +166,10 @@
 <style>
   .zone.queue-input { flex-shrink: 0; }
   .glass-card {
-    background: var(--sch-glass-bg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    padding: var(--schegent-pad);
-    box-shadow: var(--sch-card-shadow);
-    backdrop-filter: blur(12px);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -187,8 +185,8 @@
     transition: box-shadow 0.2s, border-color 0.2s;
   }
   .compose-box:focus-within {
-    border-color: var(--schegent-focus-border);
-    box-shadow: var(--sch-glow-active);
+    border-color: var(--sch-accent-gradient);
+    background: var(--vscode-editor-background);
   }
   .compose-box textarea {
     width: 100%;
@@ -238,7 +236,7 @@
     background: var(--sch-accent-gradient);
     color: var(--vscode-button-foreground);
     border: none;
-    border-radius: 50%;
+    border-radius: var(--schegent-radius);
     width: 32px;
     height: 32px;
     cursor: pointer;
@@ -249,7 +247,7 @@
     cursor: not-allowed;
   }
   .submit-button:active:not(:disabled) {
-    transform: scale(0.9);
-    opacity: 0.85;
+    transform: translateY(2px) scale(0.96);
+    opacity: 0.9;
   }
 </style>

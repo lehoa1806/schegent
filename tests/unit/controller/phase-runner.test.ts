@@ -1275,3 +1275,56 @@ describe('PhaseRunner manual pause accessor', () => {
     expect(localRunner.isManualPauseRequested()).toBe(true);
   });
 });
+
+
+describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () => {
+  let mockRegistry: any;
+  let defaultRunner: any;
+  let altRunner: any;
+
+  beforeEach(() => {
+    auditWriter = makeFakeAuditWriter();
+    
+    defaultRunner = makeFakeRunner(async () => makeRawOutput());
+    altRunner = makeFakeRunner(async () => makeRawOutput());
+    
+    mockRegistry = {
+      getOrCreate: vi.fn((runnerKind?: string) => {
+        if (runnerKind === 'agy') return altRunner;
+        return defaultRunner;
+      }),
+      getGlobalDefault: vi.fn(() => 'claude')
+    };
+  });
+
+  it('resolves runner from registry per invocation (T020)', async () => {
+    runner = new PhaseRunner(mockRegistry, new PromptBuilder(), auditWriter, new SanitizedLogger());
+    
+    const inputs = {
+      ...baseInputs,
+      phaseDef: { id: 'phase1', name: 'P1', instruction: '', steps: [], runner: 'agy' as any }
+    };
+
+    await runner.run(inputs);
+    expect(mockRegistry.getOrCreate).toHaveBeenCalledWith('agy');
+    expect(altRunner.invoke).toHaveBeenCalled();
+    expect(defaultRunner.invoke).not.toHaveBeenCalled();
+  });
+
+  it('resets cliSessionId when transitioning between different runners (T020)', async () => {
+    runner = new PhaseRunner(mockRegistry, new PromptBuilder(), auditWriter, new SanitizedLogger());
+    
+    const inputs = {
+      ...baseInputs,
+      phaseDef: { id: 'phase2', name: 'P2', instruction: '', steps: [], runner: 'agy' as any },
+      cliSessionId: 'sess-123'
+    };
+
+    await runner.run(inputs);
+    
+    // The previous cliSessionId was from the default runner, but we transitioned to 'agy'.
+    // The PhaseRunner should NOT pass it to the new runner.
+    const invokeCall = altRunner.invoke.mock.calls[0][0];
+    expect(invokeCall.resumeSessionId).toBeUndefined();
+  });
+});

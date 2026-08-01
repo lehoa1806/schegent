@@ -34,6 +34,7 @@ export interface SavePhaseRow {
   readonly effort?: PhaseDefinition['effort'];
   readonly timeoutSeconds?: number;
   readonly retryCondition?: string;
+  readonly runner?: string;
 }
 
 export type SavePhasesResult =

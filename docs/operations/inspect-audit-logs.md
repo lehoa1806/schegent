@@ -106,6 +106,24 @@ grep '"correlationId":"<runId>"' .schegent/audit.log \
   | jq -c 'select(.eventType | test("retry-|queue-paused"))'
 ```
 
+### Task lifecycle payload fields (additive, since feature 072)
+
+Feature 072 introduces four events that frame task and phase execution:
+
+| `eventType` | Payload fields |
+|---|---|
+| `task-execution-started` | `runId`, `taskId`, `description`, `pipelineId`, `isResume` |
+| `task-execution-ended` | `runId`, `terminalStatus` (`completed` \| `failed`), `phasesTotal`, `phasesCompleted`, `phasesSkipped` |
+| `task-execution-paused` | `runId`, `pauseCause` |
+| `phase-jumped` | `runId`, `reason` (`operator-jump`), `skippedPhaseId`, `nextPhaseId` |
+
+Filter all task lifecycle boundaries for a single run:
+
+```bash
+grep '"correlationId":"<runId>"' .schegent/audit.log \
+  | jq -c 'select(.eventType | test("task-execution-|phase-jumped"))'
+```
+
 The extended `fatal-signature-matched` event (also additive in 011)
 now carries `payload.source: 'built-in' | 'operator-defined'` so an
 operator-defined registry hit can be triaged separately from a

@@ -33,9 +33,9 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
-  // Feature 074 — bumped 800 → 835 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
+  // Feature 074 — bumped 800 → 850 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
   // isPhaseDef runner check, and validatePhaseRaw runner validation.
-  { path: 'src/config/pipeline-config.ts', maxLines: 835 },
+  { path: 'src/config/pipeline-config.ts', maxLines: 850 },
   { path: 'src/config/general-settings.ts', maxLines: 650 }
 ];
 
