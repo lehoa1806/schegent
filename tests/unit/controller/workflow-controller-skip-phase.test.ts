@@ -101,13 +101,11 @@ beforeEach(async () => {
     { auditWriter }
   );
   
-  // mock the runDriver noteActivePhaseOverrideAbort
-  (controller as any).runDriver = {
-    noteActivePhaseOverrideAbort: vi.fn(),
-    drive: vi.fn(async () => {})
-  };
+  // Observe the real injected collaborator instead of replacing it after the
+  // phase-control service has captured the dependency.
+  vi.spyOn((controller as any).runDriver, 'noteActivePhaseOverrideAbort')
+    .mockImplementation(() => undefined);
   (controller as any).cancelActive = vi.fn();
-  (controller as any).resumeActivePhase = vi.fn(async () => {});
   (controller as any).resumeExisting = vi.fn(async () => {});
 });
 
@@ -204,8 +202,15 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     const result = await controller.skipPhase('speckit-clarify');
     expect(result).toEqual({ ok: true });
     
-    // ensure resumeActivePhase is called so it advances
-    expect((controller as any).resumeActivePhase).toHaveBeenCalled();
+    // The paused run is resumed and dispatch is scheduled so the override is
+    // evaluated by the engine.
+    expect(store.getRun()).toMatchObject({
+      status: 'running',
+      manualPauseAt: null,
+      manualPauseCause: null
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    expect((controller as any).resumeExisting).toHaveBeenCalled();
   });
   
   it('skip when phase is failed wakes up the pipeline', async () => {

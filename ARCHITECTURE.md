@@ -96,6 +96,7 @@ webview-ui/
 | Module | Owned responsibility | Must not own |
 |---|---|---|
 | `src/activation/backend-wiring.ts` | Stage-1 runtime/evidence sink composition and the names-only unrestricted-environment warning | Workflow transitions, IPC, or backend invocation |
+| `src/controller/phase-control-service.ts` | Operator pause/resume/restart/skip/enable/disable/remove and breakpoint mutation policy | Activation wiring, queue ownership, or audit serialization |
 | `src/services/evidence-health/` | Workspace-scoped sink health, bounded causes, and continuation policies | Raw exception text, filesystem paths, or UI rendering |
 | `src/services/session-retention/` | Age/byte pruning for inactive `.schegent/sessions` run groups | Structured audit retention or active-run deletion |
 | `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
