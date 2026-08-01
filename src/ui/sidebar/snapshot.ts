@@ -1,5 +1,11 @@
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
+import {
+  IDLE_EVIDENCE_HEALTH,
+  type EvidenceHealthSnapshot
+} from '../../services/evidence-health/evidence-health-monitor';
 export type { DebugLogEntry };
+export type { EvidenceHealthSnapshot };
+export { IDLE_EVIDENCE_HEALTH };
 
 export const SCHEMA_VERSION = 3 as const;
 
@@ -371,6 +377,8 @@ export interface WorkflowSnapshot {
    * workspace/user override is absent).
    */
   readonly generalSettings: GeneralSettings;
+  readonly sessionArtifacts: SessionArtifactsProjection;
+  readonly evidenceHealth: EvidenceHealthSnapshot;
   /**
    * Feature 014 (BUG-001 / BUG-002) — Wake up settings projected for
    * the Settings surface. Always present (defaults populated when the
@@ -458,6 +466,13 @@ export interface WorkflowSnapshot {
     readonly version: 1;
     readonly suppressedActionKeys: readonly string[];
   };
+}
+
+export interface SessionArtifactsProjection {
+  readonly artifactCount: number;
+  readonly totalBytes: number;
+  readonly lastSweepAt: string | null;
+  readonly lastSweepFailures: number;
 }
 
 /**
@@ -560,6 +575,8 @@ export function buildIdleSnapshot(opts: {
     availableModels: Object.freeze([]),
     delayedRetry: IDLE_DELAYED_RETRY,
     generalSettings: IDLE_GENERAL_SETTINGS,
+    sessionArtifacts: IDLE_SESSION_ARTIFACTS,
+    evidenceHealth: IDLE_EVIDENCE_HEALTH,
     wakeUpSettings: IDLE_WAKEUP_SETTINGS,
     wakeUpLog: IDLE_WAKEUP_LOG,
     wakeUp: IDLE_WAKEUP_PROJECTION,
@@ -576,6 +593,13 @@ export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
   pendingRetryAt: null,
   pendingRetryCause: null,
   delayedRetryCount: 0
+});
+
+export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze({
+  artifactCount: 0,
+  totalBytes: 0,
+  lastSweepAt: null,
+  lastSweepFailures: 0
 });
 
 /**
@@ -602,6 +626,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogFilePath: '',
   runtimeLogMaxBytes: 5 * 1024 * 1024,
   runtimeLogMaxGenerations: 3,
+  sessionRetentionMaxAgeDays: 30,
+  sessionRetentionMaxBytes: 512 * 1024 * 1024,
   retryMaxAttempts: 5,
   scopes: Object.freeze({
     cliPath: 'default',
@@ -621,6 +647,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogFilePath: 'default',
     runtimeLogMaxBytes: 'default',
     runtimeLogMaxGenerations: 'default',
+    sessionRetentionMaxAgeDays: 'default',
+    sessionRetentionMaxBytes: 'default',
     retryMaxAttempts: 'default'
   })
 });

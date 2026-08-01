@@ -66,6 +66,12 @@ export type GeneralSettingsControlId =
   | 'runtimeLogFilePath'
   | 'runtimeLogFilePath-save'
   | 'runtimeLogFilePath-reset'
+  | 'sessionRetentionMaxAgeDays'
+  | 'sessionRetentionMaxAgeDays-save'
+  | 'sessionRetentionMaxAgeDays-reset'
+  | 'sessionRetentionMaxBytes'
+  | 'sessionRetentionMaxBytes-save'
+  | 'sessionRetentionMaxBytes-reset'
   | 'save-all'
   | 'reset-all';
 
@@ -295,6 +301,41 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       'Restore the projected runtime log file path. Disabled when there ' +
       'are no unsaved changes on this field.'
+  },
+
+  sessionRetentionMaxAgeDays: {
+    title: 'Unredacted session retention age',
+    body:
+      'Complete inactive raw transcripts and verbose diagnostics older than ' +
+      'this many days are removed. Active runs and audit.log are never pruned.'
+  },
+  'sessionRetentionMaxAgeDays-save': {
+    body:
+      'Save the session-artifact age limit. Disabled until the value differs ' +
+      'from the saved projection.'
+  },
+  'sessionRetentionMaxAgeDays-reset': {
+    body:
+      'Restore the projected session-artifact age limit. Disabled when there ' +
+      'are no unsaved changes on this field.'
+  },
+
+  sessionRetentionMaxBytes: {
+    title: 'Unredacted session byte budget',
+    body:
+      'Total byte budget for raw transcripts and verbose diagnostics. The ' +
+      'oldest complete inactive runs are removed first; active runs and ' +
+      'audit.log are protected.'
+  },
+  'sessionRetentionMaxBytes-save': {
+    body:
+      'Save the session-artifact byte budget. Disabled until the value differs ' +
+      'from the saved projection.'
+  },
+  'sessionRetentionMaxBytes-reset': {
+    body:
+      'Restore the projected session-artifact byte budget. Disabled when ' +
+      'there are no unsaved changes on this field.'
   },
 
   'save-all': {

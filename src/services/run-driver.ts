@@ -20,6 +20,7 @@ import { BUILT_IN_PIPELINE_ID } from '../config/pipeline-config';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
 import type { PhaseDef } from '../config/pipeline-config';
+import { RequiredEvidenceUnavailableError } from '../lib/errors';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import {
   DEFAULT_BACKEND,
@@ -32,12 +33,14 @@ interface RunDriverOptions {
   readonly iterationCap: number;
   readonly timeoutMs: number;
   readonly inheritProcessEnv?: boolean;
+  readonly processEnvAllowlist?: readonly string[];
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   // When undefined, falls back to `cliPath` for all runners.
   readonly cliPathResolver?: (runnerKind: string) => string;
   /** Effective global backend for phases without an explicit override. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;
+  readonly isAuditEvidenceAvailable?: () => boolean;
 }
 
 type PhaseControlEventType =
@@ -81,6 +84,7 @@ export interface RunDriverDeps {
     payload: Record<string, unknown>
   ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
+  readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
 }
 
 /**
@@ -151,9 +155,11 @@ export class RunDriver {
     // cost optimization (prompt cache preservation). Distinct from
     // isContinue (which is for interrupted conversation resumption).
     let pendingSessionReuse = false;
+    let allowAutoDrain = true;
 
     try {
       await this.deps.lock.withLock('drive-run', async (session) => {
+        this.assertAuditEvidenceAvailable();
         // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
         if (
           process.env.NODE_ENV !== 'test' &&
@@ -177,7 +183,8 @@ export class RunDriver {
                     SCHEGENT_PHASE: 'runner-probe',
                     SCHEGENT_ITERATION: '0'
                   },
-                  inheritProcessEnv: this.deps.options.inheritProcessEnv !== false
+                  inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
+                  processEnvAllowlist: this.deps.options.processEnvAllowlist
                 })
               });
             } catch (err: unknown) {
@@ -251,6 +258,7 @@ export class RunDriver {
         }
 
         while (run.currentPhase !== 'done' && run.status === 'running') {
+          this.assertAuditEvidenceAvailable();
           if (this.cancellationController!.signal.aborted) {
             run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
             await this.deps.emitRunEndedBreakpointAudit(run);
@@ -389,6 +397,7 @@ export class RunDriver {
               ? activePhaseDef.timeoutSeconds * 1000
               : this.deps.options.timeoutMs,
             inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
+            processEnvAllowlist: this.deps.options.processEnvAllowlist,
             runId: run.id,
             phaseMessagePath: composePhaseMessagePath({
               cwd: this.deps.options.cwd,
@@ -722,12 +731,93 @@ export class RunDriver {
           }
         }
       });
+    } catch (error) {
+      const auditUnavailable =
+        error instanceof RequiredEvidenceUnavailableError ||
+        this.deps.options.isAuditEvidenceAvailable?.() === false;
+      if (!auditUnavailable) throw error;
+
+      allowAutoDrain = false;
+      run = await this.failClosedForAuditEvidence(run, description);
     } finally {
+      if (run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') {
+        try {
+          await this.deps.onRunTerminal?.(run);
+        } catch (error) {
+          this.deps.logger.warn(
+            `run-driver: terminal retention hook failed: ${(error as Error).message}`
+          );
+        }
+      }
       this.isRunning = false;
       this.cancellationController = null;
       this.carriedIssues = [];
-      this.deps.scheduleAutoDrain();
+      if (allowAutoDrain && this.isAuditEvidenceAvailable()) {
+        this.deps.scheduleAutoDrain();
+      }
     }
+  }
+
+  private assertAuditEvidenceAvailable(): void {
+    if (!this.isAuditEvidenceAvailable()) {
+      throw new RequiredEvidenceUnavailableError('health-gate');
+    }
+  }
+
+  private isAuditEvidenceAvailable(): boolean {
+    return this.deps.options.isAuditEvidenceAvailable?.() ?? true;
+  }
+
+  private async failClosedForAuditEvidence(
+    run: WorkflowRun,
+    description: string
+  ): Promise<WorkflowRun> {
+    const message = 'Required structured audit evidence is unavailable.';
+    const lastError: SanitizedError = {
+      code: 'audit-evidence-unavailable',
+      message,
+      phase: run.currentPhase,
+      iteration: run.currentIteration,
+      at: Date.now()
+    };
+    const failed = await this.deps.persistTransition(run, {
+      ...run,
+      status: 'failed',
+      lastError,
+      lastTransitionAt: Date.now()
+    });
+
+    this.deps.logger.error(
+      'run-driver: execution stopped because required structured audit evidence is unavailable'
+    );
+    this.deps.statusBar.update({
+      kind: 'failed',
+      phase: failed.currentPhase,
+      detail: message
+    });
+    this.deps.notifier.warn(
+      'Schegent: execution stopped because required structured audit evidence is unavailable. Resolve the evidence sink and reload the workspace before resuming.'
+    );
+    try {
+      await this.deps.queue.finish(failed.featureId, 'failed', {
+        code: lastError.code,
+        message: lastError.message,
+        phase: lastError.phase ?? undefined,
+        correlationId: failed.id
+      });
+    } catch (queueError) {
+      this.deps.logger.warn(
+        `run-driver: queue.finish (audit unavailable) failed: ${(queueError as Error).message}`
+      );
+    }
+    try {
+      await this.deps.historyRecorder.record(failed, description, 'failed');
+    } catch (historyError) {
+      this.deps.logger.warn(
+        `run-driver: history record (audit unavailable) failed: ${(historyError as Error).message}`
+      );
+    }
+    return failed;
   }
 
   private phaseOverrideAbortKey(runId: string, phaseId: string): string {

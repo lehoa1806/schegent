@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
-  import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+  import { IDLE_GENERAL_SETTINGS, IDLE_SESSION_ARTIFACTS } from '../../lib/snapshot-types';
   import { saveGeneralSettings } from '../../lib/save-general-settings';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
@@ -23,7 +23,9 @@
     | 'defaultPipelineId'
     | 'claudeAutoCompactPctOverride'
     | 'runtimeLogLevel'
-    | 'runtimeLogFilePath';
+    | 'runtimeLogFilePath'
+    | 'sessionRetentionMaxAgeDays'
+    | 'sessionRetentionMaxBytes';
 
   type FieldKind =
     | 'string'
@@ -63,6 +65,22 @@
       kind: 'string',
       placeholder: '<workspace>/.schegent/syslog'
     },
+    {
+      key: 'sessionRetentionMaxAgeDays',
+      ipcKey: 'logging.sessionRetentionMaxAgeDays',
+      label: 'Session Artifact Retention (days)',
+      kind: 'number',
+      min: 1,
+      max: 3650
+    },
+    {
+      key: 'sessionRetentionMaxBytes',
+      ipcKey: 'logging.sessionRetentionMaxBytes',
+      label: 'Session Artifact Budget (bytes)',
+      kind: 'number',
+      min: 1048576,
+      max: 10737418240
+    },
     { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 100 },
     { key: 'invocationTimeoutSeconds', ipcKey: 'invocation.timeoutSeconds', label: 'Invocation Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
@@ -84,6 +102,22 @@
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
   );
+  const sessionArtifacts = $derived(snapshot.sessionArtifacts ?? IDLE_SESSION_ARTIFACTS);
+  const sessionBudgetPercent = $derived(
+    currentSettings.sessionRetentionMaxBytes > 0
+      ? Math.round((sessionArtifacts.totalBytes / currentSettings.sessionRetentionMaxBytes) * 100)
+      : 0
+  );
+  const sessionUsageWarning = $derived(
+    sessionArtifacts.lastSweepFailures > 0 || sessionBudgetPercent >= 80
+  );
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  }
 
   // Local draft separate from the projected settings — we only commit
   // a key on Save so users can revert via reload-without-save.
@@ -103,6 +137,8 @@
     // Feature 019: runtime debug log sink controls.
     runtimeLogLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
     runtimeLogFilePath: string;
+    sessionRetentionMaxAgeDays: number;
+    sessionRetentionMaxBytes: number;
   };
 
   function snapshotToDraft(s: GeneralSettings): Draft {
@@ -118,7 +154,9 @@
       defaultPipelineId: s.defaultPipelineId,
       claudeAutoCompactPctOverride: s.claudeAutoCompactPctOverride ?? null,
       runtimeLogLevel: s.runtimeLogLevel,
-      runtimeLogFilePath: s.runtimeLogFilePath
+      runtimeLogFilePath: s.runtimeLogFilePath,
+      sessionRetentionMaxAgeDays: s.sessionRetentionMaxAgeDays,
+      sessionRetentionMaxBytes: s.sessionRetentionMaxBytes
     };
   }
 
@@ -259,6 +297,22 @@
   <header class="tab-header">
     <h2>{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].title}</h2>
     <p class="hint">{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].body}</p>
+    <div class:usage-warning={sessionUsageWarning} class="session-usage" data-testid="session-artifact-usage">
+      <strong>Unredacted local session artifacts:</strong>
+      {sessionArtifacts.artifactCount} run{sessionArtifacts.artifactCount === 1 ? '' : 's'},
+      {formatBytes(sessionArtifacts.totalBytes)} retained.
+      {#if sessionArtifacts.lastSweepAt}
+        Last swept {new Date(sessionArtifacts.lastSweepAt).toLocaleString()}.
+      {:else}
+        Waiting for the activation sweep.
+      {/if}
+      {#if sessionArtifacts.lastSweepFailures > 0}
+        {sessionArtifacts.lastSweepFailures} retention operation{sessionArtifacts.lastSweepFailures === 1 ? '' : 's'} failed; inspect the sanitized runtime log.
+      {/if}
+      {#if sessionBudgetPercent >= 80}
+        Usage is {sessionBudgetPercent}% of the configured byte budget.
+      {/if}
+    </div>
     <div class="toolbar">
       <button
         type="button"
@@ -319,6 +373,19 @@
     margin: 0 0 12px 0;
     color: var(--schegent-muted-fg);
     font-size: 0.9em;
+  }
+  .session-usage {
+    margin: 0 0 12px 0;
+    padding: 8px 10px;
+    border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground);
+    background: var(--vscode-textBlockQuote-background);
+    color: var(--schegent-muted-fg);
+    font-size: 0.85em;
+    line-height: 1.45;
+  }
+  .usage-warning {
+    border-left-color: var(--vscode-notificationsWarningIcon-foreground);
+    color: var(--vscode-foreground);
   }
   .toolbar {
     display: flex;

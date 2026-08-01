@@ -4,6 +4,7 @@ export type SchegentErrorCode =
   | 'lock-held'
   | 'phase-timeout'
   | 'audit-malformed'
+  | 'audit-evidence-unavailable'
   | 'rate-limited'
   | 'invocation-failed'
   | 'invalid-state'
@@ -66,6 +67,26 @@ export class AuditMalformedError extends SchegentError {
     super('audit-malformed', `Audit log block malformed: missing ${missingFields.join(', ')}`);
     this.name = 'AuditMalformedError';
     this.missingFields = missingFields;
+  }
+}
+
+/**
+ * A required structured-audit event could not be durably recorded.
+ *
+ * The event type is safe operational metadata. The underlying filesystem
+ * error is deliberately not retained here so this exception cannot carry a
+ * workspace path or other sensitive sink detail across process boundaries.
+ */
+export class RequiredEvidenceUnavailableError extends SchegentError {
+  public readonly eventType: string;
+
+  constructor(eventType: string) {
+    super(
+      'audit-evidence-unavailable',
+      `Required structured audit evidence is unavailable (${eventType})`
+    );
+    this.name = 'RequiredEvidenceUnavailableError';
+    this.eventType = eventType;
   }
 }
 

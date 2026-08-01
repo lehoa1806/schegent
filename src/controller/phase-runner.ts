@@ -32,6 +32,7 @@ import {
   summarize
 } from './phase-outcome-mapper';
 import { compactClaudeSession } from './session-compactor';
+import { RequiredEvidenceUnavailableError } from '../lib/errors';
 
 // Feature 057 — re-export from `phase-sidecar-reader` so existing import
 // surfaces (workflow-controller, tests) remain stable; canonical owner moved.
@@ -51,6 +52,7 @@ export interface PhaseRunInputs {
   cwd: string;
   timeoutMs: number;
   inheritProcessEnv?: boolean;
+  processEnvAllowlist?: readonly string[];
   runId: string;
   perPhaseRulesPath?: string | null;
   phaseMessagePath?: string | null;
@@ -269,7 +271,7 @@ export class PhaseRunner {
       new Set<string>();
     if (breakpoints.has(breakpointPhaseId)) {
       const firedAt = Date.now();
-      const auditEntry = await this.auditWriter.append({
+      const auditEntry = await this.appendRequiredAudit({
         runId: inputs.runId,
         phase: inputs.phase,
         iteration: inputs.iteration,
@@ -412,6 +414,9 @@ export class PhaseRunner {
         cwd: inputs.cwd,
         env,
         ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
+        ...(inputs.processEnvAllowlist !== undefined
+          ? { processEnvAllowlist: inputs.processEnvAllowlist }
+          : {}),
         cancellationSignal: inputs.cancellationSignal,
         ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
         ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
@@ -619,6 +624,7 @@ export class PhaseRunner {
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
       inheritProcessEnv: inputs.inheritProcessEnv,
+      processEnvAllowlist: inputs.processEnvAllowlist,
       cancellationSignal: inputs.cancellationSignal,
       resumeSessionId: inputs.resumeSessionId!,
       logger: this.logger,
@@ -722,7 +728,7 @@ export class PhaseRunner {
     if (inputs.phaseDef?.timeoutSeconds) {
       payload.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
     }
-    await this.auditWriter.append({
+    await this.appendRequiredAudit({
       runId: inputs.runId,
       phase: inputs.phase,
       iteration: inputs.iteration,
@@ -744,32 +750,26 @@ export class PhaseRunner {
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>
   ): Promise<AuditEntry> {
+    return this.appendRequiredAudit({
+      runId: inputs.runId,
+      phase: inputs.phase,
+      iteration: inputs.iteration,
+      eventType,
+      payload,
+      outcome
+    });
+  }
+
+  private async appendRequiredAudit(
+    entry: Omit<AuditEntry, 'id' | 'timestamp'>
+  ): Promise<AuditEntry> {
     try {
-      return await this.auditWriter.append({
-        runId: inputs.runId,
-        phase: inputs.phase,
-        iteration: inputs.iteration,
-        eventType,
-        payload,
-        outcome
-      });
-    } catch (err) {
+      return await this.auditWriter.append(entry);
+    } catch {
       this.logger.warn(
-        `phase-runner audit append failed (${eventType}): ${(err as Error).message}`
+        `phase-runner: required audit evidence unavailable (${entry.eventType})`
       );
-      // Return a sentinel entry so callers that access `.id` still work.
-      // The audit record is lost but the workflow continues — a crashed
-      // workflow is worse than a missing audit entry.
-      return {
-        id: `audit-write-failed-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        runId: inputs.runId,
-        phase: inputs.phase,
-        iteration: inputs.iteration,
-        eventType,
-        payload,
-        outcome
-      } as AuditEntry;
+      throw new RequiredEvidenceUnavailableError(entry.eventType);
     }
   }
 }

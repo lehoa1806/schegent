@@ -18,7 +18,9 @@
     | 'defaultPipelineId'
     | 'claudeAutoCompactPctOverride'
     | 'runtimeLogLevel'
-    | 'runtimeLogFilePath';
+    | 'runtimeLogFilePath'
+    | 'sessionRetentionMaxAgeDays'
+    | 'sessionRetentionMaxBytes';
 
   type FieldKind =
     | 'string'
@@ -51,6 +53,8 @@
     claudeAutoCompactPctOverride: number | null;
     runtimeLogLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
     runtimeLogFilePath: string;
+    sessionRetentionMaxAgeDays: number;
+    sessionRetentionMaxBytes: number;
   };
 
   interface FieldStatus {

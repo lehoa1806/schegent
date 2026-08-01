@@ -118,6 +118,24 @@ describe('SchegentStatusBar (T063)', () => {
     expect(item.__text()).toBe('schegent: canceled');
   });
 
+  it('surfaces degraded and unavailable evidence without losing workflow state', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update({ kind: 'running', phase: 'speckit-plan' });
+
+    bar.setEvidenceHealth('degraded');
+    expect(item.__text()).toContain('schegent: speckit-plan');
+    expect(item.__text()).toContain('evidence degraded');
+    expect(item.__tooltip()).toContain('optional execution evidence degraded');
+
+    bar.setEvidenceHealth('unavailable');
+    expect(item.__text()).toContain('evidence unavailable');
+    expect(item.__tooltip()).toContain('fail-closed policy');
+
+    bar.setEvidenceHealth('healthy');
+    expect(item.__text()).toBe('schegent: speckit-plan');
+  });
+
   it('transitions across all forms do not flicker (no intermediate text)', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);

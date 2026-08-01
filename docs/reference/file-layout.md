@@ -86,7 +86,7 @@ Three files per invocation:
 - `stream.jsonl` — the `--output-format stream-json` event stream, one event per line.
 - `verbose.log` — the `--verbose` stderr capture.
 
-**These files are unredacted.** They are an operator opt-in for deep troubleshooting. Diagnostic files do not rotate; they accumulate per run until you delete them manually or via the task-deletion session-tree cleanup.
+**These files are unredacted.** They are an operator opt-in for deep troubleshooting. Diagnostic files do not rotate individually. Complete inactive-run groups are pruned by the shared session-artifact age and byte policy; manual and task-deletion cleanup remain available.
 
 See [Verbose Diagnostics](../features/verbose-diagnostics.md).
 

@@ -5,6 +5,7 @@ import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
+import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
 
 function makeLock(): any {
   return {
@@ -41,6 +42,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
   let store: WorkspaceStateStore;
   let emitTaskLifecycleAuditSpy: ReturnType<typeof vi.fn>;
   let phaseRunnerMock: { run: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> };
+  let onRunTerminalSpy: ReturnType<typeof vi.fn>;
   let deps: RunDriverDeps;
   let driver: RunDriver;
 
@@ -49,6 +51,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     await store.initialize();
     
     emitTaskLifecycleAuditSpy = vi.fn().mockResolvedValue(undefined);
+    onRunTerminalSpy = vi.fn().mockResolvedValue(undefined);
     phaseRunnerMock = { run: vi.fn(), abort: vi.fn() };
     
     deps = {
@@ -77,7 +80,8 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         await store.setRun(newRun);
         return newRun;
       },
-      scheduleAutoDrain: vi.fn()
+      scheduleAutoDrain: vi.fn(),
+      onRunTerminal: onRunTerminalSpy
     };
     
     driver = new RunDriver(deps);
@@ -136,6 +140,11 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     });
     expect(typeof payload.durationMs).toBe('number');
     expect(payload.lastErrorSummary).toContain('Fatal error occurred');
+    expect(onRunTerminalSpy).toHaveBeenCalledOnce();
+    expect(onRunTerminalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: runId,
+      status: 'failed'
+    }));
   });
 
   it('emits task-execution-ended on completion (T016)', async () => {
@@ -187,6 +196,10 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phasesCompleted: 1,
       phasesSkipped: 0
     });
+    expect(onRunTerminalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: runId,
+      status: 'completed'
+    }));
   });
 
   it('does not break drive outcome if audit emission fails (T017)', async () => {
@@ -230,5 +243,95 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     
     const run = store.getRun()!;
     expect(run.status).toBe('completed');
+  });
+
+  it('contains terminal retention-hook failure and still schedules queue drain', async () => {
+    onRunTerminalSpy.mockRejectedValueOnce(new Error('retention unavailable'));
+    await store.setRun({
+      id: 'run-retention-failure',
+      taskId: 'task-retention-failure',
+      featureId: 'task-retention-failure',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'canceled',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: { id: 'pipe-1', name: 'Pipe', phases: [] },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null,
+      isWakeup: false
+    } as any);
+
+    await expect(driver.drive(store.getRun()!, 'retention failure')).resolves.toBeUndefined();
+
+    expect(onRunTerminalSpy).toHaveBeenCalledOnce();
+    expect(deps.scheduleAutoDrain).toHaveBeenCalledOnce();
+  });
+
+  it('fails the active run and suppresses queue drain when required audit evidence is unavailable', async () => {
+    await store.setRun({
+      id: 'run-audit-unavailable',
+      taskId: 'task-audit-unavailable',
+      featureId: 'task-audit-unavailable',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [{ id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' }]
+      },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null,
+      isWakeup: false
+    } as any);
+    phaseRunnerMock.run.mockRejectedValueOnce(
+      new RequiredEvidenceUnavailableError('phase-start')
+    );
+    deps = {
+      ...deps,
+      options: {
+        ...deps.options,
+        isAuditEvidenceAvailable: vi.fn().mockReturnValue(true)
+      }
+    };
+
+    await expect(
+      new RunDriver(deps).drive(store.getRun()!, 'audit unavailable')
+    ).resolves.toBeUndefined();
+
+    expect(store.getRun()).toMatchObject({
+      id: 'run-audit-unavailable',
+      status: 'failed',
+      lastError: {
+        code: 'audit-evidence-unavailable',
+        message: 'Required structured audit evidence is unavailable.',
+        phase: 'plan',
+        iteration: 0
+      }
+    });
+    expect(deps.queue.finish).toHaveBeenCalledWith(
+      'task-audit-unavailable',
+      'failed',
+      expect.objectContaining({ code: 'audit-evidence-unavailable' })
+    );
+    expect(deps.scheduleAutoDrain).not.toHaveBeenCalled();
+    expect(onRunTerminalSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' })
+    );
   });
 });

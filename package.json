@@ -133,6 +133,27 @@
           "scope": "application",
           "description": "When enabled, Schegent backend CLI processes inherit the VS Code extension-host environment before Schegent-controlled variables are overlaid. Disable to spawn the backend with only Schegent-controlled variables."
         },
+        "schegent.cli.environmentMode": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "minimal",
+            "allowlist"
+          ],
+          "default": "inherit",
+          "scope": "application",
+          "markdownDescription": "Controls ambient environment forwarding to backend CLIs. `inherit` preserves the extension-host environment for compatibility; `minimal` forwards only Schegent-controlled variables; `allowlist` forwards required bootstrap variables plus the names in `schegent.cli.environmentAllowlist`. The legacy `schegent.cli.inheritEnvironment: false` always forces `minimal`."
+        },
+        "schegent.cli.environmentAllowlist": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "Environment variable **names** to forward when `schegent.cli.environmentMode` is `allowlist`. Values are read from the extension host at spawn time and are never stored in this setting. Required PATH/home/temp/locale/runtime bootstrap variables are included automatically.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
         "schegent.backend.runner": {
           "type": "string",
           "enum": [
@@ -348,6 +369,22 @@
           "default": false,
           "scope": "resource",
           "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only — prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
+        },
+        "schegent.logging.sessionRetentionMaxAgeDays": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 3650,
+          "scope": "resource",
+          "markdownDescription": "Maximum age in days for **unredacted** raw transcripts and verbose diagnostic trees. Complete inactive-run artifacts older than this are removed on activation and after terminal runs. The append-only structured audit log is never pruned by this setting."
+        },
+        "schegent.logging.sessionRetentionMaxBytes": {
+          "type": "integer",
+          "default": 536870912,
+          "minimum": 1048576,
+          "maximum": 10737418240,
+          "scope": "resource",
+          "markdownDescription": "Total byte budget for **unredacted** raw transcripts and verbose diagnostic trees. Oldest complete inactive-run artifacts are removed first; the active run and structured audit log are never pruned."
         },
         "schegent.logging.runtimeLogLevel": {
           "type": "string",

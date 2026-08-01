@@ -127,7 +127,7 @@ one of:
 | Sidebar shows **CLI unauthenticated** | The backend CLI may not have a valid local session. | Run the backend login command in a normal terminal, then re-probe from Schegent. |
 | Run pauses on rate limit | The CLI returned a recoverable quota/reset signal. | Leave the queue paused for automatic backoff, or resume manually after credits recover. |
 | Secondary VS Code window is read-only | Another window owns the workspace lock. | Use the primary window for mutations, or close/reopen windows after the active run finishes. |
-| Audit/log view looks stale | The durable audit sink or workspace disk may be failing. | Inspect `<workspaceRoot>/.schegent/syslog` and available disk space; live subscribers still receive sanitized append attempts even if the durable write fails. |
+| Audit/log view looks stale or shows **evidence unavailable** | The durable audit sink or workspace disk may be failing. | Execution fails closed and queue drain stops. Inspect free space/permissions, then reload the window; see [Execution Evidence Health](docs/operations/evidence-health.md). |
 
 ## Quick start
 
@@ -223,6 +223,8 @@ Frequently used keys:
 |---|---|---|---|
 | `schegent.cli.path` | string | `"claude"` | Path to the Claude CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | `true` | Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables. |
+| `schegent.cli.environmentMode` | string | `"inherit"` | Choose full inheritance, strict minimal mode, or required bootstrap plus a names-only allowlist. |
+| `schegent.cli.environmentAllowlist` | string[] | `[]` | Ambient variable names forwarded in allowlist mode; values are never stored in settings. |
 | `schegent.backend.runner` | enum | `"claude"` | `claude`, `codex`, or `agy`. |
 | `schegent.codex.path` | string | `"codex"` | Path to the Codex CLI binary. |
 | `schegent.agy.path` | string | `"agy"` | Path to the Agy CLI binary. |
@@ -296,9 +298,17 @@ The defenses below reduce risk; they are not absolute guarantees.
   records counts, IDs, and selection tuples rather than file paths or
   raw payloads. Paths-free discipline keeps the file safe to attach to
   bug reports.
-- **TTL-bound context fragments** — diagnostic captures live under
-  the workspace and are scoped to the run that produced them. Verbose
-  capture is opt-in; raw transcripts are local-only.
+- **Bounded local session artifacts** — unredacted raw transcripts and
+  opt-in verbose diagnostics are gitignored, grouped by run, and pruned only
+  after the run is inactive using configurable age and byte budgets. The
+  structured audit log is never included in this cleanup.
+- **Explicit subprocess environment policy** — every backend probe,
+  invocation, and pre-compaction call uses the same `inherit`, `minimal`, or
+  names-only `allowlist` policy. The legacy boolean opt-out remains supported.
+- **Unified evidence health** — audit, raw-transcript, and runtime-log failures
+  project as one sanitized health state. Required structured-audit failure
+  fails execution closed; optional sink failures continue with a visible
+  degraded indicator.
 - **Sandboxed retry-condition DSL** — operator-supplied retry
   expressions are evaluated by a restricted parser that allows
   identifiers, signed numerics, comparison operators, and boolean
