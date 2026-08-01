@@ -71,7 +71,8 @@
           "CMD_START_QUEUE",
           "CMD_CLEAR_ALL",
           "CMD_SET_CONFIRM_SUPPRESSION",
-          "CMD_DISMISS_MIGRATION_NOTICE"
+          "CMD_DISMISS_MIGRATION_NOTICE",
+          "CMD_READ_METRICS"
         ]
       },
       "uniqueItems": true

@@ -1,4 +1,5 @@
 import { parseStreamJsonlBytes } from '../services/phase-log/phase-log-jsonl-parser';
+import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 
 export interface ApiErrorMetadata {
   readonly isError: boolean;
@@ -11,9 +12,16 @@ export interface UnwrappedStream {
   readonly apiError: ApiErrorMetadata | null;
 }
 
-export function unwrapStreamJson(stdout: string): UnwrappedStream {
-  const { parsedLines, partialTrailingBuffer } = parseStreamJsonlBytes(stdout, '');
-  const linesToProcess = [...parsedLines];
+export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): UnwrappedStream {
+  const chunks = typeof stdout === 'string' ? [stdout] : Array.from(stdout.decompressStream());
+  const linesToProcess: unknown[] = [];
+  
+  let partialTrailingBuffer = '';
+  for (const chunk of chunks) {
+    const result = parseStreamJsonlBytes(chunk, partialTrailingBuffer);
+    linesToProcess.push(...result.parsedLines);
+    partialTrailingBuffer = result.partialTrailingBuffer;
+  }
 
   if (partialTrailingBuffer.length > 0) {
     try {
@@ -28,7 +36,7 @@ export function unwrapStreamJson(stdout: string): UnwrappedStream {
   let apiError: ApiErrorMetadata | null = null;
 
   if (linesToProcess.length === 0) {
-    return { text: stdout, apiError: null };
+    return { text: chunks.join(''), apiError: null };
   }
 
   for (const line of linesToProcess) {
@@ -60,7 +68,7 @@ export function unwrapStreamJson(stdout: string): UnwrappedStream {
   }
 
   return {
-    text: hasAssistantText ? unwrapped : stdout,
+    text: hasAssistantText ? unwrapped : chunks.join(''),
     apiError
   };
 }

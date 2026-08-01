@@ -11,6 +11,7 @@ export async function runResume(ctx: {
   lock: WorkspaceLockManager;
   notifier: Notifier;
   logger: SanitizedLogger;
+  prompt?: string;
 }): Promise<void> {
   try {
     const lockResult = await ctx.lock.tryAcquire();
@@ -22,7 +23,7 @@ export async function runResume(ctx: {
       ctx.notifier.info('Schegent: no resumable run found.');
       return;
     }
-    const resumed = await ctx.controller.resumeExisting();
+    const resumed = await ctx.controller.resumeExisting(ctx.prompt);
     if (!resumed) {
       ctx.notifier.warn('Schegent: could not resume; run details missing.');
     }

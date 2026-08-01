@@ -170,6 +170,8 @@ export class SchegentWorkflowController {
       appendBreakpointAudit: (eventType, run, payload) =>
         this.appendBreakpointAudit(eventType, run, payload),
       emitRunEndedBreakpointAudit: (run) => this.emitRunEndedBreakpointAudit(run),
+      emitTaskLifecycleAudit: (eventType, run, payload) =>
+        this.emitTaskLifecycleAudit(eventType, run, payload),
       scheduleAutoDrain: () => this.scheduleAutoDrain()
     });
   }
@@ -268,6 +270,14 @@ export class SchegentWorkflowController {
       };
       await this.store.setRun(run);
       await this.queue.markInFlight(feature.id, run.id);
+      // Feature 072 — emit task-execution-started after markInFlight succeeds.
+      await this.emitTaskLifecycleAudit('task-execution-started', run, {
+        taskId: feature.id,
+        runId: run.id,
+        queueId: feature.queueId ?? '',
+        pipelineId: run.pipeline?.id ?? '',
+        isResume: false
+      });
       await this.runDriver.drive(run, feature.description);
     } catch (err) {
       await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
@@ -419,12 +429,23 @@ export class SchegentWorkflowController {
   private synthesizeLegacyPipeline(): WorkflowRunPipeline {
     return this.resolvePipelineSnapshot(BUILT_IN_PIPELINE_ID);
   }
-
-  public async resumeExisting(): Promise<boolean> {
+  /**
+   * Resumes the currently persisted run if it is in a legal resumable state
+   * (paused, pending-retry, or failed/bugfix-terminal).
+   */
+  public async resumeExisting(customPrompt?: string): Promise<boolean> {
     this.logger.info(`Workflow operation triggered: resumeExisting`);
     const run = this.store.getRun();
     if (!run) return false;
     if (run.status === 'completed' || run.status === 'canceled') return false;
+
+    if (customPrompt) {
+      await this.store.setRun({
+        ...run,
+        resumePrompt: customPrompt
+      });
+    }
+
     const feature = this.queue.findById(run.featureId);
     if (!feature) {
       this.logger.warn(`resume: feature ${run.featureId} no longer in queue`);
@@ -475,6 +496,14 @@ export class SchegentWorkflowController {
     };
     await this.store.setRun(next);
     await this.queue.markInFlight(feature.id, next.id);
+    // Feature 072 — emit task-execution-started with isResume=true.
+    await this.emitTaskLifecycleAudit('task-execution-started', next, {
+      taskId: feature.id,
+      runId: next.id,
+      queueId: feature.queueId ?? '',
+      pipelineId: next.pipeline?.id ?? '',
+      isResume: true
+    });
     await this.runDriver.drive(next, feature.description);
     return true;
   }
@@ -524,6 +553,12 @@ export class SchegentWorkflowController {
       phaseId: updated.currentPhase,
       pausedDuringRetry: isInRetryCountdown
     });
+    // Feature 072 — emit task-execution-paused for task-level diagnostics.
+    await this.emitTaskLifecycleAudit('task-execution-paused', updated, {
+      taskId: updated.featureId,
+      runId: updated.id,
+      pauseCause: 'operator-paused' as const
+    });
     // Feature 028 — US1: cascade-pause the host queue so no further tasks
     // dispatch while the operator reviews the paused phase. Idempotent when
     // the queue is already operator-paused (operator wins). The audit log
@@ -537,7 +572,7 @@ export class SchegentWorkflowController {
     return { ok: true };
   }
 
-  public async resumeActivePhase(): Promise<MutationResult> {
+  public async resumeActivePhase(customPrompt?: string): Promise<MutationResult> {
     this.logger.info(`Workflow operation triggered: resumeActivePhase`);
     const run = this.store.getRun();
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
@@ -560,7 +595,8 @@ export class SchegentWorkflowController {
       resumeTargetPhaseId: null,
       pendingRetryAt: null,
       pendingRetryCause: null,
-      delayedRetryCount: run.pendingRetryAt !== null ? 0 : run.delayedRetryCount
+      delayedRetryCount: run.pendingRetryAt !== null ? 0 : run.delayedRetryCount,
+      ...(customPrompt ? { resumePrompt: customPrompt } : {})
     };
     await this.store.setRun(updated);
     await this.appendPhaseControlAudit('phase-resumed', updated, {
@@ -978,6 +1014,29 @@ export class SchegentWorkflowController {
       });
     } catch (err) {
       this.logger.warn(`phase-control audit append failed: ${(err as Error).message}`);
+    }
+  }
+
+  // Feature 072 — emit task-execution-* lifecycle audit events.
+  // Separate from appendPhaseControlAudit to keep the event type union
+  // clean (task-execution-* vs. phase-*).
+  private async emitTaskLifecycleAudit(
+    eventType: 'task-execution-started' | 'task-execution-ended' | 'task-execution-paused',
+    run: WorkflowRun,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.auditWriter) return;
+    try {
+      await this.auditWriter.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType,
+        payload,
+        outcome: 'info'
+      });
+    } catch (err) {
+      this.logger.warn(`task-lifecycle audit append failed (${eventType}): ${(err as Error).message}`);
     }
   }
 

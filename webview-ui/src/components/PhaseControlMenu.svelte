@@ -109,9 +109,12 @@
     pausePhase();
   }
 
+  let resumePromptStr = $state('');
+
   function onResume(): void {
     if (resumeDisabled) return;
-    resumePhase();
+    resumePhase(resumePromptStr.trim() || undefined);
+    resumePromptStr = '';
   }
 
   function onRestart(): void {
@@ -150,14 +153,23 @@
 
 <div class="phase-control-menu" data-testid="phase-control-menu">
   {#if isManuallyPaused}
-    <button
-      type="button"
-      data-testid="phase-control-resume"
-      aria-label="Resume active phase"
-      aria-disabled={aria(resumeDisabled)}
-      title="Resume active phase"
-      onclick={onResume}
-    >Resume</button>
+    <div class="resume-group">
+      <input
+        type="text"
+        class="resume-prompt-input"
+        placeholder="Custom prompt... (optional)"
+        bind:value={resumePromptStr}
+        onkeydown={(e) => e.key === 'Enter' && onResume()}
+      />
+      <button
+        type="button"
+        data-testid="phase-control-resume"
+        aria-label="Resume active phase"
+        aria-disabled={aria(resumeDisabled)}
+        title="Resume active phase"
+        onclick={onResume}
+      >Resume</button>
+    </div>
   {:else}
     <button
       type="button"
@@ -276,5 +288,28 @@
     color: var(--vscode-errorForeground);
     border-color: var(--vscode-inputValidation-errorBorder);
     background: color-mix(in srgb, var(--vscode-inputValidation-errorBorder) 15%, transparent);
+  }
+
+  .resume-group {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .resume-prompt-input {
+    min-height: 24px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    padding: 0 8px;
+    font: inherit;
+    width: 200px;
+    outline: none;
+    transition: border-color 0.2s ease;
+  }
+
+  .resume-prompt-input:focus {
+    border-color: var(--vscode-focusBorder);
   }
 </style>

@@ -59,7 +59,12 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       [Authoritative.CMD_SET_CONFIRM_SUPPRESSION]: {
         actionKey: 'queue.clean-all',
         suppressed: true
-      }
+      },
+      // ReadMetricsCommand.payload is required at the type level (see its
+      // field comment) even though every ReadMetricsRequest field is
+      // itself optional, so `{}` is the minimal valid payload — a bare
+      // envelope with no `payload` key at all is correctly rejected.
+      [Authoritative.CMD_READ_METRICS]: {}
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];

@@ -277,6 +277,26 @@ export const SCHEDULE_EVENT_TYPES = [
 // unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
 
+// Feature 072 — task-level execution lifecycle events. Bridges the gap
+// between operator-driven queue events (task-enqueued, task-removed, etc.)
+// and system-driven phase events (phase-start, phase-end). Enables the
+// Metrics Dashboard (073) to derive task-level timing, counts, and terminal
+// status directly from the append-only audit log. `phase-jumped` is grouped
+// here because it co-ships and is a task lifecycle concern (prevents task
+// failure metric corruption when Feature 071 "Jump to Next Step" fires).
+// Additive — no `AUDIT_SCHEMA_VERSION` bump.
+export const TASK_EXECUTION_EVENT_TYPES = [
+  'task-execution-started',
+  'task-execution-ended',
+  'task-execution-paused',
+  'phase-jumped'
+] as const;
+
+// Feature 073 — Metrics Dashboard adoption tracking (FR-022). Emitted at
+// most once per session on first Metrics tab activation. Additive — no
+// `AUDIT_SCHEMA_VERSION` bump.
+export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -299,7 +319,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...TRUST_GATE_EVENT_TYPES,
   ...QUEUE_FULL_RESET_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
-  ...MIGRATION_V7_EVENT_TYPES
+  ...MIGRATION_V7_EVENT_TYPES,
+  ...TASK_EXECUTION_EVENT_TYPES,
+  ...METRICS_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -324,8 +346,69 @@ export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
+export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
+export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
+
+// Feature 072 — payload interfaces for task-level execution lifecycle events.
+
+// Emitted by `QueueManager.markInFlight()` when a pending task transitions
+// to `in-flight`. `isResume` is `true` when the entry is via restart or
+// resume (derived from `FeatureRequest.status` at call time).
+export interface TaskExecutionStartedPayload {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly queueId: string;
+  readonly pipelineId: string;
+  readonly isResume: boolean;
+  readonly scheduledStartAt?: number;
+}
+
+// Emitted by `RunDriver.drive()` when a task reaches a terminal state.
+// `terminalStatus` mirrors `HistoryEntry.terminalStatus`. `durationMs` is
+// wall-clock time: `Date.now() - WorkflowRun.startedAt`, consistent with
+// `buildHistoryEntry()`. `lastErrorSummary` is already sanitized by
+// `SanitizedFailureMetadata`.
+export interface TaskExecutionEndedPayload {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly terminalStatus: 'completed' | 'failed' | 'canceled';
+  readonly durationMs: number;
+  readonly phasesTotal: number;
+  readonly phasesCompleted: number;
+  readonly phasesSkipped: number;
+  readonly lastErrorSummary?: string;
+}
+
+// Emitted by `WorkflowController.pauseActivePhase()` when a task stops
+// making forward progress. Separate from `phase-pause-requested` (which
+// describes what is being paused) and `queue-paused` (queue-level impact).
+export interface TaskExecutionPausedPayload {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly pauseCause:
+    | 'operator-paused'
+    | 'breakpoint-paused'
+    | 'queue-paused-mid-run'
+    | 'rate-limit'
+    | 'retry-cap-exhausted';
+}
+
+// Emitted at the jump cancellation boundary when Feature 071's "Jump to
+// next step" cancels a running or paused phase. REPLACES what would
+// otherwise be a `phase-end { outcome: 'failed' }` emission for the
+// jumped phase — `phase-jumped` and `phase-end` are mutually exclusive
+// for a given phase execution. Must NOT trigger `RetryCoordinator`
+// delayed-retry logic or contribute to `DELAYED_RETRY_CAP` exhaustion.
+export interface PhaseJumpedPayload {
+  readonly phaseId: string;
+  readonly runId: string;
+  readonly pipelineId: string;
+  readonly durationMs: number;
+  readonly iterationN: number;
+  readonly reason: 'operator-jump';
+}
 
 // Feature 058 — payload for the `multi-root.warning-shown` audit event.
 // Bounded to two primitives: `folderCount` (the workspace folder count,
@@ -461,6 +544,13 @@ export interface PhaseEndCauseExtension {
   readonly cause?: string;
 }
 
+// Feature 073 — payload for `metrics-view-opened` (FR-022 adoption
+// tracking). Bounded to a single session identifier — no workspace root
+// path, no operator-authored content (contracts/metrics-view-opened-event.md).
+export interface MetricsViewOpenedPayload {
+  readonly sessionId: string;
+}
+
 export type AuditOutcome = 'success' | 'failure' | 'info';
 
 export const KNOWN_AUDIT_EVENT_TYPE_SET: ReadonlySet<string> = new Set<string>(ALL_AUDIT_EVENT_TYPES);
@@ -542,7 +632,10 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'wakeup-daemon-uninstall-failed-on-deactivate',
     // Workspace / trust gates
     'multi-root.warning-shown',
-    'trust.capability-denied'
+    'trust.capability-denied',
+    // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
+    // specific workflow run.
+    'metrics-view-opened'
   ])
 );
 

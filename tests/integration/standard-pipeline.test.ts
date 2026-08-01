@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -69,9 +70,8 @@ function makeCliRunner(): { runner: ClaudeCliRunner; counts: Map<string, number>
     counts.set(req.phase, prev + 1);
     const loopOnce = (req.phase === 'speckit-clarify' || req.phase === 'speckit-analyze' || req.phase === 'speckit-review') && prev === 0;
     return {
-      stdout: loopOnce ? issuesStdout(req.phase) : cleanStdout(req.phase),
-      stderr: '',
-      exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(loopOnce ? issuesStdout(req.phase) : cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
       killed: false,
       timedOut: false,
       durationMs: 1

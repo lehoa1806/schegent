@@ -113,8 +113,10 @@ describe('ClaudeCliRunner.invoke', () => {
       cliPath: 'claude',
       cwd: '/repo'
     });
-    expect(result.stdout).toContain('[SCHEGENT_STATUS: CLEAR]');
-    expect(result.stderr).toContain('warn');
+    const stdout = Array.from(result.stdoutBuffer.decompressStream()).join("");
+    expect(stdout).toContain('[SCHEGENT_STATUS: CLEAR]');
+    const stderr = Array.from(result.stderrBuffer.decompressStream()).join("");
+    expect(stderr).toContain('warn');
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
     expect(result.killed).toBe(false);

@@ -109,7 +109,12 @@
           "automation-enqueue-no-start-mode",
           "system-pause-scheduled-restore",
           "system-pause-restore-unavailable",
-          "state-migrated-v6-to-v7"
+          "state-migrated-v6-to-v7",
+          "task-execution-started",
+          "task-execution-ended",
+          "task-execution-paused",
+          "phase-jumped",
+          "metrics-view-opened"
         ]
       },
       "uniqueItems": true

@@ -431,6 +431,10 @@ regression `tests/lint/no-vscode-in-headless.test.ts` enforces this.
 - [src/monitor/](src/monitor/) tracks subprocess progress, stdout/stderr
   lines, stalls, rate limits, cancellation, completion, and failure.
   Monitor failures never become workflow failures.
+- [src/metrics/](src/metrics/) derives read-only dashboard metrics (task
+  records, phase records, phase-type aggregates, cost timeline) from
+  `.schegent/audit.log` on each `CMD_READ_METRICS` call. No new
+  persistent storage; see spec 073.
 - [src/telemetry/](src/telemetry/) samples local process resource usage
   for operator display. Must remain vscode-free; sensitive telemetry is
   not persisted. Platform shims live in [src/telemetry/platform/](src/telemetry/platform/).

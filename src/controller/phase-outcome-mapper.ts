@@ -28,22 +28,6 @@ export function summarize(text: string): string {
   return text.slice(0, STDOUT_SUMMARY_LIMIT);
 }
 
-/**
- * Feature 042 — surface `RawInvocationOutput.stdoutTruncated` /
- * `stderrTruncated` onto `phase-end` audit payloads, but only when the
- * flag is `true`. Omitting the field on `false` keeps the on-disk
- * payload shape identical to the legacy (pre-042) record for the
- * non-truncated common case.
- */
-export function truncationFields(raw: {
-  readonly stdoutTruncated?: boolean;
-  readonly stderrTruncated?: boolean;
-}): Record<string, true> {
-  const out: Record<string, true> = {};
-  if (raw.stdoutTruncated === true) out.stdoutTruncated = true;
-  if (raw.stderrTruncated === true) out.stderrTruncated = true;
-  return out;
-}
 
 export function mapOutcome(result: InvocationResult, exitCode: number | null): PhaseOutcome {
   switch (result.kind) {

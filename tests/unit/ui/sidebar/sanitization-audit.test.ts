@@ -117,7 +117,7 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       outcome: 'success',
       runId: 'r1',
       iteration: 1,
-      payload: { stdout: `Token: ${SECRETS.jwt}`, headers: SECRETS.bearer }
+      payload: { stdout: `Token: ${SECRETS.jwt}`, stderr: '', headers: SECRETS.bearer }
     });
     await audit.append({
       eventType: 'error',

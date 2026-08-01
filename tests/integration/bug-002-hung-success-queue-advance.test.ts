@@ -20,6 +20,7 @@ import type {
   InvocationRequest
 } from '../../src/runner/invocation-result';
 import type { AuditEntry } from '../../src/audit/audit-entry';
+import { ZippedStreamBuffer } from "../../src/runner/zipped-stream-buffer";
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -76,12 +77,12 @@ describe('Feature 030 BUG-002 — hung-but-successful task does not stall the qu
     // 1. The runner reports a timeout (the process hung after emitting a
     //    complete result). PhaseRunner MUST still classify it `clean`.
     const cliRunner = makeFakeRunner(async () => ({
-      stdout: CLEAN_STDOUT,
-      stderr: '',
       exitCode: null, // killed by the idle-timeout watchdog
       killed: false,
       timedOut: true,
-      durationMs: 64 * 60_000
+      durationMs: 64 * 60_000,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(CLEAN_STDOUT); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })()
     }));
     const phaseRunner = new PhaseRunner(
       cliRunner,

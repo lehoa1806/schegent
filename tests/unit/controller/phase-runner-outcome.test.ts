@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 // Feature 013 — T043 (Wave 3 / US3 / FR-014).
 //
 // Defense-in-depth: even if a future parser regression returned `clean`
@@ -45,15 +46,13 @@ vi.mock('../../../src/parser/stdout-parser', async (importOriginal) => {
 import { PhaseRunner } from '../../../src/controller/phase-runner';
 
 function makeRawOutput(overrides: Partial<RawInvocationOutput> = {}): RawInvocationOutput {
-  return {
-    stdout: '[SCHEGENT_STATUS: CLEAR]',
-    stderr: '',
+  return { stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append('[SCHEGENT_STATUS: CLEAR]'); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
+    
     exitCode: 0,
     killed: false,
     timedOut: false,
     durationMs: 50,
-    ...overrides
-  };
+    ...overrides };
 }
 
 function makeFakeRunner(invokeImpl: (req: InvocationRequest) => Promise<RawInvocationOutput>): ClaudeCliRunner {

@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 028 — Walkthrough 1 (Cascaded active-phase pause) end-to-end.
 //
 // Multi-task queue: A in-flight, B pending. Mid-phase pause on A cascades
@@ -97,9 +98,8 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
         await controller.pauseActivePhase();
       }
       return {
-        stdout: cleanStdout(req.phase),
-        stderr: '',
-        exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
         killed: false,
         timedOut: false,
         durationMs: 1

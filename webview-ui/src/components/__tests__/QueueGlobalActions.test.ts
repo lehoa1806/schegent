@@ -148,7 +148,7 @@ describe('QueueGlobalActions', () => {
       props: defaultProps({ paused: true })
     });
     await fireEvent.click(getByTestId('queue-action-button'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_QUEUE);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_QUEUE, { prompt: undefined });
   });
 
   // Feature 030 (US3, T042) — the per-queue Pause/Resume queueId

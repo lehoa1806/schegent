@@ -27,6 +27,8 @@
  *   4. No match on any path → `{ resetsAtMs: null }`.
  */
 
+import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
+
 export interface ExtractResetTimestampResult {
   readonly resetsAtMs: number | null;
 }
@@ -44,12 +46,15 @@ export interface ExtractResetTimestampResult {
  * source of truth for redaction per the CLAUDE.md hard rule.
  */
 export function extractRateLimitMessage(
-  stdout: string,
-  stderr: string
+  stdout: ZippedStreamBuffer | string,
+  stderr: ZippedStreamBuffer | string
 ): string | null {
+  const getBufString = (b: ZippedStreamBuffer | string) => typeof b === 'string' ? b : b.getTrailingLines(50);
+  
   for (const buf of [stdout, stderr]) {
     if (!buf) continue;
-    const lines = buf.split(/\r?\n/);
+    const str = getBufString(buf);
+    const lines = str.split(/\r?\n/);
     for (const line of lines) {
       if (line.indexOf('· resets') !== -1 || /out of (extra )?usage/i.test(line)) {
         return line.trim().slice(0, RATE_LIMIT_MESSAGE_MAX_LEN);
@@ -57,7 +62,8 @@ export function extractRateLimitMessage(
     }
   }
   if (stdout) {
-    const lines = stdout.split(/\r?\n/);
+    const str = getBufString(stdout);
+    const lines = str.split(/\r?\n/);
     for (let i = lines.length - 1; i >= 0; i--) {
       const trimmed = lines[i].trim();
       if (trimmed.indexOf('rate_limit_event') !== -1) {
@@ -108,8 +114,8 @@ const TWELVE_HOURS_MS = 12 * MS_PER_HOUR;
 const ONE_DAY_MS = 24 * MS_PER_HOUR;
 
 export function extractResetTimestamp(
-  stdout: string,
-  stderr: string,
+  stdout: ZippedStreamBuffer | string,
+  stderr: ZippedStreamBuffer | string,
   now: number,
   opts?: ExtractResetTimestampOptions
 ): ExtractResetTimestampResult {
@@ -120,7 +126,8 @@ export function extractResetTimestamp(
   // on stdout when `--output-format stream-json` is active; stream-json on
   // stderr is not part of the CLI contract.
   if (stdout) {
-    const lines = stdout.split(/\r?\n/);
+    const str = typeof stdout === 'string' ? stdout : stdout.getTrailingLines(50);
+    const lines = str.split(/\r?\n/);
 
     // Fast-fail order: shape check (cheap), then a substring guard for the
     // `rate_limit_event` discriminator (cheap), then JSON.parse (expensive)
@@ -187,9 +194,11 @@ export function extractResetTimestamp(
   // (Bugfix 2026-05-15 — BUG-002: stderr scan added because the canonical
   // plain-mode rate-limit emission lands on stderr when the CLI exits
   // non-zero in plain mode — the default operator configuration.)
-  const stdoutMs = extractPlainText(stdout, now);
+  const stdoutStr = typeof stdout === 'string' ? stdout : stdout.getTrailingLines(50);
+  const stderrStr = typeof stderr === 'string' ? stderr : stderr.getTrailingLines(50);
+  const stdoutMs = extractPlainText(stdoutStr, now);
   if (stdoutMs !== null) return { resetsAtMs: stdoutMs };
-  const stderrMs = extractPlainText(stderr, now);
+  const stderrMs = extractPlainText(stderrStr, now);
   if (stderrMs !== null) return { resetsAtMs: stderrMs };
   return { resetsAtMs: null };
 }

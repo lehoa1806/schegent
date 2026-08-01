@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 027 — Dynamic Quota Reset Countdown
 //
 // Integration coverage for:
@@ -67,8 +68,7 @@ function rateLimitedStdout(resetsAtSec: number): string {
 function makeRateLimitedCliRunner(stdout: string, stderr: string): ClaudeCliRunner {
   const invoke = vi.fn(async (_req: InvocationRequest): Promise<RawInvocationOutput> => {
     return {
-      stdout,
-      stderr,
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(stdout); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(stderr); b.finalize(); return b; })(),
       exitCode: 1,
       killed: false,
       timedOut: false,

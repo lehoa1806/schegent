@@ -186,6 +186,11 @@
           "name": "lastRetryDecision",
           "optional": true,
           "type": "LastRetryDecision"
+        },
+        {
+          "name": "resumePrompt",
+          "optional": true,
+          "type": "string"
         }
       ]
     }

@@ -1,3 +1,5 @@
+import { ZippedStreamBuffer } from "../../src/runner/zipped-stream-buffer";
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -37,8 +39,8 @@ function makeFatalCliRunner(): {
   const invoke = vi.fn(async (_req: InvocationRequest): Promise<RawInvocationOutput> => {
     invokeCount.value += 1;
     return {
-      stdout: '',
-      stderr: `error: ${FATAL_TEXT}\n`,
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(),
+      stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(`error: ${FATAL_TEXT}\n`); b.finalize(); return b; })(),
       exitCode: 1,
       killed: false,
       timedOut: false,

@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 026 T018 — integration: per-phase Effort/Model override
 // flows through CMD_SAVE_PHASES, lands on the user-layer catalog,
 // and surfaces on the `phase-start` audit payload at run time.
@@ -87,9 +88,8 @@ function makeCliRunner(): { runner: ClaudeCliRunner; invocations: Array<{ phase:
   const invoke = vi.fn(async (req: InvocationRequest): Promise<RawInvocationOutput> => {
     invocations.push({ phase: req.phase, model: req.model, effort: req.effort });
     return {
-      stdout: cleanStdout(req.phase),
-      stderr: '',
-      exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
       killed: false,
       timedOut: false,
       durationMs: 1

@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { extractCliSessionId } from "../parser/session-id-extractor";
+
 import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
 import type {
   BackendRunner,
@@ -8,10 +10,9 @@ import type {
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
-import { extractCliSessionId } from '../parser/session-id-extractor';
+import { ZippedStreamBuffer } from './zipped-stream-buffer';
 
 const SIGKILL_DELAY_MS = 2_000;
-const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 // Feature 030 BUG-002 — after the request's `completionMarker` appears in
 // stdout, the runner waits at most this long for the process to exit on its
 // own before grace-terminating it. Short enough that a lingering process does
@@ -67,7 +68,7 @@ export class ClaudeCliRunner implements BackendRunner {
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
     _options: { probeTransport?: boolean } = {},
-    _logger: SanitizedLogger = new SanitizedLogger()
+    private readonly _logger: SanitizedLogger = new SanitizedLogger()
   ) {
     this.spawnFn = spawnFn;
     this.monitorHook = monitorHook;
@@ -151,29 +152,25 @@ export class ClaudeCliRunner implements BackendRunner {
         cwd: request.cwd,
         env: buildSpawnEnv(request)
       });
+      this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
       this.active = child;
       this.emitHook({ kind: 'started', pid: child.pid ?? null });
 
       if (child.stdin) {
         try {
+          this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
           child.stdin.write(request.prompt);
+          this._logger.info(`[ClaudeCliRunner] Ending CLI stdin`);
           child.stdin.end();
-        } catch {
+        } catch (err) {
+          this._logger.info(`[ClaudeCliRunner] Stdin write failed: ${(err as Error).message}`);
           // stdin already closed; the CLI will fail and that surfaces via
           // the existing exit-code / classification path.
         }
       }
 
-      let stdout = '';
-      let stderr = '';
-      let stdoutBytes = 0;
-      let stderrBytes = 0;
-      // Feature 042 — observability for the silent buffer cap. The
-      // flags flip `true` the first time the cumulative byte counter
-      // exceeds MAX_BUFFER_BYTES and stay sticky for the remainder of
-      // the invocation. They are returned on every exit path.
-      let stdoutTruncated = false;
-      let stderrTruncated = false;
+      const stdoutBuffer = new ZippedStreamBuffer();
+      const stderrBuffer = new ZippedStreamBuffer();
 
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
@@ -188,6 +185,7 @@ export class ClaudeCliRunner implements BackendRunner {
       // is classified on its merits rather than discarded as a timeout failure.
       let sawCompletionMarker = false;
       let completedAwaitingExit = false;
+      let stdoutLineBuffer = '';
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
       // arrived for the active window. Each data event resets it. Before the
@@ -196,6 +194,7 @@ export class ClaudeCliRunner implements BackendRunner {
       // is terminated after the configured idle window). After the marker the
       // window is the short `COMPLETION_SETTLE_MS` settle period.
       const onIdleExpiry = (): void => {
+        this._logger.info(`[ClaudeCliRunner] onIdleExpiry fired! sawCompletionMarker=${sawCompletionMarker}, timeoutMs=${request.timeoutMs}`);
         if (sawCompletionMarker) completedAwaitingExit = true;
         else timedOut = true;
         this.terminate(child);
@@ -210,28 +209,29 @@ export class ClaudeCliRunner implements BackendRunner {
       };
 
       const diagnosticWrites: Promise<void>[] = [];
+      const startTime = Date.now();
       child.stdout?.on('data', (chunk: string) => {
-        stdoutBytes += Buffer.byteLength(chunk, 'utf8');
-        if (stdoutBytes <= MAX_BUFFER_BYTES) {
-          stdout += chunk;
-        } else {
-          stdoutTruncated = true;
-        }
-        // Feature 030 BUG-002 — detect the completion marker on the recent tail
-        // (bounded so detection stays O(chunk), not O(total)) so a marker that
-        // spans a chunk boundary is still caught. Once seen, `resetIdleTimer`
-        // arms the short settle window instead of the long idle window.
-        if (!sawCompletionMarker) {
-          const matchesMainMarker =
-            request.completionMarker &&
-            stdout
-              .slice(-(chunk.length + request.completionMarker.length))
-              .includes(request.completionMarker);
-          const matchesStatusMarker = stdout
-            .slice(-(chunk.length + 20))
-            .includes('[SCHEGENT_STATUS:');
-          if (matchesMainMarker || matchesStatusMarker) {
-            sawCompletionMarker = true;
+        stdoutBuffer.append(chunk);
+        // Feature 030 BUG-002 (Fix) — parse the JSON lines to find the true final result.
+        // We must ignore `"type":"result"` events from:
+        // 1. History replays (`--resume` dumps these instantly on startup)
+        // 2. Task notifications (which don't end the run)
+        // If we see a valid non-result JSON event, we know the CLI is continuing a new turn,
+        // so we reset the marker to prevent murdering a healthy process waiting for the API.
+        for (const char of chunk) {
+          if (char === '\n') {
+            if (stdoutLineBuffer.includes('"type":"result"')) {
+              const isTaskNotification = stdoutLineBuffer.includes('"kind":"task-notification"');
+              const isHistoryReplay = (Date.now() - startTime) < 5000;
+              if (!isTaskNotification && !isHistoryReplay) {
+                sawCompletionMarker = true;
+              }
+            } else if (stdoutLineBuffer.trim().startsWith('{') && stdoutLineBuffer.includes('"type":')) {
+              sawCompletionMarker = false;
+            }
+            stdoutLineBuffer = '';
+          } else {
+            stdoutLineBuffer += char;
           }
         }
         resetIdleTimer();
@@ -242,12 +242,7 @@ export class ClaudeCliRunner implements BackendRunner {
       });
       child.stderr?.on('data', (chunk: string) => {
         resetIdleTimer();
-        stderrBytes += Buffer.byteLength(chunk, 'utf8');
-        if (stderrBytes <= MAX_BUFFER_BYTES) {
-          stderr += chunk;
-        } else {
-          stderrTruncated = true;
-        }
+        stderrBuffer.append(chunk);
         this.emitHook({ kind: 'stderr-chunk', chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
@@ -262,6 +257,7 @@ export class ClaudeCliRunner implements BackendRunner {
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
         onAbort = () => {
+          this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`);
           killed = true;
           this.terminate(child);
         };
@@ -301,19 +297,19 @@ export class ClaudeCliRunner implements BackendRunner {
       // stdout so the controller can persist it for future retry/resume.
       // Returns undefined when stdout is not stream-json or when no
       // session_id field was found (the caller falls back to `-c`).
-      const cliSessionId = extractCliSessionId(stdout) ?? undefined;
+      stdoutBuffer.finalize();
+      stderrBuffer.finalize();
+      const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
 
       return {
-        stdout,
-        stderr,
+        stdoutBuffer,
+        stderrBuffer,
         exitCode,
         killed,
         timedOut,
         completedAwaitingExit,
         durationMs: Date.now() - start,
         diagnosticWarnings,
-        stdoutTruncated,
-        stderrTruncated,
         command,
         cliSessionId
       };
@@ -333,23 +329,27 @@ export class ClaudeCliRunner implements BackendRunner {
 
   public cancelActive(): boolean {
     if (!this.active) return false;
+    this._logger.info(`[ClaudeCliRunner] cancelActive called!`);
     this.terminate(this.active);
     return true;
   }
 
   private terminate(child: ChildProcess): void {
+    this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
     if (child.exitCode === null && child.signalCode === null) {
       try {
+        this._logger.info(`[ClaudeCliRunner] sending SIGTERM`);
         child.kill('SIGTERM');
-      } catch {
-        // child may already be exiting
+      } catch (err) {
+        this._logger.info(`[ClaudeCliRunner] SIGTERM failed: ${(err as Error).message}`);
       }
       setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) {
           try {
+            this._logger.info(`[ClaudeCliRunner] sending SIGKILL`);
             child.kill('SIGKILL');
-          } catch {
-            // ignore
+          } catch (err) {
+            this._logger.info(`[ClaudeCliRunner] SIGKILL failed: ${(err as Error).message}`);
           }
         }
       }, SIGKILL_DELAY_MS).unref?.();

@@ -1515,3 +1515,30 @@ describe('Dashboard cold-start fallback (063 BUG-006 / T076)', () => {
     expect(getByTestId('dashboard-activity-audit-feed')).not.toBeNull();
   });
 });
+
+describe('Dashboard queue-tabs (Feature 073 Metrics tab)', () => {
+  it('clicking the Metrics tab renders MetricsSection', async () => {
+    const snap = buildSnapshot();
+    const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
+
+    await fireEvent.click(getByTestId('dashboard-queue-tab-metrics'));
+    await tick();
+
+    expect(getByTestId('dashboard-queue-tab-metrics').getAttribute('aria-selected')).toBe('true');
+    expect(getByTestId('metrics-section')).not.toBeNull();
+  });
+
+  it('switching back to Active Queue unmounts MetricsSection', async () => {
+    const snap = buildSnapshot();
+    const { getByTestId, queryByTestId } = render(Dashboard, { props: { snapshot: snap } });
+
+    await fireEvent.click(getByTestId('dashboard-queue-tab-metrics'));
+    await tick();
+    expect(getByTestId('metrics-section')).not.toBeNull();
+
+    await fireEvent.click(getByTestId('dashboard-queue-tab-queue'));
+    await tick();
+    expect(queryByTestId('metrics-section')).toBeNull();
+    expect(getByTestId('dashboard-queue-tab-queue').getAttribute('aria-selected')).toBe('true');
+  });
+});

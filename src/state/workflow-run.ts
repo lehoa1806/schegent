@@ -194,6 +194,12 @@ export interface WorkflowRun {
    * convention).
    */
   lastRetryDecision?: LastRetryDecision;
+  /**
+   * Custom continuation prompt provided by the operator on resume.
+   * When set, `RunDriver.drive()` uses this instead of rebuilding
+   * the phase prompt, allowing a literal "continue" message.
+   */
+  resumePrompt?: string;
 }
 
 export interface WorkflowRunSummary {

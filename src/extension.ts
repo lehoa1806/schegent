@@ -82,6 +82,7 @@ import { projectPhasePrecedence } from './config/phase-precedence';
 import type { PipelineCatalog } from './config/pipeline-config';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
+import { readMetrics } from './metrics/metrics-log-reader';
 import {
   createPhaseLogService,
   PhaseLogTailRegistry,
@@ -932,6 +933,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       phaseLogTailRegistry.stop(req.sessionId, 'webview-stop')
   };
 
+  // Feature 073 — constructed once per activation so its lifetime matches
+  // "session" per contracts/metrics-view-opened-event.md.
+  const metricsViewOpenedState = { emitted: false };
+
   const sidebarRouter = new MessageRouter({
     executeCommand: (id, ...args) => vscode.commands.executeCommand(id, ...args),
     queueRemover: queue,
@@ -1099,7 +1104,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         );
         return { status: 'rejected' as const, reason: 'reveal-failed' as const };
       }
-    }
+    },
+    // Feature 073 — metrics read adapter. Full-file scan of
+    // `.schegent/audit.log` on every CMD_READ_METRICS call (T009/T010).
+    // Workspace root reaches the reader only via this closure — the
+    // handler never resolves it directly.
+    metricsService: {
+      read: (req) => readMetrics(workspaceRoot, req, logger)
+    },
+    // Feature 073 — existing session-scoped correlation id, reused (not
+    // newly minted) for the metrics-view-opened audit payload
+    // (contracts/metrics-view-opened-event.md).
+    sessionId: ownerId,
+    metricsViewOpenedState
   });
 
   // Feature 014 — fire-and-forget reconcile + workspace-roots mirror on
@@ -1172,8 +1189,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         logger
       })
     ),
-    vscode.commands.registerCommand('schegent.resume', () =>
-      runResume({ store, controller, lock, notifier, logger })
+    vscode.commands.registerCommand('schegent.resume', (prompt?: string) =>
+      runResume({ store, controller, lock, notifier, logger, prompt })
     ),
     // BUG-002 (FR-012a) — queue-start trigger. The webview
     // `CMD_START_QUEUE` handler delegates here. Promotes the oldest
@@ -1281,8 +1298,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       const result = await controller.pauseActivePhase();
       if (!result.ok) notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
     }),
-    vscode.commands.registerCommand('schegent.resumePhase', async () => {
-      const result = await controller.resumeActivePhase();
+    vscode.commands.registerCommand('schegent.resumePhase', async (prompt?: string) => {
+      const result = await controller.resumeActivePhase(prompt);
       if (!result.ok) notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
     }),
     vscode.commands.registerCommand('schegent.restartPhase', async () => {

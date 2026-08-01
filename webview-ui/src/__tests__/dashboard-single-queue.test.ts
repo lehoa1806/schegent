@@ -201,8 +201,8 @@ describe('Feature 030 (US3, T037) — Dashboard single-queue UI', () => {
     // We now have two tabs for the Queue / History toggle, but no multi-queue tabs.
     expect(
       tabs.length,
-      `Expected 2 role="tab" elements (Queue/History toggle), found ${tabs.length}`
-    ).toBe(2);
+      `Expected 3 role="tab" elements (Queue/History/Metrics toggle), found ${tabs.length}`
+    ).toBe(3);
     const tablist = container.querySelectorAll('[role="tablist"]');
     expect(
       tablist.length,

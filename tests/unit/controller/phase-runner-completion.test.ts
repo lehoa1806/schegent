@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 // Feature 030 BUG-002 — PhaseRunner completion-vs-timeout classification.
 //
 // A CLI that emits its terminal result (a `[SCHEGENT_STATUS: DONE]` token plus
@@ -37,13 +38,26 @@ const CLEAN_STDOUT = [
   '=== END AUDIT LOG ==='
 ].join('\n');
 
-function makeRawOutput(overrides: Partial<RawInvocationOutput> = {}): RawInvocationOutput {
+
+type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };
+
+function makeRawOutput(overrides: MockRawOutput = {}): RawInvocationOutput {
+  const stdoutStr = overrides.stdout ?? CLEAN_STDOUT;
+  const stderrStr = overrides.stderr ?? '';
+  const stdoutBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.append(stdoutStr);
+  stdoutBuffer.finalize();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stderrBuffer.append(stderrStr);
+  stderrBuffer.finalize();
+
   return {
-    stdout: CLEAN_STDOUT,
-    stderr: '',
-    exitCode: 0,
-    killed: false,
-    timedOut: false,
+    stdoutBuffer,
+    stderrBuffer,
+
+    exitCode: overrides.exitCode !== undefined ? overrides.exitCode : 0,
+    killed: overrides.killed ?? false,
+    timedOut: overrides.timedOut ?? false,
     durationMs: 50,
     ...overrides
   };
@@ -111,7 +125,7 @@ describe('PhaseRunner.run — BUG-002 completed-but-non-exiting classification',
         timedOut: false,
         killed: false,
         exitCode: null,
-        stdout: CLEAN_STDOUT
+
       })
     );
     const out = await newRunner(cliRunner).run(baseInputs);

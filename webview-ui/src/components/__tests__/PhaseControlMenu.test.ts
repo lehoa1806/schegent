@@ -40,7 +40,7 @@ describe('PhaseControlMenu', () => {
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
     await fireEvent.click(getByTestId('phase-control-resume'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { prompt: undefined });
 
     await fireEvent.click(getByTestId('phase-control-restart'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESTART_PHASE, {

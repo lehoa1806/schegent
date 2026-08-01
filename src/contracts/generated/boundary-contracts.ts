@@ -50,7 +50,8 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_START_QUEUE",
   "CMD_CLEAR_ALL",
   "CMD_SET_CONFIRM_SUPPRESSION",
-  "CMD_DISMISS_MIGRATION_NOTICE"
+  "CMD_DISMISS_MIGRATION_NOTICE",
+  "CMD_READ_METRICS"
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [
@@ -145,7 +146,12 @@ export const AUDIT_EVENT_TYPES = [
   "automation-enqueue-no-start-mode",
   "system-pause-scheduled-restore",
   "system-pause-restore-unavailable",
-  "state-migrated-v6-to-v7"
+  "state-migrated-v6-to-v7",
+  "task-execution-started",
+  "task-execution-ended",
+  "task-execution-paused",
+  "phase-jumped",
+  "metrics-view-opened"
 ] as const;
 
 export const SETTINGS_KEYS = [

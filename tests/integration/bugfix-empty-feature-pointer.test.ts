@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 026 T020a — integration: enqueueing a `speckit-bugfix` task
 // against a workspace whose feature pointer is empty (or refers to a
 // non-existent feature dir) MUST fail fast at `bugfix-report` without
@@ -94,8 +95,7 @@ function makeFailFirstReportRunner(): {
     if (req.phase === 'bugfix-report') bugfixReportCount++;
     if (failFirstReport) {
       return {
-        stdout: 'feature pointer empty — bugfix-report cannot proceed.',
-        stderr: 'error: unknown option', // built-in fatal signature
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append('feature pointer empty — bugfix-report cannot proceed.'); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append('error: unknown option'); b.finalize(); return b; })(), // built-in fatal signature
         exitCode: 1,
         killed: false,
         timedOut: false,
@@ -103,8 +103,7 @@ function makeFailFirstReportRunner(): {
       };
     }
     return {
-      stdout: cleanStdout(req.phase),
-      stderr: '',
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(cleanStdout(req.phase)); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
       exitCode: 0,
       killed: false,
       timedOut: false,

@@ -10,10 +10,8 @@
  * Constraints any backend MUST honor:
  *  1. Single-shot, non-interactive: each `invoke()` returns when the
  *     subprocess terminates or the per-phase timeout fires.
- *  2. Output cap: stdout/stderr buffers are capped (currently 4 MiB per
- *     stream). Truncation is **observable** — `RawInvocationOutput.stdoutTruncated`
- *     and `RawInvocationOutput.stderrTruncated` reflect whether the
- *     runner discarded chunks past the cap (feature 042).
+ *  2. Output cap: stdout/stderr buffers are compressed sequentially using ZippedStreamBuffer
+ *     so they no longer consume raw string memory matching the full stream length.
  *  3. Timeout: the runner aborts the subprocess when `request.timeoutMs`
  *     elapses. The `timedOut` flag in `RawInvocationOutput` reflects this.
  *  4. Cancellation: the runner observes `cancellationSignal` and aborts the

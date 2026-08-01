@@ -364,7 +364,8 @@ export class QueueManager {
     paused: boolean,
     queueId?: string,
     pausedReason: string | null = null,
-    pauseSource: Exclude<QueuePauseSource, null> = 'operator'
+    pauseSource: Exclude<QueuePauseSource, null> = 'operator',
+    resumePrompt?: string
   ): Promise<QueueMutationDetail> {
     const op = paused ? 'queue-manager.pause' : 'queue-manager.resume';
     const fields: Record<string, unknown> = paused
@@ -478,7 +479,7 @@ export class QueueManager {
         if (paused) {
           await this.pauseMatchingRunForQueue(resolvedQueueId, now);
         } else {
-          await this.resumeMatchingRunForQueue(resolvedQueueId, now);
+          await this.resumeMatchingRunForQueue(resolvedQueueId, now, resumePrompt);
         }
         return { ok: true, queueId: resolvedQueueId };
       } catch (err) {
@@ -1114,7 +1115,7 @@ export class QueueManager {
     });
   }
 
-  private async resumeMatchingRunForQueue(queueId: string, now: number): Promise<void> {
+  private async resumeMatchingRunForQueue(queueId: string, now: number, resumePrompt?: string): Promise<void> {
     const run = this.store.getRun();
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching || matching.manualPauseCause !== 'queue-paused-mid-run') return;
@@ -1123,7 +1124,8 @@ export class QueueManager {
       status: matching.status === 'paused' ? 'running' : matching.status,
       manualPauseAt: null,
       manualPauseCause: null,
-      lastTransitionAt: now
+      lastTransitionAt: now,
+      resumePrompt
     });
   }
 

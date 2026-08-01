@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 026 T019 + T020 — integration: the `speckit-bugfix` pipeline
 // drives 5 phases end-to-end and emits five `phase-start` + five
 // `phase-end` audit events in the canonical order.
@@ -115,9 +116,8 @@ function makeCleanCliRunner(): { runner: ClaudeCliRunner; invocations: Array<{ p
   const invoke = vi.fn(async (req: InvocationRequest): Promise<RawInvocationOutput> => {
     invocations.push({ phase: req.phase });
     return {
-      stdout: cleanStdout(req.phase),
-      stderr: '',
-      exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
       killed: false,
       timedOut: false,
       durationMs: 1
@@ -300,9 +300,8 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
         req.phase === 'bugfix-verify-pre' && verifyPreCount === 0;
       if (req.phase === 'bugfix-verify-pre') verifyPreCount++;
       return {
-        stdout: failVerifyPre ? issuesStdout(req.phase) : cleanStdout(req.phase),
-        stderr: '',
-        exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(failVerifyPre ? issuesStdout(req.phase) : cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
         killed: false,
         timedOut: false,
         durationMs: 1

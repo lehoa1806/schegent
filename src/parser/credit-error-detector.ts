@@ -1,3 +1,5 @@
+import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
+
 export const RATE_LIMIT_MATCHERS: ReadonlyArray<{ regex: RegExp; cause: string }> = Object.freeze([
   { regex: /(?:rate.?limit|too\s+many\s+requests|429)/i, cause: 'rate-limit' },
   // Feature 027 FR-014 — operator-visible "You're out of extra usage"
@@ -83,13 +85,24 @@ function matchLine(line: string): string | null {
   const hasRateLimitEvent = line.includes(STDOUT_RATE_LIMIT_EVENT_SIGIL);
   const hasOutOfCredits = line.includes(STDOUT_OUT_OF_CREDITS_SIGIL);
   if (hasOutOfCredits) return 'out-of-credits';
-  if (hasRateLimitEvent) return 'rate-limit';
+  if (hasRateLimitEvent) {
+    // Feature 027 BUG-008 — soft-warn `rate_limit_event` payloads must not
+    // be classified as hard rate limits during a trailing-window scan on an
+    // aborted/interrupted run.
+    if (line.includes('"status":"allowed_warning"') || line.includes('"status": "allowed_warning"')) {
+      return null;
+    }
+    if (line.includes('"status":"allow"') || line.includes('"status": "allow"')) {
+      return null;
+    }
+    return 'rate-limit';
+  }
   return null;
 }
 
 export function detectCreditError(
-  stdout: string,
-  stderr: string,
+  stdout: ZippedStreamBuffer | string,
+  stderr: ZippedStreamBuffer | string,
   exitCode: number | null
 ): CreditDetectionResult {
   // BUG-008 — a successful CLI completion (exit 0) is never a rate-limit
@@ -106,8 +119,9 @@ export function detectCreditError(
   // Stderr precedence (FR-007) — existing behavior preserved
   // byte-for-byte. Any stderr match short-circuits before stdout is
   // consulted, so the existing fixture matrix routes identically.
+  const stderrStr = typeof stderr === 'string' ? stderr : stderr.getTrailingLines(50);
   for (const { regex, cause } of RATE_LIMIT_MATCHERS) {
-    if (regex.test(stderr)) {
+    if (regex.test(stderrStr)) {
       return { matched: true, cause };
     }
   }
@@ -120,8 +134,9 @@ export function detectCreditError(
   // misses it. The scan reads the trailing window line-by-line from
   // the END backwards, so the most recent CLI emission determines the
   // cause (spec edge case: "Multiple rate-limit lines").
-  if (stdout.length > 0) {
-    const window = trailingWindow(stdout, STDOUT_TRAILING_WINDOW_LINES);
+  const stdoutStr = typeof stdout === 'string' ? stdout : stdout.getTrailingLines(STDOUT_TRAILING_WINDOW_LINES);
+  if (stdoutStr.length > 0) {
+    const window = trailingWindow(stdoutStr, STDOUT_TRAILING_WINDOW_LINES);
     const cause = scanWindowForRateLimit(window);
     if (cause !== null) {
       return { matched: true, cause };
@@ -130,9 +145,12 @@ export function detectCreditError(
   return { matched: false, cause: '' };
 }
 
-export function detectStatusOk(stdout: string): boolean {
-  if (/credit.{0,30}(available|ok|restored)/i.test(stdout)) return true;
-  if (/status.{0,30}(ok|healthy|ready)/i.test(stdout)) return true;
-  if (/\bquota.{0,20}(available|reset)/i.test(stdout)) return true;
+export function detectStatusOk(stdout: ZippedStreamBuffer | string): boolean {
+  const chunks = typeof stdout === 'string' ? [stdout] : stdout.decompressStream();
+  for (const chunk of chunks) {
+    if (/credit.{0,30}(available|ok|restored)/i.test(chunk)) return true;
+    if (/status.{0,30}(ok|healthy|ready)/i.test(chunk)) return true;
+    if (/\bquota.{0,20}(available|reset)/i.test(chunk)) return true;
+  }
   return false;
 }

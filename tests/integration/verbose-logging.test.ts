@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -90,9 +91,8 @@ function makeStubRunner(opts: {
       ? ['verbose diagnostic stream write failed (synthetic): EACCES']
       : undefined;
     return {
-      stdout: CLEAN_STDOUT,
-      stderr: '',
-      exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(CLEAN_STDOUT); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
       killed: false,
       timedOut: false,
       durationMs: 1,

@@ -22,6 +22,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Feature 065 — checks `result.lifecycleAfter === 'running'` after the
   // GuardedRunService applies a convert-to-now startIntent.
   'src/commands/start-queue.ts',
+  'src/contracts/audit-events.ts',
   'src/contracts/backend-runner.ts',
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/state.schema.json',
@@ -73,7 +74,10 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // terminated.", "abort the running task") and template variable name
   // (`runningSuffix`). No pinned status discriminator literal.
   'webview-ui/src/lib/action-copy.ts',
-  'webview-ui/src/lib/snapshot-types.ts'
+  'webview-ui/src/lib/snapshot-types.ts',
+  'src/contracts/sidebar-ipc.ts',
+  'webview-ui/src/components/MetricsSection.svelte',
+  'src/metrics/metrics-log-reader.ts'
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

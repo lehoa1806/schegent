@@ -1,3 +1,5 @@
+import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
+
 export interface InvocationUsageMetrics {
   readonly cliDurationMs?: number;
   readonly numTurns?: number;
@@ -76,22 +78,56 @@ function metricsFromResultRecord(rec: Record<string, unknown>): InvocationUsageM
  * matching the phase-log metadata strip's "latest value wins" behavior.
  */
 export function extractInvocationUsageMetrics(
-  stdout: string
+  stdout: ZippedStreamBuffer | string
 ): InvocationUsageMetrics | null {
   let latest: InvocationUsageMetrics | null = null;
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.includes('"type"') || !line.includes('"result"')) continue;
-    if (Buffer.byteLength(line, 'utf8') > MAX_USAGE_JSON_LINE_BYTES) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
+  const chunks = typeof stdout === 'string' ? [stdout] : stdout.decompressStream();
+  
+  let activeLine = '';
+  for (const chunk of chunks) {
+    if (!chunk) continue;
+    let chunkIdx = 0;
+    while (chunkIdx < chunk.length) {
+      const newlineIdx = chunk.indexOf('\n', chunkIdx);
+      if (newlineIdx === -1) {
+        activeLine += chunk.slice(chunkIdx);
+        break;
+      }
+      
+      const rawLine = activeLine + chunk.slice(chunkIdx, newlineIdx);
+      activeLine = '';
+      chunkIdx = newlineIdx + 1;
+      
+      const line = rawLine.trim();
+      if (!line.includes('"type"') || !line.includes('"result"')) continue;
+      if (Buffer.byteLength(line, 'utf8') > MAX_USAGE_JSON_LINE_BYTES) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const record = asRecord(parsed);
+      if (!record) continue;
+      const metrics = metricsFromResultRecord(record);
+      if (metrics) latest = metrics;
     }
-    const record = asRecord(parsed);
-    if (!record) continue;
-    const metrics = metricsFromResultRecord(record);
-    if (metrics) latest = metrics;
   }
+
+  // Check the final line
+  if (activeLine.length > 0) {
+    const line = activeLine.trim();
+    if (line.includes('"type"') && line.includes('"result"') && Buffer.byteLength(line, 'utf8') <= MAX_USAGE_JSON_LINE_BYTES) {
+      try {
+        const parsed = JSON.parse(line);
+        const record = asRecord(parsed);
+        if (record) {
+          const metrics = metricsFromResultRecord(record);
+          if (metrics) latest = metrics;
+        }
+      } catch {}
+    }
+  }
+
   return latest;
 }
