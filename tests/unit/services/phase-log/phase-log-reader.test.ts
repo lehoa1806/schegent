@@ -176,7 +176,29 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
     });
     expect(manifest.entries.length).toBe(10);
     expect(manifest.entries[0].kind).toBe('truncated-head');
-    expect(manifest.entries[0].body.droppedEntryCount).toBe(2);
+    // Nine real entries fit beside the synthetic marker, so three were dropped.
+    expect(manifest.entries[0].body.droppedEntryCount).toBe(3);
+  });
+
+  it('reports all rows dropped when the cap leaves room only for the marker', async () => {
+    await writeStream(1, [
+      '{"type":"system","subtype":"one"}',
+      '{"type":"system","subtype":"two"}'
+    ]);
+    const manifest = await readIterationManifest({
+      workspaceRoot: tmpDir,
+      selection: BASE_SELECTION,
+      isInFlight: false,
+      caps: { perFieldBytes: 4096, maxEntries: 1 },
+      sanitize
+    });
+
+    expect(manifest.entries).toEqual([
+      expect.objectContaining({
+        kind: 'truncated-head',
+        body: { droppedEntryCount: 2 }
+      })
+    ]);
   });
 
   it('throws TypeError when the selection is not fully populated', async () => {

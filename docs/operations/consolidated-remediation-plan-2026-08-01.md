@@ -57,7 +57,7 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-017 | Ten test paths were excluded from the primary TypeScript no-emit check, including a stale path. | Medium | `tsconfig.tests.json` now checks the full host test tree, stale per-test exclusions are gone, and local/PR/push/full-gate entry points enforce it before lint. | Done |
 | F-018 | The packaged VSIX contained development-only files. | Medium | Packaging now uses an exact 20-entry allowlist, compressed/uncompressed size limits, a junk-file regression, and automatic temporary-artifact cleanup. | Done |
 | F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Current lines: `extension.ts` 1462, `workflow-controller.ts` 1198, `runtime-validators.ts` 1127, `sidebar-ipc.ts` 1214, `state-projector.ts` 902. Budget tests prevent further growth but do not reduce coupling. | Planned |
-| F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | Narrow render/load/parser budgets exist; no deterministic high-volume session/audit scenario covers the whole capture path. | Planned |
+| F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | A deterministic real-child profile exceeds both parser caps, proves exact raw capture, exercises terminal modes/restart/retention/large phase hydration, and publishes a larger scheduled soak report. | Done |
 | F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | A workspace-scoped monitor now projects per-sink and overall health, coalesces warnings, fails execution closed when structured audit is unavailable, and keeps optional raw/runtime failures visibly degraded. | Done |
 | F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | E2E covers orchestration outcomes, not prompt/result quality across models or CLI versions. | Planned |
 | F-023 | Browser-level visual regression is not a universal UI gate. | Low | Svelte component, theme, accessibility, and DOM-contract tests exist; no screenshot/browser matrix is present. | Planned |
@@ -290,6 +290,24 @@ Priority: Medium reliability/performance. Findings: F-020, F-021.
 Acceptance: blocking tests complete within defined time/space budgets and the
 scheduled soak reports bounded memory, bounded retained disk, no orphaned
 spools, and deterministic recovery.
+
+### Completion evidence (2026-08-01)
+
+- The blocking real-child profile emits 4,600 records per stream (9,600,264
+  output bytes total), while retained parser state stays at two independent
+  4 MiB caps and the raw transcript hashes to the original streams.
+- Split UTF-8 writes and clean, fatal, timeout, and cancellation terminal modes
+  pass through the production runner path.
+- A 10,000-row phase log projects the newest 200 ordered entries. The exercise
+  exposed and fixed an off-by-one dropped-entry count when the marker consumes
+  a retained slot.
+- Forty forced audit rotations in one second retain all forty archives using a
+  collision-resistant timestamp/random suffix; legacy archive names still
+  participate in retention.
+- Simulated extension-host restart scavenges an abandoned dead-owner spool,
+  leaves zero spools, and inactive-session pruning restores the byte budget.
+- The weekly/manual full gate runs 20,000 records per stream and uploads a
+  metadata-only JSON soak report for 30 days.
 
 ## P4 — Incremental module decomposition
 

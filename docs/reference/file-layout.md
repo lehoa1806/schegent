@@ -12,7 +12,7 @@ Everything under `<workspaceRoot>/.schegent/` is **local-only**. It is intention
 <workspaceRoot>/.schegent/
 ├── .gitignore                          # Self-gitignore (defense in depth)
 ├── audit.log                           # Active structured audit (sanitized)
-├── audit.log.<YYYYMMDD-HHMMSS>         # Rotated audit archives
+├── audit.log.<YYYYMMDD-HHMMSS-mmm-id>  # Rotated audit archives
 ├── syslog                              # Active runtime log (sanitized)
 ├── syslog.1, syslog.2, syslog.3 ...    # Rotated runtime log generations
 └── sessions/
@@ -44,9 +44,13 @@ The structured, sanitized, append-only record of every run. JSONL — one event 
 
 This is the file you read when you want to know what happened during a run. It is also the safest sink to ship off-machine, attach to bug reports, or store in shared infrastructure — see [Sessions, Logs, and Audit Evidence](../concepts/sessions-and-logs.md#the-structured-audit-log).
 
-### `audit.log.<YYYYMMDD-HHMMSS>`
+### `audit.log.<YYYYMMDD-HHMMSS-mmm-id>`
 
-Rotated archives. Same format as the active `audit.log`. The host emits an `audit-rotated` event in the new active file each time it rotates.
+Rotated archives. Same format as the active `audit.log`. Milliseconds plus a
+short random identifier make every archive name collision-resistant when
+several rotations happen in one second. Legacy seconds-only archive names
+remain eligible for retention. The host emits an `audit-rotated` event in the
+new active file each time it rotates.
 
 ### `syslog`
 
@@ -68,7 +72,7 @@ The host writes this file as the run proceeds; nothing reads it back. There is n
 
 `<runId>` is a UUID assigned when the task transitions to in-flight.
 
-This file is the fallback when a failure correlates with a string the sanitizer masked from `audit.log`. Treat it like your shell history: useful, may contain sensitive context, do not check into version control.
+This file is the fallback when a failure correlates with a string the sanitizer masked from `audit.log`. Treat it like your shell history: useful, may contain sensitive context, do not check into version control. Complete inactive-run groups are removed by the shared session-artifact age and byte policy.
 
 ### `sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/phase-message.env`
 

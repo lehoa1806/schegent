@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -12,6 +12,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
@@ -94,6 +95,46 @@ describe('AuditLogWriter.append', () => {
     const dirEntries = await fs.readdir(path.join(tmpRoot, '.schegent'));
     const archives = dirEntries.filter((n) => n.startsWith('audit.log.'));
     expect(archives.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('never overwrites archives during repeated same-second rotations', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-01T12:34:56.789Z'));
+    const writer = new AuditLogWriter(
+      {
+        workspaceRoot: tmpRoot,
+        rotationSizeBytes: 1,
+        retentionMaxArchives: 100
+      },
+      new SanitizedLogger()
+    );
+    const entryCount = 40;
+    for (let iteration = 0; iteration < entryCount; iteration += 1) {
+      await writer.append({
+        runId: 'burst-rotation',
+        phase: 'speckit-implement',
+        iteration,
+        eventType: 'phase-end',
+        payload: { iteration },
+        outcome: 'success'
+      });
+    }
+
+    const auditDir = path.join(tmpRoot, '.schegent');
+    const files = (await fs.readdir(auditDir)).filter((name) =>
+      name === 'audit.log' || name.startsWith('audit.log.')
+    );
+    const entries = (
+      await Promise.all(files.map((name) => fs.readFile(path.join(auditDir, name), 'utf8')))
+    )
+      .flatMap((contents) => contents.trim().split('\n').filter(Boolean))
+      .map((line) => JSON.parse(line) as { iteration: number });
+
+    expect(entries).toHaveLength(entryCount);
+    expect(entries.map((entry) => entry.iteration).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: entryCount }, (_, index) => index)
+    );
+    expect(new Set(files).size).toBe(files.length);
   });
 
   it('sanitizes secrets in payload before writing', async () => {

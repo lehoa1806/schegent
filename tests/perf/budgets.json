@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
-  "updated": "2026-05-16",
+  "updated": "2026-08-01",
   "budgets": [
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
@@ -52,6 +52,20 @@
       "budgetMs": 5000,
       "constant": "ACTIVATION_BUDGET_MS",
       "rationale": "Release smoke for startup responsiveness before the sidebar is revealed"
+    },
+    {
+      "test": "tests/perf/sustained-evidence-path.test.ts",
+      "name": "Sustained runner retained bytes per stream",
+      "budgetBytes": 4194304,
+      "constant": "MAX_STREAM_BUFFER_BYTES",
+      "rationale": "Keeps stdout and stderr parser memory bounded independently while raw capture remains complete"
+    },
+    {
+      "test": "tests/perf/sustained-evidence-path.test.ts",
+      "name": "Large phase-log hydrated entry cap",
+      "budgetEntries": 200,
+      "constant": "MAX_PHASE_LOG_ENTRIES",
+      "rationale": "Bounds projected phase-log state while retaining the newest ordered entries"
     }
   ],
   "notes": [
