@@ -103,6 +103,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run test
+      - run: npm run test:evals
 
   build:
     name: build
@@ -121,6 +122,28 @@ jobs:
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run build
       - run: npm run package:smoke
+
+  visual:
+    name: browser visual regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:visual
+      - name: Upload visual diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression-artifacts
+          path: tests/visual/.artifacts/**
+          if-no-files-found: ignore
+          retention-days: 14
 
   e2e:
     name: deterministic E2E smoke (feature 055)

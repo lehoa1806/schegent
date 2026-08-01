@@ -266,6 +266,14 @@ describe('Dashboard FR-033..FR-038 layout (T058)', () => {
       ).not.toBeNull();
     });
 
+    it('makes backend network dependence visible before a task is submitted', () => {
+      const snap = buildSnapshot();
+      const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
+      const note = getByTestId('dashboard-network-dependence-note');
+      expect(note.textContent).toContain('Local-first, not offline');
+      expect(note.textContent).toContain('configured backend providers');
+    });
+
     it('textarea has maxlength="4096"', () => {
       const snap = buildSnapshot();
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
@@ -1515,4 +1523,3 @@ describe('Dashboard cold-start fallback (063 BUG-006 / T076)', () => {
     expect(getByTestId('dashboard-activity-audit-feed')).not.toBeNull();
   });
 });
-
