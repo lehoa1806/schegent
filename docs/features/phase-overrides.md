@@ -1,6 +1,10 @@
 # Phase Overrides
 
-Phase overrides let you tune individual phases — model, effort, timeout, instruction, loopability, retry condition — without changing the underlying built-in pipeline. You can override at three levels (workspace, user, per-run), each with explicit precedence.
+Phase overrides let you tune individual phases — backend runner, model,
+effort, timeout, instruction, and retry condition — without changing the
+underlying built-in pipeline. User and workspace definitions use explicit
+per-field precedence; the supported subset of per-run overrides is then
+frozen onto the in-flight run.
 
 ## When to use overrides
 
@@ -54,7 +58,7 @@ Notes on the fields:
 - `id` must match the built-in id (`speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-analyze`, `speckit-implement`, `finalize`, `done`) to **shadow** the built-in.
 - `name` is required by the JSON schema but is purely cosmetic when shadowing.
 - `instruction` is required by the schema; an **empty string is accepted** when shadowing — the built-in's instruction is preserved.
-- `model`, `effort`, `timeoutSeconds`, `loopable`, `retryCondition` are the fields you typically want to tweak.
+- `runner`, `model`, `effort`, `timeoutSeconds`, and `retryCondition` are the fields you typically want to tweak.
 
 ## Shadowing a built-in vs. defining a new phase
 
@@ -90,11 +94,11 @@ Per field:
 
 | Field | Description |
 |---|---|
-| `model` | Claude model id passed as `--model`. |
+| `runner` | Backend kind: `claude` \| `codex` \| `agy`. Omit to inherit `schegent.backend.runner`, except Git-mutating built-ins described below. |
+| `model` | Backend model id passed as a single argv element. |
 | `effort` | Reasoning effort. Enum: `low` \| `medium` \| `high` \| `xhigh` \| `max`. |
 | `timeoutSeconds` | Per-phase timeout (1–3600 seconds). Overrides `schegent.invocation.timeoutSeconds` for this phase only. |
 | `instruction` | The phase's prompt directive. Empty string preserves the built-in. |
-| `loopable` | Whether the phase loops on `[SCHEGENT_STATUS: CLEAR]`. |
 | `retryCondition` | Optional retry-condition DSL expression. |
 
 What you cannot override:
@@ -106,6 +110,14 @@ What you cannot override:
 | The set of phases in a pipeline | Same — use a custom pipeline. |
 | Audit event payloads | The host emits whatever the runner produces; you cannot intercept. |
 
+`speckit-specify`, `specify-brainstorm`, and `superpowers-implement` invoke
+mandatory branch/worktree creation; `finalize` and `superpowers-review-close`
+commit or change branches.
+Their built-in runner is `claude`, and any override must explicitly select
+`claude` or `agy`. Codex's `workspace-write` sandbox keeps `.git` read-only, so
+Codex and Inherit are disabled for these rows and rejected again by host
+validation.
+
 ## How precedence shows up in the sidebar
 
 The sidebar's phase model overrides panel shows each phase with a precedence badge:
@@ -116,7 +128,10 @@ The sidebar's phase model overrides panel shows each phase with a precedence bad
 
 When you change a field, the badge updates immediately to reflect the new precedence. You can see at a glance which layer is contributing each value.
 
-The precedence projection is host-computed at `src/config/phase-precedence.ts` (UI-only — never persisted or logged). The composite key shape is `"<phaseId>::<fieldKey>"`; the UI consumes `model` and `effort` keys today, with the remaining keys (`timeoutSeconds`, `loopable`, `retryCondition`) reserved for forward UI use.
+The precedence projection is host-computed at `src/config/phase-precedence.ts`
+(UI-only — never persisted or logged). The composite key shape is
+`"<phaseId>::<fieldKey>"`; the Pipeline Builder consumes the `runner` key to
+show its winning built-in, user, or workspace layer.
 
 ## Operational tips
 
@@ -152,6 +167,7 @@ If `finalize` regularly stalls and you want it to fail faster:
       "id": "finalize",
       "name": "Finalize",
       "instruction": "",
+      "runner": "claude",
       "timeoutSeconds": 600,
       "loopable": false
     }

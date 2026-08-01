@@ -110,6 +110,16 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
     expect(errs.some((e) => e.field === 'timeoutSeconds')).toBe(true);
   });
 
+  it('accepts the deprecated loopable compatibility field', () => {
+    expect(validatePhaseRaw(validPhase({ loopable: true }))).toEqual([]);
+    expect(isPhaseDef(validPhase({ loopable: false }))).toBe(true);
+  });
+
+  it('rejects a non-boolean loopable compatibility field', () => {
+    const errs = validatePhaseRaw({ ...validPhase(), loopable: 'yes' } as never);
+    expect(errs.some((e) => e.field === 'loopable')).toBe(true);
+  });
+
   it('accepts valid retryCondition', () => {
     const errs = validatePhaseRaw(validPhase({ retryCondition: 'open_questions > 0' }));
     expect(errs.some((e) => e.field === 'retryCondition')).toBe(false);

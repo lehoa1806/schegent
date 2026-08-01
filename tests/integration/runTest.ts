@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { runTests } from '@vscode/test-electron';
+import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
+import {
+  findCompletionMarker,
+  resolveDownloadedExecutable
+} from './vscode-test-executable';
 
 function findRepoRoot(start: string): string {
   let dir = start;
@@ -28,6 +32,25 @@ function folderUri(p: string): string {
   return prefix + encodeURI(abs);
 }
 
+async function acquireVSCodeExecutable(extensionDevelopmentPath: string): Promise<string> {
+  const options = { extensionDevelopmentPath };
+  let reportedPath = await downloadAndUnzipVSCode(options);
+  let executable = resolveDownloadedExecutable(reportedPath);
+  if (executable) return executable;
+
+  // A completion marker without a runnable binary is a corrupt/partial cache.
+  // Removing only the marker makes test-electron replace that exact cache on
+  // the next acquisition without guessing or recursively deleting a path here.
+  const marker = findCompletionMarker(reportedPath);
+  if (marker) fs.rmSync(marker, { force: true });
+  reportedPath = await downloadAndUnzipVSCode(options);
+  executable = resolveDownloadedExecutable(reportedPath);
+  if (!executable) {
+    throw new Error(`VS Code test install has no runnable executable: ${reportedPath}`);
+  }
+  return executable;
+}
+
 async function main() {
   try {
     // CRITICAL: strip `ELECTRON_RUN_AS_NODE` from the env before spawning
@@ -46,6 +69,7 @@ async function main() {
 
     const extensionDevelopmentPath = findRepoRoot(__dirname);
     const extensionTestsPath = path.resolve(__dirname, './index');
+    const vscodeExecutablePath = await acquireVSCodeExecutable(extensionDevelopmentPath);
     const specifyDir = path.join(extensionDevelopmentPath, '.specify');
     const createdSpecifyDir = !fs.existsSync(specifyDir);
     if (createdSpecifyDir) fs.mkdirSync(specifyDir, { recursive: true });
@@ -53,6 +77,7 @@ async function main() {
       await runTests({
         extensionDevelopmentPath,
         extensionTestsPath,
+        vscodeExecutablePath,
         launchArgs: [`--folder-uri=${folderUri(extensionDevelopmentPath)}`]
       });
     } finally {

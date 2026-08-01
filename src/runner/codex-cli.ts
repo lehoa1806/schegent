@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
-import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
+import { OutputSinkBackpressure } from './output-sink-backpressure';
+import { waitForChildCompletion } from './child-completion';
+import type {
+  InvocationOutputSink,
+  InvocationRequest,
+  RawInvocationOutput
+} from './invocation-result';
 import type {
   BackendRunner,
   MonitorSidecarEvent,
@@ -67,11 +73,12 @@ function safeSpawn(
  * Codex CLI implementation of `BackendRunner` (see
  * `src/contracts/backend-runner.ts`).
  *
- * Spawns `codex exec --no-stream` (single-shot, non-interactive) with the
- * prompt piped over stdin. Per-phase model and reasoning effort overrides
- * are forwarded as `--model <id>` and `--effort <level>` respectively,
- * matching the Claude CLI's argv shape so the controller doesn't branch on
- * backend identity.
+ * Spawns `codex exec --json --sandbox workspace-write` (single-shot,
+ * non-interactive) with the prompt piped over stdin. Per-phase model
+ * overrides use `--model <id>`; reasoning effort uses Codex's long-form
+ * configuration override (`--config model_reasoning_effort=<level>`). The explicit sandbox is
+ * required because implementation phases must be able to edit the current
+ * workspace while remaining unable to write outside it.
  *
  * Wire-up: surfaced via `BackendRunnerFactory` when
  * `schegent.backend.runner === 'codex'`. The default remains `'claude'`.
@@ -87,7 +94,7 @@ export class CodexCliRunner implements BackendRunner {
     // Logger reserved for forward-compat (probe diagnostics, fallback warns).
     // The Codex CLI has no help-probe today; the parameter is accepted so the
     // factory's constructor shape matches `ClaudeCliRunner` without branching.
-    _logger: SanitizedLogger = new SanitizedLogger()
+    private readonly _logger: SanitizedLogger = new SanitizedLogger()
   ) {
     this.spawnFn = spawnFn;
     this.monitorHook = monitorHook;
@@ -97,14 +104,17 @@ export class CodexCliRunner implements BackendRunner {
     return this.active !== null;
   }
 
-  public async invoke(request: InvocationRequest): Promise<RawInvocationOutput> {
+  public async invoke(
+    request: InvocationRequest,
+    outputSink?: InvocationOutputSink
+  ): Promise<RawInvocationOutput> {
     const start = Date.now();
-    const args: string[] = ['exec', '--no-stream'];
+    const args: string[] = ['exec', '--json', '--sandbox', 'workspace-write'];
     if (request.model && request.model.trim().length > 0) {
       args.push('--model', request.model);
     }
     if (request.effort && request.effort.trim().length > 0) {
-      args.push('--effort', request.effort);
+      args.push('--config', `model_reasoning_effort=${request.effort}`);
     }
 
     // Feature 068 — capture assembled command for cli-invocation audit.
@@ -144,22 +154,31 @@ export class CodexCliRunner implements BackendRunner {
       timedOut = true;
       this.terminate(child);
     }, request.timeoutMs);
+    let idleTimerActive = true;
     const resetIdleTimer = (): void => {
       clearTimeout(timer);
+      if (!idleTimerActive) return;
       timer = setTimeout(() => {
         timedOut = true;
         this.terminate(child);
       }, request.timeoutMs);
     };
+    const outputBackpressure = new OutputSinkBackpressure(
+      outputSink,
+      () => clearTimeout(timer),
+      resetIdleTimer
+    );
 
     child.stdout?.on('data', (chunk: string) => {
-      resetIdleTimer();
       stdoutBuffer.append(chunk);
+      outputBackpressure.write('stdout', child.stdout!, chunk);
+      if (!outputBackpressure.isBlocked) resetIdleTimer();
       this.emitHook({ kind: 'stdout-chunk', chunk });
     });
     child.stderr?.on('data', (chunk: string) => {
-      resetIdleTimer();
       stderrBuffer.append(chunk);
+      outputBackpressure.write('stderr', child.stderr!, chunk);
+      if (!outputBackpressure.isBlocked) resetIdleTimer();
       this.emitHook({ kind: 'stderr-chunk', chunk });
     });
 
@@ -177,21 +196,22 @@ export class CodexCliRunner implements BackendRunner {
       else request.cancellationSignal.addEventListener('abort', onAbort);
     }
 
-    const exitCode = await new Promise<number | null>((resolve) => {
-      child.on('exit', (code, signal) => {
-        if (signal && code === null) {
-          killed = true;
-        }
-        resolve(code);
-      });
-      child.on('error', () => resolve(null));
-    });
+    const completion = await waitForChildCompletion(child, outputSink !== undefined);
+    const exitCode = completion.exitCode;
+    if (completion.signal && exitCode === null) killed = true;
+    if (completion.stdioCloseTimedOut) {
+      this._logger.warn(
+        'codex-cli: stdout/stderr close grace expired after process exit; local pipes closed'
+      );
+    }
 
     if (onAbort !== null) {
       request.cancellationSignal?.removeEventListener?.('abort', onAbort);
     }
+    idleTimerActive = false;
     clearTimeout(timer);
-    const exitSignal = (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
+    const exitSignal = completion.signal ??
+      (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
     this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
     this.active = null;
 
@@ -225,14 +245,14 @@ export class CodexCliRunner implements BackendRunner {
   }
 
   private terminate(child: ChildProcess): void {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       try {
         child.kill('SIGTERM');
       } catch {
         // child may already be exiting
       }
       setTimeout(() => {
-        if (!child.killed) {
+        if (child.exitCode === null && child.signalCode === null) {
           try {
             child.kill('SIGKILL');
           } catch {

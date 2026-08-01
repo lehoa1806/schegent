@@ -1,3 +1,5 @@
+import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+
 // Feature 031 — bumped 1 → 2 to reflect the three additive scalar fields on
 // the `wakeup-runner-invocation` audit payload: `correlationId` (UUIDv4),
 // `requestedModel` (operator selection literal), `actualModel` (closed enum
@@ -52,6 +54,7 @@ export const PHASE_EVENT_TYPES = ['phase-start', 'phase-end'] as const;
 export interface PhaseStartPayload {
   readonly pipelineId: string;
   readonly phaseId: string;
+  readonly runner: BackendRunnerKind;
   readonly model?: string;
   readonly effort?: string;
   readonly timeoutMs?: number;

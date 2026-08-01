@@ -167,6 +167,32 @@ describe('SchegentWorkflowController.startNew', () => {
     ]);
   });
 
+  it('freezes the effective global runner into every inherited phase', async () => {
+    const agyController = new SchegentWorkflowController(
+      phaseRunner,
+      store,
+      queue,
+      statusBar,
+      notifier,
+      new SanitizedLogger(),
+      lock,
+      { ...opts, defaultRunnerKind: 'agy' }
+    );
+    runSpy.mockImplementation(async () => makeOutput());
+    const feature = await queue.enqueue('feature description');
+
+    await agyController.startNew(feature, null);
+
+    const persistedRun = store.getRun()!;
+    const phases = persistedRun.pipeline!.phases;
+    expect(persistedRun.defaultRunnerKind).toBe('agy');
+    expect(phases.find((phase) => phase.id === 'speckit-specify')?.runner).toBe('claude');
+    expect(phases.find((phase) => phase.id === 'speckit-clarify')?.runner).toBe('agy');
+    expect(phases.find((phase) => phase.id === 'finalize')?.runner).toBe('claude');
+    expect(phases.every((phase) => phase.runner !== undefined)).toBe(true);
+    expect(phases.every((phase) => Object.isFrozen(phase))).toBe(true);
+  });
+
   it('snapshot preserves PhaseDef.retryCondition through Object.freeze (T009, 010)', async () => {
     const customPhase: PhaseDef = Object.freeze({
       id: 'custom-loop',
@@ -550,6 +576,49 @@ describe('SchegentWorkflowController.resumeExisting', () => {
 
     const result = await controller.resumeExisting();
     expect(result).toBe(false);
+  });
+
+  it('pins the configured backend when first migrating a pre-074 run', async () => {
+    const feature = await queue.enqueue('legacy Codex feature');
+    await store.setRun({
+      id: 'run-pre-074-codex',
+      featureId: feature.id,
+      featureDir: 'specs/001-existing',
+      status: 'paused',
+      currentPhase: 'speckit-clarify',
+      currentIteration: 1,
+      startedAt: 1_700_000_000_000,
+      lastTransitionAt: 1_700_000_000_000,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: 1_700_000_100_000,
+      manualPauseCause: 'operator-paused',
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    });
+    runSpy.mockImplementation(async () => makeOutput());
+    const codexController = new SchegentWorkflowController(
+      phaseRunner,
+      store,
+      queue,
+      statusBar,
+      notifier,
+      new SanitizedLogger(),
+      lock,
+      { ...opts, defaultRunnerKind: 'codex' }
+    );
+
+    expect(await codexController.resumeExisting()).toBe(true);
+
+    expect(store.getRun()!.defaultRunnerKind).toBe('codex');
+    expect(runSpy.mock.calls[0][0]).toMatchObject({
+      phase: 'speckit-clarify',
+      phaseDef: expect.objectContaining({ runner: 'codex' })
+    });
   });
 });
 

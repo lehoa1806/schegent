@@ -101,7 +101,8 @@ function makeCleanOutput(): RawInvocationOutput {
     exitCode: 0,
     killed: false,
     timedOut: false,
-    durationMs: 1
+    durationMs: 1,
+    cliSessionId: 'owned-claude-session'
   };
 }
 
@@ -111,7 +112,8 @@ function makeTransientOutput(): RawInvocationOutput {
     exitCode: 1,
     killed: false,
     timedOut: false,
-    durationMs: 1
+    durationMs: 1,
+    cliSessionId: 'owned-claude-session'
   };
 }
 

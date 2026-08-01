@@ -145,7 +145,10 @@ posture:
   discipline](./threat-model.md#the-paths-free-audit-discipline)).
 - **Raw transcript** at `.schegent/sessions/raw-<runId>.log`. Captures
   CLI stdout/stderr verbatim. Local-only; never referenced by path from
-  the audit log. Used by operators when reconstructing a failed run.
+  the audit log. Backpressured mode-`0600` OS-temporary spools preserve bytes
+  outside the bounded parsing buffers and are removed after finalization;
+  abandoned owner-PID spools are scavenged. Used by
+  operators when reconstructing a failed run.
 - **Verbose diagnostic files** under
   `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`.
   Opt-in via `schegent.logging.verbose` (default off). Gitignored. Same

@@ -13,11 +13,14 @@
 
 import { validate as validateRetryCondition } from '../../../lib/retry-condition';
 import {
+  BUILT_IN_PHASES,
   EFFORT_LEVELS,
   PHASE_ID_PATTERN,
   defaultRetryConditionForPhaseId,
   equalsBuiltInPhases
 } from '../../../config/pipeline-config';
+import { phaseRunnerPolicyError } from '../../../config/phase-runner-policy';
+import { SUPPORTED_BACKENDS } from '../../../runner/backend-runner-factory';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePhasesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
@@ -36,6 +39,8 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     retryCondition?: unknown;
     effort?: unknown;
     model?: unknown;
+    loopable?: unknown;
+    runner?: unknown;
   }[];
   // BUG-001 (FR-012) — foundational field validation. Runs BEFORE the
   // existing effort/model/retryCondition checks and BEFORE the trust gate.
@@ -100,6 +105,39 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
         );
         return;
       }
+    }
+    if (phase.loopable !== undefined && typeof phase.loopable !== 'boolean') {
+      await ack(
+        ctx,
+        'rejected',
+        `phase-validation:${phaseId}:loopable:must-be-boolean`
+      );
+      return;
+    }
+    if (
+      phase.runner !== undefined &&
+      (typeof phase.runner !== 'string' ||
+        !(SUPPORTED_BACKENDS as readonly string[]).includes(phase.runner))
+    ) {
+      await ack(
+        ctx,
+        'rejected',
+        `phase-validation:${phaseId}:runner:must-be-one-of-${SUPPORTED_BACKENDS.join(',')}`
+      );
+      return;
+    }
+    const pinnedBuiltInRunner = BUILT_IN_PHASES.find(
+      (builtIn) => builtIn.id === phaseId
+    )?.runner;
+    const runnerPolicyError = phaseRunnerPolicyError(
+      phaseId,
+      (phase.runner ?? pinnedBuiltInRunner) as
+        | (typeof SUPPORTED_BACKENDS)[number]
+        | undefined
+    );
+    if (runnerPolicyError !== null) {
+      await ack(ctx, 'rejected', `phase-validation:${phaseId}:runner:git-metadata-write-required`);
+      return;
     }
     const rc = phase.retryCondition;
     if (rc === undefined || rc === null || rc === '') {

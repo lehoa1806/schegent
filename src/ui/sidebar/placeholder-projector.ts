@@ -78,6 +78,7 @@ export class PlaceholderProjector implements ProjectorHandle {
       phaseBreakpoints: Object.freeze([]),
       resumeTargetPhaseId: null,
       activeRunId: null,
+      defaultRunnerKind: 'claude',
       auditTail: tail.slice(-AUDIT_TAIL_MAX),
       debugLogTail: Object.freeze([]),
       liveActivity: IDLE_LIVE_ACTIVITY,

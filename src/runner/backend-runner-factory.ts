@@ -30,6 +30,11 @@ export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freez
 
 export const DEFAULT_BACKEND: BackendRunnerKind = 'claude';
 
+export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {
+  return typeof value === 'string' &&
+    (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);
+}
+
 export interface BackendRunnerFactoryOptions {
   readonly monitorHook?: MonitorSidecarHook | null;
   /**

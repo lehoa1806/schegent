@@ -45,9 +45,30 @@ Disabling inheritance can break CLIs that rely on ambient variables such as `PAT
 - **Type:** `string`
 - **Default:** `"claude"`
 - **Scope:** `application`
-- **Enum:** `claude` | `codex`
+- **Enum:** `claude` | `codex` | `agy`
 
-Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI at `schegent.cli.path`. `codex` spawns the Codex CLI in single-shot `exec --no-stream` mode and pipes the prompt over stdin. Both backends honor the same audit, redaction, and transcript contract.
+Default backend for phase invocations without a phase-level `runner` override.
+`claude` uses `schegent.cli.path`; `codex` uses `schegent.codex.path`; and
+`agy` uses `schegent.agy.path`. All three honor the same audit, redaction,
+bounded-output, timeout, cancellation, and transcript contract.
+
+### `schegent.codex.path`
+
+- **Type:** `string`
+- **Default:** `"codex"`
+- **Scope:** `application`
+
+Path to the Codex CLI binary. Schegent invokes it as `codex exec --json
+--sandbox workspace-write` and sends the prompt over stdin.
+
+### `schegent.agy.path`
+
+- **Type:** `string`
+- **Default:** `"agy"`
+- **Scope:** `application`
+
+Path to the Agy CLI binary. Schegent invokes it with stream-JSON output and
+sends the prompt over stdin.
 
 ## Workflow tuning
 
@@ -358,7 +379,10 @@ For quick lookup, the full list of keys:
 | Key | Scope | Default |
 |---|---|---|
 | `schegent.cli.path` | application | `"claude"` |
+| `schegent.cli.inheritEnvironment` | application | `true` |
 | `schegent.backend.runner` | application | `"claude"` |
+| `schegent.codex.path` | application | `"codex"` |
+| `schegent.agy.path` | application | `"agy"` |
 | `schegent.loop.maxIterations` | resource | `10` |
 | `schegent.invocation.timeoutSeconds` | resource | `5400` |
 | `schegent.watchdog.pollIntervalMinutes` | resource | `30` |

@@ -19,7 +19,9 @@
     readonly model?: unknown;
     readonly effort?: unknown;
     readonly timeoutSeconds?: unknown;
+    readonly loopable?: unknown;
     readonly retryCondition?: unknown;
+    readonly runner?: unknown;
     readonly [k: string]: unknown;
   }
 
@@ -53,7 +55,8 @@
       return { ok: false, error: 'must be a JSON object' };
     }
     const obj = value as Record<string, unknown>;
-    // Required fields: id, name, instruction, loopable
+    // Required fields: id, name, instruction. `loopable` remains an optional
+    // deprecated compatibility field for older saved phase definitions.
     if (typeof obj['id'] !== 'string' || obj['id'].length === 0) {
       return { ok: false, error: 'field `id` must be a non-empty string' };
     }
@@ -82,11 +85,25 @@
       return { ok: false, error: 'field `timeoutSeconds` must be a number when present' };
     }
     if (
+      'loopable' in obj &&
+      obj['loopable'] !== undefined &&
+      typeof obj['loopable'] !== 'boolean'
+    ) {
+      return { ok: false, error: 'field `loopable` must be a boolean when present' };
+    }
+    if (
       'retryCondition' in obj &&
       obj['retryCondition'] !== undefined &&
       typeof obj['retryCondition'] !== 'string'
     ) {
       return { ok: false, error: 'field `retryCondition` must be a string when present' };
+    }
+    if (
+      'runner' in obj &&
+      obj['runner'] !== undefined &&
+      (typeof obj['runner'] !== 'string' || !['claude', 'codex', 'agy'].includes(obj['runner']))
+    ) {
+      return { ok: false, error: 'field `runner` must be one of claude, codex, agy when present' };
     }
     return { ok: true, value: obj as RawPhase };
   }

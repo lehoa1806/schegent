@@ -1,5 +1,7 @@
 export const SCHEMA_VERSION = 3 as const;
 
+export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
+
 export const BUILT_IN_PHASE_NAMES = [
   'speckit-specify',
   'speckit-clarify',
@@ -277,8 +279,9 @@ export interface PhaseDefinition {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
+  readonly loopable?: boolean;
   readonly retryCondition?: string;
-  readonly runner?: string;
+  readonly runner?: BackendRunnerKind;
 }
 
 export interface PipelineDefinition {
@@ -581,6 +584,8 @@ export interface WorkflowSnapshot {
    * legacy-tolerance; required for breakpoint IPC targeting.
    */
   readonly activeRunId?: string | null;
+  /** Effective host default; absent only when paired with a legacy host. */
+  readonly defaultRunnerKind?: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];
   readonly debugLogTail?: readonly DebugLogEntry[];
   readonly liveActivity: LiveActivity;
@@ -693,4 +698,3 @@ export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
 export function isRecursivePhase(name: PhaseName): boolean {
   return name === 'speckit-clarify' || name === 'speckit-analyze';
 }
-

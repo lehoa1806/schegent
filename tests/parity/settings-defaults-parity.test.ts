@@ -49,6 +49,19 @@ function readPackageJson(): {
 }
 
 describe('Feature 056 Track 3 — settings defaults parity', () => {
+  it('keeps legacy loopable phase settings schema-valid without requiring the field', () => {
+    const pkg = readPackageJson();
+    const phases = pkg.contributes.configuration.properties['schegent.phases'] as unknown as {
+      items: {
+        required: readonly string[];
+        properties: Record<string, { type?: string }>;
+      };
+    };
+
+    expect(phases.items.properties.loopable?.type).toBe('boolean');
+    expect(phases.items.required).not.toContain('loopable');
+  });
+
   it('package.json default pipeline id matches the host KEY_SPECS default', () => {
     const pkg = readPackageJson();
     const contrib = pkg.contributes.configuration.properties['schegent.defaultPipelineId'];
@@ -204,7 +217,11 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // general-settings IPC surface.
     // Feature 074 — `agy.path` is the Agy CLI binary path, same pattern as
     // `cli.path` (application-scoped, read once at activation).
-    const cliApplicationKeys = new Set<string>(['cli.inheritEnvironment', 'agy.path']);
+    const cliApplicationKeys = new Set<string>([
+      'cli.inheritEnvironment',
+      'codex.path',
+      'agy.path'
+    ]);
     // Feature 058 — read-once-at-activation toggles. The activation guard
     // reads `schegent.multiRoot.suppressWarning` via `getConfiguration` with
     // a typed default; SETTINGS_SCHEMA + the drift-guard in

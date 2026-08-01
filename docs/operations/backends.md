@@ -4,15 +4,15 @@ Schegent drives every phase invocation through a single abstraction:
 `BackendRunner` ([src/contracts/backend-runner.ts](../../src/contracts/backend-runner.ts)).
 The controller, audit pipeline, monitor, telemetry sampler, and live-activity
 projector are all backend-agnostic — they consume the `BackendRunner`
-interface only. Feature 034 Item 050 added a factory + a second adapter so
-the abstraction is provably reusable.
+interface only. A lazy `BackendRunnerRegistry` constructs adapters on first
+use and cancels every cached adapter during extension deactivation.
 
 ## Available backends
 
 | `schegent.backend.runner` | Adapter | Notes |
 |---|---|---|
 | `claude` *(default)* | [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) | Spawns the Claude CLI with prompt-transport probing (`--prompt-file` → `--prompt-stdin` → `-p` fallback). Supports `-c` (continue) for context-preserving retries. |
-| `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | Spawns `codex exec --no-stream`. Prompt is piped over stdin (never appears in argv). `-c` (continue) is **not** supported yet — retries reuse the existing fresh-context dispatch. |
+| `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | Spawns `codex exec --json --sandbox workspace-write`. Prompt is piped over stdin (never appears in argv). Model uses `--model`; effort uses `--config model_reasoning_effort=<level>`. Session continuation is not supported. |
 | `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
 
 Switch backends from the VS Code settings UI (`Schegent: Backend: Runner`)
@@ -21,11 +21,14 @@ or by editing `package.json` / `.vscode/settings.json`:
 ```json
 {
   "schegent.backend.runner": "codex",
+  "schegent.codex.path": "/usr/local/bin/codex",
   "schegent.agy.path": "/usr/local/bin/agy"
 }
 ```
 
-Changes take effect at the next extension activation. The factory at
+The global backend selection takes effect at the next extension activation;
+the three CLI path settings are read again for every probe and invocation.
+The factory at
 [src/runner/backend-runner-factory.ts](../../src/runner/backend-runner-factory.ts)
 resolves unknown values to `'claude'` and logs a `WARN` (`backend-runner-factory:
 unknown schegent.backend.runner ...`) so a typo never breaks activation.
@@ -35,13 +38,36 @@ unknown schegent.backend.runner ...`) so a typo never breaks activation.
 Since feature 074, runners can be selected dynamically **per-phase** using the `runner` field on the `PhaseDef` object in `pipeline-config.json` (or via the UI Pipeline Builder).
 
 Precedence for runner selection per phase:
+
 1. Per-phase `runner` explicitly defined
 2. Global `schegent.backend.runner` setting
 3. Fallback to `'claude'`
 
-A session context reset occurs across runner transitions (e.g., if Phase 1 uses `claude` and Phase 2 uses `agy`, the conversation history is NOT shared across the boundary).
+Five built-in phases are an intentional exception to inheritance.
+`speckit-specify`, `specify-brainstorm`, and `superpowers-implement` invoke
+mandatory branch/worktree creation; `finalize` and `superpowers-review-close`
+commit or change branches.
+They are pinned to `claude`. Codex runs under `workspace-write`, which protects
+`.git` from modification. Overrides for these phase IDs must set `runner`
+explicitly to `claude` or `agy`; the Pipeline Builder disables Codex/Inherit
+and the host rejects incompatible configuration or legacy run snapshots before
+invoking a CLI.
 
-**CLI Probing**: Schegent implements fast-fail behavior by actively probing the availability of all required CLI binaries _before_ starting the first phase in a pipeline. If a runner fails this probe, a `runner-probe-failed` audit event is emitted and the pipeline aborts immediately.
+When a run starts, every inherited runner choice is resolved and persisted in
+the immutable pipeline snapshot, together with the run's effective global
+backend. Changing the global backend later affects new runs only. Partially
+migrated snapshots use their persisted run-level backend; records old enough to
+lack both phase and run-level runner data conservatively use Claude.
+
+A session context reset occurs across runner transitions (e.g., if Phase 1
+uses `claude` and Phase 2 uses `agy`, the conversation history is not shared
+across the boundary). Legacy session records without an owning runner kind
+fail closed and are not resumed.
+
+Before the first phase, Schegent probes every effective backend kind used by
+the pipeline with that backend's current CLI path. A failed
+probe terminates the run, emits `runner-probe-failed`, updates queue/history
+state, and surfaces the blocking error to the operator.
 
 ## Contract every backend MUST honor
 
@@ -87,7 +113,7 @@ controller assumes these invariants and will *not* tolerate divergence.
    removed in a `finally` block, but failures MUST NOT throw — the OS
    reaps `os.tmpdir()` eventually.
 
-## Adding a third backend
+## Adding another backend
 
 1. Implement `BackendRunner` in `src/runner/<your>-cli.ts`. Mirror the
    Claude or Codex adapter structure exactly (`safeSpawn` guard, byte
@@ -104,9 +130,8 @@ controller assumes these invariants and will *not* tolerate divergence.
 5. Audit against [docs/security/threat-model.md](../security/threat-model.md):
    any new backend MUST honor the headless / append-only / sanitization
    invariants.
-6. Run `npm run ci`. The factory, controller, monitor, telemetry, and
-   audit pipeline should all remain untouched — *that is the point of the
-   abstraction*.
+6. Extend per-phase validation and the Pipeline Builder runner enum, then run
+   `npm run ci`.
 
 ## Diagnostics
 

@@ -161,6 +161,16 @@
           "pattern": null
         },
         {
+          "key": "schegent.codex.path",
+          "type": "string",
+          "default": "codex",
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null
+        },
+        {
           "key": "schegent.defaultPipelineId",
           "type": "string",
           "default": "dev-new-feature",
