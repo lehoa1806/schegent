@@ -217,6 +217,60 @@ import {
   isValidEnqueueStartIntent,
   isValidStartQueueIntent
 } from './start-intent-types';
+import type {
+  ReadPhaseLogCommand,
+  StartPhaseLogTailCommand,
+  StopPhaseLogTailCommand
+} from './sidebar-ipc/phase-log';
+import type {
+  ReadWakeupSessionLogCommand,
+  RevealWakeupSessionLogCommand
+} from './sidebar-ipc/wakeup';
+import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
+
+export type {
+  ReadPhaseLogRequest,
+  ReadPhaseLogCommand,
+  ReadPhaseLogResponse,
+  StartPhaseLogTailRequest,
+  StartPhaseLogTailCommand,
+  StartPhaseLogTailResponse,
+  StopPhaseLogTailRequest,
+  StopPhaseLogTailCommand,
+  StopPhaseLogTailResponse
+} from './sidebar-ipc/phase-log';
+export type {
+  ReadWakeupSessionLogCommand,
+  ReadWakeupSessionLogResponseSuccess,
+  ReadWakeupSessionLogResponseRejected,
+  ReadWakeupSessionLogResponse,
+  RevealWakeupSessionLogCommand,
+  RevealWakeupSessionLogResponseSuccess,
+  RevealWakeupSessionLogResponseRejected,
+  RevealWakeupSessionLogResponse
+} from './sidebar-ipc/wakeup';
+export type {
+  PhaseRecord,
+  TaskRecord,
+  PhaseTypeAggregate,
+  CostTimelinePoint,
+  ReadMetricsRequest,
+  ReadMetricsCommand,
+  ReadMetricsResponse
+} from './sidebar-ipc/metrics';
+export { TRUST_DENIED_REASONS } from './sidebar-ipc/trust';
+export type {
+  TrustCapability,
+  ResolvedScope,
+  TrustDeniedReason,
+  TrustDeniedError
+} from './sidebar-ipc/trust';
+export type {
+  StateSnapshotMessage,
+  CommandAckMessage,
+  PhaseLogEntryPushMessage,
+  HostMessage
+} from './sidebar-ipc/host-messages';
 
 export interface StartCommand extends CommandBase<typeof CMD_START> {
   readonly payload: {
@@ -448,117 +502,6 @@ export interface RestartCanceledTaskCommand
   readonly payload: { readonly taskId: string };
 }
 
-// Feature 020 — phase log read + tail. The selection tuple is host-
-// validated against the current snapshot before any path is composed;
-// operator-supplied path components are NEVER consumed (paths come from
-// snapshot, not from IPC request fields). See
-// specs/020-phase-level-logs/contracts/phase-log-ipc.md.
-export interface ReadPhaseLogRequest {
-  readonly selection: {
-    readonly queueId: string;
-    readonly taskId: string;
-    readonly pipelineId: string;
-    readonly phaseId: string;
-    readonly iterationN: number | null;
-  };
-}
-
-export interface ReadPhaseLogCommand extends CommandBase<typeof CMD_READ_PHASE_LOG> {
-  readonly payload: ReadPhaseLogRequest;
-}
-
-// Feature 020 — wire-format response payload for CMD_READ_PHASE_LOG.
-// Carried inside the `CommandAckMessage.result` field. The host
-// guarantees: (a) every `body.*` string has passed through
-// `SanitizedLogger.sanitize()` exactly once; (b) no `body.*` string
-// exceeds 4096 UTF-8 bytes; (c) no field carries an absolute path.
-//
-// The `kind` union mirrors `PhaseLogDisplayEntryKind` from
-// `src/services/phase-log/types.ts`. `'tail-ended'` is emitted ONLY by
-// the tail push channel (`MSG_PHASE_LOG_ENTRY`) at runtime — read
-// responses never carry it — but the wire type stays aligned with the
-// runtime type to eliminate contract-vs-runtime drift.
-export type ReadPhaseLogResponse =
-  | {
-      readonly outcome: 'success';
-      readonly manifest: {
-        readonly iterations: readonly number[];
-        readonly selectedIteration: number | null;
-        readonly entries: readonly {
-          readonly seq: number;
-          readonly kind:
-            | 'assistant-text'
-            | 'tool-use'
-            | 'tool-result'
-            | 'system'
-            | 'result'
-            | 'truncated-head'
-            | 'tail-ended';
-          readonly ts: string | null;
-          readonly body: Readonly<Record<string, unknown>>;
-          readonly bodyTruncated: Readonly<
-            Record<string, { readonly originalLength: number }>
-          > | null;
-        }[];
-        readonly skippedLines: number;
-        readonly truncatedCount: number;
-        readonly verboseDiagnosticsState:
-          | { readonly kind: 'enabled-with-sessions' }
-          | { readonly kind: 'enabled-no-sessions-for-tuple' }
-          | { readonly kind: 'disabled-no-sessions'; readonly settingKey: string };
-        readonly isInFlight: boolean;
-      };
-    }
-  | {
-      readonly outcome: 'failure';
-      readonly reason: 'unknown-tuple' | 'permission-denied' | 'internal-error';
-    };
-
-export interface StartPhaseLogTailRequest {
-  readonly selection: {
-    readonly queueId: string;
-    readonly taskId: string;
-    readonly pipelineId: string;
-    readonly phaseId: string;
-    readonly iterationN: number;
-  };
-}
-
-export interface StartPhaseLogTailCommand
-  extends CommandBase<typeof CMD_START_PHASE_LOG_TAIL> {
-  readonly payload: StartPhaseLogTailRequest;
-}
-
-export type StartPhaseLogTailResponse =
-  | {
-      readonly outcome: 'success';
-      readonly sessionId: string;
-      readonly mechanism: 'fs.watch' | 'polling';
-    }
-  | {
-      readonly outcome: 'failure';
-      readonly reason:
-        | 'unknown-tuple'
-        | 'not-in-flight'
-        | 'permission-denied'
-        | 'internal-error';
-    };
-
-export interface StopPhaseLogTailRequest {
-  readonly sessionId: string;
-}
-
-export interface StopPhaseLogTailCommand
-  extends CommandBase<typeof CMD_STOP_PHASE_LOG_TAIL> {
-  readonly payload: StopPhaseLogTailRequest;
-}
-
-export interface StopPhaseLogTailResponse {
-  readonly outcome: 'success' | 'failure';
-  readonly sessionId: string;
-  readonly reason?: 'unknown-session' | 'internal-error';
-}
-
 export interface OpenVerboseSettingCommand
   extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
 
@@ -577,69 +520,6 @@ export interface ClearPhaseBreakpointCommand
   readonly payload: { readonly runId: string; readonly phaseId: string };
 }
 
-// Feature 031 — read-only IPC to fetch the sanitized session-log
-// projection for one wake-up invocation. The host validates
-// `correlationId` shape and re-validates it against the JSONL
-// invocation log BEFORE composing any filesystem path. The session-log
-// path is host-owned (composed from `globalStorageUri`) — operators
-// never supply a path. See
-// specs/031-advanced-wakeup-logs-models/contracts/wakeup-session-log-ipc.md.
-export interface ReadWakeupSessionLogCommand
-  extends CommandBase<typeof CMD_READ_WAKEUP_SESSION_LOG> {
-  readonly payload: { readonly correlationId: string };
-}
-
-// Feature 031 — wire-format response payload for
-// CMD_READ_WAKEUP_SESSION_LOG. Carried inside the
-// `CommandAckMessage.result` field. The host guarantees:
-//   (a) `body` has passed through `SanitizedLogger.sanitize()` exactly
-//       once at the IPC boundary;
-//   (b) `body` does NOT exceed SESSION_PROJECTION_MAX_BYTES = 32 KiB;
-//   (c) `bodyTruncated === true` iff the on-disk block body exceeded
-//       the projection cap; the operator can inspect the full body via
-//       the on-disk `session.log` file (path projected separately on
-//       the snapshot's `wakeUp.sessionLogPath` field);
-//   (d) `outcome` collapses the runner's `status` → 'succeeded' |
-//       'failed' (skipped / timed-out records do not write a session
-//       block and therefore cannot reach this response).
-//
-// The rejection vocabulary is closed; new reasons require a code
-// change + PR review (mirrors `ReadPhaseLogResponse`).
-export interface ReadWakeupSessionLogResponseSuccess {
-  readonly status: 'success';
-  readonly correlationId: string;
-  readonly capturedAtMs: number;
-  readonly trigger: 'scheduled' | 'manual';
-  readonly model: string;
-  readonly outcome: 'succeeded' | 'failed';
-  readonly body: string;
-  readonly bodyTruncated: boolean;
-  readonly fullBlockBytesOnDisk: number;
-}
-
-export interface ReadWakeupSessionLogResponseRejected {
-  readonly status: 'rejected';
-  readonly reason:
-    | 'not-primary-host'
-    | 'invalid-correlation-id'
-    | 'unknown-correlation-id'
-    | 'session-log-unavailable'
-    | 'unknown-error';
-}
-
-export type ReadWakeupSessionLogResponse =
-  | ReadWakeupSessionLogResponseSuccess
-  | ReadWakeupSessionLogResponseRejected;
-
-// Feature 031 — read-only IPC to reveal the on-disk session.log file
-// in the OS file manager. Carries no operator-supplied path; the host
-// composes the path internally. See
-// specs/031-advanced-wakeup-logs-models/contracts/wakeup-reveal-session-log-ipc.md.
-export interface RevealWakeupSessionLogCommand
-  extends CommandBase<typeof CMD_REVEAL_WAKEUP_SESSION_LOG> {
-  readonly payload?: Record<string, never>;
-}
-
 // BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
 // the oldest pending task to in-flight. Rejected when no pending tasks
 // exist, when the queue is paused, or when a run is already in-flight.
@@ -649,165 +529,6 @@ export interface RevealWakeupSessionLogCommand
 // source literal. Omission preserves the legacy "no-op promote" semantics.
 export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
   readonly payload?: { readonly startIntent?: StartQueueIntent } | Record<string, never>;
-}
-
-export interface RevealWakeupSessionLogResponseSuccess {
-  readonly status: 'success';
-}
-
-export interface RevealWakeupSessionLogResponseRejected {
-  readonly status: 'rejected';
-  readonly reason:
-    | 'not-primary-host'
-    | 'session-log-unavailable'
-    | 'reveal-failed'
-    | 'unknown-error';
-}
-
-export type RevealWakeupSessionLogResponse =
-  | RevealWakeupSessionLogResponseSuccess
-  | RevealWakeupSessionLogResponseRejected;
-
-// Feature 073 — Metrics Dashboard. Wire-format entities derived
-// entirely from the existing `.schegent/audit.log`; see
-// specs/073-metrics-dashboard/data-model.md for the full field
-// derivation rules. `src/metrics/metrics-log-reader.ts` constructs
-// these directly — no separate internal representation exists to
-// decouple from, so the wire type is the single canonical definition.
-export interface PhaseRecord {
-  readonly runId: string;
-  readonly phaseType: string;
-  readonly iteration: number;
-  readonly startTime: string;
-  readonly endTime?: string;
-  readonly durationMs?: number;
-  readonly backendInvocations: number;
-  readonly costUsd?: number;
-  // Absent while the phase has no terminal event yet (still running) — mirrors
-  // TaskRecord.status's absent-while-in-flight shape; rendered as "Running" by
-  // the UI, never as a literal outcome value (data-model.md §2).
-  readonly outcome?: 'completed' | 'failed' | 'jumped' | 'paused-at-breakpoint' | 'skipped';
-  readonly rawOutcome?: string;
-}
-
-export interface TaskRecord {
-  readonly runId: string;
-  readonly taskId?: string;
-  readonly description: string;
-  readonly startTime: string;
-  readonly endTime?: string;
-  readonly durationMs: number;
-  // Deliberately terminal-only — absent while the task is in-flight.
-  // `isRunning` is the sole "still running" signal (no `'running'`
-  // literal is ever introduced; CLAUDE.md hard rule).
-  readonly status?: 'completed' | 'failed' | 'canceled';
-  readonly isRunning: boolean;
-  readonly phasesTotal: number;
-  readonly phasesCompleted: number;
-  readonly phasesSkipped: number;
-  readonly totalCostUsd?: number;
-  readonly totalBackendInvocations: number;
-  readonly phases: readonly PhaseRecord[];
-  readonly source: 'task-lifecycle' | 'phase-reconstruction';
-}
-
-export interface PhaseTypeAggregate {
-  readonly phaseType: string;
-  readonly executionCount: number;
-  readonly totalDurationMs: number;
-  readonly avgDurationMs: number;
-  readonly p50DurationMs: number;
-  readonly p90DurationMs: number;
-  readonly p99DurationMs: number;
-  readonly longestDurationMs: number;
-  readonly shortestDurationMs: number;
-  readonly totalBackendInvocations: number;
-  readonly totalCostUsd?: number;
-}
-
-export interface CostTimelinePoint {
-  readonly date: string;
-  readonly dailyCostUsd: number;
-  readonly cumulativeCostUsd: number;
-}
-
-export interface ReadMetricsRequest {
-  readonly includeArchives?: boolean;
-}
-
-export interface ReadMetricsCommand extends CommandBase<typeof CMD_READ_METRICS> {
-  // Required (not optional) so postCommand<C>'s `C extends { payload: infer
-  // P } ? P : undefined` inference resolves to ReadMetricsRequest instead of
-  // falling through to `undefined` — mirrors ReadPhaseLogCommand's required
-  // payload. Every field of ReadMetricsRequest is itself optional, so `{}`
-  // still satisfies this at every call site.
-  readonly payload: ReadMetricsRequest;
-}
-
-// Wire-format response payload for CMD_READ_METRICS. Carried inside the
-// `CommandAckMessage.result` field, mirroring the read-only-query
-// precedent established by `ReadPhaseLogResponse`. No dedicated
-// `MSG_METRICS_RESULT` push message exists — metrics has no streaming
-// counterpart to the phase-log tail feed.
-export interface ReadMetricsResponse {
-  readonly tasks: readonly TaskRecord[];
-  readonly phaseTypeAggregates: readonly PhaseTypeAggregate[];
-  readonly costTimeline: readonly CostTimelinePoint[];
-  readonly oldestIncludedTimestamp?: string;
-  readonly meta: {
-    readonly includesArchives: boolean;
-    readonly totalScannedEntries: number;
-    readonly parseWarnings: number;
-  };
-}
-
-// Feature 059 — Fine-Grained Trust Scopes. Three per-capability trust
-// scopes gate the save-command handlers and the webview projection.
-// See specs/059-fine-grained-trust-scopes/data-model.md §3 and the
-// contracts under specs/059-fine-grained-trust-scopes/contracts/.
-export type TrustCapability =
-  | 'phases'
-  | 'retryConditions'
-  | 'pipelineOverrides';
-
-// Scope that produced the most-restrictive applicable layer for the
-// resolved capability decision. Documented in data-model.md §1.
-export type ResolvedScope = 'user' | 'workspace' | 'workspace-trust';
-
-// Closed template set for the `reason` field of `TrustDeniedError` and
-// the audit payload's `reason` field. No user-controlled string is ever
-// stored or surfaced — every reason originates here. The closed set
-// preserves the `SECRET_PATTERNS` redaction invariant (CLAUDE.md hard
-// rule) because no operator input flows into the audit payload.
-export const TRUST_DENIED_REASONS = {
-  workspaceTrust:
-    'Workspace is not trusted; per-capability scopes cannot widen workspace trust.',
-  phasesWorkspace: 'allowCustomPhases is false at workspace scope.',
-  phasesUser: 'allowCustomPhases is false at user scope.',
-  retryConditionsWorkspace:
-    'allowCustomRetryConditions is false at workspace scope.',
-  retryConditionsUser: 'allowCustomRetryConditions is false at user scope.',
-  pipelineOverridesWorkspace:
-    'allowPipelineOverrides is false at workspace scope.',
-  pipelineOverridesUser: 'allowPipelineOverrides is false at user scope.'
-} as const;
-
-export type TrustDeniedReason =
-  (typeof TRUST_DENIED_REASONS)[keyof typeof TRUST_DENIED_REASONS];
-
-// IPC error variant carried in `CommandAckMessage.result` when a
-// save-command handler denies a payload because of a per-capability
-// trust scope. The webview discriminates on `kind === 'trust-denied'`.
-//
-// `rowIndex` is only present when `capability === 'retryConditions'`;
-// otherwise it MUST be omitted (the per-row gate is documented in
-// contracts/save-command-trust-gate-contract.md).
-export interface TrustDeniedError {
-  readonly kind: 'trust-denied';
-  readonly capability: TrustCapability;
-  readonly resolvedScope: ResolvedScope;
-  readonly rowIndex?: number;
-  readonly reason: TrustDeniedReason;
 }
 
 export type SidebarCommand =
@@ -862,58 +583,6 @@ export type SidebarCommand =
   | SetConfirmSuppressionCommand
   | DismissMigrationNoticeCommand
   | ReadMetricsCommand;
-
-// -- Host messages (host → webview) -----------------------------------------
-
-export interface StateSnapshotMessage<S> {
-  readonly type: typeof STATE_SNAPSHOT;
-  readonly payload: S;
-}
-
-export interface CommandAckMessage {
-  readonly type: typeof CMD_ACK;
-  readonly correlationId: string;
-  readonly status: 'accepted' | 'rejected';
-  readonly reason?: string;
-  // Feature 020 — optional typed payload for commands that need to
-  // return a result alongside the ack (currently
-  // `CMD_READ_PHASE_LOG` → `ReadPhaseLogResponse`,
-  // `CMD_START_PHASE_LOG_TAIL` → `StartPhaseLogTailResponse`,
-  // `CMD_STOP_PHASE_LOG_TAIL` → `StopPhaseLogTailResponse`). All
-  // other commands MUST leave this field absent. Mutating commands
-  // continue to communicate via `status` + `reason` only — the
-  // result channel is reserved for read-only queries.
-  readonly result?: unknown;
-}
-
-// Feature 020 — phase log push. The body field has been sanitized by
-// `SanitizedLogger.sanitize` and truncated to ≤ 4 KiB per field at the
-// IPC boundary. The webview drops messages whose `tailSessionId` does
-// not match the currently active session (defense against late
-// delivery after navigate-away).
-export interface PhaseLogEntryPushMessage {
-  readonly type: typeof MSG_PHASE_LOG_ENTRY;
-  readonly payload: {
-    readonly tailSessionId: string;
-    readonly entrySeq: number;
-    readonly entry: {
-      readonly seq: number;
-      readonly kind:
-        | 'assistant-text'
-        | 'tool-use'
-        | 'tool-result'
-        | 'system'
-        | 'result'
-        | 'truncated-head'
-        | 'tail-ended';
-      readonly ts: string | null;
-      readonly body: Readonly<Record<string, unknown>>;
-      readonly bodyTruncated: Readonly<Record<string, { readonly originalLength: number }>> | null;
-    };
-  };
-}
-
-export type HostMessage<S> = StateSnapshotMessage<S> | CommandAckMessage | PhaseLogEntryPushMessage;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -1145,14 +814,14 @@ export function isCmdDismissMigrationNotice(
 
 // Feature 073 — read-only metrics scan guard. Payload is required (an empty
 // object `{}` satisfies it — see ReadMetricsCommand's field comment) to
-// match validateReadMetrics's actual runtime gate; `includeArchived` must be
+// match validateReadMetrics's actual runtime gate; `includeArchives` must be
 // a boolean if provided.
 export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
   if (!isObjectWithType(value, CMD_READ_METRICS)) return false;
   const payload = (value as { payload?: unknown }).payload;
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  const { includeArchived } = payload as { includeArchived?: unknown };
-  return includeArchived === undefined || typeof includeArchived === 'boolean';
+  const { includeArchives } = payload as { includeArchives?: unknown };
+  return includeArchives === undefined || typeof includeArchives === 'boolean';
 }
 
 // Exhaustive guard registry. The drift test asserts the keys of this

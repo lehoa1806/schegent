@@ -6,7 +6,7 @@
 // (contracts/cmd-read-metrics.md).
 import { describe, expect, it } from 'vitest';
 import { isValidReadMetricsResponse, validateInboundMessage } from '../../../src/contracts/runtime-validators';
-import { CMD_READ_METRICS } from '../../../src/contracts/sidebar-ipc';
+import { CMD_READ_METRICS, isCmdReadMetrics } from '../../../src/contracts/sidebar-ipc';
 
 function validResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -83,6 +83,23 @@ describe('isValidReadMetricsResponse (Feature 073, T004)', () => {
 // validation path (webview -> validateInboundMessage), not just the
 // handler's own pass-through of an already-constructed command.
 describe('validateInboundMessage(CMD_READ_METRICS) — includeArchives threading (FR-014)', () => {
+  it('keeps the discriminator guard aligned with the canonical includeArchives field', () => {
+    expect(
+      isCmdReadMetrics({
+        type: CMD_READ_METRICS,
+        correlationId: 'corr-guard',
+        payload: { includeArchives: true }
+      })
+    ).toBe(true);
+    expect(
+      isCmdReadMetrics({
+        type: CMD_READ_METRICS,
+        correlationId: 'corr-guard-invalid',
+        payload: { includeArchives: 'yes' }
+      })
+    ).toBe(false);
+  });
+
   it('threads includeArchives: true from the raw payload into the validated command', () => {
     const result = validateInboundMessage({
       type: CMD_READ_METRICS,
