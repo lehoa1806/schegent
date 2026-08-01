@@ -23,9 +23,18 @@ describe('browser visual regression gate', () => {
       '.github/workflows/full-gate.yml'
     ]) {
       const source = readFileSync(resolve(ROOT, workflow), 'utf8');
-      expect(source).toContain('npx playwright install chromium');
+      expect(source).toContain('npx playwright install --with-deps chromium');
       expect(source).toContain('npm run test:visual');
       expect(source).toContain('tests/visual/.artifacts/**');
     }
+  });
+
+  it('keeps the visual browser fixture on a fail-closed loopback network boundary', () => {
+    const source = readFileSync(
+      resolve(ROOT, 'tests/visual/webview.visual.spec.ts'),
+      'utf8'
+    );
+    expect(source).toContain("requestUrl.origin === 'http://127.0.0.1:4173'");
+    expect(source).toContain('await route.abort()');
   });
 });

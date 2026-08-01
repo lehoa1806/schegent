@@ -142,10 +142,18 @@ function themeCss(theme: ThemeName): string {
 }
 
 async function installDeterministicHost(page: Page): Promise<void> {
-  await page.route('https://fonts.googleapis.com/**', (route) =>
-    route.fulfill({ status: 200, contentType: 'text/css', body: '' })
-  );
-  await page.route('https://fonts.gstatic.com/**', (route) => route.abort());
+  await page.route('**/*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.origin === 'http://127.0.0.1:4173') {
+      await route.continue();
+      return;
+    }
+    if (requestUrl.hostname === 'fonts.googleapis.com') {
+      await route.fulfill({ status: 200, contentType: 'text/css', body: '' });
+      return;
+    }
+    await route.abort();
+  });
   const fixtures = inlineJson({ metrics: metricsResponse, phaseLog: phaseLogResponse });
   await page.addInitScript({
     content: `(() => {
@@ -206,6 +214,21 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
   });
   await installDeterministicHost(page);
   await page.goto(surface === 'sidebar' ? '/index.html' : '/dashboard.html');
+  const themeClass =
+    theme === 'light'
+      ? 'vscode-light'
+      : theme === 'dark'
+        ? 'vscode-dark'
+        : 'vscode-high-contrast';
+  await page.evaluate(`
+    document.body.classList.remove(
+      'vscode-light',
+      'vscode-dark',
+      'vscode-high-contrast',
+      'vscode-high-contrast-light'
+    );
+    document.body.classList.add(${JSON.stringify(themeClass)});
+  `);
   await page.addStyleTag({ content: themeCss(theme) });
   await publishSnapshot(page);
 
