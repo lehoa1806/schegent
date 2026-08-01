@@ -16,7 +16,9 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log, wake-up, and metrics validators own shape rules.
   { path: 'src/contracts/runtime-validators.ts', maxLines: 775 },
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_250 },
+  // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
+  // literals and guards while domain wire shapes live in focused modules.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 885 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the

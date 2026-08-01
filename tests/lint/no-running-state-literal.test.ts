@@ -79,6 +79,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/action-copy.ts',
   'webview-ui/src/lib/snapshot-types.ts',
   'src/contracts/sidebar-ipc.ts',
+  // Metrics wire entities own the in-flight `isRunning` projection field.
+  'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte',
   'src/metrics/metrics-service.ts'
 ]);
