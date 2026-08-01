@@ -49,6 +49,9 @@ jobs:
       - name: Typecheck (webview)
         run: npm run typecheck:webview
 
+      - name: Typecheck (tests)
+        run: npm run typecheck:tests
+
       - name: Lint
         run: npm run lint
 

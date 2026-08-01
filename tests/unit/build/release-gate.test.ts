@@ -46,9 +46,7 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
   it('the `ci` chain invokes `package:smoke` after build and before integration', () => {
     const scripts = readScripts();
     expect(scripts['package:smoke']).toBeTypeOf('string');
-    expect(scripts['package:smoke']).toContain('vsce package');
-    expect(scripts['package:smoke']).toContain('--out schegent-smoke.vsix');
-    expect(scripts['package:smoke']).toContain('scripts/check-vsix-smoke.mjs');
+    expect(scripts['package:smoke']).toContain('scripts/package-vsix-smoke.mjs');
 
     const ci = scripts.ci;
     const idxBuild = ci.indexOf('npm run build');
@@ -74,13 +72,15 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     // lint → test → build → package:smoke → test:integration. We only assert
     // presence and ordering of the load-bearing steps, not exact whitespace.
     const idxTypecheck = ci.indexOf('npm run typecheck');
+    const idxTestTypecheck = ci.indexOf('npm run typecheck:tests');
     const idxLint = ci.indexOf('npm run lint');
     const idxTest = ci.indexOf('npm run test');
     const idxBuild = ci.indexOf('npm run build');
     const idxPackage = ci.indexOf('npm run package:smoke');
     const idxIntegration = ci.indexOf('npm run test:integration');
     expect(idxTypecheck).toBeGreaterThanOrEqual(0);
-    expect(idxLint).toBeGreaterThan(idxTypecheck);
+    expect(idxTestTypecheck).toBeGreaterThan(idxTypecheck);
+    expect(idxLint).toBeGreaterThan(idxTestTypecheck);
     expect(idxTest).toBeGreaterThan(idxLint);
     expect(idxBuild).toBeGreaterThan(idxTest);
     expect(idxPackage).toBeGreaterThan(idxBuild);

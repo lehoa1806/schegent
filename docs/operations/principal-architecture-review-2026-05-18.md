@@ -4,6 +4,29 @@ Review date: 2026-05-18
 
 Scope: first-party implementation under `repo/`, planning-envelope docs under the workspace root where they govern agent behavior, package manifests, lockfiles, CI workflows, tests, security docs, webview code, host code, and active Spec Driven Development workflow plan `specs/056-principal-arch-hardening/plan.md`. Generated `dist/`, `out/`, `.vscode-test/`, and dependency trees were excluded from code-quality judgment except where build and test behavior matters.
 
+## Status addendum — 2026-08-01
+
+This document is a dated snapshot of evidence gathered on 2026-05-18. Claims
+below such as “`RELEASE.md` is missing,” “dependency audit is non-blocking,”
+and “some tests are excluded from static checking” are historical findings,
+not descriptions of the current repository. Do not use them as current release
+evidence without this addendum.
+
+| Historical finding | Current disposition and evidence |
+|---|---|
+| Release workflow referenced a missing runbook. | Remediated: [`RELEASE.md`](../../RELEASE.md) defines required gates, dependency policy, artifact inspection, release, rollback, and diagnostic handling. |
+| Root/webview dependency audits did not block at the documented floor. | Remediated: `security-audit.yml` fails at low-or-higher and `dependency-review.yml` blocks newly introduced high-or-higher advisories. |
+| Mutating IPC classification depended on an isolated router list. | Risk reduced: command metadata is centralized in `src/contracts/sidebar-command-metadata.ts`; router and parity/lint gates consume or pin the same classification. Adding a new mutation remains a mandatory security-review duty. |
+| CLI subprocesses always inherited the full extension-host environment. | Partially remediated: `schegent.cli.inheritEnvironment=false` is enforced across supported runners and pre-compaction. Safer allowlist mode and default migration remain open. |
+| Some test sources were excluded from strict TypeScript checking. | Remediated: `tsconfig.tests.json` includes all `tests/**/*` without per-test exclusions, and `typecheck:tests` runs before lint in local and GitHub CI gates. |
+| VSIX smoke allowed development-only files. | Remediated: `.vscodeignore` removes development sources and the package gate enforces an exact 20-file allowlist plus compressed/uncompressed size budgets in a cleaned temporary directory. |
+
+The canonical register for unresolved findings, dependencies, acceptance
+criteria, and implementation order is the
+[consolidated remediation plan](consolidated-remediation-plan-2026-08-01.md).
+The historical analysis below is intentionally preserved unchanged for audit
+provenance.
+
 ## Executive Summary
 
 Schegent is fundamentally coherent and unusually well-instrumented for a local AI-agent orchestration extension. Its strongest properties are explicit security hard rules, centralized sanitization, typed IPC contracts, append-only audit discipline, single-queue concurrency invariants, and a broad regression suite that exercises host, webview, lint, parity, perf, E2E, and VS Code integration surfaces.
