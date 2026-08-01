@@ -17,6 +17,7 @@ import {
   type AuditTailEntry,
   type WorkflowSnapshot
 } from './snapshot';
+import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 
 export type PlaceholderReason = 'no-workspace' | 'init-failed';
 
@@ -88,9 +89,10 @@ export class PlaceholderProjector implements ProjectorHandle {
       monitor: null,
       history: Object.freeze([]) as readonly never[],
       producedAt,
-      availablePipelines: Object.freeze([]) as readonly never[],
-      availablePhases: Object.freeze([]) as readonly never[],
-      availableModels: Object.freeze([]) as readonly never[],
+      availablePipelines: Object.freeze([]),
+      availablePhases: Object.freeze([]),
+      availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+      availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
       delayedRetry: IDLE_DELAYED_RETRY,
       generalSettings: IDLE_GENERAL_SETTINGS,
       sessionArtifacts: IDLE_SESSION_ARTIFACTS,

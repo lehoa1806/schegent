@@ -8,6 +8,7 @@ import {
   selectActivityFeedTask
 } from '../activity-feed-selection.svelte';
 import type {
+  BackendRunnerKind,
   HistoryEntry,
   PhaseTile,
   PipelineDefinition,
@@ -104,7 +105,8 @@ function snapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
       Object.freeze({ id: 'speckit-plan', name: 'Plan', instruction: '', loopable: false }),
       Object.freeze({ id: 'speckit-tasks', name: 'Tasks', instruction: '', loopable: false })
     ]),
-    availableModels: Object.freeze([])
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[]
   } as WorkflowSnapshot);
 }
 

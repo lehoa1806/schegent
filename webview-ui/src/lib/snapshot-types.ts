@@ -604,7 +604,8 @@ export interface WorkflowSnapshot {
   readonly activePipeline?: ActivePipelineSummary;
   readonly availablePipelines: readonly PipelineDefinition[];
   readonly availablePhases: readonly PhaseDefinition[];
-  readonly availableModels: readonly string[];
+  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableBackends: readonly BackendRunnerKind[];
   /**
    * Feature 011 — delayed-retry state on the active run. Optional for
    * legacy-tolerance: an older host bundle may not include it; the

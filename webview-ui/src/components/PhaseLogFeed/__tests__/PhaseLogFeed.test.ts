@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type {
+  BackendRunnerKind,
   HistoryEntry,
   PhaseTile,
   PipelineDefinition,
@@ -176,7 +177,8 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
       Object.freeze({ id: 'speckit-plan', name: 'Plan', instruction: '', loopable: false }),
       Object.freeze({ id: 'speckit-tasks', name: 'Tasks', instruction: '', loopable: false })
     ]),
-    availableModels: Object.freeze([])
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[]
   } as WorkflowSnapshot);
   return Object.freeze({ ...base, ...overrides });
 }

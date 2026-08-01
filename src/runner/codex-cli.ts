@@ -262,4 +262,27 @@ export class CodexCliRunner implements BackendRunner {
       }, SIGKILL_DELAY_MS).unref?.();
     }
   }
+
+  public async probeAvailability(cliPath: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        const child = safeSpawn(this.spawnFn, cliPath, ['--help'], {
+          stdio: 'ignore',
+          shell: false,
+          env: process.env
+        });
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => {
+          resolve(code === 0);
+        });
+      } catch (err) {
+        resolve(false);
+      }
+    });
+  }
+
+  public async detectModels(_cliPath: string): Promise<readonly string[]> {
+    // Codex CLI does not expose a models command today. Return known closed set.
+    return Object.freeze(['codex-default']);
+  }
 }

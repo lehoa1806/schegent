@@ -198,7 +198,12 @@
     { "id": "speckit-implement", "name": "Implement", "instruction": "Implement and verify the approved plan.", "timeoutSeconds": 5400, "loopable": false, "runner": "claude" },
     { "id": "finalize", "name": "Finalize", "instruction": "Review, commit, and integrate the result.", "timeoutSeconds": 1800, "loopable": false, "runner": "claude" }
   ],
-  "availableModels": ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-5.6-codex"],
+  "availableModels": {
+    "claude": ["claude-sonnet-4-6", "claude-opus-4-6"],
+    "codex": ["gpt-5.6-codex"],
+    "agy": ["Gemini 3.1 Pro (High)"]
+  },
+  "availableBackends": ["claude", "codex", "agy"],
   "phasePrecedence": {
     "speckit-plan::model": "workspace",
     "speckit-plan::effort": "user",

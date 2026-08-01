@@ -169,6 +169,8 @@ export interface StateProjectorDeps {
    * ordered snapshot of recent SanitizedLogger output.
    */
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
+  readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
+  readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;
@@ -232,6 +234,8 @@ export class StateProjector {
     | undefined;
   private readonly getConfirmationsEnabled?: () => boolean;
   private readonly getDebugLogTail?: () => readonly DebugLogEntry[];
+  private readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
+  private readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
 
   private storeSub: Disposable | null = null;
   private auditSub: AuditDisposable | null = null;
@@ -302,6 +306,8 @@ export class StateProjector {
     this.getPhasePrecedence = deps.getPhasePrecedence;
     this.getConfirmationsEnabled = deps.getConfirmationsEnabled;
     this.getDebugLogTail = deps.getDebugLogTail;
+    this.getAvailableModels = deps.getAvailableModels;
+    this.getAvailableBackends = deps.getAvailableBackends;
     // Feature 059 — populate the initial snapshot via a real `project()`
     // so the first `subscribe()` delivers fresh trust + queue values
     // without requiring `start()` to be called first. The projection is
@@ -818,7 +824,8 @@ export class StateProjector {
       producedAt: this.now().toISOString(),
       availablePhases: Object.freeze([...catalog.phases]),
       availablePipelines: Object.freeze([...catalog.pipelines]),
-      availableModels: Object.freeze([...catalog.models]),
+      availableModels: Object.freeze(this.getAvailableModels ? this.getAvailableModels() : { claude: catalog.models, codex: ['codex-default'], agy: ['Gemini 3.1 Pro (High)'] } as Record<BackendRunnerKind, readonly string[]>),
+      availableBackends: Object.freeze(this.getAvailableBackends ? this.getAvailableBackends() : ['claude'] as readonly BackendRunnerKind[]),
       delayedRetry,
       generalSettings,
       sessionArtifacts,
