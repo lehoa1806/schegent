@@ -5,16 +5,10 @@ import { resolve } from 'node:path';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number }> = [
-  // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped +15 to accommodate the
-  // FR-028 retry-decision projection sink wired into PhaseRunner construction.
-  // Feature 065 (T055 / 2026-05-22) — bumped +50 (1400 → 1450) to absorb the
-  // host wiring for the new enqueue/start separation surface: the
-  // `ScheduledStartCoordinator` lifecycle, the `dismissMigrationNotice` IPC
-  // hook, the status-bar `showTransient` subscriber, and the v6 → v7 migration
-  // re-arm path. The feature legitimately extends extension.ts; the alternative
-  // (a second activation aggregator file) was rejected to avoid splintering the
-  // host registration order.
-  { path: 'src/extension.ts', maxLines: 1_500 },
+  // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
+  // composition and Stage-2 dashboard/command lifecycle now have focused
+  // owners under src/activation.
+  { path: 'src/extension.ts', maxLines: 1_305 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
