@@ -4,7 +4,14 @@
 // stateless shape transformation from `WorkflowRun` → `PhaseTile[]`.
 import type { Phase, PhaseOutcome } from '../../controller/phase';
 import type { WorkflowRun } from '../../state/workflow-run';
-import { buildEmptyPhases, isRecursivePhase, type PhaseName, type PhaseTile, type SubProgress } from './snapshot';
+import {
+  buildEmptyPhases,
+  isRecursivePhase,
+  type PhaseName,
+  type PhaseResultState,
+  type PhaseTile,
+  type SubProgress
+} from './snapshot';
 
 const RECURSIVE_PHASE_MAX_ITERATIONS = 10;
 
@@ -37,6 +44,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
       ? pipelinePhases.filter((def) => !removedPhaseIds.has(def.id)).map<MutableTile>((def, idx) => ({
         name: def.id,
         displayName: def.name,
+        ...(def.isRequired !== undefined ? { isRequired: def.isRequired } : {}),
         order: idx + 1,
         state: 'not-started',
         iteration: 0,
@@ -112,17 +120,17 @@ export function phaseIndex(phase: Phase, phaseOrder?: Map<PhaseName, number>): n
   return BUILT_IN_PHASE_INDEX.get(phase as PhaseName) ?? -1;
 }
 
-export function mapPhaseOutcome(
-  outcome: PhaseOutcome
-): 'clean' | 'ambiguities-remain' | 'issues-remain' | null {
+export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null {
   switch (outcome) {
     case 'clean':
       return 'clean';
     case 'issues_remain':
       return 'issues-remain';
     case 'failed':
-    case 'rate_limited':
+      return 'failed';
     case 'timeout':
+      return 'timed-out';
+    case 'rate_limited':
     case 'transient_error':
     case 'skipped':
     case 'paused-at-breakpoint':

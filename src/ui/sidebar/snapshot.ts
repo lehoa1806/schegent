@@ -1,4 +1,6 @@
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
+import type { BackendPingState } from '../../services/backend-ping-service';
+export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
   type EvidenceHealthSnapshot
@@ -26,6 +28,13 @@ export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
 export type PhaseName = string;
 
 export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
+
+export type PhaseResultState =
+  | 'clean'
+  | 'ambiguities-remain'
+  | 'issues-remain'
+  | 'failed'
+  | 'timed-out';
 
 export type WorkflowStatus =
   | 'idle'
@@ -74,7 +83,7 @@ export interface PhaseTile {
   readonly order: number;
   readonly state: PhaseState;
   readonly iteration: number;
-  readonly lastResult: 'clean' | 'ambiguities-remain' | 'issues-remain' | null;
+  readonly lastResult: PhaseResultState | null;
   readonly elapsedMs: number;
   readonly subProgress: SubProgress | null;
   /**
@@ -83,6 +92,8 @@ export interface PhaseTile {
    * empty, consumers fall back to `formatPhaseLabel(tile.name)`.
    */
   readonly displayName?: string;
+  /** Feature 076 — absent means required for legacy snapshots. */
+  readonly isRequired?: boolean;
   readonly phaseMessage?: {
     readonly fromPhaseId: string;
     readonly entryCount: number;
@@ -365,6 +376,7 @@ export interface WorkflowSnapshot {
   readonly availablePhases: readonly PhaseDef[];
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
+  readonly backendPingState: BackendPingState;
   /**
    * Feature 011 — delayed-retry state on the active run. Always present
    * (even when there is no active run); fields are null/0 when no retry
@@ -575,6 +587,7 @@ export function buildIdleSnapshot(opts: {
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
+    backendPingState: Object.freeze({ status: 'idle' as const }),
     delayedRetry: IDLE_DELAYED_RETRY,
     generalSettings: IDLE_GENERAL_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,
@@ -618,7 +631,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
-  rulesInjectPerPhase: false,
   defaultPipelineId: 'dev-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
@@ -639,7 +651,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     watchdogPollIntervalMinutes: 'default',
     auditRotationSizeMB: 'default',
     auditRotationMaxAgeDays: 'default',
-    rulesInjectPerPhase: 'default',
     defaultPipelineId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',

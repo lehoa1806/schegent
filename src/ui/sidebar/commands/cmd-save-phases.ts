@@ -40,6 +40,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     effort?: unknown;
     model?: unknown;
     loopable?: unknown;
+    isRequired?: unknown;
     runner?: unknown;
   }[];
   // BUG-001 (FR-012) — foundational field validation. Runs BEFORE the
@@ -111,6 +112,14 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
         ctx,
         'rejected',
         `phase-validation:${phaseId}:loopable:must-be-boolean`
+      );
+      return;
+    }
+    if (phase.isRequired !== undefined && typeof phase.isRequired !== 'boolean') {
+      await ack(
+        ctx,
+        'rejected',
+        `phase-validation:${phaseId}:isRequired:must-be-boolean`
       );
       return;
     }
