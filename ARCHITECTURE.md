@@ -14,6 +14,14 @@ validation, and queue control. The Svelte webview is a presentation layer
 that renders host-projected snapshots and dispatches typed commands; the host
 is the single source of truth.
 
+"Local-first" describes storage and control-plane placement; it is not an
+offline AI-execution guarantee. See
+[`docs/concepts/local-first-not-offline.md`](docs/concepts/local-first-not-offline.md).
+Remote, multi-user, and same-workspace parallel execution are blocked by the
+accepted
+[`expansion architecture gate`](docs/architecture/remote-multi-user-expansion-gate.md);
+the local concurrency cap must not be raised as a substitute for that design.
+
 ## System Boundaries
 
 ```text
