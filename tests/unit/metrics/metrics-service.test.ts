@@ -12,7 +12,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
-import { readMetrics } from '../../../src/metrics/metrics-log-reader';
+import { readMetrics } from '../../../src/metrics/metrics-service';
 
 function baseEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
@@ -222,9 +222,9 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.tasks).toEqual([]);
     expect(result.phaseTypeAggregates).toEqual([]);
     expect(result.costTimeline).toEqual([]);
-    expect(result.totalScannedEntries).toBe(0);
-    expect(result.parseWarnings).toBe(0);
-    expect(result.includesArchived).toBe(false);
+    expect(result.meta.totalScannedEntries).toBe(0);
+    expect(result.meta.parseWarnings).toBe(0);
+    expect(result.meta.includesArchives).toBe(false);
     expect(result.oldestIncludedTimestamp).toBeUndefined();
   });
 
@@ -233,7 +233,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     await writeFile(auditLog, '', 'utf8');
     const result = await readMetrics(workspaceRoot);
     expect(result.tasks).toEqual([]);
-    expect(result.totalScannedEntries).toBe(0);
+    expect(result.meta.totalScannedEntries).toBe(0);
   });
 
   it('tallies malformed JSON lines into parseWarnings without dropping surrounding valid entries', async () => {
@@ -256,8 +256,8 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
 
     const result = await readMetrics(workspaceRoot);
 
-    expect(result.parseWarnings).toBe(1);
-    expect(result.totalScannedEntries).toBe(3);
+    expect(result.meta.parseWarnings).toBe(1);
+    expect(result.meta.totalScannedEntries).toBe(3);
     expect(result.tasks.length).toBe(1);
     expect(result.tasks[0]!.runId).toBe('run-1');
   });
@@ -275,8 +275,8 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
 
     const result = await readMetrics(workspaceRoot);
 
-    expect(result.parseWarnings).toBe(1);
-    expect(result.totalScannedEntries).toBe(2);
+    expect(result.meta.parseWarnings).toBe(1);
+    expect(result.meta.totalScannedEntries).toBe(2);
   });
 
   it('derives a completed Task Record from a direct task-execution-started/-ended pair', async () => {
@@ -719,7 +719,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
 
     const result = await readMetrics(workspaceRoot);
 
-    expect(result.includesArchived).toBe(false);
+    expect(result.meta.includesArchives).toBe(false);
     expect(result.tasks.find((t) => t.runId === 'run-old')).toBeUndefined();
   });
 
@@ -734,9 +734,9 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     // Non-matching filename must be ignored (mirrors audit-log-writer.ts's own convention).
     await writeFile(join(auditDir, 'audit.log.bak'), taskStarted({ id: 'e-bak', timestamp: '2026-01-02T00:00:00.000Z', runId: 'run-bak' }) + '\n', 'utf8');
 
-    const result = await readMetrics(workspaceRoot, { includeArchived: true });
+    const result = await readMetrics(workspaceRoot, { includeArchives: true });
 
-    expect(result.includesArchived).toBe(true);
+    expect(result.meta.includesArchives).toBe(true);
     expect(result.tasks.find((t) => t.runId === 'run-old')).toBeDefined();
     expect(result.tasks.find((t) => t.runId === 'run-bak')).toBeUndefined();
     expect(result.oldestIncludedTimestamp).toBe('2026-01-01T00:00:00.000Z');
@@ -1131,9 +1131,9 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
       // yet" ENOENT.
       await writeFile(auditDir, 'not a directory', 'utf8');
 
-      const result = await readMetrics(workspaceRoot, { includeArchived: true });
+      const result = await readMetrics(workspaceRoot, { includeArchives: true });
 
-      expect(result.includesArchived).toBe(false);
+      expect(result.meta.includesArchives).toBe(false);
       expect(result.tasks).toEqual([]);
     });
 

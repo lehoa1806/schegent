@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { CostTimelinePoint, PhaseRecord, PhaseTypeAggregate, TaskRecord } from '../lib/messages';
-  import { readMetrics } from '../lib/metrics-ipc';
-  import { formatDuration } from '../lib/format-duration';
-  import { formatAbsoluteTime, formatPhaseLabel } from '../lib/format';
+  import type { CostTimelinePoint, PhaseRecord, PhaseTypeAggregate, TaskRecord } from '../../lib/messages';
+  import { readMetrics } from '../../lib/metrics-ipc';
+  import { formatDuration } from '../../lib/format-duration';
+  import { formatAbsoluteTime, formatPhaseLabel } from '../../lib/format';
 
   interface Props {
     active: boolean;
@@ -23,7 +23,7 @@
   let phaseTypeAggregates = $state<readonly PhaseTypeAggregate[]>([]);
   let costTimeline = $state<readonly CostTimelinePoint[]>([]);
   let oldestIncludedTimestamp = $state<string | undefined>(undefined);
-  let includeArchived = $state(false);
+  let includeArchives = $state(false);
   let sortKey = $state<SortKey>('startTime');
   let sortDir = $state<'asc' | 'desc'>('desc');
   let page = $state(0);
@@ -32,7 +32,7 @@
 
   async function fetchMetrics(): Promise<void> {
     loading = true;
-    const result = await readMetrics({ includeArchived });
+    const result = await readMetrics({ includeArchives });
     loading = false;
     loaded = true;
     if (result.outcome !== 'success') return;
@@ -54,7 +54,7 @@
   }
 
   function onToggleArchived(): void {
-    includeArchived = !includeArchived;
+    includeArchives = !includeArchives;
     void fetchMetrics();
   }
 
@@ -215,7 +215,7 @@
       <input
         type="checkbox"
         data-testid="metrics-include-archived"
-        checked={includeArchived}
+        checked={includeArchives}
         onchange={onToggleArchived}
       />
       Include archived history
@@ -486,7 +486,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--schegent-gap);
-    padding: 0;
+    padding: var(--schegent-pad);
+    overflow-y: auto;
+    flex: 1;
+    box-sizing: border-box;
   }
   .visually-hidden {
     position: absolute;

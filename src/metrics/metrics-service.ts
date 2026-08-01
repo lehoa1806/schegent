@@ -26,7 +26,7 @@ import type {
 import type { SanitizedLogger } from '../lib/logger';
 
 export interface ReadMetricsOptions {
-  readonly includeArchived?: boolean;
+  readonly includeArchives?: boolean;
 }
 
 const ARCHIVE_PREFIX = 'audit.log.';
@@ -57,9 +57,9 @@ export async function readMetrics(
   options: ReadMetricsOptions = {},
   logger?: SanitizedLogger
 ): Promise<ReadMetricsResponse> {
-  const includeArchived = options.includeArchived ?? false;
+  const includeArchives = options.includeArchives ?? false;
   const auditDir = join(workspaceRoot, '.schegent');
-  const { files, archivedScanSucceeded } = await listAuditFiles(auditDir, includeArchived, logger);
+  const { files, archivedScanSucceeded } = await listAuditFiles(auditDir, includeArchives, logger);
 
   const state: ScanState = {
     totalScannedEntries: 0,
@@ -84,9 +84,11 @@ export async function readMetrics(
     phaseTypeAggregates: buildPhaseTypeAggregates(allPhases),
     costTimeline: buildCostTimeline(allPhases),
     oldestIncludedTimestamp: state.oldestTimestamp?.raw,
-    includesArchived: archivedScanSucceeded,
-    totalScannedEntries: state.totalScannedEntries,
-    parseWarnings: state.parseWarnings
+    meta: {
+      includesArchives: archivedScanSucceeded,
+      totalScannedEntries: state.totalScannedEntries,
+      parseWarnings: state.parseWarnings
+    }
   };
 }
 
@@ -97,11 +99,11 @@ interface AuditFileListing {
 
 async function listAuditFiles(
   auditDir: string,
-  includeArchived: boolean,
+  includeArchives: boolean,
   logger?: SanitizedLogger
 ): Promise<AuditFileListing> {
   const liveLog = join(auditDir, 'audit.log');
-  if (!includeArchived) return { files: [liveLog], archivedScanSucceeded: false };
+  if (!includeArchives) return { files: [liveLog], archivedScanSucceeded: false };
 
   let entries: string[];
   try {
@@ -109,7 +111,7 @@ async function listAuditFiles(
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       logger?.warn(
-        `metrics-log-reader: failed to list archived audit logs: ${logger.sanitize(
+        `metrics-service: failed to list archived audit logs: ${logger.sanitize(
           (err as Error).message ?? 'unknown error'
         )}`
       );
@@ -133,7 +135,7 @@ async function scanFile(filePath: string, state: ScanState, logger?: SanitizedLo
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     logger?.warn(
-      `metrics-log-reader: failed to read audit log: ${logger.sanitize((err as Error).message ?? 'unknown error')}`
+      `metrics-service: failed to read audit log: ${logger.sanitize((err as Error).message ?? 'unknown error')}`
     );
     return;
   }

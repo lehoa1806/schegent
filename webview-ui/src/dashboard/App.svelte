@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MetricsDashboard from '../components/MetricsDashboard/MetricsDashboard.svelte';
   import Dashboard from '../components/Dashboard.svelte';
   import PipelineBuilder from '../components/PipelineBuilder.svelte';
   import SystemTab from '../components/SystemTab.svelte';
@@ -33,7 +34,9 @@
       {/each}
     </nav>
     <div class="dashboard-route" data-testid="dashboard-route">
-      {#if route === 'operations'}
+      {#if route === 'metrics'}
+        <MetricsDashboard active={true} />
+      {:else if route === 'operations'}
         <Dashboard {snapshot} />
       {:else if route === 'pipeline-builder'}
         <PipelineBuilder {snapshot} />

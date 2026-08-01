@@ -1093,14 +1093,17 @@ export function isValidReadMetricsResponse(value: unknown): value is ReadMetrics
   if (oldestIncludedTimestamp !== undefined && typeof oldestIncludedTimestamp !== 'string') {
     return false;
   }
-  if (typeof v['includesArchived'] !== 'boolean') return false;
-  if (typeof v['totalScannedEntries'] !== 'number') return false;
-  if (typeof v['parseWarnings'] !== 'number') return false;
+  const meta = v['meta'];
+  if (meta === null || typeof meta !== 'object') return false;
+  const m = meta as Record<string, unknown>;
+  if (typeof m['includesArchives'] !== 'boolean') return false;
+  if (typeof m['totalScannedEntries'] !== 'number') return false;
+  if (typeof m['parseWarnings'] !== 'number') return false;
   return true;
 }
 
 // Inbound `CMD_READ_METRICS` request (webview→host direction, FR-014's
-// `includeArchived` opt-in). Must thread `payload.includeArchived` through
+// `includeArchives` opt-in). Must thread `payload.includeArchives` through
 // to the constructed command — dropping it here would silently defeat the
 // archived-history toggle regardless of what the webview requests.
 function validateReadMetrics(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
@@ -1109,16 +1112,16 @@ function validateReadMetrics(obj: Record<string, unknown>, correlationId: string
     return fail('missing-payload', { type: CMD_READ_METRICS, correlationId });
   }
   const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['includeArchived'])) {
+  if (hasUnexpectedKeys(p, ['includeArchives'])) {
     return fail('unexpected-payload-fields', { type: CMD_READ_METRICS, correlationId });
   }
-  const includeArchived = p['includeArchived'];
-  if (includeArchived !== undefined && typeof includeArchived !== 'boolean') {
-    return fail('invalid-includeArchived', { type: CMD_READ_METRICS, correlationId });
+  const includeArchives = p['includeArchives'];
+  if (includeArchives !== undefined && typeof includeArchives !== 'boolean') {
+    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
   }
   return ok({
     type: CMD_READ_METRICS,
     correlationId,
-    payload: includeArchived === undefined ? {} : { includeArchived }
+    payload: includeArchives === undefined ? {} : { includeArchives }
   } as SidebarCommand);
 }

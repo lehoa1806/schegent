@@ -732,7 +732,7 @@ export interface CostTimelinePoint {
 }
 
 export interface ReadMetricsRequest {
-  readonly includeArchived?: boolean;
+  readonly includeArchives?: boolean;
 }
 
 export interface ReadMetricsCommand extends CommandBase<typeof CMD_READ_METRICS> {
@@ -754,9 +754,11 @@ export interface ReadMetricsResponse {
   readonly phaseTypeAggregates: readonly PhaseTypeAggregate[];
   readonly costTimeline: readonly CostTimelinePoint[];
   readonly oldestIncludedTimestamp?: string;
-  readonly includesArchived: boolean;
-  readonly totalScannedEntries: number;
-  readonly parseWarnings: number;
+  readonly meta: {
+    readonly includesArchives: boolean;
+    readonly totalScannedEntries: number;
+    readonly parseWarnings: number;
+  };
 }
 
 // Feature 059 — Fine-Grained Trust Scopes. Three per-capability trust

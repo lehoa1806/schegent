@@ -13,9 +13,9 @@ function validResponse(overrides: Record<string, unknown> = {}): Record<string, 
     tasks: [],
     phaseTypeAggregates: [],
     costTimeline: [],
-    includesArchived: false,
+    meta: { includesArchives: false,
     totalScannedEntries: 0,
-    parseWarnings: 0,
+    parseWarnings: 0 },
     ...overrides
   };
 }
@@ -33,8 +33,11 @@ describe('isValidReadMetricsResponse (Feature 073, T004)', () => {
           phaseTypeAggregates: [{ phaseType: 'plan' }],
           costTimeline: [{ date: '2026-07-01', dailyCostUsd: 1.5, cumulativeCostUsd: 1.5 }],
           oldestIncludedTimestamp: '2026-05-01T00:00:00.000Z',
-          totalScannedEntries: 42,
-          parseWarnings: 2
+          meta: {
+            includesArchives: false,
+            totalScannedEntries: 42,
+            parseWarnings: 2
+          }
         })
       )
     ).toBe(true);
@@ -64,39 +67,39 @@ describe('isValidReadMetricsResponse (Feature 073, T004)', () => {
   });
 
   it('rejects a non-boolean includesArchived', () => {
-    expect(isValidReadMetricsResponse(validResponse({ includesArchived: 'false' }))).toBe(false);
+    expect(isValidReadMetricsResponse(validResponse({ meta: { includesArchives: 'false', totalScannedEntries: 0, parseWarnings: 0 } }))).toBe(false);
   });
 
   it('rejects a non-numeric totalScannedEntries', () => {
-    expect(isValidReadMetricsResponse(validResponse({ totalScannedEntries: '0' }))).toBe(false);
+    expect(isValidReadMetricsResponse(validResponse({ meta: { includesArchives: false, totalScannedEntries: '0', parseWarnings: 0 } }))).toBe(false);
   });
 
   it('rejects a non-numeric parseWarnings', () => {
-    expect(isValidReadMetricsResponse(validResponse({ parseWarnings: null }))).toBe(false);
+    expect(isValidReadMetricsResponse(validResponse({ meta: { includesArchives: false, totalScannedEntries: 0, parseWarnings: null } }))).toBe(false);
   });
 });
 
 // FR-014 — the archived-history opt-in must survive the real inbound
 // validation path (webview -> validateInboundMessage), not just the
 // handler's own pass-through of an already-constructed command.
-describe('validateInboundMessage(CMD_READ_METRICS) — includeArchived threading (FR-014)', () => {
-  it('threads includeArchived: true from the raw payload into the validated command', () => {
+describe('validateInboundMessage(CMD_READ_METRICS) — includeArchives threading (FR-014)', () => {
+  it('threads includeArchives: true from the raw payload into the validated command', () => {
     const result = validateInboundMessage({
       type: CMD_READ_METRICS,
       correlationId: 'corr-1',
-      payload: { includeArchived: true }
+      payload: { includeArchives: true }
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.command).toEqual({
         type: CMD_READ_METRICS,
         correlationId: 'corr-1',
-        payload: { includeArchived: true }
+        payload: { includeArchives: true }
       });
     }
   });
 
-  it('accepts an empty payload and omits includeArchived rather than forcing a default', () => {
+  it('accepts an empty payload and omits includeArchives rather than forcing a default', () => {
     const result = validateInboundMessage({
       type: CMD_READ_METRICS,
       correlationId: 'corr-2',
@@ -117,11 +120,11 @@ describe('validateInboundMessage(CMD_READ_METRICS) — includeArchived threading
     expect(result.ok).toBe(false);
   });
 
-  it('rejects a non-boolean includeArchived', () => {
+  it('rejects a non-boolean includeArchives', () => {
     const result = validateInboundMessage({
       type: CMD_READ_METRICS,
       correlationId: 'corr-4',
-      payload: { includeArchived: 'yes' }
+      payload: { includeArchives: 'yes' }
     });
     expect(result.ok).toBe(false);
   });
@@ -130,7 +133,7 @@ describe('validateInboundMessage(CMD_READ_METRICS) — includeArchived threading
     const result = validateInboundMessage({
       type: CMD_READ_METRICS,
       correlationId: 'corr-5',
-      payload: { includeArchived: true, workspaceRoot: '/etc/passwd' }
+      payload: { includeArchives: true, workspaceRoot: '/etc/passwd' }
     });
     expect(result.ok).toBe(false);
   });

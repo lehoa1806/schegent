@@ -3,7 +3,7 @@
 // Pipeline Builder and Settings).
 //
 // Covers:
-//   - Four nav buttons render in order: Operations, Pipeline Builder, System, Settings.
+//   - Five nav buttons render in order: Metrics, Operations, Pipeline Builder, System, Settings.
 //   - Each carries the stable data-testid from the navigation contract.
 //   - Clicking each route switches the rendered content surface.
 //   - No `dashboard-tabs` (legacy two-tier) markup remains anywhere.
@@ -66,11 +66,12 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
     const buttons = container.querySelectorAll('[data-testid^="dashboard-route-"]');
-    expect(buttons.length).toBe(4);
-    expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-operations');
-    expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
-    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-system');
-    expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-settings');
+    expect(buttons.length).toBe(5);
+    expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-metrics');
+    expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-operations');
+    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
+    expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-system');
+    expect(buttons[4].getAttribute('data-testid')).toBe('dashboard-route-settings');
   });
 
   it('switches the visible surface when each route is clicked', async () => {
@@ -80,6 +81,9 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
 
+    const metBtn = container.querySelector(
+      '[data-testid="dashboard-route-metrics"]'
+    ) as HTMLButtonElement;
     const opBtn = container.querySelector(
       '[data-testid="dashboard-route-operations"]'
     ) as HTMLButtonElement;
@@ -101,6 +105,8 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     expect(container.querySelector('[data-testid="dashboard-route-settings"].active')).not.toBeNull();
     await fireEvent.click(opBtn);
     expect(container.querySelector('[data-testid="dashboard-route-operations"].active')).not.toBeNull();
+    await fireEvent.click(metBtn);
+    expect(container.querySelector('[data-testid="dashboard-route-metrics"].active')).not.toBeNull();
   });
 
   it('does NOT render the legacy dashboard-tabs (inner two-tier) markup', () => {

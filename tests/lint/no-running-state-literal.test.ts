@@ -76,8 +76,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/action-copy.ts',
   'webview-ui/src/lib/snapshot-types.ts',
   'src/contracts/sidebar-ipc.ts',
-  'webview-ui/src/components/MetricsSection.svelte',
-  'src/metrics/metrics-log-reader.ts'
+  'webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte',
+  'src/metrics/metrics-service.ts'
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

@@ -83,7 +83,7 @@ import { projectPhasePrecedence } from './config/phase-precedence';
 import type { PipelineCatalog } from './config/pipeline-config';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
-import { readMetrics } from './metrics/metrics-log-reader';
+import { readMetrics } from './metrics/metrics-service';
 import {
   createPhaseLogService,
   PhaseLogTailRegistry,

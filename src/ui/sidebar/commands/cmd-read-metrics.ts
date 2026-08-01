@@ -1,25 +1,27 @@
 import type { ReadMetricsCommand, ReadMetricsResponse } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
-import { ack } from './handler-helpers';
+import { ack, checkPrimary } from './handler-helpers';
 
-// Feature 073 T010 — read-only handler. MUST stay out of MUTATING_COMMANDS
-// so secondary VS Code hosts can dispatch it too (mirrors
-// cmd-read-phase-log.ts; read-only commands do not gate on checkPrimary).
+// Feature 073 T010 — handler MUST gate on isPrimaryHost() to prevent multi-window
+// races during archive scans.
 // Workspace root reaches this handler only via ctx.deps.metricsService,
 // which wireStage2() constructs once at activation with a resolved
 // workspaceRoot — this file never reads workspaceFolders directly.
 export const handler: CommandHandler<ReadMetricsCommand> = async (ctx, command) => {
+  await checkPrimary(ctx);
   await emitViewOpenedOnce(ctx);
 
   const req = command.payload ?? {};
-  const includesArchived = req.includeArchived ?? false;
+  const includesArchives = req.includeArchives ?? false;
   const emptyResponse: ReadMetricsResponse = {
     tasks: [],
     phaseTypeAggregates: [],
     costTimeline: [],
-    includesArchived,
-    totalScannedEntries: 0,
-    parseWarnings: 0
+    meta: {
+      includesArchives,
+      totalScannedEntries: 0,
+      parseWarnings: 0
+    }
   };
 
   if (!ctx.deps.metricsService) {
