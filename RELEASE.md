@@ -9,12 +9,13 @@ two-tier CI shape this document codifies.
 
 ## CI shape
 
-Two workflows live under [.github/workflows/](.github/workflows/):
+Three validation workflows live under [.github/workflows/](.github/workflows/):
 
 | Workflow | Trigger | Jobs | Purpose |
 |---|---|---|---|
-| [`pr.yml`](.github/workflows/pr.yml) | `pull_request` | host/webview/test-source typechecks, `lint`, `test`, `build`, exact package smoke | Fast PR gate. Required on every PR. |
-| [`full-gate.yml`](.github/workflows/full-gate.yml) | `schedule: '0 6 * * 1'` (Mondays 06:00 UTC) + `workflow_dispatch` | nine jobs: `typecheck-host`, `typecheck-webview`, `typecheck-tests`, `lint`, `test`, `build`, `e2e`, `integration`, `evidence-soak` | Heavier deterministic E2E, isolated extension-host integration, and high-volume evidence coverage. Required green before cutting a release. |
+| [`pr.yml`](.github/workflows/pr.yml) | `pull_request` | host/webview/test-source typechecks, `lint`, unit/eval tests, production build, Linux visual matrix, exact package smoke | Fast PR gate. Required on every PR. |
+| [`ci.yml`](.github/workflows/ci.yml) | `push`, `pull_request`, or manual dispatch | full cross-platform validation; Linux additionally runs coverage, visual regression, and isolated integration | Main-branch and PR redundancy for the release-critical path. |
+| [`full-gate.yml`](.github/workflows/full-gate.yml) | `schedule: '0 6 * * 1'` (Mondays 06:00 UTC) + `workflow_dispatch` | ten jobs: `typecheck-host`, `typecheck-webview`, `typecheck-tests`, `lint`, `test`, `build`, `visual`, `e2e`, `integration`, `evidence-soak` | Heavier deterministic E2E, isolated extension-host integration, screenshot regression, and high-volume evidence coverage. Required green before cutting a release. |
 
 The PR gate is fast enough to run inline with normal code review. The
 full gate is the release-readiness signal; the weekly cron exists so a
@@ -32,7 +33,7 @@ Before tagging a release, verify each item:
    gh workflow run full-gate.yml --ref main
    gh run watch
    ```
-2. **All nine full-gate jobs green** on the run you are releasing from.
+2. **All ten full-gate jobs green** on the run you are releasing from.
    Spot-check with:
    ```bash
    gh run list --workflow=full-gate.yml --branch=main --limit=3

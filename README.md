@@ -331,7 +331,10 @@ you control. To report a security issue, see [SECURITY.md](SECURITY.md).
 # install deps (also installs webview-ui)
 npm install
 
-# host, webview, and test-source typechecks + lint + unit tests
+# install the pinned browser used by visual regression tests
+npx playwright install chromium
+
+# typechecks + lint + unit/eval/visual tests
 npm run ci:fast
 
 # full build (host + webview)
@@ -351,9 +354,12 @@ Useful targets:
 | `npm run lint` | ESLint over `src/` and `tests/`. |
 | `npm run test` | Vitest unit suites (host + webview). |
 | `npm run test:coverage` | Unit suites with coverage. |
+| `npm run test:evals` | Deterministic backend-outcome evaluation corpus. |
+| `npm run test:visual` | Production-webview screenshot matrix (five surfaces × three themes). |
+| `npm run test:perf` | Blocking performance and sustained-evidence budgets. |
 | `npm run test:e2e` | End-to-end VS Code suite. |
 | `npm run test:integration` | Integration suite (boots a real VS Code instance). |
-| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit + E2E + build + exact package + isolated integration). |
+| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit/eval/visual/perf/E2E + build + exact package + isolated integration). |
 | `npm run package` | `vsce package --no-dependencies`. |
 | `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |
 
