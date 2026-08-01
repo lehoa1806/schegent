@@ -43,6 +43,20 @@ Check the dashboard's runtime debug log alongside the feed. The host's monitor e
 
 If you do not see a stall record but the feed is quiet, the phase is genuinely running a long tool call (e.g., a `Bash` command). The next event will arrive when the command completes.
 
+## "Is the evidence complete?"
+
+Read the evidence indicator in the status bar or dashboard health strip:
+
+- `healthy` means all three evidence sinks are operating.
+- `evidence degraded` means the raw transcript or runtime log encountered an
+  I/O failure; execution may continue, but optional evidence may be incomplete.
+- `evidence unavailable` means the required structured audit sink failed.
+  Schegent fails the active run closed and stops automatic queue drain.
+
+The indicator reports only normalized causes and is sticky until the workspace
+host reloads. Follow the [Execution Evidence Health recovery
+playbook](evidence-health.md) before resuming.
+
 ## "Why did it fail?"
 
 When a phase ends in failure, the audit log records a `phase-end` event with `outcome: failure` and a `cause` discriminator. The most useful causes:
@@ -153,7 +167,9 @@ For a multi-hour run:
 3. **Enable verbose diagnostics** for `speckit-implement` if you anticipate needing the deep capture.
 4. **Tail the audit log** in a terminal for an at-a-glance health check.
 
-You do not have to stare at the run continuously. The audit log preserves everything; you can come back hours later and reconstruct what happened.
+You do not have to stare at a healthy run continuously. The audit log preserves
+the structured history. If the evidence indicator becomes degraded or
+unavailable, treat the reported failure window as potentially incomplete.
 
 ## Pre-flight monitoring before enqueue
 
@@ -175,6 +191,8 @@ After a run terminates:
 3. **If failed, find the `fatal-signature-matched` or the `monitor-invocation-failed`** to see exactly what went wrong.
 4. **If retried, walk the `retry-scheduled` / `retry-recovered` chain** to see how long the recovery took.
 
-The audit log is the canonical record. Everything you need is there; nothing else is required.
+The audit log is the canonical record when evidence health remained healthy.
+If health reported a failure, preserve all available sinks and record the
+incomplete interval in the post-mortem.
 
 The next operations page is [Intervention Playbook](intervention.md).

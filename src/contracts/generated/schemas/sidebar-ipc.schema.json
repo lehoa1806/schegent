@@ -243,6 +243,16 @@
           "type": "GeneralSettings"
         },
         {
+          "name": "sessionArtifacts",
+          "optional": false,
+          "type": "SessionArtifactsProjection"
+        },
+        {
+          "name": "evidenceHealth",
+          "optional": false,
+          "type": "EvidenceHealthSnapshot"
+        },
+        {
           "name": "wakeUpSettings",
           "optional": false,
           "type": "WakeUpSettings"

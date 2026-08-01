@@ -40,6 +40,45 @@ When enabled, Schegent backend CLI processes inherit the VS Code extension-host 
 
 Disabling inheritance can break CLIs that rely on ambient variables such as `PATH`, proxy configuration, language runtimes, or vendor authentication tokens. Use an absolute `schegent.cli.path` and configure required authentication through the backend CLI's own supported mechanism before disabling this setting.
 
+This legacy boolean remains authoritative for compatibility: `false` forces
+the `minimal` policy even if `schegent.cli.environmentMode` says otherwise.
+
+### `schegent.cli.environmentMode`
+
+- **Type:** `string`
+- **Default:** `"inherit"`
+- **Scope:** `application`
+- **Enum:** `inherit` | `minimal` | `allowlist`
+
+Controls which ambient environment variables reach every backend invocation,
+including startup probes and Claude pre-compaction calls:
+
+- `inherit` forwards the full VS Code extension-host environment, then applies
+  Schegent-controlled variables. This compatibility default emits one
+  sanitized warning per workspace activation.
+- `minimal` forwards only Schegent-controlled variables. Use absolute backend
+  paths and backend-native credential storage.
+- `allowlist` forwards required executable/home/temp/locale/Windows-runtime
+  bootstrap variables, all `LC_*` variables, and the names configured in
+  `schegent.cli.environmentAllowlist`, then applies Schegent-controlled
+  variables last.
+
+Changing this application-scoped setting requires reloading the extension host.
+A future default change requires a major-version migration note; `inherit`
+remains the compatibility default in this release.
+
+### `schegent.cli.environmentAllowlist`
+
+- **Type:** `array of environment-variable names`
+- **Default:** `[]`
+- **Scope:** `application`
+- **Element pattern:** `^[A-Za-z_][A-Za-z0-9_]*$`
+
+Names to forward in `allowlist` mode, for example `HTTPS_PROXY` or a
+backend-specific credential variable. Store names only—never `NAME=value`.
+Values are read from the extension host immediately before each spawn and are
+never persisted, audited, or projected to the webview.
+
 ### `schegent.backend.runner`
 
 - **Type:** `string`
@@ -290,6 +329,24 @@ When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--out
 
 See [Verbose Diagnostics](../features/verbose-diagnostics.md).
 
+### `schegent.logging.sessionRetentionMaxAgeDays`
+
+- **Type:** `integer`
+- **Default:** `30`
+- **Scope:** `resource`
+- **Range:** `1` to `3650`
+
+Maximum age of unredacted raw transcripts and session diagnostic trees. Schegent removes only complete inactive-run groups, sweeping at activation, after a run reaches a terminal state, and after either retention setting changes. Running and paused runs are protected. The structured audit log is outside the managed session root and is never pruned.
+
+### `schegent.logging.sessionRetentionMaxBytes`
+
+- **Type:** `integer`
+- **Default:** `536870912` (512 MiB)
+- **Scope:** `resource`
+- **Range:** `1048576` (1 MiB) to `10737418240` (10 GiB)
+
+Total byte budget for unredacted raw transcripts and session diagnostic trees. When retained artifacts exceed the budget, Schegent removes the oldest complete inactive-run groups first. The Settings surface reports current usage, the last sweep, and contained sweep failures.
+
 ## Fatal signatures
 
 ### `schegent.fatalSignatures`
@@ -380,6 +437,8 @@ For quick lookup, the full list of keys:
 |---|---|---|
 | `schegent.cli.path` | application | `"claude"` |
 | `schegent.cli.inheritEnvironment` | application | `true` |
+| `schegent.cli.environmentMode` | application | `"inherit"` |
+| `schegent.cli.environmentAllowlist` | application | `[]` |
 | `schegent.backend.runner` | application | `"claude"` |
 | `schegent.codex.path` | application | `"codex"` |
 | `schegent.agy.path` | application | `"agy"` |
@@ -400,6 +459,8 @@ For quick lookup, the full list of keys:
 | `schegent.logging.runtimeLogMaxBytes` | resource | `5242880` |
 | `schegent.logging.runtimeLogMaxGenerations` | resource | `3` |
 | `schegent.logging.verbose` | resource | `false` |
+| `schegent.logging.sessionRetentionMaxAgeDays` | resource | `30` |
+| `schegent.logging.sessionRetentionMaxBytes` | resource | `536870912` |
 | `schegent.fatalSignatures` | resource | `[]` |
 | `schegent.claude.autoCompactPctOverride` | resource | `null` |
 | `schegent.wakeUp.enabled` | application | `false` |

@@ -8,6 +8,10 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { InvocationOutputSink } from '../runner/invocation-result';
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import {
+  normalizeEvidenceFailureCause,
+  type EvidenceHealthReporter
+} from '../services/evidence-health/evidence-health-monitor';
 
 const SESSION_START = '========== SESSION START ==========';
 const SESSION_END = '========== SESSION END ==========';
@@ -171,7 +175,8 @@ export class RawTranscriptWriter {
   constructor(
     workspaceRoot: string,
     logger: SanitizedLogger,
-    private readonly spoolRoot: string = os.tmpdir()
+    private readonly spoolRoot: string = os.tmpdir(),
+    private readonly evidenceHealth?: EvidenceHealthReporter
   ) {
     this.workspaceRoot = workspaceRoot;
     this.logger = logger;
@@ -214,14 +219,14 @@ export class RawTranscriptWriter {
           stdout: path.join(spoolDirectory, 'stdout'),
           stderr: path.join(spoolDirectory, 'stderr')
         },
-        (err) => this.warnWriteFailure(runId, err)
+        (err) => this.warnStreamFailure(runId, err)
       );
     } catch (err) {
       if (spoolDirectory) {
         try {
           await fs.rm(spoolDirectory, { recursive: true, force: true });
         } catch {
-          // Best-effort cleanup; preserve the original capture failure.
+          this.warnCleanupFailure();
         }
       }
       this.warnWriteFailure(runId, err as Error);
@@ -272,10 +277,14 @@ export class RawTranscriptWriter {
       const handle = await fs.open(target, 'a', 0o600);
       try {
         await handle.write('[STDOUT]\n');
-        await appendCapturedOrBuffered(handle, input.capture, 'stdout', input.stdout);
+        const stdoutComplete = await appendCapturedOrBuffered(handle, input.capture, 'stdout', input.stdout);
         await handle.write('\n\n[STDERR]\n');
-        await appendCapturedOrBuffered(handle, input.capture, 'stderr', input.stderr);
+        const stderrComplete = await appendCapturedOrBuffered(handle, input.capture, 'stderr', input.stderr);
         await handle.write(`\n\n[EXIT_CODE]: ${formatExitCode(input)}\n${SESSION_END}\n\n`);
+        if (!stdoutComplete || !stderrComplete) {
+          const error = Object.assign(new Error('capture fallback used'), { code: 'partial-write' });
+          this.warnWriteFailure(input.runId, error);
+        }
       } finally {
         await handle.close();
       }
@@ -284,16 +293,51 @@ export class RawTranscriptWriter {
     } finally {
       try {
         await input.capture?.dispose();
-      } catch (err) {
-        this.warnWriteFailure(input.runId, err as Error);
+      } catch {
+        this.warnCleanupFailure();
       }
     }
   }
 
   private warnWriteFailure(runId: string, err: Error): void {
-    if (this.failedRuns.has(runId)) return;
+    const code = (err as NodeJS.ErrnoException).code ?? err.message;
+    const shouldWarn = this.evidenceHealth?.reportFailure(
+      'rawTranscript',
+      normalizeEvidenceFailureCause(code)
+    ) ?? !this.failedRuns.has(runId);
+    if (!shouldWarn) return;
     this.failedRuns.add(runId);
-    this.logger.warn(`raw transcript write failed for run ${runId}: ${err.message}`);
+    this.logger.warn(`raw transcript write failed for run ${runId}; workflow continues with degraded raw evidence`, {
+      ...(typeof (err as NodeJS.ErrnoException).code === 'string'
+        ? { errno: (err as NodeJS.ErrnoException).code }
+        : {})
+    });
+  }
+
+  private warnStreamFailure(runId: string, err: Error): void {
+    const code = (err as NodeJS.ErrnoException).code;
+    const preservedCause = code === 'ENOSPC' || code === 'EACCES' ||
+      code === 'EPERM' || code === 'EROFS';
+    this.warnWriteFailure(
+      runId,
+      preservedCause
+        ? err
+        : Object.assign(new Error('raw transcript stream failed'), {
+            code: 'stream-error'
+          })
+    );
+  }
+
+  private warnCleanupFailure(): void {
+    const shouldWarn = this.evidenceHealth?.reportFailure(
+      'rawTranscript',
+      'cleanup-failed'
+    ) ?? true;
+    if (shouldWarn) {
+      this.logger.warn(
+        'raw transcript spool cleanup failed; workflow continues with degraded raw evidence'
+      );
+    }
   }
 
   private ensureRuntimeGitignore(): Promise<void> {
@@ -302,8 +346,8 @@ export class RawTranscriptWriter {
   }
 
   private ensureSpoolRoot(): Promise<void> {
-    this.spoolScavenge ??= scavengeAbandonedSpools(this.spoolRoot).catch((err) => {
-      this.logger.warn(`raw transcript stale-spool cleanup failed: ${(err as Error).message}`);
+    this.spoolScavenge ??= scavengeAbandonedSpools(this.spoolRoot).catch(() => {
+      this.warnCleanupFailure();
     });
     return this.spoolScavenge;
   }
@@ -357,10 +401,10 @@ async function appendCapturedOrBuffered(
   capture: RawTranscriptCapture | null | undefined,
   stream: 'stdout' | 'stderr',
   buffered: string | ZippedStreamBuffer
-): Promise<void> {
+): Promise<boolean> {
   if (!capture || capture.failed) {
     await writeBufferedOutput(destination, buffered);
-    return;
+    return capture?.failed !== true;
   }
   const startOffset = (await destination.stat()).size;
   try {
@@ -368,11 +412,13 @@ async function appendCapturedOrBuffered(
     if (capture.failed) {
       throw new Error('raw transcript capture became incomplete while being copied');
     }
+    return true;
   } catch {
     // The capture may have copied a prefix before its read failed. Rewind that
     // partial copy, then preserve the bounded head/tail fallback instead.
     await destination.truncate(startOffset);
     await writeBufferedOutput(destination, buffered);
+    return false;
   }
 }
 

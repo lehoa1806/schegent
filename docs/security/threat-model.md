@@ -49,7 +49,11 @@ The CLI itself, once spawned, has whatever capabilities its argv and the operato
 
 - **Other workspaces.** Schegent's state is per-workspace. A run in workspace A cannot see or affect workspace B.
 - **The network, except via the CLI.** The host extension itself does not make outbound network calls. The CLI does, to Anthropic's APIs.
-- **Your shell environment beyond what is exported.** The host inherits VS Code's environment for the CLI subprocess; that environment is the operator's, but the CLI does not see VS Code internals.
+- **Your shell environment beyond the selected policy.** The compatibility
+  default forwards the VS Code extension-host environment. Hardened operators
+  can select `minimal` or a names-only `allowlist`; the policy applies to
+  backend probes, phase calls, and pre-compaction calls. Allowlist values are
+  read only at spawn time and never stored in Schegent settings.
 - **The audit log content of *other* users on the same machine.** `.schegent/` lives in the workspace; multi-user shared workspaces are unusual.
 
 ## Trust boundaries
@@ -188,6 +192,14 @@ Read-only IPC commands are intentionally excluded from this registry — e.g. `C
 `.schegent/audit.log` is append-only. Schegent never modifies past entries. Task deletion records a `task-removed` event; it does not delete prior events. Reset Workspace State clears workspace state but does **not** touch the audit log.
 
 The audit log is your evidence trail. If you have it, you can reconstruct every run, every phase, every tool call.
+
+Audit durability is also an execution gate. A durable append failure projects
+`evidence unavailable`, fails the active run with the sanitized
+`audit-evidence-unavailable` code, and suppresses automatic queue drain. Raw
+transcript and runtime-log failures instead project `evidence degraded` and
+permit execution to continue. Health payloads contain normalized causes only;
+they never contain exception messages, paths, prompts, or environment values.
+See [Execution Evidence Health](../operations/evidence-health.md).
 
 ## What Schegent cannot prevent
 

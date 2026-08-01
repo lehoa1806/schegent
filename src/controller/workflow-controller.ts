@@ -38,25 +38,21 @@ export interface WorkflowControllerOptions {
   iterationCap: number;
   timeoutMs: number;
   inheritProcessEnv?: boolean;
+  processEnvAllowlist?: readonly string[];
   perPhaseRulesEnabled: boolean;
   skipProbing?: boolean;
   cliPathResolver?: (runnerKind: string) => string;
   defaultRunnerKind?: BackendRunnerKind;
+  isAuditEvidenceAvailable?: () => boolean;
 }
 
-// Feature 034 Item 047 — `DelayedRetryWatchdog` shape moved to
-// src/controller/retry-handler.ts (the handler is the primary consumer).
-// Re-exported here for backward compatibility with existing imports
-// from `src/watchdog/` and `src/extension.ts`.
+// Compatibility re-export; retry-handler.ts owns this shape.
 export type { DelayedRetryWatchdog } from './retry-handler';
 
 /**
- * Feature 034 — pluggable session-cleanup runner. Production wires the
- * default `cleanupSessionArtifacts` from `services/session-cleanup`;
- * tests inject a mock to exercise the success / failure branches
- * deterministically without spying on `fs.rm` (which is non-configurable
- * on `node:fs/promises`). The runner is invoked from `deleteTask` after
- * the existing queue-removal resolves with a non-null `runId`.
+ * Pluggable cleanup seam invoked after task deletion resolves a run ID.
+ * Production uses `cleanupSessionArtifacts`; tests inject a deterministic
+ * replacement without spying on non-configurable `fs.rm`.
  */
 export type SessionCleanupRunner = (input: {
   workspaceRoot: string;
@@ -77,6 +73,8 @@ export interface WorkflowControllerDeps {
    * `cleanupSessionArtifacts` from `services/session-cleanup`.
    */
   sessionCleanup?: SessionCleanupRunner;
+  /** Best-effort lifecycle hook used for inactive session-artifact retention. */
+  onRunTerminal?: (run: WorkflowRun) => Promise<void>;
 }
 
 export interface StartNewOptions {
@@ -184,6 +182,7 @@ export class SchegentWorkflowController {
       emitRunEndedBreakpointAudit: (run) => this.emitRunEndedBreakpointAudit(run),
       emitTaskLifecycleAudit: (eventType, run, payload) =>
         this.emitTaskLifecycleAudit(eventType, run, payload),
+      onRunTerminal: deps.onRunTerminal,
       scheduleAutoDrain: () => this.scheduleAutoDrain()
     });
   }

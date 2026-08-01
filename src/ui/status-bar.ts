@@ -28,6 +28,8 @@ export interface StatusModel {
   pendingCount?: number;
 }
 
+export type StatusEvidenceHealth = 'healthy' | 'degraded' | 'unavailable';
+
 // Feature 065 / FR-017a / SC-009 — transient indicator window. The
 // status-bar surface MUST show a transient "scheduled start fired" hint
 // for between 3000 and 5000 ms. Callers may request any non-finite or
@@ -39,6 +41,8 @@ export class SchegentStatusBar {
   private readonly item: StatusBarItemLike;
   private transientTimer: ReturnType<typeof setTimeout> | null = null;
   private preTransientText: string | null = null;
+  private currentModel: StatusModel = { kind: 'idle' };
+  private evidenceHealth: StatusEvidenceHealth = 'healthy';
 
   constructor(item: StatusBarItemLike) {
     this.item = item;
@@ -48,16 +52,30 @@ export class SchegentStatusBar {
   }
 
   public update(model: StatusModel): void {
-    const nextText = formatText(model);
+    this.currentModel = model;
+    const nextText = this.withEvidenceIndicator(formatText(model));
     if (this.transientTimer !== null) {
       // A transient is active — let it own `item.text` and capture the
       // intended steady-state text so the restore is correct.
       this.preTransientText = nextText;
-      this.item.tooltip = formatTooltip(model);
+      this.item.tooltip = this.withEvidenceTooltip(formatTooltip(model));
       return;
     }
     this.item.text = nextText;
-    this.item.tooltip = formatTooltip(model);
+    this.item.tooltip = this.withEvidenceTooltip(formatTooltip(model));
+  }
+
+  public setEvidenceHealth(health: StatusEvidenceHealth): void {
+    this.evidenceHealth = health;
+    const text = this.withEvidenceIndicator(formatText(this.currentModel));
+    const tooltip = this.withEvidenceTooltip(formatTooltip(this.currentModel));
+    if (this.transientTimer !== null) {
+      this.preTransientText = text;
+      this.item.tooltip = tooltip;
+      return;
+    }
+    this.item.text = text;
+    this.item.tooltip = tooltip;
   }
 
   // Feature 065 (T049b) — transient indicator for `scheduled-start-fired`.
@@ -90,6 +108,26 @@ export class SchegentStatusBar {
       this.transientTimer = null;
     }
     this.item.dispose();
+  }
+
+  private withEvidenceIndicator(text: string): string {
+    if (this.evidenceHealth === 'unavailable') {
+      return `$(error) ${text} · evidence unavailable`;
+    }
+    if (this.evidenceHealth === 'degraded') {
+      return `$(warning) ${text} · evidence degraded`;
+    }
+    return text;
+  }
+
+  private withEvidenceTooltip(tooltip: string): string {
+    if (this.evidenceHealth === 'unavailable') {
+      return `structured audit evidence unavailable (fail-closed policy) — ${tooltip}`;
+    }
+    if (this.evidenceHealth === 'degraded') {
+      return `optional execution evidence degraded — ${tooltip}`;
+    }
+    return tooltip;
   }
 }
 

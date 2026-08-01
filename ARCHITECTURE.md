@@ -47,7 +47,11 @@ is the single source of truth.
 **External boundaries:**
 
 - VS Code APIs are usable in extension-host code and forbidden in `src/headless/`, `src/wakeup/`, and `src/telemetry/`. Lint regressions under `tests/lint/` enforce this.
-- CLI backends run as subprocesses with `shell: false`, bounded stdout/stderr buffers, timeout/cancellation handling, and a scrubbed environment.
+- CLI backends run as subprocesses with `shell: false`, bounded stdout/stderr
+  buffers, timeout/cancellation handling, and one centrally resolved
+  environment policy. The compatibility default inherits; hardened `minimal`
+  and names-only `allowlist` modes apply identically to probes, phase calls,
+  and pre-compaction calls.
 - Workspace files at `<workspaceRoot>/.schegent/` hold per-workspace runtime artifacts: structured audit log, raw transcripts, opt-in verbose diagnostics, runtime log.
 - `vscode.ExtensionContext.workspaceState` (memento) stores serialized run, queue, and history records. Forward-only migrators upgrade old records.
 - `vscode.ExtensionContext.globalStorageUri` stores wake-up scheduler state and session logs.
@@ -56,6 +60,7 @@ is the single source of truth.
 
 ```text
 src/
+├── activation/   extension-host composition helpers; no workflow policy
 ├── audit/        evidence sinks — structured audit, raw transcript, verbose diagnostics, gitignore
 ├── commands/     extension command palette and command handlers
 ├── config/       settings schema (single source of truth), pipeline catalog, precedence, validation
@@ -85,6 +90,17 @@ webview-ui/
 │   └── lib/                        IPC helper modules and pure projectors
 └── __tests__/                      vitest suite
 ```
+
+## Module Ownership
+
+| Module | Owned responsibility | Must not own |
+|---|---|---|
+| `src/activation/backend-wiring.ts` | Stage-1 runtime/evidence sink composition and the names-only unrestricted-environment warning | Workflow transitions, IPC, or backend invocation |
+| `src/services/evidence-health/` | Workspace-scoped sink health, bounded causes, and continuation policies | Raw exception text, filesystem paths, or UI rendering |
+| `src/services/session-retention/` | Age/byte pruning for inactive `.schegent/sessions` run groups | Structured audit retention or active-run deletion |
+| `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
+| `src/ui/sidebar/activity-timing.ts` | Pure elapsed-time and live-activity calculations | Store subscriptions, audit hydration, or snapshot publication |
+| `src/ui/sidebar/state-projector.ts` | Snapshot orchestration and projection lifecycle | Sink I/O or elapsed-time algorithms |
 
 `src/host-services/` makes VS Code-owned platform behavior explicit before a
 Rust desktop host exists. Its `types.ts` contract is `vscode`-free and covers
@@ -254,6 +270,21 @@ Three distinct sinks with different sanitization postures:
 | Verbose diagnostics | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-N/` | No (intentional, opt-in via `schegent.logging.verbose`) | Never |
 | Runtime log | `<workspaceRoot>/.schegent/syslog` (configurable) | Yes (single point) | No (operator opens file) |
 | Wake-up session log | `<globalStorageUri>/wakeup/sessions/<id>.log` | Sanitized at write AND read | Read-only via dedicated IPC |
+
+Raw transcripts and verbose-diagnostic trees share one retention owner. It
+groups artifacts by run, protects running and paused runs, and prunes only
+complete inactive-run groups by age and total-byte budget. Sweeps run at
+activation, after terminal runs, and after policy changes. The structured
+audit log is outside the managed root and is never pruned by this service.
+
+`EvidenceHealthMonitor` is the workspace-scoped owner for sink availability.
+It projects normalized, paths-free health for structured audit, raw transcript,
+and runtime log. Structured-audit failure is a run-control boundary: the phase
+runner throws `RequiredEvidenceUnavailableError`, the run driver persists a
+sanitized terminal failure, and auto-drain remains stopped. Raw-transcript and
+runtime-log failures are availability-preserving but visibly degraded. Health
+stays sticky until workspace wiring is recreated because a later successful
+write cannot reconstruct missing evidence.
 
 - [audit-log-writer.ts](src/audit/audit-log-writer.ts) — structured
   append-only writer. Every audit record passes through `SanitizedLogger`

@@ -12,27 +12,26 @@ import type {
 } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import { RUNNER_DEFAULT_MODEL, type WakeUpModelSelection } from '../../wakeup/settings';
-import { computeFreshness } from './freshness';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
 import {
   AUDIT_TAIL_MAX,
-  IDLE_LIVE_ACTIVITY,
   IDLE_GENERAL_SETTINGS,
+  IDLE_EVIDENCE_HEALTH,
+  IDLE_SESSION_ARTIFACTS,
   IDLE_TRUST_PROJECTION,
   IDLE_WAKEUP_LOG,
   IDLE_WAKEUP_SETTINGS,
   SCHEMA_VERSION,
   buildIdleSnapshot,
-  type AuditCategory,
   type AuditTailEntry,
   type DebugLogEntry,
-  type FreshnessState,
   type GeneralSettings,
+  type EvidenceHealthSnapshot,
   type HistoryEntry,
-  type LiveActivity,
   type PhaseName,
   type PhaseTile,
+  type SessionArtifactsProjection,
   type WakeUpSettings,
   type WakeUpLogProjection,
   type WorkflowSnapshot,
@@ -56,6 +55,12 @@ import {
   mapRunStatus,
   projectDelayedRetry
 } from './run-projector';
+import {
+  computeLiveActivity,
+  computePhaseElapsedMs,
+  computeWorkflowElapsedMs,
+  type ActivityCache
+} from './activity-timing';
 
 // Re-export public helpers so existing consumers (tests, validators
 // cross-referencing the floor) keep working without import churn.
@@ -108,6 +113,8 @@ export interface StateProjectorDeps {
    * 1s latency budget (FR-017).
    */
   readonly getGeneralSettings?: () => GeneralSettings;
+  readonly getSessionArtifacts?: () => SessionArtifactsProjection;
+  readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
   /**
    * Feature 014 (BUG-001 / BUG-002) — read the four `schegent.wakeUp.*`
    * settings (Global scope) for the Settings surface. Invoked on every
@@ -171,12 +178,6 @@ export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;
 const DEFAULT_DEBOUNCE_MS = 100;
 const DEFAULT_TICK_INTERVAL_MS = 1_000;
 
-interface ActivityCache {
-  readonly summary: string;
-  readonly category: AuditCategory;
-  readonly isoAt: string;
-}
-
 // Stub store/audit used when the projector is constructed without a
 // concrete `store`/`audit` (test seam — feature 031 T014). The stubs
 // return idle/empty values so `project()` and `start()` are safe to call.
@@ -222,6 +223,8 @@ export class StateProjector {
   private readonly getCatalog?: () => { phases: readonly import('../../config/pipeline-config').PhaseDef[], pipelines: readonly import('../../config/pipeline-config').PipelineDef[], models: readonly string[] };
   private readonly defaultRunnerKind: BackendRunnerKind;
   private readonly getGeneralSettings?: () => GeneralSettings;
+  private readonly getSessionArtifacts?: () => SessionArtifactsProjection;
+  private readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
   private readonly getWakeUpSettings?: () => WakeUpSettings;
   private readonly getWakeUpLog?: () => WakeUpLogProjection;
   private readonly getWakeupModel?: () => WakeUpModelSelection;
@@ -293,6 +296,8 @@ export class StateProjector {
     this.getCatalog = deps.getCatalog;
     this.defaultRunnerKind = deps.defaultRunnerKind ?? 'claude';
     this.getGeneralSettings = deps.getGeneralSettings;
+    this.getSessionArtifacts = deps.getSessionArtifacts;
+    this.getEvidenceHealth = deps.getEvidenceHealth;
     this.getWakeUpSettings = deps.getWakeUpSettings;
     this.getWakeUpLog = deps.getWakeUpLog;
     this.getWakeupModel = deps.getWakeupModel;
@@ -630,60 +635,6 @@ export class StateProjector {
     }
   }
 
-  private computePhaseElapsedMs(phaseName: PhaseName, isActive: boolean): number {
-    const cumulative = this.cumulativePhaseMs.get(phaseName) ?? 0;
-    if (!isActive || this.phaseStartMonotonic === null) {
-      return Math.max(0, Math.floor(cumulative));
-    }
-    const monoNow = this.monotonicNow();
-    const status = this.observedStatus;
-    let activeMs: number;
-    if (status === 'paused' && this.pausedSinceMonotonic !== null) {
-      activeMs = this.pausedSinceMonotonic - this.phaseStartMonotonic;
-    } else {
-      activeMs = monoNow - this.phaseStartMonotonic;
-    }
-    return Math.max(0, Math.floor(cumulative + Math.max(0, activeMs)));
-  }
-
-  private computeWorkflowElapsedMs(): number | null {
-    if (this.workflowStartMonotonic === null) return null;
-    const monoNow = this.monotonicNow();
-    const status = this.observedStatus;
-    if (status === 'idle') return null;
-    let totalMs: number;
-    if (status === 'paused' && this.pausedSinceMonotonic !== null) {
-      totalMs = this.pausedSinceMonotonic - this.workflowStartMonotonic - this.cumulativePausedMs;
-    } else {
-      totalMs = monoNow - this.workflowStartMonotonic - this.cumulativePausedMs;
-    }
-    return Math.max(0, Math.floor(totalMs));
-  }
-
-  private computeLiveActivity(status: WorkflowStatus): LiveActivity {
-    if (status === 'idle' || status === 'completed' || status === 'canceled') {
-      return IDLE_LIVE_ACTIVITY;
-    }
-    let msSince: number | null;
-    if (this.lastActivityAtMonotonic === null) {
-      msSince = null;
-    } else if (status === 'paused' && this.pausedSinceMonotonic !== null) {
-      msSince = Math.max(0, this.pausedSinceMonotonic - this.lastActivityAtMonotonic);
-    } else {
-      msSince = Math.max(0, this.monotonicNow() - this.lastActivityAtMonotonic);
-    }
-    const freshness: FreshnessState = computeFreshness(status, msSince);
-    const staleSeconds =
-      freshness === 'idle' || msSince === null ? null : Math.max(0, Math.floor(msSince / 1000));
-    return Object.freeze({
-      summary: this.lastActivityCache?.summary ?? null,
-      category: this.lastActivityCache?.category ?? null,
-      lastEventAt: this.lastActivityCache?.isoAt ?? null,
-      freshness,
-      staleSeconds: freshness === 'idle' ? null : staleSeconds
-    });
-  }
-
   /**
    * Build a `WorkflowSnapshot` from the current store/audit state. Public
    * so unit tests (feature 031 T014 et al) can call it directly without
@@ -750,8 +701,21 @@ export class StateProjector {
       activeRunPhase: run?.currentPhase ?? null
     });
     const auditTail: readonly AuditTailEntry[] = this.auditTail.slice();
-    const liveActivity = this.computeLiveActivity(status);
-    const workflowElapsedMs = this.computeWorkflowElapsedMs();
+    const timing = {
+      status,
+      pausedSinceMonotonic: this.pausedSinceMonotonic,
+      monotonicNow: this.monotonicNow
+    };
+    const liveActivity = computeLiveActivity({
+      ...timing,
+      lastActivityAtMonotonic: this.lastActivityAtMonotonic,
+      cache: this.lastActivityCache
+    });
+    const workflowElapsedMs = computeWorkflowElapsedMs({
+      ...timing,
+      workflowStartMonotonic: this.workflowStartMonotonic,
+      cumulativePausedMs: this.cumulativePausedMs
+    });
 
     const monitorState = projectMonitor(this.monitor);
     const historyEntries = projectHistory(this.history);
@@ -765,6 +729,12 @@ export class StateProjector {
     const generalSettings = this.getGeneralSettings
       ? this.getGeneralSettings()
       : IDLE_GENERAL_SETTINGS;
+    const sessionArtifacts = this.getSessionArtifacts
+      ? this.getSessionArtifacts()
+      : IDLE_SESSION_ARTIFACTS;
+    const evidenceHealth = this.getEvidenceHealth
+      ? this.getEvidenceHealth()
+      : IDLE_EVIDENCE_HEALTH;
     const wakeUpSettings = this.getWakeUpSettings
       ? this.getWakeUpSettings()
       : IDLE_WAKEUP_SETTINGS;
@@ -868,6 +838,8 @@ export class StateProjector {
       availableModels: Object.freeze([...catalog.models]),
       delayedRetry,
       generalSettings,
+      sessionArtifacts,
+      evidenceHealth,
       wakeUpSettings,
       wakeUpLog,
       wakeUp,
@@ -896,7 +868,15 @@ export class StateProjector {
     for (const tile of phases) {
       const isActive = tile.state === 'active';
       const mutable = tile as { -readonly [K in keyof PhaseTile]: PhaseTile[K] };
-      mutable.elapsedMs = this.computePhaseElapsedMs(tile.name, isActive);
+      mutable.elapsedMs = computePhaseElapsedMs({
+        phaseName: tile.name,
+        isActive,
+        cumulativePhaseMs: this.cumulativePhaseMs,
+        phaseStartMonotonic: this.phaseStartMonotonic,
+        pausedSinceMonotonic: this.pausedSinceMonotonic,
+        status: this.observedStatus,
+        monotonicNow: this.monotonicNow
+      });
       mutable.subProgress = computeSubProgressForTile(
         tile,
         run,
