@@ -548,11 +548,12 @@
     "test:coverage": "vitest run --coverage",
     "test:webview": "npm --prefix webview-ui run test",
     "test:perf": "vitest run tests/perf/",
+    "test:soak": "vitest run tests/perf/sustained-evidence-path.test.ts --reporter=verbose",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"

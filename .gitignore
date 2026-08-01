@@ -15,6 +15,7 @@ coverage/
 # VS Code extension build & test artifacts
 *.vsix
 .vscode-test/
+tests/soak/.artifacts/
 
 # OS / editor noise
 .DS_Store

@@ -35,7 +35,7 @@ If a value in `audit.log` is replaced with `[REDACTED]`, that is the redaction s
 
 ### Rotation
 
-The active `audit.log` rotates to `audit.log.<YYYYMMDD-HHMMSS>` when either of these is true:
+The active `audit.log` rotates to `audit.log.<YYYYMMDD-HHMMSS-mmm-id>` when either of these is true. The millisecond and short random suffix prevent same-second archive collisions; legacy seconds-only archives remain supported:
 
 - File size exceeds `schegent.audit.rotation.sizeMB` megabytes (default 5).
 - Active log age exceeds `schegent.audit.rotation.maxAgeDays` days (default 30).

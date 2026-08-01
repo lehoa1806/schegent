@@ -100,7 +100,9 @@ The raw transcript and verbose diagnostic files exist because the sanitizer is c
 - They are **gitignored.** Schegent writes a best-effort `.schegent/.gitignore`
   on first runtime-directory use, and project repositories should also ignore
   `.schegent/` at the workspace root.
-- They **accumulate.** Diagnostic files do not rotate. Manage manually if you leave verbose on for long periods.
+- They **have bounded retention.** Diagnostic files do not rotate individually,
+  but complete inactive-run groups are pruned to the configured session-artifact
+  age and byte limits. Running and paused runs are protected.
 
 If you cannot tolerate unredacted bytes on disk, the mitigations are:
 
