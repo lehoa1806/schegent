@@ -97,7 +97,10 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
       inFlightId: 'q-1',
       paused: false,
       pausedReason: null,
-      updatedAt: 1
+      updatedAt: 1,
+      queueLifecycle: 'running',
+      scheduledStartAt: null,
+      scheduledStartSource: null
     });
     const acquiredAtMs = Date.now();
     await store.setLock({

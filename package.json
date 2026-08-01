@@ -502,6 +502,7 @@
     "contracts:generate": "node scripts/generate-contract-schemas.mjs",
     "dev:webview": "npm --prefix webview-ui run dev",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "typecheck:webview": "npm --prefix webview-ui run typecheck",
     "lint": "eslint --ext .ts src tests",
     "lint:webview": "npm --prefix webview-ui run lint --if-present",
@@ -513,10 +514,10 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
-    "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run lint && npm run test && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
-    "package:smoke": "vsce package --no-dependencies --out schegent-smoke.vsix && node scripts/check-vsix-smoke.mjs schegent-smoke.vsix",
+    "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
   "devDependencies": {

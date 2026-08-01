@@ -13,8 +13,8 @@ Two workflows live under [.github/workflows/](.github/workflows/):
 
 | Workflow | Trigger | Jobs | Purpose |
 |---|---|---|---|
-| [`pr.yml`](.github/workflows/pr.yml) | `pull_request` | `typecheck` (host + webview), `lint`, `test`, `build` | Fast PR gate. Required on every PR. |
-| [`full-gate.yml`](.github/workflows/full-gate.yml) | `schedule: '0 6 * * 1'` (Mondays 06:00 UTC) + `workflow_dispatch` | seven jobs: `typecheck-host`, `typecheck-webview`, `lint`, `test`, `build`, `e2e`, `integration` | Heavier deterministic E2E and extension-host integration coverage. Required green before cutting a release. |
+| [`pr.yml`](.github/workflows/pr.yml) | `pull_request` | host/webview/test-source typechecks, `lint`, `test`, `build`, exact package smoke | Fast PR gate. Required on every PR. |
+| [`full-gate.yml`](.github/workflows/full-gate.yml) | `schedule: '0 6 * * 1'` (Mondays 06:00 UTC) + `workflow_dispatch` | eight jobs: `typecheck-host`, `typecheck-webview`, `typecheck-tests`, `lint`, `test`, `build`, `e2e`, `integration` | Heavier deterministic E2E and isolated extension-host integration coverage. Required green before cutting a release. |
 
 The PR gate is fast enough to run inline with normal code review. The
 full gate is the release-readiness signal; the weekly cron exists so a
@@ -32,7 +32,7 @@ Before tagging a release, verify each item:
    gh workflow run full-gate.yml --ref main
    gh run watch
    ```
-2. **All seven full-gate jobs green** on the run you are releasing from.
+2. **All eight full-gate jobs green** on the run you are releasing from.
    Spot-check with:
    ```bash
    gh run list --workflow=full-gate.yml --branch=main --limit=3
@@ -62,6 +62,11 @@ Before tagging a release, verify each item:
 6. **Spec / docs / code in sync.** See the workspace `CLAUDE.md` PR
    expectations — both Master Workspace and Execution Repository hashes
    must be recorded and match.
+7. **Exact package policy green.** `npm run package:smoke` must report exactly
+   the audited entry allowlist within its compressed and uncompressed size
+   budgets. The command packages into a private temporary directory and removes
+   the artifact after inspection; an unexpected or missing entry fails the
+   command.
 
 ## Dependency hygiene
 
@@ -80,7 +85,7 @@ Advisories with no compatible fix available, with rationale:
 
 | Advisory | Affected package | Severity | Rationale | Tracking |
 |---|---|---|---|---|
-| _(none recorded as of 2026-05-19)_ | | | | |
+| _(none recorded as of 2026-08-01)_ | | | | |
 
 Add a row here when an `npm audit` advisory cannot be resolved without
 a `--force` or a major-version dependency bump. The expectation is that
