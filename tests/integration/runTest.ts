@@ -1,8 +1,11 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 import {
   findCompletionMarker,
+  INTEGRATION_RESULT_DIR_ENV,
+  readSuccessfulIntegrationHostResult,
   resolveDownloadedExecutable
 } from './vscode-test-executable';
 
@@ -70,6 +73,15 @@ async function main() {
     const extensionDevelopmentPath = findRepoRoot(__dirname);
     const extensionTestsPath = path.resolve(__dirname, './index');
     const vscodeExecutablePath = await acquireVSCodeExecutable(extensionDevelopmentPath);
+    // macOS limits Unix-domain socket paths to 103 bytes. Its os.tmpdir()
+    // lives under a long /var/folders path, so use the stable short temp root
+    // on Unix. Windows has no Unix-socket path limit and keeps its native temp.
+    const temporaryRoot = process.platform === 'win32' ? os.tmpdir() : '/tmp';
+    const harnessDirectory = fs.mkdtempSync(path.join(temporaryRoot, 'sg-it-'));
+    const resultDirectory = path.join(harnessDirectory, 'results');
+    const userDataDirectory = path.join(harnessDirectory, 'user-data');
+    const extensionsDirectory = path.join(harnessDirectory, 'extensions');
+    fs.mkdirSync(resultDirectory, { recursive: true, mode: 0o700 });
     const specifyDir = path.join(extensionDevelopmentPath, '.specify');
     const createdSpecifyDir = !fs.existsSync(specifyDir);
     if (createdSpecifyDir) fs.mkdirSync(specifyDir, { recursive: true });
@@ -78,10 +90,22 @@ async function main() {
         extensionDevelopmentPath,
         extensionTestsPath,
         vscodeExecutablePath,
-        launchArgs: [`--folder-uri=${folderUri(extensionDevelopmentPath)}`]
+        extensionTestsEnv: {
+          [INTEGRATION_RESULT_DIR_ENV]: resultDirectory
+        },
+        launchArgs: [
+          `--folder-uri=${folderUri(extensionDevelopmentPath)}`,
+          `--user-data-dir=${userDataDirectory}`,
+          `--extensions-dir=${extensionsDirectory}`,
+          '--disable-extensions',
+          '--new-window'
+        ]
       });
+      const result = readSuccessfulIntegrationHostResult(resultDirectory);
+      console.log(`Integration host completed ${result.executed} test modules.`);
     } finally {
       if (createdSpecifyDir) fs.rmSync(specifyDir, { recursive: true, force: true });
+      fs.rmSync(harnessDirectory, { recursive: true, force: true });
     }
   } catch (err) {
     console.error('Failed to run integration tests:', err);

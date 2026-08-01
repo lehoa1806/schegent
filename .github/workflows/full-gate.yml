@@ -3,8 +3,8 @@ name: Full gate
 # Feature 056 Track 6 (FR-030, T049) — required scheduled / manual full
 # gate.
 #
-# The fast PR gate (.github/workflows/pr.yml) runs typecheck + lint +
-# test + build on every PR. This workflow adds the heavier
+# The fast PR gate (.github/workflows/pr.yml) runs all typechecks + lint +
+# test + build + exact package smoke on every PR. This workflow adds the heavier
 # integration-host and deterministic E2E coverage on a weekly cadence
 # plus on demand. Required green before cutting a release per
 # RELEASE.md.
@@ -57,6 +57,18 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run typecheck:webview
+
+  typecheck-tests:
+    name: typecheck (tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck:tests
 
   lint:
     name: lint

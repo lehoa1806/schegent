@@ -2,6 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const COMPLETE_MARKER = 'is-complete';
+export const INTEGRATION_RESULT_DIR_ENV = 'SCHEGENT_INTEGRATION_RESULT_DIR';
+
+export interface IntegrationHostResult {
+  readonly schemaVersion: 1;
+  readonly pid: number;
+  readonly executed: number;
+  readonly failures: number;
+}
 
 /**
  * Resolve the executable produced by @vscode/test-electron. VS Code 1.131+
@@ -36,4 +44,43 @@ export function findCompletionMarker(reportedPath: string): string | null {
     current = parent;
   }
   return null;
+}
+
+/** Write one completion marker per extension host; duplicate hosts stay visible. */
+export function writeIntegrationHostResult(result: IntegrationHostResult): void {
+  const resultDirectory = process.env[INTEGRATION_RESULT_DIR_ENV];
+  if (!resultDirectory) {
+    throw new Error(`${INTEGRATION_RESULT_DIR_ENV} is required for integration tests`);
+  }
+  fs.writeFileSync(
+    path.join(resultDirectory, `result-${process.pid}.json`),
+    JSON.stringify(result),
+    { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+  );
+}
+
+/** Fail unless exactly one host completed every discovered integration module. */
+export function readSuccessfulIntegrationHostResult(
+  resultDirectory: string
+): IntegrationHostResult {
+  const files = fs.readdirSync(resultDirectory).filter((name) =>
+    /^result-\d+\.json$/.test(name)
+  );
+  if (files.length !== 1) {
+    throw new Error(`expected exactly one integration host result, found ${files.length}`);
+  }
+  const raw = JSON.parse(
+    fs.readFileSync(path.join(resultDirectory, files[0]), 'utf8')
+  ) as Partial<IntegrationHostResult>;
+  if (
+    raw.schemaVersion !== 1 ||
+    !Number.isSafeInteger(raw.pid) ||
+    !Number.isSafeInteger(raw.executed) ||
+    !Number.isSafeInteger(raw.failures) ||
+    (raw.executed ?? 0) < 1 ||
+    (raw.failures ?? -1) !== 0
+  ) {
+    throw new Error(`integration host reported an invalid or failing result: ${JSON.stringify(raw)}`);
+  }
+  return raw as IntegrationHostResult;
 }

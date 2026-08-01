@@ -20,19 +20,5 @@
     "types": ["node", "vscode"]
   },
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    ".vscode-test",
-    "tests/integration/audit-log-gitignore.host.test.ts",
-    "tests/integration/ci-gate.host.test.ts",
-    "tests/unit/build/release-gate.test.ts",
-    "tests/unit/commands/rerun-from-history.test.ts",
-    "tests/unit/contracts/audit-event-taxonomy.test.ts",
-    "tests/unit/contracts/sidebar-ipc-drift.test.ts",
-    "tests/unit/services/guarded-run-service.test.ts",
-    "tests/unit/state/history-entry.test.ts",
-    "tests/unit/state/restart-hydration.test.ts",
-    "tests/perf/unchanged-snapshot-suppression.test.ts"
-  ]
+  "exclude": ["node_modules", "dist", ".vscode-test"]
 }
