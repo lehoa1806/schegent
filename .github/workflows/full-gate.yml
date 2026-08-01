@@ -176,3 +176,27 @@ jobs:
             out/tests/integration/**
           if-no-files-found: ignore
           retention-days: 14
+
+  evidence-soak:
+    name: sustained evidence soak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - name: Run deterministic high-volume evidence profile
+        env:
+          SCHEGENT_SUSTAINED_RECORD_COUNT: '20000'
+          SCHEGENT_SOAK_REPORT: tests/soak/.artifacts/sustained-evidence.json
+        run: npm run test:soak
+      - name: Upload soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sustained-evidence-report
+          path: tests/soak/.artifacts/**
+          if-no-files-found: error
+          retention-days: 30

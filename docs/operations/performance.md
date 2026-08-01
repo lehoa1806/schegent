@@ -55,7 +55,28 @@ and re-run the runner and phase-outcome suites.
 | `schegent.audit.rotation.sizeMB` | 5 | Rotate when active log exceeds size. |
 | `schegent.audit.rotation.maxAgeDays` | 30 | Rotate when active log exceeds age. |
 
-Rotation creates `.schegent/audit.log.<YYYYMMDD-HHMMSS>` and resumes appending to a fresh `.schegent/audit.log`. Whichever threshold trips first wins.
+Rotation creates `.schegent/audit.log.<YYYYMMDD-HHMMSS-mmm-id>` and resumes appending to a fresh `.schegent/audit.log`. Milliseconds and a short random identifier prevent same-second rotations from overwriting an archive. Legacy seconds-only names remain supported. Whichever threshold trips first wins.
+
+## Sustained evidence profiles
+
+The blocking `test:perf` profile drives a real child process beyond 4 MiB on
+each output stream. It alternates stdout/stderr, splits multibyte UTF-8 across
+OS writes, verifies clean/fatal/timeout/cancel termination, and proves that:
+
+- parser retention remains at or below 4 MiB independently per stream while
+  total emitted bytes continue increasing;
+- the private raw-capture spools are mode `0600`, preserve exact stream order
+  and SHA-256 content, and leave no orphan after completion or simulated
+  extension-host restart;
+- inactive session retention restores the configured disk bound; and
+- a 10,000-row phase log hydrates to the newest 200 ordered entries with an
+  exact dropped-entry count.
+
+The weekly/manual full gate runs the same deterministic `test:soak` profile at
+20,000 records per stream and retains its metadata-only JSON report. Set
+`SCHEGENT_SUSTAINED_RECORD_COUNT` to raise the local profile up to 100,000 and
+`SCHEGENT_SOAK_REPORT` to choose a report path. Payload bytes, prompts, paths,
+and raw hashes are intentionally excluded from the uploaded report.
 
 ## Runtime log rotation
 
