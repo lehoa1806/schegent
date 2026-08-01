@@ -13,7 +13,9 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
   { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 1_200 },
+  // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
+  // command coverage; phase-log, wake-up, and metrics validators own shape rules.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 775 },
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_250 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
