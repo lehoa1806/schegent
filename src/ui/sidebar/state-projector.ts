@@ -3,7 +3,6 @@ import type { AuditEntry } from '../../audit/audit-entry';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { SanitizedLogger } from '../../lib/logger';
-import { readAuditTailColdStart } from './audit-tail-coldstart';
 import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
 import type {
   Disposable,
@@ -15,7 +14,6 @@ import { RUNNER_DEFAULT_MODEL, type WakeUpModelSelection } from '../../wakeup/se
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
 import {
-  AUDIT_TAIL_MAX,
   IDLE_GENERAL_SETTINGS,
   IDLE_EVIDENCE_HEALTH,
   IDLE_SESSION_ARTIFACTS,
@@ -42,7 +40,6 @@ import {
 // bookkeeping (monotonic timers, transition detection) and delegates each
 // shape transformation to a pure projector module.
 import { sanitizeAndCap, projectQueue } from './queue-projector';
-import { projectAuditEntry } from './audit-tail-projector';
 import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
 import {
@@ -61,6 +58,7 @@ import {
   computeWorkflowElapsedMs,
   type ActivityCache
 } from './activity-timing';
+import { AuditTailState } from './audit-tail-state';
 
 // Re-export public helpers so existing consumers (tests, validators
 // cross-referencing the floor) keep working without import churn.
@@ -217,7 +215,7 @@ export class StateProjector {
   private readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
 
   private readonly listeners = new Set<ProjectorListener>();
-  private readonly auditTail: AuditTailEntry[] = [];
+  private readonly auditTailState = new AuditTailState();
   private readonly monitor: Pick<ClaudeCliMonitor, 'getCurrentState' | 'subscribe' | 'onWorkflowPaused' | 'onWorkflowResumed'> | null;
   private readonly history: Pick<HistoryStore, 'list' | 'subscribe'> | null;
   private readonly getCatalog?: () => { phases: readonly import('../../config/pipeline-config').PhaseDef[], pipelines: readonly import('../../config/pipeline-config').PipelineDef[], models: readonly string[] };
@@ -244,7 +242,6 @@ export class StateProjector {
   private currentSnapshot: WorkflowSnapshot;
   private disposed = false;
   private started = false;
-  private tailHydrationStarted = false;
 
   // Monotonic-time bookkeeping (not serialized)
   private workflowStartMonotonic: number | null = null;
@@ -399,8 +396,7 @@ export class StateProjector {
 
   public subscribe(listener: ProjectorListener): Disposable {
     this.listeners.add(listener);
-    if (!this.tailHydrationStarted) {
-      this.tailHydrationStarted = true;
+    if (this.auditTailState.beginHydration()) {
       void this.hydrateInitialTail();
     }
     try {
@@ -420,20 +416,12 @@ export class StateProjector {
     // canonical reader. See specs/068-enhance-system-log/contracts/
     // audit-tail-projector.md §2-§3 for the contract (ENOENT silent,
     // malformed lines warn+skip, AUDIT_TAIL_MAX cap, frozen output).
-    const tail = await readAuditTailColdStart(this.audit.workspaceRoot, this.logger as SanitizedLogger | undefined);
+    const tail = await this.auditTailState.readColdStart(
+      this.audit.workspaceRoot,
+      this.logger as SanitizedLogger | undefined
+    );
     if (this.disposed) return;
-    if (tail.length === 0) return;
-    // Defensive dedupe by id (contract §3): a live audit event may
-    // arrive between subscribe() and this await resolving. In practice
-    // the cold-start completes first, but the dedupe keeps the merge
-    // safe if ordering ever inverts.
-    const seenIds = new Set(this.auditTail.map((e) => e.id));
-    for (const entry of tail) {
-      if (!seenIds.has(entry.id)) this.auditTail.push(entry);
-    }
-    if (this.auditTail.length > AUDIT_TAIL_MAX) {
-      this.auditTail.splice(0, this.auditTail.length - AUDIT_TAIL_MAX);
-    }
+    if (!this.auditTailState.mergeColdStart(tail)) return;
     this.scheduleProjection();
   }
 
@@ -457,8 +445,7 @@ export class StateProjector {
   }
 
   public seedAuditTail(entries: readonly AuditTailEntry[]): void {
-    this.auditTail.length = 0;
-    for (const entry of entries.slice(-AUDIT_TAIL_MAX)) this.auditTail.push(entry);
+    this.auditTailState.seed(entries);
     this.currentSnapshot = this.project();
   }
 
@@ -505,11 +492,7 @@ export class StateProjector {
   }
 
   private appendAuditEntry(entry: AuditEntry): void {
-    const projected = projectAuditEntry(entry);
-    this.auditTail.push(projected);
-    if (this.auditTail.length > AUDIT_TAIL_MAX) {
-      this.auditTail.splice(0, this.auditTail.length - AUDIT_TAIL_MAX);
-    }
+    const projected = this.auditTailState.append(entry);
 
     if (projected.category !== 'system') {
       this.lastActivityAtMonotonic = this.monotonicNow();
@@ -700,7 +683,7 @@ export class StateProjector {
       activeRunTaskId: run?.featureId ?? null,
       activeRunPhase: run?.currentPhase ?? null
     });
-    const auditTail: readonly AuditTailEntry[] = this.auditTail.slice();
+    const auditTail = this.auditTailState.snapshot();
     const timing = {
       status,
       pausedSinceMonotonic: this.pausedSinceMonotonic,

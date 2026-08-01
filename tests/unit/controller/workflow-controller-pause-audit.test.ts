@@ -19,7 +19,7 @@ class FakeMemento implements Memento {
 
 describe('WorkflowController Audit Emissions (Feature 072)', () => {
   let store: WorkspaceStateStore;
-  let emitTaskLifecycleAuditSpy: ReturnType<typeof vi.fn>;
+  let auditAppendSpy: ReturnType<typeof vi.fn>;
   let deps: WorkflowControllerDeps;
   let controller: SchegentWorkflowController;
 
@@ -27,12 +27,12 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
     store = new WorkspaceStateStore(new FakeMemento());
     await store.initialize();
     
-    emitTaskLifecycleAuditSpy = vi.fn().mockResolvedValue(undefined);
+    auditAppendSpy = vi.fn().mockResolvedValue(undefined);
     
     deps = {
       historyStore: undefined,
       catalog: undefined,
-      auditWriter: undefined,
+      auditWriter: { append: auditAppendSpy } as any,
       watchdog: undefined,
       sessionCleanup: undefined,
       getRetryCap: undefined
@@ -51,8 +51,6 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
     );
     // Mock the cancellation abstraction to prevent errors
     (controller as any).cancelActive = vi.fn();
-    (controller as any).emitTaskLifecycleAudit = emitTaskLifecycleAuditSpy;
-    (controller as any).appendPhaseControlAudit = vi.fn();
     (controller as any).retryCoordinator = { cancelPendingTimer: vi.fn() };
   });
 
@@ -82,19 +80,24 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
     const result = await controller.pauseActivePhase();
     expect(result.ok).toBe(true);
     
-    expect(emitTaskLifecycleAuditSpy).toHaveBeenCalledTimes(1);
-    const [eventType, updatedRun, payload] = emitTaskLifecycleAuditSpy.mock.calls[0];
-    expect(eventType).toBe('task-execution-paused');
-    expect(updatedRun.id).toBe(runId);
-    expect(payload).toMatchObject({
+    const pausedEntry = auditAppendSpy.mock.calls
+      .map((call) => call[0])
+      .find((entry) => entry.eventType === 'task-execution-paused');
+    expect(pausedEntry).toMatchObject({
+      runId,
+      phase: 'plan',
+      iteration: 0,
+      outcome: 'info',
+      payload: {
       taskId: 'task-1',
       runId,
       pauseCause: 'operator-paused'
+      }
     });
   });
 
   it('does not break pause outcome if audit emission fails (T020 robustness)', async () => {
-    emitTaskLifecycleAuditSpy.mockRejectedValue(new Error('Audit write failed'));
+    auditAppendSpy.mockRejectedValue(new Error('Audit write failed'));
     
     const runId = 'run-pause-2';
     await store.setRun({

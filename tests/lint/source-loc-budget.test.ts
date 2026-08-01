@@ -5,29 +5,29 @@ import { resolve } from 'node:path';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number }> = [
-  // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped +15 to accommodate the
-  // FR-028 retry-decision projection sink wired into PhaseRunner construction.
-  // Feature 065 (T055 / 2026-05-22) — bumped +50 (1400 → 1450) to absorb the
-  // host wiring for the new enqueue/start separation surface: the
-  // `ScheduledStartCoordinator` lifecycle, the `dismissMigrationNotice` IPC
-  // hook, the status-bar `showTransient` subscriber, and the v6 → v7 migration
-  // re-arm path. The feature legitimately extends extension.ts; the alternative
-  // (a second activation aggregator file) was rejected to avoid splintering the
-  // host registration order.
-  { path: 'src/extension.ts', maxLines: 1_500 },
-  // Bumped +20 (1100 → 1120) to absorb the terminal-failure branches in
-  // skipPhase and the delayedRetryCount reset in resumeExisting for
-  // phase-granular retry support.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_200 },
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 1_200 },
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_250 },
+  // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
+  // composition and Stage-2 dashboard/command lifecycle now have focused
+  // owners under src/activation.
+  { path: 'src/extension.ts', maxLines: 1_305 },
+  // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
+  // This file owns only the workflow facade, run dispatch, deletion, retry
+  // entry, and persistence.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
+  // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
+  // command coverage; phase-log, wake-up, and metrics validators own shape rules.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 775 },
+  // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
+  // literals and guards while domain wire shapes live in focused modules.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 885 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the
   // budget is no longer the forcing function. See
   // specs/063-clean-all-confirmations/plan.md lines 26 and 66.
   { path: 'src/state/workspace-state.ts', maxLines: 10_000 },
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 920 },
+  // P4 audit-tail/activity extraction ratchet: 920 → 875. Mutable tail merge
+  // policy and elapsed/activity algorithms now have focused owners.
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 875 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

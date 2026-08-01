@@ -66,26 +66,32 @@ import {
   CMD_DISMISS_MIGRATION_NOTICE,
   type SidebarCommand
 } from './sidebar-ipc';
+import { isValidEnqueueStartIntent } from './start-intent-types';
 import {
-  isValidEnqueueStartIntent,
-  isValidStartQueueIntent
-} from './start-intent-types';
-import type { ReadMetricsResponse } from './sidebar-ipc';
+  validateReadPhaseLog,
+  validateStartPhaseLogTail,
+  validateStopPhaseLogTail
+} from './validators/phase-log';
+import { validateReadMetrics } from './validators/metrics';
+import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
+import {
+  validateReadWakeupSessionLog,
+  validateRevealWakeupSessionLog,
+  validateSaveWakeUpSettings
+} from './validators/wakeup';
+import {
+  CORRELATION_ID_MAX,
+  QUEUE_ID_MAX,
+  fail,
+  hasUnexpectedKeys,
+  ok,
+  type IpcValidationResult
+} from './validators/shared';
 
-export interface IpcValidationError {
-  readonly ok: false;
-  readonly reason: string;
-  readonly type?: string;
-  readonly correlationId?: string;
-}
+export { isValidReadMetricsResponse } from './validators/metrics';
+export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
-export type IpcValidationResult =
-  | { readonly ok: true; readonly command: SidebarCommand }
-  | IpcValidationError;
-
-const CORRELATION_ID_MAX = 64;
 const DESCRIPTION_MAX = 4096;
-const QUEUE_ID_MAX = 256;
 // Feature 013 — US4 (FR-016): mirror the projector cap so payloads
 // produced by the projector are guaranteed to validate. The projector
 // at state-projector.ts:PAUSED_REASON_MAX_LENGTH writes ≤500 chars to
@@ -716,272 +722,6 @@ function validateReorderTask(
 // CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE removed because the
 // commands no longer exist.
 
-// Feature 014 — CMD_SAVE_WAKEUP_SETTINGS payload contract.
-// IPC-shape validation only — invariants (HH:MM regex, "Every Nm/h"
-// regex, ≥ 1-minute floor, schedulerType literal) are enforced by the
-// host's save-handler at the next layer (src/wakeup/save-handler.ts).
-// Per specs/014-wake-up/contracts/wakeup-settings-ipc.md §Request envelope.
-function validateSaveWakeUpSettings(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  // Feature 031 — `model` is an OPTIONAL string at the IPC shape layer.
-  // Closed-registry membership + sentinel coercion is enforced inside
-  // the host save-handler (src/wakeup/save-handler.ts) so the wire
-  // contract stays maximally backwards compatible.
-  if (hasUnexpectedKeys(p, [
-    'enabled',
-    'schedulerType',
-    'chronologicalTime',
-    'periodicInterval',
-    'model'
-  ])) {
-    return fail('unexpected-payload-fields', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const enabled = p['enabled'];
-  if (typeof enabled !== 'boolean') {
-    return fail('invalid-enabled', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const schedulerType = p['schedulerType'];
-  if (schedulerType !== 'chronological' && schedulerType !== 'periodic') {
-    return fail('invalid-scheduler-type', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const chronologicalTime = p['chronologicalTime'];
-  if (typeof chronologicalTime !== 'string') {
-    return fail('invalid-chronological-time', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const periodicInterval = p['periodicInterval'];
-  if (typeof periodicInterval !== 'string') {
-    return fail('invalid-periodic-interval', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  const model = p['model'];
-  if (model !== undefined && typeof model !== 'string') {
-    return fail('invalid-model', { type: CMD_SAVE_WAKEUP_SETTINGS, correlationId });
-  }
-  return ok({
-    type: CMD_SAVE_WAKEUP_SETTINGS,
-    correlationId,
-    payload: {
-      enabled,
-      schedulerType,
-      chronologicalTime,
-      periodicInterval,
-      ...(typeof model === 'string' ? { model } : {})
-    }
-  } as SidebarCommand);
-}
-
-// Feature 020 — BUG-001: payload contracts for the three phase-log
-// commands. Read-only by construction — none of them appear in
-// `MUTATING_COMMANDS`. Wire format pinned in
-// `specs/020-phase-level-logs/contracts/phase-log-ipc.md` and mirrors
-// `ReadPhaseLogRequest` / `StartPhaseLogTailRequest` /
-// `StopPhaseLogTailRequest` from `./sidebar-ipc`. The shape-only
-// allowlist here is the SINGLE inbound gate; tuple resolution and
-// path composition happen later inside the phase-log service.
-//
-// `iterationN: number | null` on the read path means "host picks the
-// latest iter-N"; `iterationN: number` on the start path is required.
-const PHASE_LOG_SELECTION_KEYS = [
-  'queueId',
-  'taskId',
-  'pipelineId',
-  'phaseId',
-  'iterationN'
-] as const;
-
-type ValidatedPhaseLogSelection = {
-  readonly queueId: string;
-  readonly taskId: string;
-  readonly pipelineId: string;
-  readonly phaseId: string;
-  readonly iterationN: number | null;
-};
-
-type SelectionValidationOutcome =
-  | { readonly ok: true; readonly selection: ValidatedPhaseLogSelection }
-  | IpcValidationError;
-
-function validatePhaseLogSelection(
-  raw: unknown,
-  type: string,
-  correlationId: string,
-  opts: { readonly iterationNRequired: boolean }
-): SelectionValidationOutcome {
-  if (raw === null || typeof raw !== 'object') {
-    return fail('invalid-selection', { type, correlationId });
-  }
-  const sel = raw as Record<string, unknown>;
-  if (hasUnexpectedKeys(sel, [...PHASE_LOG_SELECTION_KEYS])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const queueId = sel['queueId'];
-  if (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX) {
-    return fail('invalid-queueId', { type, correlationId });
-  }
-  const taskId = sel['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
-    return fail('invalid-taskId', { type, correlationId });
-  }
-  const pipelineId = sel['pipelineId'];
-  if (
-    typeof pipelineId !== 'string' ||
-    pipelineId.length === 0 ||
-    pipelineId.length > QUEUE_ID_MAX
-  ) {
-    return fail('invalid-pipelineId', { type, correlationId });
-  }
-  const phaseId = sel['phaseId'];
-  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
-    return fail('invalid-phaseId', { type, correlationId });
-  }
-  const iterRaw = sel['iterationN'];
-  let iterationN: number | null;
-  if (opts.iterationNRequired) {
-    if (typeof iterRaw !== 'number' || !Number.isInteger(iterRaw) || iterRaw < 1) {
-      return fail('invalid-iterationN', { type, correlationId });
-    }
-    iterationN = iterRaw;
-  } else if (iterRaw === null || iterRaw === undefined) {
-    iterationN = null;
-  } else if (typeof iterRaw === 'number' && Number.isInteger(iterRaw) && iterRaw >= 1) {
-    iterationN = iterRaw;
-  } else {
-    return fail('invalid-iterationN', { type, correlationId });
-  }
-  return {
-    ok: true,
-    selection: { queueId, taskId, pipelineId, phaseId, iterationN }
-  };
-}
-
-function validateReadPhaseLog(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_READ_PHASE_LOG, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['selection'])) {
-    return fail('unexpected-payload-fields', { type: CMD_READ_PHASE_LOG, correlationId });
-  }
-  const sel = validatePhaseLogSelection(p['selection'], CMD_READ_PHASE_LOG, correlationId, {
-    iterationNRequired: false
-  });
-  if (!sel.ok) return sel;
-  return ok({
-    type: CMD_READ_PHASE_LOG,
-    correlationId,
-    payload: { selection: sel.selection }
-  } as SidebarCommand);
-}
-
-function validateReadWakeupSessionLog(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('missing-payload', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['correlationId'])) {
-    return fail('unexpected-payload-fields', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
-  }
-  const sessionCorrelationId = p['correlationId'];
-  if (
-    typeof sessionCorrelationId !== 'string' ||
-    sessionCorrelationId.length === 0 ||
-    sessionCorrelationId.length > CORRELATION_ID_MAX
-  ) {
-    return fail('invalid-correlationId', { type: CMD_READ_WAKEUP_SESSION_LOG, correlationId });
-  }
-  return ok({
-    type: CMD_READ_WAKEUP_SESSION_LOG,
-    correlationId,
-    payload: { correlationId: sessionCorrelationId }
-  } as SidebarCommand);
-}
-
-function validateRevealWakeupSessionLog(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId } as SidebarCommand);
-  }
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('invalid-payload', { type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId });
-  }
-  if (Object.keys(payload as object).length !== 0) {
-    return fail('unexpected-payload-fields', { type: CMD_REVEAL_WAKEUP_SESSION_LOG, correlationId });
-  }
-  return ok({
-    type: CMD_REVEAL_WAKEUP_SESSION_LOG,
-    correlationId,
-    payload: {}
-  } as SidebarCommand);
-}
-
-function validateStartPhaseLogTail(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_START_PHASE_LOG_TAIL, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['selection'])) {
-    return fail('unexpected-payload-fields', { type: CMD_START_PHASE_LOG_TAIL, correlationId });
-  }
-  const sel = validatePhaseLogSelection(
-    p['selection'],
-    CMD_START_PHASE_LOG_TAIL,
-    correlationId,
-    { iterationNRequired: true }
-  );
-  if (!sel.ok) return sel;
-  return ok({
-    type: CMD_START_PHASE_LOG_TAIL,
-    correlationId,
-    payload: {
-      selection: sel.selection as ValidatedPhaseLogSelection & { readonly iterationN: number }
-    }
-  } as SidebarCommand);
-}
-
-function validateStopPhaseLogTail(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['sessionId'])) {
-    return fail('unexpected-payload-fields', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
-  }
-  const sessionId = p['sessionId'];
-  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > QUEUE_ID_MAX) {
-    return fail('invalid-sessionId', { type: CMD_STOP_PHASE_LOG_TAIL, correlationId });
-  }
-  return ok({
-    type: CMD_STOP_PHASE_LOG_TAIL,
-    correlationId,
-    payload: { sessionId }
-  } as SidebarCommand);
-}
-
 // BUG-002 (FR-012a) — generic validator for commands that accept either
 // no payload at all or an empty object `{}`. Shared by feature 020's
 // legacy CMD_START_QUEUE consumers (no longer routed through this fn,
@@ -1002,126 +742,4 @@ function validateOptionalEmptyPayload(
     }
   }
   return ok({ type, correlationId, payload: {} } as SidebarCommand);
-}
-
-// Feature 065 (BUG-002) — purpose-built parser for CMD_START_QUEUE that
-// accepts no payload, empty `{}`, or `{ startIntent: StartQueueIntent }`.
-// Mirrors the predicate path `isCmdStartQueue` in `sidebar-ipc.ts` and
-// must remain in lockstep with it; the lockstep is verified by T020.
-// The empty-payload semantic is preserved for feature 020 / FR-012a
-// callers that did not opt into the optional `startIntent` field.
-function validateStartQueue(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type: CMD_START_QUEUE, correlationId, payload: {} } as SidebarCommand);
-  }
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    return fail('invalid-payload', { type: CMD_START_QUEUE, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['startIntent'])) {
-    return fail('unexpected-payload-fields', { type: CMD_START_QUEUE, correlationId });
-  }
-  const startIntent = p['startIntent'];
-  if (startIntent === undefined) {
-    return ok({ type: CMD_START_QUEUE, correlationId, payload: {} } as SidebarCommand);
-  }
-  if (!isValidStartQueueIntent(startIntent)) {
-    return fail('invalid-start-intent', { type: CMD_START_QUEUE, correlationId });
-  }
-  return ok({
-    type: CMD_START_QUEUE,
-    correlationId,
-    payload: { startIntent }
-  } as SidebarCommand);
-}
-
-function validateSetConfirmSuppression(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'] as Record<string, unknown> | undefined;
-  if (
-    !payload ||
-    typeof payload !== 'object' ||
-    typeof payload.actionKey !== 'string' ||
-    typeof payload.suppressed !== 'boolean'
-  ) {
-    return fail('invalid-payload', { type: CMD_SET_CONFIRM_SUPPRESSION, correlationId });
-  }
-  return ok({
-    type: CMD_SET_CONFIRM_SUPPRESSION,
-    correlationId,
-    payload: {
-      actionKey: payload.actionKey,
-      suppressed: payload.suppressed
-    }
-  } as SidebarCommand);
-}
-
-function ok(command: SidebarCommand): IpcValidationResult {
-  return { ok: true, command };
-}
-
-function fail(reason: string, extra: { type?: string; correlationId?: string } = {}): IpcValidationError {
-  return { ok: false, reason, ...extra };
-}
-
-function hasUnexpectedKeys(obj: Record<string, unknown>, allowed: string[]): boolean {
-  for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) return true;
-  }
-  return false;
-}
-
-// Feature 073 (T011) — hand-rolled runtime validator for the
-// `ReadMetricsResponse` base envelope shape (host→webview direction, the
-// inverse of every other validator in this file). Covers only the
-// outermost fields the webview must trust before rendering; deep
-// TaskRecord/PhaseRecord field validation is out of scope
-// (contracts/cmd-read-metrics.md).
-export function isValidReadMetricsResponse(value: unknown): value is ReadMetricsResponse {
-  if (value === null || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  if (!Array.isArray(v['tasks'])) return false;
-  if (!Array.isArray(v['phaseTypeAggregates'])) return false;
-  if (!Array.isArray(v['costTimeline'])) return false;
-  const oldestIncludedTimestamp = v['oldestIncludedTimestamp'];
-  if (oldestIncludedTimestamp !== undefined && typeof oldestIncludedTimestamp !== 'string') {
-    return false;
-  }
-  const meta = v['meta'];
-  if (meta === null || typeof meta !== 'object') return false;
-  const m = meta as Record<string, unknown>;
-  if (typeof m['includesArchives'] !== 'boolean') return false;
-  if (typeof m['totalScannedEntries'] !== 'number') return false;
-  if (typeof m['parseWarnings'] !== 'number') return false;
-  return true;
-}
-
-// Inbound `CMD_READ_METRICS` request (webview→host direction, FR-014's
-// `includeArchives` opt-in). Must thread `payload.includeArchives` through
-// to the constructed command — dropping it here would silently defeat the
-// archived-history toggle regardless of what the webview requests.
-function validateReadMetrics(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_READ_METRICS, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['includeArchives'])) {
-    return fail('unexpected-payload-fields', { type: CMD_READ_METRICS, correlationId });
-  }
-  const includeArchives = p['includeArchives'];
-  if (includeArchives !== undefined && typeof includeArchives !== 'boolean') {
-    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
-  }
-  return ok({
-    type: CMD_READ_METRICS,
-    correlationId,
-    payload: includeArchives === undefined ? {} : { includeArchives }
-  } as SidebarCommand);
 }
