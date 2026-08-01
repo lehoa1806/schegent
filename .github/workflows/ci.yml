@@ -58,6 +58,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Deterministic backend evaluations
+        run: npm run test:evals
+
       # Coverage gate runs only on Linux to avoid 3x the cost. Floor
       # is set in vitest.config.ts (statements/branches/functions/lines).
       - name: Coverage gate (Linux only)

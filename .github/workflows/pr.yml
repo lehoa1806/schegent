@@ -57,6 +57,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Deterministic backend evaluations
+        run: npm run test:evals
+
       - name: Build
         run: npm run build
 
