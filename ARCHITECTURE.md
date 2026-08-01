@@ -102,6 +102,7 @@ webview-ui/
 | `src/services/evidence-health/` | Workspace-scoped sink health, bounded causes, and continuation policies | Raw exception text, filesystem paths, or UI rendering |
 | `src/services/session-retention/` | Age/byte pruning for inactive `.schegent/sessions` run groups | Structured audit retention or active-run deletion |
 | `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
+| `src/contracts/validators/` | Shared IPC validation primitives plus phase-log, wake-up, and metrics domain validators | Command dispatch coverage or downstream business invariants |
 | `src/ui/sidebar/activity-timing.ts` | Pure elapsed-time and live-activity calculations | Store subscriptions, audit hydration, or snapshot publication |
 | `src/ui/sidebar/audit-tail-state.ts` | Bounded live audit cache, cold-start dedupe/merge, seeding, and snapshot copies | Store subscriptions, workflow timing, or UI publication |
 | `src/ui/sidebar/state-projector.ts` | Snapshot orchestration and projection lifecycle | Sink I/O or elapsed-time algorithms |
