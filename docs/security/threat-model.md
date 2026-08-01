@@ -48,13 +48,13 @@ The CLI itself, once spawned, has whatever capabilities its argv and the operato
 ## What Schegent does **not** have access to
 
 - **Other workspaces.** Schegent's state is per-workspace. A run in workspace A cannot see or affect workspace B.
-- **The network, except via the CLI.** The host extension itself does not make outbound network calls. The CLI does, to Anthropic's APIs.
+- **The network, except via the CLI.** The host extension itself does not make outbound network calls. Backend CLIs may do so; this local-first boundary is not an [offline-execution promise](../concepts/local-first-not-offline.md).
 - **Your shell environment beyond the selected policy.** The compatibility
   default forwards the VS Code extension-host environment. Hardened operators
   can select `minimal` or a names-only `allowlist`; the policy applies to
   backend probes, phase calls, and pre-compaction calls. Allowlist values are
   read only at spawn time and never stored in Schegent settings.
-- **The audit log content of *other* users on the same machine.** `.schegent/` lives in the workspace; multi-user shared workspaces are unusual.
+- **The audit log content of *other* users on the same machine.** `.schegent/` lives in the workspace; shared multi-user operation is outside the supported boundary and is blocked by the [remote/multi-user expansion gate](../architecture/remote-multi-user-expansion-gate.md).
 
 ## Trust boundaries
 

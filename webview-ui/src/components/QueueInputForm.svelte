@@ -161,6 +161,10 @@
     {/if}
   </form>
 
+  <p class="network-notice" data-testid="dashboard-network-dependence-note">
+    Local-first, not offline: running this queue may contact configured backend providers.
+  </p>
+
 </section>
 
 <style>
@@ -249,5 +253,11 @@
   .submit-button:active:not(:disabled) {
     transform: translateY(2px) scale(0.96);
     opacity: 0.9;
+  }
+  .network-notice {
+    margin: 0 8px;
+    color: var(--schegent-muted-fg);
+    font-size: 0.78em;
+    line-height: 1.35;
   }
 </style>

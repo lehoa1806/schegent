@@ -33,6 +33,7 @@ The pages are organized by *what you are trying to do*, not by the order the ext
 The conceptual model you need to use Schegent effectively. None of these pages contain source code — they explain the rules of the system.
 
 - [Architecture Overview](concepts/architecture-overview.md) — extension host, CLI subprocess, webviews, trust boundaries.
+- [Local-first, Not Offline](concepts/local-first-not-offline.md) — what stays local, what provider connectivity is still required, and the queue-only degraded-mode boundary.
 - [Pipelines & Phases](concepts/pipeline-and-phases.md) — the Spec Driven Development workflow pipeline, the built-in phases, and how phase overrides work.
 - [The Queue, Tasks, and Runs](concepts/queue-and-runs.md) — how work is ordered, what an in-flight task is, and the difference between a task and a run.
 - [The Workspace Lock](concepts/workspace-lock.md) — why only one run executes at a time, how pause/resume preserves the lock, and what to do when it gets stuck. Includes the [multi-root workspace semantics](concepts/workspace-lock.md#multi-root-workspaces): the first folder is canonical, `schegent.multiRoot.suppressWarning` silences the activation toast, and the `multi-root.warning-shown` audit event records the chosen folder.
@@ -92,6 +93,10 @@ Schegent runs the Claude CLI with broad workspace capabilities. Before deploying
 
 - [Operator Threat Model](security/threat-model.md) — what we defend against, what we explicitly do not, and which knobs you control.
 - [Security White-Paper](security/whitepaper.md) — operator-facing trust ceiling, audit boundary, and failure-mode summary; designed for a 45-minute read by an enterprise reviewer or operator deciding whether to deploy Schegent.
+
+## Architecture decisions
+
+- [Remote, Multi-user, and Parallel Execution Expansion Gate](architecture/remote-multi-user-expansion-gate.md) — mandatory identity, isolation, scheduler, locking, secrets, evidence, injection, and rollback criteria before any non-local expansion.
 
 ## Versioning and updates
 

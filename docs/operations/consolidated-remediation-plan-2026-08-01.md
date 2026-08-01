@@ -59,11 +59,11 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-019 | Core composition, orchestration, contracts, validation, and projection modules remain dense. | Medium | Focused owners now hold phase control, lifecycle audit, activation wiring, projector timing/tail state, validator domains, and IPC type families. The original files fell to 1301, 727, 745, 883, and 871 lines respectively, with lower enforced budgets. | Done |
 | F-020 | There is no sustained multi-hour-equivalent memory/filesystem pressure profile. | Medium | A deterministic real-child profile exceeds both parser caps, proves exact raw capture, exercises terminal modes/restart/retention/large phase hydration, and publishes a larger scheduled soak report. | Done |
 | F-021 | Disk-full and partial-write behavior is observable but not expressed as a single evidence-health state. | Medium | A workspace-scoped monitor now projects per-sink and overall health, coalesces warnings, fails execution closed when structured audit is unavailable, and keeps optional raw/runtime failures visibly degraded. | Done |
-| F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | E2E covers orchestration outcomes, not prompt/result quality across models or CLI versions. | Planned |
-| F-023 | Browser-level visual regression is not a universal UI gate. | Low | Svelte component, theme, accessibility, and DOM-contract tests exist; no screenshot/browser matrix is present. | Planned |
+| F-022 | LLM behavior has deterministic workflow tests but no first-class quality/evaluation corpus. | Medium | A versioned nine-scenario backend-neutral corpus now scores structural outcomes, failure precedence, truncation safety, and session ownership; PR/local gates run all 10 assertions and supported CLI bands are published. | Done |
+| F-023 | Browser-level visual regression is not a universal UI gate. | Low | Playwright now compares 15 production-webview baselines: Sidebar, Dashboard, Pipeline Builder, Metrics, and Activity Feed across light, dark, and high-contrast themes, with volatile values masked and a canonical Linux CI renderer. | Done |
 | F-024 | Documentation had multiple truth surfaces and the dated audit contained resolved claims. | Medium | A dated addendum preserves the historical review while explicitly superseding resolved claims and linking this canonical open-work register; release and build docs reflect the enforced gates. | Done |
-| F-025 | Remote, multi-user, or parallel-agent operation would exceed current lock/scheduler/trust assumptions. | Critical for expansion | The single queue/concurrency cap is deliberate. No current local release blocker exists, but expansion requires a new architecture. | Decision |
-| F-026 | True offline execution depends on an offline-capable backend and explicit degraded-mode UX. | Medium | Host/UI/state are local; configured AI CLIs may require network access. | Decision |
+| F-025 | Remote, multi-user, or parallel-agent operation would exceed current lock/scheduler/trust assumptions. | Critical for expansion | The [accepted expansion gate](../architecture/remote-multi-user-expansion-gate.md) blocks cap/network widening until identity, isolation, durable scheduling, fencing/idempotency, secrets, evidence, injection, threat-model, and rollback criteria are approved and proven. | Accepted |
+| F-026 | True offline execution depends on an offline-capable backend and explicit degraded-mode UX. | Medium | [Local-first versus offline](../concepts/local-first-not-offline.md) is now explicit, queue-only behavior and a future discovery contract are specified, and the Dashboard discloses provider network dependence before submission. Offline AI execution is not a current product promise. | Accepted |
 | F-027 | VS Code integration workers could report assertion failures while the launcher exited zero; the metrics refresh budget was unstable under parallel-host contention. | High | The launcher now uses one isolated profile/extension directory, requires exactly one schema-validated host result with zero failures, and rejects missing, duplicate, or failing markers. A real-host run completed all 11 modules within both metrics budgets. | Done |
 
 ## Delivery sequence
@@ -79,9 +79,8 @@ flowchart LR
   P5 --> P6["P6: Final evidence and integration"]
 ```
 
-P0 was release-blocking for Feature 074. P1-P4 are complete. P5 contains
-lower-risk quality investment and explicit
-product-boundary decisions. P6 is the final proof gate.
+P0 was release-blocking for Feature 074. P1-P5 are complete. P6 is the final
+proof gate.
 
 ## P0 — Close Feature 074 safely
 
@@ -393,11 +392,41 @@ Priority: Medium/Low investment. Findings: F-022, F-023, F-025, F-026.
 ### P5.4 Expansion architecture gate
 
 Do not implement remote, multi-user, or parallel-agent execution as an
-incremental increase to the current concurrency cap. First approve an RFC that
-covers authentication/authorization, tenant isolation, durable scheduling,
-distributed locking/idempotency, secret brokering, evidence retention, prompt
-injection policy, and rollback. Until that RFC exists, F-025 is an explicit
+incremental increase to the current concurrency cap. The accepted
+[expansion gate](../architecture/remote-multi-user-expansion-gate.md) requires
+a separate implementation RFC covering authentication/authorization, tenant
+isolation, durable scheduling, distributed locking/idempotency, secret
+brokering, evidence retention, prompt injection policy, threat modeling, and
+rollback. Until its exit criteria are evidenced, F-025 remains an explicit
 expansion blocker rather than a local-release defect.
+
+### P5 completion evidence (2026-08-01)
+
+- `test:evals` runs a versioned nine-scenario fixture corpus with 10 assertions
+  across clean completion, loop outcomes, malformed audit data, fatal/rate
+  limits, truncation, session continuation, and runner switching. It uses the
+  production parsers and outcome/session policies, and is mandatory in local,
+  PR, push, and scheduled gates.
+- Backend documentation publishes last-qualified version bands for Claude Code
+  2.1.220, Codex CLI 0.142.5, and Agy CLI 1.1.9 while keeping authenticated
+  provider checks opt-in and isolated.
+- `test:visual` serves production-built webviews through a loopback-only
+  fixture host and compares 15 screenshots (five surfaces by three themes).
+  Timestamps and process identity are masked, animations are disabled, data is
+  deterministic, and Linux Chromium is the canonical workflow renderer with
+  failure artifacts retained.
+- The Dashboard now labels the product "Local-first, not offline" before
+  submission. The accepted product decision specifies explicit queue-only
+  operation, probe limitations, fail-closed capability discovery, and revisit
+  criteria without pretending current cloud backends are offline-capable.
+- The accepted expansion gate keeps concurrency at one and requires approved
+  identity, tenant-isolation, durable-scheduler, fencing/idempotency, secret,
+  evidence, prompt/tool, threat-model, and rollback evidence before remote,
+  multi-user, or parallel-agent work may begin.
+- The F-023 work package passed the full repository gate: 3,357 host tests (10
+  skipped), 883 webview tests, 10 eval assertions, 15 browser screenshots, 14
+  performance tests, 3 E2E tests, the exact 20-file VSIX policy, and all 11
+  isolated real-host integration modules.
 
 ## P6 — Final verification and integration
 

@@ -18,6 +18,23 @@ A list of the things that go wrong, what they look like, and how to fix them.
 
 **Fix:** Run `claude login` in a fresh terminal. Re-open VS Code (or click the badge to re-probe) once logged in.
 
+## Backend binary is detected but execution cannot reach the provider
+
+**Symptom:** The CLI probe succeeds, but starting or resuming a phase fails
+with an authentication, DNS, TLS, proxy, quota, or provider-connectivity
+error.
+
+**Cause:** The preflight proves that the configured executable and command
+surface are available. It is not a durable provider-health or network
+reachability check. Schegent's host, queue, and evidence are local-first, while
+the configured backend may still require network access.
+
+**Fix:** Leave the queue `idle-pending` or pause it to retain work without new
+execution attempts. Restore the backend's credentials/connectivity, verify the
+CLI directly in a terminal, then start or resume the queue. Schegent never
+silently switches models or backends. See
+[Local-first does not mean offline execution](../concepts/local-first-not-offline.md).
+
 ## Sidebar is empty after installing
 
 **Symptom:** Schegent is installed, the icon is in the activity bar, but the sidebar shows nothing.

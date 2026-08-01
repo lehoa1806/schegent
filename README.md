@@ -70,7 +70,9 @@ queue.
   the published extension).
 - At least one supported backend CLI installed and authenticated: **Claude
   Code** (`schegent.cli.path`), **Codex** (`schegent.codex.path`), or **Agy**
-  (`schegent.agy.path`). Claude is the default backend.
+  (`schegent.agy.path`). Claude is the default backend. Cloud-backed execution
+  may require provider connectivity; Schegent is
+  [local-first, not an offline-execution promise](docs/concepts/local-first-not-offline.md).
 - A **trusted workspace folder** open in VS Code. Schegent is
   intentionally inert in untrusted workspaces.
 - **Plugins**: Ensure you have installed and set up the **Github Speckit** and **Superpowers** plugins to enable the complete spec-driven development experience.
@@ -175,7 +177,8 @@ The full operator manual lives under [`docs/`](docs/). Start with:
 
 By topic:
 
-- **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md).
+- **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md), [local-first versus offline](docs/concepts/local-first-not-offline.md).
+- **Architecture decisions** — [remote, multi-user, and parallel execution expansion gate](docs/architecture/remote-multi-user-expansion-gate.md).
 - **Features** — [phase overrides](docs/features/phase-overrides.md), [custom phases](docs/features/custom-phases.md), [phase breakpoints](docs/features/phase-breakpoints.md), [wake-up scheduler](docs/features/wake-up-scheduler.md), [verbose diagnostics](docs/features/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
 - **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
 - **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).

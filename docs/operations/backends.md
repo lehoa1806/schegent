@@ -34,6 +34,14 @@ to any report, and complete the deterministic adapter/evaluation gate before
 expanding a supported band. Authenticated live-provider calls remain opt-in;
 they are never part of a pull-request gate and must use isolated credentials.
 
+Backend executable probes do not prove provider reachability. Cloud-backed
+phase execution may still require network access, valid credentials, quota,
+and working proxy/DNS/TLS configuration. Schegent is local-first rather than
+an offline-execution promise; see
+[Local-first does not mean offline execution](../concepts/local-first-not-offline.md)
+for the queue-only degraded-mode boundary and future capability-discovery
+requirements.
+
 Switch backends from the VS Code settings UI (`Schegent: Backend: Runner`)
 or by editing `package.json` / `.vscode/settings.json`:
 

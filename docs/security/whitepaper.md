@@ -164,6 +164,9 @@ There is no telemetry collector, no remote logging endpoint, and no
 crash reporter. The `telemetry-projection` feature is a local-only UI
 surface, not an outbound channel; see
 [`features/telemetry-projection.md`](../features/telemetry-projection.md).
+This statement applies to the Schegent control plane, not to backend CLI
+execution: configured providers may require network access. See
+[`Local-first does not mean offline execution`](../concepts/local-first-not-offline.md).
 
 The redaction surface is **centralized**: `SECRET_PATTERNS` is the
 single source of truth for every disk-bound sink. CLAUDE.md hard rules
