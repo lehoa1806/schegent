@@ -397,6 +397,86 @@ describe('Feature 021 — shared Activity Feed selection callbacks', () => {
   });
 });
 
+describe('Feature 074 — selected runner attribution', () => {
+  it('maps the selected in-flight task id to the active workflow run id', async () => {
+    const base = buildSnapshot();
+    const inFlight = Object.freeze({
+      ...base.queue.inFlight!,
+      id: 'task-1'
+    } as QueueItem);
+    const snapshot = Object.freeze({
+      ...base,
+      activeRunId: 'workflow-run-1',
+      queue: Object.freeze({ ...base.queue, inFlight } as QueueProjection),
+      auditTail: Object.freeze([
+        Object.freeze({
+          id: 'audit-runner-1',
+          timestamp: '2026-05-10T12:00:00.000Z',
+          phase: 'speckit-plan' as const,
+          category: 'phase-transition' as const,
+          summary: 'phase-start: speckit-plan',
+          runId: 'workflow-run-1',
+          scope: 'task' as const,
+          taskId: 'task-1',
+          phaseId: 'speckit-plan',
+          outcome: 'pending' as const,
+          runner: 'agy'
+        })
+      ])
+    } as WorkflowSnapshot);
+    const store = createPhaseLogStore();
+    const { getByTitle } = render(PhaseLogFeed, {
+      props: { snapshot, store }
+    });
+
+    await selectTuple(store, 'q-1', 'task-1', 'speckit-plan');
+    await tick();
+
+    expect(getByTitle('Executing on agy').textContent).toBe('agy');
+  });
+
+  it('compares attribution against the effective default backend', async () => {
+    const base = buildSnapshot();
+    const inFlight = Object.freeze({ ...base.queue.inFlight!, id: 'task-1' } as QueueItem);
+    const event = {
+      id: 'audit-runner-default',
+      timestamp: '2026-05-10T12:00:00.000Z',
+      phase: 'speckit-plan' as const,
+      category: 'phase-transition' as const,
+      summary: 'phase-start: speckit-plan',
+      runId: 'workflow-run-1',
+      scope: 'task' as const,
+      taskId: 'task-1',
+      phaseId: 'speckit-plan',
+      outcome: 'pending' as const,
+      runner: 'agy'
+    };
+    const snapshot = Object.freeze({
+      ...base,
+      activeRunId: 'workflow-run-1',
+      defaultRunnerKind: 'agy' as const,
+      queue: Object.freeze({ ...base.queue, inFlight } as QueueProjection),
+      auditTail: Object.freeze([Object.freeze(event)])
+    } as WorkflowSnapshot);
+    const store = createPhaseLogStore();
+    const view = render(PhaseLogFeed, { props: { snapshot, store } });
+
+    await selectTuple(store, 'q-1', 'task-1', 'speckit-plan');
+    await tick();
+    expect(view.queryByTitle('Executing on agy')).toBeNull();
+
+    await view.rerender({
+      snapshot: Object.freeze({
+        ...snapshot,
+        auditTail: Object.freeze([Object.freeze({ ...event, runner: 'claude' })])
+      } as WorkflowSnapshot),
+      store
+    });
+    await tick();
+    expect(view.getByTitle('Executing on claude').textContent).toBe('claude');
+  });
+});
+
 // Feature 021 T046 (BUG-001 Defect A) — cold-start cascade.
 //
 // At dashboard mount, when `queue.inFlight === null` but `queue.recent`

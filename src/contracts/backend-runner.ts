@@ -1,17 +1,14 @@
 /**
  * Backend runner interface.
  *
- * Schegent currently invokes Claude CLI as the only implemented backend
- * (`src/runner/claude-cli.ts`). The orchestrator depends on the **shape** of
- * any spawn-based backend, not on Claude-specific invocation. This module
- * declares that shape so future backends (different CLI, IPC bridge, etc.)
- * can plug in without changes to the workflow controller.
+ * Claude, Codex, and Agy implement this contract. The orchestrator depends on
+ * the **shape** of a spawn-based backend, not CLI-specific invocation flags.
  *
  * Constraints any backend MUST honor:
  *  1. Single-shot, non-interactive: each `invoke()` returns when the
  *     subprocess terminates or the per-phase timeout fires.
- *  2. Output cap: stdout/stderr buffers are compressed sequentially using ZippedStreamBuffer
- *     so they no longer consume raw string memory matching the full stream length.
+ *  2. Output cap: stdout/stderr each use a bounded `ZippedStreamBuffer` that
+ *     retains an ordered head and rolling tail with an explicit truncation marker.
  *  3. Timeout: the runner aborts the subprocess when `request.timeoutMs`
  *     elapses. The `timedOut` flag in `RawInvocationOutput` reflects this.
  *  4. Cancellation: the runner observes `cancellationSignal` and aborts the
@@ -20,8 +17,7 @@
  *     stream so the audit pipeline can hydrate live monitor events.
  *  6. No retry: retry policy lives in the controller, not the runner.
  *
- * This interface is documentary. There is no runtime registry — each
- * implementation is wired in `src/extension.ts` directly.
+ * `BackendRunnerRegistry` is the runtime construction and lifecycle owner.
  */
 
 // `InvocationRequest` and `RawInvocationOutput` are the wire shapes between
@@ -33,6 +29,7 @@
 // type identity and the controller doesn't need to choose between two
 // near-identical shapes.
 import type {
+  InvocationOutputSink,
   InvocationRequest,
   RawInvocationOutput
 } from '../runner/invocation-result';
@@ -57,7 +54,10 @@ export interface BackendRunner {
   /** Whether an invocation is currently running. */
   readonly hasActiveProcess: boolean;
   /** Run a single phase invocation. Resolves when the subprocess terminates. */
-  invoke(request: InvocationRequest): Promise<RawInvocationOutput>;
+  invoke(
+    request: InvocationRequest,
+    outputSink?: InvocationOutputSink
+  ): Promise<RawInvocationOutput>;
   /** Cancel any in-flight invocation. Returns true if a process was killed. */
   cancelActive(): boolean;
 }

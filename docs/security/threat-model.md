@@ -83,7 +83,10 @@ The extension's CLAUDE.md hard rules forbid forking the redaction set or introdu
 
 Three local diagnostic sinks require special handling:
 
-- The **raw transcript** (`.schegent/sessions/raw-<runId>.log`). Captures CLI stdout/stderr verbatim. Always written.
+- The **raw transcript** (`.schegent/sessions/raw-<runId>.log`). Captures CLI
+  stdout/stderr verbatim. Always written through mode-`0600`, backpressured
+  OS-temporary spools that are removed after finalization; abandoned spools
+  are scavenged after their owner process is no longer alive.
 - The **verbose diagnostic files** (`.schegent/sessions/<runId>/diagnostics/...`). Captured only when `schegent.logging.verbose` is true. Opt-in.
 - The **wake-up session log** at `<globalStorageUri>/wakeup/session.log`. Sanitized before write, defense-in-depth re-sanitized on read, and kept outside the workspace in VS Code global storage. The writer itself is a sink and does not carry a second sanitizer.
 

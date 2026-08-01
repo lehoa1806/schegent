@@ -91,6 +91,7 @@ function makeOutput(overrides: Partial<PhaseRunOutput> = {}): PhaseRunOutput {
     exitCode: 0,
     auditEntryId: 'audit-1',
     warnings: [],
+    cliSessionId: 'owned-claude-session',
     ...overrides
   };
 }
@@ -104,7 +105,8 @@ function makeTransientOutput(): PhaseRunOutput {
     stderrSummary: 'cli aborted unexpectedly',
     exitCode: 1,
     auditEntryId: 'audit-tx',
-    warnings: []
+    warnings: [],
+    cliSessionId: 'owned-claude-session'
   };
 }
 
@@ -117,7 +119,8 @@ function makeRateLimitedOutput(): PhaseRunOutput {
     stderrSummary: 'over rate limit',
     exitCode: 1,
     auditEntryId: 'audit-rl',
-    warnings: []
+    warnings: [],
+    cliSessionId: 'owned-claude-session'
   };
 }
 

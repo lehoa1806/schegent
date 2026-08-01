@@ -33,6 +33,7 @@ export interface SavePhaseRow {
   readonly model?: string;
   readonly effort?: PhaseDefinition['effort'];
   readonly timeoutSeconds?: number;
+  readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly runner?: string;
 }

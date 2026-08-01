@@ -31,6 +31,15 @@ describe('extractCliSessionId', () => {
     expect(extractCliSessionId(stdout)).toBe(uuid);
   });
 
+  it.each([
+    ['conversation_id', 'agy-conversation-snake'],
+    ['conversationId', 'agy-conversation-camel']
+  ])('returns an Agy %s from stream-json output', (field, expected) => {
+    expect(
+      extractCliSessionId(JSON.stringify({ type: 'result', [field]: expected }))
+    ).toBe(expected);
+  });
+
   // ── nested session_id ────────────────────────────────────────
 
   it('extracts session_id nested inside a "conversation" object', () => {
@@ -41,6 +50,11 @@ describe('extractCliSessionId', () => {
   it('extracts session_id nested inside a "session" object', () => {
     const stdout = '{"type":"init","session":{"session_id":"nested-sess-id"}}';
     expect(extractCliSessionId(stdout)).toBe('nested-sess-id');
+  });
+
+  it('extracts conversation_id nested inside an Agy conversation object', () => {
+    const stdout = '{"type":"init","conversation":{"conversation_id":"agy-nested"}}';
+    expect(extractCliSessionId(stdout)).toBe('agy-nested');
   });
 
   it('prefers top-level session_id over nested', () => {

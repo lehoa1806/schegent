@@ -1,6 +1,7 @@
 import type { AuditAppendListener, AuditDisposable, AuditLogWriter } from '../../audit/audit-log-writer';
 import type { AuditEntry } from '../../audit/audit-entry';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
+import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { SanitizedLogger } from '../../lib/logger';
 import { readAuditTailColdStart } from './audit-tail-coldstart';
 import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
@@ -97,6 +98,8 @@ export interface StateProjectorDeps {
   readonly monitor?: Pick<ClaudeCliMonitor, 'getCurrentState' | 'subscribe' | 'onWorkflowPaused' | 'onWorkflowResumed'> | null;
   readonly history?: Pick<HistoryStore, 'list' | 'subscribe'> | null;
   readonly getCatalog?: () => { phases: readonly import('../../config/pipeline-config').PhaseDef[], pipelines: readonly import('../../config/pipeline-config').PipelineDef[], models: readonly string[] };
+  /** Effective activation-time default used for phases without an override. */
+  readonly defaultRunnerKind?: BackendRunnerKind;
   /**
    * Feature 011 — read the current scalar `schegent.*` settings for the
    * Settings surface. Invoked on every projection; the projector also
@@ -217,6 +220,7 @@ export class StateProjector {
   private readonly monitor: Pick<ClaudeCliMonitor, 'getCurrentState' | 'subscribe' | 'onWorkflowPaused' | 'onWorkflowResumed'> | null;
   private readonly history: Pick<HistoryStore, 'list' | 'subscribe'> | null;
   private readonly getCatalog?: () => { phases: readonly import('../../config/pipeline-config').PhaseDef[], pipelines: readonly import('../../config/pipeline-config').PipelineDef[], models: readonly string[] };
+  private readonly defaultRunnerKind: BackendRunnerKind;
   private readonly getGeneralSettings?: () => GeneralSettings;
   private readonly getWakeUpSettings?: () => WakeUpSettings;
   private readonly getWakeUpLog?: () => WakeUpLogProjection;
@@ -287,6 +291,7 @@ export class StateProjector {
     this.monitor = deps.monitor ?? null;
     this.history = deps.history ?? null;
     this.getCatalog = deps.getCatalog;
+    this.defaultRunnerKind = deps.defaultRunnerKind ?? 'claude';
     this.getGeneralSettings = deps.getGeneralSettings;
     this.getWakeUpSettings = deps.getWakeUpSettings;
     this.getWakeUpLog = deps.getWakeUpLog;
@@ -850,6 +855,7 @@ export class StateProjector {
       // the queue/task id). Powers `CMD_SET_PHASE_BREAKPOINT` /
       // `CMD_CLEAR_PHASE_BREAKPOINT` targeting from the dashboard.
       activeRunId: run?.id ?? null,
+      defaultRunnerKind: this.defaultRunnerKind,
       auditTail: Object.freeze(auditTail),
       debugLogTail: Object.freeze(this.getDebugLogTail ? this.getDebugLogTail() : []),
       liveActivity,

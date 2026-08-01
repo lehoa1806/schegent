@@ -7,11 +7,7 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import { IsContinueGate } from './is-continue-gate';
-import type {
-  SanitizedError,
-  WorkflowRun,
-  WorkflowRunPipeline
-} from '../state/workflow-run';
+import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
@@ -33,6 +29,8 @@ import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coord
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { getOperatorActor } from '../lib/operator-attribution';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { resolvePinnedRunnerKind, snapshotPhaseDef } from '../config/pipeline-snapshot';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -42,8 +40,8 @@ export interface WorkflowControllerOptions {
   inheritProcessEnv?: boolean;
   perPhaseRulesEnabled: boolean;
   skipProbing?: boolean;
-  // Feature 074 — resolve the CLI binary path for a given runner kind.
   cliPathResolver?: (runnerKind: string) => string;
+  defaultRunnerKind?: BackendRunnerKind;
 }
 
 // Feature 034 Item 047 — `DelayedRetryWatchdog` shape moved to
@@ -270,6 +268,7 @@ export class SchegentWorkflowController {
         phasesCompleted: [],
         lastError: null,
         pipeline: pipelineSnapshot,
+        defaultRunnerKind: this.options.defaultRunnerKind ?? DEFAULT_BACKEND,
         // Feature 011 — delayed-retry fields start at zero / null.
         delayedRetryCount: 0,
         pendingRetryAt: null,
@@ -390,7 +389,7 @@ export class SchegentWorkflowController {
     );
   }
 
-  private resolvePipelineSnapshot(requestedId: string): WorkflowRunPipeline {
+  private resolvePipelineSnapshot(requestedId: string, defaultRunnerKind = this.options.defaultRunnerKind ?? DEFAULT_BACKEND): WorkflowRunPipeline {
     let pipeline = this.catalog.pipelinesById.get(requestedId);
     if (!pipeline) {
       if (requestedId !== BUILT_IN_PIPELINE_ID) {
@@ -404,18 +403,18 @@ export class SchegentWorkflowController {
     for (const phaseId of pipeline.phases) {
       const def = this.catalog.phasesById.get(phaseId);
       if (def) {
-        phases.push(def);
+        phases.push(snapshotPhaseDef(def, defaultRunnerKind));
       } else {
         this.logger.warn(
           `pipeline '${pipeline.id}' references unknown phase '${phaseId}'; substituting 'done'`
         );
         const done = this.catalog.phasesById.get('done');
-        if (done) phases.push(done);
+        if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
       }
     }
     if (!phases.some((p) => p.id === 'done')) {
       const done = this.catalog.phasesById.get('done');
-      if (done) phases.push(done);
+      if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
     }
     return Object.freeze({
       id: pipeline.id,
@@ -432,8 +431,8 @@ export class SchegentWorkflowController {
     return pipeline.phases[0]?.id ?? 'done';
   }
 
-  private synthesizeLegacyPipeline(): WorkflowRunPipeline {
-    return this.resolvePipelineSnapshot(BUILT_IN_PIPELINE_ID);
+  private synthesizeLegacyPipeline(defaultRunnerKind: BackendRunnerKind): WorkflowRunPipeline {
+    return this.resolvePipelineSnapshot(BUILT_IN_PIPELINE_ID, defaultRunnerKind);
   }
   /**
    * Resumes the currently persisted run if it is in a legal resumable state
@@ -473,9 +472,12 @@ export class SchegentWorkflowController {
     if (run.pendingRetryCause !== null || run.manualPauseCause !== null) {
       this.isContinueGate.arm();
     }
+    const defaultRunnerKind = resolvePinnedRunnerKind(
+      run.defaultRunnerKind, run.lastCliSessionRunnerKind, this.options.defaultRunnerKind
+    );
     let pipeline = run.pipeline;
     if (!pipeline) {
-      pipeline = this.synthesizeLegacyPipeline();
+      pipeline = this.synthesizeLegacyPipeline(defaultRunnerKind);
       this.logger.info(
         `workflow-run.migrated runId=${run.id} fromSchema=pre-009 toPipeline=${BUILT_IN_PIPELINE_ID}`
       );
@@ -485,6 +487,7 @@ export class SchegentWorkflowController {
       status: 'running',
       lastError: null,
       pipeline,
+      defaultRunnerKind,
       pendingRetryAt: null,
       pendingRetryCause: null,
       // When resuming a run that was terminally failed (operator retry),
@@ -1192,5 +1195,4 @@ export class SchegentWorkflowController {
     await this.store.setRun(merged);
     return merged;
   }
-
 }

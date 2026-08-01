@@ -173,6 +173,11 @@
           "type": "string | null"
         },
         {
+          "name": "defaultRunnerKind",
+          "optional": false,
+          "type": "BackendRunnerKind"
+        },
+        {
           "name": "auditTail",
           "optional": false,
           "type": "readonly AuditTailEntry[]"

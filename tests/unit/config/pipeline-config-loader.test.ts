@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
-import { BUILT_IN_PIPELINE_ID } from '../../../src/config/pipeline-config';
+import {
+  BUILT_IN_PHASES,
+  BUILT_IN_PIPELINE_ID,
+  isPhaseDef
+} from '../../../src/config/pipeline-config';
+import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
 
 function makeReader(opts: {
   userPhases?: readonly unknown[];
@@ -282,21 +287,29 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
 });
 
 describe('loadCatalog — runner validation (074, T033)', () => {
-  it('accepts phase definitions with runner: agy', () => {
+  it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement', 'finalize', 'superpowers-review-close'])(
+    'pins the built-in Git-mutating phase %s to Claude',
+    (phaseId) => {
+      expect(BUILT_IN_PHASES.find((phase) => phase.id === phaseId)?.runner).toBe('claude');
+    }
+  );
+
+  it.each(SUPPORTED_BACKENDS)('accepts phase definitions with runner: %s', (runner) => {
     const reader = makeReader({
       workspacePhases: [
         {
           id: 'test-runner-1',
           name: 'Test Runner',
           instruction: 'inst',
-          runner: 'agy'
+          runner
         }
       ]
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('test-runner-1');
-    expect(phase?.runner).toBe('agy');
+    expect(phase?.runner).toBe(runner);
+    expect(isPhaseDef(phase)).toBe(true);
   });
 
   it('rejects phase definitions with invalid runner', () => {
@@ -311,9 +324,15 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       ]
     });
     const result = loadCatalog(reader);
-    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors.filter((error) => error.field === 'runner')).toHaveLength(1);
     // Invalid runner causes the phase to fail schema validation, meaning it doesn't get loaded
     expect(result.catalog.phasesById.has('test-runner-2')).toBe(false);
+    expect(isPhaseDef({
+      id: 'test-runner-2',
+      name: 'Test Runner',
+      instruction: 'inst',
+      runner: 'invalid-runner-name'
+    })).toBe(false);
   });
 
   it('accepts phase definitions with omitted runner', () => {
@@ -331,5 +350,90 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     const phase = result.catalog.phasesById.get('test-runner-3');
     expect(phase?.runner).toBeUndefined();
   });
-});
 
+  it('preserves the deprecated loopable compatibility field', () => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'legacy-loopable',
+          name: 'Legacy loopable',
+          instruction: 'inst',
+          loopable: true
+        }
+      ]
+    });
+
+    const result = loadCatalog(reader);
+
+    expect(result.errors).toEqual([]);
+    expect(result.catalog.phasesById.get('legacy-loopable')?.loopable).toBe(true);
+  });
+
+  it.each([
+    'speckit-specify',
+    'specify-brainstorm',
+    'superpowers-implement',
+    'finalize',
+    'superpowers-review-close'
+  ] as const)('preserves the pinned runner for legacy %s overrides', (id) => {
+    const phase = {
+      id,
+      name: 'Git phase override',
+      instruction: 'Create or close the branch.'
+    };
+    const reader = makeReader({ workspacePhases: [phase] });
+
+    const result = loadCatalog(reader);
+
+    expect(result.usedFallback).toBe(false);
+    expect(result.errors).toEqual([]);
+    expect(result.catalog.phasesById.get(id)?.runner).toBe('claude');
+    expect(isPhaseDef(phase)).toBe(false);
+  });
+
+  it.each([
+    'speckit-specify',
+    'specify-brainstorm',
+    'superpowers-implement',
+    'finalize',
+    'superpowers-review-close'
+  ] as const)('rejects Git-mutating phase %s with runner codex', (id) => {
+    const phase = {
+      id,
+      name: 'Git phase override',
+      instruction: 'Create or close the branch.',
+      runner: 'codex' as const
+    };
+    const reader = makeReader({ workspacePhases: [phase] });
+    const result = loadCatalog(reader);
+
+    expect(result.usedFallback).toBe(true);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id, field: 'runner' })
+      ])
+    );
+    expect(isPhaseDef(phase)).toBe(false);
+  });
+
+  it.each(['claude', 'agy'] as const)(
+    'accepts Git-mutating overrides with explicit %s runner',
+    (runner) => {
+      const reader = makeReader({
+        workspacePhases: [
+          {
+            id: 'finalize',
+            name: 'Finalize override',
+            instruction: 'Commit and merge the work.',
+            runner
+          }
+        ]
+      });
+
+      const result = loadCatalog(reader);
+
+      expect(result.errors).toEqual([]);
+      expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);
+    }
+  );
+});

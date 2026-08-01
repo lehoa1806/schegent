@@ -8,6 +8,18 @@ export interface VerboseDiagnosticTarget {
   readonly verboseLogFile: string;
 }
 
+/**
+ * Optional disk-backed tee for raw subprocess output. Implementations must
+ * never throw from `write`: runner data handlers cannot safely recover from
+ * an output-sink exception. A `false` return applies Node stream
+ * backpressure; the runner pauses that child stream until the matching
+ * `onceDrain` callback fires.
+ */
+export interface InvocationOutputSink {
+  write(stream: 'stdout' | 'stderr', chunk: string): boolean;
+  onceDrain(stream: 'stdout' | 'stderr', callback: () => void): void;
+}
+
 export interface InvocationRequest {
   phase: Phase;
   iteration: number;

@@ -70,7 +70,17 @@
 
   const selectedRunner = $derived.by(() => {
     if (!state.selection.taskId || !state.selection.phaseId) return null;
-    const runId = state.selection.taskId;
+    const taskId = state.selection.taskId;
+    // Queue selections are keyed by FeatureRequest id, while audit entries
+    // are keyed by WorkflowRun id. Resolve that boundary explicitly for the
+    // active run and for historical tasks; falling back to taskId preserves
+    // compatibility with older snapshots where both identifiers matched.
+    const runId =
+      snapshot.queue.inFlight?.id === taskId && snapshot.activeRunId
+        ? snapshot.activeRunId
+        : snapshot.history.find(
+            (entry) => entry.featureId === taskId || entry.runId === taskId
+          )?.runId ?? taskId;
     const phaseId = state.selection.phaseId;
     const entries = snapshot.auditTail ?? [];
     for (let i = entries.length - 1; i >= 0; i--) {
@@ -81,7 +91,7 @@
         e.category === 'phase-transition' &&
         e.summary.startsWith('phase-start')
       ) {
-        if (e.runner && e.runner !== 'claude') {
+        if (e.runner && e.runner !== (snapshot.defaultRunnerKind ?? 'claude')) {
           return e.runner;
         }
       }

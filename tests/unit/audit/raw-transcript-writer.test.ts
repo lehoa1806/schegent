@@ -2,8 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { RawTranscriptWriter } from '../../../src/audit/raw-transcript-writer';
+import {
+  RawTranscriptWriter,
+  type RawTranscriptCapture
+} from '../../../src/audit/raw-transcript-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 
 let workspaceRoot: string;
 let logger: SanitizedLogger;
@@ -103,6 +107,154 @@ describe('RawTranscriptWriter happy path (T005, US1)', () => {
       timedOut: false
     });
     expect(await readLog('cnc')).toContain('[EXIT_CODE]: null');
+  });
+
+  it('preserves verbatim middle output through the disk-backed capture when parsing buffers truncate', async () => {
+    const runId = 'streamed';
+    await writer.appendStart({
+      runId,
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'p'
+    });
+    const capture = await writer.createInvocationCapture(runId);
+    expect(capture).not.toBeNull();
+    const entriesDuringCapture = await fs.readdir(
+      path.join(workspaceRoot, '.schegent', 'sessions')
+    );
+    expect(entriesDuringCapture.some((entry) => entry.startsWith('.raw-spool-'))).toBe(false);
+
+    const stdout = `head-${'x'.repeat(32_768)}-fatal-middle-${'y'.repeat(32_768)}-tail`;
+    const stderr = `stderr-${'z'.repeat(2_048)}-middle-evidence`;
+    const accepted = capture?.write('stdout', stdout);
+    if (accepted === false) {
+      await new Promise<void>((resolve) => capture?.onceDrain('stdout', resolve));
+    }
+    capture?.write('stderr', stderr);
+
+    const stdoutBuffer = new ZippedStreamBuffer(4, 128);
+    stdoutBuffer.append(stdout);
+    stdoutBuffer.finalize();
+    const stderrBuffer = new ZippedStreamBuffer(4, 128);
+    stderrBuffer.append(stderr);
+    stderrBuffer.finalize();
+    expect(stdoutBuffer.truncated).toBe(true);
+    expect(stderrBuffer.truncated).toBe(true);
+
+    await writer.appendEnd({
+      runId,
+      stdout: stdoutBuffer,
+      stderr: stderrBuffer,
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      capture
+    });
+
+    const contents = await readLog(runId);
+    expect(contents).toContain(stdout);
+    expect(contents).toContain(stderr);
+    expect(contents).toContain('fatal-middle');
+    const mode = (await fs.stat(
+      path.join(workspaceRoot, '.schegent', 'sessions', `raw-${runId}.log`)
+    )).mode;
+    expect(mode & 0o077).toBe(0);
+    const sessionEntries = await fs.readdir(
+      path.join(workspaceRoot, '.schegent', 'sessions')
+    );
+    expect(sessionEntries.some((entry) => entry.startsWith('.raw-spool-'))).toBe(false);
+  });
+
+  it('scavenges OS-temp spools whose owner process is no longer alive', async () => {
+    const spoolRoot = path.join(workspaceRoot, 'isolated-os-temp');
+    await fs.mkdir(spoolRoot, { recursive: true });
+    const abandoned = await fs.mkdtemp(
+      path.join(spoolRoot, 'schegent-raw-spool-2147483647-')
+    );
+    await fs.writeFile(path.join(abandoned, 'stdout'), 'unredacted');
+    const isolatedWriter = new RawTranscriptWriter(workspaceRoot, logger, spoolRoot);
+
+    const capture = await isolatedWriter.createInvocationCapture('scavenge');
+
+    expect(capture).not.toBeNull();
+    await expect(fs.stat(abandoned)).rejects.toMatchObject({ code: 'ENOENT' });
+    await capture?.dispose();
+  });
+
+  it('rewinds a partial spool copy and falls back to bounded output', async () => {
+    const runId = 'spool-read-failure';
+    await writer.appendStart({
+      runId,
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'p'
+    });
+    const capture: RawTranscriptCapture = {
+      failed: false,
+      write: () => true,
+      onceDrain: (_stream, callback) => callback(),
+      finish: async () => undefined,
+      appendStreamTo: async (stream, destination) => {
+        if (stream === 'stdout') {
+          await destination.write('partial-spool-copy');
+          throw new Error('spool read failed');
+        }
+        await destination.write('captured-stderr');
+      },
+      dispose: async () => undefined
+    };
+
+    await writer.appendEnd({
+      runId,
+      stdout: 'bounded-stdout-fallback',
+      stderr: 'bounded-stderr-fallback',
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      capture
+    });
+
+    const contents = await readLog(runId);
+    expect(contents).toContain('bounded-stdout-fallback');
+    expect(contents).not.toContain('partial-spool-copy');
+    expect(contents).toContain('captured-stderr');
+  });
+
+  it('falls back when capture failure is reported after a successful-looking copy', async () => {
+    const runId = 'late-spool-failure';
+    await writer.appendStart({
+      runId,
+      phase: 'speckit-implement',
+      iteration: 1,
+      prompt: 'p'
+    });
+    let failed = false;
+    const capture: RawTranscriptCapture = {
+      get failed() { return failed; },
+      write: () => true,
+      onceDrain: (_stream, callback) => callback(),
+      finish: async () => undefined,
+      appendStreamTo: async (_stream, destination) => {
+        await destination.write('partial-spool-copy');
+        failed = true;
+      },
+      dispose: async () => undefined
+    };
+
+    await writer.appendEnd({
+      runId,
+      stdout: 'bounded-stdout-fallback',
+      stderr: 'bounded-stderr-fallback',
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      capture
+    });
+
+    const contents = await readLog(runId);
+    expect(contents).toContain('bounded-stdout-fallback');
+    expect(contents).toContain('bounded-stderr-fallback');
+    expect(contents).not.toContain('partial-spool-copy');
   });
 });
 

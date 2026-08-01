@@ -261,10 +261,16 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     extra: Partial<{
       effort: PhaseDefinition['effort'];
       model: string;
+      runner: PhaseDefinition['runner'];
       precedence: PhasePrecedenceProjection;
     }> = {}
   ): Promise<{ container: HTMLElement }> {
-    const seeded = { ...p, ...(extra.effort ? { effort: extra.effort } : {}), ...(extra.model ? { model: extra.model } : {}) } as PhaseDefinition;
+    const seeded = {
+      ...p,
+      ...(extra.effort ? { effort: extra.effort } : {}),
+      ...(extra.model ? { model: extra.model } : {}),
+      ...(extra.runner ? { runner: extra.runner } : {})
+    } as PhaseDefinition;
     const snap = buildSnapshot(
       [seeded],
       [],
@@ -273,7 +279,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     );
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Phases');
-    const item = container.querySelector('[data-testid="phases-list-item-speckit-plan"]') as HTMLButtonElement;
+    const item = container.querySelector(`[data-testid="phases-list-item-${p.id}"]`) as HTMLButtonElement;
     expect(item).not.toBeNull();
     await fireEvent.click(item);
     await tick();
@@ -309,6 +315,127 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     const [phases] = vi.mocked(savePhasesHelper).mock.calls[0];
     expect(phases).toHaveLength(1);
     expect(phases[0]).toMatchObject({ id: 'speckit-plan', effort: 'high' });
+  });
+
+  it('preserves the deprecated loopable field during structured saves', async () => {
+    vi.mocked(savePhasesHelper).mockClear();
+    const { container } = await openPhasesEditor({
+      ...phase,
+      loopable: true
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement
+    );
+    await tick();
+
+    expect(vi.mocked(savePhasesHelper).mock.calls[0][0][0]).toMatchObject({
+      id: 'speckit-plan',
+      loopable: true
+    });
+  });
+
+  it('renders and saves every supported runner through the shared helper', async () => {
+    vi.mocked(savePhasesHelper).mockClear();
+    const { container } = await openPhasesEditorForPlan();
+    const select = container.querySelector(
+      '[data-testid="phases-runner-speckit-plan"]'
+    ) as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      '',
+      'claude',
+      'codex',
+      'agy'
+    ]);
+
+    await fireEvent.change(select, { target: { value: 'agy' } });
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement
+    );
+    await tick();
+
+    expect(vi.mocked(savePhasesHelper).mock.calls[0][0][0]).toMatchObject({
+      id: 'speckit-plan',
+      runner: 'agy'
+    });
+  });
+
+  it('disables inherited and Codex runners for Git-mutating built-in phases', async () => {
+    const finalizePhase = {
+      ...phase,
+      id: 'finalize',
+      name: 'Finalize',
+      runner: 'claude'
+    } as PhaseDefinition;
+    const { container } = await openPhasesEditor(finalizePhase);
+    const select = container.querySelector(
+      '[data-testid="phases-runner-finalize"]'
+    ) as HTMLSelectElement;
+
+    expect(select.querySelector('option[value=""]')?.hasAttribute('disabled')).toBe(true);
+    expect(select.querySelector('option[value="codex"]')?.hasAttribute('disabled')).toBe(true);
+    expect(select.querySelector('option[value="claude"]')?.hasAttribute('disabled')).toBe(false);
+    expect(select.querySelector('option[value="agy"]')?.hasAttribute('disabled')).toBe(false);
+  });
+
+  it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement'])(
+    'disables inherited and Codex runners for worktree-creating phase %s',
+    async (phaseId) => {
+      const branchPhase = {
+        ...phase,
+        id: phaseId,
+        runner: 'claude'
+      } as PhaseDefinition;
+      const { container } = await openPhasesEditor(branchPhase);
+      const select = container.querySelector(
+        `[data-testid="phases-runner-${phaseId}"]`
+      ) as HTMLSelectElement;
+
+      expect(select.querySelector('option[value=""]')?.hasAttribute('disabled')).toBe(true);
+      expect(select.querySelector('option[value="codex"]')?.hasAttribute('disabled')).toBe(true);
+      expect(select.querySelector('option[value="claude"]')?.hasAttribute('disabled')).toBe(false);
+      expect(select.querySelector('option[value="agy"]')?.hasAttribute('disabled')).toBe(false);
+    }
+  );
+
+  it('omits runner when the operator selects Inherit', async () => {
+    vi.mocked(savePhasesHelper).mockClear();
+    const { container } = await openPhasesEditor(phase, { runner: 'codex' });
+    const select = container.querySelector(
+      '[data-testid="phases-runner-speckit-plan"]'
+    ) as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: '' } });
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement
+    );
+    await tick();
+
+    expect(vi.mocked(savePhasesHelper).mock.calls[0][0][0].runner).toBeUndefined();
+  });
+
+  it.each([
+    ['built-in', 'Built-in'],
+    ['workspace', 'Workspace'],
+    ['user', 'User']
+  ] as const)('shows the %s runner precedence badge', async (layer, label) => {
+    const { container } = await openPhasesEditor(phase, {
+      runner: 'agy',
+      precedence: { 'speckit-plan::runner': layer }
+    });
+    expect(
+      container.querySelector('[data-testid="phases-runner-precedence-speckit-plan"]')
+        ?.textContent
+        ?.trim()
+    ).toBe(label);
+  });
+
+  it('hides runner precedence when the winning phase row inherits the runner', async () => {
+    const { container } = await openPhasesEditor(phase, {
+      precedence: { 'speckit-plan::runner': 'workspace' }
+    });
+
+    expect(
+      container.querySelector('[data-testid="phases-runner-precedence-speckit-plan"]')
+    ).toBeNull();
   });
 
 

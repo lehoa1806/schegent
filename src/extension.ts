@@ -435,7 +435,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       telemetryProjector?.updateTelemetry(snap);
     }
   });
-  context.subscriptions.push({ dispose: () => sampler.dispose() });
+  disposables.push({ dispose: () => sampler.dispose() });
   // Feature 074 — per-phase runner selection. The registry lazily constructs
   // runners on first use and caches them for the workspace lifetime. All
   // runners share the same monitor hook so the sidecar stays unified.
@@ -467,6 +467,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     probeTransport: true,
     logger
   }, backendKind);
+  // Registry lifetime is workspace-bound. Stage 2 teardown must cancel
+  // active subprocesses before releasing the workspace lock; the extension
+  // context can outlive Stage 2 when all workspace folders are removed.
+  disposables.push({ dispose: () => runnerRegistry.cancelAll() });
   const historyStore = new HistoryStore(store);
   const promptBuilder = new PromptBuilder();
   const rawTranscript = new RawTranscriptWriter(workspaceRoot, logger);
@@ -540,6 +544,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
       inheritProcessEnv,
+      defaultRunnerKind: backendKind,
       perPhaseRulesEnabled: rulesPerPhase,
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
@@ -574,7 +579,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger,
     audit: auditWriter,
     store,
-    cliPathProvider: () => cliPath,
+    cliPathProvider: (runnerKind) =>
+      resolveCliPath(runnerKind ?? backendKind, workspaceRoot, cliPath),
+    defaultRunnerKind: backendKind,
     workspaceRoot
   });
 
@@ -646,7 +653,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger,
     {
       pollIntervalMs: pollIntervalMinutes * 60 * 1000,
-      cliPath,
+      cliPath: resolveCliPath(backendKind, workspaceRoot, cliPath),
       cwd: workspaceRoot,
       timeoutMs: 60 * 1000
     },
@@ -721,6 +728,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     monitor,
     history: historyStore,
     getCatalog: () => activeCatalog,
+    defaultRunnerKind: backendKind,
     // Feature 011 — re-read scalar `schegent.*` settings on every
     // projection. The onDidChangeConfiguration listener below calls
     // `projector.kick()` for any schegent.* key so the Settings surface
@@ -1345,16 +1353,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     watchdog.dispose();
     queueScheduleWatchdog.dispose();
     statusBar.dispose();
-    await lock.release();
-    if (activeWakeUpDeps === wakeUpActivationDeps) {
-      activeWakeUpDeps = null;
-    }
     for (const d of disposables) {
       try {
         d.dispose();
       } catch {
         // ignore disposal errors
       }
+    }
+    await lock.release();
+    if (activeWakeUpDeps === wakeUpActivationDeps) {
+      activeWakeUpDeps = null;
     }
   };
 

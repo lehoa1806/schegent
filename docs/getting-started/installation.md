@@ -76,20 +76,28 @@ This setting has `application` scope — it applies across every workspace, but 
 Open the **Schegent** sidebar (the icon in the activity bar). The header will tell you whether the CLI is detected:
 
 - **CLI ready** — green check. You are done.
-- **CLI not found** — red warning. Either the path is wrong, the binary is missing, or VS Code's `PATH` does not include the binary's directory. Open a fresh terminal in VS Code (`` Ctrl+` ``) and run `which claude` to see what VS Code's environment sees.
-- **CLI unauthenticated** — yellow warning. Re-run `claude login` in a fresh terminal.
+- **CLI not found** — red warning. Either the selected backend's path is
+  wrong, the binary is missing, or VS Code's `PATH` does not include it. Test
+  that backend binary from a fresh integrated terminal.
+- **CLI unauthenticated** — yellow warning. Authenticate the selected backend
+  in a fresh terminal.
 
 ## Step 4: (Optional) Pick a backend
 
-Schegent supports two CLI backends: `claude` (the default) and `codex`. Almost every operator uses `claude`. If you have explicit reason to drive a different CLI, set:
+Schegent supports three CLI backends: `claude` (the default), `codex`, and
+`agy`. Choose a global default and optionally provide its binary path:
 
 ```jsonc
 {
-  "schegent.backend.runner": "codex"
+  "schegent.backend.runner": "codex",
+  "schegent.codex.path": "/usr/local/bin/codex"
 }
 ```
 
-The backend setting is `application`-scoped. You can override it per workspace. The `codex` backend follows the same contract: argv composition, prompt delivery, stdout parsing, and audit pipeline are all driven by the same host code. The page on [the second backend runner](https://github.com/your-org/schegent/blob/main/docs/operations/backends.md) covers the contract in detail.
+The backend and path settings are application-scoped. Individual phase
+definitions may override the global backend. See [Backend
+Runners](../operations/backends.md) for precedence, probing, and adapter
+contracts.
 
 ## Step 5: (Optional) Configure phase models
 

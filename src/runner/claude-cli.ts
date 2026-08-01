@@ -1,7 +1,11 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { extractCliSessionId } from "../parser/session-id-extractor";
 
-import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
+import type {
+  InvocationOutputSink,
+  InvocationRequest,
+  RawInvocationOutput
+} from './invocation-result';
 import type {
   BackendRunner,
   MonitorSidecarEvent,
@@ -11,6 +15,8 @@ import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
+import { OutputSinkBackpressure } from './output-sink-backpressure';
+import { waitForChildCompletion } from './child-completion';
 
 const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the request's `completionMarker` appears in
@@ -19,6 +25,39 @@ const SIGKILL_DELAY_MS = 2_000;
 // not stall the queue; long enough for a well-behaved CLI to flush and exit
 // normally. Distinct from the idle/stall window (`timeoutMs`).
 const COMPLETION_SETTLE_MS = 5_000;
+// A resumed print-mode invocation can replay the prior turn before emitting
+// the response to the newly submitted prompt. The replay may contain normal
+// system/assistant/user events before its terminal result, so event shape is
+// not a reliable boundary. Suppress only resumed terminal results during this
+// short startup window; fresh invocations remain eligible immediately.
+const RESUME_HISTORY_REPLAY_MS = 5_000;
+
+function isTerminalResultLine(line: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object') return false;
+  const record = parsed as Record<string, unknown>;
+  return record.type === 'result' &&
+    record.kind !== 'task-notification' &&
+    record.subtype !== 'task-notification';
+}
+
+function isStreamJsonEventLine(line: string): boolean {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!parsed || typeof parsed !== 'object') return false;
+    const record = parsed as Record<string, unknown>;
+    return 'type' in record &&
+      record.kind !== 'task-notification' &&
+      record.subtype !== 'task-notification';
+  } catch {
+    return false;
+  }
+}
 
 export type SpawnFn = (
   command: string,
@@ -78,7 +117,10 @@ export class ClaudeCliRunner implements BackendRunner {
     return this.active !== null;
   }
 
-  public async invoke(request: InvocationRequest): Promise<RawInvocationOutput> {
+  public async invoke(
+    request: InvocationRequest,
+    outputSink?: InvocationOutputSink
+  ): Promise<RawInvocationOutput> {
     const start = Date.now();
 
     // Feature 032 — session-continuation hint. When `resumeSessionId`
@@ -186,6 +228,7 @@ export class ClaudeCliRunner implements BackendRunner {
       let sawCompletionMarker = false;
       let completedAwaitingExit = false;
       let stdoutLineBuffer = '';
+      const invocationStartedAt = Date.now();
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
       // arrived for the active window. Each data event resets it. Before the
@@ -200,33 +243,36 @@ export class ClaudeCliRunner implements BackendRunner {
         this.terminate(child);
       };
       let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
+      let idleTimerActive = true;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
+        if (!idleTimerActive) return;
         timer = setTimeout(
           onIdleExpiry,
           sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs
         );
       };
+      const outputBackpressure = new OutputSinkBackpressure(
+        outputSink,
+        () => clearTimeout(timer),
+        resetIdleTimer
+      );
 
       const diagnosticWrites: Promise<void>[] = [];
-      const startTime = Date.now();
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk);
+        outputBackpressure.write('stdout', child.stdout!, chunk);
         // Feature 030 BUG-002 (Fix) — parse the JSON lines to find the true final result.
-        // We must ignore `"type":"result"` events from:
-        // 1. History replays (`--resume` dumps these instantly on startup)
-        // 2. Task notifications (which don't end the run)
-        // If we see a valid non-result JSON event, we know the CLI is continuing a new turn,
-        // so we reset the marker to prevent murdering a healthy process waiting for the API.
+        // A parsed terminal result starts the short settle window. Resumed
+        // startup history is ignored even when it contains non-result events
+        // before the replayed result; fresh invocations accept fast results.
         for (const char of chunk) {
           if (char === '\n') {
-            if (stdoutLineBuffer.includes('"type":"result"')) {
-              const isTaskNotification = stdoutLineBuffer.includes('"kind":"task-notification"');
-              const isHistoryReplay = (Date.now() - startTime) < 5000;
-              if (!isTaskNotification && !isHistoryReplay) {
-                sawCompletionMarker = true;
-              }
-            } else if (stdoutLineBuffer.trim().startsWith('{') && stdoutLineBuffer.includes('"type":')) {
+            if (isTerminalResultLine(stdoutLineBuffer)) {
+              const replayingHistory =
+                shouldResume && Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
+              if (!replayingHistory) sawCompletionMarker = true;
+            } else if (isStreamJsonEventLine(stdoutLineBuffer)) {
               sawCompletionMarker = false;
             }
             stdoutLineBuffer = '';
@@ -234,15 +280,16 @@ export class ClaudeCliRunner implements BackendRunner {
             stdoutLineBuffer += char;
           }
         }
-        resetIdleTimer();
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
         }
       });
       child.stderr?.on('data', (chunk: string) => {
-        resetIdleTimer();
         stderrBuffer.append(chunk);
+        outputBackpressure.write('stderr', child.stderr!, chunk);
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stderr-chunk', chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
@@ -265,24 +312,27 @@ export class ClaudeCliRunner implements BackendRunner {
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      const exitCode = await new Promise<number | null>((resolve) => {
-        child.on('exit', (code, signal) => {
-          // Feature 030 BUG-002 — a grace-terminate after the completion marker
-          // is NOT an operator cancellation, so do not flag it `killed` even
-          // though it exits via our SIGTERM with a null code.
-          if (signal && code === null && !completedAwaitingExit) {
-            killed = true;
-          }
-          resolve(code);
-        });
-        child.on('error', () => resolve(null));
-      });
+      const completion = await waitForChildCompletion(child, outputSink !== undefined);
+      const exitCode = completion.exitCode;
+      // Feature 030 BUG-002 — a grace-terminate after the completion marker
+      // is NOT an operator cancellation, so do not flag it `killed` even
+      // though it exits via our SIGTERM with a null code.
+      if (completion.signal && exitCode === null && !completedAwaitingExit) {
+        killed = true;
+      }
+      if (completion.stdioCloseTimedOut) {
+        this._logger.warn(
+          '[ClaudeCliRunner] stdout/stderr close grace expired after process exit; local pipes closed'
+        );
+      }
 
       if (onAbort !== null) {
         request.cancellationSignal?.removeEventListener?.('abort', onAbort);
       }
+      idleTimerActive = false;
       clearTimeout(timer);
-      const exitSignal = (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
+      const exitSignal = completion.signal ??
+        (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
       this.active = null;
 

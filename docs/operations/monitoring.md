@@ -104,7 +104,12 @@ tail -f .schegent/syslog | grep -E "^(WARN|ERROR)"
 
 ## Watching the raw transcript
 
-The raw transcript is the unredacted CLI scrollback. The host writes it line-by-line as the CLI emits:
+The raw transcript is the unredacted CLI scrollback. During an invocation the
+host tees chunks with backpressure into private mode-`0600` spools under the
+OS-managed temporary directory; at invocation end it streams those bytes into
+the append-only transcript and removes the spools. Abandoned spools are
+scavenged after their owner process exits, and spool-drain time does not
+consume the CLI idle timeout:
 
 ```bash
 tail -f .schegent/sessions/raw-<runId>.log

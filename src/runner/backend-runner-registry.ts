@@ -63,7 +63,12 @@ export class BackendRunnerRegistry {
    */
   public cancelAll(): void {
     for (const runner of this.runners.values()) {
-      runner.cancelActive();
+      try {
+        runner.cancelActive();
+      } catch {
+        // Deactivation cleanup is best-effort; continue canceling the other
+        // backend processes even if one adapter reports a teardown failure.
+      }
     }
   }
 
