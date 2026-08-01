@@ -287,6 +287,39 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
 });
 
 describe('loadCatalog — runner validation (074, T033)', () => {
+  it.each([true, false])('preserves isRequired: %s', (isRequired) => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'optional-policy',
+          name: 'Optional Policy',
+          instruction: 'Check policy.',
+          isRequired
+        }
+      ]
+    });
+
+    const result = loadCatalog(reader);
+
+    expect(result.errors).toEqual([]);
+    expect(result.catalog.phasesById.get('optional-policy')?.isRequired).toBe(isRequired);
+  });
+
+  it('leaves isRequired absent for legacy phase definitions', () => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'legacy-required',
+          name: 'Legacy Required',
+          instruction: 'Run as required.'
+        }
+      ]
+    });
+
+    expect(loadCatalog(reader).catalog.phasesById.get('legacy-required')?.isRequired)
+      .toBeUndefined();
+  });
+
   it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement', 'finalize', 'superpowers-review-close'])(
     'pins the built-in Git-mutating phase %s to Claude',
     (phaseId) => {

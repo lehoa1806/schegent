@@ -134,6 +134,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'task-execution-ended': 'task',
   'task-execution-paused': 'task',
   'phase-jumped': 'task',
+  // Feature 076 — optional-phase continuation is task-scoped.
+  'phase-optional-failure-continued': 'task',
+  'backend-ping': 'system',
   // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
   // specific workflow run (system)
   'metrics-view-opened': 'system'
@@ -291,6 +294,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'task-execution-paused':
         case 'runner-probe-failed':
         case 'phase-jumped':
+        case 'phase-optional-failure-continued':
+        case 'backend-ping':
         case 'metrics-view-opened': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);

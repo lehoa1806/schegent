@@ -31,6 +31,7 @@ import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runne
 import { resolvePinnedRunnerKind, snapshotPhaseDef } from '../config/pipeline-snapshot';
 import { PhaseControlService, type MutationResult } from './phase-control-service';
 import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
+import type { BackendAvailabilityProbe } from '../services/backend-capability-service';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -39,16 +40,13 @@ export interface WorkflowControllerOptions {
   timeoutMs: number;
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
-  perPhaseRulesEnabled: boolean;
   skipProbing?: boolean;
   cliPathResolver?: (runnerKind: string) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;
 }
 
-// Compatibility re-export; retry-handler.ts owns this shape.
 export type { DelayedRetryWatchdog } from './retry-handler';
-
 /**
  * Pluggable cleanup seam invoked after task deletion resolves a run ID.
  * Production uses `cleanupSessionArtifacts`; tests inject a deterministic
@@ -75,6 +73,8 @@ export interface WorkflowControllerDeps {
   sessionCleanup?: SessionCleanupRunner;
   /** Best-effort lifecycle hook used for inactive session-artifact retention. */
   onRunTerminal?: (run: WorkflowRun) => Promise<void>;
+  /** Host-owned bounded executable probe reused by the guarded run start. */
+  backendCapabilities?: BackendAvailabilityProbe;
 }
 
 export interface StartNewOptions {
@@ -105,7 +105,6 @@ export class SchegentWorkflowController {
   // production helper from services/session-cleanup. Tests inject a
   // mock to exercise the success / failure branches deterministically.
   private readonly sessionCleanup: SessionCleanupRunner;
-  // Feature 013 — Wave 7 (US7 / T098, T099): decomposed services.
   private readonly historyRecorder: HistoryRecorder;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
@@ -161,6 +160,7 @@ export class SchegentWorkflowController {
       logger,
       lock,
       options,
+      backendCapabilities: deps.backendCapabilities,
       monitor: this.monitor,
       historyRecorder: this.historyRecorder,
       retryCoordinator: this.retryCoordinator,
@@ -176,6 +176,8 @@ export class SchegentWorkflowController {
         this.lifecycleAuditor.emitRunEndedBreakpoints(run),
       emitTaskLifecycleAudit: (eventType, run, payload) =>
         this.lifecycleAuditor.emitTaskLifecycle(eventType, run, payload),
+      emitOptionalPhaseFailureContinued: (run, payload) =>
+        this.lifecycleAuditor.emitOptionalPhaseFailureContinued(run, payload),
       onRunTerminal: deps.onRunTerminal,
       scheduleAutoDrain: () => this.scheduleAutoDrain()
     });

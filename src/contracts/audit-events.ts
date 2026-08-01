@@ -1,4 +1,5 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { TerminationReason } from '../state/workflow-run';
 
 // Feature 031 — bumped 1 → 2 to reflect the three additive scalar fields on
 // the `wakeup-runner-invocation` audit payload: `correlationId` (UUIDv4),
@@ -299,6 +300,21 @@ export const TASK_EXECUTION_EVENT_TYPES = [
   'phase-jumped'
 ] as const;
 
+// Feature 076 — emitted after an optional phase reaches a terminal failed or
+// timed-out outcome and the sequencer continues to the next phase. The
+// payload is deliberately structural and paths-free: no configured CLI path,
+// stdout/stderr, environment value, operator-authored instruction, or stack
+// trace is permitted. The ordinary `phase-end` remains the authoritative
+// failure evidence; this event records only the continuation decision.
+export const OPTIONAL_PHASE_EVENT_TYPES = [
+  'phase-optional-failure-continued'
+] as const;
+
+// Feature 075 — operator-requested backend diagnostics. Payloads are bounded
+// structural data only: runner, status, timing, generic cause, and numeric
+// exit code. Paths, environment values, output, and stack traces are forbidden.
+export const BACKEND_PING_EVENT_TYPES = ['backend-ping'] as const;
+
 // Feature 073 — Metrics Dashboard adoption tracking (FR-022). Emitted at
 // most once per session on first Metrics tab activation. Additive — no
 // `AUDIT_SCHEMA_VERSION` bump.
@@ -329,6 +345,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
   ...TASK_EXECUTION_EVENT_TYPES,
+  ...OPTIONAL_PHASE_EVENT_TYPES,
+  ...BACKEND_PING_EVENT_TYPES,
   ...METRICS_EVENT_TYPES
 ] as const;
 
@@ -356,9 +374,20 @@ export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[numb
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
+export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
+export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
+
+export interface OptionalPhaseFailureContinuedPayload {
+  readonly runId: string;
+  readonly pipelineId: string;
+  readonly phaseId: string;
+  readonly runner: BackendRunnerKind;
+  readonly iteration: number;
+  readonly terminationReason: TerminationReason;
+}
 
 // Feature 072 — payload interfaces for task-level execution lifecycle events.
 
@@ -645,6 +674,7 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'trust.capability-denied',
     // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
     // specific workflow run.
+    'backend-ping',
     'metrics-view-opened'
   ])
 );

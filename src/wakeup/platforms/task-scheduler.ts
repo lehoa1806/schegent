@@ -24,7 +24,10 @@ import { resolveNodePath } from './node-resolver';
 export const WINDOWS_TASK_NAME = 'Schegent\\WakeUp';
 
 export class WindowsTaskInstaller implements DaemonInstaller {
-  constructor(private readonly runner: CommandRunner) {}
+  constructor(
+    private readonly runner: CommandRunner,
+    private readonly taskName = WINDOWS_TASK_NAME
+  ) {}
 
   async install(opts: InstallOptions): Promise<void> {
     const nodePath = await resolveNodePath(this.runner);
@@ -35,12 +38,12 @@ export class WindowsTaskInstaller implements DaemonInstaller {
     await fs.rename(tmp, wrapperPath);
 
     // Idempotent reset: delete any prior task with the same name.
-    await this.runner.run('schtasks', ['/Delete', '/TN', WINDOWS_TASK_NAME, '/F']);
+    await this.runner.run('schtasks', ['/Delete', '/TN', this.taskName, '/F']);
 
     const args = buildScheduleArgs(opts.schedule);
     const r = await this.runner.run(
       'schtasks',
-      ['/Create', '/TN', WINDOWS_TASK_NAME, '/TR', wrapperPath, ...args, '/F']
+      ['/Create', '/TN', this.taskName, '/TR', wrapperPath, ...args, '/F']
     );
     if (r.exitCode !== 0) {
       throw new Error(`schtasks /Create failed: ${r.stderr.trim() || r.exitCode}`);
@@ -50,13 +53,13 @@ export class WindowsTaskInstaller implements DaemonInstaller {
   async uninstall(): Promise<void> {
     // /F = force; deleting a non-existent task yields a non-zero exit
     // code, which we silently accept (idempotent).
-    await this.runner.run('schtasks', ['/Delete', '/TN', WINDOWS_TASK_NAME, '/F']);
+    await this.runner.run('schtasks', ['/Delete', '/TN', this.taskName, '/F']);
   }
 
   async inspect(): Promise<DaemonState> {
     const r = await this.runner.run(
       'schtasks',
-      ['/Query', '/TN', WINDOWS_TASK_NAME, '/V', '/FO', 'LIST']
+      ['/Query', '/TN', this.taskName, '/V', '/FO', 'LIST']
     );
     if (r.exitCode !== 0) return { registered: false, schedule: null };
     return { registered: true, schedule: parseScheduleFromQuery(r.stdout) };

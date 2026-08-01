@@ -85,7 +85,6 @@ describe('Feature 011 — general-settings allowlist', () => {
         'watchdog.pollIntervalMinutes',
         'audit.rotation.sizeMB',
         'audit.rotation.maxAgeDays',
-        'rules.injectPerPhase',
         'defaultPipelineId',
         'fatalSignatures',
         'claude.autoCompactPctOverride',
@@ -171,12 +170,10 @@ describe('Feature 011 — general-settings type checking', () => {
     ]);
   });
 
-  it('accepts boolean true / false uniformly', async () => {
+  it('accepts boolean settings', async () => {
     const config = makeConfig();
     const r1 = await writeGeneralSettings(config, { 'logging.verbose': true });
-    const r2 = await writeGeneralSettings(config, { 'rules.injectPerPhase': false });
     expect(r1.ok).toBe(true);
-    expect(r2.ok).toBe(true);
   });
 });
 
@@ -290,7 +287,6 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'watchdog.pollIntervalMinutes': 30,
         'audit.rotation.sizeMB': 5,
         'audit.rotation.maxAgeDays': 30,
-        'rules.injectPerPhase': false,
         'defaultPipelineId': 'speckit-new-feature',
         'fatalSignatures': [],
         'queue.globalConcurrencyCap': 1,

@@ -114,6 +114,15 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['claude', 'codex', 'agy'],
     docLabel: 'Backend runner selection'
   },
+  'schegent.backend.probeTimeoutSeconds': {
+    key: 'schegent.backend.probeTimeoutSeconds',
+    type: 'integer',
+    default: 5,
+    min: 1,
+    max: 30,
+    scope: 'application',
+    docLabel: 'Backend capability probe timeout (seconds)'
+  },
   'schegent.codex.path': {
     key: 'schegent.codex.path',
     type: 'string',
@@ -168,13 +177,6 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     min: 1,
     scope: 'resource',
     docLabel: 'Audit log rotation max age (days)'
-  },
-  'schegent.rules.injectPerPhase': {
-    key: 'schegent.rules.injectPerPhase',
-    type: 'boolean',
-    default: false,
-    scope: 'resource',
-    docLabel: 'Reserved per-phase rule injection toggle'
   },
   'schegent.models': {
     key: 'schegent.models',

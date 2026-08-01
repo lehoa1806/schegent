@@ -145,6 +145,18 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.backend.probeTimeoutSeconds",
+          "type": "integer",
+          "default": 5,
+          "scope": "application",
+          "enum": null,
+          "minimum": 1,
+          "maximum": 30,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.backend.runner",
           "type": "enum",
           "default": "claude",
@@ -441,18 +453,6 @@
           "enum": null,
           "minimum": 1,
           "maximum": 5,
-          "pattern": null,
-          "itemType": null,
-          "itemPattern": null
-        },
-        {
-          "key": "schegent.rules.injectPerPhase",
-          "type": "boolean",
-          "default": false,
-          "scope": "resource",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
           "pattern": null,
           "itemType": null,
           "itemPattern": null

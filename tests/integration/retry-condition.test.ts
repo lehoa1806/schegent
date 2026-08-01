@@ -183,7 +183,7 @@ async function makeController(
     notifier,
     logger,
     lock,
-    { cliPath: 'noop', cwd: tmpRoot, iterationCap, timeoutMs: 1000, perPhaseRulesEnabled: false },
+    { cliPath: 'noop', cwd: tmpRoot, iterationCap, timeoutMs: 1000 },
     { catalog: makeCustomCatalog() }
   );
   return { controller, queue, store, invokeCount };

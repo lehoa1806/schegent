@@ -111,7 +111,7 @@ function makeController(): SchegentWorkflowController {
     notifier,
     logger,
     makeLock(),
-    { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false }
+    { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
   );
 }
 

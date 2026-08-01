@@ -25,6 +25,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/save-phases.ts',
   // The helper's unit test.
   'webview-ui/src/lib/__tests__/save-phases.test.ts',
+  'webview-ui/src/lib/__tests__/save-catalog-command.test.ts',
   // PipelineBuilder.svelte may IMPORT the constant for type-binding via the
   // helper's argument shape but MUST NOT call postCommand(CMD_SAVE_PHASES, …)
   // inline — the test below explicitly scans component files for the

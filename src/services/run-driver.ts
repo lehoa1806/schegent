@@ -1,9 +1,4 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { PhaseRunner } from '../controller/phase-runner';
-import { buildSpawnEnv } from '../runner/spawn-env';
-
-const execFileAsync = promisify(execFile);
 import { composePhaseMessagePath } from '../controller/phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
@@ -27,6 +22,8 @@ import {
   type BackendRunnerKind
 } from '../runner/backend-runner-factory';
 import { resolveSessionDispatch } from './session-dispatch-policy';
+import type { BackendAvailabilityProbe } from './backend-capability-service';
+import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -59,6 +56,7 @@ export interface RunDriverDeps {
   readonly logger: SanitizedLogger;
   readonly lock: WorkspaceLockManager;
   readonly options: RunDriverOptions;
+  readonly backendCapabilities?: BackendAvailabilityProbe;
   readonly monitor: Pick<ClaudeCliMonitor, 'onStart'> | null;
   readonly historyRecorder: HistoryRecorder;
   readonly retryCoordinator: RetryCoordinator;
@@ -83,6 +81,10 @@ export interface RunDriverDeps {
     eventType: 'task-execution-started' | 'task-execution-ended' | 'task-execution-paused',
     run: WorkflowRun,
     payload: Record<string, unknown>
+  ) => Promise<void>;
+  readonly emitOptionalPhaseFailureContinued: (
+    run: WorkflowRun,
+    payload: OptionalPhaseFailureContinuedPayload
   ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
@@ -175,26 +177,15 @@ export class RunDriver {
             )
           );
           for (const runnerKind of runners) {
-            const cliPath = this.resolveCliPath(runnerKind);
             try {
-              await execFileAsync(cliPath, ['--help'], {
-                cwd: this.deps.options.cwd,
-                env: buildSpawnEnv({
-                  env: {
-                    SCHEGENT_PHASE: 'runner-probe',
-                    SCHEGENT_ITERATION: '0'
-                  },
-                  inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
-                  processEnvAllowlist: this.deps.options.processEnvAllowlist
-                })
-              });
-            } catch (err: unknown) {
-              const probeErr = err instanceof Error ? err : new Error(String(err));
+              const available = this.deps.backendCapabilities
+                ? await this.deps.backendCapabilities.probeAvailability(runnerKind)
+                : false;
+              if (!available) throw new Error('backend unavailable');
+            } catch {
               const failureMessage =
                 `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
-              this.deps.logger.error(
-                `run-driver: ${failureMessage} ${probeErr.message}`
-              );
+              this.deps.logger.error(`run-driver: ${failureMessage}`);
               const sanitized: SanitizedError = {
                 code: 'runner-probe-failed',
                 message: failureMessage,
@@ -482,6 +473,32 @@ export class RunDriver {
           };
 
           if (postDecision.kind === 'pause-delayed-retry') {
+            if (
+              activePhaseDef?.isRequired === false &&
+              !this.sequencer.isVerificationPhase(run.currentPhase) &&
+              this.deps.retryCoordinator.isRetryCapExhaustedOnNextFailure(run)
+            ) {
+              const terminalPhaseResult: PhaseResult = {
+                ...phaseResult,
+                result: 'failed',
+                terminationReason:
+                  postDecision.cause === 'rate_limit' ? 'rate_limit' : 'error'
+              };
+              await this.deps.runner.appendCapExhaustedPhaseEnd({
+                runId: run.id,
+                phase: run.currentPhase,
+                iteration,
+                pipelineId: run.pipeline?.id,
+                phaseDef: dispatchPhaseDef
+              });
+              run = await this.continueOptionalFailure(
+                run,
+                terminalPhaseResult,
+                activePhaseDef,
+                effectiveRunnerKind
+              );
+              continue;
+            }
             run = await this.deps.retryCoordinator.handleDelayedRetry(
               run,
               iteration,
@@ -646,6 +663,10 @@ export class RunDriver {
           );
 
           const decision = postDecision.transition;
+          const optionalTerminalContinued =
+            activePhaseDef?.isRequired === false &&
+            decision.kind === 'advance' &&
+            (phaseResult.result === 'failed' || phaseResult.result === 'timeout');
           const nextPhaseDef = decision.kind === 'advance'
             ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
             : undefined;
@@ -666,6 +687,13 @@ export class RunDriver {
                 : run.currentIteration,
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, phaseResult],
+            ...(optionalTerminalContinued
+              ? {
+                  delayedRetryCount: 0,
+                  pendingRetryAt: null,
+                  pendingRetryCause: null
+                }
+              : {}),
             ...(crossesRunnerBoundary
               ? {
                   lastCliSessionId: undefined,
@@ -674,6 +702,16 @@ export class RunDriver {
               : {})
           };
           run = await this.deps.persistTransition(run, advanced);
+          if (optionalTerminalContinued) {
+            await this.deps.emitOptionalPhaseFailureContinued(run, {
+              runId: run.id,
+              pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+              phaseId: phaseResult.phase,
+              runner: effectiveRunnerKind,
+              iteration: phaseResult.iteration,
+              terminationReason: phaseResult.terminationReason
+            });
+          }
         }
 
         if (run.currentPhase === 'done' && run.status === 'running') {
@@ -747,6 +785,52 @@ export class RunDriver {
     if (!this.isAuditEvidenceAvailable()) {
       throw new RequiredEvidenceUnavailableError('health-gate');
     }
+  }
+
+  private async continueOptionalFailure(
+    run: WorkflowRun,
+    phaseResult: PhaseResult,
+    phaseDef: PhaseDef,
+    runner: BackendRunnerKind
+  ): Promise<WorkflowRun> {
+    const transition = this.sequencer.decideAfterOptionalTerminalFailure({
+      run,
+      phaseResult,
+      phaseDef,
+      iterationCap: this.deps.options.iterationCap
+    });
+    const nextPhaseDef = run.pipeline?.phases.find(
+      (candidate) => candidate.id === transition.nextPhase
+    );
+    const crossesRunnerBoundary =
+      nextPhaseDef !== undefined &&
+      this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind) !== runner;
+    const advanced: WorkflowRun = {
+      ...run,
+      currentPhase: transition.nextPhase,
+      currentIteration: transition.nextIteration,
+      lastTransitionAt: Date.now(),
+      phasesCompleted: [...run.phasesCompleted, phaseResult],
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      delayedRetryCount: 0,
+      ...(crossesRunnerBoundary
+        ? {
+            lastCliSessionId: undefined,
+            lastCliSessionRunnerKind: undefined
+          }
+        : {})
+    };
+    const persisted = await this.deps.persistTransition(run, advanced);
+    await this.deps.emitOptionalPhaseFailureContinued(persisted, {
+      runId: persisted.id,
+      pipelineId: persisted.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+      phaseId: phaseResult.phase,
+      runner,
+      iteration: phaseResult.iteration,
+      terminationReason: phaseResult.terminationReason
+    });
+    return persisted;
   }
 
   private isAuditEvidenceAvailable(): boolean {

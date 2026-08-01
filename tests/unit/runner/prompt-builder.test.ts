@@ -117,18 +117,6 @@ describe('PromptBuilder.build', () => {
     expect(prompt).not.toContain('Unresolved from previous iteration');
   });
 
-  it('includes per-phase rules path when set', () => {
-    const prompt = builder.build({
-      phase: 'speckit-plan',
-      iteration: 1,
-      iterationCap: 10,
-      featureDescription: 'desc',
-      featureDir: null,
-      perPhaseRulesPath: '.specify/memory/plan-rules.md'
-    });
-    expect(prompt).toContain('Read rule file before acting: .specify/memory/plan-rules.md');
-  });
-
   it('always appends the feature description at the end', () => {
     const prompt = builder.build({
       phase: 'speckit-specify',

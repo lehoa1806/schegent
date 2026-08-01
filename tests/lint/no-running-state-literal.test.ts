@@ -43,6 +43,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/runner/claude-cli.ts',
   'src/services/guarded-run-service.ts',
   'src/services/run-driver.ts',
+  // Feature 075 owns an independent ephemeral BackendPingState discriminator.
+  'src/services/backend-ping-service.ts',
   // Feature 065 — coordinator owns the in-process scheduled-start timer and
   // emits 'already-running' as a superseder literal in the audit payload.
   'src/services/scheduled-start-coordinator.ts',
@@ -59,6 +61,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/ui/sidebar/run-projector.ts',
   'src/ui/sidebar/snapshot.ts',
   'src/ui/sidebar/state-projector.ts',
+  'src/ui/sidebar/state-projector-runtime.ts',
+  'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
   'webview-ui/src/components/ControlPanel.svelte',
   // Feature 065 — switches on the `QueueLifecycle` discriminator
@@ -82,6 +86,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Metrics wire entities own the in-flight `isRunning` projection field.
   'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte',
+  'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
+  'webview-ui/src/components/settings/BackendHealthSection.svelte',
   'src/metrics/metrics-service.ts'
 ]);
 

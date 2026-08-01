@@ -165,7 +165,6 @@ async function runOnce(opts: {
       cwd: opts.workspaceRoot,
       iterationCap: 3,
       timeoutMs: 1000,
-      perPhaseRulesEnabled: false,
       skipProbing: true
     }
   );

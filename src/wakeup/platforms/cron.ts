@@ -25,13 +25,16 @@ import { resolveNodePath } from './node-resolver';
 export const CRON_MARKER = '# schegent-wakeup';
 
 export class LinuxCronInstaller implements DaemonInstaller {
-  constructor(private readonly runner: CommandRunner) {}
+  constructor(
+    private readonly runner: CommandRunner,
+    private readonly marker = CRON_MARKER
+  ) {}
 
   async install(opts: InstallOptions): Promise<void> {
     const nodePath = await resolveNodePath(this.runner);
     const current = await readCrontab(this.runner);
-    const withoutOurs = stripOurEntry(current);
-    const ourLine = buildCronLine(nodePath, opts);
+    const withoutOurs = stripOurEntry(current, this.marker);
+    const ourLine = buildCronLine(nodePath, opts, this.marker);
     const updated = withoutOurs.length > 0
       ? `${withoutOurs.replace(/\s+$/, '')}\n${ourLine}\n`
       : `${ourLine}\n`;
@@ -40,19 +43,23 @@ export class LinuxCronInstaller implements DaemonInstaller {
 
   async uninstall(): Promise<void> {
     const current = await readCrontab(this.runner);
-    const withoutOurs = stripOurEntry(current);
+    const withoutOurs = stripOurEntry(current, this.marker);
     await writeCrontab(this.runner, withoutOurs);
   }
 
   async inspect(): Promise<DaemonState> {
     const current = await readCrontab(this.runner);
-    const line = extractOurLine(current);
+    const line = extractOurLine(current, this.marker);
     if (!line) return { registered: false, schedule: null };
     return { registered: true, schedule: parseScheduleFromCron(line) };
   }
 }
 
-export function buildCronLine(nodePath: string, opts: InstallOptions): string {
+export function buildCronLine(
+  nodePath: string,
+  opts: InstallOptions,
+  marker = CRON_MARKER
+): string {
   const s = opts.schedule;
   let timeSpec: string;
   if (s.kind === 'chronological') {
@@ -65,7 +72,7 @@ export function buildCronLine(nodePath: string, opts: InstallOptions): string {
   // so PATH and other env are deliberately minimal. The node binary is an
   // absolute path; the runner does its own env scrub.
   const env = `SCHEGENT_WAKEUP_HOME=${opts.bundle.homeDir}`;
-  return `${timeSpec} ${env} ${nodePath} ${opts.bundle.runnerPath} >/dev/null 2>&1 ${CRON_MARKER}`;
+  return `${timeSpec} ${env} ${nodePath} ${opts.bundle.runnerPath} >/dev/null 2>&1 ${marker}`;
 }
 
 async function readCrontab(runner: CommandRunner): Promise<string> {
@@ -82,15 +89,15 @@ async function writeCrontab(runner: CommandRunner, body: string): Promise<void> 
   }
 }
 
-export function stripOurEntry(body: string): string {
+export function stripOurEntry(body: string, marker = CRON_MARKER): string {
   return body
     .split('\n')
-    .filter((l) => !l.includes(CRON_MARKER))
+    .filter((l) => !l.includes(marker))
     .join('\n');
 }
 
-export function extractOurLine(body: string): string | null {
-  const line = body.split('\n').find((l) => l.includes(CRON_MARKER));
+export function extractOurLine(body: string, marker = CRON_MARKER): string | null {
+  const line = body.split('\n').find((l) => l.includes(marker));
   return line ?? null;
 }
 

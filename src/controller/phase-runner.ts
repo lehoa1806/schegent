@@ -54,7 +54,6 @@ export interface PhaseRunInputs {
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   runId: string;
-  perPhaseRulesPath?: string | null;
   phaseMessagePath?: string | null;
   previousPhaseMessage?: Readonly<Record<string, string>> | null;
   cancellationSignal?: { aborted: boolean; addEventListener(event: 'abort', cb: () => void): void };
@@ -314,7 +313,6 @@ export class PhaseRunner {
           featureDescription: inputs.featureDescription,
           featureDir: inputs.featureDir,
           carriedIssues: inputs.carriedIssues,
-          perPhaseRulesPath: inputs.perPhaseRulesPath ?? null,
           phaseMessagePath: inputs.phaseMessagePath ?? null,
           previousPhaseMessage: inputs.previousPhaseMessage ?? null
         });

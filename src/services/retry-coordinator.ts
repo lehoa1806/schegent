@@ -38,11 +38,13 @@ export class RetryCoordinator {
   private rateLimitHandler: RateLimitHandler | null = null;
   private readonly retryHandler: RetryHandler;
   private readonly logger: SanitizedLogger;
+  private readonly getRetryCap: () => number;
 
   constructor(deps: RetryCoordinatorDeps) {
     this.watchdog = deps.watchdog ?? null;
     this.guardedRunService = deps.guardedRunService ?? null;
     this.logger = deps.logger;
+    this.getRetryCap = deps.getRetryCap;
     this.retryHandler = new RetryHandler({
       ...deps,
       getWatchdog: () => this.watchdog,
@@ -74,6 +76,16 @@ export class RetryCoordinator {
 
   public cancelPendingTimer(): void {
     this.watchdog?.cancelPendingTimer();
+  }
+
+  /**
+   * True when the current failure would consume the final configured retry.
+   * RunDriver uses this read-only decision to convert an optional phase into
+   * terminal failure evidence before RetryHandler mutates run/queue pause
+   * state. Required phases continue through the existing handler unchanged.
+   */
+  public isRetryCapExhaustedOnNextFailure(run: WorkflowRun): boolean {
+    return run.delayedRetryCount >= this.getRetryCap() - 1;
   }
 
   public async handleDelayedRetry(

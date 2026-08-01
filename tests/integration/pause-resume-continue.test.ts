@@ -234,7 +234,6 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
       cwd: workspaceRoot,
       iterationCap: 5,
       timeoutMs: 1000,
-      perPhaseRulesEnabled: false
     },
     deps
   );

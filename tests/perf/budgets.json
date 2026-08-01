@@ -42,7 +42,7 @@
     {
       "test": "tests/perf/render-budget.test.ts",
       "name": "StateProjector — single project() median",
-      "budgetMs": 16,
+      "budgetMs": 5,
       "constant": "MEDIAN_BUDGET_MS",
       "rationale": "Snapshot render hot-path per-frame budget (60 fps target)"
     },

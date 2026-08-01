@@ -9,16 +9,14 @@
 //     `<homeDir>/invocations.log` with the literal `cwdInsideWorkspace:
 //     false` and `lockAcquired: true`.
 //   - DaemonManager.uninstall() removes the entry such that
-//     `launchctl list com.schegent.wakeup` returns non-zero within
+//     `launchctl list com.schegent.wakeup.integration` returns non-zero within
 //     30 s (the SC-005 budget).
 //
 // Why opt-in via SCHEGENT_INTEGRATION_TESTS=1:
-//   This test installs a launchd LaunchAgent with the production label
-//   `com.schegent.wakeup`. Running it on a developer machine that has
-//   a real Wake up install would clobber that registration. The test
-//   afterAll() force-cleans aggressively, but the safety net is the
-//   opt-in env gate. CI workflows must set the env var. Casual
-//   `npm run test` skips this file with a clear notice.
+//   This test installs an isolated launchd identity under a temporary
+//   home directory. The opt-in gate remains because launchctl state is
+//   a real external side effect even though production registration is
+//   never touched.
 //
 // Why a stand-in runner instead of dist/wakeup-runner.js:
 //   The real runner's behavior (lock acquisition, env scrubbing, cwd
@@ -32,7 +30,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
@@ -41,13 +39,14 @@ import {
   type DaemonInstaller,
   type CommandRunner
 } from '../../../src/wakeup/daemon-manager';
-import { LaunchdInstaller, LAUNCHD_LABEL } from '../../../src/wakeup/platforms/launchd';
+import { LaunchdInstaller } from '../../../src/wakeup/platforms/launchd';
 import { InvocationLog, type InvocationRecord } from '../../../src/wakeup/invocation-log';
 import type { WakeUpPlatform } from '../../../src/wakeup/platform-detect';
 
 const OPTED_IN = process.env.SCHEGENT_INTEGRATION_TESTS === '1';
 const IS_DARWIN = process.platform === 'darwin';
 const SHOULD_RUN = IS_DARWIN && OPTED_IN;
+const QUALIFICATION_LABEL = 'com.schegent.wakeup.integration';
 
 // 60_000 ms is the minimum periodic interval the parser accepts; launchd
 // honors StartInterval≥1s. Wait up to 75s for the first fire.
@@ -111,7 +110,7 @@ function setupHarness(): LifecycleHarness {
   const runner = defaultCommandRunner();
   const manager = new DaemonManager({
     installerFactory: (_p: WakeUpPlatform, c: CommandRunner): DaemonInstaller =>
-      new LaunchdInstaller(c),
+      new LaunchdInstaller(c, undefined, QUALIFICATION_LABEL),
     commandRunner: runner,
     platform: () => 'darwin'
   });
@@ -120,7 +119,7 @@ function setupHarness(): LifecycleHarness {
 }
 
 async function isLaunchdRegistered(runner: CommandRunner): Promise<boolean> {
-  const r = await runner.run('launchctl', ['list', LAUNCHD_LABEL]);
+  const r = await runner.run('launchctl', ['list', QUALIFICATION_LABEL]);
   return r.exitCode === 0;
 }
 
@@ -148,14 +147,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-async function forceCleanup(homeDir: string, runner: CommandRunner): Promise<void> {
+async function forceCleanup(_tempRoot: string, runner: CommandRunner): Promise<void> {
   // Best-effort: unload the launchd entry by label (idempotent) and
   // unlink the plist on disk. If we never installed, both no-op.
-  const plist = path.join(homeDir, '..', '..', 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-  // We installed against the *real* user Library, not under homeDir,
-  // because LaunchdInstaller defaults to os.homedir() — so unload-by-
-  // label is the surest way to clean up, then unlink the plist that
-  // the production installer wrote.
+  const plist = path.join(homedir(), 'Library', 'LaunchAgents', `${QUALIFICATION_LABEL}.plist`);
   await runner.run('launchctl', ['unload', plist]);
   try {
     await fs.unlink(plist);
@@ -175,7 +170,7 @@ describe.skipIf(!SHOULD_RUN)('Feature 014 — wake-up lifecycle (darwin)', () =>
   afterAll(async () => {
     if (!harness) return;
     try {
-      await forceCleanup(harness.homeDir, harness.runner);
+      await forceCleanup(harness.tempRoot, harness.runner);
     } catch {
       /* swallow cleanup errors — test was already torn down */
     }

@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import {
   DaemonManager,
@@ -31,12 +31,13 @@ import {
   type DaemonInstaller,
   type CommandRunner
 } from '../../../src/wakeup/daemon-manager';
-import { LaunchdInstaller, LAUNCHD_LABEL } from '../../../src/wakeup/platforms/launchd';
+import { LaunchdInstaller } from '../../../src/wakeup/platforms/launchd';
 import type { WakeUpPlatform } from '../../../src/wakeup/platform-detect';
 
 const OPTED_IN = process.env.SCHEGENT_INTEGRATION_TESTS === '1';
 const IS_DARWIN = process.platform === 'darwin';
 const SHOULD_RUN = IS_DARWIN && OPTED_IN;
+const QUALIFICATION_LABEL = 'com.schegent.wakeup.uninstall-integration';
 
 const UNINSTALL_WAIT_MS = 30_000;
 
@@ -59,7 +60,7 @@ function setupHarness(): UninstallHarness {
   const runner = defaultCommandRunner();
   const manager = new DaemonManager({
     installerFactory: (_p: WakeUpPlatform, c: CommandRunner): DaemonInstaller =>
-      new LaunchdInstaller(c),
+      new LaunchdInstaller(c, undefined, QUALIFICATION_LABEL),
     commandRunner: runner,
     platform: () => 'darwin'
   });
@@ -67,7 +68,7 @@ function setupHarness(): UninstallHarness {
 }
 
 async function isLaunchdRegistered(runner: CommandRunner): Promise<boolean> {
-  const r = await runner.run('launchctl', ['list', LAUNCHD_LABEL]);
+  const r = await runner.run('launchctl', ['list', QUALIFICATION_LABEL]);
   return r.exitCode === 0;
 }
 
@@ -80,12 +81,12 @@ async function waitForUnregistered(runner: CommandRunner, deadlineMs: number): P
   return false;
 }
 
-async function forceCleanup(runner: CommandRunner): Promise<void> {
+async function forceCleanup(_tempRoot: string, runner: CommandRunner): Promise<void> {
   const plist = path.join(
-    process.env.HOME ?? '',
+    homedir(),
     'Library',
     'LaunchAgents',
-    `${LAUNCHD_LABEL}.plist`
+    `${QUALIFICATION_LABEL}.plist`
   );
   await runner.run('launchctl', ['unload', plist]);
   try {
@@ -106,7 +107,7 @@ describe.skipIf(!SHOULD_RUN)('Feature 014 T048 — uninstall lifecycle (darwin)'
   afterAll(async () => {
     if (!harness) return;
     try {
-      await forceCleanup(harness.runner);
+      await forceCleanup(harness.tempRoot, harness.runner);
     } catch {
       /* swallow — test is tearing down anyway */
     }

@@ -72,7 +72,8 @@
           "CMD_CLEAR_ALL",
           "CMD_SET_CONFIRM_SUPPRESSION",
           "CMD_DISMISS_MIGRATION_NOTICE",
-          "CMD_READ_METRICS"
+          "CMD_READ_METRICS",
+          "CMD_PING_BACKEND"
         ]
       },
       "uniqueItems": true
@@ -236,6 +237,11 @@
           "name": "availableBackends",
           "optional": false,
           "type": "readonly BackendRunnerKind[]"
+        },
+        {
+          "name": "backendPingState",
+          "optional": false,
+          "type": "BackendPingState"
         },
         {
           "name": "delayedRetry",

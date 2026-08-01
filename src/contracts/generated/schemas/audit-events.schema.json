@@ -116,6 +116,8 @@
           "task-execution-ended",
           "task-execution-paused",
           "phase-jumped",
+          "phase-optional-failure-continued",
+          "backend-ping",
           "metrics-view-opened"
         ]
       },

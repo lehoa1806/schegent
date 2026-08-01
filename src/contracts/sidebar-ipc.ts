@@ -1,16 +1,6 @@
-// Authoritative IPC contract module for the sidebar webview boundary.
-//
-// Single source of truth — host (`src/ui/sidebar/messages.ts`) and webview
-// (`webview-ui/src/lib/messages.ts`) both re-export this module via a
-// single `export *` statement. Adding a new command MUST happen here
-// first; the two shims are mechanical re-exports.
-//
-// The drift test at `tests/unit/contracts/sidebar-ipc-drift.test.ts`
-// guards module identity (host and webview literals must `===` resolve
-// to this module) and the single-export-* shape of both shims.
+// Authoritative sidebar IPC contract; host and webview shims re-export it.
 
 export const SCHEMA_VERSION = 3 as const;
-
 // -- Command literals (webview → host) ---------------------------------------
 
 export const CMD_START = 'CMD_START' as const;
@@ -123,11 +113,9 @@ export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as cons
 // is non-destructive UX state per FR-020 and parity with the other
 // `CMD_OPEN_*` non-mutating commands.
 export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as const;
-// Feature 073 — Metrics Dashboard full-scan read. READ-ONLY; MUST stay
-// out of `MUTATING_COMMANDS` so a secondary VS Code host can still load
-// the Metrics tab in a multi-window session. See
-// specs/073-metrics-dashboard/contracts/cmd-read-metrics.md.
+// Feature 073 — read-only Metrics Dashboard scan.
 export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
+export const CMD_PING_BACKEND = 'CMD_PING_BACKEND' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -186,14 +174,13 @@ export const COMMAND_TYPES = [
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
-  CMD_READ_METRICS
+  CMD_READ_METRICS,
+  CMD_PING_BACKEND
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
-
 export type CommandType = (typeof COMMAND_TYPES)[number];
 export type HostMessageType = (typeof HOST_MESSAGE_TYPES)[number];
-
 // -- Command payload interfaces ---------------------------------------------
 
 export interface CommandBase<T extends CommandType> {
@@ -408,7 +395,7 @@ export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
 //   - cli.path, logging.verbose, loop.maxIterations,
 //     invocation.timeoutSeconds, watchdog.pollIntervalMinutes,
 //     audit.rotation.sizeMB, audit.rotation.maxAgeDays,
-//     rules.injectPerPhase, defaultPipelineId, fatalSignatures,
+//     defaultPipelineId, fatalSignatures,
 //     queue.globalConcurrencyCap, logging.runtimeLogLevel,
 //     logging.runtimeLogFilePath, logging.runtimeLogMaxBytes,
 //     logging.runtimeLogMaxGenerations, retry.maxAttempts.
@@ -505,6 +492,9 @@ export interface RestartCanceledTaskCommand
 export interface OpenVerboseSettingCommand
   extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
 
+export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND> {
+  readonly payload: { readonly runner: 'claude' | 'codex' | 'agy' }; }
+
 // Feature 028 — set/clear future-phase breakpoint. Both commands carry
 // `{ runId, phaseId }` payloads. The host validates the (runId, phaseId)
 // tuple against the run's immutable pipeline snapshot before mutating
@@ -582,7 +572,8 @@ export type SidebarCommand =
   | ClearAllCommand
   | SetConfirmSuppressionCommand
   | DismissMigrationNoticeCommand
-  | ReadMetricsCommand;
+  | ReadMetricsCommand
+  | PingBackendCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -824,6 +815,15 @@ export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
   return includeArchives === undefined || typeof includeArchives === 'boolean';
 }
 
+export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
+  if (!isObjectWithType(value, CMD_PING_BACKEND)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (Object.keys(payload).length !== 1) return false;
+  const runner = (payload as { runner?: unknown }).runner;
+  return runner === 'claude' || runner === 'codex' || runner === 'agy';
+}
+
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
 export const COMMAND_GUARDS: Readonly<
@@ -879,5 +879,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_CLEAR_ALL]: isCmdClearAll,
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
   [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice,
-  [CMD_READ_METRICS]: isCmdReadMetrics
+  [CMD_READ_METRICS]: isCmdReadMetrics,
+  [CMD_PING_BACKEND]: isCmdPingBackend
 });

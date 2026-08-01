@@ -49,7 +49,6 @@ export interface GeneralSettings {
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
-  readonly rulesInjectPerPhase: boolean;
   readonly defaultPipelineId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
@@ -70,7 +69,6 @@ export interface GeneralSettings {
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
-    readonly rulesInjectPerPhase: SettingScope;
     readonly defaultPipelineId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
@@ -94,7 +92,6 @@ type AllowedKey =
   | 'watchdog.pollIntervalMinutes'
   | 'audit.rotation.sizeMB'
   | 'audit.rotation.maxAgeDays'
-  | 'rules.injectPerPhase'
   | 'defaultPipelineId'
   | 'fatalSignatures'
   | 'claude.autoCompactPctOverride'
@@ -164,11 +161,6 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     typedField: 'auditRotationMaxAgeDays',
     defaultValue: 30,
     min: 1
-  },
-  'rules.injectPerPhase': {
-    type: 'boolean',
-    typedField: 'rulesInjectPerPhase',
-    defaultValue: false
   },
   defaultPipelineId: {
     type: 'string',

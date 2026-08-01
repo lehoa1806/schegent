@@ -128,7 +128,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
     );
 
     // Enqueue two tasks: A (will run) and B (must stay pending).

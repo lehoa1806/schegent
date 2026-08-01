@@ -41,6 +41,7 @@ import {
   CMD_SAVE_WAKEUP_SETTINGS,
   CMD_WAKE_UP_NOW,
   CMD_PAUSE_PHASE,
+  CMD_PING_BACKEND,
   CMD_RESUME_PHASE,
   CMD_RESTART_PHASE,
   CMD_SKIP_PHASE,
@@ -220,9 +221,30 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateStartQueue(obj, correlationId);
     case CMD_READ_METRICS:
       return validateReadMetrics(obj, correlationId);
+    case CMD_PING_BACKEND:
+      return validatePingBackend(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
+}
+
+function validatePingBackend(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return fail('missing-payload', { type: CMD_PING_BACKEND, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['runner'])) {
+    return fail('unexpected-payload-fields', { type: CMD_PING_BACKEND, correlationId });
+  }
+  const runner = p['runner'];
+  if (runner !== 'claude' && runner !== 'codex' && runner !== 'agy') {
+    return fail('invalid-runner', { type: CMD_PING_BACKEND, correlationId });
+  }
+  return ok({ type: CMD_PING_BACKEND, correlationId, payload: { runner } });
 }
 
 function validateStart(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {

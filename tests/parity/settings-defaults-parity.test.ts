@@ -211,7 +211,10 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'wakeUp.model'
     ]);
     const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines']);
-    const backendRunnerKey = new Set<string>(['backend.runner']);
+    const backendRunnerKey = new Set<string>([
+      'backend.runner',
+      'backend.probeTimeoutSeconds'
+    ]);
     // Application-scoped CLI spawn hardening toggle. It is read once at
     // activation and intentionally not writable through the workspace-scoped
     // general-settings IPC surface.

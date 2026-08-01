@@ -46,6 +46,38 @@ describe('HistoryRecorder (T098 / T102)', () => {
     expect(entry.originalDescription).toBe('investigate auth flow');
   });
 
+  it('records completion when a prior optional phase result is failed (076)', async () => {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const recorder = new HistoryRecorder({
+      historyStore: { append } as never,
+      logger: new SanitizedLogger()
+    });
+    const run = makeRun({
+      phasesCompleted: [
+        {
+          phase: 'optional-audit',
+          iteration: 1,
+          startedAt: 1_700_000_000_100,
+          endedAt: 1_700_000_000_200,
+          result: 'failed',
+          terminationReason: 'error',
+          exitCode: 7,
+          stdoutSummary: '',
+          stderrSummary: '',
+          auditEntryId: 'audit-optional'
+        }
+      ],
+      lastError: null
+    });
+
+    await recorder.record(run, 'optional audit workflow', 'completed');
+
+    expect(append.mock.calls[0][0]).toMatchObject({
+      terminalStatus: 'completed',
+      lastErrorSummary: null
+    });
+  });
+
   it('is a no-op when no history store is wired', async () => {
     const recorder = new HistoryRecorder({
       historyStore: null,

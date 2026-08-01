@@ -5,8 +5,7 @@ const RESOURCE_SCOPED_KEYS = [
   'watchdog.pollIntervalMinutes',
   'invocation.timeoutSeconds',
   'audit.rotation.sizeMB',
-  'audit.rotation.maxAgeDays',
-  'rules.injectPerPhase'
+  'audit.rotation.maxAgeDays'
 ] as const;
 
 const mocks = vi.hoisted(() => {

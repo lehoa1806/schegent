@@ -140,6 +140,13 @@ export interface PostPhaseInputs {
   readonly now: number;
 }
 
+export interface OptionalTerminalFailureInputs {
+  readonly run: WorkflowRun;
+  readonly phaseResult: PhaseResult;
+  readonly phaseDef: PhaseDef;
+  readonly iterationCap: number;
+}
+
 /**
  * Verify-phase ids that pause on a non-clean outcome instead of advancing.
  * Feature 026 FR-016: the bugfix verify phases keep `currentPhase`
@@ -151,6 +158,33 @@ const VERIFY_PHASE_IDS: ReadonlySet<string> = new Set([
 ]);
 
 export class PhaseSequencer {
+  public isVerificationPhase(phaseId: string): boolean {
+    return VERIFY_PHASE_IDS.has(phaseId);
+  }
+
+  public decideAfterOptionalTerminalFailure(
+    inputs: OptionalTerminalFailureInputs
+  ): Extract<TransitionResult, { kind: 'advance' }> {
+    if (inputs.phaseDef.isRequired !== false) {
+      throw new Error('optional terminal continuation requires isRequired === false');
+    }
+    if (inputs.phaseResult.result !== 'failed' && inputs.phaseResult.result !== 'timeout') {
+      throw new Error('optional terminal continuation requires failed or timeout result');
+    }
+    const decision = transition({
+      phase: inputs.phaseResult.phase,
+      outcome: inputs.phaseResult.result,
+      iteration: inputs.phaseResult.iteration,
+      iterationCap: inputs.iterationCap,
+      pipeline: inputs.run.pipeline,
+      phaseDef: inputs.phaseDef
+    });
+    if (decision.kind !== 'advance') {
+      throw new Error('optional terminal continuation did not advance');
+    }
+    return decision;
+  }
+
   /**
    * Pre-dispatch decision: consult `phaseOverrides` for the current phase.
    * Returns `'skip-phase'` with a synthetic skipped `PhaseResult` plus the
