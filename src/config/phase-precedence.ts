@@ -4,7 +4,8 @@ export type PhaseFieldKey =
   | 'model'
   | 'effort'
   | 'timeoutSeconds'
-  | 'retryCondition';
+  | 'retryCondition'
+  | 'runner';
 
 export type PhasePrecedenceLayer = 'built-in' | 'user' | 'workspace' | 'unset';
 
@@ -14,7 +15,8 @@ const PHASE_FIELD_KEYS: readonly PhaseFieldKey[] = [
   'model',
   'effort',
   'timeoutSeconds',
-  'retryCondition'
+  'retryCondition',
+  'runner'
 ];
 
 function compositeKey(phaseId: string, fieldKey: PhaseFieldKey): string {

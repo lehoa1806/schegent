@@ -1,5 +1,7 @@
 import type { Phase, PhaseOutcome } from './phase';
 import type { BackendRunner } from '../contracts/backend-runner';
+import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
+import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { AuditEntry } from '../audit/audit-entry';
@@ -165,9 +167,11 @@ export interface ManualPauseAccessor {
 export class PhaseRunner {
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
+  private readonly runnerRegistry: BackendRunnerRegistry | null;
+  private readonly singleRunner: BackendRunner | null;
 
   constructor(
-    private readonly runner: BackendRunner,
+    runner: BackendRunner | BackendRunnerRegistry,
     private readonly promptBuilder: PromptBuilder,
     private readonly auditWriter: AuditLogWriter,
     private readonly logger: SanitizedLogger,
@@ -179,6 +183,16 @@ export class PhaseRunner {
     private readonly phaseBreakpointAccessor: PhaseBreakpointAccessor | null = null,
     lastRetryDecisionSink: LastRetryDecisionSink | null = null
   ) {
+    // Feature 074 — accept either a BackendRunnerRegistry (per-phase
+    // runner resolution) or a plain BackendRunner (backwards compat
+    // with existing test mocks and construction sites).
+    if ('getOrCreate' in runner) {
+      this.runnerRegistry = runner as BackendRunnerRegistry;
+      this.singleRunner = null;
+    } else {
+      this.runnerRegistry = null;
+      this.singleRunner = runner as BackendRunner;
+    }
     this.sidecarReader = new PhaseSidecarReader(auditWriter, logger);
     this.retryEvaluator = new PhaseRetryEvaluator(
       auditWriter,
@@ -187,6 +201,18 @@ export class PhaseRunner {
       undefined,
       lastRetryDecisionSink
     );
+  }
+
+  /**
+   * Feature 074 — resolve the effective runner for this invocation.
+   * When a registry is available, resolves from phaseDef.runner ?? globalDefault.
+   * When a single runner was injected (backwards compat), returns it directly.
+   */
+  private resolveRunner(inputs: PhaseRunInputs): BackendRunner {
+    if (this.runnerRegistry) {
+      return this.runnerRegistry.getOrCreate(inputs.phaseDef?.runner);
+    }
+    return this.singleRunner!;
   }
 
   public isManualPauseRequested(): boolean {
@@ -287,10 +313,16 @@ export class PhaseRunner {
           phaseMessagePath: inputs.phaseMessagePath ?? null,
           previousPhaseMessage: inputs.previousPhaseMessage ?? null
         });
+    // Feature 074 — resolve the effective runner kind for audit attribution.
+    const effectiveRunnerKind = inputs.phaseDef?.runner
+      ?? this.runnerRegistry?.getGlobalDefault()
+      ?? DEFAULT_BACKEND;
 
     const startPayload: Record<string, unknown> = {
       pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
+      // Feature 074 — always-present runner attribution.
+      runner: effectiveRunnerKind,
       // Feature 032 — strict-boolean continuation telemetry. Always
       // present on the payload (never omitted); a missing or
       // non-`=== true` `inputs.isContinue` records `false`. Matches the
@@ -364,7 +396,7 @@ export class PhaseRunner {
       // Inherit the operator's process-env setting for the compact call.
       const compactInheritEnv = inputs.inheritProcessEnv !== false;
       try {
-        const compactRaw = await this.runner.invoke({
+        const compactRaw = await this.resolveRunner(inputs).invoke({
           phase: inputs.phase,
           iteration: inputs.iteration,
           prompt: 'Compact the conversation context. Reply with a single word: OK',
@@ -399,7 +431,7 @@ export class PhaseRunner {
         });
       }
     }
-    const raw = await this.runner.invoke({
+    const raw = await this.resolveRunner(inputs).invoke({
       phase: inputs.phase,
       iteration: inputs.iteration,
       prompt,
@@ -647,9 +679,14 @@ export class PhaseRunner {
   }
 
   private pipelineMeta(inputs: PhaseRunInputs): Record<string, unknown> {
+    // Feature 074 — resolve effective runner kind for audit payloads.
+    const effectiveRunnerKind = inputs.phaseDef?.runner
+      ?? this.runnerRegistry?.getGlobalDefault()
+      ?? DEFAULT_BACKEND;
     const meta: Record<string, unknown> = {
       pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
-      phaseId: inputs.phaseDef?.id ?? inputs.phase
+      phaseId: inputs.phaseDef?.id ?? inputs.phase,
+      runner: effectiveRunnerKind
     };
     if (inputs.phaseDef?.model) meta.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) meta.effort = inputs.phaseDef.effort;

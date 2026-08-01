@@ -1,6 +1,7 @@
 import type { BackendRunner, MonitorSidecarHook } from '../contracts/backend-runner';
 import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
+import { AgyCliRunner } from './agy-cli';
 import { SanitizedLogger } from '../lib/logger';
 
 // Feature 034 Item 050 — backend selection.
@@ -19,11 +20,12 @@ import { SanitizedLogger } from '../lib/logger';
 // pipeline, telemetry sampler, and live-activity projector remain
 // backend-agnostic.
 
-export type BackendRunnerKind = 'claude' | 'codex';
+export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
 
 export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze([
   'claude',
-  'codex'
+  'codex',
+  'agy'
 ]);
 
 export const DEFAULT_BACKEND: BackendRunnerKind = 'claude';
@@ -80,6 +82,8 @@ export function createBackendRunner(
   switch (kind) {
     case 'codex':
       return new CodexCliRunner(undefined, monitorHook, logger);
+    case 'agy':
+      return new AgyCliRunner(undefined, monitorHook, logger);
     case 'claude':
     default:
       return new ClaudeCliRunner(

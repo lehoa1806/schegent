@@ -1,6 +1,9 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 
+import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../runner/backend-runner-factory';
+
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
@@ -14,6 +17,10 @@ export interface PhaseDef {
   // WorkflowRun.pipeline snapshot so mid-run settings edits cannot retarget it
   // (preserved 009 FR-013).
   readonly retryCondition?: string;
+  // Feature 074 — per-phase backend runner override. When set, this phase
+  // uses the specified runner instead of the global `schegent.backend.runner`
+  // setting. Precedence: phase-level runner > global default > 'claude'.
+  readonly runner?: BackendRunnerKind;
 }
 
 export interface PipelineDef {
@@ -422,7 +429,8 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'model',
   'effort',
   'timeoutSeconds',
-  'retryCondition'
+  'retryCondition',
+  'runner'
 ]);
 
 const ALLOWED_PIPELINE_FIELDS = new Set(['id', 'name', 'phases']);
@@ -439,7 +447,8 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
       (typeof v.effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v.effort))) &&
     (v.timeoutSeconds === undefined || typeof v.timeoutSeconds === 'number') &&
     (v.retryCondition === undefined ||
-      (typeof v.retryCondition === 'string' && v.retryCondition.length > 0))
+      (typeof v.retryCondition === 'string' && v.retryCondition.length > 0)) &&
+    (v.runner === undefined || typeof v.runner === 'string')
   );
 }
 
@@ -664,6 +673,27 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
         field: 'retryCondition',
         message: 'Phase.retryCondition must be a non-empty string when set'
       });
+    }
+  }
+
+  // Feature 074 — per-phase backend runner validation.
+  if (v.runner !== undefined) {
+    if (typeof v.runner !== 'string' || v.runner.length === 0) {
+      errors.push({
+        source: 'phase',
+        id,
+        field: 'runner',
+        message: 'Phase.runner must be a non-empty string when set'
+      });
+    } else {
+      if (!(SUPPORTED_BACKENDS as readonly string[]).includes(v.runner)) {
+        errors.push({
+          source: 'phase',
+          id,
+          field: 'runner',
+          message: `Phase.runner must be one of ${(SUPPORTED_BACKENDS as readonly string[]).join(', ')}`
+        });
+      }
     }
   }
 

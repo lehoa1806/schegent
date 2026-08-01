@@ -30,8 +30,13 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Error Handling Audit (Bugfix 2026-07-31) — bumped phase-runner.ts +30 to
 // accommodate the try-catch resilience wrapper around appendAudit so a
 // full disk or permissions error does not crash the entire workflow.
+//
+// Feature 074 — bumped phase-runner.ts +30 to accommodate the
+// BackendRunnerRegistry constructor overload, resolveRunner() per-invocation
+// helper, and runner attribution on all audit payloads (pipelineMeta +
+// startPayload).
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 760 },
+  { path: 'src/controller/phase-runner.ts', max: 790 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }

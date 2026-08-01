@@ -155,6 +155,7 @@ pub const AUDIT_EVENT_TYPES: &[&str] = &[
 ];
 
 pub const SETTINGS_KEYS: &[&str] = &[
+    "schegent.agy.path",
     "schegent.audit.rotation.maxAgeDays",
     "schegent.audit.rotation.sizeMB",
     "schegent.backend.runner",

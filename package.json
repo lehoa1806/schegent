@@ -137,11 +137,18 @@
           "type": "string",
           "enum": [
             "claude",
-            "codex"
+            "codex",
+            "agy"
           ],
           "default": "claude",
           "scope": "application",
-          "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in single-shot `exec --no-stream` mode; the prompt is piped over stdin. Existing workspaces see no behavior change. See docs/operations/backends.md for the contract any backend must honor."
+          "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in single-shot `exec --no-stream` mode. `agy` spawns the Agy CLI with `--dangerously-skip-permissions` and `--output-format stream-json`. The prompt is piped over stdin for all backends. Per-phase overrides can be set via `schegent.phases[*].runner`. See docs/operations/backends.md for the contract any backend must honor."
+        },
+        "schegent.agy.path": {
+          "type": "string",
+          "default": "agy",
+          "scope": "application",
+          "description": "Path to the Agy CLI binary. Defaults to `agy` (resolved via PATH)."
         },
         "schegent.loop.maxIterations": {
           "type": "number",

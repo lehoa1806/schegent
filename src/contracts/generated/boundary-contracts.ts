@@ -155,6 +155,7 @@ export const AUDIT_EVENT_TYPES = [
 ] as const;
 
 export const SETTINGS_KEYS = [
+  "schegent.agy.path",
   "schegent.audit.rotation.maxAgeDays",
   "schegent.audit.rotation.sizeMB",
   "schegent.backend.runner",

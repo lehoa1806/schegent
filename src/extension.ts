@@ -13,7 +13,8 @@ import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
 
-import { createBackendRunner, resolveBackendKind } from './runner/backend-runner-factory';
+import { resolveBackendKind } from './runner/backend-runner-factory';
+import { BackendRunnerRegistry } from './runner/backend-runner-registry';
 import { PromptBuilder } from './runner/prompt-builder';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
@@ -434,14 +435,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     }
   });
   context.subscriptions.push({ dispose: () => sampler.dispose() });
-  // Feature 034 Item 050 — backend selection. The factory picks the
-  // concrete `BackendRunner` based on `schegent.backend.runner`. Default is
-  // `'claude'`; unknown values collapse to the default with a WARN log.
+  // Feature 074 — per-phase runner selection. The registry lazily constructs
+  // runners on first use and caches them for the workspace lifetime. All
+  // runners share the same monitor hook so the sidecar stays unified.
   const backendKind = resolveBackendKind(
     vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
     logger
   );
-  const cliRunner = createBackendRunner(backendKind, {
+  const runnerRegistry = new BackendRunnerRegistry({
     monitorHook: (event) => {
       if (event.kind === 'started') {
         monitor.onSpawnPid(event.pid);
@@ -462,13 +463,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         sampler.stop({ signal: event.signal as NodeJS.Signals | null });
       }
     },
-    // Feature 013 Wave 8 (US8): probe `claude --help` once per activation
-    // to pick the safest available prompt transport. Falls back to `-p`
-    // when the CLI doesn't advertise `--prompt-file` / `--prompt-stdin`.
-    // Only relevant for the Claude adapter; Codex ignores this flag.
     probeTransport: true,
     logger
-  });
+  }, backendKind);
   const historyStore = new HistoryStore(store);
   const promptBuilder = new PromptBuilder();
   const rawTranscript = new RawTranscriptWriter(workspaceRoot, logger);
@@ -515,7 +512,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     await store.setRun({ ...current, lastRetryDecision: decision });
   };
   const phaseRunner = new PhaseRunner(
-    cliRunner,
+    runnerRegistry,
     promptBuilder,
     auditWriter,
     logger,
@@ -542,7 +539,23 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
       inheritProcessEnv,
-      perPhaseRulesEnabled: rulesPerPhase
+      perPhaseRulesEnabled: rulesPerPhase,
+      // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
+      // setting per-invocation (never cached at activation) so the operator
+      // can change `schegent.agy.path` without restarting VS Code.
+      cliPathResolver: (runnerKind: string) => {
+        if (runnerKind === 'agy') {
+          return vscode.workspace
+            .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+            .get<string>('agy.path', 'agy');
+        }
+        if (runnerKind === 'codex') {
+          return vscode.workspace
+            .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+            .get<string>('codex.path', 'codex');
+        }
+        return cliPath; // 'claude' or default
+      }
     },
     {
       monitor,
@@ -638,7 +651,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
 
   const watchdog = new CreditWatchdog(
-    cliRunner,
+    runnerRegistry.getOrCreate(),
     store,
     statusBar,
     logger,

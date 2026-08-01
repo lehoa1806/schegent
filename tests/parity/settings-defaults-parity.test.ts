@@ -202,7 +202,9 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // Application-scoped CLI spawn hardening toggle. It is read once at
     // activation and intentionally not writable through the workspace-scoped
     // general-settings IPC surface.
-    const cliApplicationKeys = new Set<string>(['cli.inheritEnvironment']);
+    // Feature 074 — `agy.path` is the Agy CLI binary path, same pattern as
+    // `cli.path` (application-scoped, read once at activation).
+    const cliApplicationKeys = new Set<string>(['cli.inheritEnvironment', 'agy.path']);
     // Feature 058 — read-once-at-activation toggles. The activation guard
     // reads `schegent.multiRoot.suppressWarning` via `getConfiguration` with
     // a typed default; SETTINGS_SCHEMA + the drift-guard in
