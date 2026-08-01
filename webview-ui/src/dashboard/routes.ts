@@ -10,19 +10,21 @@
 // and specs/064-system-tab-audit-split/contracts/dashboard-navigation.md for
 // the invariants this module pins.
 
-export type DashboardRoute = 'operations' | 'pipeline-builder' | 'system' | 'settings';
+export type DashboardRoute = 'metrics' | 'operations' | 'pipeline-builder' | 'system' | 'settings';
 
 export const DASHBOARD_ROUTES: readonly DashboardRoute[] = [
+  'metrics',
   'operations',
   'pipeline-builder',
   'system',
   'settings'
 ] as const;
 
-export const DEFAULT_DASHBOARD_ROUTE: DashboardRoute = 'operations';
+export const DEFAULT_DASHBOARD_ROUTE: DashboardRoute = 'metrics';
 
 export const DASHBOARD_ROUTE_LABELS: Readonly<Record<DashboardRoute, string>> =
   Object.freeze({
+    metrics: 'Metrics',
     operations: 'Operations',
     'pipeline-builder': 'Pipeline Builder',
     system: 'System',

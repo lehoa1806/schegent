@@ -240,7 +240,7 @@ export class QueueManager {
     return inserted;
   }
 
-  public async markInFlight(featureId: string, runId: string): Promise<void> {
+  public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
     const queue = this.store.getQueue();
     if (!this.hasCapacity() && queue.inFlightId !== featureId) {
       throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
@@ -269,6 +269,26 @@ export class QueueManager {
       queueId: movedRequest?.queueId ?? null,
       sizeAfter: pendingAfter
     });
+
+    // Feature 072 — emit task-execution-started after markInFlight succeeds
+    if (this.lifecycleAuditHook) {
+      const currentRun = this.store.getRun();
+      const pipelineId = (currentRun?.id === runId ? currentRun?.pipeline?.id : '') ?? '';
+      await this.lifecycleAuditHook.append({
+        runId,
+        phase: 'queue-manager',
+        iteration: 0,
+        eventType: 'task-execution-started',
+        outcome: 'info',
+        payload: {
+          taskId: featureId,
+          runId,
+          queueId: movedRequest?.queueId ?? '',
+          pipelineId,
+          isResume
+        }
+      });
+    }
   }
 
   public async finish(

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { handler as readMetricsHandler } from '../../src/ui/sidebar/commands/cmd-read-metrics';
-import { readMetrics } from '../../src/metrics/metrics-log-reader';
+import { readMetrics } from '../../src/metrics/metrics-service';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { CMD_READ_METRICS } from '../../src/contracts/sidebar-ipc';

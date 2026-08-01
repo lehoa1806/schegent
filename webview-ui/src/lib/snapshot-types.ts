@@ -277,6 +277,7 @@ export interface PhaseDefinition {
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
   readonly retryCondition?: string;
+  readonly runner?: string;
 }
 
 export interface PipelineDefinition {

@@ -21,7 +21,7 @@ vi.mock('../../lib/metrics-ipc', () => ({
 
 // Late import after the vi.mock above so the component picks up the mocked
 // metrics-ipc surface.
-import MetricsSection from '../MetricsSection.svelte';
+import MetricsDashboard from '../MetricsDashboard/MetricsDashboard.svelte';
 
 const BASE_MS = Date.parse('2026-05-10T12:00:00.000Z');
 
@@ -94,9 +94,11 @@ function successResult(overrides: Partial<ReadMetricsResponse> = {}): { outcome:
     phaseTypeAggregates: [],
     costTimeline: [],
     oldestIncludedTimestamp: undefined,
-    includesArchived: false,
-    totalScannedEntries: 0,
-    parseWarnings: 0,
+    meta: {
+      includesArchives: false,
+      totalScannedEntries: 0,
+      parseWarnings: 0
+    },
     ...overrides
   };
 }
@@ -107,9 +109,9 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('MetricsSection', () => {
+describe('MetricsDashboard', () => {
   it('does not fetch when inactive', async () => {
-    render(MetricsSection, { props: { active: false } });
+    render(MetricsDashboard, { props: { active: false } });
     await tick();
     await tick();
     expect(readMetricsSpy).not.toHaveBeenCalled();
@@ -124,11 +126,11 @@ describe('MetricsSection', () => {
         })
     );
 
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
-    expect(readMetricsSpy).toHaveBeenCalledWith({ includeArchived: false });
+    expect(readMetricsSpy).toHaveBeenCalledWith({ includeArchives: false });
     expect(getByTestId('metrics-loading')).not.toBeNull();
 
     resolveFetch(successResult());
@@ -138,7 +140,7 @@ describe('MetricsSection', () => {
   });
 
   it('renders the empty state when there are no tasks', async () => {
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-empty')).not.toBeNull();
@@ -153,7 +155,7 @@ describe('MetricsSection', () => {
         ]
       })
     );
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -165,7 +167,7 @@ describe('MetricsSection', () => {
 
   it('shows "Not recorded" for total cost when no task has a recorded cost', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task({ totalCostUsd: undefined })] }));
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-summary-cost').textContent).toBe('Not recorded');
@@ -180,7 +182,7 @@ describe('MetricsSection', () => {
         ]
       })
     );
-    const { getByTestId, container } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId, container } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -200,7 +202,7 @@ describe('MetricsSection', () => {
 
   it('expands phase detail on row click and collapses on the expand-toggle button', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task({ runId: 'run-1' })] }));
-    const { getByTestId, queryByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId, queryByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -234,7 +236,7 @@ describe('MetricsSection', () => {
         tasks: [task({ runId: 'run-1', phases: [phaseA, phaseB], phasesTotal: 2, phasesCompleted: 1 })]
       })
     );
-    const { getByTestId, container } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId, container } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -250,7 +252,7 @@ describe('MetricsSection', () => {
       task({ runId: `run-${i}`, startTime: new Date(BASE_MS + i * 1000).toISOString() })
     );
     readMetricsSpy.mockResolvedValue(successResult({ tasks }));
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -267,7 +269,7 @@ describe('MetricsSection', () => {
   });
 
   it('the refresh button re-invokes readMetrics', async () => {
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(readMetricsSpy).toHaveBeenCalledTimes(1);
@@ -281,9 +283,9 @@ describe('MetricsSection', () => {
   it('toggling include-archived re-fetches with includeArchived: true and shows the coverage window', async () => {
     readMetricsSpy.mockResolvedValueOnce(successResult());
     readMetricsSpy.mockResolvedValueOnce(
-      successResult({ includesArchived: true, oldestIncludedTimestamp: '2026-01-01T00:00:00.000Z' })
+      successResult({ meta: { includesArchives: true, totalScannedEntries: 0, parseWarnings: 0 }, oldestIncludedTimestamp: '2026-01-01T00:00:00.000Z' })
     );
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
 
@@ -291,7 +293,7 @@ describe('MetricsSection', () => {
     await tick();
     await tick();
 
-    expect(readMetricsSpy).toHaveBeenLastCalledWith({ includeArchived: true });
+    expect(readMetricsSpy).toHaveBeenLastCalledWith({ includeArchives: true });
     expect(getByTestId('metrics-coverage-window')).not.toBeNull();
   });
 
@@ -299,7 +301,7 @@ describe('MetricsSection', () => {
     readMetricsSpy.mockResolvedValue(
       successResult({ tasks: [task()], phaseTypeAggregates: [aggregate({ phaseType: 'speckit-plan' })] })
     );
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-phase-analytics-row-speckit-plan')).not.toBeNull();
@@ -307,7 +309,7 @@ describe('MetricsSection', () => {
 
   it('shows the phase-analytics empty state when there are tasks but no aggregates', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task()], phaseTypeAggregates: [] }));
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-phase-analytics-empty')).not.toBeNull();
@@ -320,7 +322,7 @@ describe('MetricsSection', () => {
         costTimeline: [costPoint({ date: '2026-05-10' }), costPoint({ date: '2026-05-11', cumulativeCostUsd: 0.24 })]
       })
     );
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-cost-trend-svg')).not.toBeNull();
@@ -329,7 +331,7 @@ describe('MetricsSection', () => {
 
   it('shows the cost-trend empty state when there is no cost timeline data', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task()], costTimeline: [] }));
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-cost-trend-empty')).not.toBeNull();
@@ -337,7 +339,7 @@ describe('MetricsSection', () => {
 
   it('marks phase-reconstruction tasks with the "Reconstructed" badge', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task({ runId: 'run-r', source: 'phase-reconstruction' })] }));
-    const { getByTestId } = render(MetricsSection, { props: { active: true } });
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
     await tick();
     expect(getByTestId('metrics-task-row-run-r').textContent).toContain('Reconstructed');

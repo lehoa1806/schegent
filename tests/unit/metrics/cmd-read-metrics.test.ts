@@ -22,9 +22,12 @@ const SAMPLE_RESPONSE: ReadMetricsResponse = {
   tasks: [],
   phaseTypeAggregates: [],
   costTimeline: [],
-  includesArchived: false,
-  totalScannedEntries: 0,
-  parseWarnings: 0
+  oldestIncludedTimestamp: undefined,
+  meta: {
+    includesArchives: false,
+    totalScannedEntries: 0,
+    parseWarnings: 0
+  }
 };
 
 function buildCtx(
@@ -189,7 +192,7 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
   });
 });
 
-// Feature 073 US1 (T014) — includeArchived request forwarding and
+// Feature 073 US1 (T014) — includeArchives request forwarding and
 // coverage-window/full-history pass-through. The handler must forward the
 // request verbatim and never truncate or reshape the metrics service's
 // response (regression guard against reintroducing a HistoryStore-style
@@ -214,28 +217,31 @@ function makeTaskRecord(index: number, overrides: Partial<TaskRecord> = {}): Tas
   };
 }
 
-describe('cmd-read-metrics handler — includeArchived / coverage-window pass-through (Feature 073 US1, T014)', () => {
-  it('forwards includeArchived: true from the request payload to metricsService.read', async () => {
+describe('cmd-read-metrics handler — includeArchives / coverage-window pass-through (Feature 073 US1, T014)', () => {
+  it('forwards includeArchives: true from the request payload to metricsService.read', async () => {
     const { ctx, readSpy } = buildCtx();
-    await readMetricsHandler(ctx, makeCmd({ includeArchived: true }));
-    expect(readSpy).toHaveBeenCalledWith({ includeArchived: true });
+    await readMetricsHandler(ctx, makeCmd({ includeArchives: true }));
+    expect(readSpy).toHaveBeenCalledWith({ includeArchives: true });
   });
 
-  it('forwards an empty payload (includeArchived omitted) to metricsService.read without forcing a default', async () => {
+  it('forwards an empty payload (includeArchives omitted) to metricsService.read without forcing a default', async () => {
     const { ctx, readSpy } = buildCtx();
     await readMetricsHandler(ctx, makeCmd());
     expect(readSpy).toHaveBeenCalledWith({});
   });
 
-  it('passes through oldestIncludedTimestamp, totalScannedEntries, and includesArchived from the metrics service response verbatim', async () => {
+  it('passes through oldestIncludedTimestamp, totalScannedEntries, and includesArchives from the metrics service response verbatim', async () => {
     const response: ReadMetricsResponse = {
       ...SAMPLE_RESPONSE,
       oldestIncludedTimestamp: '2026-01-15T08:30:00.000Z',
-      totalScannedEntries: 4321,
-      includesArchived: true
+      meta: {
+        includesArchives: true,
+        totalScannedEntries: 4321,
+        parseWarnings: 0
+      }
     };
     const { ctx, acks } = buildCtx({ readResult: response });
-    await readMetricsHandler(ctx, makeCmd({ includeArchived: true }));
+    await readMetricsHandler(ctx, makeCmd({ includeArchives: true }));
     expect(acks[0]!.result).toEqual(response);
   });
 

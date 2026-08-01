@@ -15,6 +15,7 @@
   import TrustBanner from './TrustBanner.svelte';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+  const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -514,6 +515,17 @@
                       <option value="">[Inherit]</option>
                       {#each EFFORT_LEVELS as lvl}
                         <option value={lvl}>{lvl}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <label class="form-field" style="flex: 1">
+                    <span class="form-label">
+                      Runner
+                    </span>
+                    <select class="select-input" data-testid="phases-runner-{phaseRef.id}" value={phases[idx].runner ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].runner = v ? (v as PhaseDefinition['runner']) : undefined; }}>
+                      <option value="">[Inherit / Default]</option>
+                      {#each RUNNER_KINDS as runner}
+                        <option value={runner}>{runner}</option>
                       {/each}
                     </select>
                   </label>

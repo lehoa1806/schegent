@@ -271,15 +271,7 @@ export class SchegentWorkflowController {
         resumeTargetPhaseId: null
       };
       await this.store.setRun(run);
-      await this.queue.markInFlight(feature.id, run.id);
-      // Feature 072 — emit task-execution-started after markInFlight succeeds.
-      await this.emitTaskLifecycleAudit('task-execution-started', run, {
-        taskId: feature.id,
-        runId: run.id,
-        queueId: feature.queueId ?? '',
-        pipelineId: run.pipeline?.id ?? '',
-        isResume: false
-      });
+      await this.queue.markInFlight(feature.id, run.id, false);
       await this.runDriver.drive(run, feature.description);
     } catch (err) {
       await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
@@ -497,15 +489,7 @@ export class SchegentWorkflowController {
         : {})
     };
     await this.store.setRun(next);
-    await this.queue.markInFlight(feature.id, next.id);
-    // Feature 072 — emit task-execution-started with isResume=true.
-    await this.emitTaskLifecycleAudit('task-execution-started', next, {
-      taskId: feature.id,
-      runId: next.id,
-      queueId: feature.queueId ?? '',
-      pipelineId: next.pipeline?.id ?? '',
-      isResume: true
-    });
+    await this.queue.markInFlight(feature.id, next.id, true);
     await this.runDriver.drive(next, feature.description);
     return true;
   }
@@ -679,6 +663,10 @@ export class SchegentWorkflowController {
         // Feature 071 — Jump to next step. Cancel the active runner so the
         // skip takes effect immediately instead of waiting for the phase to finish.
         this.runDriver.noteActivePhaseOverrideAbort(run.id, phaseId);
+        
+        // Feature 072 — Emit phase-jumped audit event
+        await this.emitPhaseJumpedAudit(run, phaseId);
+
         this.cancelActive();
       } else if (run.status === 'paused') {
         // Feature 071 — If the phase is currently paused, resume it so the
@@ -1039,6 +1027,30 @@ export class SchegentWorkflowController {
       });
     } catch (err) {
       this.logger.warn(`task-lifecycle audit append failed (${eventType}): ${(err as Error).message}`);
+    }
+  }
+
+  private async emitPhaseJumpedAudit(run: WorkflowRun, phaseId: string): Promise<void> {
+    if (!this.auditWriter) return;
+    try {
+      await this.auditWriter.append({
+        runId: run.id,
+        phase: phaseId,
+        iteration: run.currentIteration,
+        eventType: 'phase-jumped',
+        outcome: 'info',
+        payload: {
+          phaseId,
+          runId: run.id,
+          pipelineId: run.pipeline?.id ?? '',
+          durationMs: Date.now() - (run.lastTransitionAt ?? Date.now()),
+          iterationN: run.currentIteration,
+          reason: 'operator-jump',
+          phasesSkipped: 1
+        }
+      });
+    } catch (err) {
+      this.logger.warn(`phase-jumped audit append failed: ${(err as Error).message}`);
     }
   }
 
