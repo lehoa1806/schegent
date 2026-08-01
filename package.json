@@ -165,6 +165,14 @@
           "scope": "application",
           "description": "Backend runner used to drive each phase invocation. `claude` (default) spawns the Claude CLI (`schegent.cli.path`). `codex` spawns the Codex CLI in non-interactive `exec --json` mode with a workspace-write sandbox. `agy` spawns the Agy CLI with `--dangerously-skip-permissions` and `--output-format stream-json`. The prompt is piped over stdin for all backends. Per-phase overrides can be set via `schegent.phases[*].runner`. See docs/operations/backends.md for the contract any backend must honor."
         },
+        "schegent.backend.probeTimeoutSeconds": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 30,
+          "scope": "application",
+          "description": "Maximum time in seconds for backend availability and model-discovery probes. Timed-out probes are terminated and treated as unavailable."
+        },
         "schegent.codex.path": {
           "type": "string",
           "default": "codex",
@@ -212,12 +220,6 @@
           "minimum": 1,
           "scope": "resource",
           "description": "Audit log rotation max age in days."
-        },
-        "schegent.rules.injectPerPhase": {
-          "type": "boolean",
-          "default": false,
-          "scope": "resource",
-          "description": "Reserved legacy toggle; current runner wiring does not inject per-phase rule files."
         },
         "schegent.models": {
           "type": "array",
@@ -290,6 +292,11 @@
                 "type": "string",
                 "minLength": 1,
                 "markdownDescription": "Optional retry-condition DSL expression. When set AND the phase invocation produces a well-formed audit-log block, the expression is evaluated against the audit-entry's `metrics` map (extracted from `<identifier>: <number>` lines inside the SCHEGENT AUDIT LOG block). A truthy result loops the phase; a falsy result advances. The DSL supports identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive), signed numeric literals, comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), boolean combinators (`and` / `or` / `&&` / `||`), unary negation (`not` / `!`), and parentheses. Operator precedence (highest to lowest): `not`/`!` > comparisons > `and`/`&&` > `or`/`||`. Arithmetic, function calls, and member access are NOT supported. Invalid expressions are stripped at configuration load with a one-shot host-logger warning; the surrounding phase remains loadable and falls back to default loop semantics. Examples: `\"open_questions > 0\"`, `\"unresolved_findings > 0 or open_questions > 0\"`, `\"not (confidence > 0.85)\"`."
+              },
+              "isRequired": {
+                "type": "boolean",
+                "default": true,
+                "markdownDescription": "Whether terminal failure stops the workflow. Missing or true is required. An explicitly optional phase (`false`) still exhausts normal retry policy, records its failed/timed-out result, and then continues."
               },
               "runner": {
                 "type": "string",
@@ -545,6 +552,7 @@
     "lint:webview": "npm --prefix webview-ui run lint --if-present",
     "test": "vitest run && npm --prefix webview-ui run test",
     "test:host": "vitest run",
+    "test:wakeup:lifecycle": "vitest run tests/integration/wakeup/release-native-lifecycle.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:webview": "npm --prefix webview-ui run test",
     "test:perf": "vitest run tests/perf/",

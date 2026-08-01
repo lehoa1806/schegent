@@ -33,6 +33,24 @@ Each phase is a JSON record. Every phase has these fields:
 - **`timeoutSeconds`** — optional per-phase idle-timeout override (1–5400). The timer resets on every CLI output chunk, so this caps idle time, not wall time. Falls back to `schegent.invocation.timeoutSeconds` (default 5400) if unset.
 - **`loopable`** — whether this phase can be re-invoked automatically in response to a retry condition. Defaults to `false`. When `true`, the runner re-runs the phase until stdout signals `[SCHEGENT_STATUS: CLEAR]` or `schegent.loop.maxIterations` (default 10) is reached.
 - **`retryCondition`** — optional, sandboxed DSL expression evaluated against the phase's audit metrics; controls whether the phase loops on non-fatal outcomes.
+- **`isRequired`** — optional completion policy. Missing or `true` means a
+  terminal failure stops the task. `false` allows the sequencer to continue
+  after retry policy is exhausted and the phase ends as failed or timed out.
+
+### Optional phases
+
+Optional phases still use the ordinary transient-error and rate-limit retry
+policy. They continue only after the result is terminal `failed` or `timeout`;
+verification pauses, breakpoints, manual pauses, and cancellation keep their
+normal boundaries. The failed/timed-out phase remains visible in progression,
+history, metrics, and the ordinary `phase-end` evidence. The task can complete
+if all remaining required phases succeed, without promoting that phase result
+to success or setting a terminal task `lastError`.
+
+Each continuation emits `phase-optional-failure-continued` with structural
+identifiers, runner, iteration, and termination reason only. Because
+`isRequired` is captured in the immutable run snapshot, editing the catalog
+does not change an already-enqueued run.
 
 ## How a phase actually runs
 

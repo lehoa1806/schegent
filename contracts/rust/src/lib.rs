@@ -52,6 +52,7 @@ pub const SIDEBAR_COMMAND_TYPES: &[&str] = &[
     "CMD_SET_CONFIRM_SUPPRESSION",
     "CMD_DISMISS_MIGRATION_NOTICE",
     "CMD_READ_METRICS",
+    "CMD_PING_BACKEND",
 ];
 
 pub const HOST_MESSAGE_TYPES: &[&str] = &[
@@ -153,6 +154,8 @@ pub const AUDIT_EVENT_TYPES: &[&str] = &[
     "task-execution-ended",
     "task-execution-paused",
     "phase-jumped",
+    "phase-optional-failure-continued",
+    "backend-ping",
     "metrics-view-opened",
 ];
 
@@ -160,6 +163,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "schegent.agy.path",
     "schegent.audit.rotation.maxAgeDays",
     "schegent.audit.rotation.sizeMB",
+    "schegent.backend.probeTimeoutSeconds",
     "schegent.backend.runner",
     "schegent.claude.autoCompactPctOverride",
     "schegent.cli.environmentAllowlist",
@@ -184,7 +188,6 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "schegent.pipelines",
     "schegent.queue.globalConcurrencyCap",
     "schegent.retry.maxAttempts",
-    "schegent.rules.injectPerPhase",
     "schegent.trust.allowCustomPhases",
     "schegent.trust.allowCustomRetryConditions",
     "schegent.trust.allowPipelineOverrides",
