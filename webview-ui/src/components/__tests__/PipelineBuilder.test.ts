@@ -100,6 +100,26 @@ async function switchTab(container: HTMLElement, label: string): Promise<void> {
 }
 
 describe('PipelineBuilder — restored 3-tab design', () => {
+  it('preserves configured unavailable runner and model values visibly', async () => {
+    const phase: PhaseDefinition = Object.freeze({
+      id: 'p-unavailable', name: 'Unavailable backend', instruction: 'check',
+      runner: 'agy', model: 'agy-operator-model'
+    });
+    const snap = {
+      ...buildSnapshot([phase]),
+      availableBackends: ['claude'] as readonly BackendRunnerKind[]
+    } as WorkflowSnapshot;
+    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    await switchTab(container, 'Phases');
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-p-unavailable"]')!);
+    const runner = container.querySelector('[data-testid="phases-runner-p-unavailable"]') as HTMLSelectElement;
+    const model = container.querySelector('[data-testid="phases-model-p-unavailable"]') as HTMLSelectElement;
+    expect(runner.value).toBe('agy');
+    expect(runner.selectedOptions[0]?.textContent).toContain('Unavailable');
+    expect(model.value).toBe('agy-operator-model');
+    expect(model.selectedOptions[0]?.textContent).toContain('Unavailable');
+  });
+
   it('renders the 3-tab bar: Pipelines, Phases, Models', () => {
     const snap = buildSnapshot();
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
@@ -333,6 +353,26 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + precedence badges',
     expect(vi.mocked(savePhasesHelper).mock.calls[0][0][0]).toMatchObject({
       id: 'speckit-plan',
       loopable: true
+    });
+  });
+
+  it('defaults legacy phases to Required and saves an explicit optional choice', async () => {
+    vi.mocked(savePhasesHelper).mockClear();
+    const { container } = await openPhasesEditorForPlan();
+    const required = container.querySelector(
+      '[data-testid="phases-required-speckit-plan"]'
+    ) as HTMLInputElement;
+
+    expect(required.checked).toBe(true);
+    await fireEvent.click(required);
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement
+    );
+    await tick();
+
+    expect(vi.mocked(savePhasesHelper).mock.calls[0][0][0]).toMatchObject({
+      id: 'speckit-plan',
+      isRequired: false
     });
   });
 

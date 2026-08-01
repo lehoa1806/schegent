@@ -5,6 +5,7 @@
   import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
+  import BackendHealthSection from './BackendHealthSection.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -19,7 +20,6 @@
     | 'watchdogPollIntervalMinutes'
     | 'auditRotationSizeMB'
     | 'auditRotationMaxAgeDays'
-    | 'rulesInjectPerPhase'
     | 'defaultPipelineId'
     | 'claudeAutoCompactPctOverride'
     | 'runtimeLogLevel'
@@ -86,7 +86,6 @@
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
     { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
     { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
-    { key: 'rulesInjectPerPhase', ipcKey: 'rules.injectPerPhase', label: 'Inject Rules Per Phase', kind: 'boolean' },
     { key: 'defaultPipelineId', ipcKey: 'defaultPipelineId', label: 'Default Pipeline', kind: 'pipeline-select' },
     {
       key: 'claudeAutoCompactPctOverride',
@@ -129,7 +128,6 @@
     watchdogPollIntervalMinutes: number;
     auditRotationSizeMB: number;
     auditRotationMaxAgeDays: number;
-    rulesInjectPerPhase: boolean;
     defaultPipelineId: string;
     // Feature 012: `null` is the "clear / use CLI default" sentinel; the
     // host translates a payload of `null` to `config.update(key, undefined)`.
@@ -150,7 +148,6 @@
       watchdogPollIntervalMinutes: s.watchdogPollIntervalMinutes,
       auditRotationSizeMB: s.auditRotationSizeMB,
       auditRotationMaxAgeDays: s.auditRotationMaxAgeDays,
-      rulesInjectPerPhase: s.rulesInjectPerPhase,
       defaultPipelineId: s.defaultPipelineId,
       claudeAutoCompactPctOverride: s.claudeAutoCompactPctOverride ?? null,
       runtimeLogLevel: s.runtimeLogLevel,
@@ -338,6 +335,8 @@
       >Reset All</button>
     </div>
   </header>
+
+  <BackendHealthSection {snapshot} />
 
   <div class="field-list">
     {#each FIELDS as spec (spec.key)}

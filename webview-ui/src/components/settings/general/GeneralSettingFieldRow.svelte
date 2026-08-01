@@ -14,7 +14,6 @@
     | 'watchdogPollIntervalMinutes'
     | 'auditRotationSizeMB'
     | 'auditRotationMaxAgeDays'
-    | 'rulesInjectPerPhase'
     | 'defaultPipelineId'
     | 'claudeAutoCompactPctOverride'
     | 'runtimeLogLevel'
@@ -48,7 +47,6 @@
     watchdogPollIntervalMinutes: number;
     auditRotationSizeMB: number;
     auditRotationMaxAgeDays: number;
-    rulesInjectPerPhase: boolean;
     defaultPipelineId: string;
     claudeAutoCompactPctOverride: number | null;
     runtimeLogLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
@@ -111,14 +109,14 @@
       <label class="checkbox-label">
         <input
           type="checkbox"
-          bind:checked={draft[spec.key as 'loggingVerbose' | 'rulesInjectPerPhase']}
+          bind:checked={draft[spec.key as 'loggingVerbose']}
           data-testid="general-settings-input-{spec.key}"
           use:hoverTextAnchor={{
             controlId: spec.key,
             description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
           }}
         />
-        <span>{draft[spec.key as 'loggingVerbose' | 'rulesInjectPerPhase'] ? 'On' : 'Off'}</span>
+        <span>{draft[spec.key as 'loggingVerbose'] ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
       <input

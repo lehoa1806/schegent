@@ -161,6 +161,8 @@ describe('Feature 030 (US2, T029) — QueueItem reorder affordances', () => {
 // QueueItem.label-clamp.test.ts.
 const SOURCE_PATH = resolve(__dirname, '..', 'QueueItem.svelte');
 const SOURCE = readFileSync(SOURCE_PATH, 'utf8');
+const FOOTER_SOURCE_PATH = resolve(__dirname, '..', 'QueueItemFooter.svelte');
+const FOOTER_SOURCE = readFileSync(FOOTER_SOURCE_PATH, 'utf8');
 function extractStyleBlock(svelteSource: string): string {
   const match = svelteSource.match(/<style[^>]*>([\s\S]*?)<\/style>/);
   return match ? match[1] : '';
@@ -172,6 +174,7 @@ function findRuleBlock(css: string, selector: string): string | null {
   return match ? match[1] : null;
 }
 const REORDER_STYLE_BLOCK = extractStyleBlock(SOURCE);
+const FOOTER_STYLE_BLOCK = extractStyleBlock(FOOTER_SOURCE);
 
 describe('Feature 065 BUG-005 (FR-025) — reorder affordance discoverability', () => {
   it('renders the drag handle as a real <button> element with an aria-label', () => {
@@ -210,11 +213,11 @@ describe('Feature 065 BUG-005 (FR-025) — reorder affordance discoverability', 
     // though showReorderControls === true. We pin flex-shrink: 0 on
     // both .actions-slot and .reorder-btn so the cluster cannot
     // collapse to zero width at any tested viewport size.
-    const actionsSlotBlock = findRuleBlock(REORDER_STYLE_BLOCK, '.actions-slot');
+    const actionsSlotBlock = findRuleBlock(FOOTER_STYLE_BLOCK, '.actions-slot');
     expect(actionsSlotBlock).not.toBeNull();
     if (actionsSlotBlock) expect(actionsSlotBlock).toMatch(/flex-shrink:\s*0/);
 
-    const reorderBtnBlock = findRuleBlock(REORDER_STYLE_BLOCK, '.reorder-btn');
+    const reorderBtnBlock = findRuleBlock(FOOTER_STYLE_BLOCK, '.reorder-btn');
     expect(reorderBtnBlock).not.toBeNull();
     if (reorderBtnBlock) {
       expect(reorderBtnBlock).toMatch(/flex-shrink:\s*0/);

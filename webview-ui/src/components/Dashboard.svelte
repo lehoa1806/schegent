@@ -28,12 +28,8 @@
   // alongside the multi-queue surfaces. Item 053 (053-webview-decomposition)
   // further split the inline dashboard zones into QueueInputForm,
   // QueueControls, and QueueListView sub-components.
-  import PhaseProgression from './PhaseProgression.svelte';
-  import PhaseLogFeed from './PhaseLogFeed/PhaseLogFeed.svelte';
-  import QueueInputForm from './QueueInputForm.svelte';
-  import QueueControls from './QueueControls.svelte';
-  import QueueListView from './QueueListView.svelte';
-  import HistorySection from './HistorySection.svelte';
+  import DashboardQueuePane from './DashboardQueuePane.svelte';
+  import DashboardActivityPane from './DashboardActivityPane.svelte';
   import { useConfirm } from '../lib/use-confirm';
   import { deriveCleanAllContext } from '../lib/queue-derived';
 
@@ -53,11 +49,6 @@
   const queue = $derived(snapshot.queue);
   const phases = $derived(snapshot.phases);
   const isPrimary = $derived(snapshot.isPrimary);
-  const activeFeature = $derived(snapshot.activeFeature);
-  const activePipeline = $derived(snapshot.activePipeline ?? null);
-  const manualPauseAt = $derived(snapshot.manualPauseAt ?? null);
-  const manualPauseCause = $derived(snapshot.manualPauseCause ?? null);
-  const phaseOverrides = $derived(snapshot.phaseOverrides ?? []);
   const availablePipelines = $derived(snapshot.availablePipelines ?? []);
   const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
   const activeTaskId = $derived(queue.inFlight?.id ?? null);
@@ -112,6 +103,7 @@
       return {
         name: def.id,
         displayName: def.name,
+        ...(def.isRequired !== undefined ? { isRequired: def.isRequired } : {}),
         order: idx + 1,
         state,
         iteration: 0,
@@ -325,100 +317,40 @@
       </svg>
     </button>
 
-    <div class="left-panel" data-testid="dashboard-left-panel">
-      <div class="left-panel-scroll">
-        <QueueInputForm
-          {availablePipelines}
-          {defaultPipelineId}
-          pendingCount={queue.pending.length}
-        />
+    <DashboardQueuePane
+      collapsed={leftPanelCollapsed}
+      {availablePipelines}
+      {defaultPipelineId}
+      {pendingCount}
+      {queueTab}
+      {isPrimary}
+      paused={queuePaused}
+      {hasInFlight}
+      {clearDoneDisabled}
+      {cleanDisabled}
+      queueLifecycle={queue.lifecycle ?? null}
+      {orderedItems}
+      selectedTaskId={activityFeedSelection.taskId}
+      history={snapshot.history}
+      onQueueTabChange={(tab) => (queueTab = tab)}
+      onTaskSelect={onActivityFeedTaskSelect}
+      {onResume}
+      {onPause}
+      {onClearDone}
+      {onClean}
+    />
 
-        <section class="zone queue-management glass-card queue-list-section" data-testid="dashboard-queue-management">
-          <div class="queue-tabs" data-testid="dashboard-queue-tabs">
-            <button
-              type="button"
-              class="queue-tab"
-              class:active={queueTab === 'queue'}
-              data-testid="dashboard-queue-tab-queue"
-              onclick={() => (queueTab = 'queue')}
-              aria-selected={queueTab === 'queue'}
-              role="tab"
-            >Active queue</button>
-            <button
-              type="button"
-              class="queue-tab"
-              class:active={queueTab === 'history'}
-              data-testid="dashboard-queue-tab-history"
-              onclick={() => (queueTab = 'history')}
-              aria-selected={queueTab === 'history'}
-              role="tab"
-            >Recent runs</button>
-          </div>
-          {#if queueTab === 'queue'}
-            <QueueControls
-              {isPrimary}
-              paused={queuePaused}
-              {pendingCount}
-              {hasInFlight}
-              {clearDoneDisabled}
-              {cleanDisabled}
-              queueLifecycle={queue.lifecycle ?? null}
-              {onResume}
-              {onPause}
-              {onClearDone}
-              {onClean}
-            />
-            <QueueListView
-              {orderedItems}
-              {isPrimary}
-              selectedTaskId={activityFeedSelection.taskId}
-              onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
-              testIdPrefix="dashboard-queue-item"
-            />
-          {:else if queueTab === 'history'}
-            <HistorySection
-              history={snapshot.history}
-              {isPrimary}
-              selectedTaskId={activityFeedSelection.taskId}
-              onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
-            />
-          {/if}
-        </section>
-      </div>
-    </div>
-
-    <div class="right-panel" data-testid="dashboard-right-panel">
-      <div class="glass-card phase-progression-card">
-        <PhaseProgression
-          phases={effectivePhases}
-          {activeFeature}
-          {activePipeline}
-          activeTaskId={effectiveTaskId}
-          activeRunId={snapshot.activeRunId ?? null}
-          {isPrimary}
-          {manualPauseAt}
-          {manualPauseCause}
-          {phaseOverrides}
-          phaseBreakpoints={snapshot.phaseBreakpoints ?? []}
-          resumeTargetPhaseId={snapshot.resumeTargetPhaseId ?? null}
-          delayedRetry={snapshot.delayedRetry}
-          selectedPhaseId={activityFeedSelection.phaseId}
-          onSelectPhase={(phaseId) => onActivityFeedPhaseSelect(phaseId)}
-        />
-      </div>
-
-      <section class="zone activity-audit glass-card activity-feed-card" data-testid="dashboard-activity-audit-feed">
-        <header class="zone-title">Activity Feed</header>
-        <PhaseLogFeed
-          {snapshot}
-          store={activityFeedStore}
-          onSelectQueue={onActivityFeedQueueSelect}
-          onSelectTask={(taskId) => onActivityFeedTaskSelect(taskId)}
-          onSelectPhase={onActivityFeedPhaseSelect}
-          onJumpToCurrent={onActivityFeedJumpToCurrent}
-        />
-      </section>
-    </div>
+    <DashboardActivityPane
+      {snapshot}
+      phases={effectivePhases}
+      activeTaskId={effectiveTaskId}
+      selectedPhaseId={activityFeedSelection.phaseId}
+      store={activityFeedStore}
+      onSelectQueue={onActivityFeedQueueSelect}
+      onSelectTask={onActivityFeedTaskSelect}
+      onSelectPhase={onActivityFeedPhaseSelect}
+      onJumpToCurrent={onActivityFeedJumpToCurrent}
+    />
   </div>
 </main>
 
@@ -455,45 +387,6 @@
     position: relative;
   }
 
-  .left-panel {
-    width: 420px;
-    min-width: 320px;
-    max-width: 50%;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                opacity 0.25s ease;
-  }
-  .left-collapsed .left-panel {
-    width: 0;
-    min-width: 0;
-    opacity: 0;
-    pointer-events: none;
-    overflow: hidden;
-  }
-
-  .left-panel-scroll {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-pad);
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .right-panel {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-pad);
-    overflow: hidden;
-    transition: flex 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
   .panel-toggle {
     position: absolute;
     left: 0;
@@ -527,64 +420,4 @@
     transform: rotate(180deg);
   }
 
-  .queue-management {
-    flex-shrink: 0;
-  }
-  .queue-list-section {
-    flex: 1 1 auto;
-    min-height: 60px;
-    overflow: hidden;
-  }
-  .queue-tabs {
-    display: flex;
-    gap: 0;
-    margin-bottom: var(--schegent-gap);
-    border-bottom: 1px solid var(--schegent-divider, var(--sch-glass-border));
-  }
-  .queue-tab {
-    flex: 1;
-    padding: 6px 12px;
-    font-size: 0.9em;
-    font-weight: 600;
-    color: var(--schegent-muted-fg);
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    transition: color 0.15s ease, border-color 0.15s ease;
-    text-align: center;
-  }
-  .queue-tab:hover {
-    color: var(--schegent-fg);
-  }
-  .queue-tab.active {
-    color: var(--schegent-fg);
-    border-bottom-color: var(--schegent-color-active);
-  }
-  .phase-progression-card {
-    flex-shrink: 0;
-  }
-  .activity-feed-card {
-    flex: 1 1 0;
-    min-height: 120px;
-    overflow: hidden;
-  }
-  .glass-card {
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    padding: 0;
-    box-shadow: none;
-    display: flex;
-    flex-direction: column;
-  }
-  .zone-title {
-    font-size: 0.9em;
-    font-weight: 600;
-    color: var(--schegent-muted-fg);
-    margin: 0 0 var(--schegent-gap) 0;
-    letter-spacing: 0.05em;
-  }
-
-  .activity-audit { min-height: 0; overflow: hidden; }
 </style>

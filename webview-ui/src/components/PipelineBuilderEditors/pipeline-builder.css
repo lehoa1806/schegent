@@ -1,0 +1,75 @@
+.pb { display: flex; flex-direction: column; flex: 1; min-height: 0; box-sizing: border-box; padding: 24px; gap: 16px; color: var(--schegent-fg); }
+.pb .header h2 { margin: 0 0 8px 0; background: var(--sch-accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.pb .header p { margin: 0 0 16px 0; color: var(--schegent-muted-fg); }
+.pb .builder-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--schegent-divider); padding-bottom: 8px; }
+.pb .tab-btn { background: transparent; border: none; color: var(--schegent-muted-fg); padding: 6px 16px; border-radius: var(--schegent-radius); cursor: pointer; font-weight: 500; }
+.pb .tab-btn.active { color: var(--schegent-fg); background: var(--vscode-list-activeSelectionBackground); }
+.pb .builder-canvas { flex: 1; overflow-y: hidden; display: flex; flex-direction: column; gap: 16px; }
+.pb .toolbar { display: flex; gap: 8px; }
+.pb .split-pane { display: flex; gap: 16px; flex: 1; overflow: hidden; }
+.pb .pane-left { width: 250px; border-right: 1px solid var(--schegent-divider); overflow-y: auto; padding-right: 8px; display: flex; flex-direction: column; }
+.pb .pane-right { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.pb .phase-list { display: flex; flex-direction: column; gap: 4px; }
+.pb .phase-list-item { text-align: left; background: transparent; border: 1px solid transparent; padding: 12px; border-radius: var(--schegent-radius); cursor: pointer; color: var(--schegent-fg); transition: background 0.1s ease; }
+.pb .phase-list-item:hover { background: var(--schegent-hover-bg); }
+.pb .phase-list-item.selected { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+.pb .phase-list-title { font-weight: 500; margin-bottom: 4px; }
+.pb .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
+.pb .phase-list-row { display: flex; align-items: center; gap: 4px; }
+.pb .phase-list-row .phase-list-item { flex: 1; }
+.pb .phase-list-actions { display: flex; flex-direction: column; gap: 2px; }
+.pb .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
+.pb .full-height { flex: 1; }
+.pb .editor-card { background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.pb .card-header-complex { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pb .header-actions { display: flex; gap: 8px; align-items: center; }
+.pb .title-input { font-size: 1.2em; font-weight: 600; background: transparent; border: none; border-bottom: 1px solid transparent; color: var(--schegent-fg); padding: 4px; flex: 1; min-width: 200px; }
+.pb .title-input:focus { outline: none; border-bottom-color: var(--vscode-focusBorder); }
+.pb .card-body { display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.pb .card-body label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; color: var(--schegent-muted-fg); }
+.pb .text-input, .pb .select-input { background: var(--schegent-input-bg); border: 1px solid var(--schegent-divider); color: var(--schegent-fg); padding: 8px; border-radius: 4px; font-family: inherit; font-size: 1em; }
+.pb .text-input:focus, .pb .select-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+.pb .text-area { background: var(--vscode-input-background); color: var(--schegent-fg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 6px 8px; font-family: inherit; width: 100%; box-sizing: border-box; resize: vertical; }
+.pb .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; background: var(--schegent-hover-bg); color: var(--schegent-fg); }
+.pb .btn:hover:not(:disabled) { background: var(--schegent-divider); }
+.pb .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pb .btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.pb .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
+.pb .btn-secondary { background: transparent; border: 1px solid var(--vscode-button-background); color: var(--vscode-button-background); }
+.pb .btn-secondary:hover { background: var(--vscode-list-hoverBackground); }
+.pb .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+.pb .btn-destructive:hover { background: var(--vscode-inputValidation-errorBackground); }
+.pb .btn-ghost { background: transparent; border: 1px solid var(--schegent-divider); color: var(--schegent-fg); }
+.pb .btn-ghost:hover { background: var(--schegent-hover-bg); }
+.pb .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pb .form-field { display: flex; flex-direction: column; gap: 4px; }
+.pb .form-field.full-width { grid-column: 1 / -1; }
+.pb .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
+.pb .precedence-badge { margin-left: 6px; padding: 1px 5px; border: 1px solid var(--schegent-divider); border-radius: 999px; color: var(--schegent-fg); font-size: 0.8em; font-weight: 500; }
+.pb .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
+.pb .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
+.pb .phases-sequence-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
+.pb .sequence-label { font-size: 0.9em; color: var(--schegent-muted-fg); }
+.pb .sequence-list { display: flex; flex-direction: column; gap: 8px; background: var(--schegent-list-bg); padding: 12px; border-radius: 8px; flex: 1; overflow-y: auto; }
+.pb .sequence-item { display: flex; align-items: center; gap: 8px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px; border-radius: 4px; position: relative; }
+.pb .sequence-item:hover .custom-tooltip { opacity: 1; visibility: visible; }
+.pb .custom-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--vscode-editorHoverWidget-background); border: 1px solid var(--vscode-editorHoverWidget-border); color: var(--vscode-editorHoverWidget-foreground); padding: 8px 12px; border-radius: 6px; font-size: 0.9em; width: 300px; z-index: 100; opacity: 0; visibility: hidden; pointer-events: none; box-shadow: 0 4px 6px transparent; white-space: pre-wrap; margin-bottom: 8px; }
+.pb .sequence-item:first-child .custom-tooltip { bottom: auto; top: 100%; margin-bottom: 0; margin-top: 8px; }
+.pb .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
+.pb .sequence-select { flex: 1; }
+.pb .sequence-actions { display: flex; gap: 4px; }
+.pb .icon-btn { background: transparent; border: 1px solid var(--schegent-divider); border-radius: 4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--schegent-fg); }
+.pb .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
+.pb .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+.pb .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
+.pb .flex-1 { flex: 1; }
+.pb .models-container { display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.pb .model-form { display: flex; gap: 8px; flex: 1; }
+.pb .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
+.pb .model-list-item { display: flex; align-items: center; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px 12px; border-radius: var(--schegent-radius); }
+.pb .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--vscode-errorForeground); font-size: 0.9em; }
+.pb .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
+.pb .save-error-text { flex: 1; word-break: break-word; }
+.pb .save-error-dismiss { background: transparent; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
+.pb .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }

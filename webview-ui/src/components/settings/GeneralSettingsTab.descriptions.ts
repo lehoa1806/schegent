@@ -51,9 +51,6 @@ export type GeneralSettingsControlId =
   | 'auditRotationMaxAgeDays'
   | 'auditRotationMaxAgeDays-save'
   | 'auditRotationMaxAgeDays-reset'
-  | 'rulesInjectPerPhase'
-  | 'rulesInjectPerPhase-save'
-  | 'rulesInjectPerPhase-reset'
   | 'defaultPipelineId'
   | 'defaultPipelineId-save'
   | 'defaultPipelineId-reset'
@@ -72,6 +69,7 @@ export type GeneralSettingsControlId =
   | 'sessionRetentionMaxBytes'
   | 'sessionRetentionMaxBytes-save'
   | 'sessionRetentionMaxBytes-reset'
+  | 'backend-ping'
   | 'save-all'
   | 'reset-all';
 
@@ -210,24 +208,6 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'unsaved changes on this field.'
   },
 
-  rulesInjectPerPhase: {
-    title: 'Inject rules per phase',
-    body:
-      'When on, every CLI invocation is prefixed with the contents of ' +
-      '`.claude/skills/<phase>/SKILL.md`. Turn off for thinner prompts; the ' +
-      'rules remain available via /speckit slash commands either way.'
-  },
-  'rulesInjectPerPhase-save': {
-    body:
-      'Save the rule-injection toggle. Disabled until the value differs ' +
-      'from the saved projection.'
-  },
-  'rulesInjectPerPhase-reset': {
-    body:
-      'Restore the projected rule-injection toggle. Disabled when there ' +
-      'are no unsaved changes on this field.'
-  },
-
   defaultPipelineId: {
     title: 'Default pipeline',
     body:
@@ -336,6 +316,13 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       'Restore the projected session-artifact byte budget. Disabled when ' +
       'there are no unsaved changes on this field.'
+  },
+
+  'backend-ping': {
+    title: 'Ping backend',
+    body:
+      'Run a bounded host-side CLI availability probe. The command carries ' +
+      'only the backend identity; configured paths and process output never reach the webview.'
   },
 
   'save-all': {

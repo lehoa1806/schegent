@@ -21,6 +21,7 @@
     readonly timeoutSeconds?: unknown;
     readonly loopable?: unknown;
     readonly retryCondition?: unknown;
+    readonly isRequired?: unknown;
     readonly runner?: unknown;
     readonly [k: string]: unknown;
   }
@@ -97,6 +98,13 @@
       typeof obj['retryCondition'] !== 'string'
     ) {
       return { ok: false, error: 'field `retryCondition` must be a string when present' };
+    }
+    if (
+      'isRequired' in obj &&
+      obj['isRequired'] !== undefined &&
+      typeof obj['isRequired'] !== 'boolean'
+    ) {
+      return { ok: false, error: 'field `isRequired` must be a boolean when present' };
     }
     if (
       'runner' in obj &&

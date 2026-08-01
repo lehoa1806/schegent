@@ -188,6 +188,10 @@
   .badge.result-ambiguities-remain {
     color: var(--schegent-color-warning);
   }
+  .badge.result-failed,
+  .badge.result-timed-out {
+    color: var(--schegent-color-error);
+  }
   .badge.missing-keys {
     color: var(--schegent-color-warning);
     border: 1px solid var(--schegent-color-warning);

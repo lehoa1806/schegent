@@ -4,7 +4,9 @@
   import { formatDuration } from '../lib/format-duration';
   import { nowFine } from '../lib/tick-store';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
-  import QueueItemActions from './QueueItemActions.svelte';
+  import QueueItemError from './QueueItemError.svelte';
+  import QueueItemFooter from './QueueItemFooter.svelte';
+  import QueueItemMeta from './QueueItemMeta.svelte';
   // Feature 030 (US2, T034) — reorder UX. Drag-and-drop + arrow buttons
   // route through the shared helper so the lint regression at
   // tests/lint/no-inline-reorder-ipc.test.ts keeps the build green.
@@ -305,92 +307,32 @@
   </div>
 
   {#if hasMetaChips}
-    <div class="row row-3 meta" data-testid="queue-item-meta-{item.id}">
-      {#if showCurrentPhase}
-        <span
-          class="chip phase-chip"
-          data-testid="queue-item-phase-{item.id}"
-        >{phaseChipLabel}</span>
-      {/if}
-      {#if showPausedReason}
-        <span
-          class="chip paused-chip"
-          data-testid="queue-item-pause-cause-{item.id}"
-          title={pauseCauseTitle}
-        >{pauseCauseLabel}</span>
-      {/if}
-      {#if showPausedBadge}
-        <span
-          class="chip paused-chip paused-badge"
-          data-testid="queue-item-pause-badge-{item.id}"
-          data-pause-source={item.paused?.pauseSource}
-          data-pause-cause-category={item.paused?.pauseCauseCategory ?? ''}
-        >{pausedBadgeLabel}</span>
-        {#if showResumeCountdown}
-          <span
-            class="chip restore-chip"
-            data-testid="queue-item-restore-time-{item.id}"
-            title="Queue auto-resumes when the quota window reopens"
-          >{resumeCountdownLabel}</span>
-        {/if}
-      {/if}
-      {#if showRetryBadge}
-        <span
-          class="badge retry-badge"
-          data-testid="queue-item-retry-{item.id}"
-        >retry: {item.retryCount}</span>
-      {/if}
-    </div>
+    <QueueItemMeta
+      {item}
+      {showCurrentPhase}
+      {showPausedReason}
+      {showPausedBadge}
+      {showResumeCountdown}
+      {showRetryBadge}
+      {phaseChipLabel}
+      {pauseCauseLabel}
+      {pauseCauseTitle}
+      {pausedBadgeLabel}
+      {resumeCountdownLabel}
+    />
   {/if}
 
-  <div class="row row-footer">
-    <div class="row-footer-left">
-      <span class="time" data-testid="{testIdPrefix}-enqueued-{item.id}">{enqueuedAtLabel}</span>
-    </div>
-    <div class="row-footer-right">
-      <span class="actions-slot">
-        {#if showReorderControls}
-          <button
-            type="button"
-            class="reorder-btn"
-            data-testid="queue-item-reorder-up-{item.id}"
-            title="Move up"
-            aria-label="Move task up"
-            onclick={onMoveUp}
-          >▲</button>
-          <button
-            type="button"
-            class="reorder-btn"
-            data-testid="queue-item-reorder-down-{item.id}"
-            title="Move down"
-            aria-label="Move task down"
-            onclick={onMoveDown}
-          >▼</button>
-        {/if}
-        <QueueItemActions {item} {isPrimary} />
-      </span>
-    </div>
-  </div>
+  <QueueItemFooter
+    {item}
+    {isPrimary}
+    {showReorderControls}
+    {enqueuedAtLabel}
+    {testIdPrefix}
+    {onMoveUp}
+    {onMoveDown}
+  />
 
-  {#if showLastError && item.lastErrorSummary}
-    <button
-      type="button"
-      class="error-toggle"
-      data-testid="queue-item-error-toggle-{item.id}"
-      aria-expanded={errorOpen ? 'true' : 'false'}
-      aria-controls="queue-item-error-{item.id}"
-      onclick={toggleError}
-    >{errorOpen ? 'Hide error' : 'Show last error'}</button>
-    {#if errorOpen}
-      <div
-        id="queue-item-error-{item.id}"
-        class="error-body"
-        data-testid="queue-item-error-{item.id}"
-        role="region"
-        aria-label="Last error for {item.label}"
-      >{item.lastErrorSummary}</div>
-    {/if}
-  {/if}
+  <QueueItemError {item} {showLastError} open={errorOpen} onToggle={toggleError} />
 </li>
 
 <style>
@@ -458,30 +400,6 @@
     gap: var(--schegent-gap);
     flex-shrink: 0;
   }
-  /* Feature 065 BUG-004 (FR-024) — the card's final row carries the
-     enqueued timestamp on the left and the action cluster (reorder
-     buttons + QueueItemActions) on the right. The footer wraps cleanly
-     at narrow viewport widths because the right side never shrinks
-     (flex-shrink: 0) and the left side is allowed to shrink/wrap. */
-  .row-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--schegent-gap);
-    flex-wrap: wrap;
-    padding-left: 4px;
-  }
-  .row-footer-left {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    flex-shrink: 1;
-  }
-  .row-footer-right {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-  }
   .id {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.85em;
@@ -489,11 +407,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .time {
-    font-size: 0.85em;
-    color: var(--schegent-muted-fg);
-    white-space: nowrap;
   }
   .row-2 {
     display: flex;
@@ -513,15 +426,6 @@
     line-height: 1.4;
     min-width: 0;
     flex: 1 1 auto;
-  }
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    align-items: center;
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
-    padding-left: 4px;
   }
   .pill {
     border: 1px solid var(--schegent-border);
@@ -546,82 +450,8 @@
   .status-canceled .pill {
     color: var(--schegent-muted-fg);
   }
-  .chip {
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    padding: 0 6px;
-    background: transparent;
-  }
-  .phase-chip {
-    color: var(--schegent-color-active);
-    border-color: currentColor;
-  }
-  .paused-chip {
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-  }
-  .paused-badge[data-pause-source='system-paused'] {
-    color: var(--schegent-color-error);
-    border-color: currentColor;
-    font-style: normal;
-  }
-  .restore-chip {
-    color: var(--schegent-color-active);
-    border-color: currentColor;
-    font-style: normal;
-  }
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    border-radius: var(--schegent-radius);
-    padding: 0 6px;
-    background: transparent;
-    border: 1px solid var(--schegent-border);
-  }
-  .retry-badge {
-    color: var(--schegent-color-error);
-    border-color: currentColor;
-  }
   .time-updated {
     opacity: 0.85;
-  }
-  .error-toggle {
-    align-self: flex-start;
-    background: transparent;
-    color: var(--schegent-muted-fg);
-    border: 1px dashed var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    padding: 0 6px;
-    font: inherit;
-    font-size: 0.85em;
-    cursor: pointer;
-    margin-left: 4px;
-  }
-  .error-toggle:hover {
-    color: var(--schegent-fg);
-  }
-  .error-body {
-    padding: 4px 6px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    color: var(--schegent-color-error);
-    background: transparent;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin-left: 4px;
-  }
-  /* Feature 065 BUG-005 hypothesis B (FR-025) — the action cluster
-     guarantees non-zero width at every operator viewport size. The
-     enclosing flex container (.row-footer-right) is already non-
-     shrinking; .actions-slot mirrors that so the cluster can never
-     collapse even if a future layout change wraps it deeper. */
-  .actions-slot {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
   }
   /* Feature 065 BUG-005 (FR-025) — the drag handle is a recognizable
      grabber-icon button (was previously rendered as the punctuation
@@ -656,29 +486,5 @@
   }
   .item[draggable='true']:active .drag-handle {
     cursor: grabbing;
-  }
-  .reorder-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    background: transparent;
-    color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    font: inherit;
-    line-height: 1;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .reorder-btn:hover {
-    color: var(--schegent-fg);
-    background: var(--schegent-list-hover);
-  }
-  .reorder-btn:focus-visible {
-    outline: 2px solid var(--schegent-color-active);
-    outline-offset: 1px;
   }
 </style>

@@ -30,7 +30,6 @@ export interface GeneralSettingsPayload {
   readonly 'watchdog.pollIntervalMinutes'?: number;
   readonly 'audit.rotation.sizeMB'?: number;
   readonly 'audit.rotation.maxAgeDays'?: number;
-  readonly 'rules.injectPerPhase'?: boolean;
   readonly 'defaultPipelineId'?: string;
   readonly 'fatalSignatures'?: readonly string[];
   readonly 'claude.autoCompactPctOverride'?: number | null;

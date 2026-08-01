@@ -1,7 +1,6 @@
 <script lang="ts">
   import type {
     WorkflowSnapshot,
-    PipelineDefinition,
     PhaseDefinition
   } from '../lib/snapshot-types';
   import { savePhases as savePhasesHelper, type SavePhaseRow } from '../lib/save-phases';
@@ -10,23 +9,16 @@
     type SavePipelineRow
   } from '../lib/save-pipelines';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
-  import RetryConditionEditor from './settings/RetryConditionEditor.svelte';
-  import RawJsonPhaseEditor from './settings/RawJsonPhaseEditor.svelte';
+  import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
+  import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
+  import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
+  import type {
+    MutablePhase,
+    MutablePipeline,
+    PhaseEditState
+  } from './PipelineBuilderEditors/types';
   import TrustBanner from './TrustBanner.svelte';
-
-  const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-  const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
-  const GIT_METADATA_WRITE_PHASE_IDS = new Set([
-    'speckit-specify',
-    'specify-brainstorm',
-    'superpowers-implement',
-    'finalize',
-    'superpowers-review-close'
-  ]);
-
-  function runnerOptionDisabled(phaseId: string, runner: string): boolean {
-    return GIT_METADATA_WRITE_PHASE_IDS.has(phaseId) && (runner === '' || runner === 'codex');
-  }
+  import './PipelineBuilderEditors/pipeline-builder.css';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -74,15 +66,6 @@
   // svelte-ignore state_referenced_locally
   let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
 
-  type MutablePipeline = Omit<PipelineDefinition, 'phases'> & { phases: string[] };
-  type MutablePhase = {
-    id: string; name: string; instruction: string;
-    model?: string; effort?: PhaseDefinition['effort'];
-    timeoutSeconds?: number; loopable?: boolean; retryCondition?: string;
-    runner?: PhaseDefinition['runner'];
-    [k: string]: unknown;
-  };
-
   let pipelines = $state<MutablePipeline[]>([]);
   let phases = $state<MutablePhase[]>([]);
   let models = $state<string[]>([]);
@@ -128,6 +111,7 @@
         timeoutSeconds?: number;
         loopable?: boolean;
         retryCondition?: string;
+        isRequired?: boolean;
         runner?: string;
       } = {
         id: p.id,
@@ -139,6 +123,7 @@
       if (typeof p.timeoutSeconds === 'number') row.timeoutSeconds = p.timeoutSeconds;
       if (typeof p.loopable === 'boolean') row.loopable = p.loopable;
       if (typeof p.retryCondition === 'string') row.retryCondition = p.retryCondition;
+      if (typeof p.isRequired === 'boolean') row.isRequired = p.isRequired;
       if (p.runner) row.runner = p.runner;
       return row;
     });
@@ -150,17 +135,6 @@
   function saveModels(): void {
     void saveModelsHelper([...models]);
   }
-
-  function phasePrecedenceLabel(phase: PhaseDefinition): string | null {
-    if (!phase.runner) return null;
-    const layer = snapshot.phasePrecedence?.[`${phase.id}::runner`];
-    if (!layer || layer === 'unset') return null;
-    if (layer === 'built-in') return 'Built-in';
-    if (layer === 'workspace') return 'Workspace';
-    return 'User';
-  }
-
-
 
   function getPhaseTooltip(phaseId: string): string {
     const phase = snapshot.availablePhases?.find(p => p.id === phaseId) || phases.find(p => p.id === phaseId);
@@ -204,6 +178,28 @@
     const original = snapshot.availablePipelines?.find(p => p.id === pipelines[index].id);
     if (original) pipelines[index] = JSON.parse(JSON.stringify(original));
   }
+  function updatePipeline(
+    index: number,
+    patch: Partial<Pick<MutablePipeline, 'id' | 'name'>>
+  ): void {
+    pipelines = pipelines.map((pipeline, i) =>
+      i === index ? { ...pipeline, ...patch } : pipeline
+    );
+  }
+  function updatePipelinePhase(
+    pipelineIndex: number,
+    phaseIndex: number,
+    phaseId: string
+  ): void {
+    pipelines = pipelines.map((pipeline, i) =>
+      i === pipelineIndex
+        ? {
+            ...pipeline,
+            phases: pipeline.phases.map((id, j) => j === phaseIndex ? phaseId : id)
+          }
+        : pipeline
+    );
+  }
 
   let newPhaseIdForPipeline = $state('');
   function addPhaseToPipeline(): void {
@@ -234,9 +230,8 @@
   let phaseHistoryIndex = $state(-1);
   let isPhaseUndoRedoAction = false;
 
-  type EditState = { rawJsonMode: boolean };
-  let editStateById = $state<Record<string, EditState>>({});
-  function ensureEditState(id: string): EditState {
+  let editStateById = $state<Record<string, PhaseEditState>>({});
+  function ensureEditState(id: string): PhaseEditState {
     if (!editStateById[id]) editStateById = { ...editStateById, [id]: { rawJsonMode: false } };
     return editStateById[id];
   }
@@ -300,6 +295,9 @@
     const original = snapshot.availablePhases?.find(p => p.id === phases[index].id);
     if (original) phases[index] = JSON.parse(JSON.stringify(original));
   }
+  function updatePhase(index: number, patch: Partial<MutablePhase>): void {
+    phases = phases.map((phase, i) => i === index ? { ...phase, ...patch } : phase);
+  }
   function onRawJsonSave(index: number, parsed: Record<string, unknown>): void {
     phases = phases.map((p, i) => (i === index ? { ...p, ...parsed } as MutablePhase : p));
   }
@@ -322,9 +320,6 @@
     }
   }
 
-  const selectedPhase = $derived(selectedPhaseIndex !== null ? phases[selectedPhaseIndex] : null);
-  const selectedEditState = $derived(selectedPhase ? editStateById[selectedPhase.id] ?? { rawJsonMode: false } : null);
-
   // --- Models ---
   let newModelInput = $state('');
   function addModel(): void {
@@ -334,9 +329,12 @@
     }
   }
   function removeModel(index: number): void { models = models.filter((_, i) => i !== index); }
+  function updateModel(index: number, value: string): void {
+    models[index] = value;
+  }
 </script>
 
-<div class="pipeline-builder" data-testid="pipeline-builder-root">
+<div class="pb" data-testid="pipeline-builder-root">
   <div class="header">
     <h2>Builder</h2>
     <p>Configure custom phases, pipelines, and models.</p>
@@ -352,336 +350,74 @@
       <TrustBanner variant="workspace-trust" />
     {/if}
     {#if activeTab === 'pipelines'}
-      {#if showPipelinesBanner}
-        <TrustBanner variant="pipelines" />
-      {/if}
-      <div class="toolbar">
-        <button class="btn btn-primary" onclick={addPipeline} disabled={!trustPipelineOverrides}>Add Pipeline</button>
-        <button class="btn" disabled={pipelineHistoryIndex <= 0} onclick={undoPipeline}>Undo</button>
-        <button class="btn" disabled={pipelineHistoryIndex >= pipelineHistory.length - 1} onclick={redoPipeline}>Redo</button>
-        <button class="btn btn-secondary" style="margin-left:auto" onclick={savePipelines} disabled={!trustPipelineOverrides}>Save Pipelines</button>
-      </div>
-      {#if saveError}
-        <div class="save-error-banner" data-testid="save-error-banner" role="alert">
-          <span class="save-error-icon">⚠</span>
-          <span class="save-error-text">Save rejected: {saveError}</span>
-          <button class="save-error-dismiss" onclick={() => saveError = null}>✕</button>
-        </div>
-      {/if}
-      <div class="split-pane">
-        <div class="pane-left">
-          <div class="phase-list">
-            {#each pipelines as pipeline, i (pipeline.id + '-' + i)}
-              <button class="phase-list-item {selectedPipelineIndex === i ? 'selected' : ''}" onclick={() => selectedPipelineIndex = i}>
-                <div class="phase-list-title">{pipeline.name || 'Untitled Pipeline'}</div>
-                <div class="phase-list-id">{pipeline.id}</div>
-              </button>
-            {/each}
-          </div>
-        </div>
-        <div class="pane-right">
-          {#if selectedPipelineIndex !== null && pipelines[selectedPipelineIndex]}
-            {@const pipeline = pipelines[selectedPipelineIndex]}
-            <div class="editor-card full-height">
-              <div class="card-header-complex">
-                <input class="title-input" bind:value={pipeline.name} placeholder="Pipeline Name" />
-                <div class="header-actions">
-                  <button class="btn btn-ghost" onclick={() => selectedPipelineIndex = null}>Cancel</button>
-                  <button class="btn btn-ghost" onclick={() => resetPipeline(selectedPipelineIndex!)}>Reset to default</button>
-                  <button class="btn btn-secondary" onclick={savePipelines}>Save Pipeline</button>
-                  <button class="btn btn-destructive" onclick={() => removePipeline(selectedPipelineIndex!)}>Delete Pipeline</button>
-                </div>
-              </div>
-              <div class="card-body">
-                <div class="form-grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 8px;">
-                  <label class="form-field">
-                    <span class="form-label">Name</span>
-                    <input class="text-input" data-testid="pipelines-name-field-{pipeline.id}" bind:value={pipelines[selectedPipelineIndex].name} placeholder="Pipeline display name" />
-                  </label>
-                  <label class="form-field">
-                    <span class="form-label">ID</span>
-                    <input class="text-input" bind:value={pipelines[selectedPipelineIndex].id} placeholder="pipeline-id" />
-                  </label>
-                </div>
-                <div class="phases-sequence-editor">
-                  <div class="sequence-label">Phases Sequence:</div>
-                  <div class="sequence-list">
-                    {#if pipeline.phases.length === 0}
-                      <div class="empty-selection">No phases in this pipeline. Add one below.</div>
-                    {/if}
-                    {#each pipeline.phases as p, pIdx}
-                      <div class="sequence-item">
-                        <div class="custom-tooltip">{getPhaseTooltip(p)}</div>
-                        <div class="sequence-number">{pIdx + 1}</div>
-                        <select class="select-input sequence-select" bind:value={pipeline.phases[pIdx]}>
-                          {#each phases as availPhase}
-                            <option value={availPhase.id}>{availPhase.name} ({availPhase.id})</option>
-                          {/each}
-                          {#if !phases.find((ap) => ap.id === p)}
-                            <option value={p}>{p} (Unknown)</option>
-                          {/if}
-                        </select>
-                        <div class="sequence-actions">
-                          <button class="icon-btn" disabled={pIdx === 0} onclick={() => movePhaseUp(pIdx)}>↑</button>
-                          <button class="icon-btn" disabled={pIdx === pipeline.phases.length - 1} onclick={() => movePhaseDown(pIdx)}>↓</button>
-                          <button class="icon-btn destructive-icon" onclick={() => removePhaseFromPipeline(pIdx)}>✕</button>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                  <div class="add-phase-row">
-                    <select class="select-input flex-1" bind:value={newPhaseIdForPipeline}>
-                      <option value="">-- Select a phase to add --</option>
-                      {#each phases as availPhase}
-                        <option value={availPhase.id}>{availPhase.name} ({availPhase.id})</option>
-                      {/each}
-                    </select>
-                    <button class="btn btn-primary" disabled={!newPhaseIdForPipeline} onclick={addPhaseToPipeline}>Add Phase</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          {:else}
-            <div class="empty-selection">Select a pipeline to edit or add a new one.</div>
-          {/if}
-        </div>
-      </div>
+      <PipelineCatalogEditor
+        {pipelines}
+        {phases}
+        selectedIndex={selectedPipelineIndex}
+        historyIndex={pipelineHistoryIndex}
+        historyLength={pipelineHistory.length}
+        newPhaseId={newPhaseIdForPipeline}
+        trusted={trustPipelineOverrides}
+        showTrustBanner={showPipelinesBanner}
+        {saveError}
+        {getPhaseTooltip}
+        onselect={(index) => selectedPipelineIndex = index}
+        onadd={addPipeline}
+        onremove={removePipeline}
+        onreset={resetPipeline}
+        onpipelinechange={updatePipeline}
+        onphasechange={updatePipelinePhase}
+        onundo={undoPipeline}
+        onredo={redoPipeline}
+        onsave={savePipelines}
+        ondismisssaveerror={() => saveError = null}
+        onnewphaseidchange={(value) => newPhaseIdForPipeline = value}
+        onaddphase={addPhaseToPipeline}
+        onremovephase={removePhaseFromPipeline}
+        onmovephaseup={movePhaseUp}
+        onmovephasedown={movePhaseDown}
+      />
 
     {:else if activeTab === 'phases'}
-      {#if showPhasesBanner}
-        <TrustBanner variant="phases" />
-      {/if}
-      {#if showRetryConditionsBanner}
-        <TrustBanner variant="retry-conditions" />
-      {/if}
-      <div class="toolbar">
-        <button class="btn btn-primary" data-testid="phases-add" onclick={addPhase} disabled={!trustPhases}>Add Phase</button>
-        <button class="btn" disabled={phaseHistoryIndex <= 0} onclick={undoPhase}>Undo</button>
-        <button class="btn" disabled={phaseHistoryIndex >= phaseHistory.length - 1} onclick={redoPhase}>Redo</button>
-        <button class="btn btn-secondary" data-testid="phases-save-all" style="margin-left:auto" onclick={savePhases} disabled={!trustPhases}>Save Phases</button>
-      </div>
-      {#if saveError}
-        <div class="save-error-banner" data-testid="save-error-banner" role="alert">
-          <span class="save-error-icon">⚠</span>
-          <span class="save-error-text">Save rejected: {saveError}</span>
-          <button class="save-error-dismiss" onclick={() => saveError = null}>✕</button>
-        </div>
-      {/if}
-      <div class="split-pane">
-        <div class="pane-left">
-          <div class="phase-list">
-            {#each phases as phase, i (phase.id + '-' + i)}
-              <div class="phase-list-row">
-                <button class="phase-list-item {selectedPhaseIndex === i ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" onclick={() => selectedPhaseIndex = i}>
-                  <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
-                  <div class="phase-list-id">{phase.id}</div>
-                </button>
-                <div class="phase-list-actions">
-                  <button class="icon-btn" data-testid="phases-move-up-{phase.id}" disabled={i === 0} onclick={() => movePhaseListUp(i)}>↑</button>
-                  <button class="icon-btn" data-testid="phases-move-down-{phase.id}" disabled={i === phases.length - 1} onclick={() => movePhaseListDown(i)}>↓</button>
-                </div>
-              </div>
-            {/each}
-          </div>
-        </div>
-        <div class="pane-right">
-          {#if selectedPhase && selectedPhaseIndex !== null && selectedEditState}
-            {@const phaseRef = selectedPhase}
-            {@const idx = selectedPhaseIndex}
-            <div class="editor-card full-height" data-testid="phases-editor-{phaseRef.id}">
-              <div class="card-header-complex">
-                <input class="title-input" data-testid="phases-name-{phaseRef.id}" bind:value={phases[idx].name} placeholder="Phase Name" />
-                <div class="header-actions">
-                  <button class="btn btn-ghost" data-testid="phases-raw-json-toggle" onclick={() => toggleRawJson(phaseRef.id)}>
-                    {selectedEditState.rawJsonMode ? 'Form view' : 'Edit as Raw JSON'}
-                  </button>
-                  <button class="btn btn-ghost" onclick={() => selectedPhaseIndex = null}>Cancel</button>
-                  <button class="btn btn-ghost" onclick={() => resetPhase(selectedPhaseIndex!)}>Reset to Default</button>
-                  <button class="btn btn-secondary" onclick={savePhases}>Save Phase</button>
-                  <button class="btn btn-destructive" data-testid="phases-remove" onclick={() => removePhase(selectedPhaseIndex!)}>Delete Phase</button>
-                </div>
-              </div>
-
-              {#if selectedEditState.rawJsonMode}
-                <RawJsonPhaseEditor
-                  phase={phaseRef as unknown as Record<string, unknown>}
-                  onsave={(parsed) => onRawJsonSave(idx, parsed as Record<string, unknown>)}
-                />
-              {:else}
-                <div class="form-grid">
-                  <label class="form-field">
-                    <span class="form-label">Name</span>
-                    <input class="text-input" data-testid="phases-name-field-{phaseRef.id}" bind:value={phases[idx].name} placeholder="Phase display name" />
-                  </label>
-                  <label class="form-field">
-                    <span class="form-label">ID</span>
-                    <input class="text-input" bind:value={phases[idx].id} placeholder="phase-id" />
-                  </label>
-                  <label class="form-field full-width">
-                    <span class="form-label">Instruction</span>
-                    <textarea class="text-area" rows="6" bind:value={phases[idx].instruction} placeholder="Phase instructions..."></textarea>
-                  </label>
-                  <label class="form-field" style="flex: 1">
-                    <span class="form-label">
-                      Model
-                    </span>
-                    <select class="select-input" data-testid="phases-model-{phaseRef.id}" value={phases[idx].model ?? ''} onchange={(e) => { phases[idx].model = (e.currentTarget as HTMLSelectElement).value || undefined; }}>
-                      <option value="">[Inherit / Default Backend Model]</option>
-                      {#each snapshot.availableModels[phases[idx].runner || snapshot.defaultRunnerKind || 'claude'] || [] as model}
-                        <option value={model}>{model}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <label class="form-field" style="flex: 1">
-                    <span class="form-label">
-                      Effort
-                    </span>
-                    <select class="select-input" data-testid="phases-effort-{phaseRef.id}" value={phases[idx].effort ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].effort = v ? (v as PhaseDefinition['effort']) : undefined; }}>
-                      <option value="">[Inherit]</option>
-                      {#each EFFORT_LEVELS as lvl}
-                        <option value={lvl}>{lvl}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <label class="form-field" style="flex: 1">
-                    <span class="form-label">
-                      Runner
-                      {#if phasePrecedenceLabel(phaseRef)}
-                        <span
-                          class="precedence-badge"
-                          data-testid="phases-runner-precedence-{phaseRef.id}"
-                        >{phasePrecedenceLabel(phaseRef)}</span>
-                      {/if}
-                    </span>
-                    <select class="select-input" data-testid="phases-runner-{phaseRef.id}" value={phases[idx].runner ?? ''} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; phases[idx].runner = v ? (v as PhaseDefinition['runner']) : undefined; }}>
-                      <option value="" disabled={runnerOptionDisabled(phaseRef.id, '')}>[Inherit / Default]</option>
-                      {#each RUNNER_KINDS as runner}
-                        <option value={runner} disabled={runnerOptionDisabled(phaseRef.id, runner)}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <label class="form-field checkbox-field">
-                    <input type="checkbox" data-testid="phases-retry-toggle" checked={isRetryEnabled(phaseRef)} onchange={() => toggleRetryCondition(idx)} disabled={!trustRetryConditions} />
-                    <span class="form-label">Retry Condition</span>
-                  </label>
-                  {#if isRetryEnabled(phaseRef)}
-                    <div class="form-field full-width retry-condition-row">
-                      <RetryConditionEditor
-                        source={phaseRef.retryCondition ?? ''}
-                        instruction={phaseRef.instruction}
-                        onchange={(e) => onRetryConditionChange(idx, e)}
-                        readonly={!trustRetryConditions}
-                      />
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {:else}
-            <div class="empty-selection">Select a phase to edit or add a new one.</div>
-          {/if}
-        </div>
-      </div>
+      <PhaseCatalogEditor
+        {snapshot}
+        {phases}
+        {editStateById}
+        selectedIndex={selectedPhaseIndex}
+        historyIndex={phaseHistoryIndex}
+        historyLength={phaseHistory.length}
+        trusted={trustPhases}
+        retryConditionsTrusted={trustRetryConditions}
+        showTrustBanner={showPhasesBanner}
+        showRetryTrustBanner={showRetryConditionsBanner}
+        {saveError}
+        onselect={(index) => selectedPhaseIndex = index}
+        onadd={addPhase}
+        onremove={removePhase}
+        onreset={resetPhase}
+        onphasechange={updatePhase}
+        onmoveup={movePhaseListUp}
+        onmovedown={movePhaseListDown}
+        onundo={undoPhase}
+        onredo={redoPhase}
+        onsave={savePhases}
+        ondismisssaveerror={() => saveError = null}
+        ontoggleraw={toggleRawJson}
+        onrawsave={onRawJsonSave}
+        ontoggleretry={toggleRetryCondition}
+        onretrychange={onRetryConditionChange}
+      />
 
     {:else if activeTab === 'models'}
-      <div class="models-container">
-        <div class="toolbar" style="margin-bottom: 16px;">
-          <form class="model-form" onsubmit={(e) => { e.preventDefault(); addModel(); }}>
-            <input class="text-input flex-1" bind:value={newModelInput} placeholder="e.g. claude-3-7-sonnet-20250219 or sonnet" />
-            <button class="btn btn-primary" type="submit">Add Model</button>
-          </form>
-          <button class="btn btn-secondary" style="margin-left:auto" onclick={saveModels}>Save Models</button>
-        </div>
-        <div class="models-list">
-          {#if models.length === 0}
-            <div class="empty-selection">No models defined.</div>
-          {/if}
-          {#each models as model, i (model + '-' + i)}
-            <div class="model-list-item">
-              <input class="text-input flex-1" bind:value={models[i]} />
-              <button class="btn btn-destructive" style="margin-left: 12px;" onclick={() => removeModel(i)}>Remove</button>
-            </div>
-          {/each}
-        </div>
-      </div>
+      <ModelCatalogEditor
+        {models}
+        {newModelInput}
+        onnewmodelinput={(value) => newModelInput = value}
+        onmodelchange={updateModel}
+        onadd={addModel}
+        onremove={removeModel}
+        onsave={saveModels}
+      />
     {/if}
   </div>
 </div>
-
-<style>
-  .pipeline-builder { display: flex; flex-direction: column; flex: 1; min-height: 0; box-sizing: border-box; padding: 24px; gap: 16px; color: var(--schegent-fg); }
-  .header h2 { margin: 0 0 8px 0; background: var(--sch-accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-  .header p { margin: 0 0 16px 0; color: var(--schegent-muted-fg); }
-  .builder-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--schegent-divider); padding-bottom: 8px; }
-  .tab-btn { background: transparent; border: none; color: var(--schegent-muted-fg); padding: 6px 16px; border-radius: var(--schegent-radius); cursor: pointer; font-weight: 500; }
-  .tab-btn.active { color: var(--schegent-fg); background: var(--vscode-list-activeSelectionBackground); }
-  .builder-canvas { flex: 1; overflow-y: hidden; display: flex; flex-direction: column; gap: 16px; }
-  .toolbar { display: flex; gap: 8px; }
-  .split-pane { display: flex; gap: 16px; flex: 1; overflow: hidden; }
-  .pane-left { width: 250px; border-right: 1px solid var(--schegent-divider); overflow-y: auto; padding-right: 8px; display: flex; flex-direction: column; }
-  .pane-right { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
-  .phase-list { display: flex; flex-direction: column; gap: 4px; }
-  .phase-list-item { text-align: left; background: transparent; border: 1px solid transparent; padding: 12px; border-radius: var(--schegent-radius); cursor: pointer; color: var(--schegent-fg); transition: background 0.1s ease; }
-  .phase-list-item:hover { background: var(--schegent-hover-bg); }
-  .phase-list-item.selected { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
-  .phase-list-title { font-weight: 500; margin-bottom: 4px; }
-  .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
-  .phase-list-row { display: flex; align-items: center; gap: 4px; }
-  .phase-list-row .phase-list-item { flex: 1; }
-  .phase-list-actions { display: flex; flex-direction: column; gap: 2px; }
-  .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }
-  .full-height { flex: 1; }
-  .editor-card { background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-  .card-header-complex { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-  .header-actions { display: flex; gap: 8px; align-items: center; }
-  .title-input { font-size: 1.2em; font-weight: 600; background: transparent; border: none; border-bottom: 1px solid transparent; color: var(--schegent-fg); padding: 4px; flex: 1; min-width: 200px; }
-  .title-input:focus { outline: none; border-bottom-color: var(--vscode-focusBorder); }
-  .card-body { display: flex; flex-direction: column; gap: 12px; flex: 1; }
-  .card-body label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; color: var(--schegent-muted-fg); }
-  .text-input, .select-input { background: var(--schegent-input-bg); border: 1px solid var(--schegent-divider); color: var(--schegent-fg); padding: 8px; border-radius: 4px; font-family: inherit; font-size: 1em; }
-  .text-input:focus, .select-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-  .text-area { background: var(--vscode-input-background); color: var(--schegent-fg); border: 1px solid var(--sch-glass-border); border-radius: var(--schegent-radius); padding: 6px 8px; font-family: inherit; width: 100%; box-sizing: border-box; resize: vertical; }
-  .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; background: var(--schegent-hover-bg); color: var(--schegent-fg); }
-  .btn:hover:not(:disabled) { background: var(--schegent-divider); }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-  .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
-  .btn-secondary { background: transparent; border: 1px solid var(--vscode-button-background); color: var(--vscode-button-background); }
-  .btn-secondary:hover { background: var(--vscode-list-hoverBackground); }
-  .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
-  .btn-destructive:hover { background: var(--vscode-inputValidation-errorBackground); }
-  .btn-ghost { background: transparent; border: 1px solid var(--schegent-divider); color: var(--schegent-fg); }
-  .btn-ghost:hover { background: var(--schegent-hover-bg); }
-  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .form-field { display: flex; flex-direction: column; gap: 4px; }
-  .form-field.full-width { grid-column: 1 / -1; }
-  .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
-  .precedence-badge { margin-left: 6px; padding: 1px 5px; border: 1px solid var(--schegent-divider); border-radius: 999px; color: var(--schegent-fg); font-size: 0.8em; font-weight: 500; }
-  .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
-  .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
-  .phases-sequence-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
-  .sequence-label { font-size: 0.9em; color: var(--schegent-muted-fg); }
-  .sequence-list { display: flex; flex-direction: column; gap: 8px; background: var(--schegent-list-bg); padding: 12px; border-radius: 8px; flex: 1; overflow-y: auto; }
-  .sequence-item { display: flex; align-items: center; gap: 8px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px; border-radius: 4px; position: relative; }
-  .sequence-item:hover .custom-tooltip { opacity: 1; visibility: visible; }
-  .custom-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--vscode-editorHoverWidget-background); border: 1px solid var(--vscode-editorHoverWidget-border); color: var(--vscode-editorHoverWidget-foreground); padding: 8px 12px; border-radius: 6px; font-size: 0.9em; width: 300px; z-index: 100; opacity: 0; visibility: hidden; pointer-events: none; box-shadow: 0 4px 6px transparent; white-space: pre-wrap; margin-bottom: 8px; }
-  .sequence-item:first-child .custom-tooltip { bottom: auto; top: 100%; margin-bottom: 0; margin-top: 8px; }
-  .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
-  .sequence-select { flex: 1; }
-  .sequence-actions { display: flex; gap: 4px; }
-  .icon-btn { background: transparent; border: 1px solid var(--schegent-divider); border-radius: 4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--schegent-fg); }
-  .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
-  .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
-  .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
-  .flex-1 { flex: 1; }
-  .models-container { display: flex; flex-direction: column; gap: 12px; flex: 1; }
-  .model-form { display: flex; gap: 8px; flex: 1; }
-  .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
-  .model-list-item { display: flex; align-items: center; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px 12px; border-radius: var(--schegent-radius); }
-  .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--vscode-errorForeground); font-size: 0.9em; }
-  .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
-  .save-error-text { flex: 1; word-break: break-word; }
-  .save-error-dismiss { background: transparent; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
-  .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }
-</style>
