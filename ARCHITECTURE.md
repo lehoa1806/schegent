@@ -103,19 +103,24 @@ webview-ui/
 
 | Module | Owned responsibility | Must not own |
 |---|---|---|
-| `src/activation/backend-wiring.ts` | Stage-1 runtime/evidence sink composition and the names-only unrestricted-environment warning | Workflow transitions, IPC, or backend invocation |
+| `src/activation/backend-wiring.ts` | Runtime/evidence sinks plus workspace-scoped backend capability/Ping composition | Workflow transitions, IPC routing, or backend invocation |
 | `src/activation/ui-wiring.ts` | Stage-2 dashboard bridge plus VS Code operator-command registration/disposal | Workflow mutation policy, persistence, or IPC validation |
 | `src/controller/phase-control-service.ts` | Operator pause/resume/restart/skip/enable/disable/remove and breakpoint mutation policy | Activation wiring, queue ownership, or audit serialization |
 | `src/controller/workflow-lifecycle-auditor.ts` | Workflow/phase audit taxonomy, envelope construction, and best-effort append handling | Workflow state mutation, dispatch, or UI projection |
 | `src/services/evidence-health/` | Workspace-scoped sink health, bounded causes, and continuation policies | Raw exception text, filesystem paths, or UI rendering |
 | `src/services/session-retention/` | Age/byte pruning for inactive `.schegent/sessions` run groups | Structured audit retention or active-run deletion |
 | `src/services/session-dispatch-policy.ts` | Pure backend-session ownership and continuation/reuse dispatch policy | Persisting session IDs or composing backend argv |
+| `src/services/backend-capability-service.ts` | Bounded host-only CLI availability/model discovery and newest-generation snapshot publication | Constructing invocation runners, persisting capability state, or backend failover policy |
+| `src/services/backend-ping-service.ts` | Memory-only single-flight operator Ping state and paths-free audit evidence | Resolving webview-supplied paths, exposing process output, or persisting health state |
 | `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
 | `src/contracts/validators/` | Shared IPC validation primitives plus phase-log, wake-up, and metrics domain validators | Command dispatch coverage or downstream business invariants |
 | `src/contracts/sidebar-ipc/` | Focused phase-log, wake-up, metrics, trust, and host-message IPC type families | Command literals, runtime guards, or routing behavior |
 | `src/ui/sidebar/activity-timing.ts` | Pure elapsed-time and live-activity calculations | Store subscriptions, audit hydration, or snapshot publication |
 | `src/ui/sidebar/audit-tail-state.ts` | Bounded live audit cache, cold-start dedupe/merge, seeding, and snapshot copies | Store subscriptions, workflow timing, or UI publication |
-| `src/ui/sidebar/state-projector.ts` | Snapshot orchestration and projection lifecycle | Sink I/O or elapsed-time algorithms |
+| `src/ui/sidebar/state-projector.ts` | Public lifecycle/subscription/telemetry-sanitization facade | Domain projection algorithms or mutable timing state |
+| `src/ui/sidebar/state-projector-runtime.ts` | Subscription ordering, debounce/tick lifecycle, audit hydration, and disposal | Snapshot field composition |
+| `src/ui/sidebar/projector-bookkeeping.ts` | Elapsed-time, activity, transition, and per-phase ephemeral bookkeeping | Store or audit I/O |
+| `src/ui/sidebar/snapshot-composer.ts` | Immutable WorkflowSnapshot composition from focused projectors | Subscriptions, subprocesses, or persistence |
 
 `src/host-services/` makes VS Code-owned platform behavior explicit before a
 Rust desktop host exists. Its `types.ts` contract is `vscode`-free and covers
@@ -236,6 +241,24 @@ constructs and caches a concrete `BackendRunner` per kind through
 `PhaseRunner` resolves the effective kind once per invocation from the phase
 override and global default, and `RunDriver` clears backend-owned session
 state before a runner transition.
+
+[backend-capability-service.ts](src/services/backend-capability-service.ts)
+owns short-lived availability and model-discovery subprocesses separately
+from the lazy runner registry. It publishes the newest completed scan to the
+sidebar, and `RunDriver` reuses its bounded availability probe before the first
+phase. Probe processes use `shell: false`, the invocation cwd/environment
+policy, a configurable 1–30 second timeout, 64 KiB output retention, and
+TERM→KILL cleanup. Capability results are ephemeral and do not alter persisted
+workflow snapshots.
+
+[backend-ping-service.ts](src/services/backend-ping-service.ts) reuses the
+same host-resolved probe path for an operator-requested Ping. The read-only
+`CMD_PING_BACKEND` payload contains a runner kind only; it never accepts an
+executable path. One host-local Ping may run at a time, state remains
+memory-only, and every accepted or rejected attempt appends a paths-free
+`backend-ping` record through the workspace audit sink. The webview consumes
+only the bounded classification, timing, latency, and optional numeric exit
+code—never subprocess output, environment data, paths, or stack traces.
 
 - [claude-cli.ts](src/runner/claude-cli.ts) — invokes Claude with `shell: false`,
   bounded stdout and stderr for parsing, a backpressured disk tee for the
@@ -462,6 +485,13 @@ state and produce display-shaped output:
 [projector-memo.ts](src/ui/sidebar/projector-memo.ts) and
 [projector-handle.ts](src/ui/sidebar/projector-handle.ts) provide
 memoization plumbing.
+
+Every Svelte component is limited to 500 physical lines by a repository-wide
+lint gate. Large operator surfaces retain state and IPC ownership in their
+existing parents while typed semantic leaves own metric panels, pipeline and
+phase editors, queue regions, dashboard panes, and activity-feed regions.
+Leaves communicate through props and callbacks; they do not introduce global
+stores or duplicate host-command call sites.
 
 ### Wake-Up Scheduler and Headless (`src/wakeup/`, `src/headless/`)
 

@@ -45,6 +45,14 @@ Schegent runs as a VS Code extension. When a workspace is trusted, the extension
 
 The CLI itself, once spawned, has whatever capabilities its argv and the operator's environment grant it. The CLI's tool calls (`Bash`, `Write`, `Edit`, etc.) are not sandboxed beyond what the CLI itself implements. All backend runners (Claude, Codex, Agy) use the identical `shell: false`, monitor sidecar, and output-cap truncation patterns, meaning switching backends introduces no new trust boundaries.
 
+Backend capability discovery is a separate host-only subprocess path; it never
+constructs an invocation runner or executes a model-authored prompt. Discovery
+uses `shell: false`, the same cwd/environment policy as invocations, a 1–30
+second bounded timeout (default 5), 64 KiB output retention, and TERM→KILL
+cleanup. Only backend identifiers and bounded model identifiers reach the
+webview; configured executable paths, stderr, environment values, and raw
+errors do not cross that boundary.
+
 ## What Schegent does **not** have access to
 
 - **Other workspaces.** Schegent's state is per-workspace. A run in workspace A cannot see or affect workspace B.

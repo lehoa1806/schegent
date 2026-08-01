@@ -55,6 +55,10 @@ or by editing `package.json` / `.vscode/settings.json`:
 
 The global backend selection takes effect at the next extension activation;
 the three CLI path settings are read again for every probe and invocation.
+`schegent.backend.probeTimeoutSeconds` bounds availability and model-discovery
+commands to an integer from 1–30 seconds (default 5). Changing that setting or
+any backend path triggers a new background capability scan without blocking
+extension activation.
 The factory at
 [src/runner/backend-runner-factory.ts](../../src/runner/backend-runner-factory.ts)
 resolves unknown values to `'claude'` and logs a `WARN` (`backend-runner-factory:
@@ -95,6 +99,36 @@ Before the first phase, Schegent probes every effective backend kind used by
 the pipeline with that backend's current CLI path. A failed
 probe terminates the run, emits `runner-probe-failed`, updates queue/history
 state, and surfaces the blocking error to the operator.
+
+The host-only `BackendCapabilityService` owns these probes. It does not
+construct invocation runners, preserving lazy runner creation. Every probe uses
+`shell: false`, the same cwd/environment policy as phase invocations, a 64 KiB
+capture cap, and TERM→KILL timeout cleanup. Overlapping refreshes use generation
+tokens, so a late older scan cannot replace a newer result.
+
+The sidebar snapshot projects live `availableBackends` and per-backend
+`availableModels`. Unavailable backends always have an empty model list. Agy
+models come from bounded `agy models` output, preserving first-seen CLI order,
+deduplicating entries, rejecting identifiers over 128 characters, and limiting
+the result to 200 models. Claude and Codex use code-resident fallback registries
+because their qualified CLI surfaces do not expose an equivalent model-list
+command.
+
+## Operator Ping
+
+The Settings view includes a **Backend Health** section with one Ping action
+for Claude, Codex, and Agy. Ping is a local executable health check; it does not
+prove provider authentication, quota, or network reachability. An active
+workspace is required because each attempt is written to that workspace's
+canonical structured audit log.
+
+Only one Ping can run in an extension host at a time. Its timeout uses
+`schegent.backend.probeTimeoutSeconds` (1–30 seconds, default 5). Results expose
+only a generic status, timing/latency, and a numeric exit code when applicable.
+Failure causes are `not-found`, `not-executable`, `non-zero-exit`, `timed-out`,
+or `unknown`; configured paths, environment values, stdout/stderr, and stack
+traces are never returned to the webview or written to the `backend-ping`
+audit payload.
 
 ## Contract every backend MUST honor
 

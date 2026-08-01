@@ -239,7 +239,6 @@ Frequently used keys:
 | `schegent.audit.rotation.maxAgeDays` | number | `30` | Rotated archive retention floor. |
 | `schegent.logging.verbose` | boolean | `false` | Opt-in unredacted per-phase capture. |
 | `schegent.logging.runtimeLogLevel` | enum | `"INFO"` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
-| `schegent.rules.injectPerPhase` | boolean | `false` | Reserved legacy toggle; current runner wiring does not inject per-phase rule files. |
 | `schegent.defaultPipelineId` | string | `"speckit-new-feature"` | Pipeline used when none is explicitly chosen. |
 | `schegent.fatalSignatures` | string[] | `[]` | Operator-additive fatal-signature substrings. |
 | `schegent.claude.autoCompactPctOverride` | integer\|null | unset | Exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` when set. |

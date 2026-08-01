@@ -91,6 +91,17 @@ Default backend for phase invocations without a phase-level `runner` override.
 `agy` uses `schegent.agy.path`. All three honor the same audit, redaction,
 bounded-output, timeout, cancellation, and transcript contract.
 
+### `schegent.backend.probeTimeoutSeconds`
+
+- **Type:** `integer`
+- **Default:** `5`
+- **Range:** `1`–`30`
+- **Scope:** `application`
+
+Maximum time for backend availability and model-discovery commands. A timed-out
+probe is terminated and the backend is projected as unavailable. Changing the
+value triggers a new background capability scan.
+
 ### `schegent.codex.path`
 
 - **Type:** `string`
@@ -249,16 +260,11 @@ Example:
 
 List of custom model identifiers (e.g., `claude-3-7-sonnet-20250219`, `sonnet`, `opus`) available in the Pipeline Builder QuickPick. Surface-only — does not validate the ids against an authoritative list.
 
-### `schegent.rules.injectPerPhase`
+### Removed settings
 
-- **Type:** `boolean`
-- **Default:** `false`
-- **Scope:** `resource`
-
-Reserved legacy toggle. The current runner wiring reads the setting but does
-not write or inject `.claude/rules/<phase>.md`; keep this disabled until a
-future feature reintroduces rule-file injection with explicit trust-boundary
-coverage.
+`schegent.rules.injectPerPhase` was withdrawn and removed from the extension
+contract. Existing values in operator-owned settings files are left untouched
+and ignored. Schegent does not create `.claude/rules` files.
 
 ## Retry and queue
 
@@ -440,6 +446,7 @@ For quick lookup, the full list of keys:
 | `schegent.cli.environmentMode` | application | `"inherit"` |
 | `schegent.cli.environmentAllowlist` | application | `[]` |
 | `schegent.backend.runner` | application | `"claude"` |
+| `schegent.backend.probeTimeoutSeconds` | application | `5` |
 | `schegent.codex.path` | application | `"codex"` |
 | `schegent.agy.path` | application | `"agy"` |
 | `schegent.loop.maxIterations` | resource | `10` |
@@ -451,7 +458,6 @@ For quick lookup, the full list of keys:
 | `schegent.phases` | resource | `[]` |
 | `schegent.pipelines` | resource | `[]` |
 | `schegent.models` | resource | `[]` |
-| `schegent.rules.injectPerPhase` | resource | `false` |
 | `schegent.retry.maxAttempts` | resource | `5` |
 | `schegent.queue.globalConcurrencyCap` | resource | `1` |
 | `schegent.logging.runtimeLogLevel` | resource | `"INFO"` |

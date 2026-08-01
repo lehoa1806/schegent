@@ -57,6 +57,7 @@ through VS Code settings and read at activation.
 | `schegent.cli.environmentMode` | enum (`inherit`, `minimal`, `allowlist`) | Compatibility default is `inherit`. `minimal` passes only Schegent variables; `allowlist` adds required bootstrap variables and approved names. The legacy boolean `false` always forces `minimal`. |
 | `schegent.cli.environmentAllowlist` | string[] | Names only; used in `allowlist` mode. Never store `NAME=value` or a secret value here. |
 | `schegent.backend.runner` | enum (`claude`, `codex`, `agy`) | Selects the default `BackendRunner` adapter. Default `claude`; a phase-level runner override wins. See [Backend Runners](backends.md). |
+| `schegent.backend.probeTimeoutSeconds` | integer (`1..30`) | Bounds backend availability/model discovery; default 5 seconds. Path or timeout changes trigger a background rescan. |
 | `schegent.codex.path` | string | Path to the `codex` CLI binary. |
 | `schegent.agy.path` | string | Path to the `agy` CLI binary. |
 | `schegent.logging.verbose` | boolean | Captures unredacted per-iteration diagnostics under `.schegent/sessions/`. |
@@ -67,7 +68,6 @@ through VS Code settings and read at activation.
 | `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |
 | `schegent.audit.rotation.sizeMB` | number (minimum 1) | Audit log size threshold for rotation. |
 | `schegent.audit.rotation.maxAgeDays` | number (minimum 1) | Retention for rotated audit log files. |
-| `schegent.rules.injectPerPhase` | boolean | Reserved legacy toggle; current runner wiring does not inject per-phase rule files. |
 | `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. |
 | `schegent.fatalSignatures` | string[] | Operator-additive fatal-signature substrings; managed via the **Settings → Fatal Signatures** sub-tab. |
 
@@ -76,6 +76,10 @@ The default backend does not override Git capability requirements. The
 and `superpowers-review-close` built-ins are pinned to Claude, and
 their phase overrides must explicitly select `claude` or `agy`; Codex's
 `workspace-write` sandbox cannot update `.git`.
+
+The withdrawn key `schegent.rules.injectPerPhase` is ignored if it remains in
+an operator-owned settings file. Schegent does not rewrite external settings
+files merely to remove stale keys.
 
 ### Phases / Pipelines / Models
 
