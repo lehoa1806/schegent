@@ -63,5 +63,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install visual-test browser (Linux only)
+        if: runner.os == 'Linux'
+        run: npx playwright install chromium
+
+      - name: Browser visual regression (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run test:visual
+
       - name: Package smoke
         run: npm run package:smoke
+
+      - name: Upload visual diffs on failure (Linux only)
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-visual-regression-artifacts
+          path: tests/visual/.artifacts/**
+          if-no-files-found: ignore
+          retention-days: 14
