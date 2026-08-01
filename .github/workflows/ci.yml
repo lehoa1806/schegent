@@ -78,7 +78,7 @@ jobs:
 
       - name: Install visual-test browser (Linux only)
         if: runner.os == 'Linux'
-        run: npx playwright install chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Browser visual regression (Linux only)
         if: runner.os == 'Linux'
