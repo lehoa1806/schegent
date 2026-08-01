@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 // Feature 028 — PhaseRunner breakpoint dispatch tests.
 //
 // Verifies the runner-side half of US2 (future-phase breakpoints):
@@ -34,10 +35,12 @@ const cleanStdout = [
   '=== END AUDIT LOG ==='
 ].join('\n');
 
-function makeRawOutput(overrides: Partial<RawInvocationOutput> = {}): RawInvocationOutput {
+type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };
+
+function makeRawOutput(overrides: MockRawOutput = {}): RawInvocationOutput {
   return {
-    stdout: cleanStdout,
-    stderr: '',
+    stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(overrides.stdout ?? cleanStdout); b.finalize(); return b; })(),
+    stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(overrides.stderr ?? ''); b.finalize(); return b; })(),
     exitCode: 0,
     killed: false,
     timedOut: false,

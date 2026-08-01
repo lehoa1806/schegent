@@ -79,6 +79,8 @@
     return d ? 'true' : 'false';
   }
 
+  let resumePromptStr = $state('');
+
   function onAction(): void {
     if (primaryDisabled) return;
     if (action === 'start') {
@@ -86,7 +88,9 @@
     } else if (action === 'pause') {
       postCommand(CMD_PAUSE_QUEUE);
     } else if (action === 'resume') {
-      postCommand(CMD_RESUME_QUEUE);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      postCommand(CMD_RESUME_QUEUE, { prompt: resumePromptStr.trim() || undefined } as any);
+      resumePromptStr = '';
     }
   }
   function onClearCompleted(): void {
@@ -104,6 +108,15 @@
 
 <div class="global-actions" data-testid="queue-global-actions">
   {#if action !== 'idle'}
+    {#if action === 'resume'}
+      <input
+        type="text"
+        class="resume-prompt-input"
+        placeholder="Custom prompt... (optional)"
+        bind:value={resumePromptStr}
+        onkeydown={(e) => e.key === 'Enter' && onAction()}
+      />
+    {/if}
     <button
       type="button"
       data-testid="queue-action-button"
@@ -191,5 +204,20 @@
     font-size: 0.85em;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+  .resume-prompt-input {
+    min-height: 20px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    padding: 0 8px;
+    font: inherit;
+    width: 200px;
+    outline: none;
+    transition: border-color 0.2s ease;
+  }
+  .resume-prompt-input:focus {
+    border-color: var(--vscode-focusBorder);
   }
 </style>

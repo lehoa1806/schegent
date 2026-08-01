@@ -18,6 +18,10 @@ Changes that have landed on the default branch but have not yet shipped
 in a tagged release. This section is empty between releases; entries
 land here first and graduate into a version section at release time.
 
+### Removed
+
+- Removed the `desktop-prototype` crate and its workspace registration; this was a non-production validation shell that is no longer needed (070).
+
 ---
 
 ## [0.2.0] — 2026-06-07

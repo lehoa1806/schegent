@@ -107,7 +107,7 @@ describe('runner monitor sidecar hook', () => {
       phase: 'speckit-specify', iteration: 1, prompt: 'p', timeoutMs: 5_000, cliPath: 'claude', cwd: '/repo'
     });
     expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort());
-    expect(a.stdout).toBe(b.stdout);
+    expect(Array.from(a.stdoutBuffer.decompressStream()).join('')).toBe(Array.from(b.stdoutBuffer.decompressStream()).join(''));
     expect(a.exitCode).toBe(b.exitCode);
     expect(a.killed).toBe(b.killed);
     expect(a.timedOut).toBe(b.timedOut);

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 import { CreditWatchdog } from '../../../src/watchdog/credit-watchdog';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -31,6 +32,29 @@ function makeRunner(invokeImpl: () => Promise<RawInvocationOutput>): ClaudeCliRu
   } as unknown as ClaudeCliRunner;
 }
 
+type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };
+
+function makeRawOutput(overrides: MockRawOutput = {}): RawInvocationOutput {
+  const stdoutStr = overrides.stdout ?? '';
+  const stderrStr = overrides.stderr ?? '';
+  const stdoutBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.append(stdoutStr);
+  stdoutBuffer.finalize();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stderrBuffer.append(stderrStr);
+  stderrBuffer.finalize();
+
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: overrides.exitCode ?? 0,
+    killed: overrides.killed ?? false,
+    timedOut: overrides.timedOut ?? false,
+    durationMs: overrides.durationMs ?? 1,
+    ...overrides
+  };
+}
+
 const watchdogOpts = {
   pollIntervalMs: 30 * 60 * 1000,
   cliPath: 'claude',
@@ -55,7 +79,7 @@ afterEach(() => {
 describe('CreditWatchdog.pauseAndPoll', () => {
   it('persists paused state with cause and next poll time', async () => {
     const watchdog = new CreditWatchdog(
-      makeRunner(async () => ({ stdout: 'status: ok', stderr: '', exitCode: 0, killed: false, timedOut: false, durationMs: 1 })),
+      makeRunner(async () => makeRawOutput({ stdout: 'status: ok' })),
       store,
       makeStatusBar(),
       new SanitizedLogger(),
@@ -73,7 +97,7 @@ describe('CreditWatchdog.pauseAndPoll', () => {
   it('updates the status bar to paused with nextPollAt', async () => {
     const statusBar = makeStatusBar();
     const watchdog = new CreditWatchdog(
-      makeRunner(async () => ({ stdout: '', stderr: '', exitCode: 0, killed: false, timedOut: false, durationMs: 1 })),
+      makeRunner(async () => makeRawOutput({})),
       store,
       statusBar,
       new SanitizedLogger(),
@@ -88,13 +112,8 @@ describe('CreditWatchdog.pauseAndPoll', () => {
 
 describe('CreditWatchdog poll behavior', () => {
   it('resumes when /status reports ok', async () => {
-    const runner = makeRunner(async () => ({
-      stdout: 'status: ok',
-      stderr: '',
-      exitCode: 0,
-      killed: false,
-      timedOut: false,
-      durationMs: 1
+    const runner = makeRunner(async () => makeRawOutput({
+      stdout: 'status: ok'
     }));
     const onResume = vi.fn(async () => {});
     const watchdog = new CreditWatchdog(runner, store, makeStatusBar(), new SanitizedLogger(), watchdogOpts, onResume);
@@ -111,13 +130,8 @@ describe('CreditWatchdog poll behavior', () => {
   });
 
   it('keeps polling when /status reports not ok', async () => {
-    const runner = makeRunner(async () => ({
-      stdout: 'still rate limited',
-      stderr: '',
-      exitCode: 0,
-      killed: false,
-      timedOut: false,
-      durationMs: 1
+    const runner = makeRunner(async () => makeRawOutput({
+      stdout: 'still rate limited'
     }));
     const onResume = vi.fn(async () => {});
     const watchdog = new CreditWatchdog(runner, store, makeStatusBar(), new SanitizedLogger(), watchdogOpts, onResume);
@@ -137,7 +151,7 @@ describe('CreditWatchdog poll behavior', () => {
 describe('CreditWatchdog.reattachOnActivation', () => {
   it('does nothing when watchdog state is not paused', async () => {
     const watchdog = new CreditWatchdog(
-      makeRunner(async () => ({ stdout: '', stderr: '', exitCode: 0, killed: false, timedOut: false, durationMs: 1 })),
+      makeRunner(async () => makeRawOutput({})),
       store,
       makeStatusBar(),
       new SanitizedLogger(),
@@ -160,13 +174,8 @@ describe('CreditWatchdog.reattachOnActivation', () => {
     });
 
     const onResume = vi.fn(async () => {});
-    const runner = makeRunner(async () => ({
-      stdout: 'credits available',
-      stderr: '',
-      exitCode: 0,
-      killed: false,
-      timedOut: false,
-      durationMs: 1
+    const runner = makeRunner(async () => makeRawOutput({
+      stdout: 'credits available'
     }));
     const watchdog = new CreditWatchdog(runner, store, makeStatusBar(), new SanitizedLogger(), watchdogOpts, onResume);
 
@@ -185,13 +194,7 @@ describe('CreditWatchdog.setPollInterval (US7 / T101 / T104)', () => {
     const logger = new SanitizedLogger();
     const infoSpy = vi.spyOn(logger, 'info');
     const watchdog = new CreditWatchdog(
-      makeRunner(async () => ({
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-        killed: false,
-        timedOut: false,
-        durationMs: 1
+      makeRunner(async () => makeRawOutput({
       })),
       store,
       makeStatusBar(),
@@ -213,13 +216,7 @@ describe('CreditWatchdog.setPollInterval (US7 / T101 / T104)', () => {
     const logger = new SanitizedLogger();
     const warnSpy = vi.spyOn(logger, 'warn');
     const watchdog = new CreditWatchdog(
-      makeRunner(async () => ({
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-        killed: false,
-        timedOut: false,
-        durationMs: 1
+      makeRunner(async () => makeRawOutput({
       })),
       store,
       makeStatusBar(),

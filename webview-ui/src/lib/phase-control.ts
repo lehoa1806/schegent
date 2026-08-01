@@ -13,8 +13,9 @@ export function pausePhase(): void {
   postCommand(CMD_PAUSE_PHASE);
 }
 
-export function resumePhase(): void {
-  postCommand(CMD_RESUME_PHASE);
+export function resumePhase(prompt?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  postCommand(CMD_RESUME_PHASE, { prompt } as any);
 }
 
 export function restartPhase(phaseId: string): void {

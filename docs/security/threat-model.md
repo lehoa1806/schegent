@@ -110,6 +110,7 @@ The structured audit log **does not contain filesystem paths to sensitive locati
 - The wake-up session log's path is never in the audit log.
 - The list of workspace roots is never in the audit log — only `rootCount`.
 - The phase log feed's file path is never in the audit log — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
+- The Metrics dashboard's `metrics-view-opened` event (feature 073) carries only a reused `sessionId` — no task descriptions, phase names, cost figures, or paths.
 - Operator credentials, environment variables, and tokens are scrubbed by the redaction set.
 
 This makes the audit log **safe to ship off-machine**. It can be attached to bug reports, stored in shared infrastructure, or grepped by ops tooling without leaking sensitive locations. The local diagnostic sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
@@ -176,6 +177,8 @@ This prevents two windows from racing on the same workspace. The primary host ow
 Every mutating IPC command must be a member of `MUTATING_COMMANDS` in `src/ui/sidebar/message-router.ts`. Adding a new mutating command requires adding it to the registry; the primary-only gate is enforced based on registry membership.
 
 This is the single line of defense against accidentally adding a mutating command without primary-host gating. Forgetting to register is a code-review-catchable mistake.
+
+Read-only IPC commands are intentionally excluded from this registry — e.g. `CMD_READ_PHASE_LOG` (020), the wake-up session-log reads (031), and `CMD_READ_METRICS` (073). None of these write workspace state, so the primary-only gate does not apply and secondary VS Code hosts may dispatch them too. `CMD_READ_METRICS` derives its response entirely from the existing (already paths-free, already redacted) audit log and writes nothing new except the one-shot `metrics-view-opened` adoption event described above — no new trust boundary is introduced.
 
 ## The append-only audit log
 

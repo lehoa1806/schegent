@@ -164,7 +164,7 @@ export class CreditWatchdog {
         cliPath: this.options.cliPath,
         cwd: this.options.cwd
       });
-      const ok = raw.exitCode === 0 && detectStatusOk(raw.stdout);
+      const ok = raw.exitCode === 0 && detectStatusOk(raw.stdoutBuffer);
       const state = this.store.getWatchdog();
       if (ok) {
         await this.store.setWatchdog({

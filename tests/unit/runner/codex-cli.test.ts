@@ -149,39 +149,11 @@ describe('CodexCliRunner.invoke', () => {
       cliPath: 'codex',
       cwd: '/repo'
     });
-    expect(result.stdout).toContain('tool result');
-    expect(result.stderr).toContain('warn');
+    expect(Array.from(result.stdoutBuffer.decompressStream()).join('')).toContain('tool result');
+    expect(Array.from(result.stderrBuffer.decompressStream()).join('')).toContain('warn');
     expect(result.exitCode).toBe(0);
     expect(result.killed).toBe(false);
     expect(result.timedOut).toBe(false);
-    expect(result.stdoutTruncated).toBe(false);
-    expect(result.stderrTruncated).toBe(false);
-  });
-
-  it('marks stdoutTruncated when the stream exceeds 4 MiB', async () => {
-    const child = makeFakeChild();
-    const spawnFn: SpawnFn = () => {
-      setImmediate(() => {
-        const big = 'A'.repeat(2 * 1024 * 1024);
-        child.stdout.emit('data', big);
-        child.stdout.emit('data', big);
-        // 5 MiB total stdout — third chunk will overflow the 4 MiB cap
-        child.stdout.emit('data', 'A'.repeat(1 * 1024 * 1024));
-        child.emit('exit', 0, null);
-      });
-      return child as unknown as ChildProcess;
-    };
-    const runner = new CodexCliRunner(spawnFn);
-    const result = await runner.invoke({
-      phase: 'speckit-implement',
-      iteration: 1,
-      prompt: 'noisy',
-      timeoutMs: 10_000,
-      cliPath: 'codex',
-      cwd: '/repo'
-    });
-    expect(result.stdoutTruncated).toBe(true);
-    expect(result.exitCode).toBe(0);
   });
 
   it('emits monitor sidecar events for started/stdout/exited', async () => {

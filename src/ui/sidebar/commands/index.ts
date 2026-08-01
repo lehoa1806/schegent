@@ -17,6 +17,7 @@ import {
   CMD_OPEN_VERBOSE_SETTING,
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
+  CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_READ_WAKEUP_SESSION_LOG,
   CMD_REMOVE_QUEUE_ITEM,
@@ -67,6 +68,7 @@ import { handler as openQueueItemDetails } from './cmd-open-queue-item-details';
 import { handler as openVerboseSetting } from './cmd-open-verbose-setting';
 import { handler as pausePhase } from './cmd-pause-phase';
 import { handler as pauseQueue } from './cmd-pause-queue';
+import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as readWakeupSessionLog } from './cmd-read-wakeup-session-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
@@ -127,6 +129,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_OPEN_VERBOSE_SETTING, openVerboseSetting as CommandHandler],
   [CMD_PAUSE_PHASE, pausePhase as CommandHandler],
   [CMD_PAUSE_QUEUE, pauseQueue as CommandHandler],
+  [CMD_READ_METRICS, readMetrics as CommandHandler],
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
   [CMD_READ_WAKEUP_SESSION_LOG, readWakeupSessionLog as CommandHandler],
   [CMD_REMOVE_QUEUE_ITEM, removeQueueItem as CommandHandler],

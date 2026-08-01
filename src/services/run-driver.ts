@@ -54,6 +54,11 @@ export interface RunDriverDeps {
     payload: Record<string, unknown>
   ) => Promise<void>;
   readonly emitRunEndedBreakpointAudit: (run: WorkflowRun) => Promise<void>;
+  readonly emitTaskLifecycleAudit: (
+    eventType: 'task-execution-started' | 'task-execution-ended' | 'task-execution-paused',
+    run: WorkflowRun,
+    payload: Record<string, unknown>
+  ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
 }
 
@@ -172,9 +177,14 @@ export class RunDriver {
             shouldResumeSession && typeof run.lastCliSessionId === 'string'
               ? run.lastCliSessionId
               : undefined;
-          // Session reuse flag: only set when NOT an isContinue dispatch
-          // (isContinue has its own audit semantics).
           const dispatchSessionReuse = pendingSessionReuse && !dispatchIsContinue;
+          const dispatchResumePrompt = dispatchIsContinue ? run.resumePrompt : undefined;
+          if (run.resumePrompt !== undefined) {
+            const nextRun = { ...run };
+            delete nextRun.resumePrompt;
+            run = await this.deps.persistTransition(run, nextRun);
+          }
+
           const output = await this.deps.runner.run({
             phase: run.currentPhase,
             phaseDef: activePhaseDef,
@@ -205,7 +215,8 @@ export class RunDriver {
             },
             isContinue: dispatchIsContinue,
             sessionReuse: dispatchSessionReuse,
-            resumeSessionId: dispatchResumeSessionId
+            resumeSessionId: dispatchResumeSessionId,
+            resumePrompt: dispatchResumePrompt
           });
           if (
             this.overriddenActivePhaseAborts.delete(
@@ -369,6 +380,15 @@ export class RunDriver {
                 `run-driver: history record (failed) failed: ${(hErr as Error).message}`
               );
             }
+            // Feature 072 — emit task-execution-ended (failed).
+            await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+              taskId: run.featureId,
+              runId: run.id,
+              terminalStatus: 'failed',
+              durationMs: Date.now() - run.startedAt,
+              ...this.computePhaseStats(run),
+              lastErrorSummary: sanitized.message
+            });
             break;
           }
 
@@ -468,6 +488,14 @@ export class RunDriver {
               `run-driver: history record (completed) failed: ${(hErr as Error).message}`
             );
           }
+          // Feature 072 — emit task-execution-ended (completed).
+          await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+            taskId: run.featureId,
+            runId: run.id,
+            terminalStatus: 'completed',
+            durationMs: Date.now() - run.startedAt,
+            ...this.computePhaseStats(run)
+          });
         }
       });
     } finally {
@@ -480,6 +508,23 @@ export class RunDriver {
 
   private phaseOverrideAbortKey(runId: string, phaseId: string): string {
     return `${runId}:${phaseId}`;
+  }
+
+  // Feature 072 — derive phase stats from the pipeline snapshot and
+  // completion records for the task-execution-ended payload.
+  private computePhaseStats(run: WorkflowRun): {
+    phasesTotal: number;
+    phasesCompleted: number;
+    phasesSkipped: number;
+  } {
+    const total = run.pipeline?.phases?.length ?? 0;
+    const completed = run.phasesCompleted.filter(
+      (p) => p.result === 'clean'
+    ).length;
+    const skipped = run.phasesCompleted.filter(
+      (p) => p.result === 'skipped'
+    ).length;
+    return { phasesTotal: total, phasesCompleted: completed, phasesSkipped: skipped };
   }
 }
 

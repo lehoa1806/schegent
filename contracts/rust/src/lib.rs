@@ -51,6 +51,7 @@ pub const SIDEBAR_COMMAND_TYPES: &[&str] = &[
     "CMD_CLEAR_ALL",
     "CMD_SET_CONFIRM_SUPPRESSION",
     "CMD_DISMISS_MIGRATION_NOTICE",
+    "CMD_READ_METRICS",
 ];
 
 pub const HOST_MESSAGE_TYPES: &[&str] = &[
@@ -146,6 +147,11 @@ pub const AUDIT_EVENT_TYPES: &[&str] = &[
     "system-pause-scheduled-restore",
     "system-pause-restore-unavailable",
     "state-migrated-v6-to-v7",
+    "task-execution-started",
+    "task-execution-ended",
+    "task-execution-paused",
+    "phase-jumped",
+    "metrics-view-opened",
 ];
 
 pub const SETTINGS_KEYS: &[&str] = &[

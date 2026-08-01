@@ -2,6 +2,8 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type {
   CommandAckMessage,
+  ReadMetricsRequest,
+  ReadMetricsResponse,
   ReadPhaseLogRequest,
   ReadPhaseLogResponse,
   ReadWakeupSessionLogResponse,
@@ -26,7 +28,8 @@ export interface QueueOps {
     paused: boolean,
     queueId?: string,
     reason?: string | null,
-    pauseSource?: 'operator' | 'cascade' | 'retry-cap'
+    pauseSource?: 'operator' | 'cascade' | 'retry-cap',
+    resumePrompt?: string
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
   modifyTask?(
     taskId: string,
@@ -173,6 +176,23 @@ export interface RouterDeps {
     read(req: { correlationId: string }): Promise<ReadWakeupSessionLogResponse>;
   };
   readonly revealWakeupSessionLog?: () => Promise<RevealWakeupSessionLogResponse>;
+  readonly metricsService?: {
+    read(req: ReadMetricsRequest): Promise<ReadMetricsResponse>;
+  };
+  /**
+   * Feature 073 — existing session-scoped correlation id reused (not newly
+   * minted) for the `metrics-view-opened` audit payload
+   * (contracts/metrics-view-opened-event.md). Sourced from the same
+   * `ownerId` already computed once at extension activation.
+   */
+  readonly sessionId?: string;
+  /**
+   * Feature 073 — tracks whether `metrics-view-opened` has already been
+   * appended this session (first CMD_READ_METRICS dispatch only).
+   * Constructed once in wireStage2() alongside sessionId so its lifetime
+   * matches "session" per contracts/metrics-view-opened-event.md.
+   */
+  readonly metricsViewOpenedState?: { emitted: boolean };
 }
 
 export type AckPoster = (msg: CommandAckMessage) => Thenable<boolean> | Promise<boolean>;

@@ -42,7 +42,7 @@ function makeFakeChild(emitExitOnKill: boolean): FakeChild {
   return child;
 }
 
-const COMPLETE_OUTPUT = `[SCHEGENT_STATUS: DONE]\n${AUDIT_LOG_CLOSE_MARKER}\n`;
+const COMPLETE_OUTPUT = `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"[SCHEGENT_STATUS: DONE]\\n${AUDIT_LOG_CLOSE_MARKER}"}]}}\n`;
 
 const baseReq = {
   phase: 'speckit-implement' as const,
@@ -61,7 +61,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const spawnFn: SpawnFn = () => {
       // Emit a complete result (with the audit-log close marker) once the
       // runner's stdout listener is attached, then never emit 'exit'.
-      setTimeout(() => child.stdout.emit('data', COMPLETE_OUTPUT), 0);
+      setTimeout(() => child.stdout.emit('data', COMPLETE_OUTPUT + '\n{"type":"result"}\n'), 6000);
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -70,23 +70,24 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
       timeoutMs: 90 * 60_000, // long idle window — must NOT be what fires
       completionMarker: AUDIT_LOG_CLOSE_MARKER
     });
-    await vi.advanceTimersByTimeAsync(0); // deliver stdout → detect marker → arm settle timer
+    await vi.advanceTimersByTimeAsync(6000); // pass the history-replay window and deliver stdout
     await vi.advanceTimersByTimeAsync(30_000); // past the short settle window
     const raw = await p;
     expect(raw.completedAwaitingExit).toBe(true);
     expect(raw.timedOut).toBe(false);
     expect(raw.killed).toBe(false);
     expect(child.kill).toHaveBeenCalled();
-    expect(raw.stdout).toContain(AUDIT_LOG_CLOSE_MARKER);
+    const stdout = Array.from(raw.stdoutBuffer.decompressStream()).join("");
+    expect(stdout).toContain(AUDIT_LOG_CLOSE_MARKER);
   });
 
   it('treats a process that exits promptly after the marker as a normal completion', async () => {
     const child = makeFakeChild(false);
     const spawnFn: SpawnFn = () => {
       setTimeout(() => {
-        child.stdout.emit('data', COMPLETE_OUTPUT);
+        child.stdout.emit('data', COMPLETE_OUTPUT + '\n{"type":"result"}\n');
         child.emit('exit', 0, null);
-      }, 0);
+      }, 6000);
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -95,7 +96,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
       timeoutMs: 90 * 60_000,
       completionMarker: AUDIT_LOG_CLOSE_MARKER
     });
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(6000);
     const raw = await p;
     expect(raw.exitCode).toBe(0);
     expect(raw.completedAwaitingExit).toBeFalsy();

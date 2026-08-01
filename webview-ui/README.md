@@ -625,6 +625,39 @@ record. See
 [`docs/operations/single-task-queue-migration.md`](../docs/operations/single-task-queue-migration.md)
 for the migration walkthrough.
 
+### IPC additions (spec 073 — Metrics dashboard)
+
+Feature 073 adds a **read-only** rollup surface for the Dashboard's
+Metrics tab, derived entirely from the existing `.schegent/audit.log`
+(no new persistent storage):
+
+- `CMD_READ_METRICS` — payload `{ includeArchived?: boolean }` (default
+  `false`). Returns `{ tasks, phaseTypeAggregates, costTimeline,
+  oldestIncludedTimestamp?, includesArchived, totalScannedEntries,
+  parseWarnings }` inside the standard `CMD_ACK` envelope. There is no
+  push-message counterpart — unlike the Phase Log Feed, Metrics has no
+  live tail.
+
+`CMD_READ_METRICS` is **read-only** and is NOT a member of
+`MUTATING_COMMANDS` (mirrors the spec 020 phase-log commands above) —
+a secondary VS Code host may dispatch it too. The single call site is
+[`webview-ui/src/lib/metrics-ipc.ts`](src/lib/metrics-ipc.ts); a
+repo-grep regression at
+[`../tests/lint/no-inline-read-metrics-ipc.test.ts`](../tests/lint/no-inline-read-metrics-ipc.test.ts)
+fails the build on any drift. No new snapshot envelope keys; no
+`AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump.
+
+[`MetricsSection.svelte`](src/components/MetricsSection.svelte) renders
+the tab: summary cards, a sortable/paginated task table with
+expandable per-phase detail, a phase-type analytics table, and an
+inline-SVG cumulative daily-cost chart (no new charting dependency).
+Under normal application-generated audit logs, `TaskRecord.description` is
+always an internally-generated `taskId` or `runId` — never
+operator-authored free text. Rendering safety does not depend on that
+assumption holding, though: the table uses Svelte's default auto-escaping
+with no `{@html}` usage anywhere in the component (FR-017), so a
+hand-edited or adversarial log entry still can't inject markup.
+
 ### Audit surfaces
 
 The Dashboard exposes the audit tail through **two complementary

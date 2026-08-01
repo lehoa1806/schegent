@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import type { InvocationRequest, RawInvocationOutput } from './invocation-result';
 import type {
   BackendRunner,
@@ -38,7 +39,7 @@ import { buildSpawnEnv } from './spawn-env';
 //     emits the existing "diagnostic-warnings" channel empty.
 
 const SIGKILL_DELAY_MS = 2_000;
-const MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+
 
 export type SpawnFn = (
   command: string,
@@ -128,12 +129,8 @@ export class CodexCliRunner implements BackendRunner {
       }
     }
 
-    let stdout = '';
-    let stderr = '';
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    const stdoutBuffer = new ZippedStreamBuffer();
+    const stderrBuffer = new ZippedStreamBuffer();
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -157,22 +154,12 @@ export class CodexCliRunner implements BackendRunner {
 
     child.stdout?.on('data', (chunk: string) => {
       resetIdleTimer();
-      stdoutBytes += Buffer.byteLength(chunk, 'utf8');
-      if (stdoutBytes <= MAX_BUFFER_BYTES) {
-        stdout += chunk;
-      } else {
-        stdoutTruncated = true;
-      }
+      stdoutBuffer.append(chunk);
       this.emitHook({ kind: 'stdout-chunk', chunk });
     });
     child.stderr?.on('data', (chunk: string) => {
       resetIdleTimer();
-      stderrBytes += Buffer.byteLength(chunk, 'utf8');
-      if (stderrBytes <= MAX_BUFFER_BYTES) {
-        stderr += chunk;
-      } else {
-        stderrTruncated = true;
-      }
+      stderrBuffer.append(chunk);
       this.emitHook({ kind: 'stderr-chunk', chunk });
     });
 
@@ -208,15 +195,16 @@ export class CodexCliRunner implements BackendRunner {
     this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
     this.active = null;
 
+    stdoutBuffer.finalize();
+    stderrBuffer.finalize();
+
     return {
-      stdout,
-      stderr,
+      stdoutBuffer,
+      stderrBuffer,
       exitCode,
       killed,
       timedOut,
       durationMs: Date.now() - start,
-      stdoutTruncated,
-      stderrTruncated,
       command
     };
   }

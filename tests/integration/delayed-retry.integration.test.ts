@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 011 — US1 P1 MVP: delayed-retry resilience.
 //
 // Integration coverage for:
@@ -54,10 +55,9 @@ class FakeMemento implements Memento {
 function makeTransientCliRunner(): ClaudeCliRunner {
   const invoke = vi.fn(async (_req: InvocationRequest): Promise<RawInvocationOutput> => {
     return {
-      stdout: '',
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
       // No fatal signature, no rate-limit cause, no termination token.
       // Non-zero exit code triggers `transient_error` classification.
-      stderr: 'unknown transient cli failure',
       exitCode: 1,
       killed: false,
       timedOut: false,

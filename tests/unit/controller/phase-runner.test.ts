@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -25,15 +26,29 @@ const cleanStdout = [
   '=== END AUDIT LOG ==='
 ].join('\n');
 
-function makeRawOutput(overrides: Partial<RawInvocationOutput> = {}): RawInvocationOutput {
+type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };
+
+function makeRawOutput(overrides: MockRawOutput = {}): RawInvocationOutput {
+  const stdoutStr = overrides.stdout ?? cleanStdout;
+  const stderrStr = overrides.stderr ?? '';
+  const stdoutBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.append(stdoutStr);
+  stdoutBuffer.finalize();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stderrBuffer.append(stderrStr);
+  stderrBuffer.finalize();
+
   return {
-    stdout: cleanStdout,
-    stderr: '',
-    exitCode: 0,
-    killed: false,
-    timedOut: false,
-    durationMs: 50,
-    ...overrides
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: overrides.exitCode !== undefined ? overrides.exitCode : 0,
+    killed: overrides.killed ?? false,
+    timedOut: overrides.timedOut ?? false,
+    durationMs: overrides.durationMs ?? 50,
+    completedAwaitingExit: overrides.completedAwaitingExit,
+    diagnosticWarnings: overrides.diagnosticWarnings,
+    command: overrides.command,
+    cliSessionId: overrides.cliSessionId
   };
 }
 
@@ -879,7 +894,7 @@ describe('PhaseRunner.run', () => {
 
     it('maps fatal stdout + exit non-zero to failed PhaseOutcome', async () => {
       cliRunner = makeFakeRunner(async () =>
-        makeRawOutput({ stdout: `noise\n${FATAL}\nmore`, stderr: '', exitCode: 1 })
+        makeRawOutput({ stdout: `noise\n${FATAL}\nmore`, exitCode: 1 })
       );
       runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
       const out = await runner.run(baseInputs);

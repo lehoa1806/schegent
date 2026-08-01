@@ -126,7 +126,15 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'system-pause-scheduled-restore': 'system',
   'system-pause-restore-unavailable': 'system',
   // Feature 065 — v6 → v7 state migration (system)
-  'state-migrated-v6-to-v7': 'system'
+  'state-migrated-v6-to-v7': 'system',
+  // Feature 072 — task-level execution lifecycle (task)
+  'task-execution-started': 'task',
+  'task-execution-ended': 'task',
+  'task-execution-paused': 'task',
+  'phase-jumped': 'task',
+  // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
+  // specific workflow run (system)
+  'metrics-view-opened': 'system'
 };
 
 function assertExhaustive(value: never): never {
@@ -274,7 +282,12 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'automation-enqueue-no-start-mode':
         case 'system-pause-scheduled-restore':
         case 'system-pause-restore-unavailable':
-        case 'state-migrated-v6-to-v7': {
+        case 'state-migrated-v6-to-v7':
+        case 'task-execution-started':
+        case 'task-execution-ended':
+        case 'task-execution-paused':
+        case 'phase-jumped':
+        case 'metrics-view-opened': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

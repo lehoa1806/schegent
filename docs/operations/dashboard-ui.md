@@ -204,6 +204,49 @@ host reads the tail of `.schegent/audit.log` (bounded by
 non-empty before any live event arrives. Missing or unreadable audit
 files degrade silently to an empty list — no operator-facing modal.
 
+### 7. Metrics tab (spec 073)
+
+The Dashboard's **Metrics** tab is a read-only, on-demand rollup of the
+workspace's `.schegent/audit.log` — every number shown is recomputed at
+request time; nothing new is written to disk.
+
+**Loading model:** the tab fetches on first activation (`CMD_READ_METRICS`)
+and on explicit **Refresh**. There is no live tail — unlike the Phase Log
+Feed and System tab, Metrics does not subscribe to push updates.
+
+**Layout:**
+
+- **Summary cards** — tasks completed, total elapsed time, total backend
+  invocations, and total cost (only shown when the CLI reported cost
+  data; otherwise "Not recorded").
+- **Task table** — one row per workflow run, sortable by any column and
+  paginated at 200 rows per page. Each row expands to a nested
+  phase-by-phase breakdown (outcome, duration, timestamps).
+- **Phase analytics** — per-phase-type rollups: run count, success rate,
+  and duration percentiles (nearest-rank, no interpolation).
+- **Cost trend** — a cumulative daily-cost line chart (inline SVG, no
+  charting library). Each point is keyboard-focusable and exposes its
+  exact value via an `aria-live` detail region and a native tooltip.
+
+**Archived-history toggle:** an **Include archived history** checkbox
+(opt-in, default off) widens the scan to rotated `audit.log.<stamp>`
+archives in addition to the live file. When on, a coverage-window strip
+shows the oldest included timestamp so the operator knows how far back
+the current numbers reach.
+
+**Empty state:** when no tasks are found, the tab shows an informational
+empty-state card with guidance instead of a blank table.
+
+**No mutation:** the tab issues exactly one read-only IPC command
+(`CMD_READ_METRICS`) and never calls a mutating command. The single call
+site is
+[webview-ui/src/lib/metrics-ipc.ts](../../webview-ui/src/lib/metrics-ipc.ts).
+
+**Adoption signal:** the first time `CMD_READ_METRICS` is dispatched in a
+session, the host appends one `metrics-view-opened` audit event
+(`sessionId` only) to `.schegent/audit.log` — see
+[Inspect Audit Logs](inspect-audit-logs.md).
+
 ---
 
 **Related Documentation:**

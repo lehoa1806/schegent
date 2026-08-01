@@ -5,10 +5,3 @@ version = 4
 [[package]]
 name = "schegent-contracts"
 version = "0.1.0"
-
-[[package]]
-name = "schegent-desktop-prototype"
-version = "0.1.0"
-dependencies = [
- "schegent-contracts",
-]

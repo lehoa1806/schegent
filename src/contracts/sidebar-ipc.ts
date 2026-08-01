@@ -123,6 +123,11 @@ export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as cons
 // is non-destructive UX state per FR-020 and parity with the other
 // `CMD_OPEN_*` non-mutating commands.
 export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as const;
+// Feature 073 — Metrics Dashboard full-scan read. READ-ONLY; MUST stay
+// out of `MUTATING_COMMANDS` so a secondary VS Code host can still load
+// the Metrics tab in a multi-window session. See
+// specs/073-metrics-dashboard/contracts/cmd-read-metrics.md.
+export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -180,7 +185,8 @@ export const COMMAND_TYPES = [
   CMD_START_QUEUE,
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
-  CMD_DISMISS_MIGRATION_NOTICE
+  CMD_DISMISS_MIGRATION_NOTICE,
+  CMD_READ_METRICS
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -238,7 +244,9 @@ export interface StartCommand extends CommandBase<typeof CMD_START> {
 export interface CancelCommand extends CommandBase<typeof CMD_CANCEL> {
   readonly payload: { readonly taskId: string };
 }
-export interface ResumeCommand extends CommandBase<typeof CMD_RESUME> {}
+export interface ResumeCommand extends CommandBase<typeof CMD_RESUME> {
+  readonly payload?: { readonly prompt?: string };
+}
 
 export interface ResetCommand extends CommandBase<typeof CMD_RESET> {
   readonly payload: { readonly confirmed: true };
@@ -294,7 +302,7 @@ export interface PauseQueueCommand extends CommandBase<typeof CMD_PAUSE_QUEUE> {
 }
 
 export interface ResumeQueueCommand extends CommandBase<typeof CMD_RESUME_QUEUE> {
-  readonly payload?: { readonly queueId?: string };
+  readonly payload?: { readonly queueId?: string; readonly prompt?: string };
 }
 export interface OpenDashboardCommand extends CommandBase<typeof CMD_OPEN_DASHBOARD> {}
 export interface RetryActiveRunCommand extends CommandBase<typeof CMD_RETRY_ACTIVE_RUN> {}
@@ -397,7 +405,9 @@ export interface WakeUpNowCommand extends CommandBase<typeof CMD_WAKE_UP_NOW> {
 }
 
 export interface PausePhaseCommand extends CommandBase<typeof CMD_PAUSE_PHASE> {}
-export interface ResumePhaseCommand extends CommandBase<typeof CMD_RESUME_PHASE> {}
+export interface ResumePhaseCommand extends CommandBase<typeof CMD_RESUME_PHASE> {
+  readonly payload?: { readonly prompt?: string };
+}
 
 export interface RestartPhaseCommand extends CommandBase<typeof CMD_RESTART_PHASE> {
   readonly payload: { readonly phaseId: string };
@@ -658,6 +668,97 @@ export type RevealWakeupSessionLogResponse =
   | RevealWakeupSessionLogResponseSuccess
   | RevealWakeupSessionLogResponseRejected;
 
+// Feature 073 — Metrics Dashboard. Wire-format entities derived
+// entirely from the existing `.schegent/audit.log`; see
+// specs/073-metrics-dashboard/data-model.md for the full field
+// derivation rules. `src/metrics/metrics-log-reader.ts` constructs
+// these directly — no separate internal representation exists to
+// decouple from, so the wire type is the single canonical definition.
+export interface PhaseRecord {
+  readonly runId: string;
+  readonly phaseType: string;
+  readonly iteration: number;
+  readonly startTime: string;
+  readonly endTime?: string;
+  readonly durationMs?: number;
+  readonly backendInvocations: number;
+  readonly costUsd?: number;
+  // Absent while the phase has no terminal event yet (still running) — mirrors
+  // TaskRecord.status's absent-while-in-flight shape; rendered as "Running" by
+  // the UI, never as a literal outcome value (data-model.md §2).
+  readonly outcome?: 'completed' | 'failed' | 'jumped' | 'paused-at-breakpoint' | 'skipped';
+  readonly rawOutcome?: string;
+}
+
+export interface TaskRecord {
+  readonly runId: string;
+  readonly taskId?: string;
+  readonly description: string;
+  readonly startTime: string;
+  readonly endTime?: string;
+  readonly durationMs: number;
+  // Deliberately terminal-only — absent while the task is in-flight.
+  // `isRunning` is the sole "still running" signal (no `'running'`
+  // literal is ever introduced; CLAUDE.md hard rule).
+  readonly status?: 'completed' | 'failed' | 'canceled';
+  readonly isRunning: boolean;
+  readonly phasesTotal: number;
+  readonly phasesCompleted: number;
+  readonly phasesSkipped: number;
+  readonly totalCostUsd?: number;
+  readonly totalBackendInvocations: number;
+  readonly phases: readonly PhaseRecord[];
+  readonly source: 'task-lifecycle' | 'phase-reconstruction';
+}
+
+export interface PhaseTypeAggregate {
+  readonly phaseType: string;
+  readonly executionCount: number;
+  readonly totalDurationMs: number;
+  readonly avgDurationMs: number;
+  readonly p50DurationMs: number;
+  readonly p90DurationMs: number;
+  readonly p99DurationMs: number;
+  readonly longestDurationMs: number;
+  readonly shortestDurationMs: number;
+  readonly totalBackendInvocations: number;
+  readonly totalCostUsd?: number;
+}
+
+export interface CostTimelinePoint {
+  readonly date: string;
+  readonly dailyCostUsd: number;
+  readonly cumulativeCostUsd: number;
+}
+
+export interface ReadMetricsRequest {
+  readonly includeArchived?: boolean;
+}
+
+export interface ReadMetricsCommand extends CommandBase<typeof CMD_READ_METRICS> {
+  // Required (not optional) so postCommand<C>'s `C extends { payload: infer
+  // P } ? P : undefined` inference resolves to ReadMetricsRequest instead of
+  // falling through to `undefined` — mirrors ReadPhaseLogCommand's required
+  // payload. Every field of ReadMetricsRequest is itself optional, so `{}`
+  // still satisfies this at every call site.
+  readonly payload: ReadMetricsRequest;
+}
+
+// Wire-format response payload for CMD_READ_METRICS. Carried inside the
+// `CommandAckMessage.result` field, mirroring the read-only-query
+// precedent established by `ReadPhaseLogResponse`. No dedicated
+// `MSG_METRICS_RESULT` push message exists — metrics has no streaming
+// counterpart to the phase-log tail feed.
+export interface ReadMetricsResponse {
+  readonly tasks: readonly TaskRecord[];
+  readonly phaseTypeAggregates: readonly PhaseTypeAggregate[];
+  readonly costTimeline: readonly CostTimelinePoint[];
+  readonly oldestIncludedTimestamp?: string;
+  readonly includesArchived: boolean;
+  readonly totalScannedEntries: number;
+  readonly parseWarnings: number;
+}
+
 // Feature 059 — Fine-Grained Trust Scopes. Three per-capability trust
 // scopes gate the save-command handlers and the webview projection.
 // See specs/059-fine-grained-trust-scopes/data-model.md §3 and the
@@ -757,7 +858,8 @@ export type SidebarCommand =
   | StartQueueCommand
   | ClearAllCommand
   | SetConfirmSuppressionCommand
-  | DismissMigrationNoticeCommand;
+  | DismissMigrationNoticeCommand
+  | ReadMetricsCommand;
 
 // -- Host messages (host → webview) -----------------------------------------
 
@@ -1039,6 +1141,18 @@ export function isCmdDismissMigrationNotice(
   return isObjectWithType(value, CMD_DISMISS_MIGRATION_NOTICE);
 }
 
+// Feature 073 — read-only metrics scan guard. Payload is required (an empty
+// object `{}` satisfies it — see ReadMetricsCommand's field comment) to
+// match validateReadMetrics's actual runtime gate; `includeArchived` must be
+// a boolean if provided.
+export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
+  if (!isObjectWithType(value, CMD_READ_METRICS)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const { includeArchived } = payload as { includeArchived?: unknown };
+  return includeArchived === undefined || typeof includeArchived === 'boolean';
+}
+
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
 export const COMMAND_GUARDS: Readonly<
@@ -1093,5 +1207,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_START_QUEUE]: isCmdStartQueue,
   [CMD_CLEAR_ALL]: isCmdClearAll,
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
-  [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice
+  [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice,
+  [CMD_READ_METRICS]: isCmdReadMetrics
 });

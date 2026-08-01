@@ -144,14 +144,14 @@
       },
       "default": [
         {
-          "name": "stdout",
+          "name": "stdoutBuffer",
           "optional": false,
-          "type": "string"
+          "type": "ZippedStreamBuffer"
         },
         {
-          "name": "stderr",
+          "name": "stderrBuffer",
           "optional": false,
-          "type": "string"
+          "type": "ZippedStreamBuffer"
         },
         {
           "name": "exitCode",
@@ -182,16 +182,6 @@
           "name": "diagnosticWarnings",
           "optional": true,
           "type": "ReadonlyArray<string>"
-        },
-        {
-          "name": "stdoutTruncated",
-          "optional": true,
-          "type": "boolean"
-        },
-        {
-          "name": "stderrTruncated",
-          "optional": true,
-          "type": "boolean"
         },
         {
           "name": "command",

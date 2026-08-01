@@ -49,21 +49,35 @@ const MAX_SESSION_ID_LEN = 256;
  * Returns the first valid session_id found, or `null` when no
  * parseable session ID is present.
  */
-export function extractCliSessionId(stdout: string): string | null {
-  if (!stdout || stdout.length < MIN_SESSION_JSON_LEN) return null;
-  // Fast-fail: if the entire stdout doesn't contain the sigil,
-  // skip the line-by-line scan entirely.
-  if (stdout.indexOf(SESSION_ID_SIGIL) === -1) return null;
-
-  const lines = stdout.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (line.length < MIN_SESSION_JSON_LEN) continue;
-    // Shape check: must start with '{' and end with '}'.
-    if (line.charCodeAt(0) !== 0x7b /* { */) continue;
-    if (line.charCodeAt(line.length - 1) !== 0x7d /* } */) continue;
-    // Substring guard: must contain 'session_id'.
-    if (line.indexOf(SESSION_ID_SIGIL) === -1) continue;
+export function extractCliSessionId(stdout: IterableIterator<string> | string): string | null {
+  const chunks = typeof stdout === 'string' ? [stdout] : stdout;
+  let activeLine = '';
+  
+  for (const chunk of chunks) {
+    if (!chunk) continue;
+    
+    let chunkIdx = 0;
+    while (chunkIdx < chunk.length) {
+      const newlineIdx = chunk.indexOf('\n', chunkIdx);
+      
+      if (newlineIdx === -1) {
+        // No more newlines in this chunk, append the rest to activeLine
+        activeLine += chunk.slice(chunkIdx);
+        break;
+      }
+      
+      // We found a newline, so we have a complete line
+      const rawLine = activeLine + chunk.slice(chunkIdx, newlineIdx);
+      activeLine = ''; // reset for next line
+      chunkIdx = newlineIdx + 1;
+      
+      const line = rawLine.trim();
+      if (line.length < MIN_SESSION_JSON_LEN) continue;
+      // Shape check: must start with '{' and end with '}'.
+      if (line.charCodeAt(0) !== 0x7b /* { */) continue;
+      if (line.charCodeAt(line.length - 1) !== 0x7d /* } */) continue;
+      // Substring guard: must contain 'session_id'.
+      if (line.indexOf(SESSION_ID_SIGIL) === -1) continue;
 
     let obj: unknown;
     try {
@@ -97,6 +111,32 @@ export function extractCliSessionId(stdout: string): string | null {
           return nestedId;
         }
       }
+    }
+    }
+  }
+
+  // Check the final trailing line if any
+  if (activeLine.trim().length >= MIN_SESSION_JSON_LEN) {
+    const line = activeLine.trim();
+    if (line.charCodeAt(0) === 0x7b && line.charCodeAt(line.length - 1) === 0x7d && line.indexOf(SESSION_ID_SIGIL) !== -1) {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (obj && typeof obj === 'object') {
+          const sessionId = obj.session_id;
+          if (typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= MAX_SESSION_ID_LEN) {
+            return sessionId;
+          }
+          for (const key of ['conversation', 'session'] as const) {
+            const nested = obj[key] as Record<string, unknown> | undefined;
+            if (nested && typeof nested === 'object') {
+              const nestedId = nested.session_id;
+              if (typeof nestedId === 'string' && nestedId.length > 0 && nestedId.length <= MAX_SESSION_ID_LEN) {
+                return nestedId;
+              }
+            }
+          }
+        }
+      } catch {}
     }
   }
 

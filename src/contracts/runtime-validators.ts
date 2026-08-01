@@ -60,7 +60,7 @@ import {
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_START_QUEUE,
+  CMD_START_QUEUE, CMD_READ_METRICS,
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
@@ -70,6 +70,7 @@ import {
   isValidEnqueueStartIntent,
   isValidStartQueueIntent
 } from './start-intent-types';
+import type { ReadMetricsResponse } from './sidebar-ipc';
 
 export interface IpcValidationError {
   readonly ok: false;
@@ -211,6 +212,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     // forms preserve the feature 020 / FR-012a legacy semantic.
     case CMD_START_QUEUE:
       return validateStartQueue(obj, correlationId);
+    case CMD_READ_METRICS:
+      return validateReadMetrics(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
@@ -1072,4 +1075,50 @@ function hasUnexpectedKeys(obj: Record<string, unknown>, allowed: string[]): boo
     if (!allowed.includes(key)) return true;
   }
   return false;
+}
+
+// Feature 073 (T011) — hand-rolled runtime validator for the
+// `ReadMetricsResponse` base envelope shape (host→webview direction, the
+// inverse of every other validator in this file). Covers only the
+// outermost fields the webview must trust before rendering; deep
+// TaskRecord/PhaseRecord field validation is out of scope
+// (contracts/cmd-read-metrics.md).
+export function isValidReadMetricsResponse(value: unknown): value is ReadMetricsResponse {
+  if (value === null || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  if (!Array.isArray(v['tasks'])) return false;
+  if (!Array.isArray(v['phaseTypeAggregates'])) return false;
+  if (!Array.isArray(v['costTimeline'])) return false;
+  const oldestIncludedTimestamp = v['oldestIncludedTimestamp'];
+  if (oldestIncludedTimestamp !== undefined && typeof oldestIncludedTimestamp !== 'string') {
+    return false;
+  }
+  if (typeof v['includesArchived'] !== 'boolean') return false;
+  if (typeof v['totalScannedEntries'] !== 'number') return false;
+  if (typeof v['parseWarnings'] !== 'number') return false;
+  return true;
+}
+
+// Inbound `CMD_READ_METRICS` request (webview→host direction, FR-014's
+// `includeArchived` opt-in). Must thread `payload.includeArchived` through
+// to the constructed command — dropping it here would silently defeat the
+// archived-history toggle regardless of what the webview requests.
+function validateReadMetrics(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type: CMD_READ_METRICS, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['includeArchived'])) {
+    return fail('unexpected-payload-fields', { type: CMD_READ_METRICS, correlationId });
+  }
+  const includeArchived = p['includeArchived'];
+  if (includeArchived !== undefined && typeof includeArchived !== 'boolean') {
+    return fail('invalid-includeArchived', { type: CMD_READ_METRICS, correlationId });
+  }
+  return ok({
+    type: CMD_READ_METRICS,
+    correlationId,
+    payload: includeArchived === undefined ? {} : { includeArchived }
+  } as SidebarCommand);
 }

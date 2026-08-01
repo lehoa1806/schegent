@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 032 — Context-Preserving Phase Retries, Restarts, and Resumes.
 //
 // End-to-end integration coverage for the continuation-hint dispatch
@@ -96,8 +97,7 @@ function makeScriptedCliRunner(): {
 
 function makeCleanOutput(): RawInvocationOutput {
   return {
-    stdout: '',
-    stderr: '',
+    stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
     exitCode: 0,
     killed: false,
     timedOut: false,
@@ -107,8 +107,7 @@ function makeCleanOutput(): RawInvocationOutput {
 
 function makeTransientOutput(): RawInvocationOutput {
   return {
-    stdout: '',
-    stderr: 'unknown transient cli failure',
+    stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
     exitCode: 1,
     killed: false,
     timedOut: false,

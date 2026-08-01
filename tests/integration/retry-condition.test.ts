@@ -1,3 +1,5 @@
+import { ZippedStreamBuffer } from "../../src/runner/zipped-stream-buffer";
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -74,7 +76,20 @@ function makeStubRunner(scripts: Array<() => RawInvocationOutput>): {
 }
 
 function makeRaw(stdout: string, exitCode = 0): RawInvocationOutput {
-  return { stdout, stderr: '', exitCode, killed: false, timedOut: false, durationMs: 1 };
+  const stdoutBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.append(stdout);
+  stdoutBuffer.finalize();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stderrBuffer.finalize();
+
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode,
+    killed: false,
+    timedOut: false,
+    durationMs: 1
+  };
 }
 
 function block(phase: string, body: readonly string[]): string {

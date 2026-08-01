@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 033 T010 — Integration: pause-then-resume preserves -c continuation.
 //
 // Drives the real WorkflowController + PhaseRunner + AuditLogWriter stack
@@ -89,8 +90,7 @@ interface CapturedInvocation {
 
 function makeCleanOutput(): RawInvocationOutput {
   return {
-    stdout: '',
-    stderr: '',
+    stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
     exitCode: 0,
     killed: false,
     timedOut: false,
@@ -388,8 +388,7 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
     // speckit-clarify so the runner short-circuits on invocation 1.
     let breakpointInstalled = false;
     const cleanSpecify = (): RawInvocationOutput => ({
-      stdout: 'OUTCOME: clean\n',
-      stderr: '',
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append('OUTCOME: clean\n'); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
       exitCode: 0,
       killed: false,
       timedOut: false,

@@ -3,7 +3,6 @@ import {
   mapOutcome,
   mapTerminationReason,
   summarize,
-  truncationFields,
   STDOUT_SUMMARY_LIMIT
 } from '../../../src/controller/phase-outcome-mapper';
 import type { InvocationResult } from '../../../src/parser/stdout-parser';
@@ -135,21 +134,3 @@ describe('summarize / STDOUT_SUMMARY_LIMIT', () => {
   });
 });
 
-describe('truncationFields', () => {
-  it('returns empty object when neither flag is true', () => {
-    expect(truncationFields({})).toEqual({});
-    expect(truncationFields({ stdoutTruncated: false, stderrTruncated: false })).toEqual({});
-  });
-  it('sets stdoutTruncated only when raw.stdoutTruncated is true', () => {
-    expect(truncationFields({ stdoutTruncated: true })).toEqual({ stdoutTruncated: true });
-  });
-  it('sets stderrTruncated only when raw.stderrTruncated is true', () => {
-    expect(truncationFields({ stderrTruncated: true })).toEqual({ stderrTruncated: true });
-  });
-  it('sets both when both are true', () => {
-    expect(truncationFields({ stdoutTruncated: true, stderrTruncated: true })).toEqual({
-      stdoutTruncated: true,
-      stderrTruncated: true
-    });
-  });
-});

@@ -30,7 +30,14 @@ const MAX_JS_BYTES = 200 * 1024;
 // status-bar transient indicator styles. The actual post-build size is
 // ~66.5 KB; the 70 KB cap leaves headroom for the remaining T059–T066
 // polish tasks (label tweaks, dot colors) without re-lifting mid-feature.
-const MAX_CSS_BYTES = 75 * 1024;
+//
+// Feature 073 (Metrics Dashboard, 2026-08-01) lifted 75 KB → 80 KB to
+// absorb the new Metrics tab (`MetricsSection.svelte`): summary cards, the
+// sortable/paginated task table with expandable phase detail, phase
+// analytics, and the hand-rolled cost-trend SVG chart. The actual
+// post-build `dashboard.css` size is ~76.1 KB; the 80 KB cap leaves a small
+// forward-growth margin without re-lifting mid-feature.
+const MAX_CSS_BYTES = 80 * 1024;
 const MAX_DASHBOARD_JS_BYTES = 250 * 1024;
 const SIDEBAR_GROWTH_BUDGET_BYTES = 8 * 1024;
 

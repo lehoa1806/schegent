@@ -34,11 +34,12 @@
   import QueueControls from './QueueControls.svelte';
   import QueueListView from './QueueListView.svelte';
   import HistorySection from './HistorySection.svelte';
+  import MetricsSection from './MetricsSection.svelte';
   import { useConfirm } from '../lib/use-confirm';
   import { deriveCleanAllContext } from '../lib/queue-derived';
 
   let leftPanelCollapsed = $state(false);
-  let queueTab = $state<'queue' | 'history'>('queue');
+  let queueTab = $state<'queue' | 'history' | 'metrics'>('queue');
 
   function toggleLeftPanel(): void {
     leftPanelCollapsed = !leftPanelCollapsed;
@@ -97,13 +98,13 @@
       if (item.status === 'completed') {
         state = 'completed';
       } else if (item.status === 'failed' || item.status === 'canceled') {
-        const currentIdx = phaseDefs.findIndex((p) => p.name === item.currentPhase);
+        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';
         }
-      } else if (item.status === 'in-flight') {
-        const currentIdx = phaseDefs.findIndex((p) => p.name === item.currentPhase);
+      } else if (item.status === 'in-flight' || item.status === 'paused') {
+        const currentIdx = phaseDefs.findIndex((p) => p.id === item.currentPhase);
         if (currentIdx >= 0) {
           if (idx < currentIdx) state = 'completed';
           else if (idx === currentIdx) state = 'active';
@@ -353,6 +354,15 @@
               aria-selected={queueTab === 'history'}
               role="tab"
             >Recent Runs</button>
+            <button
+              type="button"
+              class="queue-tab"
+              class:active={queueTab === 'metrics'}
+              data-testid="dashboard-queue-tab-metrics"
+              onclick={() => (queueTab = 'metrics')}
+              aria-selected={queueTab === 'metrics'}
+              role="tab"
+            >Metrics</button>
           </div>
           {#if queueTab === 'queue'}
             <QueueControls
@@ -375,13 +385,15 @@
               onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
               testIdPrefix="dashboard-queue-item"
             />
-          {:else}
+          {:else if queueTab === 'history'}
             <HistorySection
               history={snapshot.history}
               {isPrimary}
               selectedTaskId={activityFeedSelection.taskId}
               onTaskSelect={(taskId) => onActivityFeedTaskSelect(taskId)}
             />
+          {:else}
+            <MetricsSection active={queueTab === 'metrics'} />
           {/if}
         </section>
       </div>

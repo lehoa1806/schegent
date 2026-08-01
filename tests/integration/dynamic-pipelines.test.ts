@@ -1,3 +1,4 @@
+import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -90,9 +91,8 @@ function makeCliRunner(
     counts.set(req.phase, prev + 1);
     const shouldLoop = loopOnceFor.has(req.phase) && prev === 0;
     return {
-      stdout: shouldLoop ? issuesStdout(req.phase) : cleanStdout(req.phase),
-      stderr: '',
-      exitCode: 0,
+        stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(shouldLoop ? issuesStdout(req.phase) : cleanStdout(req.phase)); b.finalize(); return b; })(),
+        stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
       killed: false,
       timedOut: false,
       durationMs: 1

@@ -1,3 +1,5 @@
+import { ZippedStreamBuffer } from "../../../src/runner/zipped-stream-buffer";
+
 // Feature 032 — phase-start audit payload `isContinue` field.
 //
 // Verifies the audit-payload contract for the continuation-hint
@@ -74,8 +76,7 @@ function makeStubPromptBuilder(): PromptBuilder {
 function makeStubRunner(): ClaudeCliRunner {
   return {
     invoke: async () => ({
-      stdout: '',
-      stderr: '',
+      stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })(), stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),
       exitCode: 0,
       killed: false,
       timedOut: false,

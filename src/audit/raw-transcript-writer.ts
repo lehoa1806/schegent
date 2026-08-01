@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Phase } from '../controller/phase';
 import type { SanitizedLogger } from '../lib/logger';
+import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 import { ensureSchegentGitignore } from './schegent-gitignore';
 
 const SESSION_START = '========== SESSION START ==========';
@@ -16,8 +17,8 @@ export interface RawTranscriptStartInput {
 
 export interface RawTranscriptEndInput {
   runId: string;
-  stdout: string;
-  stderr: string;
+  stdout: string | ZippedStreamBuffer;
+  stderr: string | ZippedStreamBuffer;
   exitCode: number | null;
   killed: boolean;
   timedOut: boolean;
@@ -60,8 +61,10 @@ export class RawTranscriptWriter {
       this.warnEmptyRunId();
       return;
     }
-    const block = formatEndBlock(input);
-    await this.enqueue(input.runId, block);
+    const previous = this.chains.get(input.runId) ?? Promise.resolve();
+    const next = previous.then(() => this.doWriteEnd(input));
+    this.chains.set(input.runId, next);
+    return next;
   }
 
   private filePathFor(runId: string): string {
@@ -86,6 +89,44 @@ export class RawTranscriptWriter {
         this.failedRuns.add(runId);
         this.logger.warn(
           `raw transcript write failed for run ${runId}: ${(err as Error).message}`
+        );
+      }
+    }
+  }
+
+  private async doWriteEnd(input: RawTranscriptEndInput): Promise<void> {
+    const target = this.filePathFor(input.runId);
+    try {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await this.ensureRuntimeGitignore();
+      
+      const handle = await fs.open(target, 'a');
+      try {
+        await handle.write('[STDOUT]\n');
+        if (typeof input.stdout === 'string') {
+          await handle.write(input.stdout);
+        } else {
+          for (const chunk of input.stdout.decompressStream()) {
+            await handle.write(chunk);
+          }
+        }
+        await handle.write('\n\n[STDERR]\n');
+        if (typeof input.stderr === 'string') {
+          await handle.write(input.stderr);
+        } else {
+          for (const chunk of input.stderr.decompressStream()) {
+            await handle.write(chunk);
+          }
+        }
+        await handle.write(`\n\n[EXIT_CODE]: ${formatExitCode(input)}\n${SESSION_END}\n\n`);
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      if (!this.failedRuns.has(input.runId)) {
+        this.failedRuns.add(input.runId);
+        this.logger.warn(
+          `raw transcript write failed for run ${input.runId}: ${(err as Error).message}`
         );
       }
     }
@@ -118,20 +159,7 @@ function formatStartBlock(input: RawTranscriptStartInput): string {
   ].join('\n');
 }
 
-function formatEndBlock(input: RawTranscriptEndInput): string {
-  return [
-    '[STDOUT]',
-    input.stdout,
-    '',
-    '[STDERR]',
-    input.stderr,
-    '',
-    `[EXIT_CODE]: ${formatExitCode(input)}`,
-    SESSION_END,
-    '',
-    ''
-  ].join('\n');
-}
+// formatEndBlock is removed because it's replaced by streaming logic in doWriteEnd
 
 function formatExitCode(input: RawTranscriptEndInput): string {
   if (input.timedOut) return 'timeout';

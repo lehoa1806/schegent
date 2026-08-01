@@ -25,8 +25,7 @@ import { PhaseRetryEvaluator, type LastRetryDecisionSink } from './phase-retry-e
 import {
   mapOutcome,
   mapTerminationReason,
-  summarize,
-  truncationFields
+  summarize
 } from './phase-outcome-mapper';
 
 // Feature 057 — re-export from `phase-sidecar-reader` so existing import
@@ -97,6 +96,11 @@ export interface PhaseRunInputs {
    * `sessionReuse === true`, falls back to a fresh session.
    */
   resumeSessionId?: string;
+  /**
+   * Optional custom prompt provided by the operator for a resume invocation.
+   * When set, bypasses standard prompt generation.
+   */
+  resumePrompt?: string;
 }
 
 export interface PhaseRunOutput {
@@ -269,18 +273,20 @@ export class PhaseRunner {
       };
     }
 
-    const prompt = this.promptBuilder.build({
-      phase: inputs.phase,
-      phaseDef: inputs.phaseDef,
-      iteration: inputs.iteration,
-      iterationCap: inputs.iterationCap,
-      featureDescription: inputs.featureDescription,
-      featureDir: inputs.featureDir,
-      carriedIssues: inputs.carriedIssues,
-      perPhaseRulesPath: inputs.perPhaseRulesPath ?? null,
-      phaseMessagePath: inputs.phaseMessagePath ?? null,
-      previousPhaseMessage: inputs.previousPhaseMessage ?? null
-    });
+    const prompt = inputs.resumePrompt 
+      ? inputs.resumePrompt 
+      : this.promptBuilder.build({
+          phase: inputs.phase,
+          phaseDef: inputs.phaseDef,
+          iteration: inputs.iteration,
+          iterationCap: inputs.iterationCap,
+          featureDescription: inputs.featureDescription,
+          featureDir: inputs.featureDir,
+          carriedIssues: inputs.carriedIssues,
+          perPhaseRulesPath: inputs.perPhaseRulesPath ?? null,
+          phaseMessagePath: inputs.phaseMessagePath ?? null,
+          previousPhaseMessage: inputs.previousPhaseMessage ?? null
+        });
 
     const startPayload: Record<string, unknown> = {
       pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
@@ -430,11 +436,11 @@ export class PhaseRunner {
       });
     }
 
-    const unwrappedStream = unwrapStreamJson(raw.stdout);
+    const unwrappedStream = unwrapStreamJson(raw.stdoutBuffer);
 
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
-    const rateLimit = detectCreditError(raw.stdout, raw.stderr, raw.exitCode);
+    const rateLimit = detectCreditError(raw.stdoutBuffer, raw.stderrBuffer, raw.exitCode);
     const audit = parseAuditLogBlock(unwrappedStream.text);
     // Feature 011 FR-033 — operator-additive fatal signatures, read per
     // invocation (never cached); the built-in floor is preserved.
@@ -443,7 +449,7 @@ export class PhaseRunner {
     const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
     const result = parseInvocation({
       stdout: unwrappedStream.text,
-      stderr: raw.stderr,
+      stderr: typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100),
       exitCode: raw.exitCode,
       rateLimit,
       auditEntry: audit.entry,
@@ -456,8 +462,8 @@ export class PhaseRunner {
     if (raw.timedOut && result.kind !== 'clean') {
       await this.rawTranscript?.appendEnd({
         runId: inputs.runId,
-        stdout: raw.stdout,
-        stderr: raw.stderr,
+        stdout: raw.stdoutBuffer,
+        stderr: raw.stderrBuffer,
         exitCode: raw.exitCode,
         killed: raw.killed,
         timedOut: raw.timedOut
@@ -465,15 +471,14 @@ export class PhaseRunner {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         reason: 'timeout',
-        ...this.invocationMetricPayload(raw),
-        ...truncationFields(raw)
+        ...this.invocationMetricPayload(raw)
       });
       return {
         result: { kind: 'malformed', warnings: ['timeout'], auditEntry: null },
         outcome: 'timeout',
         terminationReason: 'timeout',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
+        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         warnings: ['phase timed out'],
@@ -484,8 +489,8 @@ export class PhaseRunner {
     if (raw.killed && raw.exitCode === null) {
       await this.rawTranscript?.appendEnd({
         runId: inputs.runId,
-        stdout: raw.stdout,
-        stderr: raw.stderr,
+        stdout: raw.stdoutBuffer,
+        stderr: raw.stderrBuffer,
         exitCode: raw.exitCode,
         killed: raw.killed,
         timedOut: raw.timedOut
@@ -499,7 +504,7 @@ export class PhaseRunner {
         outcome: 'failed',
         terminationReason: 'cancel',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
+        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         warnings: ['phase cancelled'],
@@ -540,8 +545,8 @@ export class PhaseRunner {
 
     await this.rawTranscript?.appendEnd({
       runId: inputs.runId,
-      stdout: raw.stdout,
-      stderr: raw.stderr,
+      stdout: raw.stdoutBuffer,
+      stderr: raw.stderrBuffer,
       exitCode: raw.exitCode,
       killed: raw.killed,
       timedOut: raw.timedOut
@@ -587,8 +592,7 @@ export class PhaseRunner {
         // FR-005 — redacted fatal-cause text; audit-log-writer is the
         // single sanitization point (sanitize() runs there on the
         // whole payload).
-        ...(fatalCause ? { cause: fatalCause } : {}),
-        ...truncationFields(raw)
+        ...(fatalCause ? { cause: fatalCause } : {})
       }
     );
 
@@ -597,7 +601,7 @@ export class PhaseRunner {
       outcome,
       terminationReason,
       stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-      stderrSummary: this.logger.sanitize(summarize(raw.stderr)),
+      stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
       warnings: 'warnings' in result ? result.warnings : [],
@@ -656,14 +660,14 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdout' | 'durationMs'>
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'durationMs'>
   ): Record<string, unknown> {
     return {
       // Trust the runner-owned process timer for the canonical duration.
       // CLI-reported stream-json duration is carried separately as
       // `cliDurationMs` so model/CLI output cannot overwrite host timing.
       durationMs: raw.durationMs,
-      ...(extractInvocationUsageMetrics(raw.stdout) ?? {})
+      ...(extractInvocationUsageMetrics(raw.stdoutBuffer) ?? {})
     };
   }
 
