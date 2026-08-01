@@ -137,7 +137,7 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, perPhaseRulesEnabled: false, skipProbing: true }
     );
 
     const feature = await queue.enqueue('Add login');

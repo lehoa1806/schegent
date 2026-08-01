@@ -113,14 +113,14 @@ describe('projectPhasePrecedence', () => {
     expect(Object.isFrozen(out)).toBe(true);
   });
 
-  it('12-cell matrix: every (layer × set/unset × effort/model) combination resolves', () => {
+  it('12-cell matrix: every (layer × set/unset × effort/model/runner) combination resolves', () => {
     const layers: PhasePrecedenceLayer[] = ['user', 'workspace', 'built-in', 'unset'];
-    const matrix: Array<{ field: 'effort' | 'model'; layer: PhasePrecedenceLayer }> = [];
-    for (const f of ['effort', 'model'] as const) {
+    const matrix: Array<{ field: 'effort' | 'model' | 'runner'; layer: PhasePrecedenceLayer }> = [];
+    for (const f of ['effort', 'model', 'runner'] as const) {
       for (const l of layers) matrix.push({ field: f, layer: l });
     }
     for (const cell of matrix) {
-      const set = cell.field === 'effort' ? { effort: 'high' as const } : { model: 'm' };
+      const set = cell.field === 'effort' ? { effort: 'high' as const } : cell.field === 'model' ? { model: 'm' } : { runner: 'agy' as const };
       let builtIn: PhaseDef[] = [phase('p')];
       let user: PhaseDef[] = [phase('p')];
       let workspace: PhaseDef[] = [phase('p')];

@@ -272,22 +272,26 @@ export class QueueManager {
 
     // Feature 072 — emit task-execution-started after markInFlight succeeds
     if (this.lifecycleAuditHook) {
-      const currentRun = this.store.getRun();
-      const pipelineId = (currentRun?.id === runId ? currentRun?.pipeline?.id : '') ?? '';
-      await this.lifecycleAuditHook.append({
-        runId,
-        phase: 'queue-manager',
-        iteration: 0,
-        eventType: 'task-execution-started',
-        outcome: 'info',
-        payload: {
-          taskId: featureId,
+      try {
+        const currentRun = this.store.getRun();
+        const pipelineId = (currentRun?.id === runId ? currentRun?.pipeline?.id : '') ?? '';
+        await this.lifecycleAuditHook.append({
           runId,
-          queueId: movedRequest?.queueId ?? '',
-          pipelineId,
-          isResume
-        }
-      });
+          phase: 'queue-manager',
+          iteration: 0,
+          eventType: 'task-execution-started',
+          outcome: 'info',
+          payload: {
+            taskId: featureId,
+            runId,
+            queueId: movedRequest?.queueId ?? '',
+            pipelineId,
+            isResume
+          }
+        });
+      } catch (err) {
+        this.logger?.warn(`task-execution-started audit emission failed: ${(err as Error).message}`);
+      }
     }
   }
 

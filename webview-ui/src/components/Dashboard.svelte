@@ -343,7 +343,7 @@
               onclick={() => (queueTab = 'queue')}
               aria-selected={queueTab === 'queue'}
               role="tab"
-            >Active Queue</button>
+            >Active queue</button>
             <button
               type="button"
               class="queue-tab"
@@ -352,7 +352,7 @@
               onclick={() => (queueTab = 'history')}
               aria-selected={queueTab === 'history'}
               role="tab"
-            >Recent Runs</button>
+            >Recent runs</button>
           </div>
           {#if queueTab === 'queue'}
             <QueueControls
@@ -440,12 +440,10 @@
   }
   .dashboard-title {
     font-size: 1.5em;
-    font-weight: 600;
+    font-weight: 700;
     margin: 0 0 8px 0;
-    background: var(--sch-accent-gradient);
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    color: var(--schegent-fg);
+    letter-spacing: -0.02em;
   }
 
   .dashboard-split {
@@ -572,12 +570,11 @@
     overflow: hidden;
   }
   .glass-card {
-    background: var(--sch-glass-bg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    padding: var(--schegent-pad);
-    box-shadow: var(--sch-card-shadow);
-    backdrop-filter: blur(12px);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
     display: flex;
     flex-direction: column;
   }

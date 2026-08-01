@@ -1,4 +1,8 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { PhaseRunner } from '../controller/phase-runner';
+
+const execFileAsync = promisify(execFile);
 import { composePhaseMessagePath } from '../controller/phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
@@ -24,6 +28,7 @@ interface RunDriverOptions {
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   // When undefined, falls back to `cliPath` for all runners.
   readonly cliPathResolver?: (runnerKind: string) => string;
+  readonly skipProbing?: boolean;
 }
 
 type PhaseControlEventType =
@@ -53,6 +58,10 @@ export interface RunDriverDeps {
   ) => Promise<void>;
   readonly appendBreakpointAudit: (
     eventType: 'phase-breakpoint-cleared',
+    run: WorkflowRun,
+    payload: Record<string, unknown>
+  ) => Promise<void>;
+  readonly appendRunnerProbeFailedAudit: (
     run: WorkflowRun,
     payload: Record<string, unknown>
   ) => Promise<void>;
@@ -122,6 +131,56 @@ export class RunDriver {
 
     try {
       await this.deps.lock.withLock('drive-run', async (session) => {
+        // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
+        if (
+          process.env.NODE_ENV !== 'test' &&
+          !this.deps.options.skipProbing &&
+          run.phasesCompleted.length === 0 &&
+          run.currentIteration === 0 &&
+          run.pipeline
+        ) {
+          const runners = new Set(run.pipeline.phases.map((p) => p.runner || 'claude'));
+          for (const runnerKind of runners) {
+            const cliPath = this.resolveCliPath(runnerKind);
+            try {
+              await execFileAsync(cliPath, ['--help']);
+            } catch (err: any) {
+              const probeErr = err as Error;
+              this.deps.logger.error(`Probe failed for runner ${runnerKind} at ${cliPath}: ${probeErr.message}`);
+              run = await this.deps.persistTransition(run, { ...run, status: 'failed' });
+              
+              if (this.deps.appendRunnerProbeFailedAudit) {
+                await this.deps.appendRunnerProbeFailedAudit(run, {
+                  runnerKind,
+                  cliPath,
+                  errorMessage: probeErr.message,
+                  runId: run.id
+                });
+              }
+              // Feature 072 — emit task-execution-ended
+              try {
+                if (this.deps.emitTaskLifecycleAudit) {
+                  await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+                    taskId: run.featureId,
+                    runId: run.id,
+                    terminalStatus: 'failed',
+                    phasesCompleted: 0,
+                    phasesSkipped: 0,
+                    phasesTotal: run.pipeline?.phases.length || 0,
+                    lastErrorSummary: `Runner probe failed for ${runnerKind}: ${probeErr.message}`.slice(0, 240)
+                  });
+                }
+              } catch (auditErr) {
+                this.deps.logger.warn(`run-driver: task-execution-ended (failed) audit failed: ${(auditErr as Error).message}`);
+              }
+              
+              await this.deps.emitRunEndedBreakpointAudit(run);
+              await this.deps.historyRecorder.record(run, description, 'failed');
+              return; // break out of withLock completely
+            }
+          }
+        }
+
         while (run.currentPhase !== 'done' && run.status === 'running') {
           if (this.cancellationController!.signal.aborted) {
             run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
@@ -399,14 +458,20 @@ export class RunDriver {
               );
             }
             // Feature 072 — emit task-execution-ended (failed).
-            await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-              taskId: run.featureId,
-              runId: run.id,
-              terminalStatus: 'failed',
-              durationMs: Date.now() - run.startedAt,
-              ...this.computePhaseStats(run),
-              lastErrorSummary: sanitized.message
-            });
+            try {
+              await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+                taskId: run.featureId,
+                runId: run.id,
+                terminalStatus: 'failed',
+                durationMs: Date.now() - run.startedAt,
+                ...this.computePhaseStats(run),
+                lastErrorSummary: sanitized.message
+              });
+            } catch (err) {
+              this.deps.logger.warn(
+                `run-driver: task-execution-ended (failed) audit failed: ${(err as Error).message}`
+              );
+            }
             break;
           }
 
@@ -524,13 +589,19 @@ export class RunDriver {
             );
           }
           // Feature 072 — emit task-execution-ended (completed).
-          await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-            taskId: run.featureId,
-            runId: run.id,
-            terminalStatus: 'completed',
-            durationMs: Date.now() - run.startedAt,
-            ...this.computePhaseStats(run)
-          });
+          try {
+            await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+              taskId: run.featureId,
+              runId: run.id,
+              terminalStatus: 'completed',
+              durationMs: Date.now() - run.startedAt,
+              ...this.computePhaseStats(run)
+            });
+          } catch (err) {
+            this.deps.logger.warn(
+              `run-driver: task-execution-ended (completed) audit failed: ${(err as Error).message}`
+            );
+          }
         }
       });
     } finally {

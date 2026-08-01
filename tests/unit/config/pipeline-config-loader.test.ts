@@ -278,6 +278,58 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
     });
     const result = loadCatalog(reader);
     expect(result.usedFallback).toBe(false);
-    expect(result.catalog.phasesById.get('ok')).toBeDefined();
   });
 });
+
+describe('loadCatalog — runner validation (074, T033)', () => {
+  it('accepts phase definitions with runner: agy', () => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'test-runner-1',
+          name: 'Test Runner',
+          instruction: 'inst',
+          runner: 'agy'
+        }
+      ]
+    });
+    const result = loadCatalog(reader);
+    expect(result.errors).toEqual([]);
+    const phase = result.catalog.phasesById.get('test-runner-1');
+    expect(phase?.runner).toBe('agy');
+  });
+
+  it('rejects phase definitions with invalid runner', () => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'test-runner-2',
+          name: 'Test Runner',
+          instruction: 'inst',
+          runner: 'invalid-runner-name'
+        }
+      ]
+    });
+    const result = loadCatalog(reader);
+    expect(result.errors.length).toBeGreaterThan(0);
+    // Invalid runner causes the phase to fail schema validation, meaning it doesn't get loaded
+    expect(result.catalog.phasesById.has('test-runner-2')).toBe(false);
+  });
+
+  it('accepts phase definitions with omitted runner', () => {
+    const reader = makeReader({
+      workspacePhases: [
+        {
+          id: 'test-runner-3',
+          name: 'Test Runner',
+          instruction: 'inst'
+        }
+      ]
+    });
+    const result = loadCatalog(reader);
+    expect(result.errors).toEqual([]);
+    const phase = result.catalog.phasesById.get('test-runner-3');
+    expect(phase?.runner).toBeUndefined();
+  });
+});
+

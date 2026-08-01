@@ -25,6 +25,7 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // Runner-level work (task)
   'cli-invocation': 'task',
   'file-write': 'task',
+  'runner-probe-failed': 'task',
   // Loop control (task)
   'loop-iteration': 'task',
   // Lifecycle — split between system (pause/resume) and task (warning/error/cancel)
@@ -286,6 +287,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'task-execution-started':
         case 'task-execution-ended':
         case 'task-execution-paused':
+        case 'runner-probe-failed':
         case 'phase-jumped':
         case 'metrics-view-opened': {
           const scope = classifyAuditEvent(evt);

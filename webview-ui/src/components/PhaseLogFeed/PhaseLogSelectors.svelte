@@ -21,6 +21,7 @@
     readonly selection: PhaseLogSelectionDraft;
     readonly iterations: readonly number[];
     readonly availablePhases?: readonly { readonly id: string; readonly name?: string }[];
+    readonly selectedRunner?: string | null;
     readonly entryCount?: number;
     readonly onSelectQueue: (queueId: string | null) => void;
     readonly onSelectTask: (taskId: string | null, pipelineId: string | null) => void;
@@ -34,6 +35,7 @@
     selection,
     iterations: _iterations,
     availablePhases = [],
+    selectedRunner = null,
     entryCount = 0,
     onSelectQueue: _onSelectQueue,
     onSelectTask: _onSelectTask,
@@ -109,6 +111,9 @@
         {#if selectedPhaseName}
           <span class="crumb-separator" aria-hidden="true">›</span>
           <span class="crumb crumb-phase" title="Selected phase">{selectedPhaseName}</span>
+          {#if selectedRunner}
+            <span class="runner-badge" title="Executing on {selectedRunner}">{selectedRunner}</span>
+          {/if}
         {/if}
       {/if}
     {:else}
@@ -235,6 +240,29 @@
     border-color: var(--schegent-disabled-fg);
     color: var(--schegent-disabled-fg);
     background: transparent;
+  }
+
+  .jump-label {
+    display: none;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .runner-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px;
+    height: 18px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 6px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    opacity: 0.9;
   }
 
   .jump-icon {

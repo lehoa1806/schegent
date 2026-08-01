@@ -221,6 +221,7 @@ export interface AuditTailEntry {
   readonly phaseId?: string;
   readonly outcome?: 'success' | 'error' | 'pending';
   readonly command?: string;
+  readonly runner?: string;
 }
 
 export interface LiveActivity {

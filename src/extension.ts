@@ -9,6 +9,7 @@ import {
   getCanonicalWorkspaceRoot,
   disposeWorkspaceFolderPicker
 } from './state/workspace-folder-picker';
+import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
@@ -543,19 +544,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
-      cliPathResolver: (runnerKind: string) => {
-        if (runnerKind === 'agy') {
-          return vscode.workspace
-            .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-            .get<string>('agy.path', 'agy');
-        }
-        if (runnerKind === 'codex') {
-          return vscode.workspace
-            .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-            .get<string>('codex.path', 'codex');
-        }
-        return cliPath; // 'claude' or default
-      }
+      cliPathResolver: (runnerKind: string) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
     },
     {
       monitor,

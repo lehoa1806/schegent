@@ -13,13 +13,15 @@ the abstraction is provably reusable.
 |---|---|---|
 | `claude` *(default)* | [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) | Spawns the Claude CLI with prompt-transport probing (`--prompt-file` → `--prompt-stdin` → `-p` fallback). Supports `-c` (continue) for context-preserving retries. |
 | `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | Spawns `codex exec --no-stream`. Prompt is piped over stdin (never appears in argv). `-c` (continue) is **not** supported yet — retries reuse the existing fresh-context dispatch. |
+| `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
 
 Switch backends from the VS Code settings UI (`Schegent: Backend: Runner`)
 or by editing `package.json` / `.vscode/settings.json`:
 
 ```json
 {
-  "schegent.backend.runner": "codex"
+  "schegent.backend.runner": "codex",
+  "schegent.agy.path": "/usr/local/bin/agy"
 }
 ```
 
@@ -27,6 +29,19 @@ Changes take effect at the next extension activation. The factory at
 [src/runner/backend-runner-factory.ts](../../src/runner/backend-runner-factory.ts)
 resolves unknown values to `'claude'` and logs a `WARN` (`backend-runner-factory:
 unknown schegent.backend.runner ...`) so a typo never breaks activation.
+
+## Per-phase runner selection and probing
+
+Since feature 074, runners can be selected dynamically **per-phase** using the `runner` field on the `PhaseDef` object in `pipeline-config.json` (or via the UI Pipeline Builder).
+
+Precedence for runner selection per phase:
+1. Per-phase `runner` explicitly defined
+2. Global `schegent.backend.runner` setting
+3. Fallback to `'claude'`
+
+A session context reset occurs across runner transitions (e.g., if Phase 1 uses `claude` and Phase 2 uses `agy`, the conversation history is NOT shared across the boundary).
+
+**CLI Probing**: Schegent implements fast-fail behavior by actively probing the availability of all required CLI binaries _before_ starting the first phase in a pipeline. If a runner fails this probe, a `runner-probe-failed` audit event is emitted and the pipeline aborts immediately.
 
 ## Contract every backend MUST honor
 

@@ -813,12 +813,12 @@ describe('Dashboard Activity Feed click-to-navigate (021)', () => {
 
 describe('Dashboard visible-text contract (T064 / SC-011 / BUG-004)', () => {
   describe('FR-033 zone headers render visible text per the canonical design', () => {
-    it('Queue Management zone header reads "Active Queue"', () => {
+    it('Queue Management zone header reads "Active queue"', () => {
       const snap = buildSnapshot();
       const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
       const tab = getByTestId('dashboard-queue-tab-queue');
       expect(tab).not.toBeNull();
-      expect(tab.textContent?.trim()).toBe('Active Queue');
+      expect(tab.textContent?.trim()).toBe('Active queue');
     });
 
     it('Phase Progression zone header reads "Phase Progression (Active: <id>)" when queue.inFlight is set (FR-017, 016)', () => {

@@ -68,6 +68,27 @@
       state.verboseDiagnosticsState.kind !== 'enabled-with-sessions'
   );
 
+  const selectedRunner = $derived.by(() => {
+    if (!state.selection.taskId || !state.selection.phaseId) return null;
+    const runId = state.selection.taskId;
+    const phaseId = state.selection.phaseId;
+    const entries = snapshot.auditTail ?? [];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (
+        e.runId === runId &&
+        (e.phaseId === phaseId || e.phase === phaseId) &&
+        e.category === 'phase-transition' &&
+        e.summary.startsWith('phase-start')
+      ) {
+        if (e.runner && e.runner !== 'claude') {
+          return e.runner;
+        }
+      }
+    }
+    return null;
+  });
+
   // T053 — derived tail fingerprint. Encodes the (queueId, taskId,
   // pipelineId, phaseId, iterationN) tuple as a single string when
   // the selection resolves to (a) iteration === latest known iteration
@@ -419,6 +440,7 @@
     selection={state.selection}
     iterations={state.iterations}
     {availablePhases}
+    {selectedRunner}
     entryCount={state.entries.length}
     onSelectQueue={handleSelectQueue}
     onSelectTask={handleSelectTask}
