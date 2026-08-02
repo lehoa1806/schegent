@@ -14,10 +14,26 @@ function snapshot(ping: WorkflowSnapshot['backendPingState'] = { status: 'idle' 
   } as unknown as WorkflowSnapshot;
 }
 
+const mockProps = {
+  BACKEND_FIELDS: [
+    { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
+    { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
+    { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' }
+  ],
+  draft: { cliPath: '', codexPath: '', agyPath: '' },
+  statusByKey: {},
+  fieldChanged: () => false,
+  fieldScopeLabel: () => 'default',
+  pipelines: [],
+  saveOne: () => {},
+  resetField: () => {},
+  onAutoCompactInput: () => {}
+};
+
 describe('BackendHealthSection', () => {
   it('renders one action per v1 backend through the shared helper', async () => {
     const { getByTestId } = render(BackendHealthSection, {
-      props: { snapshot: snapshot() }
+      props: { snapshot: snapshot(), ...mockProps }
     });
     expect(getByTestId('ping-backend-claude')).toBeTruthy();
     expect(getByTestId('ping-backend-codex')).toBeTruthy();
@@ -31,7 +47,8 @@ describe('BackendHealthSection', () => {
       props: {
         snapshot: snapshot({
           status: 'running', runner: 'agy', startedAt: 10, timeoutSeconds: 5
-        })
+        }),
+        ...mockProps
       }
     });
     for (const runner of ['claude', 'codex', 'agy']) {
@@ -47,7 +64,8 @@ describe('BackendHealthSection', () => {
           status: 'failure', runner: 'claude', startedAt: 10,
           completedAt: 12, latencyMs: 2, timeoutSeconds: 5,
           cause: 'non-zero-exit', exitCode: 7
-        })
+        }),
+        ...mockProps
       }
     });
     expect(getByRole('status').textContent).toBe('Unavailable · non-zero-exit · exit 7');

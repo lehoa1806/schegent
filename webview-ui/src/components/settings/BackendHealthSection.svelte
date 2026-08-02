@@ -7,9 +7,33 @@
   } from '../../lib/snapshot-types';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
+  import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
 
-  interface Props { snapshot: WorkflowSnapshot }
-  const { snapshot }: Props = $props();
+  interface Props {
+    snapshot: WorkflowSnapshot;
+    BACKEND_FIELDS: readonly any[];
+    draft: any;
+    statusByKey: any;
+    fieldChanged: (key: any) => boolean;
+    fieldScopeLabel: (key: any) => string;
+    pipelines: any;
+    saveOne: (spec: any) => void;
+    resetField: (key: any) => void;
+    onAutoCompactInput: (ev: Event) => void;
+  }
+  let {
+    snapshot,
+    BACKEND_FIELDS,
+    draft = $bindable(),
+    statusByKey,
+    fieldChanged,
+    fieldScopeLabel,
+    pipelines,
+    saveOne,
+    resetField,
+    onAutoCompactInput
+  }: Props = $props();
+
   const RUNNERS: readonly BackendRunnerKind[] = ['claude', 'codex', 'agy'];
   const LABELS: Record<BackendRunnerKind, string> = {
     claude: 'Claude',
@@ -37,8 +61,9 @@
     <p id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
   </div>
   <div class="backend-list">
-    {#each RUNNERS as runner}
-      <div class="backend-row" data-testid={`backend-health-${runner}`}>
+    {#each RUNNERS as runner, i}
+      {@const spec = BACKEND_FIELDS[i]}
+      <div class="backend-row-wrapper" data-testid={`backend-health-${runner}`}>
         <div class="identity">
           <strong>{LABELS[runner]}</strong>
           <span class:available={availableBackends.includes(runner)}>
@@ -48,17 +73,32 @@
             <small role="status" aria-live="polite">{description(runner)}</small>
           {/if}
         </div>
-        <button
-          type="button"
-          disabled={busy}
-          aria-label={`Ping ${LABELS[runner]} backend`}
-          data-testid={`ping-backend-${runner}`}
-          onclick={() => pingBackend(runner)}
-          use:hoverTextAnchor={{
-            controlId: 'backend-ping',
-            description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
-          }}
-        >{state.status === 'running' && state.runner === runner ? 'Pinging…' : 'Ping'}</button>
+        <GeneralSettingFieldRow
+          {spec}
+          bind:draft
+          status={statusByKey[spec.key]}
+          changed={fieldChanged(spec.key)}
+          scopeLabel={fieldScopeLabel(spec.key)}
+          {pipelines}
+          onSave={() => saveOne(spec)}
+          onReset={() => resetField(spec.key)}
+          {onAutoCompactInput}
+        >
+          {#snippet actionsAppend()}
+            <button
+              type="button"
+              class="ping-btn"
+              disabled={busy}
+              aria-label={`Ping ${LABELS[runner]} backend`}
+              data-testid={`ping-backend-${runner}`}
+              onclick={() => pingBackend(runner)}
+              use:hoverTextAnchor={{
+                controlId: 'backend-ping',
+                description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
+              }}
+            >{state.status === 'running' && state.runner === runner ? 'Pinging…' : 'Ping'}</button>
+          {/snippet}
+        </GeneralSettingFieldRow>
       </div>
     {/each}
   </div>
@@ -75,20 +115,17 @@
   }
   h3 { margin: 0; font-size: 1em; }
   p { margin: 3px 0 0; color: var(--schegent-muted-fg); font-size: 0.85em; }
-  .backend-list { display: grid; gap: 6px; }
-  .backend-row {
+  .backend-list { display: grid; gap: 16px; margin-top: 10px; }
+  .backend-row-wrapper {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 10px;
-    background: var(--vscode-editor-background);
+    flex-direction: column;
+    gap: 8px;
   }
   .identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
   .identity span { color: var(--vscode-notificationsWarningIcon-foreground); font-size: 0.8em; }
   .identity span.available { color: var(--vscode-testing-iconPassed); }
   small { flex-basis: 100%; color: var(--schegent-muted-fg); }
-  button {
+  .ping-btn {
     padding: 4px 12px;
     border: 0;
     border-radius: var(--schegent-radius);
@@ -96,6 +133,6 @@
     color: var(--schegent-button-fg);
     cursor: pointer;
   }
-  button:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .ping-btn:hover:not(:disabled) { background: var(--schegent-button-hover); }
+  .ping-btn:disabled { cursor: not-allowed; opacity: 0.55; }
 </style>
