@@ -6,7 +6,7 @@
 *                          @lehoa1806
 
 # Security-sensitive paths (must follow the catch-all). Sourced from Item 038
-# in `docs/features/034-architecture-refactoring-and-hardening-plan.md` plus
+# in `docs/features/round_1/034-architecture-refactoring-and-hardening-plan.md` plus
 # the post-roadmap CLAUDE.md additions (`src/telemetry/`, `src/wakeup/`).
 src/lib/logger.ts          @lehoa1806
 src/audit/                 @lehoa1806

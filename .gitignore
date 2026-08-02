@@ -28,7 +28,7 @@ Thumbs.db
 
 # Runtime sidecar — per-run, intentionally unredacted developer-debug
 # artefacts under .schegent/sessions/raw-<runId>.log. Local only —
-# never committed. See docs/features/008-raw-transcript-logging.md FR-009.
+# never committed. See docs/features/round_1/008-raw-transcript-logging.md FR-009.
 .schegent/
 
 # Local scratch
