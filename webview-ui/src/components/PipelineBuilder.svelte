@@ -264,6 +264,25 @@
     phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', model: 'claude-opus-5', effort: 'max' } as MutablePhase];
     selectedPhaseIndex = phases.length - 1;
   }
+  function duplicatePhase(index: number): void {
+    const original = phases[index];
+    if (!original) return;
+    const duplicate = JSON.parse(JSON.stringify(original)) as MutablePhase;
+    
+    let newId = `${original.id}-copy`;
+    let counter = 1;
+    while (phases.some(p => p.id === newId)) {
+      newId = `${original.id}-copy-${counter}`;
+      counter++;
+    }
+    duplicate.id = newId;
+    duplicate.name = `${original.name || 'Untitled Phase'} (Copy)`;
+    
+    const newPhases = [...phases];
+    newPhases.splice(index + 1, 0, duplicate);
+    phases = newPhases;
+    selectedPhaseIndex = index + 1;
+  }
   function removePhase(index: number): void {
     const id = phases[index]?.id;
     phases = phases.filter((_, i) => i !== index);
@@ -406,10 +425,12 @@
         onrawsave={onRawJsonSave}
         ontoggleretry={toggleRetryCondition}
         onretrychange={onRetryConditionChange}
+        onduplicate={duplicatePhase}
       />
 
     {:else if activeTab === 'models'}
       <ModelCatalogEditor
+        availableModels={snapshot.availableModels}
         {models}
         {newModelInput}
         onnewmodelinput={(value) => newModelInput = value}

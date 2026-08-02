@@ -42,6 +42,7 @@
     onrawsave: (index: number, parsed: Record<string, unknown>) => void;
     ontoggleretry: (index: number) => void;
     onretrychange: (index: number, event: { source: string; valid: boolean }) => void;
+    onduplicate: (index: number) => void;
   }
 
   const {
@@ -70,7 +71,8 @@
     ontoggleraw,
     onrawsave,
     ontoggleretry,
-    onretrychange
+    onretrychange,
+    onduplicate
   }: Props = $props();
 
   const selectedPhase = $derived(selectedIndex !== null ? phases[selectedIndex] : null);
@@ -155,6 +157,7 @@
             </button>
             <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
             <button class="btn btn-ghost" onclick={() => onreset(index)}>Reset to Default</button>
+            <button class="btn btn-ghost" data-testid="phases-duplicate" onclick={() => onduplicate(index)}>Duplicate Phase</button>
             <button class="btn btn-secondary" onclick={onsave}>Save Phase</button>
             <button class="btn btn-destructive" data-testid="phases-remove" onclick={() => onremove(index)}>Delete Phase</button>
           </div>

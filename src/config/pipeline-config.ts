@@ -28,7 +28,7 @@ export interface PipelineDef {
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
   readonly pipelines: readonly PipelineDef[];
-  readonly models: readonly string[];
+  readonly models: Record<BackendRunnerKind, readonly string[]>;
   readonly defaultPipelineId: string;
   readonly phasesById: ReadonlyMap<string, PhaseDef>;
   readonly pipelinesById: ReadonlyMap<string, PipelineDef>;
@@ -465,7 +465,7 @@ export function isPipelineDef(value: unknown): value is PipelineDef {
 interface MergeInput {
   readonly phases?: readonly PhaseDef[];
   readonly pipelines?: readonly PipelineDef[];
-  readonly models?: readonly string[];
+  readonly models?: Record<BackendRunnerKind, readonly string[]> | readonly string[]; // support migration from array
   readonly defaultPipelineId?: string;
 }
 
@@ -477,7 +477,7 @@ export function mergeCatalog(
   catalog: {
     phases: readonly PhaseDef[];
     pipelines: readonly PipelineDef[];
-    models: readonly string[];
+    models: Record<BackendRunnerKind, readonly string[]>;
     defaultPipelineId: string;
   };
   duplicateWarnings: readonly ValidationWarning[];
@@ -485,7 +485,7 @@ export function mergeCatalog(
   const duplicateWarnings: ValidationWarning[] = [];
   const phasesMap = new Map<string, PhaseDef>();
   const pipelinesMap = new Map<string, PipelineDef>();
-  const modelsSet = new Set<string>();
+  const modelsMap = new Map<BackendRunnerKind, Set<string>>();
 
   const layers: ReadonlyArray<{ name: string; input: MergeInput }> = [
     { name: 'builtin', input: builtin },
@@ -520,8 +520,27 @@ export function mergeCatalog(
       pipelinesMap.set(pl.id, pl);
     }
 
-    for (const m of input.models ?? []) {
-      modelsSet.add(m);
+    if (input.models) {
+      if (Array.isArray(input.models)) {
+        let set = modelsMap.get('claude');
+        if (!set) {
+          set = new Set<string>();
+          modelsMap.set('claude', set);
+        }
+        for (const m of input.models) set.add(m);
+      } else {
+        for (const kind of SUPPORTED_BACKENDS) {
+          const arr = (input.models as Record<BackendRunnerKind, readonly string[]>)[kind];
+          if (arr) {
+            let set = modelsMap.get(kind);
+            if (!set) {
+              set = new Set<string>();
+              modelsMap.set(kind, set);
+            }
+            for (const m of arr) set.add(m);
+          }
+        }
+      }
     }
   }
 
@@ -531,11 +550,17 @@ export function mergeCatalog(
     builtin.defaultPipelineId ??
     BUILT_IN_PIPELINE_ID;
 
+  const mergedModels: Record<BackendRunnerKind, readonly string[]> = {
+    claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
+    codex: Object.freeze(Array.from(modelsMap.get('codex') ?? [])),
+    agy: Object.freeze(Array.from(modelsMap.get('agy') ?? []))
+  };
+
   return {
     catalog: {
       phases: Array.from(phasesMap.values()),
       pipelines: Array.from(pipelinesMap.values()),
-      models: Array.from(modelsSet),
+      models: mergedModels,
       defaultPipelineId
     },
     duplicateWarnings
@@ -545,7 +570,7 @@ export function mergeCatalog(
 export function buildCatalog(
   phases: readonly PhaseDef[],
   pipelines: readonly PipelineDef[],
-  models: readonly string[],
+  models: Record<BackendRunnerKind, readonly string[]>,
   defaultPipelineId: string
 ): PipelineCatalog {
   const phasesById = new Map<string, PhaseDef>();
@@ -559,7 +584,7 @@ export function buildCatalog(
   return Object.freeze({
     phases: Object.freeze([...phases]),
     pipelines: Object.freeze([...pipelines]),
-    models: Object.freeze([...models]),
+    models: Object.freeze(models),
     defaultPipelineId,
     phasesById,
     pipelinesById
