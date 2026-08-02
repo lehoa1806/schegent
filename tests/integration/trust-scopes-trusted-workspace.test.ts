@@ -58,6 +58,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { phaseLayerRevision } from '../../src/config/process-catalog';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
   CMD_SAVE_PHASES,
@@ -136,7 +137,8 @@ function buildHarness(): Harness {
     audit,
     updateConfig: async (key, value) => {
       updateConfigCalls.push({ key, value });
-    }
+    },
+    readPhaseConfig: () => ({ user: [], workspace: [] })
   };
   return { router: new MessageRouter(deps), audit, logger, updateConfigCalls };
 }
@@ -150,7 +152,12 @@ async function dispatchSave(
   const command = {
     type: CMD_SAVE_PHASES,
     correlationId,
-    payload: { phases }
+    payload: {
+      scope: 'workspace',
+      expectedRevision: phaseLayerRevision([]),
+      mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
+      phases
+    }
   } as unknown as SidebarCommand;
   await router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = {
@@ -233,7 +240,9 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
     expect(ack.reason).toBeUndefined();
     expect(updateConfigCalls).toHaveLength(1);
     expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual(nonDefaultPhases);
+    expect(updateConfigCalls[0].value).toEqual([
+      expect.objectContaining({ ...nonDefaultPhases[0], version: 1 })
+    ]);
 
     await flushAuditChain(audit);
     const entries = await readAuditLog(tmpRoot);

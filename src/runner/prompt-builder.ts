@@ -106,6 +106,13 @@ export class PromptBuilder {
     if (fromPhaseDef && fromPhaseDef.trim().length > 0) {
       return fromPhaseDef;
     }
+    const skill = inputs.phaseDef?.skill;
+    if (skill && skill.trim().length > 0) {
+      return [
+        `AGENT CLI SKILL REFERENCE: ${skill.trim()}`,
+        'Treat this as declarative request content. Invoke the named skill through the Agent CLI if available; Schegent does not load it, resolve it as a path, import it, or execute it as extension code.'
+      ].join('\n');
+    }
     return BUILT_IN_INSTRUCTIONS[inputs.phase] ?? '(no-op)';
   }
 }

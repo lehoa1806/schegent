@@ -294,7 +294,10 @@ export type Effort = (typeof EFFORT_LEVELS)[number];
 export interface PhaseDefinition {
   readonly id: string;
   readonly name: string;
-  readonly instruction: string;
+  readonly description?: string;
+  readonly version?: number;
+  readonly instruction?: string;
+  readonly skill?: string;
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
@@ -321,6 +324,50 @@ export interface PipelineDefinition {
 export type PhasePrecedenceLayer = 'built-in' | 'user' | 'workspace' | 'unset';
 
 export type PhasePrecedenceProjection = Readonly<Record<string, PhasePrecedenceLayer>>;
+
+export type PhaseDefinitionScope = 'built-in' | 'user' | 'workspace';
+export type WritablePhaseDefinitionScope = Exclude<PhaseDefinitionScope, 'built-in'>;
+export type PhaseSourceStatus = 'effective' | 'shadowed' | 'invalid';
+
+export interface PortablePhaseDefinition {
+  readonly phaseId: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly version: number;
+  readonly instruction?: string;
+  readonly skill?: string;
+  readonly model?: string;
+  readonly effort?: Effort;
+  readonly timeoutSeconds?: number;
+  readonly loopable?: boolean;
+  readonly retryCondition?: string;
+  readonly isRequired?: boolean;
+  readonly runner?: BackendRunnerKind;
+}
+
+export interface PhaseCatalogSourceRecord {
+  readonly key: string;
+  readonly phaseId: string;
+  readonly scope: PhaseDefinitionScope;
+  readonly status: PhaseSourceStatus;
+  readonly definition: PortablePhaseDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly {
+    readonly field: string;
+    readonly code: string;
+    readonly message: string;
+  }[];
+  readonly modelAvailable?: boolean;
+}
+
+export interface PhaseCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly PhaseCatalogSourceRecord[];
+  readonly effective: readonly PortablePhaseDefinition[];
+  readonly revisions: Readonly<Record<WritablePhaseDefinitionScope, string>>;
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
 
 /**
  * Feature 011 — webview mirror of `DelayedRetryState` in
@@ -680,6 +727,8 @@ export interface WorkflowSnapshot {
    * recomputed it yet.
    */
   readonly phasePrecedence?: PhasePrecedenceProjection;
+  /** Feature 081 — absent means the authoritative catalog is still loading. */
+  readonly phaseCatalog?: PhaseCatalogProjection;
   /**
    * Feature 059 — per-capability trust projection. Optional for legacy-
    * tolerance: an older host bundle may not include either field, in

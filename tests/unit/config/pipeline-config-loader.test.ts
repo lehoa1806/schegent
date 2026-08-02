@@ -32,7 +32,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.catalog.phasesById.has('speckit-specify')).toBe(true);
   });
 
-  it('user settings shadow workspace settings for shared phase ids (BUG-003, FR-018)', () => {
+  it('workspace settings shadow user settings for shared Phase ids (081 FR-003)', () => {
     const userPhase = {
       id: 'security-audit',
       name: 'User Security Audit',
@@ -55,10 +55,10 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('security-audit');
     expect(phase).toBeDefined();
-    expect(phase!.name).toBe('User Security Audit');
-    expect(phase!.instruction).toBe('User-level instruction (wins).');
-    expect(phase!.model).toBeUndefined();
-    expect(phase!.effort).toBeUndefined();
+    expect(phase!.name).toBe('Workspace Security Audit');
+    expect(phase!.instruction).toBe('Workspace-level instruction.');
+    expect(phase!.model).toBe('claude-opus-4-7');
+    expect(phase!.effort).toBe('high');
   });
 
   it('user settings shadow workspace settings for shared pipeline ids (BUG-003, FR-018)', () => {
@@ -115,7 +115,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.catalog.defaultPipelineId).toBe('workspace-default');
   });
 
-  it('returns built-in catalog and emits errors when validation fails — no throw (T045, FR-024)', () => {
+  it('quarantines invalid source rows without discarding the effective catalog', () => {
     const badPhase = {
       id: 'INVALID-ID-CAPITAL',
       name: 'Bad',
@@ -127,11 +127,12 @@ describe('loadCatalog (T044, T045, US3)', () => {
     });
     expect(() => loadCatalog(reader)).not.toThrow();
     const result = loadCatalog(reader);
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.usedFallback).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.usedFallback).toBe(false);
     expect(result.catalog.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
     expect(result.catalog.phasesById.has('speckit-specify')).toBe(true);
     expect(result.catalog.phasesById.has('INVALID-ID-CAPITAL')).toBe(false);
+    expect(result.phaseCatalog.records.some((record) => record.status === 'invalid')).toBe(true);
   });
 
   it('falls back when a pipeline references an unknown phase id (T045)', () => {
@@ -203,7 +204,12 @@ describe('loadCatalog (T044, T045, US3)', () => {
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
     expect(result.warnings.some((w) => w.id === 'twin')).toBe(true);
-    expect(result.catalog.phasesById.get('twin')!.name).toBe('Second');
+    expect(result.catalog.phasesById.has('twin')).toBe(false);
+    expect(
+      result.phaseCatalog.records
+        .filter((record) => record.scope === 'workspace' && record.phaseId === 'twin')
+        .every((record) => record.status === 'invalid')
+    ).toBe(true);
   });
 });
 
@@ -226,7 +232,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
     expect(phase?.retryCondition).toBe('open_questions > 0');
   });
 
-  it('strips a syntactically invalid retryCondition and keeps the PhaseDef loadable (FR-014, SC-006)', () => {
+  it('quarantines a syntactically invalid retryCondition row', () => {
     const reader = makeReader({
       workspacePhases: [
         {
@@ -241,8 +247,10 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('broken');
-    expect(phase).toBeDefined();
-    expect(phase?.retryCondition).toBeUndefined();
+    expect(phase).toBeUndefined();
+    expect(
+      result.phaseCatalog.records.find((record) => record.phaseId === 'broken')?.status
+    ).toBe('invalid');
   });
 
   it('emits exactly one warning per load naming the offending phase id', () => {
@@ -260,7 +268,7 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
     const result = loadCatalog(reader);
     const matches = result.warnings.filter((w) => w.id === 'broken');
     expect(matches.length).toBe(1);
-    expect(matches[0].message ?? '').toMatch(/retryCondition/i);
+    expect(matches[0].message ?? '').toMatch(/retry condition/i);
   });
 
   it('keeps extension activation alive when a retryCondition is invalid', () => {
@@ -357,7 +365,7 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       ]
     });
     const result = loadCatalog(reader);
-    expect(result.errors.filter((error) => error.field === 'runner')).toHaveLength(1);
+    expect(result.warnings.filter((warning) => warning.id === 'test-runner-2')).toHaveLength(1);
     // Invalid runner causes the phase to fail schema validation, meaning it doesn't get loaded
     expect(result.catalog.phasesById.has('test-runner-2')).toBe(false);
     expect(isPhaseDef({
@@ -408,7 +416,7 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     'superpowers-implement',
     'finalize',
     'superpowers-review-close'
-  ] as const)('preserves the pinned runner for legacy %s overrides', (id) => {
+  ] as const)('does not inherit the pinned runner for custom %s shadows', (id) => {
     const phase = {
       id,
       name: 'Git phase override',
@@ -420,8 +428,9 @@ describe('loadCatalog — runner validation (074, T033)', () => {
 
     expect(result.usedFallback).toBe(false);
     expect(result.errors).toEqual([]);
-    expect(result.catalog.phasesById.get(id)?.runner).toBe('claude');
-    expect(isPhaseDef(phase)).toBe(false);
+    expect(result.catalog.phasesById.get(id)?.runner).toBeUndefined();
+    expect(result.catalog.phasesById.get(id)?.sourceScope).toBe('workspace');
+    expect(isPhaseDef(phase)).toBe(true);
   });
 
   it.each([
@@ -430,23 +439,24 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     'superpowers-implement',
     'finalize',
     'superpowers-review-close'
-  ] as const)('rejects Git-mutating phase %s with runner codex', (id) => {
+  ] as const)('quarantines an explicit Codex custom shadow of protected phase %s', (id) => {
     const phase = {
       id,
       name: 'Git phase override',
+      version: 1,
       instruction: 'Create or close the branch.',
       runner: 'codex' as const
     };
     const reader = makeReader({ workspacePhases: [phase] });
     const result = loadCatalog(reader);
 
-    expect(result.usedFallback).toBe(true);
-    expect(result.errors).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id, field: 'runner' })
-      ])
-    );
-    expect(isPhaseDef(phase)).toBe(false);
+    expect(result.usedFallback).toBe(false);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'phase', id })
+    ]));
+    expect(result.catalog.phasesById.get(id)?.runner).toBe('claude');
+    expect(result.catalog.phasesById.get(id)?.sourceScope).toBe('built-in');
+    expect(isPhaseDef(phase)).toBe(true);
   });
 
   it.each(['claude', 'agy'] as const)(

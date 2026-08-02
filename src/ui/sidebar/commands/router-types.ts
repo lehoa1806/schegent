@@ -1,6 +1,8 @@
 import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
+import type { WritablePhaseDefinitionScope } from '../../../contracts/process-definitions';
+import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type {
   CommandAckMessage,
   ReadMetricsRequest,
@@ -129,7 +131,20 @@ export interface RouterDeps {
       correlationId?: string;
     }): Promise<unknown>;
   };
-  readonly updateConfig?: (key: 'phases' | 'pipelines' | 'models', value: unknown) => Promise<void>;
+  readonly updateConfig?: (
+    key: 'phases' | 'pipelines' | 'models',
+    value: unknown,
+    scope?: WritablePhaseDefinitionScope
+  ) => Promise<void>;
+  readonly readPhaseConfig?: () => {
+    readonly user: readonly unknown[];
+    readonly workspace: readonly unknown[];
+  };
+  readonly readPipelineConfig?: () => {
+    readonly user: readonly unknown[];
+    readonly workspace: readonly unknown[];
+  };
+  readonly getCatalog?: () => PipelineCatalog;
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;

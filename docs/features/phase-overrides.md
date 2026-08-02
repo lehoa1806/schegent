@@ -1,10 +1,9 @@
 # Phase Overrides
 
-Phase overrides let you tune individual phases — backend runner, model,
-effort, timeout, instruction, and retry condition — without changing the
-underlying built-in pipeline. User and workspace definitions use explicit
-per-field precedence; the supported subset of per-run overrides is then
-frozen onto the in-flight run.
+Phase definitions let you tune individual phases — backend runner, model,
+effort, timeout, directive, and retry condition — without changing pipeline
+order. User and workspace settings are complete source rows; the selected
+effective row is frozen onto the Run.
 
 ## When to use overrides
 
@@ -24,12 +23,10 @@ In ascending precedence (later wins):
 3. **Workspace-layer overrides** (`schegent.phases` in your **workspace** `settings.json`).
 4. **Per-run overrides** — set in the enqueue dialog for one specific task.
 
-The precedence rule applies **per field**:
-
-- If `schegent.phases[speckit-implement].model` is set in the workspace layer to `opus`, that wins over a user-layer `sonnet`.
-- If only `model` is set in the workspace and only `effort` in the user, the merge is `model: workspace-value, effort: user-value`.
-
-The webview reads `snapshot.phasePrecedence` from the host projection — a `Record<"<phaseId>::<fieldKey>", "workspace" | "user" | "default">` map — so the UI can show which layer is winning for each field.
+The host selects one complete valid row per id: workspace, then user, then
+built-in. Invalid higher rows remain visible with field errors and do not
+block fallback. The `phasePrecedence` map remains a compatibility display
+projection; catalog selection is never computed in the webview.
 
 ## The `schegent.phases` setting
 
@@ -44,7 +41,7 @@ A minimal override that bumps the implement model:
     {
       "id": "speckit-implement",
       "name": "Spec-kit Implement",
-      "instruction": "",
+      "instruction": "Implement the approved plan.",
       "model": "claude-opus-4-7",
       "effort": "high",
       "loopable": false
@@ -57,14 +54,14 @@ Notes on the fields:
 
 - `id` must match the built-in id (`speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-analyze`, `speckit-implement`, `finalize`, `done`) to **shadow** the built-in.
 - `name` is required by the JSON schema but is purely cosmetic when shadowing.
-- `instruction` is required by the schema; an **empty string is accepted** when shadowing — the built-in's instruction is preserved.
+- Exactly one non-empty `instruction` or `skill` is required. A shadow is a complete definition and does not inherit omitted author fields from the built-in.
 - `runner`, `model`, `effort`, `timeoutSeconds`, and `retryCondition` are the fields you typically want to tweak.
 
 ## Shadowing a built-in vs. defining a new phase
 
 | If your `id` is... | Result |
 |---|---|
-| A built-in id | **Shadow.** Your fields merge with the built-in (your fields win where present). |
+| A built-in id | **Shadow.** The highest-precedence valid complete row becomes effective. Built-in host policy is not inherited by a custom shadow. |
 | A new id | **New phase.** Becomes available for inclusion in custom pipelines. Cannot be used in built-in pipelines. |
 
 To use a new phase id in a pipeline, define a custom pipeline (`schegent.pipelines`) that references it. See [Custom Phases](custom-phases.md#custom-pipelines).
@@ -98,7 +95,7 @@ Per field:
 | `model` | Backend model id passed as a single argv element. |
 | `effort` | Reasoning effort. Enum: `low` \| `medium` \| `high` \| `xhigh` \| `max`. |
 | `timeoutSeconds` | Per-phase timeout (1–3600 seconds). Overrides `schegent.invocation.timeoutSeconds` for this phase only. |
-| `instruction` | The phase's prompt directive. Empty string preserves the built-in. |
+| `instruction` or `skill` | Exactly one non-empty prompt directive is required on each complete source row. |
 | `retryCondition` | Optional retry-condition DSL expression. |
 
 What you cannot override:
@@ -113,10 +110,9 @@ What you cannot override:
 `speckit-specify`, `specify-brainstorm`, and `superpowers-implement` invoke
 mandatory branch/worktree creation; `finalize` and `superpowers-review-close`
 commit or change branches.
-Their built-in runner is `claude`, and any override must explicitly select
-`claude` or `agy`. Codex's `workspace-write` sandbox keeps `.git` read-only, so
-Codex and Inherit are disabled for these rows and rejected again by host
-validation.
+Their actual built-in definitions are pinned to `claude`. A custom definition
+that reuses one of those ids is still custom and receives no built-in privilege;
+its runner follows the ordinary custom/default rules.
 
 ## How precedence shows up in the sidebar
 
@@ -145,7 +141,7 @@ Define a single `schegent.phases` entry for the heavy phase:
     {
       "id": "speckit-implement",
       "name": "Spec-kit Implement (Opus)",
-      "instruction": "",
+      "instruction": "Implement the approved plan and verify the result.",
       "model": "claude-opus-4-7",
       "effort": "high",
       "loopable": false
@@ -166,7 +162,7 @@ If `finalize` regularly stalls and you want it to fail faster:
     {
       "id": "finalize",
       "name": "Finalize",
-      "instruction": "",
+      "instruction": "Finalize the run, verify the evidence, and commit the approved changes.",
       "runner": "claude",
       "timeoutSeconds": 600,
       "loopable": false
@@ -185,7 +181,7 @@ There is no `enabled` field on the schema. To disable a phase for a single run, 
 
 The sidebar settings panel uses a single helper, [`save-phases.ts`](https://github.com/your-org/schegent/blob/main/webview-ui/src/lib/save-phases.ts), as the only call site for the phase-save IPC command. The host re-validates the entire `schegent.phases` array on save.
 
-A workspace-layer save is accepted even when the user layer shadows the same row — the shadow only affects the *effective* run-time value, not the persisted user-layer record. You can edit both layers independently.
+A user-layer save is accepted even when a workspace row shadows the same id — the shadow only affects the *effective* run-time value, not the persisted user-layer record. You can edit both layers independently.
 
 ## Custom phases (different idea)
 

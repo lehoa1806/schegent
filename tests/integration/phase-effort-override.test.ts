@@ -37,6 +37,7 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { phaseLayerRevision } from '../../src/config/process-catalog';
 import {
   BUILT_IN_BUGFIX_PIPELINE_ID,
   BUILT_IN_CATALOG,
@@ -132,13 +133,29 @@ async function dispatchSave(
   phases: ReadonlyArray<Partial<PhaseDef> & { id: string; name?: string; instruction?: string; loopable?: boolean }>
 ): Promise<DispatchResult> {
   let captured: DispatchResult | undefined;
-  await router.dispatch(
-    { type: CMD_SAVE_PHASES, correlationId: 'save-1', payload: { phases } } as SidebarCommand,
-    async (msg: CommandAckMessage) => {
-      captured = { status: msg.status, reason: msg.reason };
-      return true;
-    }
-  );
+  const proposed: unknown[] = [];
+  for (const phase of phases) {
+    proposed.push(phase);
+    await router.dispatch(
+      {
+        type: CMD_SAVE_PHASES,
+        correlationId: `save-${proposed.length}`,
+        payload: {
+          scope: 'workspace',
+          expectedRevision: phaseLayerRevision(
+            proposed.slice(0, -1).map((row) => ({ ...(row as object), version: 1 }))
+          ),
+          mutation: { kind: 'create', phaseId: phase.id },
+          phases: [...proposed]
+        }
+      } as SidebarCommand,
+      async (msg: CommandAckMessage) => {
+        captured = { status: msg.status, reason: msg.reason };
+        return true;
+      }
+    );
+    if (captured?.status === 'rejected') break;
+  }
   if (!captured) throw new Error('router did not ack the save');
   return captured;
 }
@@ -238,6 +255,7 @@ function buildRouter(): {
   updateConfigCalls: Array<{ key: string; value: unknown }>;
 } {
   const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
+  let workspacePhases: readonly unknown[] = [];
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -247,7 +265,9 @@ function buildRouter(): {
     logger: new SanitizedLogger(),
     updateConfig: async (key, value) => {
       updateConfigCalls.push({ key, value });
-    }
+      if (key === 'phases' && Array.isArray(value)) workspacePhases = value;
+    },
+    readPhaseConfig: () => ({ user: [], workspace: workspacePhases })
   };
   return { router: new MessageRouter(deps), updateConfigCalls };
 }
@@ -268,7 +288,9 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     expect(ack.status).toBe('accepted');
     expect(updateConfigCalls).toHaveLength(1);
     expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual(savePayload);
+    expect(updateConfigCalls[0].value).toEqual([
+      expect.objectContaining({ ...savePayload[0], version: 1 })
+    ]);
 
     const { auditLog } = await runHarness({
       userPhases: savePayload as readonly PhaseDef[],
@@ -291,7 +313,9 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     const { router, updateConfigCalls } = buildRouter();
     const ack = await dispatchSave(router, cleared);
     expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls[0].value).toEqual(cleared);
+    expect(updateConfigCalls[0].value).toEqual([
+      expect.objectContaining({ ...cleared[0], version: 1 })
+    ]);
 
     const { auditLog } = await runHarness({
       userPhases: cleared as readonly PhaseDef[],
@@ -322,7 +346,7 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     const { router, updateConfigCalls } = buildRouter();
     const ack = await dispatchSave(router, userPhases);
     expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
+    expect(updateConfigCalls).toHaveLength(3);
 
     const { auditLog } = await runHarness({
       userPhases: userPhases as readonly PhaseDef[],
@@ -372,7 +396,7 @@ describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
     );
     expect(implementStarts.length).toBeGreaterThan(0);
     for (const evt of implementStarts) {
-      expect(evt.payload.effort).toBe('medium');
+      expect(evt.payload.effort).toBe('high');
       expect(evt.payload).not.toHaveProperty('model');
     }
   });

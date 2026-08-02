@@ -11,6 +11,7 @@ import type { WorkflowRun, WorkspaceLock } from '../../../../src/state/workflow-
 import type { QueueState, FeatureRequest } from '../../../../src/queue/feature-request';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { DEFAULT_QUEUE_ID, setQueuePaused } from '../../../../src/queue/queue-registry';
+import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -131,6 +132,37 @@ function sampleRun(): WorkflowRun {
 }
 
 describe('StateProjector.getCurrentSnapshot', () => {
+  it('projects source-aware Phase rows and sanitizes operator-authored catalog text', () => {
+    const catalog = resolvePhaseCatalog({
+      builtIn: [],
+      user: [],
+      workspace: [{
+        id: 'operator-phase',
+        name: 'Token SECRET',
+        version: 1,
+        instruction: 'Run SECRET safely.'
+      }]
+    });
+    const p = new StateProjector({
+      store,
+      audit,
+      ownerId: 'this-window',
+      sanitize: (value) => (value ?? '').replaceAll('SECRET', '[REDACTED]'),
+      getPhaseCatalog: () => catalog
+    });
+    p.start();
+    const phaseCatalog = p.getCurrentSnapshot().phaseCatalog;
+    expect(phaseCatalog?.state).toBe('ready');
+    expect(phaseCatalog?.records[0]).toMatchObject({
+      phaseId: 'operator-phase',
+      scope: 'workspace',
+      status: 'effective'
+    });
+    expect(phaseCatalog?.records[0].definition?.name).toBe('Token [REDACTED]');
+    expect(phaseCatalog?.effective[0].instruction).toBe('Run [REDACTED] safely.');
+    p.dispose();
+  });
+
   it('builds an idle snapshot when no run, no queue, no lock', () => {
     const p = makeProjector();
     p.start();

@@ -45,6 +45,7 @@ vi.mock('../../lib/save-phases', () => ({
 afterEach(() => cleanup());
 
 interface TrustOpts {
+  isPrimary?: boolean;
   workspaceTrust?: boolean;
   phases?: boolean;
   retryConditions?: boolean;
@@ -69,7 +70,7 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
   ]);
   return Object.freeze({
     schemaVersion: 3,
-    isPrimary: true,
+    isPrimary: opts.isPrimary ?? true,
     status: 'idle',
     activeFeature: null,
     phases: Object.freeze([]),
@@ -95,6 +96,27 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     availablePipelines: pipelines,
     availablePhases: phases,
     availableModels: Object.freeze(['claude-sonnet-4-6']),
+    phaseCatalog: {
+      state: 'ready',
+      records: [{
+        key: 'workspace::speckit-specify::0',
+        phaseId: 'speckit-specify',
+        scope: 'workspace',
+        status: 'effective',
+        definition: {
+          phaseId: 'speckit-specify',
+          name: 'Specify',
+          version: 1,
+          instruction: 'Specify',
+          loopable: false
+        },
+        display: {},
+        errors: []
+      }],
+      effective: [],
+      revisions: { user: 'user-revision', workspace: 'workspace-revision' },
+      warnings: []
+    },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
@@ -115,6 +137,16 @@ describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
     expect(saveBtn?.hasAttribute('disabled')).toBe(true);
     const banner = container.querySelector('[data-testid="trust-banner-phases"]');
     expect(banner).not.toBeNull();
+  });
+
+  it('disables every Phase editing control in a secondary window', () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ isPrimary: false }), initialTab: 'phases' }
+    });
+    const add = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    const save = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    expect(save.disabled).toBe(true);
   });
 });
 
@@ -155,7 +187,7 @@ describe('PipelineBuilder trust gating (059, T022) — workspace-trust ceiling',
 });
 
 describe('PipelineBuilder trust gating (059, T022) — re-render on toggle', () => {
-  it('re-enables Save Phases and hides banner when resolvedTrust.phases flips false → true', async () => {
+  it('re-enables Phase mutations and hides banner when resolvedTrust.phases flips false → true', async () => {
     const { container, rerender } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' }
     });
@@ -163,7 +195,9 @@ describe('PipelineBuilder trust gating (059, T022) — re-render on toggle', () 
     expect(saveBtn?.hasAttribute('disabled')).toBe(true);
     await rerender({ snapshot: buildSnapshot({ phases: true }), initialTab: 'phases' });
     saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
-    expect(saveBtn?.hasAttribute('disabled')).toBe(false);
+    const addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement | null;
+    expect(addBtn?.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn?.hasAttribute('disabled')).toBe(true);
     expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
   });
 });

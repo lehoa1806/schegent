@@ -6,8 +6,7 @@
  *             unrelated field preserves every original field.
  *   FR-028  — JSON serialized with two-space indent.
  *   FR-029  — Save is disabled while validation fails.
- *   FR-031  — unknown top-level fields preserved on round-trip
- *             (we render permissively; the host validator is final).
+ *   FR-031  — host-owned and unknown top-level fields are rejected.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -21,6 +20,7 @@ afterEach(() => {
 const PHASE_FIXTURE = {
   id: 'speckit-plan',
   name: 'Plan',
+  version: 1,
   instruction: 'Produce a phased implementation plan.',
   loopable: false,
   model: 'claude-opus-4-7',
@@ -153,7 +153,7 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       .toContain('must be a boolean');
   });
 
-  it('round-trips unknown top-level fields without loss (FR-031, SC-008)', async () => {
+  it('rejects unknown top-level fields owned by the host', async () => {
     const withUnknownField = {
       ...PHASE_FIXTURE,
       operatorCustomField: 'experimental-flag-value'
@@ -166,9 +166,35 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       '[data-testid="raw-json-save"]'
     ) as HTMLButtonElement;
     await fireEvent.click(save);
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave.mock.calls[0][0]).toEqual(withUnknownField);
-    expect(onSave.mock.calls[0][0]).toHaveProperty('operatorCustomField', 'experimental-flag-value');
+    expect(save.disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="raw-json-error"]')?.textContent)
+      .toContain('is not author-controlled');
+  });
+
+  it('accepts exactly one bounded skill directive', async () => {
+    const skillPhase = { ...PHASE_FIXTURE, skill: 'security-review' } as Record<string, unknown>;
+    delete skillPhase.instruction;
+    const onSave = vi.fn();
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: skillPhase, onsave: onSave }
+    });
+    const save = container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await fireEvent.click(save);
+    expect(onSave).toHaveBeenCalledWith(skillPhase);
+  });
+
+  it('rejects an empty configured model', async () => {
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: PHASE_FIXTURE }
+    });
+    const textarea = container.querySelector('[data-testid="raw-json-input"]') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, {
+      target: { value: JSON.stringify({ ...PHASE_FIXTURE, model: '   ' }, null, 2) }
+    });
+    expect((container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement).disabled)
+      .toBe(true);
   });
 
   it('emits the edited phase via onsave callback when Save is clicked', async () => {

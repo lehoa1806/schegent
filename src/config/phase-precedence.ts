@@ -4,6 +4,7 @@ export type PhaseFieldKey =
   | 'model'
   | 'effort'
   | 'timeoutSeconds'
+  | 'loopable'
   | 'retryCondition'
   | 'runner';
 
@@ -15,6 +16,7 @@ const PHASE_FIELD_KEYS: readonly PhaseFieldKey[] = [
   'model',
   'effort',
   'timeoutSeconds',
+  'loopable',
   'retryCondition',
   'runner'
 ];
@@ -56,12 +58,18 @@ export function projectPhasePrecedence(
     const b = builtInById.get(id);
     const u = userById.get(id);
     const w = workspaceById.get(id);
+    const selected = w ?? u ?? b;
+    const selectedLayer: PhasePrecedenceLayer = w
+      ? 'workspace'
+      : u
+        ? 'user'
+        : b
+          ? 'built-in'
+          : 'unset';
     for (const k of PHASE_FIELD_KEYS) {
-      let layer: PhasePrecedenceLayer = 'unset';
-      if (readField(u, k) !== undefined) layer = 'user';
-      else if (readField(w, k) !== undefined) layer = 'workspace';
-      else if (readField(b, k) !== undefined) layer = 'built-in';
-      out[compositeKey(id, k)] = layer;
+      out[compositeKey(id, k)] = readField(selected, k) === undefined
+        ? 'unset'
+        : selectedLayer;
     }
   }
   return Object.freeze(out);

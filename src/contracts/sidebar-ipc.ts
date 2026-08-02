@@ -1,5 +1,5 @@
 // Authoritative sidebar IPC contract; host and webview shims re-export it.
-
+import type { PhaseCatalogMutation, WritablePhaseDefinitionScope } from './process-definitions';
 export const SCHEMA_VERSION = 3 as const;
 // -- Command literals (webview → host) ---------------------------------------
 
@@ -364,19 +364,18 @@ export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OP
   readonly payload: { readonly id: string };
 }
 
-// Feature 011 — pipelines/phases/models catalog save. The payload arrays
-// are typed as `readonly unknown[]` at the contract boundary because the
-// canonical narrow types live in two different module trees that cannot
-// import each other directly (host: `src/config/pipeline-config.ts`;
-// webview: `webview-ui/src/lib/snapshot-types.ts`). Narrow validation
-// happens in `ipc-validator.ts` before the payload reaches any
-// pipeline-shaped consumer.
+// Catalog rows stay unknown at the transport boundary and are narrowed by host validators.
 export interface SavePipelinesCommand extends CommandBase<typeof CMD_SAVE_PIPELINES> {
   readonly payload: { readonly pipelines: readonly unknown[] };
 }
 
 export interface SavePhasesCommand extends CommandBase<typeof CMD_SAVE_PHASES> {
-  readonly payload: { readonly phases: readonly unknown[] };
+  readonly payload: {
+    readonly scope: WritablePhaseDefinitionScope;
+    readonly expectedRevision: string;
+    readonly mutation: PhaseCatalogMutation;
+    readonly phases: readonly unknown[];
+  };
 }
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {

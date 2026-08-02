@@ -1,9 +1,7 @@
 <script lang="ts">
-  import type {
-    WorkflowSnapshot,
-    PhaseDefinition
-  } from '../lib/snapshot-types';
-  import { savePhases as savePhasesHelper, type SavePhaseRow } from '../lib/save-phases';
+  import type { WorkflowSnapshot } from '../lib/snapshot-types';
+  import { savePhases as savePhasesHelper, type SavePhasesMutation } from '../lib/save-phases';
+  import { useConfirm } from '../lib/use-confirm';
   import {
     savePipelines as savePipelinesHelper,
     type SavePipelineRow
@@ -17,21 +15,24 @@
     MutablePipeline,
     PhaseEditState
   } from './PipelineBuilderEditors/types';
+  import {
+    effectivePhasesToMutable,
+    formatPhaseSaveRejection,
+    makeDuplicatePhaseDraft,
+    makeNewPhaseDraft,
+    phaseTooltip,
+    rebasePhaseMutation,
+    sourceRecordToMutable,
+    toSavePhaseRow
+  } from './PipelineBuilderEditors/phase-catalog-state';
+  import { initialModels } from './PipelineBuilderEditors/model-catalog-state';
   import TrustBanner from './TrustBanner.svelte';
   import './PipelineBuilderEditors/pipeline-builder.css';
-
   interface Props {
     snapshot: WorkflowSnapshot;
-    // Feature 059 — test seam: lets the component test render the
-    // Phases tab without simulating a click. Production wiring omits
-    // this prop and the component opens on the Pipelines tab as
-    // before.
     initialTab?: 'pipelines' | 'phases' | 'models';
   }
   const { snapshot, initialTab }: Props = $props();
-
-  // Feature 059 — trust projection. Fail closed when the host bundle is
-  // older and does not include these fields.
   const workspaceTrust = $derived(snapshot.workspaceTrust === true);
   const trustPhases = $derived(
     workspaceTrust && snapshot.resolvedTrust?.phases === true
@@ -50,51 +51,57 @@
   const showPipelinesBanner = $derived(
     !showWorkspaceTrustBanner && !trustPipelineOverrides
   );
-
-  const PRESEEDED_MODELS = [
-    'claude-sonnet-5',
-    'claude-opus-5',
-    'claude-fable-5',
-    'claude-sonnet-4-6',
-    'claude-opus-4-6',
-    'claude-opus-4-7',
-    'claude-opus-4-8',
-    'claude-haiku-4-5'
-  ];
-
-  // `initialTab` is a mount-only test seam; production never updates it.
   // svelte-ignore state_referenced_locally
   let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
-
   let pipelines = $state<MutablePipeline[]>([]);
   let phases = $state<MutablePhase[]>([]);
+  let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
   let initialized = $state(false);
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
-
+  let phaseMutation = $state<SavePhasesMutation | null>(null);
+  let phaseMutationScope = $state<'user' | 'workspace' | null>(null);
+  let phaseMutationSourceKey = $state<string | null>(null);
+  let phaseSavePending = $state(false); let acceptedPhaseRevision = $state<string | null>(null); let stalePhaseRevision = $state<string | null>(null);
+  let adoptedPhaseRevisions = $state({ user: '', workspace: '' });
+  const phaseCatalogReady = $derived(snapshot.phaseCatalog?.state === 'ready');
+  const phaseMutationsAllowed = $derived(
+    phaseCatalogReady && snapshot.isPrimary === true && trustPhases && !phaseSavePending
+  );
+  const pipelinePhases = $derived(effectivePhases);
   function showSaveError(reason: string): void {
     saveError = reason;
     if (saveErrorTimer !== null) clearTimeout(saveErrorTimer);
     saveErrorTimer = setTimeout(() => { saveError = null; }, 8000);
   }
-
   $effect(() => {
-    if (!initialized && snapshot.availablePipelines && snapshot.availablePhases && snapshot.availableModels) {
+    if (!initialized && snapshot.availablePipelines && snapshot.availableModels) {
       pipelines = JSON.parse(JSON.stringify(snapshot.availablePipelines));
-      phases = JSON.parse(JSON.stringify(snapshot.availablePhases));
-      
-      const loadedModels: Record<string, string[]> = {};
-      const snapModels = snapshot.availableModels || {};
-      for (const kind of Object.keys(snapModels)) {
-        const loaded = JSON.parse(JSON.stringify(snapModels[kind as keyof typeof snapModels] || []));
-        loadedModels[kind] = loaded.length > 0 ? loaded : (kind === 'claude' ? [...PRESEEDED_MODELS] : []);
-      }
-      models = loadedModels;
+      models = initialModels(snapshot.availableModels);
       initialized = true;
     }
+    if (snapshot.availablePhases) effectivePhases = effectivePhasesToMutable(snapshot.availablePhases);
+    const catalog = snapshot.phaseCatalog;
+    if (catalog?.state === 'ready') {
+      const revisionKey = `${catalog.revisions.user}:${catalog.revisions.workspace}`, adoptedKey = `${adoptedPhaseRevisions.user}:${adoptedPhaseRevisions.workspace}`;
+      if (stalePhaseRevision !== null && phaseMutation && phaseMutationScope && catalog.revisions[phaseMutationScope] !== adoptedPhaseRevisions[phaseMutationScope]) {
+        phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationScope, phaseMutationSourceKey);
+        adoptedPhaseRevisions = { ...catalog.revisions }; stalePhaseRevision = null;
+      }
+      const acceptedRefresh = acceptedPhaseRevision !== null && phaseMutationScope !== null && catalog.revisions[phaseMutationScope] !== adoptedPhaseRevisions[phaseMutationScope];
+      const shouldAdopt = adoptedKey === ':' || phaseMutation === null || acceptedRefresh;
+      if (revisionKey !== adoptedKey && shouldAdopt) {
+        phases = catalog.records.map(sourceRecordToMutable);
+        adoptedPhaseRevisions = { ...catalog.revisions };
+        phaseSavePending = false;
+        phaseMutation = null;
+        phaseMutationScope = null;
+        phaseMutationSourceKey = null;
+        selectedPhaseIndex = null; acceptedPhaseRevision = null; stalePhaseRevision = null;
+      }
+    }
   });
-
   function savePipelines(): void {
     const payload: SavePipelineRow[] = pipelines.map((p) => ({
       id: p.id,
@@ -106,54 +113,49 @@
       else saveError = null;
     });
   }
-  function savePhases(): void {
-    const payload: SavePhaseRow[] = phases.map((p) => {
-      const row: {
-        id: string;
-        name: string;
-        instruction: string;
-        model?: string;
-        effort?: PhaseDefinition['effort'];
-        timeoutSeconds?: number;
-        loopable?: boolean;
-        retryCondition?: string;
-        isRequired?: boolean;
-        runner?: string;
-      } = {
-        id: p.id,
-        name: p.name,
-        instruction: p.instruction
-      };
-      if (typeof p.model === 'string' && p.model.length > 0) row.model = p.model;
-      if (typeof p.effort === 'string' && p.effort.length > 0) row.effort = p.effort;
-      if (typeof p.timeoutSeconds === 'number') row.timeoutSeconds = p.timeoutSeconds;
-      if (typeof p.loopable === 'boolean') row.loopable = p.loopable;
-      if (typeof p.retryCondition === 'string') row.retryCondition = p.retryCondition;
-      if (typeof p.isRequired === 'boolean') row.isRequired = p.isRequired;
-      if (p.runner) row.runner = p.runner;
-      return row;
-    });
-    void savePhasesHelper(payload).then((result) => {
-      if (result.status === 'rejected') showSaveError(result.reason);
-      else saveError = null;
+  function submitPhaseMutation(
+    mutation: SavePhasesMutation,
+    scope: 'user' | 'workspace',
+    sourceRows: readonly MutablePhase[] = phases
+  ): void {
+    const catalog = snapshot.phaseCatalog;
+    if (!catalog || catalog.state !== 'ready' || phaseSavePending) return;
+    const payload = sourceRows
+      .filter((phase) => phase.scope === scope)
+      .map(toSavePhaseRow);
+    phaseSavePending = true; acceptedPhaseRevision = null;
+    void savePhasesHelper({
+      scope,
+      expectedRevision: adoptedPhaseRevisions[scope],
+      mutation,
+      phases: payload
+    }).then((result) => {
+      if (result.status === 'rejected') {
+        phaseSavePending = false;
+        const stale = result.result as { currentRevision?: unknown } | undefined;
+        if (result.reason === 'stale-catalog' && typeof stale?.currentRevision === 'string') stalePhaseRevision = stale.currentRevision;
+        showSaveError(formatPhaseSaveRejection(result.reason, result.result));
+        return;
+      }
+      saveError = null;
+      const accepted = result.result as { revision?: string } | undefined; acceptedPhaseRevision = accepted?.revision ?? '';
+      if (acceptedPhaseRevision === catalog.revisions[scope]) {
+        phaseSavePending = false; phaseMutation = null; phaseMutationScope = null;
+        phaseMutationSourceKey = null; acceptedPhaseRevision = null;
+      }
     });
   }
+  function savePhases(): void { if (phaseMutation && phaseMutationScope) submitPhaseMutation(phaseMutation, phaseMutationScope); }
   function saveModels(): void {
     void saveModelsHelper(JSON.parse(JSON.stringify(models)));
   }
-
   function getPhaseTooltip(phaseId: string): string {
-    const phase = snapshot.availablePhases?.find(p => p.id === phaseId) || phases.find(p => p.id === phaseId);
-    if (!phase) return `Unknown phase: ${phaseId}`;
-    return `ID: ${phase.id}\nName: ${phase.name}\nModel: ${phase.model || 'Default Backend Model'}\nInstruction: ${phase.instruction.slice(0, 100)}${phase.instruction.length > 100 ? '...' : ''}`;
+    return phaseTooltip(effectivePhases, phaseId);
   }
-
-  // --- Pipelines ---
   let selectedPipelineIndex = $state<number | null>(null);
   let pipelineHistory = $state<MutablePipeline[][]>([]);
   let pipelineHistoryIndex = $state(-1);
   let isPipelineUndoRedoAction = false;
-
   $effect(() => {
     if (!initialized) return;
     const currentStr = JSON.stringify(pipelines);
@@ -167,7 +169,6 @@
     }
     isPipelineUndoRedoAction = false;
   });
-
   function undoPipeline(): void {
     if (pipelineHistoryIndex > 0) { isPipelineUndoRedoAction = true; pipelineHistoryIndex--; pipelines = JSON.parse(JSON.stringify(pipelineHistory[pipelineHistoryIndex])); }
   }
@@ -206,7 +207,6 @@
         : pipeline
     );
   }
-
   let newPhaseIdForPipeline = $state('');
   function addPhaseToPipeline(): void {
     if (selectedPipelineIndex !== null && newPhaseIdForPipeline.trim()) {
@@ -229,13 +229,10 @@
       pipelines[selectedPipelineIndex].phases[phaseIndex] = t;
     }
   }
-
-  // --- Phases ---
   let selectedPhaseIndex = $state<number | null>(null);
   let phaseHistory = $state<MutablePhase[][]>([]);
   let phaseHistoryIndex = $state(-1);
   let isPhaseUndoRedoAction = false;
-
   let editStateById = $state<Record<string, PhaseEditState>>({});
   function ensureEditState(id: string): PhaseEditState {
     if (!editStateById[id]) editStateById = { ...editStateById, [id]: { rawJsonMode: false } };
@@ -245,7 +242,6 @@
     const cur = ensureEditState(id);
     editStateById = { ...editStateById, [id]: { rawJsonMode: !cur.rawJsonMode } };
   }
-
   $effect(() => {
     if (!initialized) return;
     const currentStr = JSON.stringify(phases);
@@ -259,7 +255,6 @@
     }
     isPhaseUndoRedoAction = false;
   });
-
   function undoPhase(): void {
     if (phaseHistoryIndex > 0) { isPhaseUndoRedoAction = true; phaseHistoryIndex--; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
@@ -267,87 +262,125 @@
     if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
   }
   function addPhase(): void {
-    phases = [...phases, { id: 'new-phase', name: 'New Phase', instruction: 'Describe the phase objective here.', model: 'claude-opus-5', effort: 'max' } as MutablePhase];
+    if (phaseMutation) return;
+    const draft = makeNewPhaseDraft(phases);
+    phases = [...phases, draft];
     selectedPhaseIndex = phases.length - 1;
+    phaseMutation = { kind: 'create', phaseId: draft.id };
+    phaseMutationScope = draft.scope as 'user' | 'workspace';
+    phaseMutationSourceKey = draft.sourceKey;
   }
   function duplicatePhase(index: number): void {
+    if (phaseMutation) return;
     const original = phases[index];
     if (!original) return;
-    const duplicate = JSON.parse(JSON.stringify(original)) as MutablePhase;
-    
-    let newId = `${original.id}-copy`;
-    let counter = 1;
-    while (phases.some(p => p.id === newId)) {
-      newId = `${original.id}-copy-${counter}`;
-      counter++;
-    }
-    duplicate.id = newId;
-    duplicate.name = `${original.name || 'Untitled Phase'} (Copy)`;
-    
+    const duplicate = makeDuplicatePhaseDraft(original, phases);
     const newPhases = [...phases];
     newPhases.splice(index + 1, 0, duplicate);
     phases = newPhases;
     selectedPhaseIndex = index + 1;
+    phaseMutation = {
+      kind: 'duplicate',
+      sourceScope: original.scope,
+      sourcePhaseId: original.id,
+      phaseId: duplicate.id
+    };
+    phaseMutationScope = duplicate.scope as 'user' | 'workspace';
+    phaseMutationSourceKey = duplicate.sourceKey;
   }
-  function removePhase(index: number): void {
-    const id = phases[index]?.id;
-    phases = phases.filter((_, i) => i !== index);
-    if (selectedPhaseIndex === index) selectedPhaseIndex = null;
-    else if (selectedPhaseIndex !== null && selectedPhaseIndex > index) selectedPhaseIndex--;
-    if (id) { const next = { ...editStateById }; delete next[id]; editStateById = next; }
+  async function removePhase(index: number, originatingElement?: HTMLElement | null): Promise<void> {
+    const phase = phases[index];
+    if (!phase || phase.scope === 'built-in' || !phaseMutationsAllowed) return;
+    const confirmed = await useConfirm('catalog.remove-phase', {
+      originatingElement,
+      context: { phaseName: phase.name, phaseId: phase.id, scope: phase.scope }
+    });
+    if (!confirmed) return;
+    const proposed = phases.filter((_, rowIndex) => rowIndex !== index);
+    phaseMutation = { kind: 'remove', phaseId: phase.id };
+    phaseMutationScope = phase.scope;
+    phaseMutationSourceKey = phase.sourceKey;
+    submitPhaseMutation(phaseMutation, phase.scope, proposed);
   }
   function movePhaseListUp(index: number): void {
-    if (index <= 0) return;
+    if (index <= 0 || phaseMutation) return;
+    const moved = phases[index], neighbor = phases[index - 1];
+    if (moved.scope === 'built-in' || neighbor?.scope !== moved.scope) return;
     const newPhases = [...phases];
-    const tmp = newPhases[index - 1];
-    newPhases[index - 1] = newPhases[index];
+    const tmp = newPhases[index - 1]; newPhases[index - 1] = newPhases[index];
     newPhases[index] = tmp;
     phases = newPhases;
     if (selectedPhaseIndex === index) selectedPhaseIndex = index - 1;
     else if (selectedPhaseIndex === index - 1) selectedPhaseIndex = index;
+    phaseMutation = { kind: 'edit', phaseId: moved.id };
+    phaseMutationScope = moved.scope; phaseMutationSourceKey = moved.sourceKey;
   }
   function movePhaseListDown(index: number): void {
-    if (index >= phases.length - 1) return;
+    if (index >= phases.length - 1 || phaseMutation) return;
+    const moved = phases[index], neighbor = phases[index + 1];
+    if (moved.scope === 'built-in' || neighbor?.scope !== moved.scope) return;
     const newPhases = [...phases];
-    const tmp = newPhases[index + 1];
-    newPhases[index + 1] = newPhases[index];
+    const tmp = newPhases[index + 1]; newPhases[index + 1] = newPhases[index];
     newPhases[index] = tmp;
     phases = newPhases;
     if (selectedPhaseIndex === index) selectedPhaseIndex = index + 1;
     else if (selectedPhaseIndex === index + 1) selectedPhaseIndex = index;
+    phaseMutation = { kind: 'edit', phaseId: moved.id };
+    phaseMutationScope = moved.scope; phaseMutationSourceKey = moved.sourceKey;
   }
   function resetPhase(index: number): void {
-    const original = snapshot.availablePhases?.find(p => p.id === phases[index].id);
-    if (original) phases[index] = JSON.parse(JSON.stringify(original));
+    const sourceKey = phases[index]?.sourceKey;
+    const original = snapshot.phaseCatalog?.records.find((record) => record.key === sourceKey);
+    phases = original
+      ? phases.map((phase, rowIndex) => rowIndex === index ? sourceRecordToMutable(original) : phase)
+      : phases.filter((_, rowIndex) => rowIndex !== index);
+    phaseMutation = null;
+    phaseMutationScope = null;
+    phaseMutationSourceKey = null;
+    selectedPhaseIndex = null;
   }
   function updatePhase(index: number, patch: Partial<MutablePhase>): void {
+    const current = phases[index];
+    if (!current || (phaseMutationSourceKey && current.sourceKey !== phaseMutationSourceKey)) return;
     phases = phases.map((phase, i) => i === index ? { ...phase, ...patch } : phase);
+    const updated = phases[index];
+    if (!updated.persisted) {
+      updated.sourceKey = `draft::${updated.scope}::${updated.id}`;
+    }
+    if (updated?.persisted && updated.scope !== 'built-in') {
+      phaseMutation = { kind: 'edit', phaseId: current.id };
+      phaseMutationScope = updated.scope as 'user' | 'workspace';
+      phaseMutationSourceKey = updated.sourceKey;
+    } else if (phaseMutation?.kind === 'create' && patch.id && typeof patch.id === 'string') {
+      phaseMutation = { kind: 'create', phaseId: patch.id };
+    } else if (phaseMutation?.kind === 'duplicate' && patch.id && typeof patch.id === 'string') {
+      phaseMutation = { ...phaseMutation, phaseId: patch.id };
+    }
+    if (!updated.persisted) {
+      phaseMutationScope = updated.scope as 'user' | 'workspace';
+      phaseMutationSourceKey = updated.sourceKey;
+    }
   }
   function onRawJsonSave(index: number, parsed: Record<string, unknown>): void {
-    phases = phases.map((p, i) => (i === index ? { ...p, ...parsed } as MutablePhase : p));
+    updatePhase(index, parsed as Partial<MutablePhase>);
   }
   function onRetryConditionChange(index: number, e: { source: string; valid: boolean }): void {
-    phases = phases.map((p, i) => i === index ? ({ ...p, retryCondition: e.source } as MutablePhase) : p);
+    updatePhase(index, { retryCondition: e.source });
   }
-
   function isRetryEnabled(phase: MutablePhase): boolean {
     return typeof phase.retryCondition === 'string';
   }
-
   function toggleRetryCondition(index: number): void {
     const phase = phases[index];
     if (isRetryEnabled(phase)) {
       // Disable: clear retryCondition
-      phases = phases.map((p, i) => i === index ? ({ ...p, retryCondition: undefined } as MutablePhase) : p);
+      updatePhase(index, { retryCondition: undefined });
     } else {
       // Enable: seed with empty string so editor appears; user must fill it in
-      phases = phases.map((p, i) => i === index ? ({ ...p, retryCondition: '' } as MutablePhase) : p);
+      updatePhase(index, { retryCondition: '' });
     }
   }
-
-  // --- Models ---
   let newModelInput = $state<Record<string, string>>({});
-  
   function addModel(backend: string): void {
     const val = (newModelInput[backend] || '').trim();
     if (val) {
@@ -358,20 +391,17 @@
       }
     }
   }
-  
   function removeModel(backend: string, index: number): void { 
     if (models[backend]) {
       models[backend] = models[backend].filter((_, i) => i !== index);
     }
   }
-  
   function updateModel(backend: string, index: number, value: string): void {
     if (models[backend]) {
       models[backend][index] = value;
     }
   }
 </script>
-
 <div class="pb" data-testid="pipeline-builder-root">
   <div class="header">
     <h2>Builder</h2>
@@ -382,7 +412,6 @@
       <button class="tab-btn {activeTab === 'models' ? 'active' : ''}" onclick={() => activeTab = 'models'}>Models</button>
     </div>
   </div>
-
   <div class="builder-canvas">
     {#if showWorkspaceTrustBanner}
       <TrustBanner variant="workspace-trust" />
@@ -390,7 +419,7 @@
     {#if activeTab === 'pipelines'}
       <PipelineCatalogEditor
         {pipelines}
-        {phases}
+        phases={pipelinePhases}
         selectedIndex={selectedPipelineIndex}
         historyIndex={pipelineHistoryIndex}
         historyLength={pipelineHistory.length}
@@ -415,7 +444,6 @@
         onmovephaseup={movePhaseUp}
         onmovephasedown={movePhaseDown}
       />
-
     {:else if activeTab === 'phases'}
       <PhaseCatalogEditor
         {snapshot}
@@ -424,11 +452,14 @@
         selectedIndex={selectedPhaseIndex}
         historyIndex={phaseHistoryIndex}
         historyLength={phaseHistory.length}
-        trusted={trustPhases}
+        trusted={phaseMutationsAllowed}
         retryConditionsTrusted={trustRetryConditions}
         showTrustBanner={showPhasesBanner}
         showRetryTrustBanner={showRetryConditionsBanner}
         {saveError}
+        savePending={phaseSavePending}
+        mutationActive={phaseMutation !== null}
+        editableSourceKey={phaseMutationSourceKey}
         onselect={(index) => selectedPhaseIndex = index}
         onadd={addPhase}
         onremove={removePhase}
@@ -446,7 +477,6 @@
         onretrychange={onRetryConditionChange}
         onduplicate={duplicatePhase}
       />
-
     {:else if activeTab === 'models'}
       <ModelCatalogEditor
         availableModels={snapshot.availableModels}

@@ -163,6 +163,25 @@ describe('PromptBuilder.build', () => {
       expect(prompt).not.toContain('/speckit-specify');
     });
 
+    it('renders a skill reference as declarative Agent CLI task text only', () => {
+      const prompt = builder.build({
+        phase: 'security-audit',
+        phaseDef: {
+          id: 'security-audit',
+          name: 'Security Audit',
+          version: 1,
+          skill: 'security-review',
+          sourceScope: 'workspace'
+        },
+        iteration: 1,
+        iterationCap: 10,
+        featureDescription: 'desc',
+        featureDir: null
+      });
+      expect(prompt).toContain('AGENT CLI SKILL REFERENCE: security-review');
+      expect(prompt).toContain('does not load it, resolve it as a path, import it, or execute it');
+    });
+
     it('falls back to the built-in switch when no phaseDef is supplied', () => {
       const prompt = builder.build({
         phase: 'speckit-clarify',

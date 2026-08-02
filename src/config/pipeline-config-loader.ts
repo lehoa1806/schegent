@@ -13,7 +13,11 @@ import {
   type ValidationWarning
 } from './pipeline-config';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
-import { validate as validateRetryCondition } from '../lib/retry-condition';
+import {
+  phaseDefinitionToPhaseDef,
+  resolvePhaseCatalog,
+  type ResolvedPhaseCatalog
+} from './process-catalog';
 
 export interface CatalogConfigReader {
   getPhases(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
@@ -38,45 +42,7 @@ export interface LoadCatalogResult {
   readonly builtInPhases: readonly PhaseDef[];
   readonly userPhases: readonly PhaseDef[];
   readonly workspacePhases: readonly PhaseDef[];
-}
-
-function coercePhase(raw: unknown, warnings: ValidationWarning[]): PhaseDef | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const v = raw as Record<string, unknown>;
-  if (typeof v.id !== 'string') return null;
-  if (typeof v.name !== 'string') return null;
-  if (typeof v.instruction !== 'string') return null;
-
-  // Feature 010 — FR-014: validate retryCondition at load time; on parse
-  // failure strip the field, keep the PhaseDef, surface ONE warning naming
-  // the offending phase id, and never block activation.
-  let retryCondition: string | undefined;
-  if (typeof v.retryCondition === 'string' && v.retryCondition.trim().length > 0) {
-    const result = validateRetryCondition(v.retryCondition);
-    if (result.ok) {
-      retryCondition = v.retryCondition;
-    } else {
-      warnings.push({
-        source: 'phase',
-        id: v.id,
-        message: `retryCondition rejected: ${result.error}`
-      });
-    }
-  }
-
-  const def: PhaseDef = {
-    id: v.id,
-    name: v.name,
-    instruction: v.instruction,
-    ...(typeof v.model === 'string' && v.model.length > 0 ? { model: v.model } : {}),
-    ...(typeof v.effort === 'string' ? { effort: v.effort as PhaseDef['effort'] } : {}),
-    ...(typeof v.runner === 'string' ? { runner: v.runner as PhaseDef['runner'] } : {}),
-    ...(typeof v.timeoutSeconds === 'number' ? { timeoutSeconds: v.timeoutSeconds } : {}),
-    ...(typeof v.loopable === 'boolean' ? { loopable: v.loopable } : {}),
-    ...(retryCondition !== undefined ? { retryCondition } : {}),
-    ...(typeof v.isRequired === 'boolean' ? { isRequired: v.isRequired } : {})
-  };
-  return def;
+  readonly phaseCatalog: ResolvedPhaseCatalog;
 }
 
 function coercePipeline(raw: unknown): PipelineDef | null {
@@ -91,19 +57,6 @@ function coercePipeline(raw: unknown): PipelineDef | null {
     phaseIds.push(ref);
   }
   return { id: v.id, name: v.name, phases: phaseIds };
-}
-
-function coercePhases(
-  raw: readonly unknown[] | undefined,
-  warnings: ValidationWarning[]
-): readonly PhaseDef[] {
-  if (!raw) return [];
-  const out: PhaseDef[] = [];
-  for (const entry of raw) {
-    const phase = coercePhase(entry, warnings);
-    if (phase) out.push(phase);
-  }
-  return out;
 }
 
 function coercePipelines(raw: readonly unknown[] | undefined): readonly PipelineDef[] {
@@ -153,6 +106,11 @@ function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]
 }
 
 export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
+  const builtInPhaseCatalog = resolvePhaseCatalog({
+    builtIn: BUILT_IN_PHASES,
+    user: [],
+    workspace: []
+  });
   if (!reader) {
     return {
       catalog: BUILT_IN_CATALOG,
@@ -162,7 +120,8 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       usedFallback: false,
       builtInPhases: BUILT_IN_PHASES,
       userPhases: [],
-      workspacePhases: []
+      workspacePhases: [],
+      phaseCatalog: builtInPhaseCatalog
     };
   }
 
@@ -176,33 +135,58 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
   const workspaceModelsRaw = reader.getModels('workspace');
   const workspaceDefault = reader.getDefaultPipelineId('workspace');
 
-  const retryWarnings: ValidationWarning[] = [];
-  const userPhases = coercePhases(userPhasesRaw, retryWarnings);
   const userPipelines = coercePipelines(userPipelinesRaw);
   const userModels = coerceModels(userModelsRaw);
-  const workspacePhases = coercePhases(workspacePhasesRaw, retryWarnings);
   const workspacePipelines = coercePipelines(workspacePipelinesRaw);
   const workspaceModels = coerceModels(workspaceModelsRaw);
+  const phaseCatalog = resolvePhaseCatalog({
+    builtIn: BUILT_IN_PHASES,
+    user: userPhasesRaw,
+    workspace: workspacePhasesRaw
+  });
+  const builtInById = new Map(BUILT_IN_PHASES.map((phase) => [phase.id, phase]));
+  const userPhases = phaseCatalog.records
+    .filter((record) => record.scope === 'user' && record.definition !== null)
+    .map((record) => phaseDefinitionToPhaseDef(record.definition!, 'user', builtInById));
+  const workspacePhases = phaseCatalog.records
+    .filter((record) => record.scope === 'workspace' && record.definition !== null)
+    .map((record) => phaseDefinitionToPhaseDef(record.definition!, 'workspace', builtInById));
 
   const merge = mergeCatalog(
-    { phases: BUILT_IN_PHASES, pipelines: BUILT_IN_PIPELINES, models: [], defaultPipelineId: BUILT_IN_PIPELINE_ID },
-    { phases: userPhases, pipelines: userPipelines, models: userModels, defaultPipelineId: userDefault },
-    { phases: workspacePhases, pipelines: workspacePipelines, models: workspaceModels, defaultPipelineId: workspaceDefault }
+    { phases: phaseCatalog.effectivePhaseDefs, pipelines: BUILT_IN_PIPELINES, models: [], defaultPipelineId: BUILT_IN_PIPELINE_ID },
+    { pipelines: userPipelines, models: userModels, defaultPipelineId: userDefault },
+    { pipelines: workspacePipelines, models: workspaceModels, defaultPipelineId: workspaceDefault }
   );
 
   const report = validateCatalog(merge.catalog);
-  const allWarnings = [...retryWarnings, ...merge.duplicateWarnings, ...report.warnings];
+  const phaseWarnings: ValidationWarning[] = phaseCatalog.warnings.map((warning) => ({
+    source: warning.code === 'phase-soft-cap' ? 'limit' : 'phase',
+    message: warning.message
+  }));
+  for (const record of phaseCatalog.records) {
+    for (const error of record.errors) {
+      phaseWarnings.push({ source: 'phase', id: record.phaseId, message: error.message });
+    }
+  }
+  const allWarnings = [...phaseWarnings, ...merge.duplicateWarnings, ...report.warnings];
 
   if (report.errors.length > 0) {
+    const fallbackCatalog = buildCatalog(
+      phaseCatalog.effectivePhaseDefs,
+      BUILT_IN_PIPELINES,
+      merge.catalog.models,
+      BUILT_IN_PIPELINE_ID
+    );
     return {
-      catalog: BUILT_IN_CATALOG,
+      catalog: fallbackCatalog,
       errors: report.errors,
       warnings: allWarnings,
       defaultPipelineId: BUILT_IN_PIPELINE_ID,
       usedFallback: true,
       builtInPhases: BUILT_IN_PHASES,
       userPhases,
-      workspacePhases
+      workspacePhases,
+      phaseCatalog
     };
   }
 
@@ -226,6 +210,7 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     usedFallback: false,
     builtInPhases: BUILT_IN_PHASES,
     userPhases,
-    workspacePhases
+    workspacePhases,
+    phaseCatalog
   };
 }

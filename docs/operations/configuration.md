@@ -94,16 +94,13 @@ dedicated IPC commands (`CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`,
 
 ### Per-phase Effort + Model (feature 026)
 
-Each row in the Pipeline Builder's Phases editor has dedicated **Effort**
+Each source row in the Pipeline Builder's Phases editor has dedicated **Effort**
 and **Model** dropdowns alongside the existing per-phase fields. Both
-fields default to **Inherit** (no override); choosing a concrete value
-applies that override at the **user catalog layer** (`schegent.phases`
-in user settings). A workspace-layer override
-(`.vscode/settings.json` `schegent.phases`) shadows the user-layer
-value for the *effective* run-time choice but does NOT block a
-user-layer save — the workspace shadow is surfaced by an inline
-**"shadowed by workspace"** badge on the row, and the user-layer save
-is still accepted and persisted (FR-021).
+fields default to **Inherit** (no override). Each row identifies its user,
+workspace, or built-in source. Workspace wins over user, which wins over
+built-in, but invalid higher rows are quarantined and the next valid source
+becomes effective. User-layer rows remain independently editable while
+shadowed.
 
 **Effort** accepts one of `low`, `medium`, `high`, `xhigh`, `max`.
 **Model** accepts any identifier from the merged model catalog (built-in
@@ -116,6 +113,20 @@ emitted on the `phase-start` audit event as optional payload fields
 (absent fields are omitted, not emitted as empty strings or `null`).
 Settings changes mid-run never retarget the in-flight snapshot;
 overrides only take effect on the **next** enqueue.
+
+### Scoped Phase saves and stale recovery
+
+Phase create and duplicate flows require a target scope. Every save sends the
+complete selected layer, its authoritative revision, and exactly one mutation
+intent. The host re-reads the layer, validates the whole proposal, derives
+versions, and writes once to Global or Workspace configuration. A
+`stale-catalog` rejection means another window or settings edit won the race:
+refresh the catalog, review the authoritative row, and reapply the draft.
+
+Removing a custom row always asks for confirmation. Removal is blocked when it
+would eliminate the final valid definition referenced by an effective
+pipeline; the error lists the dependent pipeline ids. Reset clears only the
+selected writable layer. Built-ins are never copied into settings or deleted.
 
 
 

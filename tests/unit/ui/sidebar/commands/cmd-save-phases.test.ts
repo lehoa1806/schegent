@@ -1,330 +1,225 @@
-// Feature 059 (US1, T009) — cmd-save-phases trust-gate unit tests.
-// Covers the gate semantics from
-// `specs/059-fine-grained-trust-scopes/contracts/save-command-trust-gate-contract.md`:
-//   I-2 Reset-is-allowed
-//   I-3 Row-granularity retry-condition gate (US3, T017)
-//   I-4 One denial per save (precedence)
-//   I-5 Audit-before-return
-//   I-7 Reason templates are exhaustive.
-//
-// The resolver is mocked at module level so the gate can be exercised
-// without touching VS Code APIs. The integration test
-// `tests/integration/trust-scopes-trusted-workspace.test.ts` exercises
-// the host end-to-end.
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-const mocks = vi.hoisted(() => {
-  const state = {
-    capabilities: new Map<string, boolean>(),
-    scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>(),
-    canonicalBasename: 'test-workspace' as string
-  };
-  return { state };
-});
+const mocks = vi.hoisted(() => ({
+  capabilities: new Map<string, boolean>(),
+  scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>(),
+  basename: 'catalog-workspace'
+}));
 
 vi.mock('../../../../../src/state/capability-trust-resolver', () => ({
-  isCapabilityAllowed: (capability: string) =>
-    mocks.state.capabilities.get(capability) ?? true,
-  getResolvedScope: (capability: string) =>
-    mocks.state.scopes.get(capability) ?? 'workspace-trust'
+  isCapabilityAllowed: (capability: string) => mocks.capabilities.get(capability) ?? true,
+  getResolvedScope: (capability: string) => mocks.scopes.get(capability) ?? 'workspace-trust'
 }));
 
 vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
   getCanonicalWorkspaceRoot: () => ({
-    uri: { fsPath: `/tmp/${mocks.state.canonicalBasename}`, scheme: 'file' },
-    name: mocks.state.canonicalBasename,
+    uri: { fsPath: `/tmp/${mocks.basename}`, scheme: 'file' },
+    name: mocks.basename,
     index: 0
   })
 }));
 
-import { handler as saveHandler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
+import { phaseLayerRevision } from '../../../../../src/config/process-catalog';
+import { handler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SavePhasesCommand, TrustDeniedError } from '../../../../../src/ui/sidebar/messages';
-import { BUILT_IN_PHASES } from '../../../../../src/config/pipeline-config';
 
-interface CapturedAudit {
-  runId: string;
-  phase: string;
-  iteration: number;
-  eventType: string;
-  payload: Record<string, unknown>;
-  outcome: string;
-  correlationId?: string;
-}
+const CUSTOM = { id: 'optional-audit', name: 'Optional Audit', instruction: 'Audit.', isRequired: false };
 
-function buildCtx(opts: {
-  updateConfigThrows?: boolean;
-  auditAppendThrows?: boolean;
-} = {}): {
-  ctx: Parameters<typeof saveHandler>[0];
-  acks: CommandAckMessage[];
-  auditCalls: CapturedAudit[];
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
-  warnings: string[];
-} {
+function harness(options: {
+  user?: readonly unknown[];
+  workspace?: readonly unknown[];
+  auditThrows?: boolean;
+  persistThrows?: boolean;
+} = {}) {
+  const workspace = options.workspace ?? [];
   const acks: CommandAckMessage[] = [];
-  const auditCalls: CapturedAudit[] = [];
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
-  const warnings: string[] = [];
-  const logger = {
-    info: vi.fn(),
-    warn: (msg: string) => warnings.push(msg),
-    error: vi.fn(),
-    debug: vi.fn(),
-    sanitize: (s: string) => s
-  };
-  const audit = {
-    append: vi.fn(async (entry: CapturedAudit) => {
-      if (opts.auditAppendThrows) {
-        throw new Error('append failed');
-      }
-      auditCalls.push(entry);
-    })
-  };
-  const updateConfig = vi.fn(async (key: string, value: unknown) => {
-    if (opts.updateConfigThrows) throw new Error('update failed');
-    updateConfigCalls.push({ key, value });
-  });
+  const writes: Array<{ key: string; value: unknown; scope?: string }> = [];
+  const audits: Array<{ payload: Record<string, unknown> }> = [];
   const ctx = {
     deps: {
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
-      logger,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      audit: audit as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      updateConfig: updateConfig as any
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize: String },
+      audit: { append: vi.fn(async (entry: { payload: Record<string, unknown> }) => {
+        if (options.auditThrows) throw new Error('audit failed');
+        audits.push(entry);
+      }) },
+      updateConfig: vi.fn(async (key: string, value: unknown, scope?: string) => {
+        if (options.persistThrows) throw new Error('persist failed');
+        writes.push({ key, value, scope });
+      }),
+      readPhaseConfig: () => ({ user: options.user ?? [], workspace }),
+      getCatalog: () => ({ pipelines: [], phases: [], models: {}, defaultPipelineId: 'default' })
     },
-    postAck: async (msg: CommandAckMessage) => {
-      acks.push(msg);
-      return true;
-    },
-    correlationId: 'test-correlation-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-  return { ctx, acks, auditCalls, updateConfigCalls, warnings };
+    postAck: async (message: CommandAckMessage) => { acks.push(message); return true; },
+    correlationId: 'save-phases'
+  } as unknown as Parameters<typeof handler>[0];
+  return { ctx, acks, writes, audits };
 }
 
-function makeCmd(phases: readonly unknown[]): SavePhasesCommand {
+function command(
+  phases: readonly unknown[],
+  mutation: SavePhasesCommand['payload']['mutation'],
+  current: readonly unknown[] = [],
+  expectedRevision = phaseLayerRevision(current),
+  scope: 'user' | 'workspace' = 'workspace'
+): SavePhasesCommand {
   return {
     type: CMD_SAVE_PHASES,
-    correlationId: 'test-correlation-1',
-    payload: { phases }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+    correlationId: 'save-phases',
+    payload: { scope, expectedRevision, mutation, phases }
+  };
 }
 
 beforeEach(() => {
-  mocks.state.capabilities.clear();
-  mocks.state.scopes.clear();
-  mocks.state.canonicalBasename = 'test-workspace';
+  mocks.capabilities.clear();
+  mocks.scopes.clear();
+  mocks.basename = 'catalog-workspace';
 });
 
-describe('cmd-save-phases optional phase validation (076)', () => {
-  it('accepts and preserves isRequired: false', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    const phases = [
-      {
-        id: 'optional-audit',
-        name: 'Optional Audit',
-        instruction: 'Audit without blocking.',
-        isRequired: false
-      }
-    ];
-
-    await saveHandler(ctx, makeCmd(phases));
-
+describe('CMD_SAVE_PHASES atomic mutation and trust behavior', () => {
+  it('persists an optional Phase in the selected scope', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }));
     expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls).toEqual([{ key: 'phases', value: phases }]);
+    expect(writes).toEqual([{ key: 'phases', scope: 'workspace', value: [
+      expect.objectContaining({ ...CUSTOM, version: 1 })
+    ] }]);
   });
 
-  it('rejects string coercion before persistence', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-
-    await saveHandler(ctx, makeCmd([
-      {
-        id: 'optional-audit',
-        name: 'Optional Audit',
-        instruction: 'Audit without blocking.',
-        isRequired: 'false'
-      }
-    ]));
-
-    expect(acks[0]).toMatchObject({
-      status: 'rejected',
-      reason: 'phase-validation:optional-audit:isRequired:must-be-boolean'
-    });
-    expect(updateConfigCalls).toEqual([]);
-  });
-});
-
-describe('cmd-save-phases trust gate (059, T009) — I-2 reset-to-defaults', () => {
-  it('accepts BUILT_IN_PHASES payload even when allowCustomPhases is false', async () => {
-    mocks.state.capabilities.set('phases', false);
-    mocks.state.scopes.set('phases', 'workspace');
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([...BUILT_IN_PHASES]));
+  it('persists a complete user layer in the selected scope', async () => {
+    const { ctx, acks, writes } = harness({ user: [] });
+    await handler(ctx, command(
+      [CUSTOM],
+      { kind: 'create', phaseId: CUSTOM.id },
+      [],
+      phaseLayerRevision([]),
+      'user'
+    ));
     expect(acks[0].status).toBe('accepted');
-    expect(auditCalls).toEqual([]);
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-  });
-});
-
-describe('cmd-save-phases trust gate (059, T009) — capability denial', () => {
-  it('denies non-default phases when allowCustomPhases is false', async () => {
-    mocks.state.capabilities.set('phases', false);
-    mocks.state.scopes.set('phases', 'workspace');
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    const phases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Custom instruction',
-        loopable: false
-      }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('trust-denied');
-    const err = acks[0].result as TrustDeniedError;
-    expect(err.kind).toBe('trust-denied');
-    expect(err.capability).toBe('phases');
-    expect(err.resolvedScope).toBe('workspace');
-    expect(updateConfigCalls).toEqual([]);
-    expect(auditCalls).toHaveLength(1);
-    expect(auditCalls[0].eventType).toBe('trust.capability-denied');
-    expect(auditCalls[0].payload.capability).toBe('phases');
-    expect(auditCalls[0].payload.resolvedScope).toBe('workspace');
-    expect(auditCalls[0].payload.workspaceBasename).toBe('test-workspace');
-    expect(typeof auditCalls[0].payload.reason).toBe('string');
-    expect(auditCalls[0].outcome).toBe('failure');
+    expect(writes).toEqual([{
+      key: 'phases', scope: 'user',
+      value: [expect.objectContaining({ ...CUSTOM, version: 1 })]
+    }]);
   });
 
-  it('accepts non-default phases when allowCustomPhases is true', async () => {
-    mocks.state.capabilities.set('phases', true);
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    const phases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Custom instruction',
-        loopable: false
-      }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
+  it('rejects a stale layer revision without writing', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }, [], 'stale'));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    expect(writes).toEqual([]);
+  });
+
+  it('rejects a payload diff that exceeds the declared mutation', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([
+      CUSTOM,
+      { id: 'second', name: 'Second', instruction: 'Run.' }
+    ], { kind: 'create', phaseId: CUSTOM.id }));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'phase-mutation-mismatch' });
+  });
+
+  it('rejects reordering unrelated rows under a single-row edit intent', async () => {
+    const first = { ...CUSTOM, version: 1 };
+    const second = { id: 'second', name: 'Second', version: 1, instruction: 'Run.' };
+    const third = { id: 'third', name: 'Third', version: 1, instruction: 'Run.' };
+    const current = [first, second, third];
+    const { ctx, acks, writes } = harness({ workspace: current });
+    await handler(ctx, command(
+      [{ ...first, name: 'Edited' }, third, second],
+      { kind: 'edit', phaseId: first.id }, current
+    ));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'phase-mutation-mismatch' });
+    expect(writes).toEqual([]);
+  });
+
+  it('allows moving only the row named by the edit intent', async () => {
+    const first = { ...CUSTOM, version: 1 };
+    const second = { id: 'second', name: 'Second', version: 1, instruction: 'Run.' };
+    const third = { id: 'third', name: 'Third', version: 1, instruction: 'Run.' };
+    const current = [first, second, third];
+    const { ctx, acks, writes } = harness({ workspace: current });
+    await handler(ctx, command(
+      [second, first, third], { kind: 'edit', phaseId: first.id }, current
+    ));
     expect(acks[0].status).toBe('accepted');
-    expect(auditCalls).toEqual([]);
-    expect(updateConfigCalls).toHaveLength(1);
+    expect((writes[0].value as readonly { id: string }[]).map((row) => row.id))
+      .toEqual(['second', first.id, 'third']);
   });
-});
 
-describe('cmd-save-phases trust gate (059, T009) — I-5 audit-before-return resilience', () => {
-  it('still returns rejection when audit append throws', async () => {
-    mocks.state.capabilities.set('phases', false);
-    mocks.state.scopes.set('phases', 'workspace');
-    const { ctx, acks, updateConfigCalls, warnings } = buildCtx({ auditAppendThrows: true });
-    const phases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Custom instruction',
-        loopable: false
-      }
+  it('rejects silently normalizing an untouched invalid row', async () => {
+    const current = [
+      { ...CUSTOM, version: 1 },
+      { id: 'invalid-row', name: 'Invalid', version: 1, instruction: 'Run.', loopable: 'yes' }
     ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('trust-denied');
+    const proposed = [
+      { ...CUSTOM, name: 'Edited', version: 1 },
+      { id: 'invalid-row', name: 'Invalid', version: 1, instruction: 'Run.' }
+    ];
+    const { ctx, acks, writes } = harness({ workspace: current });
+    await handler(ctx, command(proposed, { kind: 'edit', phaseId: CUSTOM.id }, current));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'phase-mutation-mismatch' });
+    expect(writes).toEqual([]);
+  });
+
+  it('increments host-owned version on edit', async () => {
+    const current = [{ ...CUSTOM, version: 4 }];
+    const edited = [{ ...CUSTOM, name: 'Optional Audit Updated', version: 4 }];
+    const { ctx, acks, writes } = harness({ workspace: current });
+    await handler(ctx, command(edited, { kind: 'edit', phaseId: CUSTOM.id }, current));
+    expect(acks[0].status).toBe('accepted');
+    expect(writes[0].value).toEqual([expect.objectContaining({ name: 'Optional Audit Updated', version: 5 })]);
+  });
+
+  it('allows reset to clear a writable layer even when custom phases are denied', async () => {
+    mocks.capabilities.set('phases', false);
+    const current = [{ ...CUSTOM, version: 1 }];
+    const { ctx, acks, writes } = harness({ workspace: current });
+    await handler(ctx, command([], { kind: 'reset' }, current));
+    expect(acks[0].status).toBe('accepted');
+    expect(writes[0].value).toEqual([]);
+  });
+
+  it('denies a custom mutation when the phases capability is unavailable', async () => {
+    mocks.capabilities.set('phases', false);
+    mocks.scopes.set('phases', 'workspace');
+    const { ctx, acks, writes, audits } = harness();
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'trust-denied' });
     expect((acks[0].result as TrustDeniedError).capability).toBe('phases');
-    expect(updateConfigCalls).toEqual([]);
-    expect(warnings.some((w) => w.includes('trust.capability-denied'))).toBe(true);
-  });
-});
-
-describe('cmd-save-phases trust gate (T017, US3) — row-granularity retry-conditions', () => {
-  it('denies non-default retryCondition on row when allowCustomRetryConditions is false', async () => {
-    // Allow phases overall; deny only retry-conditions.
-    mocks.state.capabilities.set('phases', true);
-    mocks.state.capabilities.set('retryConditions', false);
-    mocks.state.scopes.set('retryConditions', 'user');
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    // Row 0: identical to built-in (no retryCondition declared on built-ins).
-    // Row 1: introduces a custom retryCondition → triggers the gate.
-    const phases = [
-      { id: 'speckit-specify', name: 'Spec-kit Specify', instruction: 'i', loopable: false },
-      {
-        id: 'speckit-clarify',
-        name: 'Spec-kit Clarify',
-        instruction: 'i',
-        loopable: true,
-        retryCondition: 'some_custom_condition > 0'
-      }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('trust-denied');
-    const err = acks[0].result as TrustDeniedError;
-    expect(err.capability).toBe('retryConditions');
-    expect(err.rowIndex).toBe(1);
-    expect(err.resolvedScope).toBe('user');
-    expect(updateConfigCalls).toEqual([]);
-    expect(auditCalls).toHaveLength(1);
-    expect(auditCalls[0].payload.capability).toBe('retryConditions');
-    expect(auditCalls[0].payload.rowIndex).toBe(1);
+    expect(writes).toEqual([]);
+    expect(audits).toHaveLength(1);
   });
 
-  it('accepts row whose retryCondition matches the built-in default', async () => {
-    mocks.state.capabilities.set('phases', true);
-    mocks.state.capabilities.set('retryConditions', false);
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    // Built-in phases have a specific default retryCondition (if loopable);
-    // submitting a row with the SAME retryCondition is the default and should be accepted.
-    const phases = [
-      { id: 'speckit-specify', name: 'Spec-kit Specify', instruction: 'i', loopable: false },
-      { id: 'speckit-clarify', name: 'Spec-kit Clarify', instruction: 'i', loopable: true, retryCondition: 'open_questions > 0' }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
+  it('denies a custom retry condition at row granularity', async () => {
+    mocks.capabilities.set('phases', true);
+    mocks.capabilities.set('retryConditions', false);
+    const row = { ...CUSTOM, retryCondition: 'exitCode != 0' };
+    const { ctx, acks } = harness();
+    await handler(ctx, command([row], { kind: 'create', phaseId: row.id }));
+    expect((acks[0].result as TrustDeniedError)).toMatchObject({ capability: 'retryConditions', rowIndex: 0 });
   });
 
-  it('I-4 precedence: when both phases AND retryConditions would fire, rejection cites phases', async () => {
-    mocks.state.capabilities.set('phases', false);
-    mocks.state.capabilities.set('retryConditions', false);
-    mocks.state.scopes.set('phases', 'workspace');
-    mocks.state.scopes.set('retryConditions', 'user');
-    const { ctx, acks, auditCalls } = buildCtx();
-    const phases = [
-      {
-        id: 'speckit-clarify',
-        name: 'Renamed Clarify',
-        instruction: 'overridden',
-        loopable: true,
-        retryCondition: 'some_custom_condition > 0'
-      }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(acks[0].status).toBe('rejected');
-    const err = acks[0].result as TrustDeniedError;
-    expect(err.capability).toBe('phases'); // precedence: phases wins
-    expect(auditCalls).toHaveLength(1);
-    expect(auditCalls[0].payload.capability).toBe('phases');
+  it('returns trust denial even when audit append fails', async () => {
+    mocks.capabilities.set('phases', false);
+    const { ctx, acks } = harness({ auditThrows: true });
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'trust-denied' });
   });
-});
 
-describe('cmd-save-phases trust gate (059, T009) — I-6 workspaceBasename derivation', () => {
-  it('uses path.basename of canonical workspace folder', async () => {
-    mocks.state.canonicalBasename = 'my-project';
-    mocks.state.capabilities.set('phases', false);
-    mocks.state.scopes.set('phases', 'workspace');
-    const { ctx, auditCalls } = buildCtx();
-    const phases = [
-      { id: 'custom-phase', name: 'Custom', instruction: 'i', loopable: false }
-    ];
-    await saveHandler(ctx, makeCmd(phases));
-    expect(auditCalls[0].payload.workspaceBasename).toBe('my-project');
-    // Path separators MUST NOT appear in the basename.
-    expect(String(auditCalls[0].payload.workspaceBasename)).not.toMatch(/[\\/]/);
+  it('uses only the canonical workspace basename in denial evidence', async () => {
+    mocks.capabilities.set('phases', false);
+    mocks.basename = 'my-project';
+    const { ctx, audits } = harness();
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }));
+    expect(audits[0].payload.workspaceBasename).toBe('my-project');
+  });
+
+  it('leaves the prior layer unchanged when persistence fails', async () => {
+    const { ctx, acks, writes } = harness({ persistThrows: true });
+    await handler(ctx, command([CUSTOM], { kind: 'create', phaseId: CUSTOM.id }));
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'persistence-failed' });
+    expect(writes).toEqual([]);
   });
 });

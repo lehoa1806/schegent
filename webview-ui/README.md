@@ -277,7 +277,7 @@ Host → webview push channel:
 
 All three commands are **read-only** and are NOT members of `MUTATING_COMMANDS` — they bypass the primary-only mutation gate so a secondary VS Code window can still browse logs. They flow through the shared helper at [`webview-ui/src/lib/phase-log-ipc.ts`](src/lib/phase-log-ipc.ts) (single call site); a repo-grep regression test at [`../tests/lint/no-inline-phase-log-ipc.test.ts`](../tests/lint/no-inline-phase-log-ipc.test.ts) fails the build on any drift. No new snapshot envelope keys; no `AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump (logs are derived from the existing diagnostics directory).
 
-### Pipeline Builder per-phase Effort + Model (spec 026)
+### Scoped Phase catalog manager (spec 081)
 
 [`PipelineBuilder.svelte`](src/components/PipelineBuilder.svelte) carries
 per-phase **Effort** and **Model** dropdowns plus a precedence badge
@@ -286,18 +286,18 @@ per-phase **Effort** and **Model** dropdowns plus a precedence badge
 phase-editing surface; SettingsSurface intentionally does **not** carry
 a Phases tab (spec 012 reduction).
 
-The component reads `snapshot.phasePrecedence` from the host
-projection (composite-key shape `"<phaseId>::<fieldKey>"`) and never
-computes precedence locally. The 5 per-phase keys covered today are
-`model`, `effort`, `timeoutSeconds`, `loopable`, `retryCondition`; UI
-consumes `model` and `effort` and the remaining keys are reserved for
-forward use without a fresh contract change.
+The component reads the authoritative `snapshot.phaseCatalog` source-record
+projection. It renders built-in, user, and workspace rows separately with
+effective/shadowed/invalid status, bounded errors, revisions, and unavailable
+models. `availablePhases` remains the effective runtime-only list. Built-ins are
+read-only; drafts select user or workspace scope explicitly.
 
 [`webview-ui/src/lib/save-phases.ts`](src/lib/save-phases.ts) is the
 **single call site** for `CMD_SAVE_PHASES` in the webview (FR-021 +
 research Decision 1). Components MUST call
-`await savePhases(phases)` rather than constructing the envelope
-inline. The helper mirrors the shape of
+`await savePhases({ scope, expectedRevision, mutation, phases })` rather than
+constructing the envelope inline. The helper preserves structured accepted and
+rejected acknowledgement details and mirrors the correlation behavior of
 [`save-general-settings.ts`](src/lib/save-general-settings.ts):
 
 1. Generates a UUIDv4 correlation id.
@@ -308,11 +308,11 @@ inline. The helper mirrors the shape of
 
 A repo-grep regression test at
 [`../tests/lint/no-inline-save-phases.test.ts`](../tests/lint/no-inline-save-phases.test.ts)
-fails the build if any new component references `CMD_SAVE_PHASES`
-directly. A user-layer save MUST be accepted even when the workspace
-layer shadows the same row (FR-021) — the shadow only affects the
-*effective* value used at run time, not the persisted user-layer
-record.
+fails the build if any new component references `CMD_SAVE_PHASES` directly.
+Saves contain exactly one create/edit/duplicate/remove/reset intent and the
+complete target layer. Delete additionally awaits
+`useConfirm('catalog.remove-phase', ...)`. The UI remains pending until a
+snapshot publishes the accepted revision.
 
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 

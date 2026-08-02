@@ -34,6 +34,7 @@ import {
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { phaseLayerRevision } from '../../src/config/process-catalog';
 
 interface CapturedAck {
   msg: CommandAckMessage;
@@ -60,10 +61,20 @@ function buildRouter(opts: {
     isTrusted: () => true,
     notifyWarning: vi.fn(),
     logger: new SanitizedLogger(),
-    updateConfig
+    updateConfig,
+    readPhaseConfig: () => ({ user: [], workspace: [] })
   };
   const router = new MessageRouter(deps);
   return { router, acks, updateConfigCalls };
+}
+
+function savePayload(phases: readonly unknown[], phaseId = 'speckit-plan') {
+  return {
+    scope: 'workspace' as const,
+    expectedRevision: phaseLayerRevision([]),
+    mutation: { kind: 'create' as const, phaseId },
+    phases
+  };
 }
 
 async function dispatch(
@@ -106,7 +117,7 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'save-1',
-        payload: { phases }
+        payload: savePayload(phases)
       } as SidebarCommand,
       acks
     );
@@ -114,7 +125,9 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
     expect(acks[0].msg.status).toBe('accepted');
     expect(updateConfigCalls).toHaveLength(1);
     expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual(phases);
+    expect(updateConfigCalls[0].value).toEqual([
+      expect.objectContaining({ ...phases[0], version: 1 })
+    ]);
   });
 
   it('(c) rejects a row with effort: "turbo" with a per-row error code and does not persist', async () => {
@@ -125,8 +138,7 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'save-2',
-        payload: {
-          phases: [
+        payload: savePayload([
             {
               id: 'speckit-plan',
               name: 'Plan',
@@ -134,14 +146,15 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
               loopable: false,
               effort: 'turbo'
             }
-          ]
-        }
+          ])
       } as SidebarCommand,
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
-    expect(acks[0].msg.reason).toMatch(/effort/);
-    expect(acks[0].msg.reason).toMatch(/speckit-plan/);
+    expect(acks[0].msg).toMatchObject({
+      reason: 'phase-validation',
+      result: { errors: [expect.objectContaining({ phaseId: 'speckit-plan', field: 'effort' })] }
+    });
     expect(updateConfigCalls).toEqual([]);
   });
 
@@ -153,8 +166,7 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'save-3',
-        payload: {
-          phases: [
+        payload: savePayload([
             {
               id: 'speckit-plan',
               name: 'Plan',
@@ -162,14 +174,15 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
               loopable: false,
               model: '' // empty-string model fails per-row validation (FR-005 shape)
             }
-          ]
-        }
+          ])
       } as SidebarCommand,
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
-    expect(acks[0].msg.reason).toMatch(/model/);
-    expect(acks[0].msg.reason).toMatch(/speckit-plan/);
+    expect(acks[0].msg).toMatchObject({
+      reason: 'phase-validation',
+      result: { errors: [expect.objectContaining({ phaseId: 'speckit-plan', field: 'model' })] }
+    });
     expect(updateConfigCalls).toEqual([]);
   });
 
@@ -197,17 +210,19 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'save-4',
-        payload: { phases }
+        payload: savePayload(phases)
       } as SidebarCommand,
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
-    expect(acks[0].msg.reason).toMatch(/effort/);
-    expect(acks[0].msg.reason).toMatch(/speckit-implement/);
+    expect(acks[0].msg).toMatchObject({
+      reason: 'phase-validation',
+      result: { errors: [expect.objectContaining({ phaseId: 'speckit-implement', field: 'effort' })] }
+    });
     expect(updateConfigCalls).toEqual([]);
   });
 
-  it('(e-bis) all-rows-valid multi-row save: persists the entire batch atomically', async () => {
+  it('(e-bis) rejects an all-valid batch whose diff exceeds one declared mutation', async () => {
     const { router, updateConfigCalls } = buildRouter();
     const acks: CapturedAck[] = [];
     const phases = [
@@ -233,13 +248,12 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'save-5',
-        payload: { phases }
+        payload: savePayload(phases)
       } as SidebarCommand,
       acks
     );
-    expect(acks[0].msg.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual(phases);
+    expect(acks[0].msg.status).toBe('rejected');
+    expect(acks[0].msg.reason).toBe('phase-mutation-mismatch');
+    expect(updateConfigCalls).toEqual([]);
   });
 });

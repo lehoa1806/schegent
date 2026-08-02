@@ -52,6 +52,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { phaseLayerRevision } from '../../src/config/process-catalog';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
   CMD_SAVE_PHASES,
@@ -136,7 +137,8 @@ function buildHarness(): {
     audit,
     updateConfig: async (key, value) => {
       updateConfigCalls.push({ key, value });
-    }
+    },
+    readPhaseConfig: () => ({ user: [], workspace: [] })
   };
   return { router: new MessageRouter(deps), audit, updateConfigCalls };
 }
@@ -150,7 +152,12 @@ async function dispatchSave(
   const command = {
     type: CMD_SAVE_PHASES,
     correlationId,
-    payload: { phases }
+    payload: {
+      scope: 'workspace',
+      expectedRevision: phaseLayerRevision([]),
+      mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
+      phases
+    }
   } as unknown as SidebarCommand;
   await router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = msg;
@@ -209,14 +216,6 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
     mocks.state.scopes.set('retryConditions', 'user');
     const { router, audit } = buildHarness();
     const phases = [
-      // Row 0: built-in `speckit-specify` with no retry-condition override.
-      {
-        id: 'speckit-specify',
-        name: 'Specify',
-        instruction: 'Specify',
-        loopable: false
-      },
-      // Row 1: non-default retry-condition → row-granularity denial.
       {
         id: 'speckit-clarify',
         name: 'Clarify',
@@ -237,6 +236,6 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
     const payload = trustEntries[0].payload as Record<string, unknown>;
     expect(payload.capability).toBe('retryConditions');
     expect(typeof payload.rowIndex).toBe('number');
-    expect(payload.rowIndex).toBe(1);
+    expect(payload.rowIndex).toBe(0);
   });
 });

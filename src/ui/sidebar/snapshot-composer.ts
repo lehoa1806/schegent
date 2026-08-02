@@ -1,4 +1,5 @@
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { SanitizedLogger } from '../../lib/logger';
 import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
@@ -55,6 +56,64 @@ export interface SnapshotComposerContext {
   readonly telemetry: TelemetrySnapshot | null;
 }
 
+function catalogText(value: string, sanitize: (value: string) => string, max: number): string {
+  return sanitize(value).slice(0, max);
+}
+
+function projectPhaseDefinition(
+  definition: PhaseDefinition,
+  sanitize: (value: string) => string
+): PhaseDefinition {
+  const common = {
+    phaseId: catalogText(definition.phaseId, sanitize, 64),
+    name: catalogText(definition.name, sanitize, 80),
+    version: definition.version,
+    ...(definition.description !== undefined
+      ? { description: catalogText(definition.description, sanitize, 1024) }
+      : {}),
+    ...(definition.model !== undefined
+      ? { model: catalogText(definition.model, sanitize, 512) }
+      : {}),
+    ...(definition.effort !== undefined ? { effort: definition.effort } : {}),
+    ...(definition.timeoutSeconds !== undefined
+      ? { timeoutSeconds: definition.timeoutSeconds }
+      : {}),
+    ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
+    ...(definition.retryCondition !== undefined
+      ? { retryCondition: catalogText(definition.retryCondition, sanitize, 8192) }
+      : {}),
+    ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
+    ...(definition.runner !== undefined ? { runner: definition.runner } : {})
+  };
+  return Object.freeze(
+    definition.instruction !== undefined
+      ? { ...common, instruction: catalogText(definition.instruction, sanitize, 8192) }
+      : { ...common, skill: catalogText(definition.skill, sanitize, 256) }
+  );
+}
+
+function projectDisplay(
+  display: Readonly<Record<string, unknown>>,
+  sanitize: (value: string) => string
+): Readonly<Record<string, unknown>> {
+  const projected: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(display)) {
+    if (typeof value === 'string') {
+      const max = field === 'instruction' || field === 'retryCondition'
+        ? 8192
+        : field === 'description'
+          ? 1024
+          : field === 'skill'
+            ? 256
+            : 512;
+      projected[field] = catalogText(value, sanitize, max);
+    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+      projected[field] = value;
+    }
+  }
+  return Object.freeze(projected);
+}
+
 /** Composes the immutable wire snapshot from focused domain projections. */
 export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowSnapshot {
   const { deps, store } = ctx;
@@ -92,6 +151,47 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
     : undefined;
   const phasePrecedence = deps.getPhasePrecedence?.();
+  const phaseCatalog = deps.getPhaseCatalog?.();
+  const availableModels = deps.getAvailableModels?.() ?? {
+    claude: catalog.models,
+    codex: ['codex-default'],
+    agy: ['Gemini 3.1 Pro (High)']
+  } as Record<BackendRunnerKind, readonly string[]>;
+  const phaseCatalogProjection = phaseCatalog
+    ? Object.freeze({
+        state: 'ready' as const,
+        records: Object.freeze(phaseCatalog.records.map((record) => {
+          const definition = record.definition
+            ? projectPhaseDefinition(record.definition, sanitize)
+            : null;
+          const runner = definition?.runner ?? ctx.defaultRunnerKind;
+          return Object.freeze({
+            key: catalogText(record.key, sanitize, 160),
+            phaseId: catalogText(record.phaseId, sanitize, 64),
+            scope: record.scope,
+            status: record.status,
+            definition,
+            display: projectDisplay(record.display, sanitize),
+            errors: Object.freeze(record.errors.map((error) => Object.freeze({
+              field: catalogText(error.field, sanitize, 32),
+              code: catalogText(error.code, sanitize, 64),
+              message: catalogText(error.message, sanitize, 512)
+            }))),
+            ...(definition?.model !== undefined
+              ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
+              : {})
+          });
+        })),
+        effective: Object.freeze(
+          phaseCatalog.effective.map((definition) => projectPhaseDefinition(definition, sanitize))
+        ),
+        revisions: phaseCatalog.revisions,
+        warnings: Object.freeze(phaseCatalog.warnings.map((warning) => Object.freeze({
+          code: catalogText(warning.code, sanitize, 64),
+          message: catalogText(warning.message, sanitize, 512)
+        })))
+      })
+    : undefined;
   const wakeUp = Object.freeze({
     model: (deps.getWakeupModel?.() ?? RUNNER_DEFAULT_MODEL) as WakeUpModelSelection,
     sessionLogPath: deps.getWakeupSessionLogPath?.() ?? ''
@@ -157,11 +257,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     producedAt: ctx.now().toISOString(),
     availablePhases: Object.freeze([...catalog.phases]),
     availablePipelines: Object.freeze([...catalog.pipelines]),
-    availableModels: Object.freeze(deps.getAvailableModels?.() ?? {
-      claude: catalog.models,
-      codex: ['codex-default'],
-      agy: ['Gemini 3.1 Pro (High)']
-    } as Record<BackendRunnerKind, readonly string[]>),
+    availableModels: Object.freeze(availableModels),
     availableBackends: Object.freeze(
       deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
     ),
@@ -178,6 +274,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     resolvedTrust,
     ...(activePipeline ? { activePipeline } : {}),
     ...(phasePrecedence !== undefined ? { phasePrecedence } : {}),
+    ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
     ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
     ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
   });

@@ -13,9 +13,13 @@ export function snapshotPhaseDef(
   phase: PhaseDef,
   defaultRunner?: BackendRunnerKind
 ): PhaseDef {
-  const isBuiltIn = (BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id) || phase.id === 'done';
+  const isBuiltIn = phase.sourceScope === 'built-in' || (
+    phase.sourceScope === undefined &&
+    ((BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id) || phase.id === 'done')
+  );
   return Object.freeze({
     ...phase,
+    version: phase.version ?? 1,
     runner: effectiveRunnerKindForPhase(phase, defaultRunner),
     sideEffects: phase.sideEffects ?? (isBuiltIn ? builtInSideEffects(phase.id) : 'unrestricted'),
     evidencePolicy:
@@ -30,7 +34,11 @@ export function effectiveRunnerKindForPhase(
   defaultRunner?: BackendRunnerKind
 ): BackendRunnerKind {
   if (phase?.runner !== undefined) return phase.runner;
-  if (phase && phaseRequiresGitMetadataWrite(phase.id)) return DEFAULT_BACKEND;
+  const isBuiltIn = phase?.sourceScope === 'built-in' || (
+    phase !== undefined && phase.sourceScope === undefined &&
+    (BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id)
+  );
+  if (phase && isBuiltIn && phaseRequiresGitMetadataWrite(phase.id)) return DEFAULT_BACKEND;
   return defaultRunner ?? DEFAULT_BACKEND;
 }
 
@@ -50,6 +58,7 @@ export function mergePhaseRunnerPolicy(
 ): PhaseDef {
   return next.runner === undefined &&
     prior?.runner !== undefined &&
+    next.sourceScope === 'built-in' &&
     phaseRequiresGitMetadataWrite(next.id)
       ? { ...next, runner: prior.runner }
       : next;

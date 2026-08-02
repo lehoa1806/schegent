@@ -35,8 +35,8 @@ Field requirements:
 
 - `id` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). Cannot collide with built-in ids unless you intend to shadow.
 - `name` — display name (1–80 chars).
-- `instruction` — the prompt directive injected into the CLI. **For new phases this must be non-empty.** Empty strings are only accepted for shadow definitions.
-- `loopable` — required boolean.
+- `instruction` or `skill` — exactly one non-empty directive is required for every source row.
+- `loopable` — optional deprecated compatibility boolean.
 
 Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow the same semantics as overrides; see [Phase Overrides](phase-overrides.md).
 
@@ -164,7 +164,7 @@ When `missingKeys` is non-empty, the expression evaluates as if those identifier
 
 ### Invalid expressions
 
-Invalid expressions are **stripped** at configuration load with a one-shot host-logger warning. The surrounding phase remains loadable and falls back to default loop semantics. The phase is **not** rejected for an invalid expression — you can fix the expression and re-save without losing the rest of the phase definition.
+An invalid expression invalidates that source row. The catalog keeps the authored row visible with a field error so you can repair it, while runtime resolution falls back to the next valid workspace, user, or built-in source for the same id.
 
 ## Custom phase audit trail
 
@@ -174,7 +174,7 @@ Custom phases flow through the identical audit + redaction + transcript path as 
 
 If a custom phase's `id` matches a built-in, the custom phase **shadows** the built-in. Shadowing rules:
 
-- Empty or omitted fields fall back to the built-in's defaults. (For example, an empty `instruction` preserves the built-in's instruction.)
+- A shadow is a complete definition; omitted optional fields use runtime defaults and are not copied from the built-in.
 - Workspace-layer entries shadow user-layer entries; user-layer entries shadow built-ins.
 
 Shadowing is the right pattern when you want to tune a built-in. Defining a new id is the right pattern when you want a new step.

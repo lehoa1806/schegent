@@ -188,7 +188,7 @@ Pipeline id used when a feature is enqueued without an explicit selection. Set t
 - **Default:** `[]`
 - **Scope:** `resource`
 
-Custom phase definitions. Each entry is a reusable named Claude CLI invocation step. A user-defined phase whose `id` matches a built-in id **shadows** the built-in.
+Portable custom Phase definitions. Resolution selects one complete valid source row per id using workspace > user > built-in precedence. Invalid rows remain visible for repair and fall back to the next valid source; rows never merge field-by-field.
 
 Each phase object accepts:
 
@@ -196,12 +196,17 @@ Each phase object accepts:
 |---|---|---|---|
 | `id` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). Reserved built-ins: `speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-analyze`, `speckit-implement`, `finalize`, `done`. |
 | `name` | string | yes | Display name (1–80 chars) shown in sidebar tiles, audit logs, and pipeline picker. |
-| `instruction` | string | yes | Phase-specific directive injected into the Claude CLI prompt. 1–8192 chars. Empty string is accepted when *shadowing* a built-in (the built-in instruction is preserved). |
-| `model` | string | no | Claude model id passed as `--model <id>` for this phase only. |
+| `description` | string | no | Portable description, up to 1024 chars. |
+| `version` | positive integer | no | Host-owned optimistic version. Omit for new settings rows; the host defaults it to 1. |
+| `instruction` | string | conditional | Inline directive, 1–8192 chars. Exactly one of `instruction` or `skill` is required. |
+| `skill` | string | conditional | Declarative skill reference. Exactly one of `instruction` or `skill` is required. |
+| `model` | string | no | Backend model id passed to the selected runner for this phase only. |
 | `effort` | string | no | Reasoning effort. Enum: `low` \| `medium` \| `high` \| `xhigh` \| `max`. |
 | `timeoutSeconds` | integer | no | Per-phase timeout override (1–3600). |
-| `loopable` | boolean | yes | When `true`, the phase re-runs until stdout signals `[SCHEGENT_STATUS: CLEAR]`. |
+| `loopable` | boolean | no | Deprecated compatibility field; retry behavior is controlled by `retryCondition`. |
 | `retryCondition` | string | no | Retry-condition DSL expression evaluated against the audit-entry's `metrics` map. See [Custom Phases](../features/custom-phases.md#retry-condition-dsl). |
+| `isRequired` | boolean | no | Whether terminal failure stops the workflow; defaults to `true`. |
+| `runner` | string | no | Phase runner override: `claude`, `codex`, or `agy`. |
 
 Example:
 
@@ -211,7 +216,7 @@ Example:
     {
       "id": "speckit-implement",
       "name": "Spec-kit Implement (Opus)",
-      "instruction": "",
+      "instruction": "Implement the approved plan and verify the result.",
       "model": "claude-opus-4-7",
       "effort": "high",
       "loopable": false

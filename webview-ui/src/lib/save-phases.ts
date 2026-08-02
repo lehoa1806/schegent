@@ -20,7 +20,11 @@
 // CMD_SAVE_PHASES, …).
 
 import { CMD_SAVE_PHASES } from './messages';
-import type { PhaseDefinition } from './snapshot-types';
+import type {
+  PhaseDefinition,
+  PhaseDefinitionScope,
+  WritablePhaseDefinitionScope
+} from './snapshot-types';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
@@ -29,7 +33,10 @@ const ACK_TIMEOUT_MS = 5000;
 export interface SavePhaseRow {
   readonly id: string;
   readonly name: string;
-  readonly instruction: string;
+  readonly description?: string;
+  readonly version: number;
+  readonly instruction?: string;
+  readonly skill?: string;
   readonly model?: string;
   readonly effort?: PhaseDefinition['effort'];
   readonly timeoutSeconds?: number;
@@ -39,9 +46,28 @@ export interface SavePhaseRow {
   readonly runner?: string;
 }
 
+export type SavePhasesMutation =
+  | { readonly kind: 'create'; readonly phaseId: string }
+  | { readonly kind: 'edit'; readonly phaseId: string }
+  | {
+      readonly kind: 'duplicate';
+      readonly sourceScope: PhaseDefinitionScope;
+      readonly sourcePhaseId: string;
+      readonly phaseId: string;
+    }
+  | { readonly kind: 'remove'; readonly phaseId: string }
+  | { readonly kind: 'reset' };
+
+export interface SavePhasesRequest {
+  readonly scope: WritablePhaseDefinitionScope;
+  readonly expectedRevision: string;
+  readonly mutation: SavePhasesMutation;
+  readonly phases: readonly SavePhaseRow[];
+}
+
 export type SavePhasesResult =
-  | { readonly status: 'accepted' }
-  | { readonly status: 'rejected'; readonly reason: string };
+  | { readonly status: 'accepted'; readonly result?: unknown }
+  | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
 
 /**
  * Persist the entire user-layer `schegent.phases` catalog via the
@@ -56,7 +82,7 @@ export type SavePhasesResult =
  *                     and the VS Code webview message bus.
  */
 export function savePhases(
-  phases: readonly SavePhaseRow[],
+  request: SavePhasesRequest,
   postMessage?: (msg: unknown) => void
 ): Promise<SavePhasesResult> {
   return new Promise<SavePhasesResult>((resolve) => {
@@ -88,20 +114,24 @@ export function savePhases(
       const envelope = {
         type: CMD_SAVE_PHASES,
         correlationId,
-        payload: { phases }
+        payload: request
       };
       postMessage(envelope);
     } else {
-      const posted = postCommand(CMD_SAVE_PHASES, { phases });
+      const posted = postCommand(CMD_SAVE_PHASES, request);
       correlationId = posted.correlationId;
     }
 
     snapshotStore.markPending(correlationId);
     unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
       if (ack.status === 'accepted') {
-        finalise({ status: 'accepted' });
+        finalise({ status: 'accepted', ...(ack.result !== undefined ? { result: ack.result } : {}) });
       } else {
-        finalise({ status: 'rejected', reason: ack.reason ?? 'rejected' });
+        finalise({
+          status: 'rejected',
+          reason: ack.reason ?? 'rejected',
+          ...(ack.result !== undefined ? { result: ack.result } : {})
+        });
       }
     });
 

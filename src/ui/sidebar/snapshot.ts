@@ -1,5 +1,10 @@
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
 import type { BackendPingState } from '../../services/backend-ping-service';
+import type {
+  PhaseDefinition,
+  PhaseDefinitionScope,
+  PhaseSourceStatus
+} from '../../contracts/process-definitions';
 export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -26,6 +31,35 @@ export const PHASE_NAMES = BUILT_IN_PHASE_NAMES;
 export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
 
 export type PhaseName = string;
+
+export interface PhaseCatalogFieldErrorProjection {
+  readonly field: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface PhaseCatalogSourceProjection {
+  readonly key: string;
+  readonly phaseId: string;
+  readonly scope: PhaseDefinitionScope;
+  readonly status: PhaseSourceStatus;
+  readonly definition: PhaseDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly PhaseCatalogFieldErrorProjection[];
+  readonly modelAvailable?: boolean;
+}
+
+export interface PhaseCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly PhaseCatalogSourceProjection[];
+  readonly effective: readonly PhaseDefinition[];
+  readonly revisions: {
+    readonly user: string;
+    readonly workspace: string;
+  };
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
 
 export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
 
@@ -433,6 +467,8 @@ export interface WorkflowSnapshot {
    * occurred yet (e.g. very first idle snapshot).
    */
   readonly phasePrecedence?: PhasePrecedenceProjection;
+  /** Feature 081 — authoritative source-aware Phase catalog; absence means loading. */
+  readonly phaseCatalog?: PhaseCatalogProjection;
   /**
    * Feature 033 — ephemeral per-subprocess telemetry for the in-flight
    * task. Present (non-null) only while a Claude CLI subprocess is alive

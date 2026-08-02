@@ -83,7 +83,12 @@ describe('Feature 056 Track 1 — secondary-host gate for catalog saves', () => 
       {
         type: CMD_SAVE_PHASES,
         correlationId: 'cid-phases-secondary',
-        payload: { phases: [] }
+        payload: {
+          scope: 'workspace',
+          expectedRevision: 'revision',
+          mutation: { kind: 'reset' },
+          phases: []
+        }
       },
       cap.post
     );

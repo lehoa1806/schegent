@@ -16,6 +16,7 @@ import {
 } from '../action-copy';
 
 const EXPECTED_KEYS: readonly ActionKey[] = [
+  'catalog.remove-phase',
   'queue.clean-all',
   'queue.clear-done',
   'queue.remove-item',
@@ -31,7 +32,7 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
-  it('contains exactly the 12 contractual ActionKey entries', () => {
+  it('contains every contractual ActionKey entry', () => {
     expect(Object.keys(ACTION_COPY).sort()).toEqual([...EXPECTED_KEYS].sort());
   });
 
@@ -45,9 +46,13 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
     }
   });
 
-  it('destructive severity is reserved for clean-all and workspace.reset', () => {
+  it('destructive severity covers irreversible catalog and workspace actions', () => {
     const destructive = EXPECTED_KEYS.filter((k) => ACTION_COPY[k].severity === 'destructive');
-    expect(destructive.sort()).toEqual(['queue.clean-all', 'workspace.reset']);
+    expect(destructive.sort()).toEqual([
+      'catalog.remove-phase',
+      'queue.clean-all',
+      'workspace.reset'
+    ]);
   });
 
   it('exposes the four static strings', () => {
