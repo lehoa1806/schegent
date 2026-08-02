@@ -23,14 +23,16 @@ Eight phases in order. The first six are operator-visible work; the last two are
 
 ## The phase definition
 
-Each phase is a JSON record. Every phase has these fields:
+Each phase is a versioned JSON record. Every phase has these fields:
 
 - **`id`** — a stable kebab-case identifier (regex `^[a-z][a-z0-9-]{0,63}$`). Built-in pipelines use the ids above; the bare names `specify`, `clarify`, `plan`, `tasks`, `analyze`, `implement`, `finalize`, `done` are reserved so a custom phase declared with one of those ids *shadows* (replaces) the built-in.
 - **`name`** — display name used in the sidebar, audit log summaries, and pipeline picker (1–80 chars).
-- **`instruction`** — the phase-specific directive that gets composed into the prompt the Claude CLI receives. Built-in phases ship with carefully-tuned instructions; custom phases are operator-authored (1–8192 chars).
+- **`description`** — optional operator-facing context (up to 1024 chars).
+- **`version`** — a positive, host-owned revision. Legacy definitions load as version 1; changed rows increment on save.
+- **`instruction`** or **`skill`** — exactly one directive. Instructions contain 1–8192 chars. A skill is a bounded declarative Agent CLI reference; the extension never reads or executes the referenced skill itself.
 - **`model`** — optional Claude model id passed as `--model`. When omitted, the runner's default applies.
 - **`effort`** — optional reasoning depth: one of `low`, `medium`, `high`, `xhigh`, `max`. Higher levels take longer and cost more but produce more thorough output.
-- **`timeoutSeconds`** — optional per-phase idle-timeout override (1–5400). The timer resets on every CLI output chunk, so this caps idle time, not wall time. Falls back to `schegent.invocation.timeoutSeconds` (default 5400) if unset.
+- **`timeoutSeconds`** — optional per-phase idle-timeout override (1–3600). The timer resets on every CLI output chunk, so this caps idle time, not wall time. Falls back to `schegent.invocation.timeoutSeconds` if unset.
 - **`loopable`** — whether this phase can be re-invoked automatically in response to a retry condition. Defaults to `false`. When `true`, the runner re-runs the phase until stdout signals `[SCHEGENT_STATUS: CLEAR]` or `schegent.loop.maxIterations` (default 10) is reached.
 - **`retryCondition`** — optional, sandboxed DSL expression evaluated against the phase's audit metrics; controls whether the phase loops on non-fatal outcomes.
 - **`isRequired`** — optional completion policy. Missing or `true` means a
@@ -56,7 +58,7 @@ does not change an already-enqueued run.
 
 The host treats every phase invocation identically:
 
-1. Read the current settings at *invocation entry* (model, effort, timeout, verbose-diagnostics flag, fatal-signature additives, auto-compact override). This is why changing a setting mid-pipeline takes effect on the *next* phase, not the in-flight one.
+1. Read phase behavior from the immutable pipeline snapshot captured when the task was enqueued; unrelated runtime controls keep their documented dynamic behavior.
 2. Compose the Claude CLI argv: prompt, model flag, effort flag, and the `--continue` flag if this invocation is a context-preserving retry.
 3. Spawn the subprocess with a sanitized environment.
 4. Stream stdout and stderr through the parser, the audit pipeline, and (if enabled) the verbose diagnostic sink.
@@ -74,7 +76,7 @@ Phase overrides live at two precedence levels:
 - **User layer.** Settings under `schegent.phases` in your user `settings.json`. These apply across every workspace you open.
 - **Workspace layer.** The same settings under `.vscode/settings.json` in a specific project. These take precedence over the user layer for that project only.
 
-The override resolves *per field*. If you set `model` for `implement` at user scope and `effort` for `implement` at workspace scope, both apply — they do not overwrite each other. The composite key the extension uses internally is `"<phaseId>::<fieldKey>"`, exposed in the snapshot as `phasePrecedence` so the sidebar can show you which layer is currently winning for each field.
+Resolution selects one complete valid source row per id: workspace first, then user, then built-in. An invalid higher-precedence row remains visible but is quarantined, allowing the next valid source to become effective. Source rows do not merge field-by-field.
 
 ### Concrete example
 
@@ -94,9 +96,9 @@ In your user `settings.json`:
 }
 ```
 
-The setting takes an array of phase records. A custom record whose `id` matches a built-in phase id *shadows* the built-in for that workspace. Workspace-scoped (`.vscode/settings.json`) entries take precedence over user-scoped ones — the sidebar surfaces the winning layer per field via the snapshot's `phasePrecedence` projection.
+The setting takes an array of complete phase records. A custom record whose `id` matches a built-in phase id *shadows* the built-in. Workspace-scoped (`.vscode/settings.json`) entries take precedence over user-scoped ones. The sidebar's host-computed `phasePrecedence` projection remains a UI-only compatibility indicator; runtime catalog resolution never merges rows per field.
 
-All omitted fields fall back to the built-in defaults.
+Omitted optional fields use runtime defaults; they are not copied from a shadowed lower source.
 
 ### What happens on save
 
@@ -106,7 +108,7 @@ When you save a phase-override change, the host:
 2. Recomputes the `phasePrecedence` projection so the sidebar can show the new winning layer.
 3. **Does not** retarget any in-flight `WorkflowRun.pipeline` snapshot. Active runs keep their frozen pipeline. The override takes effect for the *next* enqueued task.
 
-This is intentional: phase overrides are configuration, not commands. If you actually want to change the model on an in-flight phase, pause the run, change the setting, then resume.
+This is intentional: phase definitions are configuration, not commands. To use a changed Phase definition, enqueue a new task; pausing and resuming an existing run preserves its frozen snapshot.
 
 ## Custom phases
 
@@ -114,7 +116,7 @@ The pipeline is not closed to seven phases. You can extend it with your own — 
 
 Custom phases:
 
-- Are declared in `schegent.phases` with at minimum an `id`, a `prompt`, and a position in the pipeline order.
+- Are declared in `schegent.phases` with an `id`, `name`, positive `version`, and exactly one of `instruction` or `skill`; pipeline order is declared separately.
 - Flow through *the same* audit pipeline as built-ins: every `phase-start` and `phase-end` event carries the same fields, sanitization runs identically, and the verbose diagnostic sink captures everything.
 - Are subject to the same phase overrides as built-ins (model, effort, timeout, loopable, retryCondition).
 

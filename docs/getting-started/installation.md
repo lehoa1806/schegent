@@ -109,7 +109,7 @@ Out of the box, Schegent uses sensible defaults for the model and effort of each
     {
       "id": "speckit-implement",
       "name": "Spec-kit Implement",
-      "instruction": "",
+      "instruction": "Implement the approved plan and verify the result.",
       "model": "claude-opus-4-7",
       "effort": "high"
     }
@@ -117,7 +117,7 @@ Out of the box, Schegent uses sensible defaults for the model and effort of each
 }
 ```
 
-A custom phase whose `id` matches a built-in **shadows** the built-in. Empty or omitted fields fall back to the built-in defaults. The `instruction` field is required by the JSON schema, but an empty string is accepted when shadowing a built-in (the built-in's instruction is preserved).
+A custom phase whose `id` matches a built-in **shadows** it as a complete source row. Exactly one non-empty `instruction` or `skill` is required. Workspace rows take precedence over user rows, which take precedence over built-ins; invalid higher-precedence rows remain visible for repair and fall back to the next valid row.
 
 For the full set of phase fields and the override precedence, see [Phase Overrides](../features/phase-overrides.md).
 

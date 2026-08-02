@@ -245,14 +245,23 @@
           "type": "array",
           "default": [],
           "scope": "resource",
-          "markdownDescription": "Custom phase definitions. Each phase is a reusable named backend invocation step. User-defined phases with the same `id` as a built-in phase **shadow** the built-in (replace it).",
+          "markdownDescription": "Portable custom Phase definitions. Resolution selects one complete valid row per id with workspace > user > built-in precedence; invalid rows remain visible for repair and fall back to the next valid source.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": [
               "id",
-              "name",
-              "instruction"
+              "name"
+            ],
+            "oneOf": [
+              {
+                "required": ["instruction"],
+                "not": { "required": ["skill"] }
+              },
+              {
+                "required": ["skill"],
+                "not": { "required": ["instruction"] }
+              }
             ],
             "properties": {
               "id": {
@@ -266,11 +275,28 @@
                 "maxLength": 80,
                 "markdownDescription": "Display name shown in sidebar tiles, audit logs, and the pipeline picker."
               },
+              "description": {
+                "type": "string",
+                "maxLength": 1024,
+                "markdownDescription": "Optional plain-text description shown in the Phase catalog."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 1,
+                "markdownDescription": "Positive definition version. Legacy rows without this field load as version 1."
+              },
               "instruction": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 8192,
                 "markdownDescription": "Phase-specific directive injected into the selected backend prompt."
+              },
+              "skill": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "markdownDescription": "Declarative Agent CLI skill reference. Schegent passes this value as prompt content and never loads it as extension code."
               },
               "model": {
                 "type": "string",
@@ -302,7 +328,7 @@
               "retryCondition": {
                 "type": "string",
                 "minLength": 1,
-                "markdownDescription": "Optional retry-condition DSL expression. When set AND the phase invocation produces a well-formed audit-log block, the expression is evaluated against the audit-entry's `metrics` map (extracted from `<identifier>: <number>` lines inside the SCHEGENT AUDIT LOG block). A truthy result loops the phase; a falsy result advances. The DSL supports identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive), signed numeric literals, comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), boolean combinators (`and` / `or` / `&&` / `||`), unary negation (`not` / `!`), and parentheses. Operator precedence (highest to lowest): `not`/`!` > comparisons > `and`/`&&` > `or`/`||`. Arithmetic, function calls, and member access are NOT supported. Invalid expressions are stripped at configuration load with a one-shot host-logger warning; the surrounding phase remains loadable and falls back to default loop semantics. Examples: `\"open_questions > 0\"`, `\"unresolved_findings > 0 or open_questions > 0\"`, `\"not (confidence > 0.85)\"`."
+                "markdownDescription": "Optional retry-condition DSL expression. When set AND the phase invocation produces a well-formed audit-log block, the expression is evaluated against the audit-entry's `metrics` map (extracted from `<identifier>: <number>` lines inside the SCHEGENT AUDIT LOG block). A truthy result loops the phase; a falsy result advances. The DSL supports identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive), signed numeric literals, comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), boolean combinators (`and` / `or` / `&&` / `||`), unary negation (`not` / `!`), and parentheses. Operator precedence (highest to lowest): `not`/`!` > comparisons > `and`/`&&` > `or`/`||`. Arithmetic, function calls, and member access are NOT supported. An invalid expression invalidates that source row, keeps it visible for repair, and lets the next valid source row become effective. Examples: `\"open_questions > 0\"`, `\"unresolved_findings > 0 or open_questions > 0\"`, `\"not (confidence > 0.85)\"`."
               },
               "isRequired": {
                 "type": "boolean",

@@ -324,6 +324,16 @@ If the spec / plan / task / phase-instruction text contains injection instructio
 
 A custom phase declared in `schegent.phases` could in principle skip the audit + redaction + raw-transcript path that built-in phases flow through. Mitigated by routing every phase invocation — built-in and custom — through the same `appendAudit` + raw transcript writer. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs` / `runner`. Feature 072 task-execution lifecycle events (`task-execution-started`, `task-execution-ended`, etc.) flow through this identical `appendAudit` → `SanitizedLogger` path, introducing no new trust boundary.
 
+Feature 081 keeps catalog mutation inside the same primary-host, workspace-trust,
+and fine-grained capability gates as the existing save command. Payloads are
+exact-key validated, revision checked, whole-layer validated, and persisted once.
+Built-in policy is derived from source origin rather than id, so a custom shadow
+cannot acquire built-in side effects, evidence policy, prompt version, or runner
+pinning. A `skill` directive is converted to declarative Agent CLI prompt text;
+the extension never resolves a skill path, imports code, or adds runner argv.
+Removal uses the shared confirmation helper and cannot delete built-ins or the
+last effective definition referenced by a pipeline.
+
 ### T10 — Verbose-diagnostic unredacted leak
 
 The verbose-diagnostic files (`debug.json`, `stream.jsonl`, `verbose.log` under `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`) are intentionally unredacted. The risk is that an operator ships them off-machine. Mitigated by making the sink operator-opt-in (`schegent.logging.verbose`, default off), gitignored, and excluded from the structured audit log. See [What requires local-only handling](#what-requires-local-only-handling).

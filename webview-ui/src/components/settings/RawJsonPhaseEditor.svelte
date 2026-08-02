@@ -5,7 +5,7 @@
    * Reactive validation:
    *   - parses JSON on every keystroke
    *   - validates against PhaseDefinition shape (required fields,
-   *     types). Unknown top-level fields are preserved (FR-031).
+   *     types). Unknown and host-owned fields are rejected.
    *   - Save is disabled while validation fails (FR-029)
    *   - emits the parsed object via onsave callback when Save is clicked
    *
@@ -15,7 +15,10 @@
   interface RawPhase {
     readonly id?: unknown;
     readonly name?: unknown;
+    readonly description?: unknown;
+    readonly version?: unknown;
     readonly instruction?: unknown;
+    readonly skill?: unknown;
     readonly model?: unknown;
     readonly effort?: unknown;
     readonly timeoutSeconds?: unknown;
@@ -56,34 +59,57 @@
       return { ok: false, error: 'must be a JSON object' };
     }
     const obj = value as Record<string, unknown>;
-    // Required fields: id, name, instruction. `loopable` remains an optional
-    // deprecated compatibility field for older saved phase definitions.
-    if (typeof obj['id'] !== 'string' || obj['id'].length === 0) {
-      return { ok: false, error: 'field `id` must be a non-empty string' };
+    const allowed = new Set([
+      'id', 'name', 'description', 'version', 'instruction', 'skill', 'model', 'effort',
+      'timeoutSeconds', 'loopable', 'retryCondition', 'isRequired', 'runner'
+    ]);
+    const unknown = Object.keys(obj).find((field) => !allowed.has(field));
+    if (unknown) {
+      return { ok: false, error: `field \`${unknown.slice(0, 32)}\` is not author-controlled` };
     }
-    if (typeof obj['name'] !== 'string' || obj['name'].length === 0) {
-      return { ok: false, error: 'field `name` must be a non-empty string' };
+    if (typeof obj['id'] !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(obj['id'])) {
+      return { ok: false, error: 'field `id` must match ^[a-z][a-z0-9-]{0,63}$' };
     }
-    if (typeof obj['instruction'] !== 'string') {
-      return { ok: false, error: 'field `instruction` must be a string' };
+    if (typeof obj['name'] !== 'string' || obj['name'].trim().length === 0 || obj['name'].length > 80) {
+      return { ok: false, error: 'field `name` must contain 1 to 80 characters' };
+    }
+    if (!Number.isSafeInteger(obj['version']) || (obj['version'] as number) < 1) {
+      return { ok: false, error: 'field `version` must be a positive integer' };
+    }
+    if ('description' in obj && (typeof obj['description'] !== 'string' || obj['description'].length > 1024)) {
+      return { ok: false, error: 'field `description` must be at most 1024 characters' };
+    }
+    const instruction = typeof obj['instruction'] === 'string' && obj['instruction'].trim().length > 0;
+    const skill = typeof obj['skill'] === 'string' && obj['skill'].trim().length > 0;
+    if (instruction === skill) {
+      return { ok: false, error: 'provide exactly one of `instruction` or `skill`' };
+    }
+    if (instruction && (obj['instruction'] as string).length > 8192) {
+      return { ok: false, error: 'field `instruction` must be at most 8192 characters' };
+    }
+    if (skill && (obj['skill'] as string).length > 256) {
+      return { ok: false, error: 'field `skill` must be at most 256 characters' };
     }
     // Optional fields — validate when present
-    if ('model' in obj && obj['model'] !== undefined && typeof obj['model'] !== 'string') {
-      return { ok: false, error: 'field `model` must be a string when present' };
+    if (
+      'model' in obj && obj['model'] !== undefined &&
+      (typeof obj['model'] !== 'string' || obj['model'].trim().length === 0)
+    ) {
+      return { ok: false, error: 'field `model` must be a non-empty string when present' };
     }
     if (
       'effort' in obj &&
       obj['effort'] !== undefined &&
-      typeof obj['effort'] !== 'string'
+      (typeof obj['effort'] !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max'].includes(obj['effort']))
     ) {
-      return { ok: false, error: 'field `effort` must be a string when present' };
+      return { ok: false, error: 'field `effort` must use a supported level' };
     }
     if (
       'timeoutSeconds' in obj &&
       obj['timeoutSeconds'] !== undefined &&
-      typeof obj['timeoutSeconds'] !== 'number'
+      (typeof obj['timeoutSeconds'] !== 'number' || !Number.isInteger(obj['timeoutSeconds']) || obj['timeoutSeconds'] < 1 || obj['timeoutSeconds'] > 3600)
     ) {
-      return { ok: false, error: 'field `timeoutSeconds` must be a number when present' };
+      return { ok: false, error: 'field `timeoutSeconds` must be an integer from 1 to 3600' };
     }
     if (
       'loopable' in obj &&

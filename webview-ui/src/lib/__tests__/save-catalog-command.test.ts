@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CMD_SAVE_MODELS, CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../messages';
 import { saveModels } from '../save-models';
-import { savePhases } from '../save-phases';
+import { savePhases, type SavePhasesRequest } from '../save-phases';
 import { savePipelines } from '../save-pipelines';
 
 type AckListener = (ack: { status: 'accepted' | 'rejected'; reason?: string }) => void;
@@ -45,15 +45,22 @@ describe('save catalog helpers', () => {
       {
         id: 'optional-audit',
         name: 'Optional Audit',
+        version: 2,
         instruction: 'Audit without blocking.',
         isRequired: false
       }
     ];
-    const promise = savePhases(phases, (msg) => posted.push(msg));
+    const request: SavePhasesRequest = {
+      scope: 'workspace',
+      expectedRevision: 'workspace-revision',
+      mutation: { kind: 'edit', phaseId: 'optional-audit' },
+      phases
+    };
+    const promise = savePhases(request, (msg) => posted.push(msg));
     const env = posted[0] as { type: string; correlationId: string; payload: unknown };
 
     expect(env.type).toBe(CMD_SAVE_PHASES);
-    expect(env.payload).toEqual({ phases });
+    expect(env.payload).toEqual(request);
     fireAck(env.correlationId, 'accepted');
     await expect(promise).resolves.toEqual({ status: 'accepted' });
   });

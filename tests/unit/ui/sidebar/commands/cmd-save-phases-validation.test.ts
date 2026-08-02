@@ -1,289 +1,288 @@
-// BUG-001 (FR-012, T022) — foundational field validation tests for
-// cmd-save-phases. These cover the pre-persist validation that runs
-// BEFORE the trust gate and BEFORE updateConfig.
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-const mocks = vi.hoisted(() => {
-  const state = {
-    capabilities: new Map<string, boolean>(),
-    scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>(),
-    canonicalBasename: 'test-workspace' as string
-  };
-  return { state };
-});
+const mocks = vi.hoisted(() => ({
+  capabilities: new Map<string, boolean>()
+}));
 
 vi.mock('../../../../../src/state/capability-trust-resolver', () => ({
-  isCapabilityAllowed: (capability: string) =>
-    mocks.state.capabilities.get(capability) ?? true,
-  getResolvedScope: (capability: string) =>
-    mocks.state.scopes.get(capability) ?? 'workspace-trust'
+  isCapabilityAllowed: (capability: string) => mocks.capabilities.get(capability) ?? true,
+  getResolvedScope: () => 'workspace-trust'
 }));
 
 vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
   getCanonicalWorkspaceRoot: () => ({
-    uri: { fsPath: `/tmp/${mocks.state.canonicalBasename}`, scheme: 'file' },
-    name: mocks.state.canonicalBasename,
+    uri: { fsPath: '/tmp/catalog-validation', scheme: 'file' },
+    name: 'catalog-validation',
     index: 0
   })
 }));
 
-import { handler as saveHandler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
+import { phaseLayerRevision } from '../../../../../src/config/process-catalog';
+import type { PhaseFieldError } from '../../../../../src/contracts/process-definitions';
+import { handler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SavePhasesCommand } from '../../../../../src/ui/sidebar/messages';
-import { SUPPORTED_BACKENDS } from '../../../../../src/runner/backend-runner-factory';
 
-function buildCtx(): {
-  ctx: Parameters<typeof saveHandler>[0];
-  acks: CommandAckMessage[];
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
-} {
+function harness(
+  sanitize: (value: string) => string = String,
+  layers: { user: readonly unknown[]; workspace: readonly unknown[] } = {
+    user: [], workspace: []
+  }
+) {
   const acks: CommandAckMessage[] = [];
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
-  const logger = {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-    sanitize: (s: string) => s
-  };
-  const audit = {
-    append: vi.fn(async () => {})
-  };
-  const updateConfig = vi.fn(async (key: string, value: unknown) => {
-    updateConfigCalls.push({ key, value });
-  });
+  const writes: unknown[] = [];
   const ctx = {
     deps: {
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
-      logger,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      audit: audit as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      updateConfig: updateConfig as any
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize },
+      updateConfig: vi.fn(async (_key: string, value: unknown) => { writes.push(value); }),
+      readPhaseConfig: () => layers
     },
-    postAck: async (msg: CommandAckMessage) => {
-      acks.push(msg);
-      return true;
-    },
-    correlationId: 'test-validation-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-  return { ctx, acks, updateConfigCalls };
+    postAck: async (message: CommandAckMessage) => { acks.push(message); return true; },
+    correlationId: 'phase-validation'
+  } as unknown as Parameters<typeof handler>[0];
+  return { ctx, acks, writes };
 }
 
-function makeCmd(phases: readonly unknown[]): SavePhasesCommand {
+function command(phases: readonly unknown[], phaseId = 'valid-id'): SavePhasesCommand {
   return {
     type: CMD_SAVE_PHASES,
-    correlationId: 'test-validation-1',
-    payload: { phases }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+    correlationId: 'phase-validation',
+    payload: {
+      scope: 'workspace',
+      expectedRevision: phaseLayerRevision([]),
+      mutation: { kind: 'create', phaseId },
+      phases
+    }
+  };
 }
 
-beforeEach(() => {
-  mocks.state.capabilities.clear();
-  mocks.state.scopes.clear();
-});
+function errors(ack: CommandAckMessage): readonly PhaseFieldError[] {
+  expect(ack).toMatchObject({ status: 'rejected', reason: 'phase-validation' });
+  return (ack.result as { errors: readonly PhaseFieldError[] }).errors;
+}
 
-describe('cmd-save-phases foundational validation (BUG-001, FR-012)', () => {
-  it('rejects phase with invalid id pattern', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'INVALID-UPPER', name: 'Test', instruction: 'Do something' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toContain('phase-validation:INVALID-UPPER:id:invalid-pattern');
-    expect(updateConfigCalls).toEqual([]);
+beforeEach(() => mocks.capabilities.clear());
+
+describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
+  it('rejects an invalid portable identity', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([{ id: 'INVALID', name: 'Invalid', instruction: 'Run.' }], 'INVALID'));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'phaseId', code: 'invalid-pattern' }));
+    expect(writes).toEqual([]);
   });
 
-  it('rejects phase with empty id', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: '', name: 'Test', instruction: 'Do something' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toContain('id:invalid-pattern');
-    expect(updateConfigCalls).toEqual([]);
+  it('rejects an empty name', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: '', instruction: 'Run.' }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'name', code: 'invalid-length' }));
   });
 
-  it('rejects phase with empty name', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: '', instruction: 'Do something' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:name:must-be-non-empty');
-    expect(updateConfigCalls).toEqual([]);
+  it('requires exactly one directive kind', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: 'Valid', instruction: 'Run.', skill: 'skill-a' }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'directive', code: 'exactly-one-required' }));
   });
 
-  it('rejects phase with name exceeding 80 chars', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'a'.repeat(81), instruction: 'Do something' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:name:exceeds-max-length');
-    expect(updateConfigCalls).toEqual([]);
-  });
-
-  it('rejects phase with empty instruction', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: '' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:instruction:must-be-non-empty');
-    expect(updateConfigCalls).toEqual([]);
-  });
-
-  it('rejects phase with instruction exceeding 8192 chars', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test', instruction: 'x'.repeat(8193) }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:valid-id:instruction:exceeds-max-length');
-    expect(updateConfigCalls).toEqual([]);
-  });
-
-
-  it('accepts phase with all valid foundational fields', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test Phase', instruction: 'Do something useful' }
-    ]));
+  it('accepts a skill directive and persists a host-owned version', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: 'Valid', skill: 'speckit-plan' }]));
     expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
+    expect(writes).toEqual([[expect.objectContaining({ id: 'valid-id', skill: 'speckit-plan', version: 1 })]]);
   });
 
-  it('round-trips a legacy boolean loopable field', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    const phases = [
-      { id: 'legacy-loop', name: 'Legacy loop', instruction: 'Do work', loopable: true }
-    ];
-
-    await saveHandler(ctx, makeCmd(phases));
-
-    expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls[0].value).toEqual(phases);
+  it('rejects unknown authored fields', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: 'Valid', instruction: 'Run.', hostPolicy: true }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'hostPolicy', code: 'unknown-field' }));
   });
 
-  it('rejects a non-boolean loopable field', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-
-    await saveHandler(ctx, makeCmd([
-      { id: 'legacy-loop', name: 'Legacy loop', instruction: 'Do work', loopable: 'yes' }
-    ]));
-
-    expect(acks[0]).toMatchObject({
-      status: 'rejected',
-      reason: 'phase-validation:legacy-loop:loopable:must-be-boolean'
-    });
-    expect(updateConfigCalls).toEqual([]);
-  });
-
-  it.each(SUPPORTED_BACKENDS)('accepts supported runner %s', async (runner) => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test Phase', instruction: 'Do work', runner }
-    ]));
-    expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-  });
-
-  it.each(['unknown', '', 42, null])('rejects invalid runner %j', async (runner) => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'valid-id', name: 'Test Phase', instruction: 'Do work', runner }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toContain('runner:must-be-one-of-claude,codex,agy');
-    expect(updateConfigCalls).toEqual([]);
+  it('sanitizes structured validation details before acknowledgement', async () => {
+    const { ctx, acks } = harness((value) => value.replace(/TOKEN=abcdefgh/g, '[REDACTED]'));
+    await handler(ctx, command([{
+      id: 'valid-id', name: 'Valid', instruction: 'Run.', 'TOKEN=abcdefgh': true
+    }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: '[REDACTED]' }));
+    expect(JSON.stringify(acks[0])).not.toContain('TOKEN=abcdefgh');
   });
 
   it.each([
-    'speckit-specify',
-    'specify-brainstorm',
-    'superpowers-implement',
-    'finalize',
-    'superpowers-review-close'
-  ] as const)('accepts protected phase %s with its pinned runner omitted', async (id) => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id, name: 'Git phase', instruction: 'Commit and merge the work.' }
-    ]));
-
-    expect(acks[0].status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
+    ['effort', 'turbo'],
+    ['runner', 'unknown'],
+    ['timeoutSeconds', 0],
+    ['loopable', 'yes'],
+    ['isRequired', 'false']
+  ])('rejects invalid %s values', async (field, value) => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: 'Valid', instruction: 'Run.', [field]: value }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field }));
   });
 
-  it.each([
-    'speckit-specify',
-    'specify-brainstorm',
-    'superpowers-implement',
-    'finalize',
-    'superpowers-review-close'
-  ] as const)('rejects protected phase %s with runner codex', async (id) => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      {
-        id,
-        name: 'Git phase',
-        instruction: 'Commit and merge the work.',
-        runner: 'codex'
+  it('rejects invalid retry-condition syntax', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([{ id: 'valid-id', name: 'Valid', instruction: 'Run.', retryCondition: '(' }]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'retryCondition' }));
+  });
+
+  it('rejects duplicate ids within one source layer', async () => {
+    const { ctx, acks } = harness();
+    const row = { id: 'valid-id', name: 'Valid', instruction: 'Run.' };
+    await handler(ctx, command([row, row]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ code: 'duplicate-in-scope' }));
+  });
+
+  it('requires a Git-capable runner on a custom row that shadows a protected built-in id', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([
+      { id: 'speckit-specify', name: 'Custom Specify', instruction: 'Run safely.', runner: 'codex' }
+    ], 'speckit-specify'));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({
+      phaseId: 'speckit-specify', field: 'runner', code: 'git-metadata-write-required'
+    }));
+    expect(writes).toEqual([]);
+  });
+
+  it('allows the default runner on a custom row that shadows a protected built-in id', async () => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([
+      { id: 'finalize', name: 'Custom Finalize', instruction: 'Commit safely.' }
+    ], 'finalize'));
+    expect(acks[0].status).toBe('accepted');
+  });
+
+  it.each(['claude', 'agy'] as const)('accepts protected built-in shadows using %s', async (runner) => {
+    const { ctx, acks } = harness();
+    await handler(ctx, command([
+      { id: 'finalize', name: 'Custom Finalize', instruction: 'Commit safely.', runner }
+    ], 'finalize'));
+    expect(acks[0].status).toBe('accepted');
+  });
+
+  it('validates the entire proposed layer before any persistence', async () => {
+    const { ctx, acks, writes } = harness();
+    await handler(ctx, command([
+      { id: 'valid-id', name: 'Valid', instruction: 'Run.' },
+      { id: 'bad-id', name: '', instruction: 'Run.' }
+    ]));
+    expect(errors(acks[0])).toContainEqual(expect.objectContaining({ phaseId: 'bad-id', field: 'name' }));
+    expect(writes).toEqual([]);
+  });
+
+  it('repairs an invalid persisted row without treating it as a new identity', async () => {
+    const current = [{
+      id: 'valid-id', name: 'Valid', version: 2, instruction: 'Run.', retryCondition: '('
+    }];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command([{ id: 'valid-id', name: 'Valid', version: 2, instruction: 'Run.' }]);
+    const edit: SavePhasesCommand = {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'edit', phaseId: 'valid-id' }
       }
-    ]));
+    };
 
-    expect(acks[0]).toMatchObject({
-      status: 'rejected',
-      reason: `phase-validation:${id}:runner:git-metadata-write-required`
+    await handler(ctx, edit);
+
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[
+      expect.objectContaining({ id: 'valid-id', version: 3, instruction: 'Run.' })
+    ]]);
+  });
+
+  it('repairs a malformed persisted identity as one atomic edit', async () => {
+    const current = [{ id: 'INVALID', name: 'Invalid', version: 2, instruction: 'Run.' }];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command([{ id: 'repaired-id', name: 'Repaired', version: 2, instruction: 'Run.' }]);
+    await handler(ctx, {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'edit', phaseId: 'INVALID' }
+      }
     });
-    expect(updateConfigCalls).toEqual([]);
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[
+      expect.objectContaining({ id: 'repaired-id', version: 3, instruction: 'Run.' })
+    ]]);
   });
 
-  it.each(['claude', 'agy'] as const)(
-    'accepts a Git-mutating phase with explicit %s runner',
-    async (runner) => {
-      const { ctx, acks, updateConfigCalls } = buildCtx();
-      await saveHandler(ctx, makeCmd([
-        {
-          id: 'finalize',
-          name: 'Finalize',
-          instruction: 'Commit and merge the work.',
-          runner
-        }
-      ]));
-
-      expect(acks[0].status).toBe('accepted');
-      expect(updateConfigCalls).toHaveLength(1);
-    }
-  );
-
-  it('rejects on first invalid phase in a multi-phase payload', async () => {
-    const { ctx, acks, updateConfigCalls } = buildCtx();
-    await saveHandler(ctx, makeCmd([
-      { id: 'good-phase', name: 'Good', instruction: 'Valid instruction' },
-      { id: 'bad-phase', name: '', instruction: 'Also valid' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('phase-validation:bad-phase:name:must-be-non-empty');
-    expect(updateConfigCalls).toEqual([]);
+  it('removes a malformed persisted identity as one atomic removal', async () => {
+    const current = [{ id: 'INVALID', name: 'Invalid', version: 2, instruction: 'Run.' }];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command([]);
+    await handler(ctx, {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'remove', phaseId: 'INVALID' }
+      }
+    });
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[]]);
   });
 
-  it('validation runs before trust gate (rejects invalid even when trust is denied)', async () => {
-    mocks.state.capabilities.set('phases', false);
-    const { ctx, acks } = buildCtx();
-    // The payload is non-default AND invalid. The foundational validation
-    // must fire first, not the trust gate.
-    await saveHandler(ctx, makeCmd([
-      { id: 'UPPER', name: 'Test', instruction: 'x' }
-    ]));
-    expect(acks[0].status).toBe('rejected');
-    // If trust gate fired first, reason would be 'trust-denied'.
-    // Foundational validation must win.
-    expect(acks[0].reason).toContain('id:invalid-pattern');
+  it('repairs a persisted row with no string identity through its synthetic handle', async () => {
+    const current = [{ name: 'Invalid', version: 2, instruction: 'Run.' }];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command([{ id: 'repaired-id', name: 'Repaired', version: 2, instruction: 'Run.' }]);
+    await handler(ctx, {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'edit', phaseId: '?invalid-1' }
+      }
+    });
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[
+      expect.objectContaining({ id: 'repaired-id', version: 3 })
+    ]]);
+  });
+
+  it('removes a persisted row with no string identity through its synthetic handle', async () => {
+    const current = [{ name: 'Invalid', instruction: 'Run.' }];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command([]);
+    await handler(ctx, {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'remove', phaseId: '?invalid-1' }
+      }
+    });
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[]]);
+  });
+
+  it('repairs one duplicate legacy identity by assigning it a new id', async () => {
+    const current = [
+      { id: 'duplicate-id', name: 'One', version: 1, instruction: 'One.' },
+      { id: 'duplicate-id', name: 'Two', version: 2, instruction: 'Two.' }
+    ];
+    const proposed = [
+      { id: 'repaired-id', name: 'One', version: 1, instruction: 'One.' },
+      { id: 'duplicate-id', name: 'Two', version: 2, instruction: 'Two.' }
+    ];
+    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const base = command(proposed);
+    await handler(ctx, {
+      ...base,
+      payload: {
+        ...base.payload,
+        expectedRevision: phaseLayerRevision(current),
+        mutation: { kind: 'edit', phaseId: 'duplicate-id' }
+      }
+    });
+    expect(acks[0].status).toBe('accepted');
+    expect(writes).toEqual([[
+      expect.objectContaining({ id: 'repaired-id', version: 2 }),
+      expect.objectContaining({ id: 'duplicate-id', version: 2 })
+    ]]);
   });
 });

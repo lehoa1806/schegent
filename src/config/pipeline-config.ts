@@ -3,12 +3,16 @@ export type Effort = (typeof EFFORT_LEVELS)[number];
 export type PhaseSideEffects = 'none' | 'workspace' | 'git' | 'unrestricted';
 export type PhaseEvidencePolicy = 'required' | 'best-effort' | 'none';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
-import { phaseRunnerPolicyError } from './phase-runner-policy';
+import type { PhaseDefinitionScope } from '../contracts/process-definitions';
 import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
+import { validatePhaseDefinition } from './process-definition-validator';
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
-  readonly instruction: string;
+  readonly description?: string;
+  readonly version?: number;
+  readonly instruction?: string;
+  readonly skill?: string;
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
@@ -19,6 +23,8 @@ export interface PhaseDef {
   readonly sideEffects?: PhaseSideEffects; // Custom omission => unrestricted.
   readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly promptVersion?: string;
+  /** Resolution origin used only to derive host-owned runtime policy. */
+  readonly sourceScope?: PhaseDefinitionScope;
 }
 export interface PipelineDef {
   readonly id: string;
@@ -419,7 +425,10 @@ export function defaultRetryConditionForPhaseId(phaseId: string): string | undef
 export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'id',
   'name',
+  'description',
+  'version',
   'instruction',
+  'skill',
   'model',
   'effort',
   'timeoutSeconds',
@@ -434,10 +443,14 @@ const ALLOWED_PIPELINE_FIELDS = new Set(['id', 'name', 'phases']);
 export function isPhaseDef(value: unknown): value is PhaseDef {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
+  const hasInstruction = typeof v.instruction === 'string' && v.instruction.trim().length > 0;
+  const hasSkill = typeof v.skill === 'string' && v.skill.trim().length > 0;
   const structurallyValid = (
     typeof v.id === 'string' &&
     typeof v.name === 'string' &&
-    typeof v.instruction === 'string' &&
+    hasInstruction !== hasSkill &&
+    (v.description === undefined || typeof v.description === 'string') &&
+    (v.version === undefined || (Number.isSafeInteger(v.version) && (v.version as number) > 0)) &&
     (v.model === undefined || typeof v.model === 'string') &&
     (v.effort === undefined ||
       (typeof v.effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v.effort))) &&
@@ -446,9 +459,13 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.retryCondition === undefined ||
       (typeof v.retryCondition === 'string' && v.retryCondition.length > 0)) &&
     (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
-    (v.runner === undefined || isBackendRunnerKind(v.runner))
+    (v.runner === undefined || isBackendRunnerKind(v.runner)) &&
+    (v.sourceScope === undefined ||
+      v.sourceScope === 'built-in' ||
+      v.sourceScope === 'user' ||
+      v.sourceScope === 'workspace')
   );
-  return structurallyValid && phaseRunnerPolicyError(v.id as string, v.runner as BackendRunnerKind | undefined) === null;
+  return structurallyValid;
 }
 
 export function isPipelineDef(value: unknown): value is PipelineDef {
@@ -487,13 +504,13 @@ export function mergeCatalog(
   const pipelinesMap = new Map<string, PipelineDef>();
   const modelsMap = new Map<BackendRunnerKind, Set<string>>();
 
-  const layers: ReadonlyArray<{ name: string; input: MergeInput }> = [
+  const phaseLayers: ReadonlyArray<{ name: string; input: MergeInput }> = [
     { name: 'builtin', input: builtin },
-    { name: 'workspace', input: workspace },
-    { name: 'user', input: user }
+    { name: 'user', input: user },
+    { name: 'workspace', input: workspace }
   ];
 
-  for (const { name, input } of layers) {
+  for (const { name, input } of phaseLayers) {
     const layerPhaseIds = new Set<string>();
     for (const p of input.phases ?? []) {
       if (layerPhaseIds.has(p.id) && name !== 'builtin') {
@@ -506,7 +523,17 @@ export function mergeCatalog(
       layerPhaseIds.add(p.id);
       phasesMap.set(p.id, mergePhaseRunnerPolicy(phasesMap.get(p.id), p));
     }
+  }
 
+  // Feature 081 changes Phase precedence only. Pipeline and model merge order
+  // remains the established built-in -> workspace -> user behavior.
+  const catalogLayers: ReadonlyArray<{ name: string; input: MergeInput }> = [
+    { name: 'builtin', input: builtin },
+    { name: 'workspace', input: workspace },
+    { name: 'user', input: user }
+  ];
+
+  for (const { name, input } of catalogLayers) {
     const layerPipelineIds = new Set<string>();
     for (const pl of input.pipelines ?? []) {
       if (layerPipelineIds.has(pl.id) && name !== 'builtin') {
@@ -574,7 +601,10 @@ export function buildCatalog(
   defaultPipelineId: string
 ): PipelineCatalog {
   const phasesById = new Map<string, PhaseDef>();
-  for (const p of phases) {
+  const normalizedPhases = phases.map((phase) =>
+    phase.version === undefined ? Object.freeze({ ...phase, version: 1 }) : phase
+  );
+  for (const p of normalizedPhases) {
     phasesById.set(p.id, p);
   }
   const pipelinesById = new Map<string, PipelineDef>();
@@ -582,7 +612,7 @@ export function buildCatalog(
     pipelinesById.set(pl.id, pl);
   }
   return Object.freeze({
-    phases: Object.freeze([...phases]),
+    phases: Object.freeze(normalizedPhases),
     pipelines: Object.freeze([...pipelines]),
     models: Object.freeze(models),
     defaultPipelineId,
@@ -599,158 +629,13 @@ export const BUILT_IN_CATALOG: PipelineCatalog = buildCatalog(
 );
 
 export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
-  const errors: ValidationError[] = [];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    errors.push({ source: 'phase', message: 'Phase entry must be an object' });
-    return errors;
-  }
-  const v = value as Record<string, unknown>;
-  const id = typeof v.id === 'string' ? v.id : undefined;
-
-  for (const key of Object.keys(v)) {
-    if (!ALLOWED_PHASE_FIELDS.has(key)) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: key,
-        message: `Unknown property '${key}' on phase definition`
-      });
-    }
-  }
-
-  if (typeof v.id !== 'string' || v.id.length === 0) {
-    errors.push({ source: 'phase', id, field: 'id', message: 'Phase.id is required' });
-  } else if (!PHASE_ID_PATTERN.test(v.id)) {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'id',
-      message: `Phase.id '${v.id}' must match ${PHASE_ID_PATTERN.source}`
-    });
-  }
-
-  if (typeof v.name !== 'string' || v.name.length === 0 || v.name.length > NAME_MAX_LEN) {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'name',
-      message: `Phase.name must be a non-empty string ≤ ${NAME_MAX_LEN} chars`
-    });
-  }
-
-  if (
-    typeof v.instruction !== 'string' ||
-    v.instruction.length === 0 ||
-    v.instruction.length > INSTRUCTION_MAX_LEN
-  ) {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'instruction',
-      message: `Phase.instruction must be a non-empty string ≤ ${INSTRUCTION_MAX_LEN} chars`
-    });
-  }
-
-  if (v.model !== undefined) {
-    if (typeof v.model !== 'string' || v.model.length === 0) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'model',
-        message: 'Phase.model must be a non-empty string when set'
-      });
-    }
-  }
-
-  if (v.effort !== undefined) {
-    if (typeof v.effort !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(v.effort)) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'effort',
-        message: `Phase.effort must be one of ${EFFORT_LEVELS.join(', ')}`
-      });
-    } else if (v.runner === 'agy' && (v.effort === 'xhigh' || v.effort === 'max')) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'effort',
-        message: `Phase.effort '${v.effort}' is not supported by Antigravity (agy). Supported levels: low, medium, high`
-      });
-    }
-  }
-
-  if (v.timeoutSeconds !== undefined) {
-    if (
-      typeof v.timeoutSeconds !== 'number' ||
-      !Number.isInteger(v.timeoutSeconds) ||
-      v.timeoutSeconds < TIMEOUT_MIN ||
-      v.timeoutSeconds > TIMEOUT_MAX
-    ) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'timeoutSeconds',
-        message: `Phase.timeoutSeconds must be an integer in [${TIMEOUT_MIN}, ${TIMEOUT_MAX}]`
-      });
-    }
-  }
-
-  if (v.loopable !== undefined && typeof v.loopable !== 'boolean') {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'loopable',
-      message: 'Phase.loopable must be a boolean when set'
-    });
-  }
-
-  if (v.retryCondition !== undefined) {
-    if (typeof v.retryCondition !== 'string' || v.retryCondition.length === 0) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'retryCondition',
-        message: 'Phase.retryCondition must be a non-empty string when set'
-      });
-    }
-  }
-
-  if (v.isRequired !== undefined && typeof v.isRequired !== 'boolean') {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'isRequired',
-      message: 'Phase.isRequired must be a boolean when set'
-    });
-  }
-
-  const runnerValid = v.runner === undefined || isBackendRunnerKind(v.runner);
-  if (!runnerValid) {
-    errors.push({
-      source: 'phase',
-      id,
-      field: 'runner',
-      message: `Phase.runner must be one of ${SUPPORTED_BACKENDS.join(', ')}`
-    });
-  }
-
-  if (typeof v.id === 'string' && runnerValid) {
-    const policyError = phaseRunnerPolicyError(
-      v.id,
-      v.runner as BackendRunnerKind | undefined
-    );
-    if (policyError !== null) {
-      errors.push({
-        source: 'phase',
-        id,
-        field: 'runner',
-        message: policyError
-      });
-    }
-  }
-
-  return errors;
+  const result = validatePhaseDefinition(value, { allowLegacyId: true, defaultVersion: 1 });
+  return result.errors.map((error) => ({
+    source: 'phase' as const,
+    id: error.phaseId === '?' ? undefined : error.phaseId,
+    field: error.field === 'phaseId' ? 'id' : error.field,
+    message: error.message
+  }));
 }
 
 export function validatePipelineRaw(
@@ -836,7 +721,10 @@ export function validateCatalog(catalog: {
   const warnings: ValidationWarning[] = [];
 
   for (const p of catalog.phases) {
-    errors.push(...validatePhaseRaw(p));
+    const authored = Object.fromEntries(
+      Object.entries(p).filter(([key]) => ALLOWED_PHASE_FIELDS.has(key))
+    );
+    errors.push(...validatePhaseRaw(authored));
   }
 
   const knownPhaseIds = new Set(catalog.phases.map((p) => p.id));

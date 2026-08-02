@@ -1,6 +1,7 @@
 import type { AuditLogWriter } from '../../audit/audit-log-writer';
 import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
+import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
@@ -64,6 +65,7 @@ export interface StateProjectorDeps {
   readonly getWakeupModel?: () => WakeUpModelSelection;
   readonly getWakeupSessionLogPath?: () => string;
   readonly getPhasePrecedence?: () => PhasePrecedenceProjection | undefined;
+  readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
   readonly getConfirmationsEnabled?: () => boolean;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;

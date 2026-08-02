@@ -297,21 +297,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
-
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
   const initialLoad = loadAndReportCatalog(catalogReader, logger);
   let activeCatalog: PipelineCatalog = initialLoad.catalog;
-  // Feature 026 — cached per-phase precedence projection. Re-computed
-  // each time `schegent.phases` (etc.) change. UI-only — never persisted.
   let activePhasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection =
     initialLoad.phasePrecedence;
-
+  let activePhaseCatalog = initialLoad.phaseCatalog;
   const lock = new WorkspaceLockManager(store, ownerId);
-
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   disposables.push(statusBarItem);
   const statusBar = new SchegentStatusBar(statusBarItem);
-
   const notifier = new Notifier({
     showInformationMessage: (m) => vscode.window.showInformationMessage(m),
     showWarningMessage: (m) => vscode.window.showWarningMessage(m),
@@ -383,7 +378,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     notifier
   });
-
   const monitor = new ClaudeCliMonitor({
     stallThresholdMs: 90_000,
     rateLimitMatchers: RATE_LIMIT_MATCHERS,
@@ -741,6 +735,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // `onDidChangeConfiguration('schegent.phases')` reaches the webview
     // within the FR-017 1s budget. Never persisted; never logged.
     getPhasePrecedence: () => activePhasePrecedence,
+    getPhaseCatalog: () => activePhaseCatalog,
     // Feature 063 — surface `schegent.ui.confirmations.enable` into the
     // snapshot so the webview's `useConfirm` helper can short-circuit
     // without an IPC round-trip. Re-read on every projection; the
@@ -800,6 +795,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           const reload = loadAndReportCatalog(catalogReader, logger);
           activeCatalog = reload.catalog;
           activePhasePrecedence = reload.phasePrecedence;
+          activePhaseCatalog = reload.phaseCatalog;
           controller.setCatalog(activeCatalog);
         }
         if (
@@ -962,10 +958,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     notifyWarning: (message) => notifier.warn(`Schegent: ${message}.`),
     logger,
     audit: auditWriter,
-    updateConfig: async (key, value) => {
+    updateConfig: async (key, value, scope = 'workspace') => {
       const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-      await config.update(key, value, vscode.ConfigurationTarget.Workspace);
+      await config.update(
+        key,
+        value,
+        scope === 'user' ? vscode.ConfigurationTarget.Global : vscode.ConfigurationTarget.Workspace
+      );
     },
+    readPhaseConfig: () => ({ user: catalogReader.getPhases('user') ?? [],
+      workspace: catalogReader.getPhases('workspace') ?? [] }),
+    readPipelineConfig: () => ({ user: catalogReader.getPipelines('user') ?? [],
+      workspace: catalogReader.getPipelines('workspace') ?? [] }),
+    getCatalog: () => activeCatalog,
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear
     // the sink's suppression for both the previous and the new
@@ -1248,6 +1253,7 @@ function loadAndReportCatalog(
 ): {
   catalog: PipelineCatalog;
   phasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection;
+  phaseCatalog: import('./config/process-catalog').ResolvedPhaseCatalog;
 } {
   const result = loadCatalog(reader);
   if (result.errors.length > 0) {
@@ -1276,7 +1282,7 @@ function loadAndReportCatalog(
     result.userPhases,
     result.workspacePhases
   );
-  return { catalog: result.catalog, phasePrecedence };
+  return { catalog: result.catalog, phasePrecedence, phaseCatalog: result.phaseCatalog };
 }
 
 export function deactivate(): void {

@@ -303,7 +303,7 @@ describe('validateCatalog — soft caps and warnings', () => {
 });
 
 describe('mergeCatalog — precedence and duplicate warnings', () => {
-  it('user shadows workspace shadows builtin for shared ids (BUG-003)', () => {
+  it('workspace shadows user shadows builtin for shared Phase ids (081 FR-003)', () => {
     const customSpecify: PhaseDef = {
       id: 'speckit-specify',
       name: 'Workspace Specify',
@@ -322,7 +322,7 @@ describe('mergeCatalog — precedence and duplicate warnings', () => {
       { phases: [customSpecify] }
     );
     const merged = merge.catalog.phases.find((p) => p.id === 'speckit-specify');
-    expect(merged?.name).toBe('User Specify');
+    expect(merged?.name).toBe('Workspace Specify');
   });
 
   it('flags duplicate phase ids within the same precedence layer', () => {

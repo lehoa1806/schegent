@@ -18,7 +18,8 @@ export type ActionKey =
   | 'run.modify-task'
   | 'history.rerun'
   | 'workspace.reset'
-  | 'run.skip-phase';
+  | 'run.skip-phase'
+  | 'catalog.remove-phase';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -52,6 +53,11 @@ export type ActionCopyContext = {
   'history.rerun': { readonly taskTitle: string };
   'workspace.reset': Record<string, never>;
   'run.skip-phase': { readonly phaseName: string };
+  'catalog.remove-phase': {
+    readonly phaseName: string;
+    readonly phaseId: string;
+    readonly scope: 'user' | 'workspace';
+  };
 };
 
 // Authoritative copy table (v1, English). Adding a new key here AND to
@@ -132,6 +138,12 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     bodyTemplate: 'Cancels the ongoing execution of **{phaseName}** and advances to the next step.',
     confirmLabel: 'Skip Phase',
     severity: 'caution'
+  },
+  'catalog.remove-phase': {
+    title: 'Delete Phase definition?',
+    bodyTemplate: 'Deletes **{phaseName}** (`{phaseId}`) from {scope} scope. A lower-precedence definition may become effective.',
+    confirmLabel: 'Delete Phase',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -197,6 +209,13 @@ export function renderActionBody<K extends ActionKey>(
     case 'run.skip-phase': {
       const ctx = context as ActionCopyContext['run.retry-phase-now' | 'run.skip-phase'];
       return entry.bodyTemplate.replace('{phaseName}', ctx.phaseName);
+    }
+    case 'catalog.remove-phase': {
+      const ctx = context as ActionCopyContext['catalog.remove-phase'];
+      return entry.bodyTemplate
+        .replace('{phaseName}', ctx.phaseName)
+        .replace('{phaseId}', ctx.phaseId)
+        .replace('{scope}', ctx.scope);
     }
     case 'queue.pause':
     case 'queue.resume':
