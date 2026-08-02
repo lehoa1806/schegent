@@ -21,7 +21,7 @@ describe('AuditLogWriter sanitizes the payload sent to listeners (US3 / T047)', 
     await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
   });
 
-  it('redacts secrets in the entry passed to listeners (not just to disk)', async () => {
+  it('omits command detail from the entry passed to listeners', async () => {
     const captured: AuditEntry[] = [];
     writer.subscribe((e) => captured.push(e));
     const fakeKey = `sk-ant-${'A'.repeat(30)}`;
@@ -36,21 +36,20 @@ describe('AuditLogWriter sanitizes the payload sent to listeners (US3 / T047)', 
     expect(captured).toHaveLength(1);
     const payload = captured[0].payload as Record<string, unknown>;
     expect(JSON.stringify(payload)).not.toContain('sk-ant-AAA');
-    expect(JSON.stringify(payload)).toContain('[REDACTED]');
+    expect(JSON.stringify(payload)).not.toContain('command');
+    expect(payload.operation).toBe('phase');
   });
 
-  it('writes sanitized JSON to disk', async () => {
+  it('rejects unsafe generic payloads instead of writing redacted evidence', async () => {
     const fakeToken = `ghp_${'A'.repeat(36)}`;
-    await writer.append({
+    await expect(writer.append({
       runId: 'r2',
       phase: 'speckit-plan',
       iteration: 1,
       eventType: 'file-write',
       payload: { token: fakeToken },
       outcome: 'info'
-    });
-    const onDisk = await fs.readFile(writer.logPath, 'utf-8');
-    expect(onDisk).not.toContain('ghp_AAA');
-    expect(onDisk).toContain('[REDACTED]');
+    })).rejects.toMatchObject({ reasonCode: 'secret-detected' });
+    await expect(fs.readFile(writer.logPath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

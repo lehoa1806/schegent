@@ -4,6 +4,7 @@ import { HANDLERS } from './commands';
 import { SECONDARY_REJECT, UNTRUSTED_REJECT } from './commands/constants';
 import { ack } from './commands/handler-helpers';
 import type { AckPoster, RouterDeps } from './commands/router-types';
+import { MutationCommandExecutor } from './mutation-command-executor';
 
 export type {
   AckPoster,
@@ -29,7 +30,14 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set(MUTATING_COMMAND_T
  *      `MUTATING_COMMAND_REASONS` in `src/contracts/sidebar-command-metadata.ts`.
  */
 export class MessageRouter {
-  constructor(private readonly deps: RouterDeps) {}
+  private readonly mutations: MutationCommandExecutor;
+
+  constructor(
+    private readonly deps: RouterDeps,
+    mutations: MutationCommandExecutor = new MutationCommandExecutor()
+  ) {
+    this.mutations = mutations;
+  }
 
   public async dispatch(command: SidebarCommand, postAck: AckPoster): Promise<void> {
     // Feature 019 BUG-001 (FR-021) — DEBUG every inbound operator IPC
@@ -39,6 +47,16 @@ export class MessageRouter {
       type: command.type,
       correlationId: command.correlationId
     });
+    if (this.isMutatingCommand(command.type)) {
+      await this.mutations.execute(command.correlationId, postAck, async (captureAck) => {
+        await this.dispatchValidated(command, captureAck);
+      });
+      return;
+    }
+    await this.dispatchValidated(command, postAck);
+  }
+
+  private async dispatchValidated(command: SidebarCommand, postAck: AckPoster): Promise<void> {
     const ctx = {
       deps: this.deps,
       postAck,

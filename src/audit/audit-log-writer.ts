@@ -4,6 +4,10 @@ import { randomUUID } from 'crypto';
 import type { AuditEntry } from './audit-entry';
 import { AUDIT_SCHEMA_VERSION } from '../contracts/audit-events';
 import type { SanitizedLogger } from '../lib/logger';
+import {
+  AuditPayloadValidationError,
+  projectAuditPayload
+} from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
 import {
   normalizeEvidenceFailureCause,
@@ -127,10 +131,24 @@ export class AuditLogWriter {
   }
 
   public async append(entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> {
+    let projectedPayload: Record<string, unknown>;
+    try {
+      projectedPayload = projectAuditPayload(entry.eventType, entry.payload);
+    } catch (err) {
+      const reasonCode = err instanceof AuditPayloadValidationError
+        ? err.reasonCode
+        : 'projection-failed';
+      this.logger.warn('audit payload rejected', {
+        eventType: entry.eventType,
+        reasonCode
+      });
+      throw err;
+    }
     const full: AuditEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       ...entry,
+      payload: projectedPayload,
       schemaVersion: entry.schemaVersion ?? AUDIT_SCHEMA_VERSION,
       // The workflow runId IS the per-run correlation identifier. Threading it
       // explicitly into the audit entry keeps `correlationId` greppable across
@@ -138,6 +156,13 @@ export class AuditLogWriter {
       correlationId: entry.correlationId ?? entry.runId
     };
     const sanitized = this.logger.sanitizeRecord(full as unknown as Record<string, unknown>) as unknown as AuditEntry;
+    if (JSON.stringify(sanitized.payload) !== JSON.stringify(projectedPayload)) {
+      this.logger.warn('audit payload rejected', {
+        eventType: entry.eventType,
+        reasonCode: 'secret-detected'
+      });
+      throw new AuditPayloadValidationError('secret-detected');
+    }
     const line = `${JSON.stringify(sanitized)}\n`;
     // Run doWrite regardless of the previous link's outcome so one wedged
     // or rejected append cannot stall the whole chain. The caller still

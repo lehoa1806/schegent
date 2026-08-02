@@ -24,6 +24,9 @@ import {
 import { resolveSessionDispatch } from './session-dispatch-policy';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
 import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
+import { mutationPlanIsApproved } from './mutation-plan';
+import type { RunCheckpointService } from './run-checkpoint-service';
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -88,6 +91,8 @@ export interface RunDriverDeps {
   ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
+  readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
+  readonly checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
 }
 
 /**
@@ -339,6 +344,21 @@ export class RunDriver {
             activePhaseDef && activePhaseDef.runner === undefined
               ? Object.freeze({ ...activePhaseDef, runner: effectiveRunnerKind })
               : activePhaseDef;
+          if (
+            (dispatchPhaseDef?.sideEffects === 'git' ||
+              dispatchPhaseDef?.sideEffects === 'unrestricted') &&
+            (!run.mutationPlan ||
+              !mutationPlanIsApproved(run.mutationPlan, run.gitApprovalReceipt) ||
+              !run.mutationPlan.gitCapablePhaseIds.includes(dispatchPhaseDef.id))
+          ) {
+            throw new Error('git-mutation-plan-not-approved');
+          }
+          if (
+            dispatchPhaseDef?.sideEffects === 'git' ||
+            dispatchPhaseDef?.sideEffects === 'unrestricted'
+          ) {
+            await this.deps.checkpoints?.checkpoint(run, dispatchPhaseDef.id);
+          }
           const requestedContinue = pendingIsContinue;
           pendingIsContinue = false;
           const sessionDispatch = resolveSessionDispatch({
@@ -375,6 +395,7 @@ export class RunDriver {
             inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
             processEnvAllowlist: this.deps.options.processEnvAllowlist,
             runId: run.id,
+            rawTranscriptMode: run.rawTranscriptMode,
             phaseMessagePath: composePhaseMessagePath({
               cwd: this.deps.options.cwd,
               runId: run.id,
@@ -763,7 +784,10 @@ export class RunDriver {
       allowAutoDrain = false;
       run = await this.failClosedForAuditEvidence(run, description);
     } finally {
-      if (run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') {
+      if (run.status !== 'running') {
+        if (run.status !== 'paused') {
+          await this.deps.terminalTransitions?.complete(run, description);
+        }
         try {
           await this.deps.onRunTerminal?.(run);
         } catch (error) {

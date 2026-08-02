@@ -230,7 +230,6 @@ export interface AuditTailEntry {
   readonly taskId?: string;
   readonly phaseId?: string;
   readonly outcome?: 'success' | 'error' | 'pending';
-  readonly command?: string;
   readonly runner?: string;
 }
 
@@ -631,7 +630,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
-  defaultPipelineId: 'dev-new-feature',
+  defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   queueGlobalConcurrencyCap: 1,
@@ -642,6 +641,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogMaxGenerations: 3,
   sessionRetentionMaxAgeDays: 30,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
+  rawTranscriptMode: 'always',
   retryMaxAttempts: 5,
   scopes: Object.freeze({
     cliPath: 'default',
@@ -662,6 +662,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogMaxGenerations: 'default',
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
+    rawTranscriptMode: 'default',
     retryMaxAttempts: 'default'
   })
 });

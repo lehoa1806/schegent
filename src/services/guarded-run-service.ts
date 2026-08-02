@@ -125,7 +125,7 @@ export interface GuardedRunServiceDeps {
   readonly controller: Pick<SchegentWorkflowController, 'running' | 'startNew' | 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
-  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'setQueue'>;
+  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue'>;
   readonly cliPathProvider: (runnerKind?: BackendRunnerKind) => Promise<string> | string;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly workspaceRoot: string;
@@ -254,13 +254,16 @@ export class GuardedRunService {
     const now = this.clock();
     const current = this.deps.store.getQueue();
     const wasIdlePending = current.queueLifecycle === 'idle-pending';
-    await this.deps.store.setQueue({
-      ...current,
-      queueLifecycle: 'idle-pending',
-      scheduledStartAt: args.scheduledStartAt,
-      scheduledStartSource: args.scheduledStartSource,
-      updatedAt: now
-    });
+    await this.deps.store.updateQueue((queue) => ({
+      queue: {
+        ...queue,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: args.scheduledStartAt,
+        scheduledStartSource: args.scheduledStartSource,
+        updatedAt: now
+      },
+      result: undefined
+    }));
     if (this.deps.scheduledStartCoordinator) {
       await this.deps.scheduledStartCoordinator.arm(
         queueId,
@@ -326,13 +329,16 @@ export class GuardedRunService {
       if (coordinator) {
         await coordinator.cancel(queueId, 'operator-cancel');
       }
-      await this.deps.store.setQueue({
-        ...current,
-        queueLifecycle: 'idle-pending',
-        scheduledStartAt: null,
-        scheduledStartSource: null,
-        updatedAt: now
-      });
+      await this.deps.store.updateQueue((queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: now
+        },
+        result: undefined
+      }));
       return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
     }
 
@@ -356,13 +362,16 @@ export class GuardedRunService {
         return { outcome: 'rejected-horizon', requestedScheduledStartAt: requested };
       }
       const source: ScheduledStartSource = 'operator-restart';
-      await this.deps.store.setQueue({
-        ...current,
-        queueLifecycle: 'idle-pending',
-        scheduledStartAt: requested,
-        scheduledStartSource: source,
-        updatedAt: now
-      });
+      await this.deps.store.updateQueue((queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: requested,
+          scheduledStartSource: source,
+          updatedAt: now
+        },
+        result: undefined
+      }));
       if (coordinator) {
         if (current.scheduledStartAt !== null) {
           await coordinator.change(queueId, requested, source);
@@ -378,13 +387,16 @@ export class GuardedRunService {
       await coordinator.cancel(queueId, 'operator-cancel');
     }
     const wasIdlePending = current.queueLifecycle === 'idle-pending';
-    await this.deps.store.setQueue({
-      ...current,
-      queueLifecycle: 'running',
-      scheduledStartAt: null,
-      scheduledStartSource: null,
-      updatedAt: now
-    });
+    await this.deps.store.updateQueue((queue) => ({
+      queue: {
+        ...queue,
+        queueLifecycle: 'running',
+        scheduledStartAt: null,
+        scheduledStartSource: null,
+        updatedAt: now
+      },
+      result: undefined
+    }));
     if (wasIdlePending) {
       await this.appendScheduleAudit('idle-pending-exited', {
         queueId,
@@ -500,13 +512,16 @@ export class GuardedRunService {
       if (wasIdlePending && current.scheduledStartAt !== null && this.deps.scheduledStartCoordinator) {
         await this.deps.scheduledStartCoordinator.cancel(queueId, 'operator-cancel');
       }
-      await this.deps.store.setQueue({
-        ...current,
-        queueLifecycle: 'running',
-        scheduledStartAt: null,
-        scheduledStartSource: null,
-        updatedAt: now
-      });
+      await this.deps.store.updateQueue((queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'running',
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: now
+        },
+        result: undefined
+      }));
       if (wasIdlePending) {
         await this.appendScheduleAudit('idle-pending-exited', {
           queueId,
@@ -523,13 +538,16 @@ export class GuardedRunService {
       // arm() call on the coordinator already supersedes the prior timer; we
       // emit no extra `scheduled-start-canceled` here. The
       // change-schedule-from-restart path is owned by T042.
-      await this.deps.store.setQueue({
-        ...current,
-        queueLifecycle: 'idle-pending',
-        scheduledStartAt: policy.scheduledStartAt,
-        scheduledStartSource: policy.source,
-        updatedAt: now
-      });
+      await this.deps.store.updateQueue((queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: policy.scheduledStartAt,
+          scheduledStartSource: policy.source,
+          updatedAt: now
+        },
+        result: undefined
+      }));
       if (this.deps.scheduledStartCoordinator) {
         await this.deps.scheduledStartCoordinator.arm(
           queueId,
@@ -550,13 +568,16 @@ export class GuardedRunService {
     if (policy.kind === 'no-intent-human') {
       const wasIdlePending = current.queueLifecycle === 'idle-pending';
       if (!wasIdlePending) {
-        await this.deps.store.setQueue({
-          ...current,
-          queueLifecycle: 'idle-pending',
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          updatedAt: now
-        });
+        await this.deps.store.updateQueue((queue) => ({
+          queue: {
+            ...queue,
+            queueLifecycle: 'idle-pending',
+            scheduledStartAt: null,
+            scheduledStartSource: null,
+            updatedAt: now
+          },
+          result: undefined
+        }));
         await this.appendScheduleAudit('idle-pending-entered', {
           queueId,
           scheduledStartAt: null,
@@ -569,13 +590,16 @@ export class GuardedRunService {
     // no-intent-automation
     const wasIdlePending = current.queueLifecycle === 'idle-pending';
     if (!wasIdlePending) {
-      await this.deps.store.setQueue({
-        ...current,
-        queueLifecycle: 'idle-pending',
-        scheduledStartAt: null,
-        scheduledStartSource: null,
-        updatedAt: now
-      });
+      await this.deps.store.updateQueue((queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: now
+        },
+        result: undefined
+      }));
       await this.appendScheduleAudit('idle-pending-entered', {
         queueId,
         scheduledStartAt: null,

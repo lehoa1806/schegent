@@ -58,7 +58,7 @@ export interface ScheduledStartFiredEvent {
 }
 
 export interface ScheduledStartCoordinatorDeps {
-  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'setQueue'>;
+  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'updateQueue'>;
   readonly auditWriter: Pick<AuditLogWriter, 'append'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly onFire: (queueId: string) => Promise<void> | void;
@@ -198,12 +198,15 @@ export class ScheduledStartCoordinator {
       // Clear scheduledStartAt/Source so auto-drain takes over without
       // re-firing the timer. Keep lifecycle as idle-pending — operator
       // intent is preserved.
-      await this.store.setQueue({
-        ...queueState,
-        scheduledStartAt: null,
-        scheduledStartSource: null,
-        updatedAt: this.nowFn()
-      });
+      await this.store.updateQueue((current) => ({
+        queue: {
+          ...current,
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: this.nowFn()
+        },
+        result: undefined
+      }));
       return;
     }
     this.timer = null;
