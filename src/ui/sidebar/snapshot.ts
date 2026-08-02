@@ -5,6 +5,11 @@ import type {
   PhaseDefinitionScope,
   PhaseSourceStatus
 } from '../../contracts/process-definitions';
+import type {
+  PipelineDefinition,
+  PipelineDefinitionScope,
+  PipelineSourceStatus
+} from '../../contracts/pipeline-definitions';
 export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -53,6 +58,50 @@ export interface PhaseCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PhaseCatalogSourceProjection[];
   readonly effective: readonly PhaseDefinition[];
+  readonly revisions: {
+    readonly user: string;
+    readonly workspace: string;
+  };
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
+/**
+ * Feature 082 — Pipeline catalog projection. Contract:
+ * `specs/082-pipeline-contracts-builder/contracts/pipeline-catalog-snapshot.md`.
+ * Structurally parallel to the Phase catalog projection above so both authoring
+ * surfaces consume one shape.
+ */
+export interface PipelineCatalogFieldErrorProjection {
+  readonly field: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface PipelineCatalogSourceProjection {
+  /** `${scope}:${pipelineId}`, suffixed positionally only when a scope repeats an id. */
+  readonly key: string;
+  readonly pipelineId: string;
+  readonly scope: PipelineDefinitionScope;
+  readonly status: PipelineSourceStatus;
+  readonly definition: PipelineDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly PipelineCatalogFieldErrorProjection[];
+  readonly modelAvailable?: boolean;
+  /**
+   * FR-002 — the Workflows that still resolve this `pipelineId` from the
+   * catalog, so the Library can show what a change would affect. Sorted and
+   * deduplicated; identical for every record sharing a `pipelineId`, since a
+   * reference names the id, not the layer it resolves from. Absent when the
+   * host exposes no Workflow references at all (see `collectWorkflowPipelineRefs`).
+   */
+  readonly consumingWorkflowIds?: readonly string[];
+}
+
+export interface PipelineCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly PipelineCatalogSourceProjection[];
+  readonly effective: readonly PipelineDefinition[];
   readonly revisions: {
     readonly user: string;
     readonly workspace: string;
@@ -469,6 +518,14 @@ export interface WorkflowSnapshot {
   readonly phasePrecedence?: PhasePrecedenceProjection;
   /** Feature 081 — authoritative source-aware Phase catalog; absence means loading. */
   readonly phaseCatalog?: PhaseCatalogProjection;
+  /**
+   * Feature 082 — authoritative source-aware Pipeline catalog for the Library
+   * and Builder. Additive and optional: `availablePipelines` keeps its runtime
+   * selection meaning, and absence means the host has not resolved a catalog
+   * yet, so the editor renders a loading state (FR-028). Derived state only —
+   * never persisted, never written to `WorkflowRun` or the audit log.
+   */
+  readonly pipelineCatalog?: PipelineCatalogProjection;
   /**
    * Feature 033 — ephemeral per-subprocess telemetry for the in-flight
    * task. Present (non-null) only while a Claude CLI subprocess is alive

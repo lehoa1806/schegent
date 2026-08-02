@@ -230,6 +230,69 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
     }
   });
 
+  // Feature 082 (US7, T055) — catalog removals never reach `postCommand`
+  // directly: they go through the shared `savePipelines` / `savePhases`
+  // helpers, so the command-name scan above cannot see them. What is
+  // destructive is the declared *mutation intent*, so the same
+  // enclosing-scope `useConfirm(` rule is applied to the sites that build a
+  // layer-shrinking mutation (FR-023).
+  const CATALOG_REMOVAL_ACTION_KEYS: readonly string[] = [
+    'catalog.remove-pipeline',
+    'catalog.remove-phase'
+  ];
+
+  // `{ kind: 'remove' | 'reset' }` as *constructed*, not as declared: the
+  // `readonly kind:` members of the contract type unions never match.
+  const MUTATION_RE = /\{\s*kind:\s*'(remove|reset)'/g;
+
+  const removalSites = files.flatMap((filePath) => {
+    const source = readFileSync(filePath, 'utf8');
+    const range = getScriptRange(source, filePath);
+    if (!range) return [] as CallSite[];
+    const sites: CallSite[] = [];
+    MUTATION_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = MUTATION_RE.exec(source)) !== null) {
+      if (match.index < range.start || match.index >= range.end) continue;
+      sites.push({
+        file: relativize(filePath),
+        line: source.slice(0, match.index).split('\n').length,
+        command: `mutation:${match[1]}`,
+        guarded: hasUseConfirmInAncestors(source, match.index, range)
+      });
+    }
+    return sites;
+  });
+
+  it('discovers at least one catalog removal mutation site (sanity)', () => {
+    expect(removalSites.length).toBeGreaterThan(0);
+  });
+
+  it('every catalog removal mutation is gated by useConfirm in an enclosing scope (FR-023)', () => {
+    const offenders = removalSites.filter((site) => !site.guarded);
+    const rendered = offenders
+      .map((o) => `  - ${o.file}:${o.line} — ${o.command} is not guarded by useConfirm`)
+      .join('\n');
+    expect(
+      offenders,
+      offenders.length === 0
+        ? ''
+        : `Catalog removal mutations missing useConfirm gate:\n${rendered}`
+    ).toEqual([]);
+  });
+
+  it('passes each catalog removal action key to useConfirm in live code', () => {
+    const sources = files.map((filePath) => readFileSync(filePath, 'utf8'));
+    const missing = CATALOG_REMOVAL_ACTION_KEYS.filter((key) => {
+      const re = new RegExp(`useConfirm\\(\\s*'${key.replace('.', '\\.')}'`);
+      return !sources.some((source) => re.test(source));
+    });
+    expect(
+      missing,
+      `Action keys declared in ACTION_COPY but never passed to useConfirm:\n${missing.join('\n')}`
+    ).toEqual([]);
+  });
+
   it('every LEGACY_FILES entry has at least one ungated destructive call site (otherwise it should leave the allowlist)', () => {
     const offendersByFile = new Map<string, number>();
     for (const site of allSites) {

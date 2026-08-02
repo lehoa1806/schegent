@@ -22,6 +22,7 @@ import {
   mergeCatalog,
   validateCatalog,
   validatePhaseRaw,
+  equalsBuiltInPipelines,
   validatePipelineRaw,
   type PhaseDef,
   type PipelineDef
@@ -473,5 +474,122 @@ describe('Feature 026 T017 — phase Effort + Model validator coverage', () => {
     expect(emptyErr?.id).toBe('security-audit');
     const rejectNonString = validatePhaseRaw({ ...validPhase(), model: 123 } as never);
     expect(rejectNonString.some((e) => e.field === 'model')).toBe(true);
+  });
+});
+
+// Feature 082 (T011) — the widened `PipelineDef`. Every new contract field is
+// optional so an existing `{ id, name, phases }` row keeps resolving (research
+// R2), and the built-ins carry the normalized `version` that FR-010 requires.
+describe('Feature 082 — widened PipelineDef', () => {
+  it('accepts a legacy { id, name, phases } row with no new field set', () => {
+    const legacy: PipelineDef = { id: 'legacy', name: 'Legacy', phases: ['speckit-specify'] };
+    expect(isPipelineDef(legacy)).toBe(true);
+    expect(legacy.version).toBeUndefined();
+    expect(legacy.inputs).toBeUndefined();
+    expect(legacy.outputs).toBeUndefined();
+    expect(legacy.bindings).toBeUndefined();
+    expect(legacy.executionDefaults).toBeUndefined();
+    expect(legacy.recommendedNext).toBeUndefined();
+    expect(legacy.sourceScope).toBeUndefined();
+  });
+
+  it('accepts a fully-specified contract row', () => {
+    const full: PipelineDef = {
+      id: 'full',
+      name: 'Full',
+      description: 'demo',
+      version: 3,
+      phases: ['speckit-specify', 'security-audit'],
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
+      outputs: [{ portId: 'spec', label: 'Spec', type: 'markdown' }],
+      bindings: [
+        {
+          kind: 'input',
+          phaseIndex: 0,
+          inputKey: 'brief',
+          source: { from: 'pipeline-input', portId: 'brief' }
+        },
+        { kind: 'output', phaseIndex: 1, portId: 'spec', outputKey: 'spec' }
+      ],
+      executionDefaults: { runner: 'claude', effort: 'high', timeoutSeconds: 900 },
+      recommendedNext: ['legacy'],
+      sourceScope: 'workspace'
+    };
+    expect(isPipelineDef(full)).toBe(true);
+    expect(full.bindings).toHaveLength(2);
+  });
+
+  it('normalizes every built-in to version 1 with no authored contract collections', () => {
+    for (const pipeline of BUILT_IN_PIPELINES) {
+      expect(pipeline.version).toBe(1);
+      expect(pipeline.inputs).toBeUndefined();
+      expect(pipeline.outputs).toBeUndefined();
+      expect(pipeline.bindings).toBeUndefined();
+      expect(pipeline.executionDefaults).toBeUndefined();
+      expect(pipeline.recommendedNext).toBeUndefined();
+      expect(pipeline.sourceScope).toBeUndefined();
+      expect(pipeline.phases.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps equalsBuiltInPipelines matching a structurally equal reset payload', () => {
+    const resetPayload = BUILT_IN_PIPELINES.map((pipeline) => ({
+      phases: [...pipeline.phases],
+      version: pipeline.version,
+      name: pipeline.name,
+      id: pipeline.id
+    }));
+    expect(equalsBuiltInPipelines(resetPayload)).toBe(true);
+    expect(equalsBuiltInPipelines(resetPayload.slice(0, 1))).toBe(false);
+    expect(
+      equalsBuiltInPipelines(BUILT_IN_PIPELINES.map((p) => ({ id: p.id, name: p.name, phases: [...p.phases] })))
+    ).toBe(false);
+  });
+
+  it('rejects a row whose new field has the wrong shape', () => {
+    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], version: '3' })).toBe(false);
+    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], inputs: 'brief' })).toBe(false);
+    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], recommendedNext: [7] })).toBe(false);
+    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], sourceScope: 'global' })).toBe(false);
+  });
+});
+
+describe('Feature 082 — validatePipelineRaw over the widened contract', () => {
+  const knownIds = new Set(['speckit-specify', 'security-audit']);
+
+  it('accepts the new optional fields', () => {
+    const errs = validatePipelineRaw(
+      validPipeline({
+        description: 'demo',
+        version: 2,
+        inputs: [{ portId: 'brief', label: 'Brief', type: 'text' }],
+        outputs: [{ portId: 'spec', label: 'Spec', type: 'markdown' }],
+        recommendedNext: ['security']
+      }) as never,
+      knownIds
+    );
+    expect(errs).toEqual([]);
+  });
+
+  it('rejects an unknown port type and names the offending field', () => {
+    const errs = validatePipelineRaw(
+      validPipeline({ inputs: [{ portId: 'brief', label: 'Brief', type: 'markdown' }] } as never),
+      knownIds
+    );
+    expect(errs.some((e) => e.field === 'inputs[0].type')).toBe(true);
+    expect(errs.every((e) => e.source === 'pipeline')).toBe(true);
+  });
+
+  it('rejects a non-positive-integer version', () => {
+    const errs = validatePipelineRaw(validPipeline({ version: 0 } as never), knownIds);
+    expect(errs.some((e) => e.field === 'version')).toBe(true);
+  });
+
+  it('still reports an unknown phase reference against the known-id set', () => {
+    const errs = validatePipelineRaw(
+      validPipeline({ phases: ['speckit-specify', 'made-up-phase'] }),
+      knownIds
+    );
+    expect(errs.some((e) => e.field === 'phases[1]')).toBe(true);
   });
 });

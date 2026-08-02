@@ -22,6 +22,17 @@ import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePhasesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
+import {
+  definitionMap,
+  identityRepairTarget,
+  layerDiff,
+  layerIdentities,
+  layerShapeMatches,
+  mutationMatches,
+  withHostVersions,
+  type LayerIntentAdapter,
+  type LayerMutationIntent
+} from './save-layer-intent';
 import { denyAndAudit } from './trust-gate';
 
 interface NormalizedLayer {
@@ -29,70 +40,22 @@ interface NormalizedLayer {
   readonly errors: readonly PhaseFieldError[];
 }
 
-interface LayerIdentities {
-  readonly counts: ReadonlyMap<string, number>;
-  readonly versions: ReadonlyMap<string, ReadonlySet<number>>;
-}
+/**
+ * Binds the shared mutation-intent algebra to the Phase catalog: how a raw
+ * settings row is identified, how a parsed definition is identified, and how a
+ * row is parsed. The algebra itself lives in `save-layer-intent.ts` so the
+ * Pipeline catalog reuses it unchanged (research R6).
+ */
+const phaseIntentAdapter: LayerIntentAdapter<PhaseDefinition> = {
+  sourceIdentity: phaseSourceIdentity,
+  identityOf: (definition) => definition.phaseId,
+  parse: (row) =>
+    validatePhaseDefinition(row, { allowLegacyId: true, defaultVersion: 1 }).definition
+};
 
-function stableJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined && key !== 'version')
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(record[key])}`)
-    .join(',')}}`;
-}
-
-interface LayerEntry {
-  readonly identity: string;
-  readonly fingerprint: string;
-}
-
-function layerEntries(rows: readonly unknown[]): LayerEntry[] {
-  return rows.map((row, index) => {
-    const parsed = validatePhaseDefinition(row, { allowLegacyId: true, defaultVersion: 1 });
-    return {
-      identity: phaseSourceIdentity(row, index),
-      fingerprint: stableJsonStringify(parsed.definition ?? row)
-    };
-  });
-}
-
-function fingerprintsWithoutOne(entries: readonly LayerEntry[], identity: string): string[][] {
-  return entries.flatMap((entry, index) => entry.identity === identity
-    ? [entries.filter((_, candidate) => candidate !== index).map((item) => item.fingerprint)]
-    : []);
-}
-
-function sameFingerprints(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function layerShapeMatches(
-  mutation: PhaseCatalogMutation,
-  currentRows: readonly unknown[],
-  proposedRows: readonly unknown[],
-  repairTargetId: string | null
-): boolean {
-  if (mutation.kind === 'reset') return proposedRows.length === 0;
-  const current = layerEntries(currentRows);
-  const proposed = layerEntries(proposedRows);
-  if (mutation.kind === 'create' || mutation.kind === 'duplicate') {
-    const currentFingerprints = current.map((entry) => entry.fingerprint);
-    return fingerprintsWithoutOne(proposed, mutation.phaseId)
-      .some((candidate) => sameFingerprints(currentFingerprints, candidate));
-  }
-  if (mutation.kind === 'remove') {
-    const proposedFingerprints = proposed.map((entry) => entry.fingerprint);
-    return fingerprintsWithoutOne(current, mutation.phaseId)
-      .some((candidate) => sameFingerprints(candidate, proposedFingerprints));
-  }
-  const proposedTarget = repairTargetId ?? mutation.phaseId;
-  return fingerprintsWithoutOne(current, mutation.phaseId).some((currentCandidate) =>
-    fingerprintsWithoutOne(proposed, proposedTarget).some((proposedCandidate) =>
-      sameFingerprints(currentCandidate, proposedCandidate)));
+/** Projects a Phase mutation onto the entity-agnostic intent the algebra reads. */
+function phaseIntent(mutation: PhaseCatalogMutation): LayerMutationIntent {
+  return { kind: mutation.kind, targetId: mutation.kind === 'reset' ? null : mutation.phaseId };
 }
 
 function normalizeLayer(rows: readonly unknown[]): NormalizedLayer {
@@ -118,159 +81,6 @@ function normalizeLayer(rows: readonly unknown[]): NormalizedLayer {
     }
   }
   return { definitions, errors };
-}
-
-function layerIdentities(rows: readonly unknown[]): LayerIdentities {
-  const counts = new Map<string, number>();
-  const versions = new Map<string, Set<number>>();
-  for (const [index, raw] of rows.entries()) {
-    const phaseId = phaseSourceIdentity(raw, index);
-    counts.set(phaseId, (counts.get(phaseId) ?? 0) + 1);
-    const row = raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? raw as Record<string, unknown>
-      : {};
-    const version = Number.isSafeInteger(row.version) && (row.version as number) > 0
-      ? row.version as number
-      : 1;
-    const phaseVersions = versions.get(phaseId) ?? new Set<number>();
-    phaseVersions.add(version);
-    versions.set(phaseId, phaseVersions);
-  }
-  return { counts, versions };
-}
-
-function identityRepairTarget(
-  mutation: PhaseCatalogMutation,
-  currentCounts: ReadonlyMap<string, number>,
-  proposedCounts: ReadonlyMap<string, number>,
-  diff: ReturnType<typeof layerDiff>
-): string | null {
-  if (
-    mutation.kind !== 'edit' ||
-    ((currentCounts.get(mutation.phaseId) ?? 0) === 1 &&
-      /^[a-z][a-z0-9-]{0,63}$/.test(mutation.phaseId)) ||
-    (currentCounts.get(mutation.phaseId) ?? 0) < 1 ||
-    (proposedCounts.get(mutation.phaseId) ?? 0) !==
-      (currentCounts.get(mutation.phaseId) ?? 0) - 1 ||
-    diff.removed.length !== 0 ||
-    diff.changed.some((phaseId) => phaseId !== mutation.phaseId)
-  ) return null;
-
-  const additions = [...proposedCounts].filter(
-    ([phaseId, count]) => count - (currentCounts.get(phaseId) ?? 0) === 1
-  );
-  if (additions.length !== 1 || diff.added.length !== 1 || diff.added[0] !== additions[0][0]) {
-    return null;
-  }
-  const replacementId = additions[0][0];
-  const allIds = new Set([...currentCounts.keys(), ...proposedCounts.keys()]);
-  for (const phaseId of allIds) {
-    const delta = (proposedCounts.get(phaseId) ?? 0) - (currentCounts.get(phaseId) ?? 0);
-    if (phaseId === mutation.phaseId) {
-      if (delta !== -1) return null;
-    } else if (phaseId === replacementId) {
-      if (delta !== 1) return null;
-    } else if (delta !== 0) return null;
-  }
-  return replacementId;
-}
-
-function countsMatchExcept(
-  current: ReadonlyMap<string, number>,
-  proposed: ReadonlyMap<string, number>,
-  exceptPhaseId: string
-): boolean {
-  const ids = new Set([...current.keys(), ...proposed.keys()]);
-  for (const phaseId of ids) {
-    if (phaseId === exceptPhaseId) continue;
-    if ((current.get(phaseId) ?? 0) !== (proposed.get(phaseId) ?? 0)) return false;
-  }
-  return true;
-}
-
-function definitionMap(definitions: readonly PhaseDefinition[]): Map<string, PhaseDefinition> {
-  return new Map(definitions.map((definition) => [definition.phaseId, definition]));
-}
-
-function authoredEqual(a: PhaseDefinition, b: PhaseDefinition): boolean {
-  return stableJsonStringify(a) === stableJsonStringify(b);
-}
-
-function layerDiff(
-  current: ReadonlyMap<string, PhaseDefinition>,
-  proposed: ReadonlyMap<string, PhaseDefinition>
-): { added: string[]; removed: string[]; changed: string[] } {
-  const added = [...proposed.keys()].filter((id) => !current.has(id));
-  const removed = [...current.keys()].filter((id) => !proposed.has(id));
-  const changed = [...proposed.keys()].filter((id) => {
-    const prior = current.get(id);
-    return prior !== undefined && !authoredEqual(prior, proposed.get(id)!);
-  });
-  return { added, removed, changed };
-}
-
-function mutationMatches(
-  mutation: PhaseCatalogMutation,
-  diff: ReturnType<typeof layerDiff>,
-  proposedCount: number,
-  currentCounts: ReadonlyMap<string, number>,
-  proposedCounts: ReadonlyMap<string, number>
-): boolean {
-  const none = (values: readonly string[]) => values.length === 0;
-  const only = (values: readonly string[], phaseId: string) =>
-    values.length === 1 && values[0] === phaseId;
-  switch (mutation.kind) {
-    case 'create':
-    case 'duplicate':
-      return (currentCounts.get(mutation.phaseId) ?? 0) === 0 &&
-        only(diff.added, mutation.phaseId) && none(diff.removed) && none(diff.changed);
-    case 'edit':
-      return (currentCounts.get(mutation.phaseId) ?? 0) === 1 &&
-        (proposedCounts.get(mutation.phaseId) ?? 0) === 1 &&
-        countsMatchExcept(currentCounts, proposedCounts, mutation.phaseId) &&
-        diff.added.every((id) => id === mutation.phaseId) &&
-        diff.removed.every((id) => id === mutation.phaseId) &&
-        diff.changed.every((id) => id === mutation.phaseId);
-    case 'remove': {
-      const currentCount = currentCounts.get(mutation.phaseId) ?? 0;
-      const proposedCountForId = proposedCounts.get(mutation.phaseId) ?? 0;
-      return currentCount === proposedCountForId + 1 &&
-        countsMatchExcept(currentCounts, proposedCounts, mutation.phaseId) &&
-        diff.added.every((id) => id === mutation.phaseId) &&
-        diff.removed.every((id) => id === mutation.phaseId) &&
-        diff.changed.every((id) => id === mutation.phaseId);
-    }
-    case 'reset':
-      return proposedCount === 0;
-  }
-}
-
-function withHostVersions(
-  proposed: readonly PhaseDefinition[],
-  current: ReadonlyMap<string, PhaseDefinition>,
-  currentCounts: ReadonlyMap<string, number>,
-  currentVersions: ReadonlyMap<string, ReadonlySet<number>>,
-  mutation: PhaseCatalogMutation
-): readonly PhaseDefinition[] {
-  return proposed.map((definition) => {
-    const prior = current.get(definition.phaseId);
-    const candidates = currentVersions.get(definition.phaseId);
-    const sourceVersion = candidates?.has(definition.version)
-      ? definition.version
-      : candidates?.size ? Math.max(...candidates) : null;
-    const preservingDuplicateSurvivor = mutation.kind === 'edit' &&
-      mutation.phaseId === definition.phaseId &&
-      (currentCounts.get(definition.phaseId) ?? 0) > 1;
-    const version = preservingDuplicateSurvivor && sourceVersion !== null
-      ? sourceVersion
-      : mutation.kind === 'remove' &&
-      mutation.phaseId === definition.phaseId && sourceVersion !== null
-      ? sourceVersion
-      : prior
-        ? authoredEqual(prior, definition) ? prior.version : prior.version + 1
-        : sourceVersion !== null ? sourceVersion + 1 : 1;
-    return Object.freeze({ ...definition, version }) as PhaseDefinition;
-  });
 }
 
 function persistedRow(definition: PhaseDefinition): Record<string, unknown> {
@@ -364,12 +174,13 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
   }
 
   const { scope, expectedRevision, mutation } = command.payload;
+  const intent = phaseIntent(mutation);
   const layers = ctx.deps.readPhaseConfig();
   const currentRows = layers[scope];
   const currentRevision = phaseLayerRevision(currentRows);
   const currentLayer = normalizeLayer(currentRows);
-  const currentById = definitionMap(currentLayer.definitions);
-  const currentIdentities = layerIdentities(currentRows);
+  const currentById = definitionMap(currentLayer.definitions, phaseIntentAdapter);
+  const currentIdentities = layerIdentities(currentRows, phaseIntentAdapter);
 
   if (expectedRevision !== currentRevision) {
     await ack(ctx, 'rejected', 'stale-catalog', {
@@ -408,16 +219,18 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     );
     return;
   }
-  const proposedById = definitionMap(proposedLayer.definitions);
-  const proposedIdentities = layerIdentities(command.payload.phases);
+  const proposedById = definitionMap(proposedLayer.definitions, phaseIntentAdapter);
+  const proposedIdentities = layerIdentities(command.payload.phases, phaseIntentAdapter);
   const diff = layerDiff(currentById, proposedById);
   const repairTargetId = identityRepairTarget(
-    mutation, currentIdentities.counts, proposedIdentities.counts, diff
+    intent, currentIdentities.counts, proposedIdentities.counts, diff
   );
   const mutationValid = (repairTargetId !== null || mutationMatches(
-    mutation, diff, proposedLayer.definitions.length,
+    intent, diff, proposedLayer.definitions.length,
     currentIdentities.counts, proposedIdentities.counts
-  )) && layerShapeMatches(mutation, currentRows, command.payload.phases, repairTargetId);
+  )) && layerShapeMatches(
+    intent, currentRows, command.payload.phases, repairTargetId, phaseIntentAdapter
+  );
   if (!mutationValid) {
     if (
       mutation.kind === 'edit' &&
@@ -499,7 +312,8 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     currentById,
     currentIdentities.counts,
     versionSources,
-    mutation
+    intent,
+    phaseIntentAdapter
   );
   const persistedRows = versioned.map(persistedRow);
 

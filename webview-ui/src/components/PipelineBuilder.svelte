@@ -2,19 +2,12 @@
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import { savePhases as savePhasesHelper, type SavePhasesMutation } from '../lib/save-phases';
   import { useConfirm } from '../lib/use-confirm';
-  import {
-    savePipelines as savePipelinesHelper,
-    type SavePipelineRow
-  } from '../lib/save-pipelines';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
   import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
-  import type {
-    MutablePhase,
-    MutablePipeline,
-    PhaseEditState
-  } from './PipelineBuilderEditors/types';
+  import type { MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
+  import { PipelineCatalogStore } from './PipelineBuilderEditors/pipeline-catalog-store.svelte';
   import {
     effectivePhasesToMutable,
     formatPhaseSaveRejection,
@@ -53,7 +46,6 @@
   );
   // svelte-ignore state_referenced_locally
   let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
-  let pipelines = $state<MutablePipeline[]>([]);
   let phases = $state<MutablePhase[]>([]);
   let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
@@ -70,14 +62,27 @@
     phaseCatalogReady && snapshot.isPrimary === true && trustPhases && !phaseSavePending
   );
   const pipelinePhases = $derived(effectivePhases);
+  const pipelineMutationsAllowed = $derived(
+    snapshot.pipelineCatalog?.state === 'ready' &&
+      snapshot.isPrimary === true &&
+      trustPipelineOverrides
+  );
   function showSaveError(reason: string): void {
     saveError = reason;
     if (saveErrorTimer !== null) clearTimeout(saveErrorTimer);
     saveErrorTimer = setTimeout(() => { saveError = null; }, 8000);
   }
+  // Feature 082 — the Pipeline tab's rows, mutation handshake, and history live
+  // in a rune store so this component stays inside the 500-line Svelte budget.
+  const pipelineStore = new PipelineCatalogStore({
+    getSnapshot: () => snapshot,
+    onSaveError: showSaveError,
+    onSaveAccepted: () => { saveError = null; }
+  });
+  $effect(() => { pipelineStore.syncFromSnapshot(snapshot); });
+  $effect(() => { if (initialized) pipelineStore.recordHistory(); });
   $effect(() => {
-    if (!initialized && snapshot.availablePipelines && snapshot.availableModels) {
-      pipelines = JSON.parse(JSON.stringify(snapshot.availablePipelines));
+    if (!initialized && snapshot.availableModels) {
       models = initialModels(snapshot.availableModels);
       initialized = true;
     }
@@ -102,17 +107,6 @@
       }
     }
   });
-  function savePipelines(): void {
-    const payload: SavePipelineRow[] = pipelines.map((p) => ({
-      id: p.id,
-      name: p.name,
-      phases: [...p.phases]
-    }));
-    void savePipelinesHelper(payload).then((result) => {
-      if (result.status === 'rejected') showSaveError(result.reason);
-      else saveError = null;
-    });
-  }
   function submitPhaseMutation(
     mutation: SavePhasesMutation,
     scope: 'user' | 'workspace',
@@ -151,83 +145,6 @@
   }
   function getPhaseTooltip(phaseId: string): string {
     return phaseTooltip(effectivePhases, phaseId);
-  }
-  let selectedPipelineIndex = $state<number | null>(null);
-  let pipelineHistory = $state<MutablePipeline[][]>([]);
-  let pipelineHistoryIndex = $state(-1);
-  let isPipelineUndoRedoAction = false;
-  $effect(() => {
-    if (!initialized) return;
-    const currentStr = JSON.stringify(pipelines);
-    if (!isPipelineUndoRedoAction) {
-      const lastStateStr = pipelineHistoryIndex >= 0 ? JSON.stringify(pipelineHistory[pipelineHistoryIndex]) : null;
-      if (currentStr !== lastStateStr) {
-        pipelineHistory = pipelineHistory.slice(0, pipelineHistoryIndex + 1);
-        pipelineHistory.push(JSON.parse(currentStr));
-        pipelineHistoryIndex++;
-      }
-    }
-    isPipelineUndoRedoAction = false;
-  });
-  function undoPipeline(): void {
-    if (pipelineHistoryIndex > 0) { isPipelineUndoRedoAction = true; pipelineHistoryIndex--; pipelines = JSON.parse(JSON.stringify(pipelineHistory[pipelineHistoryIndex])); }
-  }
-  function redoPipeline(): void {
-    if (pipelineHistoryIndex < pipelineHistory.length - 1) { isPipelineUndoRedoAction = true; pipelineHistoryIndex++; pipelines = JSON.parse(JSON.stringify(pipelineHistory[pipelineHistoryIndex])); }
-  }
-  function addPipeline(): void { pipelines = [...pipelines, { id: 'new-pipeline', name: 'New Pipeline', phases: [] }]; selectedPipelineIndex = pipelines.length - 1; }
-  function removePipeline(index: number): void {
-    pipelines = pipelines.filter((_, i) => i !== index);
-    if (selectedPipelineIndex === index) selectedPipelineIndex = null;
-    else if (selectedPipelineIndex !== null && selectedPipelineIndex > index) selectedPipelineIndex--;
-  }
-  function resetPipeline(index: number): void {
-    const original = snapshot.availablePipelines?.find(p => p.id === pipelines[index].id);
-    if (original) pipelines[index] = JSON.parse(JSON.stringify(original));
-  }
-  function updatePipeline(
-    index: number,
-    patch: Partial<Pick<MutablePipeline, 'id' | 'name'>>
-  ): void {
-    pipelines = pipelines.map((pipeline, i) =>
-      i === index ? { ...pipeline, ...patch } : pipeline
-    );
-  }
-  function updatePipelinePhase(
-    pipelineIndex: number,
-    phaseIndex: number,
-    phaseId: string
-  ): void {
-    pipelines = pipelines.map((pipeline, i) =>
-      i === pipelineIndex
-        ? {
-            ...pipeline,
-            phases: pipeline.phases.map((id, j) => j === phaseIndex ? phaseId : id)
-          }
-        : pipeline
-    );
-  }
-  let newPhaseIdForPipeline = $state('');
-  function addPhaseToPipeline(): void {
-    if (selectedPipelineIndex !== null && newPhaseIdForPipeline.trim()) {
-      pipelines[selectedPipelineIndex].phases.push(newPhaseIdForPipeline.trim());
-      newPhaseIdForPipeline = '';
-    }
-  }
-  function removePhaseFromPipeline(phaseIndex: number): void { if (selectedPipelineIndex !== null) pipelines[selectedPipelineIndex].phases.splice(phaseIndex, 1); }
-  function movePhaseUp(phaseIndex: number): void {
-    if (selectedPipelineIndex !== null && phaseIndex > 0) {
-      const t = pipelines[selectedPipelineIndex].phases[phaseIndex - 1];
-      pipelines[selectedPipelineIndex].phases[phaseIndex - 1] = pipelines[selectedPipelineIndex].phases[phaseIndex];
-      pipelines[selectedPipelineIndex].phases[phaseIndex] = t;
-    }
-  }
-  function movePhaseDown(phaseIndex: number): void {
-    if (selectedPipelineIndex !== null && phaseIndex < pipelines[selectedPipelineIndex].phases.length - 1) {
-      const t = pipelines[selectedPipelineIndex].phases[phaseIndex + 1];
-      pipelines[selectedPipelineIndex].phases[phaseIndex + 1] = pipelines[selectedPipelineIndex].phases[phaseIndex];
-      pipelines[selectedPipelineIndex].phases[phaseIndex] = t;
-    }
   }
   let selectedPhaseIndex = $state<number | null>(null);
   let phaseHistory = $state<MutablePhase[][]>([]);
@@ -418,31 +335,37 @@
     {/if}
     {#if activeTab === 'pipelines'}
       <PipelineCatalogEditor
-        {pipelines}
+        {snapshot}
+        pipelines={pipelineStore.pipelines}
         phases={pipelinePhases}
-        selectedIndex={selectedPipelineIndex}
-        historyIndex={pipelineHistoryIndex}
-        historyLength={pipelineHistory.length}
-        newPhaseId={newPhaseIdForPipeline}
-        trusted={trustPipelineOverrides}
+        selectedIndex={pipelineStore.selectedIndex}
+        historyIndex={pipelineStore.historyIndex}
+        historyLength={pipelineStore.historyLength}
+        newPhaseId={pipelineStore.newPhaseId}
+        trusted={pipelineMutationsAllowed}
         showTrustBanner={showPipelinesBanner}
         {saveError}
+        savePending={pipelineStore.savePending}
+        mutationActive={pipelineStore.mutationActive}
+        editableSourceKey={pipelineStore.mutationSourceKey}
         {getPhaseTooltip}
-        onselect={(index) => selectedPipelineIndex = index}
-        onadd={addPipeline}
-        onremove={removePipeline}
-        onreset={resetPipeline}
-        onpipelinechange={updatePipeline}
-        onphasechange={updatePipelinePhase}
-        onundo={undoPipeline}
-        onredo={redoPipeline}
-        onsave={savePipelines}
+        onselect={(index) => pipelineStore.selectedIndex = index}
+        onadd={() => pipelineStore.add()}
+        onremove={(index, element) => pipelineStore.remove(index, element)}
+        onreset={(index) => pipelineStore.discardDraft(index)}
+        onduplicate={(index) => pipelineStore.duplicate(index)}
+        onpipelinechange={(index, patch) => pipelineStore.update(index, patch)}
+        onphasechange={(pipelineIndex, phaseIndex, phaseId) =>
+          pipelineStore.setPhase(pipelineIndex, phaseIndex, phaseId)}
+        onundo={() => pipelineStore.undo()}
+        onredo={() => pipelineStore.redo()}
+        onsave={() => pipelineStore.save()}
         ondismisssaveerror={() => saveError = null}
-        onnewphaseidchange={(value) => newPhaseIdForPipeline = value}
-        onaddphase={addPhaseToPipeline}
-        onremovephase={removePhaseFromPipeline}
-        onmovephaseup={movePhaseUp}
-        onmovephasedown={movePhaseDown}
+        onnewphaseidchange={(value) => pipelineStore.newPhaseId = value}
+        onaddphase={() => pipelineStore.appendPhase()}
+        onremovephase={(index) => pipelineStore.removePhase(index)}
+        onmovephaseup={(index) => pipelineStore.movePhaseUp(index)}
+        onmovephasedown={(index) => pipelineStore.movePhaseDown(index)}
       />
     {:else if activeTab === 'phases'}
       <PhaseCatalogEditor

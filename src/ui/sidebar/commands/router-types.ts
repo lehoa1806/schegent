@@ -100,6 +100,12 @@ export interface PhaseOps {
   ): Promise<{ ok: boolean; reason?: string }>;
 }
 
+/** One Workflow → Pipeline reference the removal gate must not break (FR-022a). */
+export interface WorkflowPipelineReference {
+  readonly workflowId: string;
+  readonly pipelineId: string;
+}
+
 export interface RouterDeps {
   readonly executeCommand: <T = unknown>(commandId: string, ...args: unknown[]) => Thenable<T> | Promise<T>;
   readonly queueRemover: QueueRemover;
@@ -145,6 +151,24 @@ export interface RouterDeps {
     readonly workspace: readonly unknown[];
   };
   readonly getCatalog?: () => PipelineCatalog;
+  /**
+   * Feature 082 (US7, FR-022a) — the only data source behind
+   * `consumingWorkflowIdsReferencing(...)` in `cmd-save-pipelines.ts`, which
+   * decides whether removing a Pipeline source would leave a consuming
+   * Workflow's reference unresolved.
+   *
+   * "Consuming Workflow" is not a persisted catalog entity in this slice, so
+   * the host supplies the references it can see today: queued Workflow
+   * requests that pin a `pipelineId` and have not yet frozen a Pipeline
+   * contract. An in-flight or finished Run already froze its contract
+   * (FR-027) and is therefore never a consumer. A future Workflow catalog
+   * supplies the same pairs through this same hook; the save algebra above it
+   * does not change (research R5).
+   *
+   * Optional: a host that exposes no Workflow references reports none, which
+   * is the same answer as an empty queue.
+   */
+  readonly readWorkflowPipelineRefs?: () => readonly WorkflowPipelineReference[];
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;

@@ -59,7 +59,10 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'auto-promote a queue in `idle-pending`',
   'persist `scheduledstartat` without also persisting',
   'emit a schedule-related audit event',
-  'emit the literal `\'running\'` as a `queuelifecycle`'
+  'emit the literal `\'running\'` as a `queuelifecycle`',
+  // Feature 082 — Pipeline contract hard-rule anchors.
+  'resolve a pipeline binding',
+  'write a pipeline layer'
 ];
 
 function readClaudeMd(): string {

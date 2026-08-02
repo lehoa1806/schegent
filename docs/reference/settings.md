@@ -233,15 +233,34 @@ For more on shadowing and overrides, see [Phase Overrides](../features/phase-ove
 - **Default:** `[]`
 - **Scope:** `resource`
 
-Custom pipeline definitions. A pipeline is an ordered chain of phase ids.
+Custom pipeline definitions. A pipeline is an ordered chain of phase ids, and
+may additionally declare a contract: what it consumes, what it produces, and how
+its steps are wired.
 
 Each pipeline accepts:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Unique pipeline id, kebab-case, ≤64 chars. The id `speckit-new-feature` is reserved for the built-in. |
+| `id` | string | yes | Unique pipeline id, kebab-case, ≤64 chars (`pipelineId` is the portable alias). The id `speckit-new-feature` is reserved for the built-in. Immutable once saved. |
 | `name` | string | yes | Display name (1–80 chars) shown in the QuickPick picker and sidebar header. |
-| `phases` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a built-in id or one of your `schegent.phases[].id`. |
+| `phases` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a built-in id or one of your `schegent.phases[].id`. The same id may appear more than once. |
+| `description` | string | no | Optional summary, ≤1024 chars. |
+| `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
+| `inputs` | array of objects | no | Declared session inputs: `{ portId, label, type, required?, description? }`. `type` is one of `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, `repository-context`. |
+| `outputs` | array of objects | no | Declared artifacts: `{ portId, label, type, description? }`. `type` is one of `markdown`, `file`, `file-set`, `structured-data`, `run-request`, `external-reference`. |
+| `bindings` | array of objects | no | Wiring between ports and phase steps. See below. |
+| `executionDefaults` | object | no | Advisory run-creation defaults: `runner`, `model`, `effort`, `timeoutSeconds`. Host-owned runtime policy is not authorable here. |
+| `recommendedNext` | array of strings | no | Advisory follow-on pipeline ids. An id with no effective definition is a warning, never an error. |
+
+Bindings address a phase by **position** (`phaseIndex`, zero-based), not by
+`phaseId`, because the same phase may appear twice in one sequence:
+
+- Input binding — `{ "kind": "input", "phaseIndex": N, "inputKey": "...", "source": { "from": "pipeline-input", "portId": "..." } }`, or `"source": { "from": "phase-output", "phaseIndex": M, "portId": "..." }`.
+- Output binding — `{ "kind": "output", "phaseIndex": N, "portId": "...", "outputKey": "..." }`.
+
+A binding that reads from a later phase (`M >= N`) is rejected as a forward
+reference. An input port fed by an earlier phase's output must be declared with
+type `pipeline-output`.
 
 Example:
 
@@ -251,11 +270,35 @@ Example:
     {
       "id": "quick-spec",
       "name": "Quick Spec",
-      "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "done"]
+      "version": 1,
+      "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "done"],
+      "inputs": [
+        { "portId": "brief", "label": "Feature brief", "type": "text", "required": true }
+      ],
+      "outputs": [
+        { "portId": "spec", "label": "Specification", "type": "markdown" }
+      ],
+      "bindings": [
+        {
+          "kind": "input",
+          "phaseIndex": 0,
+          "inputKey": "brief",
+          "source": { "from": "pipeline-input", "portId": "brief" }
+        },
+        { "kind": "output", "phaseIndex": 0, "portId": "spec", "outputKey": "spec" }
+      ]
     }
   ]
 }
 ```
+
+Rows are resolved workspace > user > built-in, one effective definition per id.
+An invalid row stays visible with its field errors while the next valid scope for
+that id becomes effective. Exceeding 20 effective pipelines, or 50 phases in one
+pipeline, warns without truncating anything. Editing this key from the Pipeline
+Builder is gated by `schegent.trust.allowPipelineOverrides`; see
+[Trust Scopes](../operations/trust-scopes.md) and
+[Configuration](../operations/configuration.md).
 
 ### `schegent.models`
 

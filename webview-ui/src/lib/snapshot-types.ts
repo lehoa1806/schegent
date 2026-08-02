@@ -311,6 +311,18 @@ export interface PipelineDefinition {
   readonly id: string;
   readonly name: string;
   readonly phases: readonly string[];
+  /**
+   * Feature 082 — contract fields carried by the runtime selection list. Every
+   * one is optional so a pre-082 snapshot deserializes unchanged.
+   */
+  readonly description?: string;
+  readonly version?: number;
+  readonly inputs?: readonly PipelineInputPort[];
+  readonly outputs?: readonly PipelineOutputPort[];
+  readonly bindings?: readonly PhaseBinding[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext?: readonly string[];
+  readonly sourceScope?: PipelineDefinitionScope;
 }
 
 /**
@@ -365,6 +377,144 @@ export interface PhaseCatalogProjection {
   readonly records: readonly PhaseCatalogSourceRecord[];
   readonly effective: readonly PortablePhaseDefinition[];
   readonly revisions: Readonly<Record<WritablePhaseDefinitionScope, string>>;
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
+/*
+ * Feature 082 — webview mirror of the portable Pipeline contract in
+ * `src/contracts/pipeline-definitions.ts`. Types and closed unions only; the
+ * host remains the sole authority for validation and resolution.
+ */
+
+export type PipelineDefinitionScope = 'built-in' | 'user' | 'workspace';
+export type WritablePipelineDefinitionScope = Exclude<PipelineDefinitionScope, 'built-in'>;
+export type PipelineSourceStatus = 'effective' | 'shadowed' | 'invalid';
+
+/**
+ * Session-input port types (FR-012). `pipeline-output` is the declared type an
+ * input port uses when an earlier Phase's output feeds it rather than the
+ * operator at session start.
+ */
+export const PIPELINE_INPUT_PORT_TYPES = [
+  'text',
+  'source',
+  'source-list',
+  'local-file',
+  'local-folder',
+  'web-url',
+  'pipeline-output',
+  'repository-context'
+] as const;
+export type PipelineInputPortType = (typeof PIPELINE_INPUT_PORT_TYPES)[number];
+
+/** Declared artifact types a Pipeline produces (FR-013). */
+export const PIPELINE_OUTPUT_PORT_TYPES = [
+  'markdown',
+  'file',
+  'file-set',
+  'structured-data',
+  'run-request',
+  'external-reference'
+] as const;
+export type PipelineOutputPortType = (typeof PIPELINE_OUTPUT_PORT_TYPES)[number];
+
+export interface PipelineInputPort {
+  readonly portId: string;
+  readonly label: string;
+  readonly type: PipelineInputPortType;
+  readonly required?: boolean;
+  readonly description?: string;
+}
+
+export interface PipelineOutputPort {
+  readonly portId: string;
+  readonly label: string;
+  readonly type: PipelineOutputPortType;
+  readonly description?: string;
+}
+
+/**
+ * Bindings address a Phase *position* rather than a bare phase id because a
+ * Pipeline's `phaseIds` may repeat the same Phase.
+ */
+export interface PhaseInputBinding {
+  readonly kind: 'input';
+  readonly phaseIndex: number;
+  readonly inputKey: string;
+  readonly source:
+    | { readonly from: 'pipeline-input'; readonly portId: string }
+    | { readonly from: 'phase-output'; readonly phaseIndex: number; readonly portId: string };
+}
+
+export interface PhaseOutputBinding {
+  readonly kind: 'output';
+  readonly phaseIndex: number;
+  readonly portId: string;
+  readonly outputKey: string;
+}
+
+export type PhaseBinding = PhaseInputBinding | PhaseOutputBinding;
+
+/** Advisory Run-creation defaults; host-owned runtime policy is not authorable. */
+export interface PipelineExecutionDefaults {
+  readonly runner?: string;
+  readonly model?: string;
+  readonly effort?: Effort;
+  readonly timeoutSeconds?: number;
+}
+
+export interface PortablePipelineDefinition {
+  readonly pipelineId: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly version: number;
+  readonly phaseIds: readonly string[];
+  readonly inputs: readonly PipelineInputPort[];
+  readonly outputs: readonly PipelineOutputPort[];
+  readonly bindings: readonly PhaseBinding[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext: readonly string[];
+}
+
+export type PipelineCatalogMutation =
+  | { readonly kind: 'create'; readonly pipelineId: string }
+  | { readonly kind: 'edit'; readonly pipelineId: string }
+  | {
+      readonly kind: 'duplicate';
+      readonly sourceScope: PipelineDefinitionScope;
+      readonly sourcePipelineId: string;
+      readonly pipelineId: string;
+    }
+  | { readonly kind: 'remove'; readonly pipelineId: string }
+  | { readonly kind: 'reset' };
+
+export interface PipelineCatalogSourceRecord {
+  readonly key: string;
+  readonly pipelineId: string;
+  readonly scope: PipelineDefinitionScope;
+  readonly status: PipelineSourceStatus;
+  readonly definition: PortablePipelineDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly {
+    readonly field: string;
+    readonly code: string;
+    readonly message: string;
+  }[];
+  readonly modelAvailable?: boolean;
+  /**
+   * FR-002 — Workflows that still resolve this `pipelineId` from the catalog.
+   * Absent on a host that exposes no Workflow references; the editor renders an
+   * empty list rather than asserting there are none.
+   */
+  readonly consumingWorkflowIds?: readonly string[];
+}
+
+export interface PipelineCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly PipelineCatalogSourceRecord[];
+  readonly effective: readonly PortablePipelineDefinition[];
+  readonly revisions: Readonly<Record<WritablePipelineDefinitionScope, string>>;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -729,6 +879,13 @@ export interface WorkflowSnapshot {
   readonly phasePrecedence?: PhasePrecedenceProjection;
   /** Feature 081 — absent means the authoritative catalog is still loading. */
   readonly phaseCatalog?: PhaseCatalogProjection;
+  /**
+   * Feature 082 — resolved Pipeline catalog for the Library and Builder.
+   * Additive and optional: absent means the authoritative catalog is still
+   * loading, and every mutating control stays disabled until it arrives
+   * (FR-028). `availablePipelines` keeps its runtime-selection meaning.
+   */
+  readonly pipelineCatalog?: PipelineCatalogProjection;
   /**
    * Feature 059 — per-capability trust projection. Optional for legacy-
    * tolerance: an older host bundle may not include either field, in
