@@ -70,6 +70,10 @@
         "title": "Schegent: Show Audit Log"
       },
       {
+        "command": "schegent.exportAuditLog",
+        "title": "Schegent: Export Metadata-Only Audit"
+      },
+      {
         "command": "schegent.pauseQueue",
         "title": "Schegent: Pause Queue"
       },
@@ -350,10 +354,10 @@
         },
         "schegent.defaultPipelineId": {
           "type": "string",
-          "default": "dev-new-feature",
+          "default": "speckit-new-feature",
           "scope": "resource",
           "pattern": "^[a-z][a-z0-9-]{0,63}$",
-          "markdownDescription": "Pipeline id used when a feature is enqueued without an explicit selection. Defaults to the built-in `dev-new-feature` pipeline."
+          "markdownDescription": "Pipeline id used when a feature is enqueued without an explicit selection. Defaults to the built-in `speckit-new-feature` pipeline."
         },
         "schegent.retry.maxAttempts": {
           "type": "integer",
@@ -376,6 +380,13 @@
           "default": false,
           "scope": "resource",
           "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only — prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
+        },
+        "schegent.logging.rawTranscriptMode": {
+          "type": "string",
+          "enum": ["always", "errors-only", "off"],
+          "default": "always",
+          "scope": "resource",
+          "markdownDescription": "Raw transcript retention policy frozen when each run starts. `always` retains every unredacted transcript; `errors-only` stages it privately and retains it only for failed, canceled, or paused runs; `off` disables raw transcript capture. Structured audit evidence remains enabled."
         },
         "schegent.logging.sessionRetentionMaxAgeDays": {
           "type": "integer",
@@ -544,6 +555,11 @@
     "build:host": "node esbuild.config.mjs",
     "build:webview": "npm --prefix webview-ui run build",
     "contracts:generate": "node scripts/generate-contract-schemas.mjs",
+    "contracts:check": "node scripts/generate-contract-schemas.mjs --check",
+    "docs:check": "node scripts/check-docs.mjs",
+    "security:secrets": "node scripts/scan-secrets.mjs",
+    "security:actions": "node scripts/check-workflow-pins.mjs",
+    "license:check": "node scripts/check-licenses.mjs",
     "dev:webview": "npm --prefix webview-ui run dev",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
@@ -555,6 +571,7 @@
     "test:wakeup:lifecycle": "vitest run tests/integration/wakeup/release-native-lifecycle.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:webview": "npm --prefix webview-ui run test",
+    "test:webview:coverage": "npm --prefix webview-ui run test:coverage",
     "test:perf": "vitest run tests/perf/",
     "test:soak": "vitest run tests/perf/sustained-evidence-path.test.ts --reporter=verbose",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
@@ -562,7 +579,8 @@
     "test:visual": "npm run build:webview && playwright test --config playwright.config.ts",
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
-    "ci:fast": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:evals && npm run test:visual",
+    "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test",
+    "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual",
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",

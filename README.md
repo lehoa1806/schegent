@@ -207,6 +207,7 @@ All commands are available from the VS Code command palette
 | `schegent.showActiveRun` | Show Active Run |
 | `schegent.openDashboard` | Open Dashboard |
 | `schegent.showAuditLog` | Show Audit Log |
+| `schegent.exportAuditLog` | Export Metadata-Only Audit |
 | `schegent.reset` | Reset Workspace State (destructive — clears queue and runs; audit log preserved) |
 | `schegent.redetectClaudeTransport` | Re-detect CLI Transport |
 

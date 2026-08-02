@@ -26,6 +26,10 @@ dispatch.
 
 Before tagging a release, verify each item:
 
+0. **Local consolidated gate.** Run `npm run verify:all`; contract and
+   documentation freshness, version parity, secret/license/action-pin checks, typechecks,
+   lint, and host/webview tests must all pass.
+
 1. **Full gate ≤ 7 days old.** The most recent successful `full-gate.yml`
    run against `main` (or the release branch) must be within seven days.
    If older, dispatch a fresh run:
