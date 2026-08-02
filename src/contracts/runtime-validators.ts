@@ -636,19 +636,24 @@ function validateSavePhases(obj: Record<string, unknown>, correlationId: string)
 
 function validateSaveModels(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
   const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
+  if (!payload || typeof payload !== 'object') {
     return fail('missing-payload', { type: CMD_SAVE_MODELS, correlationId });
   }
   const p = payload as Record<string, unknown>;
-  if (!Array.isArray(p.models)) {
+  if (!p.models || typeof p.models !== 'object' || Array.isArray(p.models)) {
     return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
   }
-  for (const v of p.models) {
-    if (typeof v !== 'string' || v.length === 0) {
+  for (const v of Object.values(p.models as Record<string, unknown>)) {
+    if (!Array.isArray(v)) {
       return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
     }
+    for (const model of v) {
+      if (typeof model !== 'string' || model.length === 0) {
+        return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+      }
+    }
   }
-  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: { models: p.models } } as SidebarCommand);
+  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: { models: p.models as Record<string, readonly string[]> } } as unknown as SidebarCommand);
 }
 
 // Feature 011 — CMD_SAVE_GENERAL_SETTINGS payload contract.

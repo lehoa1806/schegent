@@ -12,6 +12,7 @@ import {
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
 
 export interface CatalogConfigReader {
@@ -115,14 +116,39 @@ function coercePipelines(raw: readonly unknown[] | undefined): readonly Pipeline
   return out;
 }
 
-function coerceModels(raw: readonly unknown[] | undefined): readonly string[] {
-  if (!raw) return [];
-  const out: string[] = [];
-  for (const entry of raw) {
-    if (typeof entry === 'string' && entry.trim().length > 0) {
-      out.push(entry.trim());
+function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
+  const out: Record<BackendRunnerKind, string[]> = {
+    claude: [],
+    codex: [],
+    agy: []
+  };
+
+  if (!raw) return out;
+
+  // Migration for old array format (assumes claude models)
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (typeof entry === 'string' && entry.trim().length > 0) {
+        out.claude.push(entry.trim());
+      }
+    }
+    return out;
+  }
+
+  // New object format
+  if (typeof raw === 'object' && raw !== null) {
+    for (const kind of SUPPORTED_BACKENDS) {
+      const arr = (raw as Record<string, unknown>)[kind];
+      if (Array.isArray(arr)) {
+        for (const entry of arr) {
+          if (typeof entry === 'string' && entry.trim().length > 0) {
+            out[kind].push(entry.trim());
+          }
+        }
+      }
     }
   }
+
   return out;
 }
 

@@ -134,7 +134,7 @@ const SECURITY_PIPELINE: PipelineDef = {
 };
 
 function makeCustomCatalog() {
-  return buildCatalog([SECURITY_AUDIT_PHASE, DONE_PHASE], [SECURITY_PIPELINE], [], 'security');
+  return buildCatalog([SECURITY_AUDIT_PHASE, DONE_PHASE], [SECURITY_PIPELINE], { claude: [], codex: [], agy: [] }, 'security');
 }
 
 let tmpRoot: string;

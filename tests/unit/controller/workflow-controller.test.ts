@@ -208,7 +208,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const catalog = buildCatalog(
       [customPhase],
       [customPipeline],
-      [],
+      { claude: [], codex: [], agy: [] },
       'custom-pipe'
     );
     controller.setCatalog(catalog);
@@ -492,7 +492,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     const tamperedCatalog = buildCatalog(
       [finalizeDef],
       [tamperedBugfix],
-      [],
+      { claude: [], codex: [], agy: [] },
       BUILT_IN_BUGFIX_PIPELINE_ID
     );
     controller.setCatalog(tamperedCatalog);

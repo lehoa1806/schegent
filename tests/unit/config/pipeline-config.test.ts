@@ -374,7 +374,7 @@ describe('isPhaseDef / isPipelineDef predicates', () => {
 
 describe('buildCatalog — constructs by-id maps', () => {
   it('exposes phasesById and pipelinesById', () => {
-    const catalog = buildCatalog([...BUILT_IN_PHASES], [BUILT_IN_PIPELINE], [], BUILT_IN_PIPELINE_ID);
+    const catalog = buildCatalog([...BUILT_IN_PHASES], [BUILT_IN_PIPELINE], { claude: [], codex: [], agy: [] }, BUILT_IN_PIPELINE_ID);
     expect(catalog.phasesById.get('speckit-specify')?.name).toBe('Spec-kit Specify');
     expect(catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID)?.id).toBe(BUILT_IN_PIPELINE_ID);
   });

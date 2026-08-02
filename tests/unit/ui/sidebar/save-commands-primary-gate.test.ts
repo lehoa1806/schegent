@@ -105,7 +105,7 @@ describe('Feature 056 Track 1 — secondary-host gate for catalog saves', () => 
       {
         type: CMD_SAVE_MODELS,
         correlationId: 'cid-models-secondary',
-        payload: { models: [] }
+        payload: { models: { claude: [], codex: [], agy: [] } }
       },
       cap.post
     );

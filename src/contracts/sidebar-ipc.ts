@@ -380,7 +380,7 @@ export interface SavePhasesCommand extends CommandBase<typeof CMD_SAVE_PHASES> {
 }
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
-  readonly payload: { readonly models: readonly string[] };
+  readonly payload: { readonly models: Record<string, readonly string[]> };
 }
 
 // Feature 011 — keys in `updates` are unprefixed scalar setting names;

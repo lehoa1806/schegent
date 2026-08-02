@@ -33,7 +33,8 @@ export type SettingsSchemaType =
   | 'number'
   | 'boolean'
   | 'array'
-  | 'enum';
+  | 'enum'
+  | 'object';
 
 /** Setting scope as documented in `package.json` contributions. */
 export type SettingsSchemaScope = 'resource' | 'application' | 'window';
@@ -180,9 +181,8 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   },
   'schegent.models': {
     key: 'schegent.models',
-    type: 'array',
-    default: [],
-    itemType: 'string',
+    type: 'object',
+    default: { claude: [], codex: [], agy: [] },
     scope: 'resource',
     docLabel: 'Custom model identifiers'
   },
@@ -446,6 +446,8 @@ export function isSchemaCompliantValue(
           (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))
         );
       });
+    case 'object':
+      return typeof value === 'object' && value !== null && !Array.isArray(value);
     case 'enum':
       return (
         typeof value === 'string' &&

@@ -594,7 +594,7 @@ export function buildCatalog(
 export const BUILT_IN_CATALOG: PipelineCatalog = buildCatalog(
   BUILT_IN_PHASES,
   BUILT_IN_PIPELINES,
-  Object.freeze([]),
+  { claude: [], codex: [], agy: [] },
   BUILT_IN_PIPELINE_ID
 );
 
