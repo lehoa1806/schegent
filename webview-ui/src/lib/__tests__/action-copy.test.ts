@@ -17,6 +17,10 @@ import {
 
 const EXPECTED_KEYS: readonly ActionKey[] = [
   'catalog.remove-phase',
+  // Feature 082 — Pipeline removal is destructive in the same way Phase
+  // removal is: it drops an authored layer row and may promote a
+  // lower-precedence definition.
+  'catalog.remove-pipeline',
   'queue.clean-all',
   'queue.clear-done',
   'queue.remove-item',
@@ -50,6 +54,7 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
     const destructive = EXPECTED_KEYS.filter((k) => ACTION_COPY[k].severity === 'destructive');
     expect(destructive.sort()).toEqual([
       'catalog.remove-phase',
+      'catalog.remove-pipeline',
       'queue.clean-all',
       'workspace.reset'
     ]);

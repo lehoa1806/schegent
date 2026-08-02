@@ -14,6 +14,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MessageRouter } from '../../../../src/ui/sidebar/message-router';
 import type { RouterDeps } from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
+import { pipelineLayerRevision } from '../../../../src/config/pipeline-catalog';
 import {
   CMD_ACK,
   CMD_SAVE_PIPELINES,
@@ -61,7 +62,12 @@ describe('Feature 056 Track 1 — secondary-host gate for catalog saves', () => 
       {
         type: CMD_SAVE_PIPELINES,
         correlationId: 'cid-pipelines-secondary',
-        payload: { pipelines: [] }
+        payload: {
+          scope: 'workspace',
+          expectedRevision: pipelineLayerRevision([]),
+          mutation: { kind: 'reset' },
+          pipelines: []
+        }
       },
       cap.post
     );
@@ -124,7 +130,11 @@ describe('Feature 056 Track 1 — secondary-host gate for catalog saves', () => 
 
   it('CMD_SAVE_PIPELINES still works on the primary host (FR-001)', async () => {
     const updateConfig = vi.fn(async () => undefined);
-    const deps = makeDeps({ isPrimary: () => true, updateConfig });
+    const deps = makeDeps({
+      isPrimary: () => true,
+      updateConfig,
+      readPipelineConfig: () => ({ user: [], workspace: [] })
+    });
     const router = new MessageRouter(deps);
     const cap = makeAckCapture();
 
@@ -132,12 +142,19 @@ describe('Feature 056 Track 1 — secondary-host gate for catalog saves', () => 
       {
         type: CMD_SAVE_PIPELINES,
         correlationId: 'cid-pipelines-primary',
-        payload: { pipelines: [] }
+        payload: {
+          scope: 'workspace',
+          expectedRevision: pipelineLayerRevision([]),
+          mutation: { kind: 'reset' },
+          pipelines: []
+        }
       },
       cap.post
     );
 
     expect(cap.posted[0].status).toBe('accepted');
-    expect(updateConfig).toHaveBeenCalledWith('pipelines', []);
+    // Feature 082 — the write is scope-targeted; the third argument maps onto a
+    // `vscode.ConfigurationTarget` in `extension.ts`.
+    expect(updateConfig).toHaveBeenCalledWith('pipelines', [], 'workspace');
   });
 });

@@ -5,7 +5,7 @@ import {
   type PhaseDef,
   type PipelineCatalog
 } from '../config/pipeline-config';
-import { snapshotPhaseDef } from '../config/pipeline-snapshot';
+import { snapshotPhaseDef, snapshotPipelineContract } from '../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../lib/logger';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runner-factory';
@@ -51,11 +51,7 @@ export class WorkflowRunFactory {
       const done = catalog.phasesById.get('done');
       if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
     }
-    return Object.freeze({
-      id: pipeline.id,
-      name: pipeline.name,
-      phases: Object.freeze(phases)
-    });
+    return snapshotPipelineContract(pipeline, phases);
   }
 
   public async create(

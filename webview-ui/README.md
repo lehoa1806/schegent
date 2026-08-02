@@ -314,6 +314,45 @@ complete target layer. Delete additionally awaits
 `useConfirm('catalog.remove-phase', ...)`. The UI remains pending until a
 snapshot publishes the accepted revision.
 
+### Scoped Pipeline catalog manager (spec 082)
+
+The Pipelines editor is the Phase manager's counterpart and follows the same
+rules. It reads the authoritative `snapshot.pipelineCatalog` source-record
+projection — built-in / user / workspace rows with effective, shadowed, or
+invalid status, bounded field errors, both writable-layer revisions, warnings,
+and each row's `consumingWorkflowIds`. `availablePipelines` remains the
+effective runtime-only list. Built-ins are read-only and offer duplicate only.
+
+Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
+
+| File | Owns |
+|---|---|
+| [`PipelineCatalogEditor.svelte`](src/components/PipelineBuilderEditors/PipelineCatalogEditor.svelte) | The catalog list, the selected Pipeline's header/sequence markup, and the consuming-Workflow list |
+| [`PipelinePortsEditor.svelte`](src/components/PipelineBuilderEditors/PipelinePortsEditor.svelte) | Declared input and output ports |
+| [`PipelineFieldErrors.svelte`](src/components/PipelineBuilderEditors/PipelineFieldErrors.svelte) | Field-associated error regions (`aria-describedby` → `role="alert"`) |
+| [`pipeline-catalog-state.ts`](src/components/PipelineBuilderEditors/pipeline-catalog-state.ts) | Pure draft logic — including the binding `phaseIndex` remap every reorder, insert, and remove must apply *before* revalidation |
+| [`pipeline-catalog-store.svelte.ts`](src/components/PipelineBuilderEditors/pipeline-catalog-store.svelte.ts) | Rune-backed draft state and mutation dispatch |
+
+`CMD_SAVE_PIPELINES` is widened to `{ scope, expectedRevision, mutation,
+pipelines }`, matching `CMD_SAVE_PHASES`. Each row may now carry `description`,
+`version`, `inputs`, `outputs`, `bindings`, `executionDefaults`, and
+`recommendedNext` in addition to `id`/`name`/`phases`.
+[`webview-ui/src/lib/save-pipelines.ts`](src/lib/save-pipelines.ts) is the
+**single call site**, with the same correlation and 5-second timeout behavior as
+`save-phases.ts`; the repo-grep regression at
+[`../tests/lint/no-inline-save-catalog.test.ts`](../tests/lint/no-inline-save-catalog.test.ts)
+fails the build if a component posts the command inline. Removal awaits
+`useConfirm('catalog.remove-pipeline', ...)`, enforced by
+[`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts),
+which scans for constructed `{ kind: 'remove' | 'reset' }` mutations rather than
+command names, since catalog removals route through the shared helper.
+
+The UI stays pending after a save until a snapshot arrives whose
+`revisions[scope]` differs from the one submitted, or a rejection is received. A
+`stale-catalog` rejection carries the authoritative row and the legal next
+actions. With an empty Phase catalog the editor explains the prerequisite and
+disables save rather than offering a control that cannot succeed.
+
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 
 The Dashboard's new-task pipeline selector at

@@ -1,10 +1,32 @@
 import type { Phase, PhaseOutcome } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
+import type {
+  PhaseBinding,
+  PipelineExecutionDefaults,
+  PipelineInputPort,
+  PipelineOutputPort
+} from '../contracts/pipeline-definitions';
 
 export interface WorkflowRunPipeline {
   readonly id: string;
   readonly name: string;
   readonly phases: ReadonlyArray<PhaseDef>;
+  /**
+   * Feature 082 (US5) — the rest of the resolved Pipeline contract, frozen with
+   * the Run so ports and bindings cannot drift while the Phase list stays pinned
+   * (FR-026, FR-027).
+   *
+   * Optional, and written only when the resolved definition carried them, so a
+   * Run persisted before this feature reads back byte-for-byte unchanged and no
+   * `STATE_SCHEMA_VERSION` bump is needed (research R8).
+   */
+  readonly description?: string;
+  readonly version?: number;
+  readonly inputs?: readonly PipelineInputPort[];
+  readonly outputs?: readonly PipelineOutputPort[];
+  readonly bindings?: readonly PhaseBinding[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext?: readonly string[];
 }
 
 export type WorkflowRunStatus = 'running' | 'paused' | 'failed' | 'completed' | 'canceled';
