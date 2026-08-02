@@ -19,7 +19,8 @@ export type ActionKey =
   | 'history.rerun'
   | 'workspace.reset'
   | 'run.skip-phase'
-  | 'catalog.remove-phase';
+  | 'catalog.remove-phase'
+  | 'catalog.remove-pipeline';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -56,6 +57,11 @@ export type ActionCopyContext = {
   'catalog.remove-phase': {
     readonly phaseName: string;
     readonly phaseId: string;
+    readonly scope: 'user' | 'workspace';
+  };
+  'catalog.remove-pipeline': {
+    readonly pipelineName: string;
+    readonly pipelineId: string;
     readonly scope: 'user' | 'workspace';
   };
 };
@@ -144,6 +150,12 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     bodyTemplate: 'Deletes **{phaseName}** (`{phaseId}`) from {scope} scope. A lower-precedence definition may become effective.',
     confirmLabel: 'Delete Phase',
     severity: 'destructive'
+  },
+  'catalog.remove-pipeline': {
+    title: 'Delete Pipeline definition?',
+    bodyTemplate: 'Deletes **{pipelineName}** (`{pipelineId}`) from {scope} scope. A lower-precedence definition may become effective.',
+    confirmLabel: 'Delete Pipeline',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -215,6 +227,13 @@ export function renderActionBody<K extends ActionKey>(
       return entry.bodyTemplate
         .replace('{phaseName}', ctx.phaseName)
         .replace('{phaseId}', ctx.phaseId)
+        .replace('{scope}', ctx.scope);
+    }
+    case 'catalog.remove-pipeline': {
+      const ctx = context as ActionCopyContext['catalog.remove-pipeline'];
+      return entry.bodyTemplate
+        .replace('{pipelineName}', ctx.pipelineName)
+        .replace('{pipelineId}', ctx.pipelineId)
         .replace('{scope}', ctx.scope);
     }
     case 'queue.pause':

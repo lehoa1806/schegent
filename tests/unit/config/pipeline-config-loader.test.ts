@@ -5,6 +5,7 @@ import {
   BUILT_IN_PIPELINE_ID,
   isPhaseDef
 } from '../../../src/config/pipeline-config';
+import { pipelineLayerRevision } from '../../../src/config/pipeline-catalog';
 import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
 
 function makeReader(opts: {
@@ -61,7 +62,10 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(phase!.effort).toBe('high');
   });
 
-  it('user settings shadow workspace settings for shared pipeline ids (BUG-003, FR-018)', () => {
+  // Feature 082 FR-003 supersedes the earlier BUG-003 pipeline merge order:
+  // Pipeline precedence is now workspace over user over built-in, matching the
+  // Phase catalog precedence established by feature 081.
+  it('workspace settings shadow user settings for shared pipeline ids (082 FR-003)', () => {
     const userPipeline = {
       id: 'security',
       name: 'User Security Pipeline',
@@ -80,8 +84,13 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.errors).toEqual([]);
     const pipeline = result.catalog.pipelinesById.get('security');
     expect(pipeline).toBeDefined();
-    expect(pipeline!.name).toBe('User Security Pipeline');
-    expect(pipeline!.phases).toEqual(['speckit-specify', 'finalize']);
+    expect(pipeline!.name).toBe('Workspace Security Pipeline');
+    expect(pipeline!.phases).toEqual(['speckit-specify', 'speckit-clarify', 'finalize']);
+    expect(
+      result.pipelineCatalog.records.find(
+        (record) => record.pipelineId === 'security' && record.scope === 'user'
+      )?.status
+    ).toBe('shadowed');
   });
 
   it('user settings shadow built-in defaults for shared ids (T044)', () => {
@@ -135,20 +144,33 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.phaseCatalog.records.some((record) => record.status === 'invalid')).toBe(true);
   });
 
-  it('falls back when a pipeline references an unknown phase id (T045)', () => {
+  // Feature 082 FR-002 replaces the earlier all-or-nothing fallback: a Pipeline
+  // row that references an unknown Phase is quarantined as an invalid source
+  // record instead of discarding the whole configured layer.
+  it('quarantines a pipeline that references an unknown phase id without falling back', () => {
     const reader = makeReader({
       userPipelines: [
         {
           id: 'broken',
           name: 'Broken Pipeline',
           phases: ['speckit-specify', 'does-not-exist', 'finalize']
+        },
+        {
+          id: 'intact',
+          name: 'Intact Pipeline',
+          phases: ['speckit-specify', 'finalize']
         }
       ]
     });
     const result = loadCatalog(reader);
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.usedFallback).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.usedFallback).toBe(false);
     expect(result.catalog.pipelinesById.has('broken')).toBe(false);
+    expect(result.catalog.pipelinesById.has('intact')).toBe(true);
+    const record = result.pipelineCatalog.records.find((entry) => entry.pipelineId === 'broken');
+    expect(record?.status).toBe('invalid');
+    expect(record?.errors.some((error) => error.code === 'unknown-phase')).toBe(true);
+    expect(result.warnings.some((warning) => warning.id === 'broken')).toBe(true);
   });
 
   it('falls back when defaultPipelineId references an unknown pipeline (T045)', () => {
@@ -210,6 +232,92 @@ describe('loadCatalog (T044, T045, US3)', () => {
         .filter((record) => record.scope === 'workspace' && record.phaseId === 'twin')
         .every((record) => record.status === 'invalid')
     ).toBe(true);
+  });
+});
+
+describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () => {
+  it('exposes a pipelineCatalog resolution with per-scope revisions', () => {
+    const userPipelines = [{ id: 'custom', name: 'Custom', phases: ['finalize'] }];
+    const result = loadCatalog(makeReader({ userPipelines }));
+    expect(result.pipelineCatalog.revisions.user).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.pipelineCatalog.revisions.workspace).toBe(pipelineLayerRevision([]));
+    expect(result.pipelineCatalog.revisions.user).toBe(pipelineLayerRevision(userPipelines));
+  });
+
+  it('exposes a built-in-only resolution when no reader is supplied', () => {
+    const result = loadCatalog();
+    expect(result.pipelineCatalog.records.every((record) => record.scope === 'built-in')).toBe(true);
+    expect(result.pipelineCatalog.effective.some((p) => p.pipelineId === BUILT_IN_PIPELINE_ID)).toBe(
+      true
+    );
+  });
+
+  it('retains every configured row as a record, including malformed ones', () => {
+    const result = loadCatalog(
+      makeReader({
+        userPipelines: [
+          null,
+          { id: 'no-phases-array' },
+          { id: 'good', name: 'Good', phases: ['finalize'] }
+        ] as readonly unknown[]
+      })
+    );
+    const userRecords = result.pipelineCatalog.records.filter((record) => record.scope === 'user');
+    expect(userRecords).toHaveLength(3);
+    expect(userRecords.filter((record) => record.status === 'invalid')).toHaveLength(2);
+    expect(userRecords.find((record) => record.pipelineId === 'good')?.status).toBe('effective');
+  });
+
+  it('places only effective valid definitions in catalog.pipelines', () => {
+    const result = loadCatalog(
+      makeReader({
+        userPipelines: [
+          { id: 'good', name: 'Good', phases: ['finalize'] },
+          { id: 'bad', name: 'Bad', phases: [] }
+        ] as readonly unknown[]
+      })
+    );
+    const ids = result.catalog.pipelines.map((pipeline) => pipeline.id);
+    expect(ids).toContain('good');
+    expect(ids).not.toContain('bad');
+    expect(
+      result.catalog.pipelines.every((pipeline) =>
+        result.pipelineCatalog.effective.some((entry) => entry.pipelineId === pipeline.id)
+      )
+    ).toBe(true);
+  });
+
+  it('stamps the resolved sourceScope onto each effective pipeline', () => {
+    const result = loadCatalog(
+      makeReader({
+        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }]
+      })
+    );
+    expect(result.catalog.pipelinesById.get('scoped')?.sourceScope).toBe('workspace');
+    expect(result.catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID)?.sourceScope).toBe('built-in');
+  });
+
+  it('surfaces resolver warnings without producing catalog errors', () => {
+    const result = loadCatalog(
+      makeReader({
+        userPipelines: [
+          { id: 'suggester', name: 'Suggester', phases: ['finalize'], recommendedNext: ['ghost'] }
+        ] as readonly unknown[]
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.usedFallback).toBe(false);
+    expect(result.warnings.some((warning) => /ghost/.test(warning.message))).toBe(true);
+  });
+
+  it('keeps a defaultPipelineId that only a configured layer supplies', () => {
+    const result = loadCatalog(
+      makeReader({
+        workspaceDefault: 'scoped',
+        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }]
+      })
+    );
+    expect(result.defaultPipelineId).toBe('scoped');
   });
 });
 

@@ -1,5 +1,4 @@
 // Authoritative sidebar IPC contract; host and webview shims re-export it.
-import type { PhaseCatalogMutation, WritablePhaseDefinitionScope } from './process-definitions';
 export const SCHEMA_VERSION = 3 as const;
 // -- Command literals (webview → host) ---------------------------------------
 
@@ -364,19 +363,10 @@ export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OP
   readonly payload: { readonly id: string };
 }
 
-// Catalog rows stay unknown at the transport boundary and are narrowed by host validators.
-export interface SavePipelinesCommand extends CommandBase<typeof CMD_SAVE_PIPELINES> {
-  readonly payload: { readonly pipelines: readonly unknown[] };
-}
-
-export interface SavePhasesCommand extends CommandBase<typeof CMD_SAVE_PHASES> {
-  readonly payload: {
-    readonly scope: WritablePhaseDefinitionScope;
-    readonly expectedRevision: string;
-    readonly mutation: PhaseCatalogMutation;
-    readonly phases: readonly unknown[];
-  };
-}
+// Catalog saves carry a scoped, revisioned complete-layer envelope; the shapes
+// live in a focused module and the barrel stays the single import site.
+import type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
+export type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
   readonly payload: { readonly models: Record<string, readonly string[]> };

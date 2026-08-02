@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "A workspace state persisted BEFORE feature 082 widened the Pipeline contract.",
+    "Captured at STATE_SCHEMA_VERSION 8, the version current when 082 landed, so",
+    "this fixture isolates the Pipeline shape change from any schema migration.",
+    "`schegent.run.pipeline` carries only the legacy id/name/phases trio — no",
+    "version, description, inputs, outputs, bindings, executionDefaults, or",
+    "recommendedNext. Read by tests/unit/state/pre-082-state-load.test.ts (T066)."
+  ],
+  "schegent.schemaVersion": "1.0.0",
+  "schegent.schemaVersionNumeric": 8,
+  "schegent.queue": {
+    "requests": [
+      {
+        "id": "req-pending",
+        "description": "Add the export button",
+        "enqueuedAt": 1700000000000,
+        "createdAt": 1700000000000,
+        "startedAt": null,
+        "updatedAt": 1700000000000,
+        "completedAt": null,
+        "status": "pending",
+        "queueId": "default",
+        "position": 0,
+        "pauseCause": null,
+        "runId": null,
+        "retryCount": 0,
+        "lastError": null,
+        "pausedReason": null,
+        "pipelineId": "legacy-flow"
+      }
+    ],
+    "inFlightId": "req-active",
+    "paused": false,
+    "pausedReason": null,
+    "updatedAt": 1700000000000,
+    "queueLifecycle": "running",
+    "scheduledStartAt": null,
+    "scheduledStartSource": null
+  },
+  "schegent.queues.registry": {
+    "entries": [
+      {
+        "id": "default",
+        "name": "Default queue",
+        "position": 0,
+        "state": "active",
+        "pauseSource": null,
+        "schedule": null,
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      }
+    ],
+    "updatedAt": 1700000000000
+  },
+  "schegent.run": {
+    "id": "run-legacy-1",
+    "featureId": "req-active",
+    "featureDir": "specs/070-legacy",
+    "status": "paused",
+    "currentPhase": "speckit-plan",
+    "currentIteration": 1,
+    "startedAt": 1700000000000,
+    "lastTransitionAt": 1700000100000,
+    "phasesCompleted": [],
+    "lastError": null,
+    "delayedRetryCount": 0,
+    "pendingRetryAt": null,
+    "pendingRetryCause": null,
+    "phaseOverrides": [],
+    "manualPauseAt": 1700000100000,
+    "manualPauseCause": "operator-paused",
+    "phaseBreakpoints": [],
+    "resumeTargetPhaseId": null,
+    "rawTranscriptMode": "always",
+    "pipeline": {
+      "id": "legacy-flow",
+      "name": "Legacy Flow",
+      "phases": [
+        { "id": "speckit-specify", "name": "speckit-specify", "instruction": "Write the spec." },
+        { "id": "speckit-plan", "name": "speckit-plan", "instruction": "Write the plan." },
+        { "id": "finalize", "name": "finalize", "instruction": "Wrap up." }
+      ]
+    }
+  }
+}

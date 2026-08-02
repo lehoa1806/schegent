@@ -4,8 +4,17 @@ export type PhaseSideEffects = 'none' | 'workspace' | 'git' | 'unrestricted';
 export type PhaseEvidencePolicy = 'required' | 'best-effort' | 'none';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { PhaseDefinitionScope } from '../contracts/process-definitions';
+import {
+  isPipelineDefinitionScope,
+  type PhaseBinding,
+  type PipelineDefinitionScope,
+  type PipelineExecutionDefaults,
+  type PipelineInputPort,
+  type PipelineOutputPort
+} from '../contracts/pipeline-definitions';
 import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
 import { validatePhaseDefinition } from './process-definition-validator';
+import { validatePipelineDefinition } from './pipeline-definition-validator';
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
@@ -26,10 +35,22 @@ export interface PhaseDef {
   /** Resolution origin used only to derive host-owned runtime policy. */
   readonly sourceScope?: PhaseDefinitionScope;
 }
+// Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the
+// legacy required trio; every contract field added by the Pipeline Builder is
+// optional and normalizes on parse so an existing `schegent.pipelines` row keeps
+// resolving without a configuration rewrite (research R2).
 export interface PipelineDef {
   readonly id: string;
   readonly name: string;
   readonly phases: readonly string[];
+  readonly description?: string;
+  readonly version?: number;
+  readonly inputs?: readonly PipelineInputPort[];
+  readonly outputs?: readonly PipelineOutputPort[];
+  readonly bindings?: readonly PhaseBinding[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext?: readonly string[];
+  readonly sourceScope?: PipelineDefinitionScope;
 }
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
@@ -321,6 +342,7 @@ export const DEFAULT_PIPELINE_ID = BUILT_IN_PIPELINE_ID;
 export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
   id: BUILT_IN_PIPELINE_ID,
   name: 'Spec-kit New Feature',
+  version: 1,
   phases: Object.freeze([
     'speckit-specify',
     'speckit-clarify',
@@ -337,6 +359,7 @@ export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
 export const BUILT_IN_BUGFIX_PIPELINE: PipelineDef = Object.freeze({
   id: BUILT_IN_BUGFIX_PIPELINE_ID,
   name: 'Spec-kit Bugfix',
+  version: 1,
   phases: Object.freeze([
     'bugfix-report',
     'bugfix-patch',
@@ -349,6 +372,7 @@ export const BUILT_IN_BUGFIX_PIPELINE: PipelineDef = Object.freeze({
 export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE: PipelineDef = Object.freeze({
   id: BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID,
   name: 'Dev New Feature',
+  version: 1,
   phases: Object.freeze([
     'specify-brainstorm',
     'speckit-clarify',
@@ -438,7 +462,18 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'runner'
 ]);
 
-const ALLOWED_PIPELINE_FIELDS = new Set(['id', 'name', 'phases']);
+const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
+  'id',
+  'name',
+  'phases',
+  'description',
+  'version',
+  'inputs',
+  'outputs',
+  'bindings',
+  'executionDefaults',
+  'recommendedNext'
+]);
 
 export function isPhaseDef(value: unknown): value is PhaseDef {
   if (!value || typeof value !== 'object') return false;
@@ -468,6 +503,10 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
   return structurallyValid;
 }
 
+function isObjectArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((e) => !!e && typeof e === 'object' && !Array.isArray(e));
+}
+
 export function isPipelineDef(value: unknown): value is PipelineDef {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -475,7 +514,20 @@ export function isPipelineDef(value: unknown): value is PipelineDef {
     typeof v.id === 'string' &&
     typeof v.name === 'string' &&
     Array.isArray(v.phases) &&
-    v.phases.every((p) => typeof p === 'string')
+    v.phases.every((p) => typeof p === 'string') &&
+    (v.description === undefined || typeof v.description === 'string') &&
+    (v.version === undefined || (Number.isSafeInteger(v.version) && (v.version as number) > 0)) &&
+    (v.inputs === undefined || isObjectArray(v.inputs)) &&
+    (v.outputs === undefined || isObjectArray(v.outputs)) &&
+    (v.bindings === undefined || isObjectArray(v.bindings)) &&
+    (v.executionDefaults === undefined ||
+      (!!v.executionDefaults &&
+        typeof v.executionDefaults === 'object' &&
+        !Array.isArray(v.executionDefaults))) &&
+    (v.recommendedNext === undefined ||
+      (Array.isArray(v.recommendedNext) &&
+        v.recommendedNext.every((r) => typeof r === 'string'))) &&
+    (v.sourceScope === undefined || isPipelineDefinitionScope(v.sourceScope))
   );
 }
 
@@ -638,74 +690,44 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
   }));
 }
 
+/**
+ * Maps a portable `PipelineFieldError.field` onto the legacy authored field
+ * name this settings-layer report has always used (`pipelineId` → `id`,
+ * `phaseIds…` → `phases…`), so existing consumers keep their field contract
+ * while the shape checks move into `pipeline-definition-validator.ts`.
+ */
+function legacyPipelineField(field: string): string {
+  if (field === 'pipelineId') return 'id';
+  if (field === 'phaseIds') return 'phases';
+  if (field.startsWith('phaseIds[')) return `phases${field.slice('phaseIds'.length)}`;
+  return field;
+}
+
 export function validatePipelineRaw(
   value: unknown,
   knownPhaseIds: ReadonlySet<string>
 ): readonly ValidationError[] {
-  const errors: ValidationError[] = [];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    errors.push({ source: 'pipeline', message: 'Pipeline entry must be an object' });
-    return errors;
-  }
-  const v = value as Record<string, unknown>;
-  const id = typeof v.id === 'string' ? v.id : undefined;
+  const result = validatePipelineDefinition(value, { allowLegacyId: true, defaultVersion: 1 });
+  const id = result.pipelineId === '?' ? undefined : result.pipelineId;
+  const errors: ValidationError[] = result.errors.map((error) => ({
+    source: 'pipeline' as const,
+    id,
+    field: legacyPipelineField(error.field),
+    message: error.message
+  }));
 
-  for (const key of Object.keys(v)) {
-    if (!ALLOWED_PIPELINE_FIELDS.has(key)) {
+  // Cross-reference against the resolved phase catalog stays here: the portable
+  // validator is shape-only and has no view of which phase ids actually exist.
+  const phaseIds = result.definition?.phaseIds ?? [];
+  for (let i = 0; i < phaseIds.length; i++) {
+    const ref = phaseIds[i] as string;
+    if (!knownPhaseIds.has(ref)) {
       errors.push({
         source: 'pipeline',
         id,
-        field: key,
-        message: `Unknown property '${key}' on pipeline definition`
+        field: `phases[${i}]`,
+        message: `Pipeline.phases[${i}] references unknown phase id '${ref}'`
       });
-    }
-  }
-
-  if (typeof v.id !== 'string' || v.id.length === 0) {
-    errors.push({ source: 'pipeline', id, field: 'id', message: 'Pipeline.id is required' });
-  } else if (!PHASE_ID_PATTERN.test(v.id)) {
-    errors.push({
-      source: 'pipeline',
-      id,
-      field: 'id',
-      message: `Pipeline.id '${v.id}' must match ${PHASE_ID_PATTERN.source}`
-    });
-  }
-
-  if (typeof v.name !== 'string' || v.name.length === 0 || v.name.length > NAME_MAX_LEN) {
-    errors.push({
-      source: 'pipeline',
-      id,
-      field: 'name',
-      message: `Pipeline.name must be a non-empty string ≤ ${NAME_MAX_LEN} chars`
-    });
-  }
-
-  if (!Array.isArray(v.phases) || v.phases.length === 0) {
-    errors.push({
-      source: 'pipeline',
-      id,
-      field: 'phases',
-      message: 'Pipeline.phases must be a non-empty array'
-    });
-  } else {
-    for (let i = 0; i < v.phases.length; i++) {
-      const ref = v.phases[i];
-      if (typeof ref !== 'string') {
-        errors.push({
-          source: 'pipeline',
-          id,
-          field: `phases[${i}]`,
-          message: 'Pipeline.phases entries must be strings'
-        });
-      } else if (!knownPhaseIds.has(ref)) {
-        errors.push({
-          source: 'pipeline',
-          id,
-          field: `phases[${i}]`,
-          message: `Pipeline.phases[${i}] references unknown phase id '${ref}'`
-        });
-      }
     }
   }
 
@@ -729,7 +751,10 @@ export function validateCatalog(catalog: {
 
   const knownPhaseIds = new Set(catalog.phases.map((p) => p.id));
   for (const pl of catalog.pipelines) {
-    errors.push(...validatePipelineRaw(pl, knownPhaseIds));
+    const authored = Object.fromEntries(
+      Object.entries(pl).filter(([key]) => ALLOWED_PIPELINE_FIELDS.has(key))
+    );
+    errors.push(...validatePipelineRaw(authored, knownPhaseIds));
   }
 
   if (

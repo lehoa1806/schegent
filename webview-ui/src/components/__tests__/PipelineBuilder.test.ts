@@ -9,7 +9,7 @@
 //   - Feature 026 T011 — per-phase Effort dropdown + precedence badges +
 //     FR-003 orthogonality of effort/model overrides.
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PipelineBuilder from '../PipelineBuilder.svelte';
@@ -73,6 +73,16 @@ function buildSnapshot(
     ...(phase.isRequired !== undefined ? { isRequired: phase.isRequired } : {}),
     ...(phase.runner !== undefined ? { runner: phase.runner } : {})
   }));
+  const portablePipelines = pipelines.map((pipeline) => ({
+    pipelineId: pipeline.id,
+    name: pipeline.name,
+    version: 1,
+    phaseIds: [...pipeline.phases],
+    inputs: [],
+    outputs: [],
+    bindings: [],
+    recommendedNext: []
+  }));
   return Object.freeze({
     schemaVersion: 3,
     isPrimary: true,
@@ -121,6 +131,24 @@ function buildSnapshot(
       })),
       effective: portable,
       revisions: { user: 'user-revision', workspace: 'workspace-revision' },
+      warnings: []
+    },
+    // Feature 082 — the Pipeline tab reads the authoritative catalog
+    // projection, not `availablePipelines` (which keeps its runtime-selection
+    // meaning). Legacy fixtures declare a Pipeline once; both fields mirror it.
+    pipelineCatalog: {
+      state: 'ready',
+      records: portablePipelines.map((definition) => ({
+        key: `workspace::${definition.pipelineId}::0`,
+        pipelineId: definition.pipelineId,
+        scope: 'workspace',
+        status: 'effective',
+        definition,
+        display: definition,
+        errors: []
+      })),
+      effective: portablePipelines,
+      revisions: { user: 'user-pipeline-revision', workspace: 'workspace-pipeline-revision' },
       warnings: []
     },
     generalSettings: IDLE_GENERAL_SETTINGS,
@@ -539,7 +567,10 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(items.length).toBe(2);
   });
 
-  it('Pipelines tab: saves through the shared save-pipelines helper', async () => {
+  // Feature 082 — saves are mutation-scoped: the operator declares a change,
+  // and only that change is submitted against the adopted layer revision. A
+  // Save click with nothing declared is inert (FR-029).
+  it('Pipelines tab: save is inert until a mutation is declared', async () => {
     vi.mocked(savePipelinesHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
@@ -549,16 +580,13 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     const snap = buildSnapshot([], [pipeline]);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await tick();
-    const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save Pipelines'
-    ) as HTMLButtonElement | undefined;
-    expect(saveBtn).toBeDefined();
+    const saveBtn = container.querySelector(
+      '[data-testid="pipelines-save-all"]'
+    ) as HTMLButtonElement | null;
+    expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
     await tick();
-    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual([
-      { id: 'custom', name: 'Custom Pipeline', phases: ['speckit-specify', 'speckit-plan'] }
-    ]);
+    expect(savePipelinesHelper).not.toHaveBeenCalled();
   });
 
   it('Models tab: saves through the shared save-models helper', async () => {
@@ -606,17 +634,22 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await tick();
 
     // Save
-    const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save Pipeline'
-    ) as HTMLButtonElement | undefined;
-    expect(saveBtn).toBeDefined();
+    const saveBtn = container.querySelector(
+      '[data-testid="pipelines-save-all"]'
+    ) as HTMLButtonElement | null;
+    expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
     await tick();
 
     expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual([
-      { id: 'custom', name: 'Renamed Pipeline', phases: ['speckit-specify'] }
-    ]);
+    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual({
+      scope: 'workspace',
+      expectedRevision: 'workspace-pipeline-revision',
+      mutation: { kind: 'edit', pipelineId: 'custom' },
+      pipelines: [
+        { id: 'custom', name: 'Renamed Pipeline', version: 1, phases: ['speckit-specify'] }
+      ]
+    });
   });
 });
 
@@ -1174,5 +1207,95 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
       .map((el) => el.textContent?.trim().toLowerCase() ?? '');
     expect(labels.some((l) => l.includes('order'))).toBe(false);
     expect(labels.some((l) => l.includes('position'))).toBe(false);
+  });
+});
+
+// Feature 082 (US7, T054) — the Pipeline delete control is destructive, so it
+// is gated on the shared confirmation and never on its own click (FR-023). The
+// prompt has to describe the target, not just the action, and the triggering
+// control is handed to `useConfirm` so focus returns to it when the dialog
+// closes (FR-038).
+describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
+  const REMOVABLE: PipelineDefinition = Object.freeze({
+    id: 'custom',
+    name: 'Custom Pipeline',
+    phases: Object.freeze(['speckit-specify'])
+  }) as unknown as PipelineDefinition;
+
+  /** Renders the Pipelines tab, selects the row, and returns its delete button. */
+  async function openDeleteControl(): Promise<{
+    container: HTMLElement;
+    deleteBtn: HTMLButtonElement;
+  }> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([], [REMOVABLE]) }
+    });
+    await tick();
+    await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);
+    await tick();
+    const deleteBtn = container.querySelector(
+      '[data-testid="pipelines-remove"]'
+    ) as HTMLButtonElement | null;
+    expect(deleteBtn).not.toBeNull();
+    return { container, deleteBtn: deleteBtn! };
+  }
+
+  beforeEach(() => {
+    vi.mocked(savePipelinesHelper).mockClear();
+    vi.mocked(useConfirm).mockClear();
+  });
+
+  it('names the Pipeline and its scope in the confirmation prompt', async () => {
+    vi.mocked(useConfirm).mockResolvedValueOnce(false);
+    const { deleteBtn } = await openDeleteControl();
+
+    await fireEvent.click(deleteBtn);
+    await tick();
+
+    expect(useConfirm).toHaveBeenCalledWith(
+      'catalog.remove-pipeline',
+      expect.objectContaining({
+        context: { pipelineName: 'Custom Pipeline', pipelineId: 'custom', scope: 'workspace' }
+      })
+    );
+  });
+
+  it('does not remove a persisted Pipeline when confirmation is cancelled', async () => {
+    vi.mocked(useConfirm).mockResolvedValueOnce(false);
+    const { deleteBtn } = await openDeleteControl();
+
+    await fireEvent.click(deleteBtn);
+    await tick();
+
+    expect(savePipelinesHelper).not.toHaveBeenCalled();
+  });
+
+  it('submits one scoped remove mutation after confirmation', async () => {
+    vi.mocked(useConfirm).mockResolvedValueOnce(true);
+    const { deleteBtn } = await openDeleteControl();
+
+    await fireEvent.click(deleteBtn);
+    await tick();
+
+    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual({
+      scope: 'workspace',
+      expectedRevision: 'workspace-pipeline-revision',
+      mutation: { kind: 'remove', pipelineId: 'custom' },
+      pipelines: []
+    });
+  });
+
+  it('hands the triggering control to the dialog so focus can return to it', async () => {
+    vi.mocked(useConfirm).mockResolvedValueOnce(false);
+    const { deleteBtn } = await openDeleteControl();
+
+    await fireEvent.click(deleteBtn);
+    await tick();
+
+    expect(useConfirm).toHaveBeenCalledWith(
+      'catalog.remove-pipeline',
+      expect.objectContaining({ originatingElement: deleteBtn })
+    );
   });
 });

@@ -8,7 +8,6 @@ import {
   validateCatalog,
   type PhaseDef,
   type PipelineCatalog,
-  type PipelineDef,
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
@@ -18,6 +17,7 @@ import {
   resolvePhaseCatalog,
   type ResolvedPhaseCatalog
 } from './process-catalog';
+import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
 
 export interface CatalogConfigReader {
   getPhases(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
@@ -43,30 +43,38 @@ export interface LoadCatalogResult {
   readonly userPhases: readonly PhaseDef[];
   readonly workspacePhases: readonly PhaseDef[];
   readonly phaseCatalog: ResolvedPhaseCatalog;
+  /**
+   * Feature 082 — the layered Pipeline resolution. Retains every source row
+   * (including invalid ones) so the Library can render them for repair, and
+   * carries the per-scope revisions the Builder echoes back on save.
+   */
+  readonly pipelineCatalog: ResolvedPipelineCatalog;
 }
 
-function coercePipeline(raw: unknown): PipelineDef | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const v = raw as Record<string, unknown>;
-  if (typeof v.id !== 'string') return null;
-  if (typeof v.name !== 'string') return null;
-  if (!Array.isArray(v.phases)) return null;
-  const phaseIds: string[] = [];
-  for (const ref of v.phases) {
-    if (typeof ref !== 'string') return null;
-    phaseIds.push(ref);
-  }
-  return { id: v.id, name: v.name, phases: phaseIds };
-}
+const PIPELINE_LIMIT_WARNING_CODES: ReadonlySet<string> = new Set([
+  'pipeline-soft-cap',
+  'pipeline-phase-soft-cap'
+]);
 
-function coercePipelines(raw: readonly unknown[] | undefined): readonly PipelineDef[] {
-  if (!raw) return [];
-  const out: PipelineDef[] = [];
-  for (const entry of raw) {
-    const pipeline = coercePipeline(entry);
-    if (pipeline) out.push(pipeline);
+/**
+ * Projects the Pipeline resolution onto the legacy warning channel: catalog-level
+ * advisories plus one warning per retained field error. Invalid rows never
+ * become catalog errors, so a single malformed row cannot discard the layer
+ * (FR-002).
+ */
+function pipelineResolutionWarnings(
+  pipelineCatalog: ResolvedPipelineCatalog
+): ValidationWarning[] {
+  const warnings: ValidationWarning[] = pipelineCatalog.warnings.map((warning) => ({
+    source: PIPELINE_LIMIT_WARNING_CODES.has(warning.code) ? 'limit' : 'pipeline',
+    message: warning.message
+  }));
+  for (const record of pipelineCatalog.records) {
+    for (const error of record.errors) {
+      warnings.push({ source: 'pipeline', id: record.pipelineId, message: error.message });
+    }
   }
-  return out;
+  return warnings;
 }
 
 function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
@@ -121,7 +129,13 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       builtInPhases: BUILT_IN_PHASES,
       userPhases: [],
       workspacePhases: [],
-      phaseCatalog: builtInPhaseCatalog
+      phaseCatalog: builtInPhaseCatalog,
+      pipelineCatalog: resolvePipelineCatalog({
+        builtIn: BUILT_IN_PIPELINES,
+        user: [],
+        workspace: [],
+        phaseCatalog: builtInPhaseCatalog.effective
+      })
     };
   }
 
@@ -135,14 +149,20 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
   const workspaceModelsRaw = reader.getModels('workspace');
   const workspaceDefault = reader.getDefaultPipelineId('workspace');
 
-  const userPipelines = coercePipelines(userPipelinesRaw);
   const userModels = coerceModels(userModelsRaw);
-  const workspacePipelines = coercePipelines(workspacePipelinesRaw);
   const workspaceModels = coerceModels(workspaceModelsRaw);
   const phaseCatalog = resolvePhaseCatalog({
     builtIn: BUILT_IN_PHASES,
     user: userPhasesRaw,
     workspace: workspacePhasesRaw
+  });
+  // Pipeline bindings and Phase references resolve against the effective Phase
+  // catalog, so the Phase layer must be resolved first (FR-011).
+  const pipelineCatalog = resolvePipelineCatalog({
+    builtIn: BUILT_IN_PIPELINES,
+    user: userPipelinesRaw,
+    workspace: workspacePipelinesRaw,
+    phaseCatalog: phaseCatalog.effective
   });
   const builtInById = new Map(BUILT_IN_PHASES.map((phase) => [phase.id, phase]));
   const userPhases = phaseCatalog.records
@@ -152,10 +172,18 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     .filter((record) => record.scope === 'workspace' && record.definition !== null)
     .map((record) => phaseDefinitionToPhaseDef(record.definition!, 'workspace', builtInById));
 
+  // Pipelines arrive already resolved and validated per row, so they enter the
+  // merge as a single settled layer; only models and defaultPipelineId still
+  // merge across scopes here.
   const merge = mergeCatalog(
-    { phases: phaseCatalog.effectivePhaseDefs, pipelines: BUILT_IN_PIPELINES, models: [], defaultPipelineId: BUILT_IN_PIPELINE_ID },
-    { pipelines: userPipelines, models: userModels, defaultPipelineId: userDefault },
-    { pipelines: workspacePipelines, models: workspaceModels, defaultPipelineId: workspaceDefault }
+    {
+      phases: phaseCatalog.effectivePhaseDefs,
+      pipelines: pipelineCatalog.effectivePipelineDefs,
+      models: [],
+      defaultPipelineId: BUILT_IN_PIPELINE_ID
+    },
+    { pipelines: [], models: userModels, defaultPipelineId: userDefault },
+    { pipelines: [], models: workspaceModels, defaultPipelineId: workspaceDefault }
   );
 
   const report = validateCatalog(merge.catalog);
@@ -168,7 +196,12 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       phaseWarnings.push({ source: 'phase', id: record.phaseId, message: error.message });
     }
   }
-  const allWarnings = [...phaseWarnings, ...merge.duplicateWarnings, ...report.warnings];
+  const allWarnings = [
+    ...phaseWarnings,
+    ...pipelineResolutionWarnings(pipelineCatalog),
+    ...merge.duplicateWarnings,
+    ...report.warnings
+  ];
 
   if (report.errors.length > 0) {
     const fallbackCatalog = buildCatalog(
@@ -186,7 +219,8 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       builtInPhases: BUILT_IN_PHASES,
       userPhases,
       workspacePhases,
-      phaseCatalog
+      phaseCatalog,
+      pipelineCatalog
     };
   }
 
@@ -211,6 +245,7 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     builtInPhases: BUILT_IN_PHASES,
     userPhases,
     workspacePhases,
-    phaseCatalog
+    phaseCatalog,
+    pipelineCatalog
   };
 }

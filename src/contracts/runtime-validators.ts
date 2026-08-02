@@ -76,6 +76,7 @@ import {
 import { validateReadMetrics } from './validators/metrics';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import { validateSavePhases } from './validators/save-phases';
+import { validateSavePipelines } from './validators/save-pipelines';
 import {
   validateReadWakeupSessionLog,
   validateRevealWakeupSessionLog,
@@ -609,18 +610,6 @@ function validatePhaseBreakpointPayload(
     return fail('invalid-phaseId', { type, correlationId });
   }
   return ok({ type, correlationId, payload: { runId, phaseId } } as SidebarCommand);
-}
-
-function validateSavePipelines(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_SAVE_PIPELINES, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (!Array.isArray(p.pipelines)) {
-    return fail('invalid-payload', { type: CMD_SAVE_PIPELINES, correlationId });
-  }
-  return ok({ type: CMD_SAVE_PIPELINES, correlationId, payload: { pipelines: p.pipelines } } as SidebarCommand);
 }
 
 function validateSaveModels(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {

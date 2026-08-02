@@ -1,6 +1,8 @@
+import type { PhaseBinding } from '../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
-import type { PhaseDef } from './pipeline-config';
+import type { WorkflowRunPipeline } from '../state/workflow-run';
+import type { PhaseDef, PipelineDef } from './pipeline-config';
 import {
   builtInEvidencePolicy,
   builtInSideEffects,
@@ -25,6 +27,55 @@ export function snapshotPhaseDef(
     evidencePolicy:
       phase.evidencePolicy ?? (isBuiltIn ? builtInEvidencePolicy(phase.id) : 'required'),
     promptVersion: phase.promptVersion ?? (isBuiltIn ? 'builtin-v1' : 'custom-v1')
+  });
+}
+
+/** An input binding nests its source endpoint, so freezing the row is not enough. */
+function snapshotBinding(binding: PhaseBinding): PhaseBinding {
+  return binding.kind === 'input'
+    ? Object.freeze({ ...binding, source: Object.freeze({ ...binding.source }) })
+    : Object.freeze({ ...binding });
+}
+
+/**
+ * Freeze the complete resolved Pipeline contract for the lifetime of a Run
+ * (FR-026, FR-027).
+ *
+ * Every nested array and object is copied rather than aliased: an operator
+ * editing the catalog row afterwards must not be able to reach through a shared
+ * reference into a Run that is already executing. `sourceScope` is deliberately
+ * dropped — where a definition came from is catalog state, not part of the
+ * executable contract, and it has no place in a persisted Run (FR-039).
+ *
+ * Each optional field is written only when the resolved definition carried it,
+ * so a Pipeline that declares no ports produces exactly the pre-feature-082
+ * shape and no `STATE_SCHEMA_VERSION` bump is needed (research R8).
+ */
+export function snapshotPipelineContract(
+  pipeline: PipelineDef,
+  phases: readonly PhaseDef[]
+): WorkflowRunPipeline {
+  return Object.freeze({
+    id: pipeline.id,
+    name: pipeline.name,
+    phases: Object.freeze([...phases]),
+    ...(pipeline.description !== undefined ? { description: pipeline.description } : {}),
+    ...(pipeline.version !== undefined ? { version: pipeline.version } : {}),
+    ...(pipeline.inputs !== undefined
+      ? { inputs: Object.freeze(pipeline.inputs.map((port) => Object.freeze({ ...port }))) }
+      : {}),
+    ...(pipeline.outputs !== undefined
+      ? { outputs: Object.freeze(pipeline.outputs.map((port) => Object.freeze({ ...port }))) }
+      : {}),
+    ...(pipeline.bindings !== undefined
+      ? { bindings: Object.freeze(pipeline.bindings.map(snapshotBinding)) }
+      : {}),
+    ...(pipeline.executionDefaults !== undefined
+      ? { executionDefaults: Object.freeze({ ...pipeline.executionDefaults }) }
+      : {}),
+    ...(pipeline.recommendedNext !== undefined
+      ? { recommendedNext: Object.freeze([...pipeline.recommendedNext]) }
+      : {})
   });
 }
 

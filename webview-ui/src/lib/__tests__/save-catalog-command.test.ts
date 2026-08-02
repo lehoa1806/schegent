@@ -1,8 +1,13 @@
+// Feature 082 (T028) — the `savePipelines` case moved to
+// `save-pipelines.test.ts` when the helper adopted the scoped, revisioned
+// envelope. That suite covers the same envelope/markPending/accepted-ack
+// behavior against the current contract, so keeping a copy here would only pin
+// the superseded `{ pipelines }` payload.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CMD_SAVE_MODELS, CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../messages';
+import { CMD_SAVE_MODELS, CMD_SAVE_PHASES } from '../messages';
 import { saveModels } from '../save-models';
 import { savePhases, type SavePhasesRequest } from '../save-phases';
-import { savePipelines } from '../save-pipelines';
 
 type AckListener = (ack: { status: 'accepted' | 'rejected'; reason?: string }) => void;
 
@@ -61,21 +66,6 @@ describe('save catalog helpers', () => {
 
     expect(env.type).toBe(CMD_SAVE_PHASES);
     expect(env.payload).toEqual(request);
-    fireAck(env.correlationId, 'accepted');
-    await expect(promise).resolves.toEqual({ status: 'accepted' });
-  });
-
-  it('savePipelines posts CMD_SAVE_PIPELINES and resolves accepted on ack', async () => {
-    const posted: unknown[] = [];
-    const pipelines = [
-      { id: 'custom', name: 'Custom', phases: ['speckit-specify', 'speckit-plan'] }
-    ];
-    const promise = savePipelines(pipelines, (msg) => posted.push(msg));
-    expect(posted.length).toBe(1);
-    const env = posted[0] as { type: string; correlationId: string; payload: unknown };
-    expect(env.type).toBe(CMD_SAVE_PIPELINES);
-    expect(env.payload).toEqual({ pipelines });
-    expect(pendingSet.has(env.correlationId)).toBe(true);
     fireAck(env.correlationId, 'accepted');
     await expect(promise).resolves.toEqual({ status: 'accepted' });
   });

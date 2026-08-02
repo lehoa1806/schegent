@@ -66,6 +66,18 @@ describe('snapshot builders', () => {
     });
   });
 
+  // Feature 082 (US1, T020) — `pipelineCatalog` is additive and optional, so a
+  // snapshot built before the host resolves a catalog still validates at
+  // SCHEMA_VERSION 3. The C1-C10 projection guarantees live in
+  // `snapshot-composer.test.ts`; this pins only the envelope tolerance.
+  it('idle snapshot omits pipelineCatalog without changing SCHEMA_VERSION', () => {
+    const snap = buildIdleSnapshot({ isPrimary: true });
+    expect(snap.schemaVersion).toBe(3);
+    expect('pipelineCatalog' in snap).toBe(false);
+    expect(snap.pipelineCatalog).toBeUndefined();
+    expect(snap.availablePipelines).toEqual([]);
+  });
+
   it('isRecursivePhase identifies clarify and analyze only', () => {
     for (const name of PHASE_NAMES) {
       const expected = name === 'speckit-clarify' || name === 'speckit-analyze';
