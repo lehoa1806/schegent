@@ -1,4 +1,5 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { PhaseEvidencePolicy, PhaseSideEffects } from './pipeline-config';
 
 /** Built-in phases whose instructions create commits or change branches. */
 export const GIT_METADATA_WRITE_PHASE_IDS: ReadonlySet<string> = new Set([
@@ -11,6 +12,16 @@ export const GIT_METADATA_WRITE_PHASE_IDS: ReadonlySet<string> = new Set([
 
 export function phaseRequiresGitMetadataWrite(phaseId: string): boolean {
   return GIT_METADATA_WRITE_PHASE_IDS.has(phaseId);
+}
+
+export function builtInSideEffects(phaseId: string): PhaseSideEffects {
+  if (phaseRequiresGitMetadataWrite(phaseId)) return 'git';
+  return phaseId === 'done' ? 'none' : 'workspace';
+}
+
+export function builtInEvidencePolicy(phaseId: string): PhaseEvidencePolicy {
+  if (phaseId === 'done') return 'none';
+  return phaseId === 'speckit-checklist' ? 'best-effort' : 'required';
 }
 
 export function phaseRunnerPolicyError(

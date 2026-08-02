@@ -192,6 +192,7 @@ function normalizeAuditLog(raw: string): string {
         delete obj.payload.startTimestamp;
         delete obj.payload.endTimestamp;
         delete obj.payload.durationMs;
+        delete obj.payload.diagnosticsEnabled;
       }
       return JSON.stringify(obj);
     })
@@ -200,15 +201,19 @@ function normalizeAuditLog(raw: string): string {
 
 describe('Verbose diagnostic logging end-to-end (010, T037, US3)', () => {
   it(
-    'the structured audit log is byte-identical between verbose-on and verbose-off (SC-005)',
+    'structured audit differs only by the declared diagnosticsEnabled metadata flag',
     async () => {
       const rootA = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-on-'));
       const rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verbose-off-'));
       try {
         await runOnce({ verbose: true, emitDiagnosticChunks: true, workspaceRoot: rootA });
         await runOnce({ verbose: false, workspaceRoot: rootB });
-        const logA = normalizeAuditLog(await readAuditLog(rootA));
-        const logB = normalizeAuditLog(await readAuditLog(rootB));
+        const rawA = await readAuditLog(rootA);
+        const rawB = await readAuditLog(rootB);
+        expect(rawA).toContain('"diagnosticsEnabled":true');
+        expect(rawB).toContain('"diagnosticsEnabled":false');
+        const logA = normalizeAuditLog(rawA);
+        const logB = normalizeAuditLog(rawB);
         expect(logA).toBe(logB);
       } finally {
         await fs.rm(rootA, { recursive: true, force: true });
@@ -295,11 +300,7 @@ describe('Verbose diagnostic logging end-to-end (010, T037, US3)', () => {
     const log = await readAuditLog(tmpRoot);
     const lines = log.trim().split('\n').map((l) => JSON.parse(l));
     const ends = lines.filter((l) => l.eventType === 'phase-end');
-    const sawWarning = ends.some((e) => {
-      const w: unknown = e.payload?.warnings;
-      return Array.isArray(w) && w.some((s: unknown) => typeof s === 'string' && /verbose diagnostic/.test(s));
-    });
-    expect(sawWarning).toBe(true);
+    expect(ends.every((e) => !Object.hasOwn(e.payload, 'warnings'))).toBe(true);
     // Run still successfully completed (status 'completed').
     expect(lines.some((l) => l.eventType === 'phase-end' && l.outcome === 'success')).toBe(true);
   });

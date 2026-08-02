@@ -17,7 +17,7 @@
   "properties": {
     "auditSchemaVersion": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "auditEventTypes": {
       "type": "array",

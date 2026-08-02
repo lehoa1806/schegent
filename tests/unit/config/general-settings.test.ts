@@ -92,6 +92,7 @@ describe('Feature 011 — general-settings allowlist', () => {
         'queue.defaultQueueId',
         'logging.runtimeLogLevel',
         'logging.runtimeLogFilePath',
+        'logging.rawTranscriptMode',
         'logging.runtimeLogMaxBytes',
         'logging.runtimeLogMaxGenerations',
         'logging.sessionRetentionMaxAgeDays',

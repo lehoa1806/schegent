@@ -4,6 +4,7 @@ import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import { projectAuditPayload } from '../audit/audit-payload';
 import type { AuditEntry } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
@@ -12,7 +13,7 @@ import { parseInvocation, type InvocationResult } from '../parser/stdout-parser'
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
 import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
-import type { TerminationReason } from '../state/workflow-run';
+import type { RawTranscriptMode, TerminationReason } from '../state/workflow-run';
 import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
 import { assertPhaseRunnerPolicy } from '../config/phase-runner-policy';
 import type { RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
@@ -33,9 +34,7 @@ import {
 } from './phase-outcome-mapper';
 import { compactClaudeSession } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
-
-// Feature 057 — re-export from `phase-sidecar-reader` so existing import
-// surfaces (workflow-controller, tests) remain stable; canonical owner moved.
+// Compatibility re-export; canonical owner is phase-sidecar-reader.
 export { composePhaseMessagePath };
 export type { PhaseMessageResult };
 
@@ -54,6 +53,7 @@ export interface PhaseRunInputs {
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   runId: string;
+  rawTranscriptMode?: RawTranscriptMode;
   phaseMessagePath?: string | null;
   previousPhaseMessage?: Readonly<Record<string, string>> | null;
   cancellationSignal?: { aborted: boolean; addEventListener(event: 'abort', cb: () => void): void };
@@ -302,7 +302,6 @@ export class PhaseRunner {
         phaseMessage: null
       };
     }
-
     const prompt = inputs.resumePrompt 
       ? inputs.resumePrompt 
       : this.promptBuilder.build({
@@ -336,12 +335,6 @@ export class PhaseRunner {
       // Session reuse — strict-boolean cost-optimization telemetry.
       // Always present (never omitted); defaults `undefined` → `false`.
       sessionReuse: inputs.sessionReuse === true,
-      // Session ID capture — record the targeted session ID when a
-      // deterministic `--resume <id>` dispatch was used. Absent when no
-      // session ID was provided (falls back to `-c` or fresh session).
-      ...(typeof inputs.resumeSessionId === 'string'
-        ? { resumeSessionId: inputs.resumeSessionId }
-        : {})
     };
     if (inputs.phaseDef?.model) startPayload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
@@ -375,20 +368,34 @@ export class PhaseRunner {
       });
     }
     // Compact Claude sessions before cross-phase reuse to bound context bleed.
+    let effectiveSessionReuse = inputs.sessionReuse === true;
+    let effectiveIsContinue = inputs.isContinue === true;
+    let effectiveResumeSessionId = inputs.resumeSessionId;
     if (
       effectiveRunnerKind === 'claude' &&
-      inputs.sessionReuse === true &&
+      effectiveSessionReuse &&
       typeof inputs.resumeSessionId === 'string'
     ) {
       try {
         await this.compactSession(inputs);
       } catch (err) {
-        // Compaction failure is non-fatal — the real invocation will
-        // still resume the session; it just won't be pre-compacted.
+        effectiveSessionReuse = false;
+        effectiveIsContinue = false;
+        effectiveResumeSessionId = undefined;
         this.logger.warn('session-compact-failed', {
           phase: inputs.phase,
+          iteration: inputs.iteration
+        });
+        await this.appendRequiredAudit({
+          runId: inputs.runId,
+          phase: inputs.phase,
           iteration: inputs.iteration,
-          error: (err as Error).message
+          eventType: 'warning',
+          payload: {
+            ...this.pipelineMeta(inputs),
+            reasonCode: 'session-compaction-failed-fresh-session'
+          },
+          outcome: 'failure'
         });
       }
     }
@@ -396,10 +403,12 @@ export class PhaseRunner {
       runId: inputs.runId,
       phase: inputs.phase,
       iteration: inputs.iteration,
-      prompt
+      prompt,
+      mode: inputs.rawTranscriptMode
     });
-    const rawTranscriptCapture =
-      await this.rawTranscript?.createInvocationCapture?.(inputs.runId) ?? null;
+    const rawTranscriptCapture = await this.rawTranscript?.createInvocationCapture?.(
+      inputs.runId, inputs.rawTranscriptMode
+    ) ?? null;
     let raw: RawInvocationOutput;
     try {
       raw = await this.resolveRunner(inputs).invoke({
@@ -422,14 +431,14 @@ export class PhaseRunner {
         // Feature 032 — forward the controller's session-continuation
         // hint. The runner uses strict `=== true` to gate the `-c` /
         // `--resume` append.
-        ...(inputs.isContinue === true ? { isContinue: true } : {}),
+        ...(effectiveIsContinue ? { isContinue: true } : {}),
         // Session reuse — forward the cost-optimization session reuse
         // hint. The runner uses the same `--resume` argv path.
-        ...(inputs.sessionReuse === true ? { sessionReuse: true } : {}),
+        ...(effectiveSessionReuse ? { sessionReuse: true } : {}),
         // Session ID capture — forward the persisted session ID so the
         // runner uses `--resume <id>` instead of `-c`.
-        ...(typeof inputs.resumeSessionId === 'string'
-          ? { resumeSessionId: inputs.resumeSessionId }
+        ...(typeof effectiveResumeSessionId === 'string'
+          ? { resumeSessionId: effectiveResumeSessionId }
           : {})
       }, rawTranscriptCapture ?? undefined);
     } catch (err) {
@@ -437,18 +446,16 @@ export class PhaseRunner {
       throw err;
     }
 
-    // Feature 068 — emit cli-invocation; sanitizer redacts secrets.
-    if (typeof raw.command === 'string' && raw.command.length > 0) {
-      await this.appendAudit(inputs, 'cli-invocation', 'info', {
-        ...this.pipelineMeta(inputs),
-        phaseId: inputs.phaseDef?.id ?? inputs.phase,
-        command: raw.command
-      });
-    }
-
-    // Finalize the disk-backed tee before parsing. This guarantees that
-    // every returned invocation closes and removes its temporary spools even
-    // if a later parser or sidecar operation fails.
+    await this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
+      runner: effectiveRunnerKind,
+      operation: 'phase',
+      permissionMode: effectiveRunnerKind === 'codex' ? 'workspace-write' : 'unrestricted',
+      continued: effectiveIsContinue,
+      sessionReused: effectiveSessionReuse,
+      ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
+      ...(inputs.phaseDef?.effort ? { effortId: inputs.phaseDef.effort } : {}),
+      diagnosticsEnabled: verboseDiagnostics !== undefined
+    }));
     await this.rawTranscript?.appendEnd({
       runId: inputs.runId,
       stdout: raw.stdoutBuffer,
@@ -456,9 +463,9 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       killed: raw.killed,
       timedOut: raw.timedOut,
-      capture: rawTranscriptCapture
+      capture: rawTranscriptCapture,
+      mode: inputs.rawTranscriptMode
     });
-
     const unwrappedStream = unwrapStreamJson(raw.stdoutBuffer);
 
     // Feature 030 BUG-002 — parse up front so the timeout branch can tell a
@@ -489,7 +496,8 @@ export class PhaseRunner {
     if (raw.timedOut && result.kind !== 'clean') {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
-        reason: 'timeout',
+        outcome: 'timeout',
+        terminationReason: 'timeout',
         ...this.invocationMetricPayload(raw)
       });
       return {
@@ -586,6 +594,7 @@ export class PhaseRunner {
         ...this.pipelineMeta(inputs),
         outcome,
         exitCode: raw.exitCode,
+        terminationReason,
         ...this.invocationMetricPayload(raw),
         files_created: audit.entry?.filesCreated ?? [],
         files_modified: audit.entry?.filesModified ?? [],
@@ -616,6 +625,7 @@ export class PhaseRunner {
     await compactClaudeSession({
       runner: this.resolveRunner(inputs),
       rawTranscript: this.rawTranscript,
+      rawTranscriptMode: inputs.rawTranscriptMode,
       runId: inputs.runId,
       phase: inputs.phase,
       iteration: inputs.iteration,
@@ -626,11 +636,16 @@ export class PhaseRunner {
       cancellationSignal: inputs.cancellationSignal,
       resumeSessionId: inputs.resumeSessionId!,
       logger: this.logger,
-      onCommand: (command) => this.appendAudit(inputs, 'cli-invocation', 'info', {
-        ...this.pipelineMeta(inputs),
-        phaseId: inputs.phaseDef?.id ?? inputs.phase,
-        command
-      }).then(() => undefined)
+      onCommand: () => this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
+        runner: 'claude',
+        operation: 'session-compaction',
+        permissionMode: 'unrestricted',
+        continued: false,
+        sessionReused: true,
+        ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
+        ...(inputs.phaseDef?.effort ? { effortId: inputs.phaseDef.effort } : {}),
+        diagnosticsEnabled: false
+      })).then(() => undefined)
     });
   }
 
@@ -719,7 +734,8 @@ export class PhaseRunner {
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       runner: inputs.phaseDef?.runner ?? this.runnerRegistry?.getGlobalDefault() ?? DEFAULT_BACKEND,
       outcome: 'failed',
-      cause: 'cap_exhausted'
+      terminationReason: 'cap-exhausted',
+      exitCode: null
     };
     if (inputs.phaseDef?.model) payload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) payload.effort = inputs.phaseDef.effort;

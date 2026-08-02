@@ -127,10 +127,11 @@ The structured audit log **does not contain filesystem paths to sensitive locati
 - The wake-up session log's path is never in the audit log.
 - The list of workspace roots is never in the audit log — only `rootCount`.
 - The phase log feed's file path is never in the audit log — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
-- The Metrics dashboard's `metrics-view-opened` event (feature 073) carries only a reused `sessionId` — no task descriptions, phase names, cost figures, or paths.
-- Operator credentials, environment variables, and tokens are scrubbed by the redaction set.
+- The Metrics dashboard's adoption event carries only bounded structural metadata; session and conversation identifiers are omitted from v3 payloads.
+- Executable paths, argv, commands, endpoints, model-output notes/errors, and repository filenames are omitted from v3 payloads.
+- Operator credentials, environment variables, and tokens cause the unsafe payload append to fail closed.
 
-This makes the audit log **safe to ship off-machine**. It can be attached to bug reports, stored in shared infrastructure, or grepped by ops tooling without leaking sensitive locations. The local diagnostic sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
+Legacy v1/v2 rows remain readable and are not rewritten. Use the v3 counts-only export path before sharing evidence off-machine. The local diagnostic sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
 
 ## The CSP and webview integrity
 
@@ -301,7 +302,7 @@ The structured audit log at `<workspaceRoot>/.schegent/audit.log` is the operato
 
 ### T4 — Workspace path leakage into the structured audit log
 
-A workspace path serialized into an audit payload would leak the operator's directory structure when the audit log is shipped off-machine (e.g. attached to a bug report). Mitigated by the paths-free audit discipline — counts and selection tuples only, never `path`, `filePath`, `workspaceRoot`, `roots`, `paths`, or `workspaces`. See [The paths-free audit discipline](#the-paths-free-audit-discipline).
+A workspace path serialized into an audit payload would leak the operator's directory structure when evidence is shared. Mitigated by the v3 metadata projection: sensitive keys are omitted, residual path/endpoint strings fail closed, and payloads are bounded to 32 KiB. Legacy v1/v2 records require review or counts-only export before sharing. See [The paths-free audit discipline](#the-paths-free-audit-discipline).
 
 ### T5 — Concurrent state mutation across multiple VS Code windows
 

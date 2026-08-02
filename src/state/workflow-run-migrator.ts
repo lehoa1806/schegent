@@ -46,6 +46,7 @@
  */
 
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
+import { buildMutationPlan } from '../services/mutation-plan';
 import type {
   DelayedRetryCause,
   ManualPauseCause,
@@ -140,6 +141,15 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
       ? rec.resumeTargetPhaseId
       : null;
   const resumeTargetPhaseId = resumeTargetInvariant(rawResumeTarget, manualPauseCause);
+  const rawTranscriptMode =
+    rec.rawTranscriptMode === 'errors-only' || rec.rawTranscriptMode === 'off'
+      ? rec.rawTranscriptMode
+      : 'always';
+  const mutationPlan = rec.mutationPlan && typeof rec.mutationPlan === 'object'
+    ? rec.mutationPlan as WorkflowRun['mutationPlan']
+    : rec.pipeline && typeof rec.pipeline === 'object'
+      ? buildMutationPlan(rec.pipeline as WorkflowRun['pipeline'] as NonNullable<WorkflowRun['pipeline']>)
+      : undefined;
 
   return {
     ...(rec as Omit<
@@ -153,6 +163,7 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
       | 'phaseBreakpoints'
       | 'resumeTargetPhaseId'
       | 'status'
+      | 'rawTranscriptMode'
     >),
     status,
     delayedRetryCount: rawCount,
@@ -162,8 +173,15 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
     manualPauseAt,
     manualPauseCause,
     phaseBreakpoints: rawBreakpoints,
-    resumeTargetPhaseId
+    resumeTargetPhaseId,
+    rawTranscriptMode,
+    ...(mutationPlan ? { mutationPlan } : {})
   };
+}
+
+/** v7 -> v8 forward migration. Idempotent on v8 records. */
+export function migrateV7ToV8(legacy: unknown): WorkflowRun | null {
+  return migrateLegacyRun(legacy);
 }
 
 export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResult {

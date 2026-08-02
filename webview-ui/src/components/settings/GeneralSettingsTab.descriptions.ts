@@ -69,6 +69,9 @@ export type GeneralSettingsControlId =
   | 'sessionRetentionMaxBytes'
   | 'sessionRetentionMaxBytes-save'
   | 'sessionRetentionMaxBytes-reset'
+  | 'rawTranscriptMode'
+  | 'rawTranscriptMode-save'
+  | 'rawTranscriptMode-reset'
   | 'backend-ping'
   | 'save-all'
   | 'reset-all';
@@ -107,6 +110,16 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'Capture unredacted per-iteration diagnostics under ' +
       '`.schegent/sessions/<runId>/diagnostics/`. Useful for support; the ' +
       'structured `.schegent/audit.log` remains sanitized either way.'
+  },
+  rawTranscriptMode: {
+    title: 'Raw transcript retention',
+    body: 'Choose whether new runs retain unredacted transcripts always, only when interrupted or unsuccessful, or never. The choice is frozen for each run.'
+  },
+  'rawTranscriptMode-save': {
+    body: 'Save this raw-transcript policy for future runs. Active and paused runs keep the policy frozen when they were created.'
+  },
+  'rawTranscriptMode-reset': {
+    body: 'Restore the projected raw-transcript policy. This control stays disabled when there are no unsaved changes to discard.'
   },
   'loggingVerbose-save': {
     body:

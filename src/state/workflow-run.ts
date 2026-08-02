@@ -8,6 +8,25 @@ export interface WorkflowRunPipeline {
 }
 
 export type WorkflowRunStatus = 'running' | 'paused' | 'failed' | 'completed' | 'canceled';
+export type RawTranscriptMode = 'always' | 'errors-only' | 'off';
+
+export interface GitApprovalReceipt {
+  readonly approvedAt: number;
+  readonly planFingerprint: string;
+  readonly approvedPhaseIds: readonly string[];
+}
+
+export interface MutationPlanSnapshot {
+  readonly fingerprint: string;
+  readonly gitCapablePhaseIds: readonly string[];
+  readonly capturedAt: number;
+}
+
+export interface TerminalTransitionIntent {
+  readonly schemaVersion: 1;
+  readonly run: WorkflowRun;
+  readonly createdAt: number;
+}
 
 export type TerminationReason =
   | 'token'
@@ -120,6 +139,12 @@ export interface WorkflowRun {
   lastTransitionAt: number;
   phasesCompleted: PhaseResult[];
   lastError: SanitizedError | null;
+  /** Frozen at run creation; legacy records migrate to `always`. */
+  rawTranscriptMode?: RawTranscriptMode;
+  /** Frozen projection of phases that can mutate Git state. */
+  mutationPlan?: MutationPlanSnapshot;
+  /** Present only after an operator approved the matching frozen plan. */
+  gitApprovalReceipt?: GitApprovalReceipt;
   pipeline?: WorkflowRunPipeline;
   /**
    * Effective global backend captured when the run is created. Phases in new

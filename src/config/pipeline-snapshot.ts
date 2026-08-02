@@ -1,16 +1,26 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
 import type { PhaseDef } from './pipeline-config';
-import { phaseRequiresGitMetadataWrite } from './phase-runner-policy';
+import {
+  builtInEvidencePolicy,
+  builtInSideEffects,
+  phaseRequiresGitMetadataWrite
+} from './phase-runner-policy';
+import { BUILT_IN_PHASE_IDS } from './pipeline-config';
 
 /** Freeze one phase with its effective backend persisted for the run lifetime. */
 export function snapshotPhaseDef(
   phase: PhaseDef,
   defaultRunner?: BackendRunnerKind
 ): PhaseDef {
+  const isBuiltIn = (BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id) || phase.id === 'done';
   return Object.freeze({
     ...phase,
-    runner: effectiveRunnerKindForPhase(phase, defaultRunner)
+    runner: effectiveRunnerKindForPhase(phase, defaultRunner),
+    sideEffects: phase.sideEffects ?? (isBuiltIn ? builtInSideEffects(phase.id) : 'unrestricted'),
+    evidencePolicy:
+      phase.evidencePolicy ?? (isBuiltIn ? builtInEvidencePolicy(phase.id) : 'required'),
+    promptVersion: phase.promptVersion ?? (isBuiltIn ? 'builtin-v1' : 'custom-v1')
   });
 }
 

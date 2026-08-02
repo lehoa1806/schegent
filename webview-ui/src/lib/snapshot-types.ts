@@ -242,7 +242,6 @@ export interface AuditTailEntry {
   readonly taskId?: string;
   readonly phaseId?: string;
   readonly outcome?: 'success' | 'error' | 'pending';
-  readonly command?: string;
   readonly runner?: string;
 }
 
@@ -382,6 +381,7 @@ export interface GeneralSettings {
   readonly runtimeLogMaxGenerations: number;
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
+  readonly rawTranscriptMode: 'always' | 'errors-only' | 'off';
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -402,6 +402,7 @@ export interface GeneralSettings {
     readonly runtimeLogMaxGenerations: SettingScope;
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
+    readonly rawTranscriptMode: SettingScope;
   };
 }
 
@@ -415,10 +416,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   auditRotationMaxAgeDays: 30,
   // Feature 056 Track 3 (FR-013) — host default and package
   // contribution default both point at the built-in
-  // `dev-new-feature` pipeline; the webview idle snapshot must
+  // `speckit-new-feature` pipeline; the webview idle snapshot must
   // agree so a fresh workspace shows a consistent value before the
   // first projection lands.
-  defaultPipelineId: 'dev-new-feature',
+  defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   queueGlobalConcurrencyCap: 1,
@@ -429,6 +430,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogMaxBytes: 5 * 1024 * 1024,
   runtimeLogMaxGenerations: 3,
   sessionRetentionMaxAgeDays: 30,
+  rawTranscriptMode: 'always',
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
   scopes: Object.freeze({
     cliPath: 'default',
@@ -449,7 +451,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogMaxBytes: 'default',
     runtimeLogMaxGenerations: 'default',
     sessionRetentionMaxAgeDays: 'default',
-    sessionRetentionMaxBytes: 'default'
+    sessionRetentionMaxBytes: 'default',
+    rawTranscriptMode: 'default'
   })
 });
 

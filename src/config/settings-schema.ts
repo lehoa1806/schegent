@@ -205,7 +205,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
-    default: 'dev-new-feature',
+    default: 'speckit-new-feature',
     scope: 'resource',
     pattern: '^[a-z][a-z0-9-]{0,63}$',
     docLabel: 'Default pipeline id'
@@ -234,6 +234,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: false,
     scope: 'resource',
     docLabel: 'Verbose CLI diagnostic sink'
+  },
+  'schegent.logging.rawTranscriptMode': {
+    key: 'schegent.logging.rawTranscriptMode',
+    type: 'enum',
+    default: 'always',
+    enum: ['always', 'errors-only', 'off'],
+    scope: 'resource',
+    docLabel: 'Raw transcript retention policy for new runs'
   },
   'schegent.logging.sessionRetentionMaxAgeDays': {
     key: 'schegent.logging.sessionRetentionMaxAgeDays',

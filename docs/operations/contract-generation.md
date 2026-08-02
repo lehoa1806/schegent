@@ -1,8 +1,8 @@
 # Shared Contract Generation
 
 Schegent keeps the current TypeScript contracts as the runtime source of truth,
-but generated artifacts provide a reviewable bridge for the VS Code extension,
-Svelte webview, future Rust desktop app, and shared engine.
+and generated artifacts provide a reviewable bridge between the VS Code host
+and Svelte webview.
 
 ## Commands
 
@@ -20,10 +20,6 @@ Generated artifacts:
 
 - `src/contracts/generated/boundary-contracts.ts`
 - `src/contracts/generated/schemas/*.schema.json`
-- `contracts/rust/src/lib.rs`
-
-The Rust binding is dependency-free. `cargo test` from `repo/` compiles the
-contract workspace.
 
 ## Review Policy
 
@@ -44,5 +40,4 @@ feature proves the generated validator rejects and accepts the same shapes.
 ## Exclusions
 
 Raw transcript bytes are not generated. They are an unredacted sink-only
-diagnostic artifact and must not be surfaced to UI-facing schemas or Rust
-desktop bindings.
+diagnostic artifact and must not be surfaced to UI-facing schemas.

@@ -235,8 +235,8 @@ async function verifyPerformance(): Promise<void> {
     console.log(
       `[metrics-dashboard perf] ${fixtureMb}MB fixture — first-open dispatch: ${firstOpenMs.toFixed(1)}ms ` +
         `(SC-002 budget ${FIRST_OPEN_BUDGET_MS}ms), refresh dispatch: ${refreshMs.toFixed(1)}ms ` +
-        `(SC-003 budget ${REFRESH_BUDGET_MS}ms; the handler re-derives from scratch on every dispatch — ` +
-        `no cache short-circuit exists in cmd-read-metrics.ts — so this is a full re-scan, not an incremental update). ` +
+        `(SC-003 budget ${REFRESH_BUDGET_MS}ms; the metrics service reuses its per-workspace ` +
+        `offset cache, so this refresh scans only bytes appended since the first open). ` +
         `Figures are host-side derivation only; they exclude webview render and the postMessage round-trip.`
     );
 

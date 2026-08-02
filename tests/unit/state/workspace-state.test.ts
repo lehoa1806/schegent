@@ -216,6 +216,18 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     ]);
   });
 
+  it('serializes concurrent queue read-modify-write mutations without losing either enqueue', async () => {
+    await Promise.all([
+      store.insertPendingRequest(pendingFeature('concurrent-a')),
+      store.insertPendingRequest(pendingFeature('concurrent-b'))
+    ]);
+
+    expect(store.getQueue().requests.map((request) => request.id).sort()).toEqual([
+      'concurrent-a',
+      'concurrent-b'
+    ]);
+  });
+
   it('rejects enqueue into an unknown queue', async () => {
     await expect(
       store.insertPendingRequest({ ...pendingFeature('bad'), queueId: 'missing' }, { queueId: 'missing' })

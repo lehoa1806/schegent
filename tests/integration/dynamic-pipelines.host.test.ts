@@ -46,8 +46,8 @@ export async function run(): Promise<void> {
   );
   assert.equal(
     defaultPipelineInspect.defaultValue,
-    'dev-new-feature',
-    'schegent.defaultPipelineId defaultValue must be "dev-new-feature"'
+    'speckit-new-feature',
+    'schegent.defaultPipelineId defaultValue must be "speckit-new-feature"'
   );
 
   // (c) — `schegent.schedule` must be a registered command (it is the entry

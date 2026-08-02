@@ -56,6 +56,7 @@ import { windowsShellOut } from './telemetry/platform/platform-windows';
 import type { TelemetrySnapshot } from './telemetry/telemetry-snapshot';
 import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
 import { HistoryStore } from './state/history-store';
+import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
 import { loadCatalog, type CatalogConfigReader } from './config/pipeline-config-loader';
 import { projectPhasePrecedence } from './config/phase-precedence';
@@ -458,43 +459,23 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     undefined,
     evidenceHealth
   );
-  // Feature 010 FR-024: read schegent.logging.verbose on every invocation
-  // — never cached on a long-lived object — so toggling mid-run applies
-  // to the next phase invocation.
   const verboseAccessor = {
     isVerboseDiagnosticsEnabled: () =>
       vscode.workspace
         .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
         .get<boolean>('logging.verbose', false)
   };
-  // Feature 011 FR-033: read schegent.fatalSignatures on every invocation.
-  // Goes through the same general-settings validator so a malformed
-  // workspace value degrades gracefully to the built-in floor.
   const fatalSignaturesAccessor = {
     readOperatorAdditions: () =>
       readFatalSignaturesSetting(
         vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
       )
   };
-  // Feature 012 FR-006: read schegent.claude.autoCompactPctOverride on every
-  // invocation — never cached on the runner — so toggling mid-run applies
-  // to the next phase invocation.
   const autoCompactOverrideAccessor = createAutoCompactOverrideAccessor(
     () => vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)),
     logger
   );
-  // Feature 028 — US2: re-read `WorkflowRun.phaseBreakpoints` at every
-  // phase dispatch boundary (never cached on the runner) so a breakpoint
-  // added via the sidebar mid-run applies to the very next phase
-  // invocation. The closure pulls the live run from the workspace store
-  // — same no-cache contract as the settings accessors above.
   const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
-  // Feature 010 — BUG-001 (FR-028). Project the most recent retry decision
-  // onto WorkflowRun.lastRetryDecision so the sidebar surfaces `missingKeys`
-  // without the operator enabling verbose mode. Sink reads the live run and
-  // tolerates a missing run (a decision can only be emitted while a run is
-  // active; if the run has been torn down between emit and sink, drop the
-  // projection — the audit event remains the canonical record).
   const lastRetryDecisionSink = async (decision: import('./state/workflow-run').LastRetryDecision) => {
     const current = store.getRun();
     if (current === null) return;
@@ -513,6 +494,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     phaseBreakpointAccessor,
     lastRetryDecisionSink
   );
+  const runSafety = await createRunSafetyWiring({
+    context,
+    workspaceRoot,
+    store,
+    queue,
+    historyStore,
+    logger,
+    rawTranscript,
+    sessionRetention,
+    protectedSessionRunIds
+  });
 
   const controller = new SchegentWorkflowController(
     phaseRunner,
@@ -542,10 +534,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       historyStore,
       catalog: activeCatalog,
       auditWriter,
-      onRunTerminal: async () => {
-        await sessionRetention.sweep(protectedSessionRunIds());
-      },
       backendCapabilities,
+      ...runSafety,
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
         // cap shares the same window as `DELAYED_RETRY_CAP = 5`. Earlier
@@ -558,6 +548,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 5
           ? value
           : 5;
+      },
+      getRawTranscriptMode: () => {
+        const value = vscode.workspace
+          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+          .get<string>('logging.rawTranscriptMode', 'always');
+        return value === 'errors-only' || value === 'off' ? value : 'always';
       }
     }
   );
@@ -588,14 +584,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     logger,
     onFire: async (_queueId: string) => {
-      const queueState = store.getQueue();
-      await store.setQueue({
-        ...queueState,
-        queueLifecycle: 'active-empty',
-        scheduledStartAt: null,
-        scheduledStartSource: null,
-        updatedAt: Date.now()
-      });
+      await store.updateQueue((queueState) => ({
+        queue: {
+          ...queueState,
+          queueLifecycle: 'active-empty',
+          scheduledStartAt: null,
+          scheduledStartSource: null,
+          updatedAt: Date.now()
+        },
+        result: undefined
+      }));
       await controller.drainQueuedWork();
     },
     // Feature 065 (T049b) — surface the transient FR-017a / SC-009 hint
@@ -1013,20 +1011,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       await store.setConfirmSuppression(actionKey, suppressed);
       projector.kick();
     },
-    // Feature 065 (T054a / FR-020) — `CMD_DISMISS_MIGRATION_NOTICE`
-    // persistence. Flip the queue's `migrationNotice` field via a single
-    // `setQueue({...})` write that preserves every other field including
-    // `scheduledStartSource` (FR-020 invariant: those clear only on the
-    // operator's next explicit start). Idempotent — if the notice is
-    // already absent / dismissed, the write is a no-op.
     dismissMigrationNotice: async () => {
-      const cur = store.getQueue();
-      if (cur.migrationNotice !== 'pending') return;
-      await store.setQueue({
-        ...cur,
-        migrationNotice: 'dismissed',
-        updatedAt: Date.now()
-      });
+      const changed = await store.updateQueue((cur) => ({
+        queue: cur.migrationNotice === 'pending'
+          ? { ...cur, migrationNotice: 'dismissed', updatedAt: Date.now() }
+          : cur,
+        result: cur.migrationNotice === 'pending'
+      }));
+      if (!changed) return;
       projector.kick();
     },
     // Feature 014 — Wake up save protocol (primary-only; transactional).
@@ -1243,7 +1235,9 @@ function createCatalogReader(workspaceRoot: string): CatalogConfigReader {
         .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
         .inspect<string>('defaultPipelineId');
       if (!inspect) return undefined;
-      return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
+      return scope === 'workspace'
+        ? inspect.workspaceValue
+        : inspect.globalValue ?? inspect.defaultValue;
     }
   };
 }

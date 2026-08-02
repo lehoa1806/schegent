@@ -132,7 +132,7 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     expect(releaseSpy).toHaveBeenCalled();
 
     // (e) Audit log has exactly one phase-start and one phase-end for the
-    // failing phase, and the phase-end carries payload.cause = redacted text.
+    // failing phase. Audit v3 carries only the closed termination reason.
     const log = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
     const lines = log.trim().split('\n').map((l) => JSON.parse(l));
     const starts = lines.filter((l) => l.eventType === 'phase-start');
@@ -140,6 +140,8 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     expect(starts).toHaveLength(1);
     expect(ends).toHaveLength(1);
     expect(ends[0].outcome).toBe('failure');
-    expect(ends[0].payload.cause).toBe(FATAL_TEXT);
+    expect(ends[0].payload.terminationReason).toBe('error');
+    expect(ends[0].payload).not.toHaveProperty('cause');
+    expect(log).not.toContain(FATAL_TEXT);
   });
 });

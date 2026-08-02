@@ -61,6 +61,7 @@ export interface GeneralSettings {
   readonly runtimeLogMaxGenerations: number;
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
+  readonly rawTranscriptMode: import('../state/workflow-run').RawTranscriptMode;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -81,6 +82,7 @@ export interface GeneralSettings {
     readonly runtimeLogMaxGenerations: SettingScope;
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
+    readonly rawTranscriptMode: SettingScope;
   };
 }
 
@@ -103,7 +105,8 @@ type AllowedKey =
   | 'logging.runtimeLogMaxBytes'
   | 'logging.runtimeLogMaxGenerations'
   | 'logging.sessionRetentionMaxAgeDays'
-  | 'logging.sessionRetentionMaxBytes';
+  | 'logging.sessionRetentionMaxBytes'
+  | 'logging.rawTranscriptMode';
 
 type RuntimeType =
   | 'string'
@@ -168,7 +171,7 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // Feature 056 Track 3 (FR-013..FR-017) — Align host default with
     // package.json contribution default so a fresh workspace and the
     // webview idle snapshot agree on which pipeline is selected.
-    defaultValue: 'dev-new-feature'
+    defaultValue: 'speckit-new-feature'
   },
   fatalSignatures: {
     type: 'array-of-string',
@@ -257,6 +260,12 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     defaultValue: 512 * 1024 * 1024,
     min: 1024 * 1024,
     max: 10 * 1024 * 1024 * 1024
+  },
+  'logging.rawTranscriptMode': {
+    type: 'string-enum',
+    typedField: 'rawTranscriptMode',
+    defaultValue: 'always',
+    allowedValues: ['always', 'errors-only', 'off']
   }
 });
 

@@ -20,7 +20,7 @@
   "properties": {
     "stateSchemaVersion": {
       "type": "integer",
-      "const": 7
+      "const": 8
     },
     "workflowRunStatuses": {
       "type": "array",
@@ -131,6 +131,21 @@
           "name": "lastError",
           "optional": false,
           "type": "SanitizedError | null"
+        },
+        {
+          "name": "rawTranscriptMode",
+          "optional": true,
+          "type": "RawTranscriptMode"
+        },
+        {
+          "name": "mutationPlan",
+          "optional": true,
+          "type": "MutationPlanSnapshot"
+        },
+        {
+          "name": "gitApprovalReceipt",
+          "optional": true,
+          "type": "GitApprovalReceipt"
         },
         {
           "name": "pipeline",

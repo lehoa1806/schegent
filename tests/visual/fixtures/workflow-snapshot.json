@@ -223,7 +223,7 @@
     "watchdogPollIntervalMinutes": 30,
     "auditRotationSizeMB": 5,
     "auditRotationMaxAgeDays": 30,
-    "defaultPipelineId": "dev-new-feature",
+    "defaultPipelineId": "speckit-new-feature",
     "fatalSignatures": [],
     "queueGlobalConcurrencyCap": 1,
     "queueDefaultQueueId": "default",

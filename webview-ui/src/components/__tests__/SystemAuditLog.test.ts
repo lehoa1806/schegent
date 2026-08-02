@@ -22,7 +22,7 @@ describe('SystemAuditLog', () => {
     const entries = [
       entry({ id: 'system', scope: 'system' }),
       entry({ id: 'task', scope: 'task', category: 'phase-transition' }),
-      entry({ id: 'cli', scope: 'task', category: 'cli-invocation', command: 'claude --print' })
+      entry({ id: 'cli', scope: 'task', category: 'cli-invocation' })
     ];
     const { getByTestId, queryByTestId } = render(SystemAuditLog, { props: { entries } });
 
@@ -54,21 +54,18 @@ describe('SystemAuditLog', () => {
     expect(getByTestId('system-entry-task-old').textContent).toContain('—');
   });
 
-  it('renders CLI commands as literal text and strips terminal control sequences', () => {
+  it('never renders CLI command or argv detail', () => {
     const entries = [
       entry({
         id: 'cli',
         scope: 'task',
         category: 'cli-invocation',
-        command: '\u001b[31m<script>alert(1)</script>\u001b[0m'
+        summary: 'cli-invocation plan#1: claude phase · unrestricted'
       })
     ];
-    const { container, getByTestId } = render(SystemAuditLog, { props: { entries } });
-    const command = getByTestId('system-entry-command-cli');
-
-    expect(command.textContent).toContain('<script>alert(1)</script>');
-    expect(command.textContent).not.toContain('\u001b[31m');
-    expect(container.querySelector('script')).toBeNull();
+    const { getByTestId, queryByTestId } = render(SystemAuditLog, { props: { entries } });
+    expect(getByTestId('system-entry-command-missing-cli').textContent).toContain('intentionally omitted');
+    expect(queryByTestId('system-entry-command-cli')).toBeNull();
   });
 
   it('preserves unknown audit categories with the generic system glyph', () => {

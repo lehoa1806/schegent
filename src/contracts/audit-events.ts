@@ -25,7 +25,13 @@ import type { TerminationReason } from '../state/workflow-run';
 // `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032 precedent).
 // Historical records lack the field and are backwards-compatible per
 // the warn-and-preserve parser discipline.
-export const AUDIT_SCHEMA_VERSION = 2 as const;
+export const AUDIT_SCHEMA_VERSION = 3 as const;
+
+export type {
+  AuditPermissionMode,
+  CliInvocationPayloadV3,
+  PhaseEndPayloadV3
+} from '../audit/audit-payload';
 
 export const PHASE_EVENT_TYPES = ['phase-start', 'phase-end'] as const;
 
