@@ -14,6 +14,8 @@
 
   type ScalarKey =
     | 'cliPath'
+    | 'codexPath'
+    | 'agyPath'
     | 'loggingVerbose'
     | 'loopMaxIterations'
     | 'invocationTimeoutSeconds'
@@ -51,8 +53,13 @@
 
   // Per FR-020 we surface every scalar `schegent.*` key. fatalSignatures
   // is intentionally handled by FatalSignaturesTab (array-of-string).
-  const FIELDS: readonly FieldSpec[] = [
-    { key: 'cliPath', ipcKey: 'cli.path', label: 'CLI Path', kind: 'string' },
+  const BACKEND_FIELDS: readonly FieldSpec[] = [
+    { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
+    { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
+    { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' }
+  ] as const;
+
+  const GENERAL_FIELDS: readonly FieldSpec[] = [
     { key: 'loggingVerbose', ipcKey: 'logging.verbose', label: 'Verbose Logging', kind: 'boolean' },
     {
       key: 'runtimeLogLevel',
@@ -106,6 +113,8 @@
     }
   ] as const;
 
+  const FIELDS = [...BACKEND_FIELDS, ...GENERAL_FIELDS] as const;
+
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
   );
@@ -130,6 +139,8 @@
   // a key on Save so users can revert via reload-without-save.
   type Draft = {
     cliPath: string;
+    codexPath: string;
+    agyPath: string;
     loggingVerbose: boolean;
     loopMaxIterations: number;
     invocationTimeoutSeconds: number;
@@ -151,6 +162,8 @@
   function snapshotToDraft(s: GeneralSettings): Draft {
     return {
       cliPath: s.cliPath,
+      codexPath: s.codexPath,
+      agyPath: s.agyPath,
       loggingVerbose: s.loggingVerbose,
       loopMaxIterations: s.loopMaxIterations,
       invocationTimeoutSeconds: s.invocationTimeoutSeconds,
@@ -346,10 +359,21 @@
     </div>
   </header>
 
-  <BackendHealthSection {snapshot} />
+  <BackendHealthSection
+    {snapshot}
+    {BACKEND_FIELDS}
+    bind:draft
+    {statusByKey}
+    {fieldChanged}
+    {fieldScopeLabel}
+    {pipelines}
+    {saveOne}
+    {resetField}
+    {onAutoCompactInput}
+  />
 
   <div class="field-list">
-    {#each FIELDS as spec (spec.key)}
+    {#each GENERAL_FIELDS as spec (spec.key)}
       <GeneralSettingFieldRow
         {spec}
         bind:draft

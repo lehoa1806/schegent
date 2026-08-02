@@ -57,6 +57,8 @@ export interface GeneralSettings {
   readonly runtimeLogLevel: string;
   readonly runtimeLogFilePath: string;
   readonly retryMaxAttempts: number;
+  readonly codexPath: string;
+  readonly agyPath: string;
   readonly runtimeLogMaxBytes: number;
   readonly runtimeLogMaxGenerations: number;
   readonly sessionRetentionMaxAgeDays: number;
@@ -78,6 +80,8 @@ export interface GeneralSettings {
     readonly runtimeLogLevel: SettingScope;
     readonly runtimeLogFilePath: SettingScope;
     readonly retryMaxAttempts: SettingScope;
+    readonly codexPath: SettingScope;
+    readonly agyPath: SettingScope;
     readonly runtimeLogMaxBytes: SettingScope;
     readonly runtimeLogMaxGenerations: SettingScope;
     readonly sessionRetentionMaxAgeDays: SettingScope;
@@ -102,6 +106,8 @@ type AllowedKey =
   | 'logging.runtimeLogLevel'
   | 'logging.runtimeLogFilePath'
   | 'retry.maxAttempts'
+  | 'codex.path'
+  | 'agy.path'
   | 'logging.runtimeLogMaxBytes'
   | 'logging.runtimeLogMaxGenerations'
   | 'logging.sessionRetentionMaxAgeDays'
@@ -129,6 +135,8 @@ interface KeySpec {
 
 const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
   'cli.path': { type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
+  'codex.path': { type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
+  'agy.path': { type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
   'logging.verbose': {
     type: 'boolean',
     typedField: 'loggingVerbose',

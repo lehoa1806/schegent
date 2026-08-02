@@ -624,6 +624,8 @@ export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze(
  */
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
+  codexPath: 'codex',
+  agyPath: 'agy',
   loggingVerbose: false,
   loopMaxIterations: 10,
   invocationTimeoutSeconds: 5400,
@@ -645,6 +647,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   retryMaxAttempts: 5,
   scopes: Object.freeze({
     cliPath: 'default',
+    codexPath: 'default',
+    agyPath: 'default',
     loggingVerbose: 'default',
     loopMaxIterations: 'default',
     invocationTimeoutSeconds: 'default',

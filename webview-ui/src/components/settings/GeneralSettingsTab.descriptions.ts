@@ -33,6 +33,12 @@ export type GeneralSettingsControlId =
   | 'cliPath'
   | 'cliPath-save'
   | 'cliPath-reset'
+  | 'codexPath'
+  | 'codexPath-save'
+  | 'codexPath-reset'
+  | 'agyPath'
+  | 'agyPath-save'
+  | 'agyPath-reset'
   | 'loggingVerbose'
   | 'loggingVerbose-save'
   | 'loggingVerbose-reset'
@@ -99,6 +105,44 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
   'cliPath-reset': {
     title: 'Reset CLI path',
+    body:
+      'Discard the unsaved edit on this field and restore the projected ' +
+      'value. Disabled when there are no unsaved changes on this field.'
+  },
+
+  codexPath: {
+    title: 'Codex CLI path',
+    body:
+      'Absolute or PATH-resolvable path to the `codex` binary. Leave the ' +
+      'default `codex` to use whatever resolves on the system PATH.'
+  },
+  'codexPath-save': {
+    title: 'Save Codex CLI path',
+    body:
+      'Persist this field to VS Code workspace settings. Disabled until you ' +
+      'change the value — type an edit first, then click Save.'
+  },
+  'codexPath-reset': {
+    title: 'Reset Codex CLI path',
+    body:
+      'Discard the unsaved edit on this field and restore the projected ' +
+      'value. Disabled when there are no unsaved changes on this field.'
+  },
+
+  agyPath: {
+    title: 'Agy CLI path',
+    body:
+      'Absolute or PATH-resolvable path to the `agy` binary. Leave the ' +
+      'default `agy` to use whatever resolves on the system PATH.'
+  },
+  'agyPath-save': {
+    title: 'Save Agy CLI path',
+    body:
+      'Persist this field to VS Code workspace settings. Disabled until you ' +
+      'change the value — type an edit first, then click Save.'
+  },
+  'agyPath-reset': {
+    title: 'Reset Agy CLI path',
     body:
       'Discard the unsaved edit on this field and restore the projected ' +
       'value. Disabled when there are no unsaved changes on this field.'

@@ -79,6 +79,8 @@ describe('Feature 011 — general-settings allowlist', () => {
     expect(ALLOWED_KEYS).toEqual(
       new Set([
         'cli.path',
+        'codex.path',
+        'agy.path',
         'logging.verbose',
         'loop.maxIterations',
         'invocation.timeoutSeconds',

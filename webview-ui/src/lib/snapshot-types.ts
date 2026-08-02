@@ -377,6 +377,8 @@ export interface GeneralSettings {
   readonly runtimeLogLevel: RuntimeLogLevel;
   readonly runtimeLogFilePath: string;
   readonly retryMaxAttempts: number;
+  readonly codexPath: string;
+  readonly agyPath: string;
   readonly runtimeLogMaxBytes: number;
   readonly runtimeLogMaxGenerations: number;
   readonly sessionRetentionMaxAgeDays: number;
@@ -398,6 +400,8 @@ export interface GeneralSettings {
     readonly runtimeLogLevel: SettingScope;
     readonly runtimeLogFilePath: SettingScope;
     readonly retryMaxAttempts: SettingScope;
+    readonly codexPath: SettingScope;
+    readonly agyPath: SettingScope;
     readonly runtimeLogMaxBytes: SettingScope;
     readonly runtimeLogMaxGenerations: SettingScope;
     readonly sessionRetentionMaxAgeDays: SettingScope;
@@ -408,6 +412,8 @@ export interface GeneralSettings {
 
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
+  codexPath: 'codex',
+  agyPath: 'agy',
   loggingVerbose: false,
   loopMaxIterations: 10,
   invocationTimeoutSeconds: 1800,
@@ -448,6 +454,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogLevel: 'default',
     runtimeLogFilePath: 'default',
     retryMaxAttempts: 'default',
+    codexPath: 'default',
+    agyPath: 'default',
     runtimeLogMaxBytes: 'default',
     runtimeLogMaxGenerations: 'default',
     sessionRetentionMaxAgeDays: 'default',

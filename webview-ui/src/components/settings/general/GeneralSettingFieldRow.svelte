@@ -9,6 +9,8 @@
 
   type ScalarKey =
     | 'cliPath'
+    | 'codexPath'
+    | 'agyPath'
     | 'loggingVerbose'
     | 'loopMaxIterations'
     | 'invocationTimeoutSeconds'
@@ -44,6 +46,8 @@
 
   type Draft = {
     cliPath: string;
+    codexPath: string;
+    agyPath: string;
     loggingVerbose: boolean;
     loopMaxIterations: number;
     invocationTimeoutSeconds: number;
@@ -85,8 +89,9 @@
     pipelines,
     onSave,
     onReset,
-    onAutoCompactInput
-  }: Props = $props();
+    onAutoCompactInput,
+    actionsAppend
+  }: Props & { actionsAppend?: import('svelte').Snippet } = $props();
 
   function saveId(key: ScalarKey): GeneralSettingsControlId {
     return `${key}-save`;
@@ -212,7 +217,7 @@
         class="text-input"
         placeholder={spec.placeholder ?? ''}
         data-testid="general-settings-input-{spec.key}"
-        bind:value={draft[spec.key as 'cliPath' | 'runtimeLogFilePath']}
+        bind:value={draft[spec.key as 'cliPath' | 'codexPath' | 'agyPath' | 'runtimeLogFilePath']}
         use:hoverTextAnchor={{
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
@@ -243,6 +248,7 @@
         description: GENERAL_SETTINGS_DESCRIPTIONS[resetId(spec.key)]
       }}
     >Reset</button>
+    {@render actionsAppend?.()}
   </div>
   {#if status}
     <div
