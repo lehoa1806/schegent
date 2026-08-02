@@ -4,7 +4,7 @@
 // markup across every webview surface (sidebar `QueueListView`, dashboard
 // "Active Queue" panel, etc.). Inline `<li class="item status-...">`
 // templates outside `QueueItem.svelte` cause the regressions catalogued in
-// `docs/features/066_queue_ui_layout_bugs.md` (FR-024 surface-disparity):
+// `docs/features/round_1/066_queue_ui_layout_bugs.md` (FR-024 surface-disparity):
 //
 //   1. The dashboard panel skips the meta-chip row introduced by
 //      `QueueItem` (phase / retry / paused-cause / paused-badge).

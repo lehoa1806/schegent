@@ -10,7 +10,7 @@
 // "0 occurrences of `WorkflowController.tryAutoDrain` (or other
 // documented removed symbols) in the operations docs."
 //
-// The `docs/features/*` and `specs/*` folders are intentionally
+// The `docs/features/round_1/*` and `specs/*` folders are intentionally
 // out-of-scope (historical record); only operator-facing docs under
 // `docs/operations/`, `README.md`, `ARCHITECTURE.md`, and the webview
 // README are asserted.
