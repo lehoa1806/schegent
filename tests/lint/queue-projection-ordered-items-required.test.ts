@@ -10,7 +10,7 @@
 // authoritative flat projection (no legacy `inFlight`/`pending`/`recent`
 // bucket math). Marking the field optional would let stale snapshot mocks
 // silently re-introduce the "task disappears on cancel" regression from
-// `docs/features/066_queue_ui_layout_bugs.md`.
+// `docs/features/round_1/066_queue_ui_layout_bugs.md`.
 //
 // This test mirrors the established repo-grep pattern used by
 // `no-inline-reorder-ipc.test.ts` etc.
