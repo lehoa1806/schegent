@@ -248,9 +248,13 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     expect(starts.length).toBe(5);
     expect(ends.length).toBe(5);
     expect(starts.map((e) => e.payload.phaseId)).toEqual([...BUGFIX_PHASES]);
-    expect(ends.map((e) => e.payload.phaseId)).toEqual([...BUGFIX_PHASES]);
-    for (const evt of [...starts, ...ends]) {
+    expect(ends.map((e) => e.phase)).toEqual([...BUGFIX_PHASES]);
+    for (const evt of starts) {
       expect(evt.payload.pipelineId).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
+    }
+    for (const evt of ends) {
+      expect(evt.payload).not.toHaveProperty('pipelineId');
+      expect(evt.payload).not.toHaveProperty('phaseId');
     }
   });
 
@@ -355,7 +359,7 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
 
     // (b) phase-end for bugfix-verify-pre has a non-success outcome
     // (issues_remain), and a phase-paused control event followed it.
-    const verifyPreEnd = endsBeforeResume.find((e) => e.payload.phaseId === 'bugfix-verify-pre');
+    const verifyPreEnd = endsBeforeResume.find((e) => e.phase === 'bugfix-verify-pre');
     expect(verifyPreEnd).toBeDefined();
     expect(verifyPreEnd!.outcome === 'success' || verifyPreEnd!.outcome === 'clean').toBe(false);
     const pauseEvent = auditBeforeResume.find(

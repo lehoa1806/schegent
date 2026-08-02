@@ -101,7 +101,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(phase!.instruction).toBe('User-overridden specify instruction.');
   });
 
-  it('user defaultPipelineId shadows workspace defaultPipelineId (BUG-003)', () => {
+  it('workspace defaultPipelineId shadows user defaultPipelineId for scalar setting precedence', () => {
     const reader = makeReader({
       userDefault: 'user-default',
       workspaceDefault: 'workspace-default',
@@ -112,7 +112,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
-    expect(result.catalog.defaultPipelineId).toBe('user-default');
+    expect(result.catalog.defaultPipelineId).toBe('workspace-default');
   });
 
   it('returns built-in catalog and emits errors when validation fails — no throw (T045, FR-024)', () => {

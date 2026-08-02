@@ -155,12 +155,18 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     const ends = lines.filter((l) => l.eventType === 'phase-end');
     expect(starts.length).toBe(ends.length);
     expect(starts.length).toBeGreaterThanOrEqual(9);
-    for (const entry of [...starts, ...ends]) {
+    for (const entry of starts) {
       expect(entry.payload.pipelineId).toBe('speckit-new-feature');
       expect(typeof entry.payload.phaseId).toBe('string');
       expect(entry.payload).toHaveProperty('model', 'claude-opus-5');
       expect(entry.payload).not.toHaveProperty('effort');
       expect(entry.payload).not.toHaveProperty('timeoutMs');
+    }
+    for (const entry of ends) {
+      expect(entry.payload).not.toHaveProperty('pipelineId');
+      expect(entry.payload).not.toHaveProperty('phaseId');
+      expect(entry.payload).toHaveProperty('fileChangeCounts');
+      expect(entry.payload).toHaveProperty('toolCategoryCounts');
     }
 
     const phaseSequence = starts.map((l) => l.payload.phaseId);

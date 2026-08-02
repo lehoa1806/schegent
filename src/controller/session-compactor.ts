@@ -1,6 +1,7 @@
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
+import type { RawTranscriptMode } from '../state/workflow-run';
 
 const COMPACTION_PROMPT =
   'Compact the conversation context. Reply with a single word: OK';
@@ -8,6 +9,7 @@ const COMPACTION_PROMPT =
 export interface SessionCompactionInputs {
   readonly runner: BackendRunner;
   readonly rawTranscript: RawTranscriptWriter | null;
+  readonly rawTranscriptMode?: RawTranscriptMode;
   readonly runId: string;
   readonly phase: Parameters<RawTranscriptWriter['appendStart']>[0]['phase'];
   readonly iteration: number;
@@ -30,9 +32,13 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
     runId: inputs.runId,
     phase: inputs.phase,
     iteration: inputs.iteration,
-    prompt: COMPACTION_PROMPT
+    prompt: COMPACTION_PROMPT,
+    mode: inputs.rawTranscriptMode
   });
-  const capture = await inputs.rawTranscript?.createInvocationCapture(inputs.runId) ?? null;
+  const capture = await inputs.rawTranscript?.createInvocationCapture(
+    inputs.runId,
+    inputs.rawTranscriptMode
+  ) ?? null;
   let raw;
   try {
     raw = await inputs.runner.invoke({
@@ -63,7 +69,8 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
     exitCode: raw.exitCode,
     killed: raw.killed,
     timedOut: raw.timedOut,
-    capture
+    capture,
+    mode: inputs.rawTranscriptMode
   });
   if (typeof raw.command === 'string' && raw.command.length > 0) {
     await inputs.onCommand(raw.command);

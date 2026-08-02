@@ -44,14 +44,15 @@ Rotated archives are pruned per retention policy (a 7-day archive-age floor, plu
 
 ### What never appears in the audit log
 
-The audit log is intentionally **paths-free** for sensitive locations. You will *never* see in `audit.log`:
+Audit schema v3 is a bounded, metadata-only projection. You will *never* see in new v3 records:
 
 - The path of `wakeup/session.log` or any wake-up session-log path.
 - The list of workspace roots (only `rootCount` appears).
 - The path of the phase log feed file (only the selection tuple — queueId, taskId, pipelineId, phaseId, iterationN).
-- Operator credentials, environment variables, or tokens (the redaction set strips these from any string that reaches the writer).
+- Executable paths, argv, commands, endpoints, session/conversation ids, model-output notes/errors, or repository-relative filenames.
+- Operator credentials, environment variables, or tokens. Unsafe payloads fail the append; the runtime log records only the event type and rejection reason code.
 
-This is by design: the audit log is the safest sink to ship off-machine, attach to bug reports, or store in shared infrastructure.
+Legacy v1/v2 records remain readable and are not rewritten. Review or export logs through the v3 counts-only export path before sharing them off-machine.
 
 ## 2. The raw transcript
 

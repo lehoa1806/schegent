@@ -1,5 +1,7 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
+export type PhaseSideEffects = 'none' | 'workspace' | 'git' | 'unrestricted';
+export type PhaseEvidencePolicy = 'required' | 'best-effort' | 'none';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
 import { phaseRunnerPolicyError } from './phase-runner-policy';
 import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
@@ -11,12 +13,12 @@ export interface PhaseDef {
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
-  // Retry DSL is captured in the immutable run snapshot (009 FR-013).
   readonly retryCondition?: string;
-  // Missing means required; false preserves terminal evidence and continues.
   readonly isRequired?: boolean;
-  // Precedence: phase runner > global default > Claude.
   readonly runner?: BackendRunnerKind;
+  readonly sideEffects?: PhaseSideEffects; // Custom omission => unrestricted.
+  readonly evidencePolicy?: PhaseEvidencePolicy;
+  readonly promptVersion?: string;
 }
 export interface PipelineDef {
   readonly id: string;
@@ -65,7 +67,6 @@ export const BUILT_IN_PHASE_IDS = [
   'superpowers-implement',
   'superpowers-review-close'
 ] as const;
-
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export const ID_MAX_LEN = 64;
 export const NAME_MAX_LEN = 80;
@@ -197,7 +198,6 @@ export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
   'superpowers-review-close':
     "Get the 'feature_directory' from .specify/feature.json. Don't re-plan, analyze the implementation, identify open tasks, evaluate them, and implement them. Mark all implemented tasks to done. After that, perform a code review and finish the development branch. At the end, create commits for the pending changes if necessary. Merge all new commits to develop, then checkout to develop"
 };
-
 export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
   Object.freeze({
     id: 'speckit-specify',
@@ -310,7 +310,7 @@ export const BUILT_IN_BUGFIX_PIPELINE_ID = 'speckit-bugfix';
 
 export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID = 'dev-new-feature';
 
-export const DEFAULT_PIPELINE_ID = BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID;
+export const DEFAULT_PIPELINE_ID = BUILT_IN_PIPELINE_ID;
 
 export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
   id: BUILT_IN_PIPELINE_ID,
@@ -526,8 +526,8 @@ export function mergeCatalog(
   }
 
   const defaultPipelineId =
-    user.defaultPipelineId ??
     workspace.defaultPipelineId ??
+    user.defaultPipelineId ??
     builtin.defaultPipelineId ??
     BUILT_IN_PIPELINE_ID;
 

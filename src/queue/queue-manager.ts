@@ -241,29 +241,32 @@ export class QueueManager {
   }
 
   public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
-    const queue = this.store.getQueue();
-    if (!this.hasCapacity() && queue.inFlightId !== featureId) {
-      throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
-    }
     const now = Date.now();
-    const requests = queue.requests.map((r) =>
-      r.id === featureId
-        ? {
-            ...r,
-            status: 'in-flight' as FeatureRequestStatus,
-            runId,
-            startedAt: r.startedAt ?? now,
-            updatedAt: now
-          }
-        : r
-    );
-    await this.store.setQueue({ ...queue, requests, inFlightId: featureId });
+    const movedRequest = await this.store.updateQueue((queue) => {
+      if (queue.inFlightId !== null && queue.inFlightId !== featureId) {
+        throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
+      }
+      const requests = queue.requests.map((r) =>
+        r.id === featureId
+          ? {
+              ...r,
+              status: 'in-flight' as FeatureRequestStatus,
+              runId,
+              startedAt: r.startedAt ?? now,
+              updatedAt: now
+            }
+          : r
+      );
+      return {
+        queue: { ...queue, requests, inFlightId: featureId },
+        result: requests.find((request) => request.id === featureId)
+      };
+    });
     // Feature 019 — DEBUG instrumentation. `markInFlight` is the
     // effective "dequeue" — a pending task transitions to in-flight.
     // `sizeAfter` reflects the pending count after the transition.
     const updatedQueue = this.store.getQueue();
     const pendingAfter = updatedQueue.requests.filter((r) => r.status === 'pending').length;
-    const movedRequest = updatedQueue.requests.find((r) => r.id === featureId);
     this.logger?.debug('queue-manager.dequeue', {
       taskId: featureId,
       queueId: movedRequest?.queueId ?? null,
@@ -300,21 +303,25 @@ export class QueueManager {
     status: FeatureRequestStatus,
     lastError: FeatureRequestFailure | string | null = null
   ): Promise<void> {
-    const queue = this.store.getQueue();
     const now = Date.now();
-    const requests = queue.requests.map((r) =>
-      r.id === featureId
-        ? {
-            ...r,
-            status,
-            completedAt: now,
-            updatedAt: now,
-            lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError
-          }
-        : r
-    );
-    const inFlightId = queue.inFlightId === featureId ? null : queue.inFlightId;
-    await this.store.setQueue({ ...queue, requests, inFlightId });
+    await this.store.updateQueue((queue) => ({
+      queue: {
+        ...queue,
+        requests: queue.requests.map((r) =>
+          r.id === featureId
+            ? {
+                ...r,
+                status,
+                completedAt: now,
+                updatedAt: now,
+                lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError
+              }
+            : r
+        ),
+        inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
+      },
+      result: undefined
+    }));
   }
 
   /**
@@ -331,41 +338,42 @@ export class QueueManager {
     pauseCause: FeatureRequestPauseCause | null = null,
     preserveInFlightForRestore: boolean = false
   ): Promise<boolean> {
-    const queue = this.store.getQueue();
-    const idx = queue.requests.findIndex((r) => r.id === featureId);
-    if (idx === -1) return false;
     const now = Date.now();
-    const requests = queue.requests.map((r, i) =>
-      i === idx
-        ? {
-            ...r,
-            status: 'paused' as FeatureRequestStatus,
-            pauseCause,
-            updatedAt: now
-          }
-        : r
-    );
-    const inFlightId =
-      queue.inFlightId === featureId && !preserveInFlightForRestore
-        ? null
-        : queue.inFlightId;
-    await this.store.setQueue({ ...queue, requests, inFlightId });
-    return true;
+    return this.store.updateQueue((queue) => {
+      const idx = queue.requests.findIndex((r) => r.id === featureId);
+      if (idx === -1) return { queue, result: false };
+      const requests = queue.requests.map((r, i) =>
+        i === idx
+          ? {
+              ...r,
+              status: 'paused' as FeatureRequestStatus,
+              pauseCause,
+              updatedAt: now
+            }
+          : r
+      );
+      const inFlightId =
+        queue.inFlightId === featureId && !preserveInFlightForRestore
+          ? null
+          : queue.inFlightId;
+      return { queue: { ...queue, requests, inFlightId }, result: true };
+    });
   }
 
   public async cancel(featureId: string): Promise<boolean> {
-    const queue = this.store.getQueue();
-    const idx = queue.requests.findIndex((r) => r.id === featureId);
-    if (idx === -1) return false;
-    if (queue.requests[idx].status !== 'pending') return false;
     const now = Date.now();
-    const requests = queue.requests.map((r, i) =>
-      i === idx
-        ? { ...r, status: 'canceled' as FeatureRequestStatus, completedAt: now, updatedAt: now }
-        : r
-    );
-    await this.store.setQueue({ ...queue, requests });
-    return true;
+    return this.store.updateQueue((queue) => {
+      const idx = queue.requests.findIndex((r) => r.id === featureId);
+      if (idx === -1 || queue.requests[idx].status !== 'pending') {
+        return { queue, result: false };
+      }
+      const requests = queue.requests.map((r, i) =>
+        i === idx
+          ? { ...r, status: 'canceled' as FeatureRequestStatus, completedAt: now, updatedAt: now }
+          : r
+      );
+      return { queue: { ...queue, requests }, result: true };
+    });
   }
 
   public async remove(featureId: string): Promise<boolean> {
@@ -415,7 +423,10 @@ export class QueueManager {
           if (resolvedQueueId === DEFAULT_QUEUE_ID) {
             const queue = this.store.getQueue();
             if (queue.paused === true) {
-              await this.store.setQueue({ ...queue, paused: false, pausedReason: null });
+              await this.store.updateQueue((current) => ({
+                queue: { ...current, paused: false, pausedReason: null },
+                result: undefined
+              }));
               return { ok: true, queueId: resolvedQueueId };
             }
           }
@@ -451,14 +462,17 @@ export class QueueManager {
                 );
               }
             }
-            await this.store.setQueue({
-              ...queue,
-              paused,
-              pausedReason,
-              queueLifecycle: 'operator-paused',
-              scheduledStartAt: null,
-              scheduledStartSource: null
-            });
+            await this.store.updateQueue((current) => ({
+              queue: {
+                ...current,
+                paused,
+                pausedReason,
+                queueLifecycle: 'operator-paused',
+                scheduledStartAt: null,
+                scheduledStartSource: null
+              },
+              result: undefined
+            }));
             // Note: `scheduled-start-canceled` is emitted by the coordinator's
             // own `cancel()` method (above), not duplicated here. We only emit
             // `idle-pending-exited` AFTER the cancel to preserve the ordering
@@ -479,14 +493,17 @@ export class QueueManager {
               : hasPending
                 ? 'idle-pending'
                 : 'active-empty';
-            await this.store.setQueue({
-              ...queue,
-              paused,
-              pausedReason,
-              queueLifecycle: nextLifecycle,
-              scheduledStartAt: null,
-              scheduledStartSource: null
-            });
+            await this.store.updateQueue((current) => ({
+              queue: {
+                ...current,
+                paused,
+                pausedReason,
+                queueLifecycle: nextLifecycle,
+                scheduledStartAt: null,
+                scheduledStartSource: null
+              },
+              result: undefined
+            }));
             if (
               nextLifecycle === 'idle-pending' &&
               this.lifecycleAuditHook
@@ -543,8 +560,10 @@ export class QueueManager {
           })
         );
         if (queueId === DEFAULT_QUEUE_ID) {
-          const queue = this.store.getQueue();
-          await this.store.setQueue({ ...queue, paused: true, pausedReason: null });
+          await this.store.updateQueue((queue) => ({
+            queue: { ...queue, paused: true, pausedReason: null },
+            result: undefined
+          }));
         }
         return { ok: true, queueId };
       } catch (err) {
@@ -573,8 +592,10 @@ export class QueueManager {
           setQueuePaused(registry, { id: queueId, paused: false, now })
         );
         if (queueId === DEFAULT_QUEUE_ID) {
-          const queue = this.store.getQueue();
-          await this.store.setQueue({ ...queue, paused: false, pausedReason: null });
+          await this.store.updateQueue((queue) => ({
+            queue: { ...queue, paused: false, pausedReason: null },
+            result: undefined
+          }));
         }
         return { ok: true, queueId };
       } catch (err) {
@@ -841,43 +862,44 @@ export class QueueManager {
   }
 
   public async retry(featureId: string): Promise<MutationResult> {
-    const queue = this.store.getQueue();
-    const idx = queue.requests.findIndex((r) => r.id === featureId);
-    if (idx === -1) return { ok: false, reason: 'not-found' };
-    const target = queue.requests[idx];
-    if (target.status !== 'failed' && target.status !== 'canceled' && target.status !== 'paused') {
-      return { ok: false, reason: 'illegal-state' };
-    }
     // Check whether the task's run context is still the active workspace
     // run. If so, preserve runId and startedAt so the auto-drain
     // coordinator can resume the failed phase instead of restarting the
     // entire pipeline from scratch.
     const activeRun = this.store.getRun();
-    const canResume =
-      target.status === 'failed' &&
-      target.runId !== null &&
-      activeRun !== null &&
-      activeRun.id === target.runId &&
-      (activeRun.status === 'failed' || activeRun.status === 'paused');
-    const now = Date.now();
-    const updated: FeatureRequest = {
-      ...target,
-      status: 'pending',
-      retryCount: target.retryCount + 1,
-      lastError: null,
-      pausedReason: null,
-      completedAt: null,
-      startedAt: canResume ? target.startedAt : null,
-      updatedAt: now,
-      runId: canResume ? target.runId : null
-    };
-    const without = queue.requests.filter((_, i) => i !== idx);
-    const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
-    const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
-    const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
-    const repositioned = reordered.map((r, i) => ({ ...r, position: i }));
-    await this.store.setQueue({ ...queue, requests: repositioned });
-    return { ok: true };
+    return this.store.updateQueue<MutationResult>((queue) => {
+      const idx = queue.requests.findIndex((r) => r.id === featureId);
+      if (idx === -1) return { queue, result: { ok: false, reason: 'not-found' } };
+      const target = queue.requests[idx];
+      if (target.status !== 'failed' && target.status !== 'canceled' && target.status !== 'paused') {
+        return { queue, result: { ok: false, reason: 'illegal-state' } };
+      }
+      const canResume =
+        target.status === 'failed' &&
+        target.runId !== null &&
+        activeRun !== null &&
+        activeRun.id === target.runId &&
+        (activeRun.status === 'failed' || activeRun.status === 'paused');
+      const updated: FeatureRequest = {
+        ...target,
+        status: 'pending',
+        retryCount: target.retryCount + 1,
+        lastError: null,
+        pausedReason: null,
+        completedAt: null,
+        startedAt: canResume ? target.startedAt : null,
+        updatedAt: Date.now(),
+        runId: canResume ? target.runId : null
+      };
+      const without = queue.requests.filter((_, i) => i !== idx);
+      const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
+      const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
+      const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
+      return {
+        queue: { ...queue, requests: reordered.map((r, i) => ({ ...r, position: i })) },
+        result: { ok: true }
+      };
+    });
   }
 
   public async moveUp(featureId: string): Promise<MutationResult> {
@@ -974,14 +996,17 @@ export class QueueManager {
     }
 
     // 1. Clear queue items (also drops `inFlightId`).
-    await this.store.setQueue({
-      ...queueBefore,
-      requests: [],
-      inFlightId: null,
-      paused: false,
-      pausedReason: null,
-      updatedAt: Date.now()
-    });
+    await this.store.updateQueue((queue) => ({
+      queue: {
+        ...queue,
+        requests: [],
+        inFlightId: null,
+        paused: false,
+        pausedReason: null,
+        updatedAt: Date.now()
+      },
+      result: undefined
+    }));
 
     // 2. Clear pause state via the canonical single-writer so the
     //    registry's `pauseSource` is cleared in lock-step with the
@@ -1079,14 +1104,19 @@ export class QueueManager {
   }
 
   private async clearByStatus(status: FeatureRequestStatus): Promise<ClearResult> {
-    const queue = this.store.getQueue();
-    const before = queue.requests.length;
-    const filtered = queue.requests.filter(
-      (r) => r.status !== status || r.id === queue.inFlightId
-    );
-    if (filtered.length === before) return { removed: 0 };
-    const repositioned = filtered.map((r, i) => ({ ...r, position: i }));
-    await this.store.setQueue({ ...queue, requests: repositioned });
+    const removed = await this.store.updateQueue((queue) => {
+      const before = queue.requests.length;
+      const filtered = queue.requests.filter(
+        (r) => r.status !== status || r.id === queue.inFlightId
+      );
+      return {
+        queue: filtered.length === before
+          ? queue
+          : { ...queue, requests: filtered.map((r, i) => ({ ...r, position: i })) },
+        result: before - filtered.length
+      };
+    });
+    if (removed === 0) return { removed: 0 };
     // BUG-001 escape hatch: when the operator clears completed/failed items
     // and no in-flight task remains, also release any lingering pause so a
     // stale `retry-cap-exhausted` pause whose originating run is gone does
@@ -1095,7 +1125,7 @@ export class QueueManager {
     if (!this.hasInFlight() && this.store.getQueue().paused) {
       await this.setQueuePausedState(false, undefined, null, 'operator');
     }
-    return { removed: before - filtered.length };
+    return { removed };
   }
 
   /**

@@ -8,7 +8,7 @@
 // separate, later task (T013/T015) and is NOT covered here.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
@@ -226,6 +226,28 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.meta.parseWarnings).toBe(0);
     expect(result.meta.includesArchives).toBe(false);
     expect(result.oldestIncludedTimestamp).toBeUndefined();
+  });
+
+  it('does not advance the incremental cache past a partial audit record', async () => {
+    await mkdir(auditDir, { recursive: true });
+    await writeFile(
+      auditLog,
+      taskStarted({
+        id: 'e-partial',
+        timestamp: '2026-05-23T12:00:00.000Z',
+        runId: 'run-partial'
+      }),
+      'utf8'
+    );
+
+    const beforeAppendCompletes = await readMetrics(workspaceRoot);
+    expect(beforeAppendCompletes.tasks).toEqual([]);
+    expect(beforeAppendCompletes.meta.totalScannedEntries).toBe(0);
+
+    await appendFile(auditLog, '\n', 'utf8');
+    const afterAppendCompletes = await readMetrics(workspaceRoot);
+    expect(afterAppendCompletes.tasks.map((task) => task.runId)).toEqual(['run-partial']);
+    expect(afterAppendCompletes.meta.totalScannedEntries).toBe(1);
   });
 
   it('returns an empty response for an empty audit.log', async () => {

@@ -25,7 +25,8 @@
     | 'runtimeLogLevel'
     | 'runtimeLogFilePath'
     | 'sessionRetentionMaxAgeDays'
-    | 'sessionRetentionMaxBytes';
+    | 'sessionRetentionMaxBytes'
+    | 'rawTranscriptMode';
 
   type FieldKind =
     | 'string'
@@ -33,7 +34,8 @@
     | 'number'
     | 'pipeline-select'
     | 'number-optional'
-    | 'level-select';
+    | 'level-select'
+    | 'raw-transcript-select';
 
   interface FieldSpec {
     readonly key: ScalarKey;
@@ -64,6 +66,12 @@
       label: 'Runtime Log File Path',
       kind: 'string',
       placeholder: '<workspace>/.schegent/syslog'
+    },
+    {
+      key: 'rawTranscriptMode',
+      ipcKey: 'logging.rawTranscriptMode',
+      label: 'Raw Transcript Retention',
+      kind: 'raw-transcript-select'
     },
     {
       key: 'sessionRetentionMaxAgeDays',
@@ -137,6 +145,7 @@
     runtimeLogFilePath: string;
     sessionRetentionMaxAgeDays: number;
     sessionRetentionMaxBytes: number;
+    rawTranscriptMode: 'always' | 'errors-only' | 'off';
   };
 
   function snapshotToDraft(s: GeneralSettings): Draft {
@@ -153,7 +162,8 @@
       runtimeLogLevel: s.runtimeLogLevel,
       runtimeLogFilePath: s.runtimeLogFilePath,
       sessionRetentionMaxAgeDays: s.sessionRetentionMaxAgeDays,
-      sessionRetentionMaxBytes: s.sessionRetentionMaxBytes
+      sessionRetentionMaxBytes: s.sessionRetentionMaxBytes,
+      rawTranscriptMode: s.rawTranscriptMode
     };
   }
 

@@ -46,8 +46,12 @@
  *       `pending.length`) triple. The `paused` boolean remains as a
  *       legacy mirror of `queueLifecycle === 'operator-paused'`.
  *       Forward-only. Down-migration is unsupported.
+ *   8 — architecture hardening: freezes the raw-transcript retention mode
+ *       and Git mutation-plan/approval metadata on each run. Legacy runs
+ *       retain the historical `always` transcript behavior. Also introduces
+ *       the separately persisted terminal-transition intent journal.
  */
-export const STATE_SCHEMA_VERSION = 7 as const;
+export const STATE_SCHEMA_VERSION = 8 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -55,6 +59,7 @@ export const STATE_SCHEMA_VERSION_V4 = 4 as const;
 export const STATE_SCHEMA_VERSION_V5 = 5 as const;
 export const STATE_SCHEMA_VERSION_V6 = 6 as const;
 export const STATE_SCHEMA_VERSION_V7 = 7 as const;
+export const STATE_SCHEMA_VERSION_V8 = 8 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

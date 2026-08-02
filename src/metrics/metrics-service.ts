@@ -12,7 +12,7 @@
 // solely from grouped phase-level activity (`source: 'phase-reconstruction'`
 // — data-model.md §1, T013/T015).
 
-import { readFile, readdir } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AuditEntry } from '../audit/audit-entry';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
@@ -30,7 +30,7 @@ export interface ReadMetricsOptions {
 }
 
 const ARCHIVE_PREFIX = 'audit.log.';
-const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}$/;
+const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}(?:-\d{3}-[0-9a-f]{8})?$/;
 
 interface PhaseGroup {
   readonly runId: string;
@@ -52,6 +52,14 @@ interface ScanState {
   readonly phaseGroups: Map<string, PhaseGroup>;
 }
 
+interface MetricsCacheEntry {
+  readonly files: readonly string[];
+  readonly offsets: Map<string, number>;
+  readonly state: ScanState;
+}
+
+const metricsCache = new Map<string, MetricsCacheEntry>();
+
 export async function readMetrics(
   workspaceRoot: string,
   options: ReadMetricsOptions = {},
@@ -61,7 +69,24 @@ export async function readMetrics(
   const auditDir = join(workspaceRoot, '.schegent');
   const { files, archivedScanSucceeded } = await listAuditFiles(auditDir, includeArchives, logger);
 
-  const state: ScanState = {
+  const cacheKey = `${workspaceRoot}\0${includeArchives ? 'archives' : 'live'}`;
+  let cache = metricsCache.get(cacheKey);
+  const sameFiles = cache !== undefined &&
+    cache.files.length === files.length &&
+    cache.files.every((file, index) => file === files[index]);
+  if (sameFiles && cache) {
+    for (const file of files) {
+      const priorOffset = cache?.offsets.get(file) ?? 0;
+      try {
+        if ((await stat(file)).size < priorOffset) cache = undefined;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') cache = undefined;
+      }
+    }
+  } else {
+    cache = undefined;
+  }
+  const state: ScanState = cache?.state ?? {
     totalScannedEntries: 0,
     parseWarnings: 0,
     oldestTimestamp: undefined,
@@ -69,10 +94,12 @@ export async function readMetrics(
     taskEnded: new Map(),
     phaseGroups: new Map()
   };
+  const offsets = cache?.offsets ?? new Map<string, number>();
 
   for (const file of files) {
-    await scanFile(file, state, logger);
+    offsets.set(file, await scanFile(file, state, logger, offsets.get(file) ?? 0));
   }
+  metricsCache.set(cacheKey, { files: [...files], offsets, state });
 
   const phasesByRunId = buildPhaseRecordsByRunId(state);
   const allPhases = [...phasesByRunId.values()].flat();
@@ -128,25 +155,61 @@ async function listAuditFiles(
   return { files: [...archives, liveLog], archivedScanSucceeded: true };
 }
 
-async function scanFile(filePath: string, state: ScanState, logger?: SanitizedLogger): Promise<void> {
-  let content: string;
+async function scanFile(
+  filePath: string,
+  state: ScanState,
+  logger?: SanitizedLogger,
+  offset = 0
+): Promise<number> {
+  let bytes: Buffer;
+  let fileSize: number;
   try {
-    content = await readFile(filePath, 'utf8');
+    fileSize = (await stat(filePath)).size;
+    const length = Math.max(0, fileSize - offset);
+    bytes = Buffer.allocUnsafe(length);
+    if (length > 0) {
+      const handle = await open(filePath, 'r');
+      try {
+        await handle.read(bytes, 0, length, offset);
+      } finally {
+        await handle.close();
+      }
+    }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
     logger?.warn(
       `metrics-service: failed to read audit log: ${logger.sanitize((err as Error).message ?? 'unknown error')}`
     );
-    return;
+    return offset;
   }
 
-  for (const line of content.split('\n')) {
+  const content = bytes.toString('utf8');
+  const lastNewline = content.lastIndexOf('\n');
+  if (lastNewline === -1) return offset;
+
+  // Audit records are newline-delimited and append-only. Do not advance past
+  // a trailing partial record: the next read will include it once the writer
+  // has completed the append.
+  const completeContent = content.slice(0, lastNewline + 1);
+  for (const line of completeContent.split('\n')) {
     if (line.trim().length === 0) continue;
     state.totalScannedEntries += 1;
     const { entry, warning } = parseAuditLogLineDetailed(line);
     if (warning !== undefined) state.parseWarnings += 1;
     if (entry === null) continue;
     ingestEntry(entry, state);
+  }
+  return offset + Buffer.byteLength(completeContent, 'utf8');
+}
+
+/** Test/activation hook for deterministic cache invalidation. */
+export function clearMetricsCache(workspaceRoot?: string): void {
+  if (workspaceRoot === undefined) {
+    metricsCache.clear();
+    return;
+  }
+  for (const key of metricsCache.keys()) {
+    if (key.startsWith(`${workspaceRoot}\0`)) metricsCache.delete(key);
   }
 }
 

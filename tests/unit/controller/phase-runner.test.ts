@@ -139,8 +139,8 @@ describe('PhaseRunner.run', () => {
     expect(out.terminationReason).toBe('token');
     expect(out.result.kind).toBe('clean');
     expect(out.exitCode).toBe(0);
-    // phase-start (audit-1) is now emitted before the phase-end (audit-2) entry returned in output.
-    expect(out.auditEntryId).toBe('audit-2');
+    // phase-start and metadata-only cli-invocation precede phase-end.
+    expect(out.auditEntryId).toBe('audit-3');
   });
 
   it('adds runner duration and stream-json usage metrics to phase-end audit payload', async () => {
@@ -739,7 +739,8 @@ describe('PhaseRunner.run', () => {
       expect.objectContaining({
         eventType: 'phase-end',
         payload: expect.objectContaining({
-          reason: 'timeout',
+          outcome: 'timeout',
+          terminationReason: 'timeout',
           durationMs: 321
         })
       })
@@ -1541,7 +1542,10 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       expect.objectContaining({
         eventType: 'phase-end',
         outcome: 'failure',
-        payload: expect.objectContaining({ runner: 'agy', cause: 'cap_exhausted' })
+        payload: expect.objectContaining({
+          runner: 'agy',
+          terminationReason: 'cap-exhausted'
+        })
       })
     );
   });
@@ -1590,7 +1594,7 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     );
   });
 
-  it('audits a failed pre-compaction invocation before continuing with the phase', async () => {
+  it('audits failed pre-compaction and continues with a fresh phase session', async () => {
     let invocation = 0;
     cliRunner = makeFakeRunner(async () => {
       invocation += 1;
@@ -1615,10 +1619,21 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     const invocationAudits = (
       auditWriter.append as ReturnType<typeof vi.fn>
     ).mock.calls.filter((call) => call[0].eventType === 'cli-invocation');
-    expect(invocationAudits.map((call) => call[0].payload.command)).toEqual([
-      'claude --resume owned-session compact',
-      'claude --resume owned-session phase'
+    expect(invocationAudits.map((call) => call[0].payload.operation)).toEqual([
+      'session-compaction',
+      'phase'
     ]);
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
+    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('sessionReuse');
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'warning',
+        payload: expect.objectContaining({
+          reasonCode: 'session-compaction-failed-fresh-session'
+        })
+      })
+    );
   });
 
   it('forwards cancellation to the Claude pre-compaction invocation', async () => {

@@ -6,7 +6,7 @@ The structured audit log (`<workspaceRoot>/.schegent/audit.log`) is JSONL — on
 {
   "timestamp": "2026-05-17T12:34:56.789Z",
   "eventType": "phase-start",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "runId": "<uuid>",
   "pipelineId": "speckit-new-feature",
   "phaseId": "speckit-implement",
@@ -18,11 +18,11 @@ Field details:
 
 - `timestamp` — ISO-8601 UTC.
 - `eventType` — one of the values listed below.
-- `schemaVersion` — current value is `2`; readers tolerate unknown values (`warn-and-preserve`).
+- `schemaVersion` — current value is `3`; readers preserve v1/v2 rows and tolerate unknown future values (`warn-and-preserve`).
 - `outcome` — `success` | `failure` | `info`.
 - Per-event payload fields are described per event below.
 
-Every string written to `audit.log` passes through the central sanitization function. There is **one** redaction set in the codebase; if a value is replaced with `[REDACTED]`, that is the central sanitizer at work.
+Every v3 payload passes through `projectAuditPayload`: strings are bounded, numbers must be finite, arrays are capped, the full payload is limited to 32 KiB, sensitive execution fields are omitted, and residual paths/endpoints or secrets fail the append.
 
 ## Event categories
 
@@ -66,12 +66,11 @@ Payload fields:
 
 Emitted after the phase invocation terminates.
 
-Payload includes `durationMs` (runner-measured process duration),
-the outcome, the exit code, file/command summaries from the phase's
-constitution audit block, and a `cause` field on failures (for
-example `timeout`, fatal-signature text, or `cap_exhausted`). When
-the CLI stdout includes a stream-json `result` row, the payload also
-includes numeric usage/cost fields reported by the CLI:
+Payload includes the outcome, numeric exit code, a closed termination reason,
+finite metrics, file-change counts, host-observed tool-category counts, and
+omitted-evidence counts. It never includes filenames, commands, notes, model
+errors, or fatal-signature text. When the CLI stdout includes a stream-json
+`result` row, numeric usage/cost metrics may include:
 `cliDurationMs`, `numTurns`, `totalCostUsd`, `inputTokens`,
 `outputTokens`, `cacheCreationInputTokens`, and
 `cacheReadInputTokens`.
@@ -80,7 +79,7 @@ includes numeric usage/cost fields reported by the CLI:
 
 ### `cli-invocation`
 
-Emitted on each `child_process.spawn` of the CLI. Carries the sanitized argv composition and PID.
+Emitted for each CLI invocation. Carries runner, operation (`phase`, `session-compaction`, or `probe`), permission mode, continuation/session-reuse booleans, optional model/effort ids, and whether diagnostics were enabled. Executable path, argv, command text, PID, and session id are omitted.
 
 ### `file-write`
 

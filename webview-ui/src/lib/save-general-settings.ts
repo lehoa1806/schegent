@@ -36,6 +36,7 @@ export interface GeneralSettingsPayload {
   // Feature 019 — runtime debug log sink controls.
   readonly 'logging.runtimeLogLevel'?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
   readonly 'logging.runtimeLogFilePath'?: string;
+  readonly 'logging.rawTranscriptMode'?: 'always' | 'errors-only' | 'off';
 }
 
 export type SaveResult =

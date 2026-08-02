@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import type { PhaseRunner } from './phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
@@ -15,9 +14,7 @@ import { HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import {
   BUILT_IN_CATALOG,
-  BUILT_IN_PIPELINE,
   BUILT_IN_PIPELINE_ID,
-  type PhaseDef,
   type PipelineCatalog
 } from '../config/pipeline-config';
 import { LockHeldError } from '../lib/errors';
@@ -27,11 +24,17 @@ import { RunDriver } from '../services/run-driver';
 import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
-import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runner-factory';
-import { resolvePinnedRunnerKind, snapshotPhaseDef } from '../config/pipeline-snapshot';
+import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import { resolvePinnedRunnerKind } from '../config/pipeline-snapshot';
 import { PhaseControlService, type MutationResult } from './phase-control-service';
 import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
 import type { BackendAvailabilityProbe } from '../services/backend-capability-service';
+import type { RawTranscriptMode } from '../state/workflow-run';
+import type { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
+import { buildMutationPlan, mutationPlanIsApproved } from '../services/mutation-plan';
+import type { MutationPlanSnapshot } from '../state/workflow-run';
+import type { RunCheckpointService } from '../services/run-checkpoint-service';
+import { WorkflowRunFactory } from '../services/workflow-run-factory';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -66,6 +69,8 @@ export interface WorkflowControllerDeps {
   watchdog?: DelayedRetryWatchdog | null;
   /** Dynamic reader for `schegent.retry.maxAttempts`. Falls back to DELAYED_RETRY_CAP. */
   getRetryCap?: () => number;
+  /** Read only when a run is created; the result is frozen on WorkflowRun. */
+  getRawTranscriptMode?: () => RawTranscriptMode;
   /**
    * Feature 034 — optional session-cleanup runner. Defaults to
    * `cleanupSessionArtifacts` from `services/session-cleanup`.
@@ -75,6 +80,9 @@ export interface WorkflowControllerDeps {
   onRunTerminal?: (run: WorkflowRun) => Promise<void>;
   /** Host-owned bounded executable probe reused by the guarded run start. */
   backendCapabilities?: BackendAvailabilityProbe;
+  terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
+  requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
+  checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
 }
 
 export interface StartNewOptions {
@@ -111,6 +119,9 @@ export class SchegentWorkflowController {
   private readonly runDriver: RunDriver;
   private readonly phaseControlService: PhaseControlService;
   private readonly lifecycleAuditor: WorkflowLifecycleAuditor;
+  private readonly terminalTransitions: WorkflowControllerDeps['terminalTransitions'];
+  private readonly requestGitApproval: WorkflowControllerDeps['requestGitApproval'];
+  private readonly runFactory: WorkflowRunFactory;
 
   constructor(
     runner: PhaseRunner,
@@ -128,6 +139,15 @@ export class SchegentWorkflowController {
     this.catalog = deps.catalog ?? BUILT_IN_CATALOG;
     this.getRetryCapFn = deps.getRetryCap ?? null;
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
+    this.terminalTransitions = deps.terminalTransitions;
+    this.requestGitApproval = deps.requestGitApproval;
+    this.runFactory = new WorkflowRunFactory({
+      getCatalog: () => this.catalog,
+      defaultRunnerKind: options.defaultRunnerKind,
+      getRawTranscriptMode: deps.getRawTranscriptMode,
+      requestGitApproval: deps.requestGitApproval,
+      logger
+    });
     this.historyRecorder = new HistoryRecorder({
       historyStore: deps.historyStore ?? null,
       logger
@@ -179,6 +199,8 @@ export class SchegentWorkflowController {
       emitOptionalPhaseFailureContinued: (run, payload) =>
         this.lifecycleAuditor.emitOptionalPhaseFailureContinued(run, payload),
       onRunTerminal: deps.onRunTerminal,
+      terminalTransitions: deps.terminalTransitions,
+      checkpoints: deps.checkpoints,
       scheduleAutoDrain: () => this.scheduleAutoDrain()
     });
     this.phaseControlService = new PhaseControlService({
@@ -269,37 +291,9 @@ export class SchegentWorkflowController {
     this.logger.info(`Workflow operation triggered: startNew`, { featureId: feature.id, featureDir, options });
     let run: WorkflowRun | null = null;
     try {
-      const pipelineSnapshot = this.resolvePipelineSnapshot(
+      run = await this.runFactory.create(feature, featureDir,
         options.pipelineId ?? feature.pipelineId ?? this.catalog.defaultPipelineId
       );
-      const startPhase = featureDir
-        ? this.firstPhaseAfterSpecify(pipelineSnapshot)
-        : pipelineSnapshot.phases[0]?.id ?? 'done';
-      run = {
-        id: randomUUID(),
-        featureId: feature.id,
-        featureDir: featureDir ?? '',
-        status: 'running',
-        currentPhase: startPhase,
-        currentIteration: 0,
-        startedAt: Date.now(),
-        lastTransitionAt: Date.now(),
-        phasesCompleted: [],
-        lastError: null,
-        pipeline: pipelineSnapshot,
-        defaultRunnerKind: this.options.defaultRunnerKind ?? DEFAULT_BACKEND,
-        // Feature 011 — delayed-retry fields start at zero / null.
-        delayedRetryCount: 0,
-        pendingRetryAt: null,
-        pendingRetryCause: null,
-        // Feature 017 — per-run phase overrides and manual pause pair start empty/null.
-        phaseOverrides: [],
-        manualPauseAt: null,
-        manualPauseCause: null,
-        // Feature 028 — per-run future-phase breakpoints and resume target start empty/null.
-        phaseBreakpoints: [],
-        resumeTargetPhaseId: null
-      };
       await this.store.setRun(run);
       await this.queue.markInFlight(feature.id, run.id, false);
       await this.runDriver.drive(run, feature.description);
@@ -391,6 +385,7 @@ export class SchegentWorkflowController {
           `failed to record unexpected workflow failure in history: ${this.sanitizeUnexpectedError(historyErr)}`
         );
       }
+      await this.terminalTransitions?.complete(terminalRun, description);
     }
 
     await this.lock.release().catch(() => undefined);
@@ -408,50 +403,8 @@ export class SchegentWorkflowController {
     );
   }
 
-  private resolvePipelineSnapshot(requestedId: string, defaultRunnerKind = this.options.defaultRunnerKind ?? DEFAULT_BACKEND): WorkflowRunPipeline {
-    let pipeline = this.catalog.pipelinesById.get(requestedId);
-    if (!pipeline) {
-      if (requestedId !== BUILT_IN_PIPELINE_ID) {
-        this.logger.warn(
-          `pipeline '${requestedId}' not found in catalog; falling back to '${BUILT_IN_PIPELINE_ID}'`
-        );
-      }
-      pipeline = this.catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID) ?? BUILT_IN_PIPELINE;
-    }
-    const phases: PhaseDef[] = [];
-    for (const phaseId of pipeline.phases) {
-      const def = this.catalog.phasesById.get(phaseId);
-      if (def) {
-        phases.push(snapshotPhaseDef(def, defaultRunnerKind));
-      } else {
-        this.logger.warn(
-          `pipeline '${pipeline.id}' references unknown phase '${phaseId}'; substituting 'done'`
-        );
-        const done = this.catalog.phasesById.get('done');
-        if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
-      }
-    }
-    if (!phases.some((p) => p.id === 'done')) {
-      const done = this.catalog.phasesById.get('done');
-      if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
-    }
-    return Object.freeze({
-      id: pipeline.id,
-      name: pipeline.name,
-      phases: Object.freeze([...phases])
-    });
-  }
-
-  private firstPhaseAfterSpecify(pipeline: WorkflowRunPipeline): string {
-    const specifyIdx = pipeline.phases.findIndex((p) => p.id === 'speckit-specify');
-    if (specifyIdx >= 0 && specifyIdx + 1 < pipeline.phases.length) {
-      return pipeline.phases[specifyIdx + 1].id;
-    }
-    return pipeline.phases[0]?.id ?? 'done';
-  }
-
   private synthesizeLegacyPipeline(defaultRunnerKind: BackendRunnerKind): WorkflowRunPipeline {
-    return this.resolvePipelineSnapshot(BUILT_IN_PIPELINE_ID, defaultRunnerKind);
+    return this.runFactory.resolvePipeline(BUILT_IN_PIPELINE_ID, defaultRunnerKind);
   }
   /**
    * Resumes the currently persisted run if it is in a legal resumable state
@@ -501,12 +454,28 @@ export class SchegentWorkflowController {
         `workflow-run.migrated runId=${run.id} fromSchema=pre-009 toPipeline=${BUILT_IN_PIPELINE_ID}`
       );
     }
+    const mutationPlan = run.mutationPlan ?? buildMutationPlan(pipeline);
+    let gitApprovalReceipt = run.gitApprovalReceipt;
+    if (
+      mutationPlan.gitCapablePhaseIds.length > 0 &&
+      !mutationPlanIsApproved(mutationPlan, gitApprovalReceipt)
+    ) {
+      const approved = await (this.requestGitApproval?.(mutationPlan) ?? Promise.resolve(true));
+      if (!approved) return false;
+      gitApprovalReceipt = {
+        approvedAt: Date.now(),
+        planFingerprint: mutationPlan.fingerprint,
+        approvedPhaseIds: mutationPlan.gitCapablePhaseIds
+      };
+    }
     const next: WorkflowRun = {
       ...run,
       status: 'running',
       lastError: null,
       pipeline,
       defaultRunnerKind,
+      mutationPlan,
+      ...(gitApprovalReceipt ? { gitApprovalReceipt } : {}),
       pendingRetryAt: null,
       pendingRetryCause: null,
       // When resuming a run that was terminally failed (operator retry),
@@ -723,6 +692,7 @@ export class SchegentWorkflowController {
                 : latest.phaseBreakpoints
           }
         : next;
+    await this.terminalTransitions?.begin(merged);
     await this.store.setRun(merged);
     return merged;
   }

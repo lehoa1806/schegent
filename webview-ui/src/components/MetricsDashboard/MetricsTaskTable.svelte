@@ -50,6 +50,12 @@
       default: return 'Running';
     }
   }
+
+  function onRowKeydown(event: KeyboardEvent, runId: string): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    onToggleExpand(runId);
+  }
 </script>
 
 <div class="table-scroll">
@@ -83,13 +89,15 @@
     <tbody>
       {#each tasks as task (task.runId)}
         {@const expanded = expandedRunIds.has(task.runId)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <tr
           class="task-row"
           class:expanded
           data-testid="metrics-task-row-{task.runId}"
+          role="button"
+          tabindex="0"
+          aria-expanded={expanded}
           onclick={() => onToggleExpand(task.runId)}
+          onkeydown={(event) => onRowKeydown(event, task.runId)}
         >
           <td class="expand-cell">
             <button

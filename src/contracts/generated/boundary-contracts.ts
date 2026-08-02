@@ -174,6 +174,7 @@ export const SETTINGS_KEYS = [
   "schegent.defaultPipelineId",
   "schegent.fatalSignatures",
   "schegent.invocation.timeoutSeconds",
+  "schegent.logging.rawTranscriptMode",
   "schegent.logging.runtimeLogFilePath",
   "schegent.logging.runtimeLogLevel",
   "schegent.logging.runtimeLogMaxBytes",
@@ -250,7 +251,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/sidebar-ipc.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate and review literal diffs with every IPC contract change."
   },
   {
@@ -265,7 +265,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/settings.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate after adding or changing any schegent.* setting."
   },
   {
@@ -280,7 +279,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/queue.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate when queue status or feature request fields change."
   },
   {
@@ -295,7 +293,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/state.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate with every persisted workflow state shape change."
   },
   {
@@ -309,7 +306,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/audit-events.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate with every audit taxonomy change; unknown events must remain warn-and-preserve."
   },
   {
@@ -324,7 +320,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/backend-runner.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate with every runner request/result boundary change."
   },
   {
@@ -339,7 +334,6 @@ export const CONTRACT_FAMILIES = [
       "src/contracts/generated/schemas/wakeup.schema.json"
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "rustBinding": "contracts/rust/src/lib.rs",
     "reviewPolicy": "Regenerate with every wake-up settings or invocation-log boundary change."
   },
   {
@@ -351,7 +345,6 @@ export const CONTRACT_FAMILIES = [
     ],
     "schemaFiles": [],
     "typescriptBinding": null,
-    "rustBinding": null,
     "reviewPolicy": "Do not generate UI-facing schemas for raw transcript bytes.",
     "exclusionReason": "Sink-only unredacted bytes are intentionally never surfaced to UI or generated cross-release schemas."
   }

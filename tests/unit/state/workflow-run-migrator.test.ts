@@ -29,6 +29,14 @@ describe('migrateLegacyRun v1 → v2 → v3 (017, T007)', () => {
     expect(out!.phaseOverrides).toEqual([]);
     expect(out!.manualPauseAt).toBeNull();
     expect(out!.manualPauseCause).toBeNull();
+    expect(out!.rawTranscriptMode).toBe('always');
+  });
+
+  it('preserves valid v8 transcript modes and fails legacy garbage to always', () => {
+    expect(migrateLegacyRun({ rawTranscriptMode: 'errors-only' })!.rawTranscriptMode)
+      .toBe('errors-only');
+    expect(migrateLegacyRun({ rawTranscriptMode: 'garbage' })!.rawTranscriptMode)
+      .toBe('always');
   });
 
   it('preserves valid phaseOverrides and dedupes by phaseId', () => {

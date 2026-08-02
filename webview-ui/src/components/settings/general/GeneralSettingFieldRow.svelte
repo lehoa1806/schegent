@@ -5,6 +5,7 @@
     type GeneralSettingsControlId
   } from '../GeneralSettingsTab.descriptions';
   import type { PipelineDefinition } from '../../../lib/snapshot-types';
+  import { t } from '../../../lib/i18n';
 
   type ScalarKey =
     | 'cliPath'
@@ -19,7 +20,8 @@
     | 'runtimeLogLevel'
     | 'runtimeLogFilePath'
     | 'sessionRetentionMaxAgeDays'
-    | 'sessionRetentionMaxBytes';
+    | 'sessionRetentionMaxBytes'
+    | 'rawTranscriptMode';
 
   type FieldKind =
     | 'string'
@@ -27,7 +29,8 @@
     | 'number'
     | 'pipeline-select'
     | 'number-optional'
-    | 'level-select';
+    | 'level-select'
+    | 'raw-transcript-select';
 
   interface FieldSpec {
     readonly key: ScalarKey;
@@ -53,6 +56,7 @@
     runtimeLogFilePath: string;
     sessionRetentionMaxAgeDays: number;
     sessionRetentionMaxBytes: number;
+    rawTranscriptMode: 'always' | 'errors-only' | 'off';
   };
 
   interface FieldStatus {
@@ -187,6 +191,20 @@
         <option value="INFO">INFO</option>
         <option value="WARN">WARN</option>
         <option value="ERROR">ERROR</option>
+      </select>
+    {:else if spec.kind === 'raw-transcript-select'}
+      <select
+        class="select-input"
+        data-testid="general-settings-input-{spec.key}"
+        bind:value={draft.rawTranscriptMode}
+        use:hoverTextAnchor={{
+          controlId: spec.key,
+          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+        }}
+      >
+        <option value="always">{t('settings.rawTranscript.always')}</option>
+        <option value="errors-only">{t('settings.rawTranscript.errorsOnly')}</option>
+        <option value="off">{t('settings.rawTranscript.off')}</option>
       </select>
     {:else}
       <input

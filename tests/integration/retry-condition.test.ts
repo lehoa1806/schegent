@@ -219,7 +219,7 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
     expect(retryEvts[2].payload.decision).toBe(false);
     for (const evt of retryEvts) {
       expect(evt.outcome).toBe('info');
-      expect(evt.payload.expression).toBe('open_questions > 0');
+      expect(evt.payload).not.toHaveProperty('expression');
       expect(evt.payload.pipelineId).toBe('security');
       expect(evt.payload.phaseId).toBe('security-audit');
     }
@@ -265,6 +265,7 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
     const ends = lines.filter((l) => l.eventType === 'phase-end');
     const lastEnd = ends[ends.length - 1];
     expect(lastEnd.outcome).toBe('failure');
-    expect(lastEnd.payload.cause).toBe('cap_exhausted');
+    expect(lastEnd.payload.terminationReason).toBe('cap-exhausted');
+    expect(lastEnd.payload).not.toHaveProperty('cause');
   });
 });

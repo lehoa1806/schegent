@@ -251,7 +251,7 @@
         {
           "key": "schegent.defaultPipelineId",
           "type": "string",
-          "default": "dev-new-feature",
+          "default": "speckit-new-feature",
           "scope": "resource",
           "enum": null,
           "minimum": null,
@@ -279,6 +279,22 @@
           "scope": "resource",
           "enum": null,
           "minimum": 30,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.logging.rawTranscriptMode",
+          "type": "enum",
+          "default": "always",
+          "scope": "resource",
+          "enum": [
+            "always",
+            "errors-only",
+            "off"
+          ],
+          "minimum": null,
           "maximum": null,
           "pattern": null,
           "itemType": null,

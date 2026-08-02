@@ -12,7 +12,12 @@ import {
   validateQueueRegistry,
   type QueueRegistry
 } from '../queue/queue-registry';
-import type { WorkflowRun, WatchdogState, WorkspaceLock } from './workflow-run';
+import type {
+  TerminalTransitionIntent,
+  WorkflowRun,
+  WatchdogState,
+  WorkspaceLock
+} from './workflow-run';
 import { STATE_SCHEMA_VERSION } from '../contracts/state-schema';
 import {
   migrateLegacyRun,
@@ -103,6 +108,7 @@ export const KEYS = {
   lock: 'schegent.lock',
   watchdog: 'schegent.watchdog',
   history: 'schegent.history',
+  terminalTransitionIntent: 'schegent.terminalTransitionIntent',
   // Feature 063 (FR-021) — per-action "don't ask again" suppression set.
   confirmSuppression: 'schegent.ui.confirmSuppression'
 } as const;
@@ -119,7 +125,8 @@ export type StoreChangeKey =
   | typeof KEYS.queueDefaultId
   | typeof KEYS.queueGlobalConcurrencyCap
   | typeof KEYS.lock
-  | typeof KEYS.history;
+  | typeof KEYS.history
+  | typeof KEYS.terminalTransitionIntent;
 
 export type StoreChangeListener = (key: StoreChangeKey) => void;
 
@@ -180,6 +187,14 @@ const DELAYED_RETRY_COUNT_PERSISTED_CEILING = 20;
  * write so split-state corruption is prevented locally.
  */
 function validateRunInvariants(run: WorkflowRun): void {
+  if (
+    run.rawTranscriptMode !== undefined &&
+    run.rawTranscriptMode !== 'always' &&
+    run.rawTranscriptMode !== 'errors-only' &&
+    run.rawTranscriptMode !== 'off'
+  ) {
+    throw new Error('WorkflowRun invariant violation: invalid rawTranscriptMode');
+  }
   const pendingAtSet = run.pendingRetryAt !== null;
   const pendingCauseSet = run.pendingRetryCause !== null;
   if (pendingAtSet !== pendingCauseSet) {
@@ -558,6 +573,7 @@ export class WorkspaceStateStore {
     return ensureExtendedQueueShape(persisted);
   }
 
+  /** @internal Full replacement seam for migrations and test setup only. */
   public setQueue(queue: QueueState): Promise<void> {
     // Feature 065 — normalize via `ensureExtendedQueueShape` so a partial
     // QueueState (legacy callers / tests using `as never`) is persisted in
@@ -571,6 +587,32 @@ export class WorkspaceStateStore {
     });
     return this.serialize(KEYS.queue, () => this.memento.update(KEYS.queue, next)).then(() => {
       this.notify(KEYS.queue);
+    });
+  }
+
+  /**
+   * The only safe read/modify/write boundary for queue state. The current
+   * value is read after this mutation reaches the head of the queue chain,
+   * preventing callers from committing a snapshot captured before another
+   * queued mutation completed.
+   */
+  public updateQueue<T>(
+    mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T }
+  ): Promise<T> {
+    let result!: T;
+    return this.serialize(KEYS.queue, async () => {
+      const current = this.getQueue();
+      const mutation = mutate(current);
+      const next = ensureExtendedQueueShape({
+        ...mutation.queue,
+        requests: compactRequestPositions(mutation.queue.requests),
+        updatedAt: Date.now()
+      });
+      result = mutation.result;
+      await this.memento.update(KEYS.queue, next);
+    }).then(() => {
+      this.notify(KEYS.queue);
+      return result;
     });
   }
 
@@ -671,74 +713,73 @@ export class WorkspaceStateStore {
     if (!findQueue(this.getQueueRegistry(), queueId)) {
       throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
     }
-    const queue = this.getQueue();
-    // BUG-004 — `insertAt` is the logical index into the pending list, and
-    // the position field must mirror that index for the queue projector's
-    // `position ascending` sort to honor FIFO order. Sort pending tasks
-    // by their current sparse position so we know the operator-visible
-    // order, then renormalize every pending position to dense `[0..N-1]`
-    // so the new task's `insertAt` index does not collide with a stale
-    // position left behind by a task that transitioned out of pending.
-    const pendingInTarget = queue.requests
-      .filter((item) => item.queueId === queueId && item.status === 'pending')
-      .sort((a, b) => a.position - b.position);
-    if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-      throw new QueueMutationRejected(
-        'task-cap-reached',
-        `Queue ${queueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
-      );
-    }
-    const insertAt = params.position ?? queue.requests.length;
-    if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
-      throw new QueueMutationRejected(
-        'position-out-of-range',
-        `Position must be in [0, ${queue.requests.length}] (got ${String(params.position)})`
-      );
-    }
-    const now = Date.now();
-    const nextRequest: FeatureRequest = {
-      ...request,
-      queueId,
-      position: insertAt,
-      pauseCause: null,
-      updatedAt: now
-    };
-    const denseIndex = new Map<string, number>();
-    const allInTarget = queue.requests
-      .filter((item) => item.queueId === queueId)
-      .sort((a, b) => a.position - b.position);
-    allInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
-    const shifted = queue.requests.map((item) => {
-      if (item.queueId !== queueId) return item;
-      const dense = denseIndex.get(item.id) ?? item.position;
-      const repositioned = dense >= insertAt ? dense + 1 : dense;
-      if (repositioned === item.position) return item;
-      return { ...item, position: repositioned, updatedAt: now };
+    return this.updateQueue((queue) => {
+      // BUG-004 — `insertAt` is the logical index into the pending list, and
+      // the position field must mirror that index for the queue projector's
+      // `position ascending` sort to honor FIFO order.
+      const pendingInTarget = queue.requests
+        .filter((item) => item.queueId === queueId && item.status === 'pending')
+        .sort((a, b) => a.position - b.position);
+      if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
+        throw new QueueMutationRejected(
+          'task-cap-reached',
+          `Queue ${queueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
+        );
+      }
+      const insertAt = params.position ?? queue.requests.length;
+      if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
+        throw new QueueMutationRejected(
+          'position-out-of-range',
+          `Position must be in [0, ${queue.requests.length}] (got ${String(params.position)})`
+        );
+      }
+      const now = Date.now();
+      const nextRequest: FeatureRequest = {
+        ...request,
+        queueId,
+        position: insertAt,
+        pauseCause: null,
+        updatedAt: now
+      };
+      const denseIndex = new Map<string, number>();
+      const allInTarget = queue.requests
+        .filter((item) => item.queueId === queueId)
+        .sort((a, b) => a.position - b.position);
+      allInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
+      const shifted = queue.requests.map((item) => {
+        if (item.queueId !== queueId) return item;
+        const dense = denseIndex.get(item.id) ?? item.position;
+        const repositioned = dense >= insertAt ? dense + 1 : dense;
+        if (repositioned === item.position) return item;
+        return { ...item, position: repositioned, updatedAt: now };
+      });
+      return {
+        queue: { ...queue, requests: [...shifted, nextRequest] },
+        result: nextRequest
+      };
     });
-    await this.setQueue({
-      ...queue,
-      requests: [...shifted, nextRequest]
-    });
-    return nextRequest;
   }
 
   public async removePendingRequest(taskId: string): Promise<FeatureRequest> {
-    const queue = this.getQueue();
-    const target = queue.requests.find((request) => request.id === taskId);
-    if (!target) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    if (target.status !== 'pending') {
-      throw new QueueMutationRejected(
-        'task-not-in-pending-state',
-        `Task ${taskId} is not pending`
-      );
-    }
-    await this.setQueue({
-      ...queue,
-      requests: queue.requests.filter((request) => request.id !== taskId)
+    return this.updateQueue((queue) => {
+      const target = queue.requests.find((request) => request.id === taskId);
+      if (!target) {
+        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+      }
+      if (target.status !== 'pending') {
+        throw new QueueMutationRejected(
+          'task-not-in-pending-state',
+          `Task ${taskId} is not pending`
+        );
+      }
+      return {
+        queue: {
+          ...queue,
+          requests: queue.requests.filter((request) => request.id !== taskId)
+        },
+        result: target
+      };
     });
-    return target;
   }
 
   public getRequest(taskId: string): FeatureRequest | null {
@@ -746,49 +787,54 @@ export class WorkspaceStateStore {
   }
 
   public async removeRequest(taskId: string): Promise<FeatureRequest> {
-    const queue = this.getQueue();
-    const target = queue.requests.find((request) => request.id === taskId);
-    if (!target) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    await this.setQueue({
-      ...queue,
-      inFlightId: queue.inFlightId === taskId ? null : queue.inFlightId,
-      requests: queue.requests.filter((request) => request.id !== taskId)
+    return this.updateQueue((queue) => {
+      const target = queue.requests.find((request) => request.id === taskId);
+      if (!target) {
+        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+      }
+      return {
+        queue: {
+          ...queue,
+          inFlightId: queue.inFlightId === taskId ? null : queue.inFlightId,
+          requests: queue.requests.filter((request) => request.id !== taskId)
+        },
+        result: target
+      };
     });
-    return target;
   }
 
   public async modifyPendingRequest(
     taskId: string,
     updates: { description?: string }
   ): Promise<FeatureRequest> {
-    const queue = this.getQueue();
-    const target = queue.requests.find((request) => request.id === taskId);
-    if (!target) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    if (target.status !== 'pending') {
-      throw new QueueMutationRejected(
-        'task-not-in-pending-state',
-        `Task ${taskId} is not pending`
-      );
-    }
-    const now = Date.now();
-    const nextTarget: FeatureRequest = {
-      ...target,
-      ...(updates.description !== undefined
-        ? { description: validateDescription(updates.description) }
-        : {}),
-      updatedAt: now
-    };
-    await this.setQueue({
-      ...queue,
-      requests: queue.requests.map((request) =>
-        request.id === taskId ? nextTarget : request
-      )
+    return this.updateQueue((queue) => {
+      const target = queue.requests.find((request) => request.id === taskId);
+      if (!target) {
+        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+      }
+      if (target.status !== 'pending') {
+        throw new QueueMutationRejected(
+          'task-not-in-pending-state',
+          `Task ${taskId} is not pending`
+        );
+      }
+      const nextTarget: FeatureRequest = {
+        ...target,
+        ...(updates.description !== undefined
+          ? { description: validateDescription(updates.description) }
+          : {}),
+        updatedAt: Date.now()
+      };
+      return {
+        queue: {
+          ...queue,
+          requests: queue.requests.map((request) =>
+            request.id === taskId ? nextTarget : request
+          )
+        },
+        result: nextTarget
+      };
     });
-    return nextTarget;
   }
 
   // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
@@ -800,52 +846,46 @@ export class WorkspaceStateStore {
   // translating the operator-emitted global `orderedItems` index into a
   // pending-array index before invoking this writer.
   public async reorderPendingRequest(taskId: string, position: number): Promise<FeatureRequest> {
-    const queue = this.getQueue();
-    const target = queue.requests.find((request) => request.id === taskId);
-    if (!target) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    if (target.status !== 'pending') {
-      throw new QueueMutationRejected(
-        'task-not-in-pending-state',
-        `Task ${taskId} is not pending`
+    return this.updateQueue((queue) => {
+      const target = queue.requests.find((request) => request.id === taskId);
+      if (!target) {
+        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+      }
+      if (target.status !== 'pending') {
+        throw new QueueMutationRejected(
+          'task-not-in-pending-state',
+          `Task ${taskId} is not pending`
+        );
+      }
+      const queueId = target.queueId ?? DEFAULT_QUEUE_ID;
+      const pendingPeers = queue.requests
+        .filter((request) => request.queueId === queueId && request.status === 'pending')
+        .sort((a, b) => a.position - b.position);
+      if (!Number.isInteger(position) || position < 0 || position >= pendingPeers.length) {
+        throw new QueueMutationRejected(
+          'position-out-of-range',
+          `Position must be in [0, ${Math.max(0, pendingPeers.length - 1)}] (got ${position})`
+        );
+      }
+      const pendingSlots = pendingPeers.map((peer) => peer.position);
+      const reorderedPending = pendingPeers.filter((request) => request.id !== taskId);
+      reorderedPending.splice(position, 0, target);
+      const now = Date.now();
+      const byId = new Map(
+        reorderedPending.map((request, i) => {
+          const nextPosition = pendingSlots[i];
+          if (request.position === nextPosition) return [request.id, request];
+          return [request.id, { ...request, position: nextPosition, updatedAt: now }];
+        })
       );
-    }
-    const queueId = target.queueId ?? DEFAULT_QUEUE_ID;
-    const pendingPeers = queue.requests
-      .filter((request) => request.queueId === queueId && request.status === 'pending')
-      .sort((a, b) => a.position - b.position);
-    if (
-      !Number.isInteger(position) ||
-      position < 0 ||
-      position >= pendingPeers.length
-    ) {
-      throw new QueueMutationRejected(
-        'position-out-of-range',
-        `Position must be in [0, ${Math.max(0, pendingPeers.length - 1)}] (got ${position})`
-      );
-    }
-    // The slot space: the global `.position` values currently occupied by
-    // pending rows in this queue. The reshuffle permutes the pending row
-    // ids across these slots — slot positions themselves are not
-    // recomputed, so non-pending rows interleaved at unrelated positions
-    // keep their slots untouched (FR-030 stability invariant).
-    const pendingSlots = pendingPeers.map((peer) => peer.position);
-    const reorderedPending = pendingPeers.filter((request) => request.id !== taskId);
-    reorderedPending.splice(position, 0, target);
-    const now = Date.now();
-    const byId = new Map(
-      reorderedPending.map((request, i) => {
-        const nextPosition = pendingSlots[i];
-        if (request.position === nextPosition) return [request.id, request];
-        return [request.id, { ...request, position: nextPosition, updatedAt: now }];
-      })
-    );
-    await this.setQueue({
-      ...queue,
-      requests: queue.requests.map((request) => byId.get(request.id) ?? request)
+      return {
+        queue: {
+          ...queue,
+          requests: queue.requests.map((request) => byId.get(request.id) ?? request)
+        },
+        result: byId.get(taskId) ?? target
+      };
     });
-    return byId.get(taskId) ?? target;
   }
 
   public async movePendingRequest(
@@ -891,25 +931,30 @@ export class WorkspaceStateStore {
       return this.reorderPendingRequest(taskId, insertAt);
     }
     const now = Date.now();
-    const withoutTarget = queue.requests.filter((request) => request.id !== taskId);
-    const shifted = withoutTarget.map((request) =>
-      request.queueId === params.targetQueueId &&
-      request.status === 'pending' &&
-      request.position >= insertAt
-        ? { ...request, position: request.position + 1, updatedAt: now }
-        : request
-    );
     const moved: FeatureRequest = {
       ...target,
       queueId: params.targetQueueId,
       position: insertAt,
       updatedAt: now
     };
-    await this.setQueue({
-      ...queue,
-      requests: [...shifted, moved]
-    });
-    return moved;
+    return this.updateQueue((current) => ({
+      queue: {
+        ...current,
+        requests: [
+          ...current.requests
+            .filter((request) => request.id !== taskId)
+            .map((request) =>
+              request.queueId === params.targetQueueId &&
+              request.status === 'pending' &&
+              request.position >= insertAt
+                ? { ...request, position: request.position + 1, updatedAt: now }
+                : request
+            ),
+          moved
+        ]
+      },
+      result: moved
+    }));
   }
 
   public getRun(): WorkflowRun | null {
@@ -923,6 +968,22 @@ export class WorkspaceStateStore {
     return this.serialize(KEYS.run, () => this.memento.update(KEYS.run, run)).then(() => {
       this.notify(KEYS.run);
     });
+  }
+
+  public getTerminalTransitionIntent(): TerminalTransitionIntent | null {
+    const value = this.memento.get<unknown>(KEYS.terminalTransitionIntent);
+    if (!value || typeof value !== 'object') return null;
+    const intent = value as Partial<TerminalTransitionIntent>;
+    return intent.schemaVersion === 1 && intent.run && typeof intent.createdAt === 'number'
+      ? (intent as TerminalTransitionIntent)
+      : null;
+  }
+
+  public setTerminalTransitionIntent(intent: TerminalTransitionIntent | null): Promise<void> {
+    return this.serialize(
+      KEYS.terminalTransitionIntent,
+      () => this.memento.update(KEYS.terminalTransitionIntent, intent)
+    ).then(() => this.notify(KEYS.terminalTransitionIntent));
   }
 
   public getLock(): WorkspaceLock | null {
@@ -959,6 +1020,14 @@ export class WorkspaceStateStore {
   public appendHistory(entry: PersistedHistoryEntry): Promise<void> {
     return this.serialize(KEYS.history, async () => {
       const existing = this.getHistory();
+      const incoming = entry as { runId?: unknown; terminalStatus?: unknown };
+      if (
+        typeof incoming.runId === 'string' &&
+        existing.some((candidate) => {
+          const prior = candidate as { runId?: unknown; terminalStatus?: unknown };
+          return prior.runId === incoming.runId && prior.terminalStatus === incoming.terminalStatus;
+        })
+      ) return;
       const next = [...existing, entry];
       const trimmed = next.length > HISTORY_CAP ? next.slice(next.length - HISTORY_CAP) : next;
       await this.memento.update(KEYS.history, trimmed);
@@ -990,6 +1059,7 @@ export class WorkspaceStateStore {
       this.memento.update(KEYS.lock, undefined),
       this.memento.update(KEYS.watchdog, undefined),
       this.memento.update(KEYS.history, undefined),
+      this.memento.update(KEYS.terminalTransitionIntent, undefined),
       // Feature 063 (FR-022a) — Reset Workspace clears the suppression
       // set so reopened operators always see confirmation prompts again.
       this.memento.update(KEYS.confirmSuppression, undefined),

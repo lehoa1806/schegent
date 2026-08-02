@@ -1,6 +1,5 @@
 <script lang="ts">
   import { formatAbsoluteTime } from '../lib/format';
-  import { stripAnsi } from '../lib/ansi';
   import type { AuditCategory, AuditTailEntry } from '../lib/snapshot-types';
 
   interface Props {
@@ -82,11 +81,9 @@
           <div class="row summary" data-testid="system-entry-summary-{entry.id}">
             {entry.summary}
           </div>
-          {#if entry.category === 'cli-invocation' && entry.command}
-            <pre class="cli-command" data-testid="system-entry-command-{entry.id}">{stripAnsi(entry.command)}</pre>
-          {:else if entry.category === 'cli-invocation'}
+          {#if entry.category === 'cli-invocation'}
             <p class="cli-command-missing" data-testid="system-entry-command-missing-{entry.id}">
-              <em>(no command captured)</em>
+              <em>Invocation details are intentionally omitted.</em>
             </p>
           {/if}
         </li>
@@ -200,20 +197,6 @@
 
   .outcome-badge {
     font-weight: 600;
-  }
-
-  pre.cli-command {
-    max-height: 12em;
-    margin: 2px 0 0;
-    padding: 4px 6px;
-    overflow-x: auto;
-    overflow-y: auto;
-    border-radius: 3px;
-    background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
-    font-family: var(--schegent-mono-font, ui-monospace, SFMono-Regular, monospace);
-    font-size: 0.85em;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
   .cli-command-missing {

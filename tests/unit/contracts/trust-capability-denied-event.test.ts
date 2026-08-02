@@ -56,8 +56,8 @@ describe('trust.capability-denied audit event registration (059, T029)', () => {
     expect(isKnownAuditEventType('trust.capability-bogus')).toBe(false);
   });
 
-  it('keeps AUDIT_SCHEMA_VERSION at 2 (additive event, no bump)', () => {
-    expect(AUDIT_SCHEMA_VERSION).toBe(2);
+  it('uses AUDIT_SCHEMA_VERSION 3 for bounded metadata-only payloads', () => {
+    expect(AUDIT_SCHEMA_VERSION).toBe(3);
   });
 
   it('exposes a TrustGateEventType union limited to the registered literal', () => {

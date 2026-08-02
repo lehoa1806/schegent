@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CostTimelinePoint } from '../../lib/messages';
+  import { t } from '../../lib/i18n';
 
   interface Props {
     timeline: readonly CostTimelinePoint[];
@@ -76,6 +77,12 @@
           onmouseleave={() => onActivePointChange(null)}
           onfocus={() => onActivePointChange(index)}
           onblur={() => onActivePointChange(null)}
+          onkeydown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onActivePointChange(index);
+            }
+          }}
         ><title>{point.date}: {formatCost(point.dailyCostUsd)} (cumulative {formatCost(point.cumulativeCostUsd)})</title></circle>
       {/each}
     </svg>
@@ -83,7 +90,7 @@
       {#if activePoint}
         {activePoint.date}: daily {formatCost(activePoint.dailyCostUsd)}, cumulative {formatCost(activePoint.cumulativeCostUsd)}
       {:else}
-        Hover or focus a point on the chart for exact values.
+        {t('metrics.chart.hint')}
       {/if}
     </p>
   {/if}
