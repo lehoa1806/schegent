@@ -88,7 +88,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
   'webview-ui/src/components/settings/BackendHealthSection.svelte',
-  'src/metrics/metrics-service.ts'
+  'src/metrics/metrics-service.ts',
+  'src/services/workflow-run-factory.ts'
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

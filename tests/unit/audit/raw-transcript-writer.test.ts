@@ -395,3 +395,36 @@ describe('RawTranscriptWriter custom-phase instruction redaction (T049, US3, SC-
     expect(auditEquivalent).toContain('[REDACTED]');
   });
 });
+
+describe('RawTranscriptWriter retention modes', () => {
+  it('does not create transcript or spool artifacts in off mode', async () => {
+    await writer.appendStart({
+      runId: 'off-run', phase: 'speckit-plan', iteration: 1, prompt: 'secret', mode: 'off'
+    });
+    expect(await writer.createInvocationCapture('off-run', 'off')).toBeNull();
+    await writer.appendEnd({
+      runId: 'off-run', stdout: 'x', stderr: '', exitCode: 0,
+      killed: false, timedOut: false, mode: 'off'
+    });
+    await expect(readLog('off-run')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('stages errors-only privately, promotes failures, and deletes completion', async () => {
+    const runId = 'error-run';
+    await writer.appendStart({
+      runId, phase: 'speckit-plan', iteration: 1, prompt: 'p', mode: 'errors-only'
+    });
+    await writer.appendEnd({
+      runId, stdout: 'x', stderr: 'bad', exitCode: 1,
+      killed: false, timedOut: false, mode: 'errors-only'
+    });
+    const pending = path.join(
+      workspaceRoot, '.schegent', 'sessions', '.pending', `raw-${runId}.log`
+    );
+    expect(await fs.stat(pending).then((s) => s.isFile())).toBe(true);
+    await writer.finalizeRun(runId, 'failed', 'errors-only');
+    expect(await readLog(runId)).toContain('bad');
+    await writer.finalizeRun(runId, 'completed', 'errors-only');
+    await expect(readLog(runId)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});

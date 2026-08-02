@@ -4,6 +4,7 @@ import type { FileHandle } from 'node:fs/promises';
 import * as path from 'path';
 import * as os from 'node:os';
 import type { Phase } from '../controller/phase';
+import type { RawTranscriptMode, WorkflowRunStatus } from '../state/workflow-run';
 import type { SanitizedLogger } from '../lib/logger';
 import type { InvocationOutputSink } from '../runner/invocation-result';
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
@@ -22,6 +23,7 @@ export interface RawTranscriptStartInput {
   phase: Phase;
   iteration: number;
   prompt: string;
+  mode?: RawTranscriptMode;
 }
 
 export interface RawTranscriptEndInput {
@@ -33,6 +35,7 @@ export interface RawTranscriptEndInput {
   timedOut: boolean;
   /** Verbatim disk-backed stream capture, when one was available. */
   capture?: RawTranscriptCapture | null;
+  mode?: RawTranscriptMode;
 }
 
 export interface RawTranscriptCapture extends InvocationOutputSink {
@@ -187,8 +190,9 @@ export class RawTranscriptWriter {
       this.warnEmptyRunId();
       return;
     }
+    if (input.mode === 'off') return;
     const block = formatStartBlock(input);
-    await this.enqueue(input.runId, block);
+    await this.enqueue(input.runId, block, input.mode ?? 'always');
   }
 
   /**
@@ -197,11 +201,15 @@ export class RawTranscriptWriter {
    * `appendEnd`. Returns `null` on I/O failure so callers can retain the
    * legacy bounded-buffer fallback without failing the workflow.
    */
-  public async createInvocationCapture(runId: string): Promise<RawTranscriptCapture | null> {
+  public async createInvocationCapture(
+    runId: string,
+    mode: RawTranscriptMode = 'always'
+  ): Promise<RawTranscriptCapture | null> {
     if (!runId) {
       this.warnEmptyRunId();
       return null;
     }
+    if (mode === 'off') return null;
     let spoolDirectory: string | null = null;
     try {
       await this.ensureRuntimeGitignore();
@@ -240,25 +248,64 @@ export class RawTranscriptWriter {
       this.warnEmptyRunId();
       return;
     }
+    if (input.mode === 'off') {
+      await input.capture?.dispose();
+      return;
+    }
     const previous = this.chains.get(input.runId) ?? Promise.resolve();
     const next = previous.then(() => this.doWriteEnd(input));
     this.chains.set(input.runId, next);
     return next;
   }
 
-  private filePathFor(runId: string): string {
-    return path.join(this.workspaceRoot, '.schegent', 'sessions', `raw-${runId}.log`);
+  public async finalizeRun(
+    runId: string,
+    status: WorkflowRunStatus,
+    mode: RawTranscriptMode
+  ): Promise<void> {
+    if (!runId || mode === 'always') return;
+    const previous = this.chains.get(runId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const pending = this.filePathFor(runId, 'errors-only');
+      const retained = this.filePathFor(runId, 'always');
+      try {
+        if (mode === 'off' || status === 'completed') {
+          await Promise.all([
+            fs.rm(pending, { force: true }),
+            fs.rm(retained, { force: true })
+          ]);
+        } else if (status === 'failed' || status === 'canceled' || status === 'paused') {
+          await fs.mkdir(path.dirname(retained), { recursive: true, mode: 0o700 });
+          try {
+            await fs.rename(pending, retained);
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          }
+        }
+      } catch (err) {
+        this.warnWriteFailure(runId, err as Error);
+      }
+    });
+    this.chains.set(runId, next);
+    await next;
   }
 
-  private enqueue(runId: string, content: string): Promise<void> {
+  private filePathFor(runId: string, mode: RawTranscriptMode): string {
+    const sessions = path.join(this.workspaceRoot, '.schegent', 'sessions');
+    return mode === 'errors-only'
+      ? path.join(sessions, '.pending', `raw-${runId}.log`)
+      : path.join(sessions, `raw-${runId}.log`);
+  }
+
+  private enqueue(runId: string, content: string, mode: RawTranscriptMode): Promise<void> {
     const previous = this.chains.get(runId) ?? Promise.resolve();
-    const next = previous.then(() => this.doWrite(runId, content));
+    const next = previous.then(() => this.doWrite(runId, content, mode));
     this.chains.set(runId, next);
     return next;
   }
 
-  private async doWrite(runId: string, content: string): Promise<void> {
-    const target = this.filePathFor(runId);
+  private async doWrite(runId: string, content: string, mode: RawTranscriptMode): Promise<void> {
+    const target = this.filePathFor(runId, mode);
     try {
       await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await this.ensureRuntimeGitignore();
@@ -269,7 +316,7 @@ export class RawTranscriptWriter {
   }
 
   private async doWriteEnd(input: RawTranscriptEndInput): Promise<void> {
-    const target = this.filePathFor(input.runId);
+    const target = this.filePathFor(input.runId, input.mode ?? 'always');
     try {
       await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await this.ensureRuntimeGitignore();

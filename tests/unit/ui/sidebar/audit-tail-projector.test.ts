@@ -103,7 +103,7 @@ describe('projectAuditEntry (Feature 064 T008)', () => {
 });
 
 // Feature 068 — INV-4..INV-9: additive extraction of taskId / phaseId /
-// outcome / command. Existing assertions above must remain green
+// outcome. Audit v3 keeps command detail out of the projection.
 // (SC-004 / FR-017).
 describe('projectAuditEntry (Feature 068 additive fields)', () => {
   it('projects runner from phase-start payload for Activity Feed attribution', () => {
@@ -187,42 +187,22 @@ describe('projectAuditEntry (Feature 068 additive fields)', () => {
     expect(projected.outcome).toBeUndefined();
   });
 
-  it("extracts command for cli-invocation event when payload.command is a non-empty string", () => {
+  it("uses host-generated metadata for cli-invocation summaries", () => {
     const projected = projectAuditEntry(
       entry({
         eventType: 'cli-invocation',
-        payload: { command: 'claude --print --model claude-opus-4-7 ...' }
+        payload: { runner: 'claude', operation: 'phase', permissionMode: 'unrestricted' }
       })
     );
-    expect(projected.command).toBe('claude --print --model claude-opus-4-7 ...');
-  });
-
-  it("leaves command undefined for cli-invocation when payload.command is missing", () => {
-    const projected = projectAuditEntry(
-      entry({ eventType: 'cli-invocation', payload: {} })
-    );
-    expect(projected.command).toBeUndefined();
-  });
-
-  it("leaves command undefined for cli-invocation when payload.command is an empty string", () => {
-    const projected = projectAuditEntry(
-      entry({ eventType: 'cli-invocation', payload: { command: '' } })
-    );
-    expect(projected.command).toBeUndefined();
-  });
-
-  it("ignores payload.command for non-cli-invocation events", () => {
-    const projected = projectAuditEntry(
-      entry({ eventType: 'phase-start', payload: { command: 'should-be-ignored' } })
-    );
-    expect(projected.command).toBeUndefined();
+    expect(projected.summary).toContain('claude phase');
+    expect(projected.summary).not.toContain('--');
   });
 
   it('returns a frozen object after additive fields land', () => {
     const projected = projectAuditEntry(
       entry({
         eventType: 'cli-invocation',
-        payload: { taskId: 't-1', phaseId: 'plan', command: 'claude ...' },
+        payload: { taskId: 't-1', phaseId: 'plan', runner: 'claude', operation: 'phase' },
         outcome: 'success'
       })
     );
@@ -230,6 +210,6 @@ describe('projectAuditEntry (Feature 068 additive fields)', () => {
     expect(projected.taskId).toBe('t-1');
     expect(projected.phaseId).toBe('plan');
     expect(projected.outcome).toBe('success');
-    expect(projected.command).toBe('claude ...');
+    expect(projected.summary).toContain('claude phase');
   });
 });

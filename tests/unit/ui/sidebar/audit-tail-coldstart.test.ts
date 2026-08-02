@@ -83,7 +83,7 @@ describe('readAuditTailColdStart (Feature 068 US3)', () => {
     const lines = [
       entryLine({ id: 'e-1', iteration: 1 }),
       entryLine({ id: 'e-2', iteration: 2, eventType: 'phase-end', outcome: 'success' }),
-      entryLine({ id: 'e-3', iteration: 3, eventType: 'cli-invocation', outcome: 'info', payload: { command: 'claude --print' } })
+      entryLine({ id: 'e-3', iteration: 3, eventType: 'cli-invocation', outcome: 'info', payload: { runner: 'claude', operation: 'phase' } })
     ];
     await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
 
@@ -93,7 +93,7 @@ describe('readAuditTailColdStart (Feature 068 US3)', () => {
     expect(tail[0]!.id).toBe('e-1');
     expect(tail[1]!.id).toBe('e-2');
     expect(tail[2]!.id).toBe('e-3');
-    expect(tail[2]!.command).toBe('claude --print');
+    expect(tail[2]!.summary).toContain('claude phase');
   });
 
   it('INV-13: returns the last AUDIT_TAIL_MAX entries when file exceeds the cap', async () => {

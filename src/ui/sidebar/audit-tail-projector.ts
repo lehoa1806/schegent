@@ -4,9 +4,9 @@
 // the persisted audit entry shape to the tail-entry shape rendered in
 // the sidebar.
 //
-// Feature 068 — additive extraction of `taskId`, `phaseId`, `outcome`, and
-// (for `cli-invocation` events only) `command` so the System tab can
-// render structured per-entry metadata and the CLI command block.
+// Feature 068 — additive extraction of `taskId`, `phaseId`, and `outcome`.
+// Audit schema v3 deliberately excludes executable paths and argv; the host
+// produces a metadata-only summary for CLI invocation rows.
 
 import type { AuditEntry, AuditEventType, AuditOutcome } from '../../audit/audit-entry';
 import { classifyAuditEvent } from '../../contracts/audit-events';
@@ -18,7 +18,6 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   const taskId = extractTaskId(entry.payload);
   const phaseId = extractPhaseId(entry);
   const outcome = normalizeOutcome(entry.outcome);
-  const command = entry.eventType === 'cli-invocation' ? extractCommand(entry.payload) : undefined;
   const runner = entry.eventType === 'phase-start' ? extractRunner(entry.payload) : undefined;
   return Object.freeze({
     id: entry.id,
@@ -31,7 +30,6 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
     taskId,
     phaseId,
     outcome,
-    command,
     runner
   });
 }
@@ -67,12 +65,6 @@ function normalizeOutcome(outcome: AuditOutcome): 'success' | 'error' | 'pending
   return undefined;
 }
 
-function extractCommand(payload: Record<string, unknown>): string | undefined {
-  const value = payload.command;
-  if (typeof value === 'string' && value.length > 0) return value;
-  return undefined;
-}
-
 function phaseForTail(phase: Phase): PhaseName | null {
   if (phase === 'done') return null;
   return phase as PhaseName;
@@ -91,6 +83,16 @@ function categorize(eventType: AuditEventType, outcome: AuditOutcome): AuditCate
 
 function summarize(entry: AuditEntry): string {
   const base = `${entry.eventType} ${entry.phase}#${entry.iteration}`;
+  if (entry.eventType === 'cli-invocation') {
+    const runner = typeof entry.payload.runner === 'string' ? entry.payload.runner : 'backend';
+    const operation = typeof entry.payload.operation === 'string'
+      ? entry.payload.operation
+      : 'phase';
+    const permission = typeof entry.payload.permissionMode === 'string'
+      ? ` · ${entry.payload.permissionMode}`
+      : '';
+    return truncateLabel(`${base}: ${runner} ${operation}${permission}`);
+  }
   const note = typeof entry.payload?.summary === 'string' ? `: ${entry.payload.summary as string}` : '';
   return truncateLabel(`${base}${note}`);
 }

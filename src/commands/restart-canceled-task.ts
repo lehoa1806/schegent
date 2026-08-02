@@ -48,32 +48,44 @@ export async function runRestartCanceledTask(ctx: {
       return { ok: false, reason: 'illegal-state' };
     }
 
-    const queue = ctx.store.getQueue();
     const targetQueueId = feature.queueId ?? DEFAULT_QUEUE_ID;
-    const pendingInTarget = queue.requests.filter(
-      (r) => (r.queueId ?? DEFAULT_QUEUE_ID) === targetQueueId && r.status === 'pending'
-    );
-    if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-      return { ok: false, reason: 'task-cap-reached' };
-    }
-
     const now = Date.now();
     const previousRunId = feature.runId;
-    const restarted: FeatureRequest = {
-      ...feature,
-      status: 'pending',
-      runId: null,
-      startedAt: null,
-      completedAt: null,
-      updatedAt: now,
-      position: pendingInTarget.length,
-      retryCount: feature.retryCount + 1,
-      lastError: null,
-      pausedReason: null,
-      pauseCause: null
-    };
-    const requests = queue.requests.map((r) => (r.id === taskId ? restarted : r));
-    await ctx.store.setQueue({ ...queue, requests });
+    const restarted = await ctx.store.updateQueue<FeatureRequest | null>((queue) => {
+      const current = queue.requests.find((request) => request.id === taskId);
+      if (!current || current.status !== 'canceled') return { queue, result: null };
+      const pendingInTarget = queue.requests.filter(
+        (request) =>
+          (request.queueId ?? DEFAULT_QUEUE_ID) === targetQueueId &&
+          request.status === 'pending'
+      );
+      if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
+        throw new Error('task-cap-reached');
+      }
+      const next: FeatureRequest = {
+        ...current,
+        status: 'pending',
+        runId: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: now,
+        position: pendingInTarget.length,
+        retryCount: current.retryCount + 1,
+        lastError: null,
+        pausedReason: null,
+        pauseCause: null
+      };
+      return {
+        queue: {
+          ...queue,
+          requests: queue.requests.map((request) =>
+            request.id === taskId ? next : request
+          )
+        },
+        result: next
+      };
+    });
+    if (!restarted) return { ok: false, reason: 'illegal-state' };
 
     await ctx.audit.append({
       runId: previousRunId ?? `task:${feature.id}`,
@@ -81,7 +93,7 @@ export async function runRestartCanceledTask(ctx: {
       iteration: 0,
       eventType: 'task-restarted-from-canceled',
       payload: {
-        taskId: feature.id,
+        taskId: restarted.id,
         queueId: targetQueueId,
         previousRunId: previousRunId ?? null
       },
@@ -92,6 +104,7 @@ export async function runRestartCanceledTask(ctx: {
     return { ok: true };
   } catch (err) {
     const message = (err as Error).message ?? 'unknown error';
+    if (message === 'task-cap-reached') return { ok: false, reason: message };
     ctx.notifier.error(`Schegent: restart failed — ${message}`);
     ctx.logger.error(message);
     return { ok: false, reason: 'unexpected-error' };

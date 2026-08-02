@@ -5,6 +5,7 @@ import { runAuto } from '../commands/auto';
 import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
 import { runEnqueue } from '../commands/enqueue';
+import { runExportAuditLog } from '../commands/export-audit';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
   runClearCompleted,
@@ -159,6 +160,9 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     ),
     vscode.commands.registerCommand('schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
+    ),
+    vscode.commands.registerCommand('schegent.exportAuditLog', () =>
+      runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
     vscode.commands.registerCommand('schegent.retryQueuedItem', (arg) =>
       runRetryQueuedItem(arg, queueOpsCtx)

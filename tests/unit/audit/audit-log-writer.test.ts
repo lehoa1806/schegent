@@ -137,7 +137,7 @@ describe('AuditLogWriter.append', () => {
     expect(new Set(files).size).toBe(files.length);
   });
 
-  it('sanitizes secrets in payload before writing', async () => {
+  it('projects command-bearing cli payloads to metadata before writing', async () => {
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
     await writer.append({
       runId: 'r',
@@ -148,8 +148,9 @@ describe('AuditLogWriter.append', () => {
       outcome: 'info'
     });
     const contents = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
-    expect(contents).toContain('[REDACTED]');
+    expect(contents).not.toContain('Bearer');
     expect(contents).not.toContain('abcdefghijklmnopqrst');
+    expect(contents).toContain('"operation":"phase"');
   });
 
   it('serializes concurrent appends in order', async () => {
@@ -241,7 +242,7 @@ describe('AuditLogWriter.subscribe', () => {
     ).rejects.toThrow();
 
     expect(received).toHaveLength(1);
-    expect(JSON.stringify(received[0])).toContain('[REDACTED]');
+    expect(JSON.stringify(received[0])).not.toContain('Bearer');
     expect(JSON.stringify(received[0])).not.toContain('abcdefghijklmnopqrst');
   });
 });
