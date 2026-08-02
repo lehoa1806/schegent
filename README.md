@@ -179,7 +179,7 @@ By topic:
 
 - **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md), [local-first versus offline](docs/concepts/local-first-not-offline.md).
 - **Architecture decisions** — [remote, multi-user, and parallel execution expansion gate](docs/architecture/remote-multi-user-expansion-gate.md).
-- **Features** — [phase overrides](docs/features/phase-overrides.md), [custom phases](docs/features/custom-phases.md), [phase breakpoints](docs/features/phase-breakpoints.md), [wake-up scheduler](docs/features/wake-up-scheduler.md), [verbose diagnostics](docs/features/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
+- **Features** — [phase overrides](docs/features/round_1/phase-overrides.md), [custom phases](docs/features/round_1/custom-phases.md), [phase breakpoints](docs/features/round_1/phase-breakpoints.md), [wake-up scheduler](docs/features/round_1/wake-up-scheduler.md), [verbose diagnostics](docs/features/round_1/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/round_1/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
 - **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
 - **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).
 - **Security** — [operator threat model](docs/security/threat-model.md).
@@ -283,7 +283,7 @@ diagnostics are unredacted by design.
 
 A fifth sink, the wake-up session log, lives under VS Code global
 storage rather than `.schegent/`; see
-[`docs/features/wake-up-scheduler.md`](docs/features/wake-up-scheduler.md).
+[`docs/features/round_1/wake-up-scheduler.md`](docs/features/round_1/wake-up-scheduler.md).
 
 ## Security posture
 
