@@ -670,6 +670,13 @@ export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
         field: 'effort',
         message: `Phase.effort must be one of ${EFFORT_LEVELS.join(', ')}`
       });
+    } else if (v.runner === 'agy' && (v.effort === 'xhigh' || v.effort === 'max')) {
+      errors.push({
+        source: 'phase',
+        id,
+        field: 'effort',
+        message: `Phase.effort '${v.effort}' is not supported by Antigravity (agy). Supported levels: low, medium, high`
+      });
     }
   }
 

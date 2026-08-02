@@ -82,17 +82,14 @@ describe('AgyCliRunner.invoke', () => {
     expect(captured.join('')).toBe('do work');
   });
 
-  it('maps effort xhigh → high with WARN log', async () => {
+  it('rejects effort xhigh with an Error', async () => {
     const child = makeFakeChild();
-    const seen: { args: ReadonlyArray<string> } = { args: [] };
-    const spawnFn: SpawnFn = (_cmd, args, _opts) => {
-      seen.args = args;
+    const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
       setImmediate(() => child.emit('exit', 0, null));
       return child as unknown as ChildProcess;
     };
-    const logger = silentLogger();
-    const runner = new AgyCliRunner(spawnFn, null, logger);
-    await runner.invoke({
+    const runner = new AgyCliRunner(spawnFn, null, silentLogger());
+    await expect(runner.invoke({
       phase: 'speckit-specify',
       iteration: 1,
       prompt: 'hi',
@@ -100,26 +97,17 @@ describe('AgyCliRunner.invoke', () => {
       cliPath: 'agy',
       cwd: '/repo',
       effort: 'xhigh'
-    });
-    const effortIdx = (seen.args as string[]).indexOf('--effort');
-    expect(effortIdx).toBeGreaterThan(-1);
-    expect(seen.args[effortIdx + 1]).toBe('high');
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("effort 'xhigh' is not supported")
-    );
+    })).rejects.toThrow("agy-cli: effort 'xhigh' is not supported by Antigravity");
   });
 
-  it('maps effort max → high with WARN log', async () => {
+  it('rejects effort max with an Error', async () => {
     const child = makeFakeChild();
-    const seen: { args: ReadonlyArray<string> } = { args: [] };
-    const spawnFn: SpawnFn = (_cmd, args, _opts) => {
-      seen.args = args;
+    const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
       setImmediate(() => child.emit('exit', 0, null));
       return child as unknown as ChildProcess;
     };
-    const logger = silentLogger();
-    const runner = new AgyCliRunner(spawnFn, null, logger);
-    await runner.invoke({
+    const runner = new AgyCliRunner(spawnFn, null, silentLogger());
+    await expect(runner.invoke({
       phase: 'speckit-specify',
       iteration: 1,
       prompt: 'hi',
@@ -127,13 +115,7 @@ describe('AgyCliRunner.invoke', () => {
       cliPath: 'agy',
       cwd: '/repo',
       effort: 'max'
-    });
-    const effortIdx = (seen.args as string[]).indexOf('--effort');
-    expect(effortIdx).toBeGreaterThan(-1);
-    expect(seen.args[effortIdx + 1]).toBe('high');
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("effort 'max' is not supported")
-    );
+    })).rejects.toThrow("agy-cli: effort 'max' is not supported by Antigravity");
   });
 
   it('passes low/medium/high effort unchanged', async () => {

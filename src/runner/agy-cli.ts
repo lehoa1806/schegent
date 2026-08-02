@@ -11,11 +11,10 @@ const HIGH_EFFORT: readonly Effort[] = ['xhigh', 'max'];
 export type SpawnFn = ProcessSpawnFn;
 export type { MonitorSidecarEvent, MonitorSidecarHook };
 
-function resolveEffort(effort: string | undefined, logger: SanitizedLogger): string | undefined {
+function resolveEffort(effort: string | undefined): string | undefined {
   if (!effort?.trim()) return undefined;
   if ((HIGH_EFFORT as readonly string[]).includes(effort.trim())) {
-    logger.warn(`agy-cli: effort '${effort.trim()}' is not supported; capping to 'high'`);
-    return 'high';
+    throw new Error(`agy-cli: effort '${effort.trim()}' is not supported by Antigravity. Supported levels: low, medium, high`);
   }
   return effort.trim();
 }
@@ -27,7 +26,7 @@ export class AgyCliRunner implements BackendRunner {
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
-    private readonly logger: SanitizedLogger = new SanitizedLogger()
+    logger: SanitizedLogger = new SanitizedLogger()
   ) {
     this.lifecycle = new ProcessLifecycleRunner(spawnFn, monitorHook, logger, 'agy-cli');
   }
@@ -41,9 +40,9 @@ export class AgyCliRunner implements BackendRunner {
     const resume = request.isContinue === true || request.sessionReuse === true;
     const args = ['--dangerously-skip-permissions'];
     if (resume && request.resumeSessionId) args.push('--conversation', request.resumeSessionId);
-    args.push('-p');
+    args.push('-p', '-');
     if (request.model?.trim()) args.push('--model', request.model);
-    const effort = resolveEffort(request.effort, this.logger);
+    const effort = resolveEffort(request.effort);
     if (effort) args.push('--effort', effort);
     args.push('--output-format', 'stream-json');
     const output = await this.lifecycle.invoke({
