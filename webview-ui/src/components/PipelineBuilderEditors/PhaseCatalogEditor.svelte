@@ -106,6 +106,11 @@
   function configuredModelUnavailable(phase: MutablePhase): boolean {
     return !!phase.model && !modelsFor(phase).includes(phase.model);
   }
+
+  function effortOptionDisabled(phase: MutablePhase, effort: string): boolean {
+    const runner = phase.runner || snapshot.defaultRunnerKind || 'claude';
+    return runner === 'agy' && (effort === 'xhigh' || effort === 'max');
+  }
 </script>
 
 {#if showTrustBanner}
@@ -199,7 +204,7 @@
               <select class="select-input" data-testid="phases-effort-{phase.id}" value={phase.effort ?? ''} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { effort: value ? (value as PhaseDefinition['effort']) : undefined }); }}>
                 <option value="">[Inherit]</option>
                 {#each EFFORT_LEVELS as effort}
-                  <option value={effort}>{effort}</option>
+                  <option value={effort} disabled={effortOptionDisabled(phase, effort)}>{effort}</option>
                 {/each}
               </select>
             </label>
