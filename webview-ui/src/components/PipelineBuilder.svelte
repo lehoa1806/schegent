@@ -68,7 +68,7 @@
 
   let pipelines = $state<MutablePipeline[]>([]);
   let phases = $state<MutablePhase[]>([]);
-  let models = $state<string[]>([]);
+  let models = $state<Record<string, string[]>>({});
   let initialized = $state(false);
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -83,8 +83,14 @@
     if (!initialized && snapshot.availablePipelines && snapshot.availablePhases && snapshot.availableModels) {
       pipelines = JSON.parse(JSON.stringify(snapshot.availablePipelines));
       phases = JSON.parse(JSON.stringify(snapshot.availablePhases));
-      const loaded = JSON.parse(JSON.stringify(snapshot.availableModels.claude || []));
-      models = loaded.length > 0 ? loaded : [...PRESEEDED_MODELS];
+      
+      const loadedModels: Record<string, string[]> = {};
+      const snapModels = snapshot.availableModels || {};
+      for (const kind of Object.keys(snapModels)) {
+        const loaded = JSON.parse(JSON.stringify(snapModels[kind as keyof typeof snapModels] || []));
+        loadedModels[kind] = loaded.length > 0 ? loaded : (kind === 'claude' ? [...PRESEEDED_MODELS] : []);
+      }
+      models = loadedModels;
       initialized = true;
     }
   });
@@ -133,7 +139,7 @@
     });
   }
   function saveModels(): void {
-    void saveModelsHelper([...models]);
+    void saveModelsHelper(JSON.parse(JSON.stringify(models)));
   }
 
   function getPhaseTooltip(phaseId: string): string {
@@ -340,16 +346,29 @@
   }
 
   // --- Models ---
-  let newModelInput = $state('');
-  function addModel(): void {
-    if (newModelInput.trim() && !models.includes(newModelInput.trim())) {
-      models = [...models, newModelInput.trim()];
-      newModelInput = '';
+  let newModelInput = $state<Record<string, string>>({});
+  
+  function addModel(backend: string): void {
+    const val = (newModelInput[backend] || '').trim();
+    if (val) {
+      if (!models[backend]) models[backend] = [];
+      if (!models[backend].includes(val)) {
+        models[backend] = [...models[backend], val];
+        newModelInput[backend] = '';
+      }
     }
   }
-  function removeModel(index: number): void { models = models.filter((_, i) => i !== index); }
-  function updateModel(index: number, value: string): void {
-    models[index] = value;
+  
+  function removeModel(backend: string, index: number): void { 
+    if (models[backend]) {
+      models[backend] = models[backend].filter((_, i) => i !== index);
+    }
+  }
+  
+  function updateModel(backend: string, index: number, value: string): void {
+    if (models[backend]) {
+      models[backend][index] = value;
+    }
   }
 </script>
 
@@ -433,7 +452,11 @@
         availableModels={snapshot.availableModels}
         {models}
         {newModelInput}
-        onnewmodelinput={(value) => newModelInput = value}
+        onnewmodelinput={(backend, value) => {
+          const updated = { ...newModelInput };
+          updated[backend] = value;
+          newModelInput = updated;
+        }}
         onmodelchange={updateModel}
         onadd={addModel}
         onremove={removeModel}

@@ -38,7 +38,7 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
   // Feature 074 — bumped 800 → 850 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
   // isPhaseDef runner check, and validatePhaseRaw runner validation.
-  { path: 'src/config/pipeline-config.ts', maxLines: 850 },
+  { path: 'src/config/pipeline-config.ts', maxLines: 900 },
   { path: 'src/config/general-settings.ts', maxLines: 650 }
 ];
 

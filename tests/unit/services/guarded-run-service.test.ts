@@ -43,7 +43,7 @@ function makeCatalog(pipelineIds: readonly string[]): PipelineCatalog {
   return {
     phases: [],
     pipelines,
-    models: [],
+    models: { claude: [], codex: [], agy: [] },
     defaultPipelineId: pipelineIds[0] ?? 'default',
     phasesById: new Map(),
     pipelinesById
@@ -65,7 +65,7 @@ function makeRunnerCatalog(runner: BackendRunnerKind): PipelineCatalog {
   return {
     phases: [phase],
     pipelines: [pipeline],
-    models: [],
+    models: { claude: [], codex: [], agy: [] },
     defaultPipelineId: pipeline.id,
     phasesById: new Map([[phase.id, phase]]),
     pipelinesById: new Map([[pipeline.id, pipeline]])
@@ -90,7 +90,7 @@ function makeGitPhaseCatalog(
   return {
     phases: [phase],
     pipelines: [pipeline],
-    models: [],
+    models: { claude: [], codex: [], agy: [] },
     defaultPipelineId: pipeline.id,
     phasesById: new Map([[phase.id, phase]]),
     pipelinesById: new Map([[pipeline.id, pipeline]])

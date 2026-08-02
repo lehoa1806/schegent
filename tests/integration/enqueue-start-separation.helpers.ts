@@ -134,7 +134,7 @@ export function makeCatalog(pipelineIds: readonly string[] = ['default']): Pipel
   return {
     phases: [],
     pipelines,
-    models: [],
+    models: { claude: [], codex: [], agy: [] },
     defaultPipelineId: pipelineIds[0] ?? 'default',
     phasesById: new Map(),
     pipelinesById

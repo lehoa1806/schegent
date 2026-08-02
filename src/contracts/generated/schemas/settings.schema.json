@@ -403,14 +403,18 @@
         },
         {
           "key": "schegent.models",
-          "type": "array",
-          "default": [],
+          "type": "object",
+          "default": {
+            "claude": [],
+            "codex": [],
+            "agy": []
+          },
           "scope": "resource",
           "enum": null,
           "minimum": null,
           "maximum": null,
           "pattern": null,
-          "itemType": "string",
+          "itemType": null,
           "itemPattern": null
         },
         {

@@ -154,7 +154,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
 
     const customPhases: readonly PhaseDef[] = [...BUILT_IN_PHASES, securityPhase];
     const customPipelines: readonly PipelineDef[] = [BUILT_IN_PIPELINE, securityPipeline];
-    const catalog = buildCatalog(customPhases, customPipelines, [], 'security');
+    const catalog = buildCatalog(customPhases, customPipelines, { claude: [], codex: [], agy: [] }, 'security');
 
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
@@ -230,7 +230,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
   });
 
   it('falls back to defaultPipelineId when feature.pipelineId is unknown to the catalog', async () => {
-    const catalog = buildCatalog(BUILT_IN_PHASES, [BUILT_IN_PIPELINE], [], 'speckit-new-feature');
+    const catalog = buildCatalog(BUILT_IN_PHASES, [BUILT_IN_PIPELINE], { claude: [], codex: [], agy: [] }, 'speckit-new-feature');
 
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);

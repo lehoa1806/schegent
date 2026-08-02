@@ -18,6 +18,7 @@ import type {
   SessionArtifactsProjection,
   WakeUpLogProjection,
   WakeUpSettings,
+  
   WorkflowSnapshot
 } from './snapshot';
 
@@ -52,7 +53,7 @@ export interface StateProjectorDeps {
   readonly getCatalog?: () => {
     phases: readonly PhaseDef[];
     pipelines: readonly PipelineDef[];
-    models: readonly string[];
+    models: Record<BackendRunnerKind, readonly string[]>;
   };
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly getGeneralSettings?: () => GeneralSettings;

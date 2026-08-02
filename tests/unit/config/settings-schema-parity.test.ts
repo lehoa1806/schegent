@@ -229,7 +229,7 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
 // type tag is the more abstract `'enum'`. Map back to the package's
 // JSON-Schema vocabulary for parity comparison.
 function mapSchemaTypeToPackage(
-  type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'enum',
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'enum' | 'object',
   nullable: boolean
 ): string[] {
   const base = (() => {
@@ -241,6 +241,7 @@ function mapSchemaTypeToPackage(
       case 'number':
       case 'boolean':
       case 'array':
+      case 'object':
         return type;
     }
   })();

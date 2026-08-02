@@ -214,16 +214,17 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
     const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save Models'
+      (btn) => btn.textContent?.trim() === 'Save All Models'
     ) as HTMLButtonElement | undefined;
     expect(saveBtn).toBeDefined();
     await fireEvent.click(saveBtn!);
     await tick();
     expect(saveModelsHelper).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual([
-      'claude-sonnet-4-6',
-      'claude-opus-4-6'
-    ]);
+    expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual({
+      claude: ['claude-sonnet-4-6', 'claude-opus-4-6'],
+      codex: [],
+      agy: []
+    });
   });
   it('Pipelines tab: Pipeline Name field updates name and saves correctly (BUG-005)', async () => {
     vi.mocked(savePipelinesHelper).mockClear();
