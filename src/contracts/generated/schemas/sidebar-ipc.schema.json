@@ -289,6 +289,11 @@
           "type": "PhaseCatalogProjection"
         },
         {
+          "name": "pipelineCatalog",
+          "optional": true,
+          "type": "PipelineCatalogProjection"
+        },
+        {
           "name": "telemetry",
           "optional": false,
           "type": "TelemetrySnapshot | null"

@@ -1,6 +1,7 @@
 import type { AuditLogWriter } from '../../audit/audit-log-writer';
 import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
+import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
@@ -11,6 +12,7 @@ import type { Disposable, WorkspaceStateStore } from '../../state/workspace-stat
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WakeUpModelSelection } from '../../wakeup/settings';
+import type { WorkflowPipelineReference } from './commands/router-types';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
   AuditTailEntry,
@@ -66,6 +68,14 @@ export interface StateProjectorDeps {
   readonly getWakeupSessionLogPath?: () => string;
   readonly getPhasePrecedence?: () => PhasePrecedenceProjection | undefined;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
+  /** Feature 082 — resolved Pipeline catalog; throwing projects `state: 'error'`. */
+  readonly getPipelineCatalog?: () => ResolvedPipelineCatalog | undefined;
+  /**
+   * Feature 082 (FR-002) — Workflow → Pipeline references for the Library's
+   * consuming-Workflow list, from `collectWorkflowPipelineRefs`. Absent on a
+   * host with no queue wiring; the Library then shows no consumers.
+   */
+  readonly getWorkflowPipelineRefs?: () => readonly WorkflowPipelineReference[];
   readonly getConfirmationsEnabled?: () => boolean;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;

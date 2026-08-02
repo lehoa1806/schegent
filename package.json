@@ -381,6 +381,218 @@
                   "pattern": "^[a-z][a-z0-9-]{0,63}$"
                 },
                 "markdownDescription": "Ordered list of phase ids. Each id must match a built-in phase id or a `schegent.phases[].id` you defined."
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 1024,
+                "markdownDescription": "Optional summary shown in the Pipeline Builder and the pipeline picker."
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "markdownDescription": "Definition revision. Increment when you change the contract so runs record which revision they captured."
+              },
+              "inputs": {
+                "type": "array",
+                "markdownDescription": "Declared input ports supplied when a run starts.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "portId",
+                    "label",
+                    "type"
+                  ],
+                  "properties": {
+                    "portId": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                      "markdownDescription": "Port identifier, unique among this pipeline's inputs."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80,
+                      "markdownDescription": "Display label for the port."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "source",
+                        "source-list",
+                        "local-file",
+                        "local-folder",
+                        "web-url",
+                        "pipeline-output",
+                        "repository-context"
+                      ],
+                      "markdownDescription": "Port value type. `pipeline-output` marks a port fed by an earlier phase rather than at session start."
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "default": true,
+                      "markdownDescription": "Whether a value must be supplied before the run can start."
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 1024,
+                      "markdownDescription": "Optional operator-facing help text for the port."
+                    }
+                  }
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "markdownDescription": "Declared output ports produced by the pipeline.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "portId",
+                    "label",
+                    "type"
+                  ],
+                  "properties": {
+                    "portId": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                      "markdownDescription": "Port identifier, unique among this pipeline's outputs."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80,
+                      "markdownDescription": "Display label for the port."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "markdown",
+                        "file",
+                        "file-set",
+                        "structured-data",
+                        "run-request",
+                        "external-reference"
+                      ],
+                      "markdownDescription": "Port value type."
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 1024,
+                      "markdownDescription": "Optional operator-facing help text for the port."
+                    }
+                  }
+                }
+              },
+              "bindings": {
+                "type": "array",
+                "markdownDescription": "Wiring between declared ports and phase positions. `phaseIndex` addresses a position in `phases`, not a phase id, because a phase id may repeat.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "phaseIndex"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "input",
+                        "output"
+                      ],
+                      "markdownDescription": "`input` feeds a phase; `output` publishes from a phase."
+                    },
+                    "phaseIndex": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "markdownDescription": "Zero-based position in `phases` this binding addresses."
+                    },
+                    "inputKey": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "markdownDescription": "Phase-side slot the value is delivered to. Required when `kind` is `input`."
+                    },
+                    "portId": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                      "markdownDescription": "Declared output port written to. Required when `kind` is `output`."
+                    },
+                    "outputKey": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "markdownDescription": "Phase-side slot the value is read from. Required when `kind` is `output`."
+                    },
+                    "source": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "from",
+                        "portId"
+                      ],
+                      "markdownDescription": "Where an `input` binding reads its value from.",
+                      "properties": {
+                        "from": {
+                          "type": "string",
+                          "enum": [
+                            "pipeline-input",
+                            "phase-output"
+                          ]
+                        },
+                        "portId": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                        },
+                        "phaseIndex": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "markdownDescription": "Producing position. Required when `from` is `phase-output`, and must be strictly earlier than the consuming `phaseIndex`."
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "executionDefaults": {
+                "type": "object",
+                "additionalProperties": false,
+                "markdownDescription": "Pipeline-level execution defaults applied to phases that do not override them.",
+                "properties": {
+                  "runner": {
+                    "type": "string",
+                    "markdownDescription": "Default backend runner id."
+                  },
+                  "model": {
+                    "type": "string",
+                    "markdownDescription": "Default model id."
+                  },
+                  "effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ],
+                    "markdownDescription": "Default reasoning effort."
+                  },
+                  "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "markdownDescription": "Default per-phase timeout in seconds."
+                  }
+                }
+              },
+              "recommendedNext": {
+                "type": "array",
+                "markdownDescription": "Pipeline ids suggested as a follow-up after this one completes.",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                }
               }
             }
           }

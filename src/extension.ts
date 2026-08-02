@@ -37,6 +37,7 @@ import { Notifier } from './ui/notifications';
 import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
 import { runReset } from './commands/reset';
 import { StateProjector } from './ui/sidebar/state-projector';
+import { collectWorkflowPipelineRefs } from './ui/sidebar/workflow-pipeline-refs';
 import {
   readGeneralSettings,
   writeGeneralSettings,
@@ -58,8 +59,8 @@ import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
 import { HistoryStore } from './state/history-store';
 import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
-import { loadCatalog, type CatalogConfigReader } from './config/pipeline-config-loader';
-import { projectPhasePrecedence } from './config/phase-precedence';
+import type { CatalogConfigReader } from './config/pipeline-config-loader';
+import { loadAndReportCatalog } from './activation/catalog-loading';
 import type { PipelineCatalog } from './config/pipeline-config';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
@@ -303,6 +304,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   let activePhasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection =
     initialLoad.phasePrecedence;
   let activePhaseCatalog = initialLoad.phaseCatalog;
+  let activePipelineCatalog = initialLoad.pipelineCatalog;
   const lock = new WorkspaceLockManager(store, ownerId);
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   disposables.push(statusBarItem);
@@ -736,6 +738,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // within the FR-017 1s budget. Never persisted; never logged.
     getPhasePrecedence: () => activePhasePrecedence,
     getPhaseCatalog: () => activePhaseCatalog,
+    // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
+    getPipelineCatalog: () => activePipelineCatalog,
+    // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
+    // so the Library can show what a change would affect. Same collector as the
+    // removal gate's `readWorkflowPipelineRefs` (FR-022a).
+    getWorkflowPipelineRefs: () => collectWorkflowPipelineRefs(queue.list()),
     // Feature 063 — surface `schegent.ui.confirmations.enable` into the
     // snapshot so the webview's `useConfirm` helper can short-circuit
     // without an IPC round-trip. Re-read on every projection; the
@@ -796,6 +804,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           activeCatalog = reload.catalog;
           activePhasePrecedence = reload.phasePrecedence;
           activePhaseCatalog = reload.phaseCatalog;
+          activePipelineCatalog = reload.pipelineCatalog;
           controller.setCatalog(activeCatalog);
         }
         if (
@@ -971,6 +980,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     readPipelineConfig: () => ({ user: catalogReader.getPipelines('user') ?? [],
       workspace: catalogReader.getPipelines('workspace') ?? [] }),
     getCatalog: () => activeCatalog,
+    // Feature 082 (US7, FR-022a) — the consumer side of the Pipeline removal
+    // gate, from the same collector that feeds the Library's consuming-Workflow
+    // list (FR-002) so the two can never disagree about who a consumer is.
+    readWorkflowPipelineRefs: () => collectWorkflowPipelineRefs(queue.list()),
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear
     // the sink's suppression for both the previous and the new
@@ -1245,44 +1258,6 @@ function createCatalogReader(workspaceRoot: string): CatalogConfigReader {
         : inspect.globalValue ?? inspect.defaultValue;
     }
   };
-}
-
-function loadAndReportCatalog(
-  reader: CatalogConfigReader,
-  logger: SanitizedLogger
-): {
-  catalog: PipelineCatalog;
-  phasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection;
-  phaseCatalog: import('./config/process-catalog').ResolvedPhaseCatalog;
-} {
-  const result = loadCatalog(reader);
-  if (result.errors.length > 0) {
-    logger.debug(
-      `pipeline-config: ${result.errors.length} error(s) found in schegent.phases/pipelines; falling back to built-in catalog`
-    );
-    for (const err of result.errors.slice(0, 3)) {
-      logger.debug(
-        `pipeline-config: ${err.source}${err.id ? `[${err.id}]` : ''}${err.field ? `.${err.field}` : ''}: ${err.message}`
-      );
-    }
-    if (result.errors.length > 3) {
-      logger.debug(`pipeline-config: ${result.errors.length - 3} additional error(s) suppressed`);
-    }
-  }
-  for (const w of result.warnings) {
-    logger.debug(
-      `pipeline-config: ${w.source}${w.id ? `[${w.id}]` : ''}: ${w.message}`
-    );
-  }
-  // Feature 026 — surface the per-phase precedence projection alongside
-  // the merged catalog. Computed once per catalog reload; the projector
-  // reads it on every snapshot.
-  const phasePrecedence = projectPhasePrecedence(
-    result.builtInPhases,
-    result.userPhases,
-    result.workspacePhases
-  );
-  return { catalog: result.catalog, phasePrecedence, phaseCatalog: result.phaseCatalog };
 }
 
 export function deactivate(): void {

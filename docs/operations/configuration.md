@@ -128,7 +128,48 @@ would eliminate the final valid definition referenced by an effective
 pipeline; the error lists the dependent pipeline ids. Reset clears only the
 selected writable layer. Built-ins are never copied into settings or deleted.
 
+### Scoped Pipeline saves and contracts (feature 082)
 
+`schegent.pipelines` rows are no longer just `{ id, name, phases }`. A row may
+now declare a full contract:
+
+| Field | Meaning |
+|---|---|
+| `pipelineId` | Portable kebab-case id, ≤ 64 chars (`id` still accepted). Immutable once saved — rename the `name`, not the id. |
+| `name`, `description` | Display fields. |
+| `version` | Integer, monotonic. The host derives the next version on save; it never decreases. |
+| `phases` | Ordered Phase references, 1–50 entries. The same Phase may appear more than once. |
+| `inputs` | Declared session inputs: `{ portId, label, type, required?, description? }`. `type` is one of `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, `repository-context`. |
+| `outputs` | Declared artifacts: `{ portId, label, type, description? }`, `type` one of `markdown`, `file`, `file-set`, `structured-data`, `run-request`, `external-reference`. |
+| `bindings` | Wiring between ports and Phase steps. Addressed by **position** (`phaseIndex`), not by `phaseId`, because a Phase may repeat. |
+| `executionDefaults` | Advisory Run-creation defaults (`runner`, `model`, `effort`, `timeoutSeconds`). Host-owned runtime policy is not authorable here. |
+| `recommendedNext` | Advisory follow-on Pipeline ids. |
+
+Editing rules that will show up in the UI:
+
+- **Bindings resolve only against the effective Phase catalog.** An input that
+  reads from a later Phase (`binding-forward-reference`) is a validation error
+  naming the binding and the port, and blocks the save. Reordering a Phase
+  remaps every binding automatically before revalidation.
+- **A Phase output feeding a later Phase input** requires the receiving input
+  port to be declared with type `pipeline-output`.
+- **Scope is explicit.** Create and duplicate ask for a target scope; every save
+  sends the complete selected layer, its authoritative revision, and exactly one
+  mutation intent, and the host writes once. A `stale-catalog` rejection means
+  another window won the race — it returns the row as the host holds it plus the
+  legal next actions (`refresh`, then `reapply`).
+- **Removal is blocked while a queued Workflow still references the Pipeline**
+  and no other layer would supply it. The error lists the consuming Workflows.
+  Define the same `pipelineId` at a lower scope and the removal is permitted —
+  the lower definition becomes effective. Workflows that have already started
+  are not consumers: their Pipeline contract is frozen in the Run.
+- **Built-ins are read-only** — duplicate them into a writable scope instead.
+- **Advisory conditions never block a save**: exceeding 20 effective Pipelines
+  or 50 Phases in one Pipeline warns without truncating anything, and a
+  `recommendedNext` id with no effective definition is a warning too.
+- **An invalid row stays visible** with its field errors while the next valid
+  scope for that id becomes effective, so a broken workspace row never hides the
+  user or built-in definition behind it.
 
 ## How saves work
 

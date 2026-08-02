@@ -9,7 +9,8 @@ const ALLOWED_BY_COMMAND: Record<string, ReadonlySet<string>> = {
   CMD_SAVE_PIPELINES: new Set([
     'webview-ui/src/lib/messages.ts',
     'webview-ui/src/lib/save-pipelines.ts',
-    'webview-ui/src/lib/__tests__/save-catalog-command.test.ts'
+    // Feature 082 (T021) — pins the envelope emitted by the sole call site.
+    'webview-ui/src/lib/__tests__/save-pipelines.test.ts'
   ]),
   CMD_SAVE_MODELS: new Set([
     'webview-ui/src/lib/messages.ts',

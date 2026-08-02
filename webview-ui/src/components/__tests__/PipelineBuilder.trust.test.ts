@@ -117,6 +117,15 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
       revisions: { user: 'user-revision', workspace: 'workspace-revision' },
       warnings: []
     },
+    // Feature 082 — the Pipeline tab's controls only exist once the
+    // authoritative projection arrives (FR-028); trust gating layers on top.
+    pipelineCatalog: {
+      state: 'ready',
+      records: [],
+      effective: [],
+      revisions: { user: 'user-pipeline-revision', workspace: 'workspace-pipeline-revision' },
+      warnings: []
+    },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
@@ -155,11 +164,10 @@ describe('PipelineBuilder trust gating (059, T022) — pipelines disabled', () =
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ pipelineOverrides: false }) }
     });
-    const saveBtns = container.querySelectorAll('button');
-    const savePipelinesBtn = Array.from(saveBtns).find(
-      (b) => (b.textContent ?? '').trim() === 'Save Pipelines'
-    ) as HTMLButtonElement | undefined;
-    expect(savePipelinesBtn).toBeDefined();
+    const savePipelinesBtn = container.querySelector(
+      '[data-testid="pipelines-save-all"]'
+    ) as HTMLButtonElement | null;
+    expect(savePipelinesBtn).not.toBeNull();
     expect(savePipelinesBtn?.hasAttribute('disabled')).toBe(true);
     const banner = container.querySelector('[data-testid="trust-banner-pipelines"]');
     expect(banner).not.toBeNull();
