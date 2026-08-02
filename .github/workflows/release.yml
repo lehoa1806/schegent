@@ -1,0 +1,37 @@
+name: Release package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix webview-ui ci --ignore-scripts
+      - run: npm run verify:all
+      - run: npm run build
+      - run: npm run package
+      - name: Generate CycloneDX SBOM
+        run: npm sbom --sbom-format cyclonedx > schegent-sbom.cdx.json
+      - name: Generate checksums
+        run: sha256sum *.vsix schegent-sbom.cdx.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schegent-release-artifacts
+          path: |
+            *.vsix
+            schegent-sbom.cdx.json
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
