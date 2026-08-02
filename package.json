@@ -226,12 +226,19 @@
           "description": "Audit log rotation max age in days."
         },
         "schegent.models": {
-          "type": "array",
-          "default": [],
+          "type": "object",
+          "default": {
+            "claude": [],
+            "codex": [],
+            "agy": []
+          },
           "scope": "resource",
-          "markdownDescription": "List of custom model identifiers (e.g. `claude-3-7-sonnet-20250219`, `sonnet`, `opus`) available in the Pipeline Builder.",
-          "items": {
-            "type": "string"
+          "markdownDescription": "Map of backend kinds to their custom model identifiers.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "schegent.phases": {
@@ -383,7 +390,11 @@
         },
         "schegent.logging.rawTranscriptMode": {
           "type": "string",
-          "enum": ["always", "errors-only", "off"],
+          "enum": [
+            "always",
+            "errors-only",
+            "off"
+          ],
           "default": "always",
           "scope": "resource",
           "markdownDescription": "Raw transcript retention policy frozen when each run starts. `always` retains every unredacted transcript; `errors-only` stages it privately and retains it only for failed, canceled, or paused runs; `off` disables raw transcript capture. Structured audit evidence remains enabled."
