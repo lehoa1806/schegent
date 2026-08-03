@@ -36,9 +36,14 @@ import type {
 const PHASE_ROW = { id: 'done', name: 'Done', version: 1, instruction: 'Done.' };
 const ROW = { id: 'custom-flow', name: 'Custom Flow', version: 1, phases: ['done'] };
 
+// Feature 083 (FR-041) added a second consumer sense, so the host now stamps
+// every reference with a `kind`. These fixtures pin the run-request half; the
+// definition half and the two-list split live in
+// `tests/contract/save-pipelines-scoped.test.ts`.
 interface WorkflowRef {
   readonly workflowId: string;
   readonly pipelineId: string;
+  readonly kind: 'run-request';
 }
 
 function run(options: {
@@ -117,8 +122,8 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
     const { ctx, acks, writes } = run({
       workspace: [ROW],
       workflows: [
-        { workflowId: 'wf-z', pipelineId: ROW.id },
-        { workflowId: 'wf-a', pipelineId: ROW.id }
+        { workflowId: 'wf-z', pipelineId: ROW.id, kind: 'run-request' },
+        { workflowId: 'wf-a', pipelineId: ROW.id, kind: 'run-request' }
       ]
     });
 
@@ -140,7 +145,7 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
     const { ctx, acks, writes } = run({
       workspace: [ROW],
       user: [{ ...ROW, name: 'Fallback' }],
-      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id }]
+      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id, kind: 'run-request' }]
     });
 
     await handler(ctx, remove(ROW.id, [ROW]));
@@ -152,7 +157,7 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
   it('permits removal when no consuming Workflow references the id', async () => {
     const { ctx, acks, writes } = run({
       workspace: [ROW],
-      workflows: [{ workflowId: 'wf-1', pipelineId: 'other-flow' }]
+      workflows: [{ workflowId: 'wf-1', pipelineId: 'other-flow', kind: 'run-request' }]
     });
 
     await handler(ctx, remove(ROW.id, [ROW]));
@@ -176,7 +181,7 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
     const { ctx, acks, writes } = run({
       workspace: [ROW],
       user: [{ ...ROW, phases: [] }],
-      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id }]
+      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id, kind: 'run-request' }]
     });
 
     await handler(ctx, remove(ROW.id, [ROW]));
@@ -192,7 +197,7 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
   it('blocks a reset that would leave a consuming Workflow reference unresolved', async () => {
     const { ctx, acks, writes } = run({
       workspace: [ROW],
-      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id }]
+      workflows: [{ workflowId: 'wf-1', pipelineId: ROW.id, kind: 'run-request' }]
     });
 
     await handler(ctx, reset([ROW]));
@@ -209,8 +214,8 @@ describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
     const { ctx, acks } = run({
       workspace: [ROW],
       workflows: [
-        { workflowId: 'wf-1', pipelineId: ROW.id },
-        { workflowId: 'wf-1', pipelineId: ROW.id }
+        { workflowId: 'wf-1', pipelineId: ROW.id, kind: 'run-request' },
+        { workflowId: 'wf-1', pipelineId: ROW.id, kind: 'run-request' }
       ]
     });
 

@@ -12,6 +12,7 @@ import type { Disposable, WorkspaceStateStore } from '../../state/workspace-stat
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WakeUpModelSelection } from '../../wakeup/settings';
+import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import type { WorkflowPipelineReference } from './commands/router-types';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
@@ -76,6 +77,13 @@ export interface StateProjectorDeps {
    * host with no queue wiring; the Library then shows no consumers.
    */
   readonly getWorkflowPipelineRefs?: () => readonly WorkflowPipelineReference[];
+  /**
+   * Feature 083 — resolved Workflow catalog (the definition sense). Read fresh
+   * on every compose; throwing projects `state: 'error'` rather than failing the
+   * snapshot. Absent until the host has resolved a catalog, which the Builder
+   * renders as a loading state (FR-036).
+   */
+  readonly getWorkflowCatalog?: () => WorkflowCatalogResolution | undefined;
   readonly getConfirmationsEnabled?: () => boolean;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;

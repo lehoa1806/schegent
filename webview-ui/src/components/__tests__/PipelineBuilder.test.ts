@@ -463,11 +463,13 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(model.selectedOptions[0]?.textContent).toContain('Unavailable');
   });
 
-  it('renders the 3-tab bar: Pipelines, Phases, Models', () => {
+  // Feature 083 added the Workflows tab; the Workflow Library has no other
+  // mount site, so the tab bar is 4-wide from this feature forward.
+  it('renders the 4-tab bar: Pipelines, Phases, Workflows, Models', () => {
     const snap = buildSnapshot();
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     const tabs = [...container.querySelectorAll('.tab-btn')].map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['Pipelines', 'Phases', 'Models']);
+    expect(tabs).toEqual(['Pipelines', 'Phases', 'Workflows', 'Models']);
   });
 
   it('Phases tab: phase list renders after switching tabs', async () => {

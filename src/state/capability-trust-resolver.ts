@@ -19,8 +19,8 @@
 //          `null` / `undefined` mean "no override; fall through".
 //   - I-4: disposables are pushed into `context.subscriptions`; the module
 //          retains no Disposable references of its own.
-//   - I-7: the config listener fires `onInvalidate` only for the three
-//          trust keys; other configuration churn is ignored.
+//   - I-7: the config listener fires `onInvalidate` only for the trust keys
+//          in `SETTING_KEYS`; other configuration churn is ignored.
 //
 // Hard rule (CLAUDE.md): never cache settings on long-lived objects. The
 // resolver re-reads on every call so the listener wiring is purely an
@@ -31,7 +31,11 @@ import * as vscode from 'vscode';
 export type TrustCapability =
   | 'phases'
   | 'retryConditions'
-  | 'pipelineOverrides';
+  | 'pipelineOverrides'
+  // Feature 083 — a fourth capability, not a reuse of `pipelineOverrides`
+  // (research R8): permitting Pipeline edits does not thereby permit
+  // Workflow-graph edits, so the two resolve independently.
+  | 'workflowOverrides';
 
 export type ResolvedScope =
   | 'user'
@@ -43,12 +47,14 @@ export interface ResolvedCapabilities {
   readonly phases: boolean;
   readonly retryConditions: boolean;
   readonly pipelineOverrides: boolean;
+  readonly workflowOverrides: boolean;
 }
 
 const SETTING_KEYS: Record<TrustCapability, string> = {
   phases: 'schegent.trust.allowCustomPhases',
   retryConditions: 'schegent.trust.allowCustomRetryConditions',
-  pipelineOverrides: 'schegent.trust.allowPipelineOverrides'
+  pipelineOverrides: 'schegent.trust.allowPipelineOverrides',
+  workflowOverrides: 'schegent.trust.allowWorkflowOverrides'
 };
 
 function isExplicitBoolean(value: unknown): value is boolean {
@@ -88,7 +94,8 @@ export function getResolvedCapabilities(): ResolvedCapabilities {
     workspaceTrust: vscode.workspace.isTrusted === true,
     phases: isCapabilityAllowed('phases'),
     retryConditions: isCapabilityAllowed('retryConditions'),
-    pipelineOverrides: isCapabilityAllowed('pipelineOverrides')
+    pipelineOverrides: isCapabilityAllowed('pipelineOverrides'),
+    workflowOverrides: isCapabilityAllowed('workflowOverrides')
   };
 }
 
@@ -99,11 +106,12 @@ export function initCapabilityTrustResolver(
   context.subscriptions.push(
     vscode.workspace.onDidGrantWorkspaceTrust(() => onProjectionInvalidated()),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (
-        event.affectsConfiguration(SETTING_KEYS.phases) ||
-        event.affectsConfiguration(SETTING_KEYS.retryConditions) ||
-        event.affectsConfiguration(SETTING_KEYS.pipelineOverrides)
-      ) {
+      // Derived from SETTING_KEYS rather than enumerated, so a capability
+      // added to the ladder cannot silently lose its invalidation signal.
+      const affectsTrust = Object.values(SETTING_KEYS).some((key) =>
+        event.affectsConfiguration(key)
+      );
+      if (affectsTrust) {
         onProjectionInvalidated();
       }
     })

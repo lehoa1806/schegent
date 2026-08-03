@@ -24,6 +24,7 @@ export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as 
 export const CMD_SAVE_PIPELINES = 'CMD_SAVE_PIPELINES' as const;
 export const CMD_SAVE_PHASES = 'CMD_SAVE_PHASES' as const;
 export const CMD_SAVE_MODELS = 'CMD_SAVE_MODELS' as const;
+export const CMD_SAVE_WORKFLOWS = 'CMD_SAVE_WORKFLOWS' as const; // Feature 083.
 // Feature 011 — scalar settings save + manual delayed-retry trigger.
 export const CMD_SAVE_GENERAL_SETTINGS = 'CMD_SAVE_GENERAL_SETTINGS' as const;
 export const CMD_RETRY_PHASE_NOW = 'CMD_RETRY_PHASE_NOW' as const;
@@ -147,6 +148,7 @@ export const COMMAND_TYPES = [
   CMD_SAVE_PIPELINES,
   CMD_SAVE_PHASES,
   CMD_SAVE_MODELS,
+  CMD_SAVE_WORKFLOWS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
   CMD_SAVE_WAKEUP_SETTINGS,
@@ -366,7 +368,9 @@ export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OP
 // Catalog saves carry a scoped, revisioned complete-layer envelope; the shapes
 // live in a focused module and the barrel stays the single import site.
 import type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
+import type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';
 export type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
+export type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
   readonly payload: { readonly models: Record<string, readonly string[]> };
@@ -532,6 +536,7 @@ export type SidebarCommand =
   | SavePipelinesCommand
   | SavePhasesCommand
   | SaveModelsCommand
+  | SaveWorkflowsCommand
   | SaveGeneralSettingsCommand
   | RetryPhaseNowCommand
   | SaveWakeUpSettingsCommand
@@ -648,6 +653,9 @@ export function isCmdSavePipelines(value: unknown): value is SavePipelinesComman
 }
 export function isCmdSavePhases(value: unknown): value is SavePhasesCommand {
   return isObjectWithType(value, CMD_SAVE_PHASES);
+}
+export function isCmdSaveWorkflows(value: unknown): value is SaveWorkflowsCommand {
+  return isObjectWithType(value, CMD_SAVE_WORKFLOWS);
 }
 export function isCmdSaveModels(value: unknown): value is SaveModelsCommand {
   return isObjectWithType(value, CMD_SAVE_MODELS);
@@ -838,6 +846,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_OPEN_HISTORY_ITEM_DETAILS]: isCmdOpenHistoryItemDetails,
   [CMD_SAVE_PIPELINES]: isCmdSavePipelines,
   [CMD_SAVE_PHASES]: isCmdSavePhases,
+  [CMD_SAVE_WORKFLOWS]: isCmdSaveWorkflows,
   [CMD_SAVE_MODELS]: isCmdSaveModels,
   [CMD_SAVE_GENERAL_SETTINGS]: isCmdSaveGeneralSettings,
   [CMD_RETRY_PHASE_NOW]: isCmdRetryPhaseNow,

@@ -195,16 +195,17 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
     expect(violators, `self-consistency violations: ${violators.join('; ')}`).toEqual([]);
   });
 
-  // Feature 059 — three trust-scope settings are explicitly required to
-  // exist with the agreed shape. The generic loop above already exercises
-  // parity for any present key; this assertion catches accidental
-  // deletion of all three at once (the generic loop would silently pass
-  // an empty intersection).
-  it('declares the three Feature 059 trust-scope keys (nullable boolean, window scope)', () => {
+  // Features 059 and 083 — the trust-scope settings are explicitly required
+  // to exist with the agreed shape. The generic loop above already exercises
+  // parity for any present key; this assertion catches accidental deletion
+  // of all of them at once (the generic loop would silently pass an empty
+  // intersection).
+  it('declares the four trust-scope keys (nullable boolean, window scope)', () => {
     const trustKeys = [
       'schegent.trust.allowCustomPhases',
       'schegent.trust.allowCustomRetryConditions',
-      'schegent.trust.allowPipelineOverrides'
+      'schegent.trust.allowPipelineOverrides',
+      'schegent.trust.allowWorkflowOverrides'
     ];
     for (const key of trustKeys) {
       const entry = SETTINGS_SCHEMA[key];

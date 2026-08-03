@@ -13,6 +13,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { StateProjector } from '../../../../src/ui/sidebar/state-projector';
+import type { WorkflowPipelineReference } from '../../../../src/ui/sidebar/commands/router-types';
 import { WorkspaceStateStore, type Memento } from '../../../../src/state/workspace-state';
 import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
@@ -58,7 +59,7 @@ function project(
     user?: readonly unknown[];
     workspace?: readonly unknown[];
     /** FR-002 — omitted entirely by a host with no Workflow references. */
-    workflowRefs?: readonly { readonly workflowId: string; readonly pipelineId: string }[];
+    workflowRefs?: readonly WorkflowPipelineReference[];
   },
   sanitize: (value: string | null | undefined) => string = (value) =>
     (value ?? '').replaceAll('SECRET', '[REDACTED]')
@@ -279,9 +280,9 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
     const { projection } = project({
       workspace: [VALID_ROW],
       workflowRefs: [
-        { workflowId: 'wf-z', pipelineId: 'custom-flow' },
-        { workflowId: 'wf-a', pipelineId: 'custom-flow' },
-        { workflowId: 'wf-a', pipelineId: 'custom-flow' }
+        { workflowId: 'wf-z', pipelineId: 'custom-flow', kind: 'run-request' },
+        { workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' },
+        { workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }
       ]
     });
     const record = projection!.records.find((r) => r.key === 'workspace:custom-flow')!;
@@ -292,7 +293,7 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
     const { projection } = project({
       user: [{ ...VALID_ROW, name: 'User Copy' }],
       workspace: [VALID_ROW],
-      workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow' }]
+      workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const forId = projection!.records.filter((r) => r.pipelineId === 'custom-flow');
     expect(forId.map((r) => r.status).sort()).toEqual(['effective', 'shadowed']);
@@ -304,7 +305,7 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
   it('omits the field on records nothing references', () => {
     const { projection } = project({
       workspace: [VALID_ROW],
-      workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow' }]
+      workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const unreferenced = projection!.records.filter((r) => r.pipelineId !== 'custom-flow');
     expect(unreferenced.length).toBeGreaterThan(0);
@@ -323,7 +324,7 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
   it('sanitizes and bounds ids before they reach the webview (C5, C7)', () => {
     const { projection } = project({
       workspace: [VALID_ROW],
-      workflowRefs: [{ workflowId: 'wf-SECRET', pipelineId: 'custom-flow' }]
+      workflowRefs: [{ workflowId: 'wf-SECRET', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const record = projection!.records.find((r) => r.key === 'workspace:custom-flow')!;
     expect(record.consumingWorkflowIds).toEqual(['wf-[REDACTED]']);

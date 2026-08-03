@@ -10,6 +10,12 @@ import type {
   PipelineDefinitionScope,
   PipelineSourceStatus
 } from '../../contracts/pipeline-definitions';
+import type {
+  WorkflowDefinition,
+  WorkflowDefinitionScope,
+  WorkflowDerivedPort,
+  WorkflowSourceStatus
+} from '../../contracts/workflow-definitions';
 export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -102,6 +108,51 @@ export interface PipelineCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PipelineCatalogSourceProjection[];
   readonly effective: readonly PipelineDefinition[];
+  readonly revisions: {
+    readonly user: string;
+    readonly workspace: string;
+  };
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
+/**
+ * Feature 083 — Workflow catalog projection. Contract:
+ * `specs/083-workflow-graph-builder/contracts/workflow-catalog-snapshot.md`.
+ * The third instance of this shape, deliberately field-for-field with the two
+ * above. `workflowCatalog` names the *definition* sense of "Workflow"; the
+ * run-side `WorkflowSnapshot` / `WorkflowRun` family below keeps every surface
+ * it already owns, with no rename anywhere (FR-046).
+ */
+export interface WorkflowCatalogFieldErrorProjection {
+  /** Positional, e.g. `connections[12].to` — hence the wider cap than a Pipeline field. */
+  readonly field: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface WorkflowCatalogSourceProjection {
+  /** `${scope}:${workflowId}`, suffixed positionally only when a scope repeats an id. */
+  readonly key: string;
+  readonly workflowId: string;
+  readonly scope: WorkflowDefinitionScope;
+  readonly status: WorkflowSourceStatus;
+  readonly definition: WorkflowDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly WorkflowCatalogFieldErrorProjection[];
+  /**
+   * FR-048 — computed at projection time from the definition, never stored on
+   * the row and never accepted in a save payload. Empty for a record with no
+   * resolved definition.
+   */
+  readonly derivedInputs: readonly WorkflowDerivedPort[];
+  readonly derivedOutputs: readonly WorkflowDerivedPort[];
+}
+
+export interface WorkflowCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly WorkflowCatalogSourceProjection[];
+  readonly effective: readonly WorkflowDefinition[];
   readonly revisions: {
     readonly user: string;
     readonly workspace: string;
@@ -527,6 +578,15 @@ export interface WorkflowSnapshot {
    */
   readonly pipelineCatalog?: PipelineCatalogProjection;
   /**
+   * Feature 083 — authoritative source-aware Workflow catalog for the Workflow
+   * Library and Graph Builder. Additive and optional, so a snapshot produced
+   * before this feature deserializes unchanged and `SCHEMA_VERSION` does not
+   * move. Names the *definition* sense of "Workflow"; the run-side
+   * `WorkflowSnapshot` field above is untouched (FR-046). Derived state only —
+   * never persisted, never written to `WorkflowRun` or the audit log.
+   */
+  readonly workflowCatalog?: WorkflowCatalogProjection;
+  /**
    * Feature 033 — ephemeral per-subprocess telemetry for the in-flight
    * task. Present (non-null) only while a Claude CLI subprocess is alive
    * (or for one publish cycle after exit to surface the final sample).
@@ -541,7 +601,7 @@ export interface WorkflowSnapshot {
    * affordances without an existence guard.
    *
    * - `workspaceTrust`: mirrors `vscode.workspace.isTrusted`. When `false`,
-   *   all three `resolvedTrust.*` fields are also `false` (the ceiling
+   *   all four `resolvedTrust.*` fields are also `false` (the ceiling
    *   per the resolution ladder).
    * - `resolvedTrust.phases`: result of `isCapabilityAllowed('phases')`.
    *   Drives the Phases-tab Save button and policy banner.
@@ -551,6 +611,11 @@ export interface WorkflowSnapshot {
    * - `resolvedTrust.pipelineOverrides`: result of
    *   `isCapabilityAllowed('pipelineOverrides')`. Drives the Pipelines-
    *   tab Save button and policy banner.
+   * - `resolvedTrust.workflowOverrides` (feature 083): result of
+   *   `isCapabilityAllowed('workflowOverrides')`. Drives the Workflows-
+   *   tab Save button and policy banner. A distinct capability from
+   *   `pipelineOverrides` — projected separately so the Builder cannot
+   *   infer one from the other.
    *
    * Contract:
    * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
@@ -560,6 +625,7 @@ export interface WorkflowSnapshot {
     readonly phases: boolean;
     readonly retryConditions: boolean;
     readonly pipelineOverrides: boolean;
+    readonly workflowOverrides: boolean;
   };
   /**
    * Feature 063 (FR-021) — projected confirmation-prompt suppression
@@ -592,6 +658,7 @@ interface TrustProjection {
     phases: boolean;
     retryConditions: boolean;
     pipelineOverrides: boolean;
+    workflowOverrides: boolean;
   }>;
 }
 
@@ -600,7 +667,8 @@ export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
   resolvedTrust: Object.freeze({
     phases: false,
     retryConditions: false,
-    pipelineOverrides: false
+    pipelineOverrides: false,
+    workflowOverrides: false
   })
 });
 

@@ -21,6 +21,11 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   // removal is: it drops an authored layer row and may promote a
   // lower-precedence definition.
   'catalog.remove-pipeline',
+  // Feature 083 — a Workflow removal drops an authored layer row exactly as a
+  // Pipeline removal does, and the layer reset drops every row in the scope at
+  // once, so both are destructive and both carry their own copy.
+  'catalog.remove-workflow',
+  'catalog.reset-workflows',
   'queue.clean-all',
   'queue.clear-done',
   'queue.remove-item',
@@ -55,6 +60,10 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
     expect(destructive.sort()).toEqual([
       'catalog.remove-phase',
       'catalog.remove-pipeline',
+      // Feature 083 — both drop authored layer rows with no undo, which is what
+      // `destructive` means here; `caution` is for actions that only interrupt.
+      'catalog.remove-workflow',
+      'catalog.reset-workflows',
       'queue.clean-all',
       'workspace.reset'
     ]);

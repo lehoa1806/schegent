@@ -10,9 +10,11 @@ import {
   mutationMatches,
   stableAuthoredJson,
   withHostVersions,
+  workflowIntentAdapter,
   type LayerIntentAdapter,
   type LayerMutationIntent
 } from '../../../../../src/ui/sidebar/commands/save-layer-intent';
+import type { WorkflowDefinition } from '../../../../../src/contracts/workflow-definitions';
 
 interface Toy {
   readonly id: string;
@@ -347,5 +349,197 @@ describe('withHostVersions', () => {
   it('freezes every returned definition', () => {
     const result = versioned(intent('edit', 'a'), [row('a', 'Before')], [row('a', 'After')]);
     expect(Object.isFrozen(result[0])).toBe(true);
+  });
+});
+
+describe('workflowIntentAdapter', () => {
+  const wf = (id: string, label = 'Design', version = 1): Record<string, unknown> => ({
+    id,
+    name: id,
+    version,
+    nodes: [{ nodeId: 'design', pipelineId: 'design-review', label }],
+    connections: [],
+    startNodeIds: ['design']
+  });
+
+  const parsed = (rows: readonly unknown[]) =>
+    rows
+      .map((r) => workflowIntentAdapter.parse(r))
+      .filter((d): d is WorkflowDefinition => d !== null);
+
+  const wfIdentities = (rows: readonly unknown[]) => layerIdentities(rows, workflowIntentAdapter);
+
+  const wfDiff = (currentRows: readonly unknown[], proposedRows: readonly unknown[]) =>
+    layerDiff(
+      definitionMap(parsed(currentRows), workflowIntentAdapter),
+      definitionMap(parsed(proposedRows), workflowIntentAdapter)
+    );
+
+  const match = (
+    mutation: LayerMutationIntent,
+    currentRows: readonly unknown[],
+    proposedRows: readonly unknown[]
+  ) =>
+    mutationMatches(
+      mutation,
+      wfDiff(currentRows, proposedRows),
+      parsed(proposedRows).length,
+      wfIdentities(currentRows).counts,
+      wfIdentities(proposedRows).counts
+    );
+
+  const versioned = (
+    mutation: LayerMutationIntent,
+    currentRows: readonly unknown[],
+    proposedRows: readonly unknown[]
+  ) => {
+    const identities = wfIdentities(currentRows);
+    return withHostVersions(
+      parsed(proposedRows),
+      definitionMap(parsed(currentRows), workflowIntentAdapter),
+      identities.counts,
+      identities.versions,
+      mutation,
+      workflowIntentAdapter
+    );
+  };
+
+  describe('adapter surface', () => {
+    it('reads the portable workflowId, falls back to the authored id, then synthesizes', () => {
+      expect(workflowIntentAdapter.sourceIdentity({ workflowId: 'portable' }, 0)).toBe('portable');
+      expect(workflowIntentAdapter.sourceIdentity({ id: ' legacy ' }, 0)).toBe('legacy');
+      expect(workflowIntentAdapter.sourceIdentity(null, 2)).toBe('?invalid-3');
+    });
+
+    it('parses a well-formed row to its portable identity and rejects an unaddressable one', () => {
+      const definition = workflowIntentAdapter.parse(wf('design-then-implement'));
+      expect(definition).not.toBeNull();
+      expect(workflowIntentAdapter.identityOf(definition!)).toBe('design-then-implement');
+      expect(workflowIntentAdapter.parse(wf('BAD ID'))).toBeNull();
+      expect(workflowIntentAdapter.parse({ id: 'no-nodes', name: 'No nodes' })).toBeNull();
+    });
+
+    it('accepts the legacy id key so an existing layer keeps parsing', () => {
+      expect(workflowIntentAdapter.parse({ ...wf('legacy-keyed') })?.workflowId).toBe(
+        'legacy-keyed'
+      );
+    });
+  });
+
+  describe('mutation kinds', () => {
+    it('accepts a create that adds exactly the declared workflow', () => {
+      expect(match(intent('create', 'ship'), [wf('draft')], [wf('draft'), wf('ship')])).toBe(true);
+    });
+
+    it('rejects a create that also edits an untouched workflow', () => {
+      expect(
+        match(intent('create', 'ship'), [wf('draft')], [wf('draft', 'Renamed'), wf('ship')])
+      ).toBe(false);
+    });
+
+    it('accepts a duplicate as a pure addition of the copy id', () => {
+      expect(match(intent('duplicate', 'draft-copy'), [wf('draft')], [wf('draft'), wf('draft-copy')])).toBe(
+        true
+      );
+    });
+
+    it('accepts an edit confined to the declared workflow and rejects one that spreads', () => {
+      expect(match(intent('edit', 'draft'), [wf('draft', 'Before')], [wf('draft', 'After')])).toBe(
+        true
+      );
+      expect(
+        match(
+          intent('edit', 'draft'),
+          [wf('draft', 'Before'), wf('ship')],
+          [wf('draft', 'After'), wf('ship', 'Also changed')]
+        )
+      ).toBe(false);
+    });
+
+    it('accepts a remove of exactly one declared workflow', () => {
+      expect(match(intent('remove', 'ship'), [wf('draft'), wf('ship')], [wf('draft')])).toBe(true);
+      expect(match(intent('remove', 'ship'), [wf('draft'), wf('ship')], [wf('ship')])).toBe(false);
+    });
+
+    it('accepts a reset only when the proposed layer is empty', () => {
+      expect(match(intent('reset'), [wf('draft')], [])).toBe(true);
+      expect(match(intent('reset'), [wf('draft')], [wf('draft')])).toBe(false);
+    });
+
+    it('rejects a create that silently reorders the surrounding rows', () => {
+      expect(
+        layerShapeMatches(
+          intent('create', 'ship'),
+          [wf('draft'), wf('review')],
+          [wf('review'), wf('draft'), wf('ship')],
+          null,
+          workflowIntentAdapter
+        )
+      ).toBe(false);
+      expect(
+        layerShapeMatches(
+          intent('create', 'ship'),
+          [wf('draft'), wf('review')],
+          [wf('draft'), wf('review'), wf('ship')],
+          null,
+          workflowIntentAdapter
+        )
+      ).toBe(true);
+    });
+  });
+
+  describe('identity repair', () => {
+    it('detects renaming a pattern-invalid workflow id to a legal one', () => {
+      expect(
+        identityRepairTarget(
+          intent('edit', 'BAD ID'),
+          wfIdentities([wf('BAD ID')]).counts,
+          wfIdentities([wf('good-id')]).counts,
+          wfDiff([wf('BAD ID')], [wf('good-id')])
+        )
+      ).toBe('good-id');
+    });
+
+    it('returns null for an edit of an already-addressable workflow', () => {
+      expect(
+        identityRepairTarget(
+          intent('edit', 'draft'),
+          wfIdentities([wf('draft', 'Before')]).counts,
+          wfIdentities([wf('draft', 'After')]).counts,
+          wfDiff([wf('draft', 'Before')], [wf('draft', 'After')])
+        )
+      ).toBeNull();
+    });
+  });
+
+  describe('host version assignment', () => {
+    it('holds the version steady when no authored field changed', () => {
+      expect(versioned(intent('edit', 'draft'), [wf('draft', 'A', 4)], [wf('draft', 'A', 4)])[0].version).toBe(4);
+    });
+
+    it('ignores a version the save tried to dictate', () => {
+      expect(versioned(intent('edit', 'draft'), [wf('draft', 'A', 4)], [wf('draft', 'A', 99)])[0].version).toBe(4);
+    });
+
+    it('increments by one when an authored field changed', () => {
+      expect(
+        versioned(intent('edit', 'draft'), [wf('draft', 'Before', 4)], [wf('draft', 'After', 4)])[0]
+          .version
+      ).toBe(5);
+    });
+
+    it('starts a brand-new workflow at version 1', () => {
+      const result = versioned(intent('create', 'ship'), [wf('draft')], [wf('draft'), wf('ship')]);
+      expect(result.find((entry) => entry.workflowId === 'ship')?.version).toBe(1);
+    });
+
+    it('freezes every returned definition', () => {
+      const result = versioned(
+        intent('edit', 'draft'),
+        [wf('draft', 'Before')],
+        [wf('draft', 'After')]
+      );
+      expect(Object.isFrozen(result[0])).toBe(true);
+    });
   });
 });

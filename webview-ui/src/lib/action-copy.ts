@@ -20,7 +20,9 @@ export type ActionKey =
   | 'workspace.reset'
   | 'run.skip-phase'
   | 'catalog.remove-phase'
-  | 'catalog.remove-pipeline';
+  | 'catalog.remove-pipeline'
+  | 'catalog.remove-workflow'
+  | 'catalog.reset-workflows';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -63,6 +65,17 @@ export type ActionCopyContext = {
     readonly pipelineName: string;
     readonly pipelineId: string;
     readonly scope: 'user' | 'workspace';
+  };
+  'catalog.remove-workflow': {
+    readonly workflowName: string;
+    readonly workflowId: string;
+    readonly scope: 'user' | 'workspace';
+  };
+  // The count is what distinguishes this prompt from the single-row one: the
+  // operator is told how many definitions the scope is about to lose.
+  'catalog.reset-workflows': {
+    readonly scope: 'user' | 'workspace';
+    readonly workflowCount: number;
   };
 };
 
@@ -156,6 +169,18 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     bodyTemplate: 'Deletes **{pipelineName}** (`{pipelineId}`) from {scope} scope. A lower-precedence definition may become effective.',
     confirmLabel: 'Delete Pipeline',
     severity: 'destructive'
+  },
+  'catalog.remove-workflow': {
+    title: 'Delete Workflow definition?',
+    bodyTemplate: 'Deletes **{workflowName}** (`{workflowId}`) from {scope} scope. A lower-precedence definition may become effective. The Pipelines it composed are not affected.',
+    confirmLabel: 'Delete Workflow',
+    severity: 'destructive'
+  },
+  'catalog.reset-workflows': {
+    title: 'Reset Workflow definitions?',
+    bodyTemplate: 'Deletes all {workflowCount} Workflow definitions in {scope} scope. A lower-precedence layer may become effective. The Pipelines they composed are not affected.',
+    confirmLabel: 'Reset Workflows',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -234,6 +259,19 @@ export function renderActionBody<K extends ActionKey>(
       return entry.bodyTemplate
         .replace('{pipelineName}', ctx.pipelineName)
         .replace('{pipelineId}', ctx.pipelineId)
+        .replace('{scope}', ctx.scope);
+    }
+    case 'catalog.remove-workflow': {
+      const ctx = context as ActionCopyContext['catalog.remove-workflow'];
+      return entry.bodyTemplate
+        .replace('{workflowName}', ctx.workflowName)
+        .replace('{workflowId}', ctx.workflowId)
+        .replace('{scope}', ctx.scope);
+    }
+    case 'catalog.reset-workflows': {
+      const ctx = context as ActionCopyContext['catalog.reset-workflows'];
+      return entry.bodyTemplate
+        .replace('{workflowCount}', String(ctx.workflowCount))
         .replace('{scope}', ctx.scope);
     }
     case 'queue.pause':

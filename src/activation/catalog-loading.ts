@@ -7,6 +7,9 @@ import type { ResolvedPipelineCatalog } from '../config/pipeline-catalog';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import { loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
 import type { ResolvedPhaseCatalog } from '../config/process-catalog';
+import { resolveWorkflowCatalog } from '../config/workflow-catalog';
+import { BUILT_IN_WORKFLOWS, readWorkflowLayers, type WorkflowConfigReader } from '../config/workflow-config';
+import type { WorkflowCatalogResolution } from '../contracts/workflow-definitions';
 import type { SanitizedLogger } from '../lib/logger';
 
 export interface LoadedCatalog {
@@ -14,16 +17,24 @@ export interface LoadedCatalog {
   readonly phasePrecedence: PhasePrecedenceProjection;
   readonly phaseCatalog: ResolvedPhaseCatalog;
   readonly pipelineCatalog: ResolvedPipelineCatalog;
+  /**
+   * Feature 083 — the Workflow catalog, resolved here so load and reload stay
+   * in lockstep and so it is built against the same **effective** Pipeline
+   * catalog this call just produced. Resolving it at a separate site would let
+   * the two drift after a `schegent.pipelines` change.
+   */
+  readonly workflowCatalog: WorkflowCatalogResolution;
 }
 
 /**
  * Loads the merged catalog and reports loader diagnostics to the debug log.
  * Called once during activation and again on every `schegent.phases` /
- * `schegent.pipelines` configuration change.
+ * `schegent.pipelines` / `schegent.workflows` configuration change.
  */
 export function loadAndReportCatalog(
   reader: CatalogConfigReader,
-  logger: Pick<SanitizedLogger, 'debug'>
+  logger: Pick<SanitizedLogger, 'debug'>,
+  workflowReader?: WorkflowConfigReader
 ): LoadedCatalog {
   const result = loadCatalog(reader);
   if (result.errors.length > 0) {
@@ -53,5 +64,12 @@ export function loadAndReportCatalog(
     result.workspacePhases
   );
   const { catalog, phaseCatalog, pipelineCatalog } = result;
-  return { catalog, phasePrecedence, phaseCatalog, pipelineCatalog };
+  const workflowLayers = readWorkflowLayers(workflowReader);
+  const workflowCatalog = resolveWorkflowCatalog({
+    builtIn: BUILT_IN_WORKFLOWS,
+    user: workflowLayers.user,
+    workspace: workflowLayers.workspace,
+    pipelineCatalog
+  });
+  return { catalog, phasePrecedence, phaseCatalog, pipelineCatalog, workflowCatalog };
 }
