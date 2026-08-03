@@ -29,7 +29,9 @@ import {
   CMD_SAVE_PHASES,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
-  CMD_RETRY_PHASE_NOW
+  CMD_RETRY_PHASE_NOW,
+  CMD_EXPORT_PROCESS_YAML,
+  CMD_PREFLIGHT_PROCESS_YAML
 } from '../../../../src/ui/sidebar/messages';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
 
@@ -79,5 +81,26 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
 
   it('reports a non-listed command as non-mutating', () => {
     expect(isMutatingCommand('CMD_NONEXISTENT_BOGUS')).toBe(false);
+  });
+
+  // Feature 084 T024 (research R2, QS-40). Phase export writes a file the
+  // operator named in the host's own save dialog and changes no extension
+  // state, so it is deliberately absent from MUTATING_COMMANDS: gating it
+  // there would block export from a secondary window and from an untrusted
+  // workspace for no safety gain. Import commits through the existing
+  // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
+  // mutating command.
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 19', () => {
+    expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(19);
+  });
+
+  // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
+  // document once and returns a plan. It writes no configuration and moves no
+  // layer revision, so it is not mutating either; the write it precedes goes
+  // through CMD_SAVE_PHASES, which is gated.
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 19', () => {
+    expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(19);
   });
 });

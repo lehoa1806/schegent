@@ -10,6 +10,8 @@ Beyond overriding the parameters of built-in phases, you can define entirely new
 
 If you just want to tune a built-in's model, effort, or timeout, you do not need a custom phase — see [Phase Overrides](phase-overrides.md).
 
+If the phase you want already exists on someone else's machine, you do not need to retype it — see [Phase YAML Exchange](phase-yaml-exchange.md), which moves a phase definition between catalogs as a portable YAML document and never overwrites a phase you already have.
+
 ## Defining a new phase
 
 You can define new phases visually via the **Pipeline Builder > Phases** dashboard, or manually by adding an entry to `schegent.phases` whose `id` does **not** match a built-in:

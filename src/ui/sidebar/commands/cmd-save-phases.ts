@@ -53,9 +53,45 @@ const phaseIntentAdapter: LayerIntentAdapter<PhaseDefinition> = {
     validatePhaseDefinition(row, { allowLegacyId: true, defaultVersion: 1 }).definition
 };
 
-/** Projects a Phase mutation onto the entity-agnostic intent the algebra reads. */
+/**
+ * Projects a Phase mutation onto the entity-agnostic intent the algebra reads.
+ *
+ * `import` projects to `create` (feature 084, research R2): an import adds
+ * exactly one identity and touches nothing else, which is what the algebra
+ * already validates a create to be. Keeping it a create here means the diff
+ * check, the positional shape check, and the identity-repair rule are the
+ * shipped ones rather than a second copy that can rot.
+ */
 function phaseIntent(mutation: PhaseCatalogMutation): LayerMutationIntent {
-  return { kind: mutation.kind, targetId: mutation.kind === 'reset' ? null : mutation.phaseId };
+  const kind = mutation.kind === 'import' ? 'create' : mutation.kind;
+  return { kind, targetId: mutation.kind === 'reset' ? null : mutation.phaseId };
+}
+
+/**
+ * Feature 084 (FR-046a) — the one row an import introduces keeps the `version`
+ * its document declared, so exporting an imported Phase reproduces the source
+ * document.
+ *
+ * Every other row in the same save, including the rest of the layer, still gets
+ * its version from {@link withHostVersions}. The exemption is safe precisely
+ * because the algebra has already established that this identity is absent from
+ * the current layer: the invariant the version rules protect is that a save
+ * cannot dictate a version *transition*, and there is no prior version here to
+ * transition from.
+ */
+function withImportedVersion(
+  versioned: readonly PhaseDefinition[],
+  proposedById: ReadonlyMap<string, PhaseDefinition>,
+  mutation: PhaseCatalogMutation
+): readonly PhaseDefinition[] {
+  if (mutation.kind !== 'import') return versioned;
+  const authored = proposedById.get(mutation.phaseId);
+  if (authored === undefined) return versioned;
+  return versioned.map((definition) =>
+    definition.phaseId === mutation.phaseId
+      ? Object.freeze({ ...definition, version: authored.version })
+      : definition
+  );
 }
 
 function normalizeLayer(rows: readonly unknown[]): NormalizedLayer {
@@ -271,6 +307,9 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       ? row.phaseId
       : typeof row.id === 'string' ? row.id : null;
     if (phaseId === null || row.version === undefined) continue;
+    // The imported identity declares its own version (FR-046a). Skipping the
+    // echo check for it alone leaves the check in force for every other row.
+    if (mutation.kind === 'import' && phaseId === mutation.phaseId) continue;
     const expectedVersions = currentIdentities.versions.get(
       phaseId === repairTargetId && mutation.kind === 'edit' ? mutation.phaseId : phaseId
     ) ?? new Set([1]);
@@ -315,7 +354,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     intent,
     phaseIntentAdapter
   );
-  const persistedRows = versioned.map(persistedRow);
+  const persistedRows = withImportedVersion(versioned, proposedById, mutation).map(persistedRow);
 
   if (mutation.kind === 'remove' || mutation.kind === 'reset') {
     const prospective = resolvePhaseCatalog({

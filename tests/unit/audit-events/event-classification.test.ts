@@ -139,7 +139,12 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'backend-ping': 'system',
   // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
   // specific workflow run (system)
-  'metrics-view-opened': 'system'
+  'metrics-view-opened': 'system',
+  // Feature 084 — Phase exchange is a catalog operation, not part of any
+  // workflow run (system). A refused import is recorded so a blocked import is
+  // distinguishable from one that never happened (FR-049).
+  'process-exchange-export': 'system',
+  'process-exchange-import-refused': 'system'
 };
 
 function assertExhaustive(value: never): never {
@@ -296,7 +301,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-jumped':
         case 'phase-optional-failure-continued':
         case 'backend-ping':
-        case 'metrics-view-opened': {
+        case 'metrics-view-opened':
+        case 'process-exchange-export':
+        case 'process-exchange-import-refused': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

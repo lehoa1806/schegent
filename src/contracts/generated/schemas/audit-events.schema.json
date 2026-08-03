@@ -118,7 +118,9 @@
           "phase-jumped",
           "phase-optional-failure-continued",
           "backend-ping",
-          "metrics-view-opened"
+          "metrics-view-opened",
+          "process-exchange-export",
+          "process-exchange-import-refused"
         ]
       },
       "uniqueItems": true
