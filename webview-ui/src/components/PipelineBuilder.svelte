@@ -6,6 +6,7 @@
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
   import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
+  import WorkflowCatalogEditor from './PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
   import type { MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
   import { PipelineCatalogStore } from './PipelineBuilderEditors/pipeline-catalog-store.svelte';
   import {
@@ -23,7 +24,7 @@
   import './PipelineBuilderEditors/pipeline-builder.css';
   interface Props {
     snapshot: WorkflowSnapshot;
-    initialTab?: 'pipelines' | 'phases' | 'models';
+    initialTab?: 'pipelines' | 'phases' | 'workflows' | 'models';
   }
   const { snapshot, initialTab }: Props = $props();
   const workspaceTrust = $derived(snapshot.workspaceTrust === true);
@@ -36,6 +37,12 @@
   const trustPipelineOverrides = $derived(
     workspaceTrust && snapshot.resolvedTrust?.pipelineOverrides === true
   );
+  // Feature 083 — read separately from `pipelineOverrides`: composing Pipelines
+  // into a graph is a broader authority than reordering one Pipeline's phases
+  // (docs/security/threat-model.md, per-capability trust scopes).
+  const trustWorkflowOverrides = $derived(
+    workspaceTrust && snapshot.resolvedTrust?.workflowOverrides === true
+  );
   const showWorkspaceTrustBanner = $derived(snapshot.workspaceTrust === false);
   const showPhasesBanner = $derived(!showWorkspaceTrustBanner && !trustPhases);
   const showRetryConditionsBanner = $derived(
@@ -44,8 +51,11 @@
   const showPipelinesBanner = $derived(
     !showWorkspaceTrustBanner && !trustPipelineOverrides
   );
+  const showWorkflowsBanner = $derived(
+    !showWorkspaceTrustBanner && !trustWorkflowOverrides
+  );
   // svelte-ignore state_referenced_locally
-  let activeTab = $state<'pipelines' | 'phases' | 'models'>(initialTab ?? 'pipelines');
+  let activeTab = $state<'pipelines' | 'phases' | 'workflows' | 'models'>(initialTab ?? 'pipelines');
   let phases = $state<MutablePhase[]>([]);
   let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
@@ -66,6 +76,11 @@
     snapshot.pipelineCatalog?.state === 'ready' &&
       snapshot.isPrimary === true &&
       trustPipelineOverrides
+  );
+  const workflowMutationsAllowed = $derived(
+    snapshot.workflowCatalog?.state === 'ready' &&
+      snapshot.isPrimary === true &&
+      trustWorkflowOverrides
   );
   function showSaveError(reason: string): void {
     saveError = reason;
@@ -322,10 +337,11 @@
 <div class="pb" data-testid="pipeline-builder-root">
   <div class="header">
     <h2>Builder</h2>
-    <p>Configure custom phases, pipelines, and models.</p>
+    <p>Configure custom phases, pipelines, workflows, and models.</p>
     <div class="builder-tabs">
       <button class="tab-btn {activeTab === 'pipelines' ? 'active' : ''}" onclick={() => activeTab = 'pipelines'}>Pipelines</button>
       <button class="tab-btn {activeTab === 'phases' ? 'active' : ''}" onclick={() => activeTab = 'phases'}>Phases</button>
+      <button class="tab-btn {activeTab === 'workflows' ? 'active' : ''}" onclick={() => activeTab = 'workflows'}>Workflows</button>
       <button class="tab-btn {activeTab === 'models' ? 'active' : ''}" onclick={() => activeTab = 'models'}>Models</button>
     </div>
   </div>
@@ -400,6 +416,17 @@
         onretrychange={onRetryConditionChange}
         onduplicate={duplicatePhase}
       />
+    {:else if activeTab === 'workflows'}
+      <!--
+        Feature 083 — the Workflow Library's only mount site. The editor owns
+        its rows, its revision handshake, and its confirmations; this branch
+        supplies the trust verdict it is not allowed to compute for itself and
+        the banner that explains a disabled control (FR-029).
+      -->
+      {#if showWorkflowsBanner}
+        <TrustBanner variant="workflows" />
+      {/if}
+      <WorkflowCatalogEditor {snapshot} trusted={workflowMutationsAllowed} />
     {:else if activeTab === 'models'}
       <ModelCatalogEditor
         availableModels={snapshot.availableModels}

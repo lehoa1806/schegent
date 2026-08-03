@@ -41,7 +41,10 @@ interface CapturedAck {
 }
 
 function buildRouter(opts: {
-  updateConfig?: (key: 'phases' | 'pipelines' | 'models', value: unknown) => Promise<void>;
+  updateConfig?: (
+    key: 'phases' | 'pipelines' | 'models' | 'workflows',
+    value: unknown
+  ) => Promise<void>;
 } = {}): {
   router: MessageRouter;
   acks: CapturedAck[];
@@ -51,7 +54,7 @@ function buildRouter(opts: {
   const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
   const updateConfig =
     opts.updateConfig ??
-    (async (key: 'phases' | 'pipelines' | 'models', value: unknown) => {
+    (async (key: 'phases' | 'pipelines' | 'models' | 'workflows', value: unknown) => {
       updateConfigCalls.push({ key, value });
     });
   const deps: RouterDeps = {

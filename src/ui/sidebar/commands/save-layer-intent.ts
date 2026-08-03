@@ -9,10 +9,18 @@
  *
  * Feature 081 established this algebra for the Phase catalog; feature 082
  * extracts it here (research R6) so the Pipeline catalog reuses the identical
- * behavior. Everything below is entity-agnostic and parameterized by a
+ * behavior. Every exported function is entity-agnostic and parameterized by a
  * {@link LayerIntentAdapter}; nothing here reads configuration or imports
- * `vscode`.
+ * `vscode`. The one exception is {@link workflowIntentAdapter} at the bottom of
+ * the file — feature 083 binds the Workflow catalog here (research R10) rather
+ * than adding a third copy of the algebra.
  */
+
+import {
+  validateWorkflowDefinition
+} from '../../../config/workflow-definition-validator';
+import { workflowSourceIdentity } from '../../../config/workflow-catalog';
+import type { WorkflowDefinition } from '../../../contracts/workflow-definitions';
 
 /** The identity pattern shared by Phase and Pipeline ids. */
 export const LAYER_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -326,3 +334,22 @@ export function withHostVersions<T extends VersionedDefinition>(
     return Object.freeze({ ...definition, version });
   });
 }
+
+/**
+ * Binds the algebra above to the Workflow catalog (research R10). Nothing else
+ * changes: a Workflow layer is "a layer of rows keyed by a portable id" exactly
+ * as a Phase or Pipeline layer is, so `CMD_SAVE_WORKFLOWS` answers "does the
+ * observed diff match the declared intent?" with the same code the other two
+ * catalogs answer it with.
+ *
+ * `parse` runs field validation only. Graph validation (`validateWorkflowGraph`)
+ * is a separate save gate: the intent check asks whether the *shape of the
+ * change* is legal, and a row that is well-formed but graph-invalid still has to
+ * be diffable so an operator can save the edit that repairs it.
+ */
+export const workflowIntentAdapter: LayerIntentAdapter<WorkflowDefinition> = {
+  sourceIdentity: workflowSourceIdentity,
+  identityOf: (definition) => definition.workflowId,
+  parse: (row) =>
+    validateWorkflowDefinition(row, { allowLegacyId: true, defaultVersion: 1 }).definition
+};

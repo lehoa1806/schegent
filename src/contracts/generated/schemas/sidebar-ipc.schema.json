@@ -46,6 +46,7 @@
           "CMD_SAVE_PIPELINES",
           "CMD_SAVE_PHASES",
           "CMD_SAVE_MODELS",
+          "CMD_SAVE_WORKFLOWS",
           "CMD_SAVE_GENERAL_SETTINGS",
           "CMD_RETRY_PHASE_NOW",
           "CMD_SAVE_WAKEUP_SETTINGS",
@@ -294,6 +295,11 @@
           "type": "PipelineCatalogProjection"
         },
         {
+          "name": "workflowCatalog",
+          "optional": true,
+          "type": "WorkflowCatalogProjection"
+        },
+        {
           "name": "telemetry",
           "optional": false,
           "type": "TelemetrySnapshot | null"
@@ -306,7 +312,7 @@
         {
           "name": "resolvedTrust",
           "optional": false,
-          "type": "{ readonly phases: boolean; readonly retryConditions: boolean; readonly pipelineOverrides: boolean; }"
+          "type": "{ readonly phases: boolean; readonly retryConditions: boolean; readonly pipelineOverrides: boolean; readonly workflowOverrides: boolean; }"
         },
         {
           "name": "confirmSuppression",

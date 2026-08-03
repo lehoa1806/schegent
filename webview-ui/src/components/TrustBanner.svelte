@@ -14,7 +14,7 @@
    * variant (FR-010e).
    */
   interface Props {
-    variant: 'workspace-trust' | 'phases' | 'retry-conditions' | 'pipelines';
+    variant: 'workspace-trust' | 'phases' | 'retry-conditions' | 'pipelines' | 'workflows';
   }
   const { variant }: Props = $props();
 
@@ -36,6 +36,11 @@
     },
     pipelines: {
       title: 'Custom pipelines disabled by workspace policy',
+      body:
+        'Reset-to-defaults remains available. See docs/operations/trust-scopes.md.'
+    },
+    workflows: {
+      title: 'Custom workflows disabled by workspace policy',
       body:
         'Reset-to-defaults remains available. See docs/operations/trust-scopes.md.'
     }

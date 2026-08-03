@@ -40,6 +40,7 @@ import {
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
@@ -92,6 +93,7 @@ import { handler as saveModels } from './cmd-save-models';
 import { handler as savePhases } from './cmd-save-phases';
 import { handler as savePipelines } from './cmd-save-pipelines';
 import { handler as saveWakeupSettings } from './cmd-save-wakeup-settings';
+import { handler as saveWorkflows } from './cmd-save-workflows';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
@@ -154,6 +156,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_PHASES, savePhases as CommandHandler],
   [CMD_SAVE_PIPELINES, savePipelines as CommandHandler],
   [CMD_SAVE_WAKEUP_SETTINGS, saveWakeupSettings as CommandHandler],
+  [CMD_SAVE_WORKFLOWS, saveWorkflows as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],

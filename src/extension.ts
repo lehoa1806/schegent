@@ -37,7 +37,7 @@ import { Notifier } from './ui/notifications';
 import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
 import { runReset } from './commands/reset';
 import { StateProjector } from './ui/sidebar/state-projector';
-import { collectWorkflowPipelineRefs } from './ui/sidebar/workflow-pipeline-refs';
+import { createWorkflowPipelineRefReader } from './ui/sidebar/workflow-pipeline-ref-source';
 import {
   readGeneralSettings,
   writeGeneralSettings,
@@ -62,6 +62,8 @@ import { isConfirmationsEnabled } from './state/confirmations-config';
 import type { CatalogConfigReader } from './config/pipeline-config-loader';
 import { loadAndReportCatalog } from './activation/catalog-loading';
 import type { PipelineCatalog } from './config/pipeline-config';
+import { readWorkflowLayers, type WorkflowConfigReader } from './config/workflow-config';
+import { createWorkflowConfigReader } from './activation/workflow-config-reader';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
@@ -299,12 +301,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
-  const initialLoad = loadAndReportCatalog(catalogReader, logger);
+  const workflowConfigReader: WorkflowConfigReader = createWorkflowConfigReader(workspaceRoot);
+  const initialLoad = loadAndReportCatalog(catalogReader, logger, workflowConfigReader);
   let activeCatalog: PipelineCatalog = initialLoad.catalog;
   let activePhasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection =
     initialLoad.phasePrecedence;
   let activePhaseCatalog = initialLoad.phaseCatalog;
   let activePipelineCatalog = initialLoad.pipelineCatalog;
+  let activeWorkflowCatalog = initialLoad.workflowCatalog;
   const lock = new WorkspaceLockManager(store, ownerId);
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   disposables.push(statusBarItem);
@@ -317,6 +321,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
 
   const queue = new QueueManager(store, logger);
+  // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
+  // Pipeline?" for both the Library list (FR-002) and gate 13 (FR-022a). The
+  // callbacks re-read on every call so a `schegent.workflows` reload, which
+  // reassigns `activeWorkflowCatalog`, reaches the next gate decision.
+  const collectAllWorkflowPipelineRefs = createWorkflowPipelineRefReader({
+    listRequests: () => queue.list(),
+    listWorkflowRecords: () => activeWorkflowCatalog.records
+  });
   const auditWriter = new AuditLogWriter(
     {
       workspaceRoot,
@@ -742,8 +754,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getPipelineCatalog: () => activePipelineCatalog,
     // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
     // so the Library can show what a change would affect. Same collector as the
-    // removal gate's `readWorkflowPipelineRefs` (FR-022a).
-    getWorkflowPipelineRefs: () => collectWorkflowPipelineRefs(queue.list()),
+    // removal gate's `readWorkflowPipelineRefs` (FR-022a, 083 FR-041).
+    getWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
+    // Feature 083 — authoritative Workflow catalog (the definition sense) for
+    // the Library and Builder. Re-resolved with the Pipeline catalog it was
+    // validated against, so a `schegent.pipelines` change refreshes both.
+    getWorkflowCatalog: () => activeWorkflowCatalog,
     // Feature 063 — surface `schegent.ui.confirmations.enable` into the
     // snapshot so the webview's `useConfirm` helper can short-circuit
     // without an IPC round-trip. Re-read on every projection; the
@@ -798,13 +814,18 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         if (
           event.affectsConfiguration('schegent.phases') ||
           event.affectsConfiguration('schegent.pipelines') ||
-          event.affectsConfiguration('schegent.defaultPipelineId')
+          event.affectsConfiguration('schegent.defaultPipelineId') ||
+          // Feature 083 — a Workflow layer edit re-resolves the whole catalog;
+          // a Phase or Pipeline edit does too, since a Workflow is validated
+          // against the effective Pipeline catalog those edits move.
+          event.affectsConfiguration('schegent.workflows')
         ) {
-          const reload = loadAndReportCatalog(catalogReader, logger);
+          const reload = loadAndReportCatalog(catalogReader, logger, workflowConfigReader);
           activeCatalog = reload.catalog;
           activePhasePrecedence = reload.phasePrecedence;
           activePhaseCatalog = reload.phaseCatalog;
           activePipelineCatalog = reload.pipelineCatalog;
+          activeWorkflowCatalog = reload.workflowCatalog;
           controller.setCatalog(activeCatalog);
         }
         if (
@@ -979,11 +1000,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       workspace: catalogReader.getPhases('workspace') ?? [] }),
     readPipelineConfig: () => ({ user: catalogReader.getPipelines('user') ?? [],
       workspace: catalogReader.getPipelines('workspace') ?? [] }),
+    // Feature 083 — read fresh per save so the revision gate compares against the
+    // layer as it stands now, not as it stood when the catalog last resolved.
+    readWorkflowConfig: () => readWorkflowLayers(workflowConfigReader),
     getCatalog: () => activeCatalog,
-    // Feature 082 (US7, FR-022a) — the consumer side of the Pipeline removal
-    // gate, from the same collector that feeds the Library's consuming-Workflow
-    // list (FR-002) so the two can never disagree about who a consumer is.
-    readWorkflowPipelineRefs: () => collectWorkflowPipelineRefs(queue.list()),
+    // Feature 082 (US7, FR-022a) / 083 (FR-041) — the consumer side of the
+    // Pipeline removal gate, from the same collector that feeds the Library's
+    // consuming-Workflow list (FR-002) so the two can never disagree about who
+    // a consumer is.
+    readWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear
     // the sink's suppression for both the previous and the new

@@ -353,6 +353,72 @@ The UI stays pending after a save until a snapshot arrives whose
 actions. With an empty Phase catalog the editor explains the prerequisite and
 disables save rather than offering a control that cannot succeed.
 
+### Scoped Workflow catalog manager and Graph Builder (spec 083)
+
+The third catalog family. A **Workflow definition** is a reusable acyclic graph
+of Pipeline nodes — distinct from the run-side `WorkflowRun` (a queued request
+driven through one Pipeline), whose surfaces this feature does not touch. Both
+senses are recorded in [`../docs/reference/glossary.md`](../docs/reference/glossary.md).
+
+The editor reads the authoritative `snapshot.workflowCatalog` source-record
+projection and nothing else — built-in / user / workspace rows with effective,
+shadowed, or invalid status, bounded field errors, both writable-layer
+revisions, and warnings. A Workflow's own inputs and outputs are **derived**,
+never stored: an input is a node input port no connection lists in `to`, an
+output is a node output port no connection lists in `from`. A stored list would
+drift from the graph the moment a connection changed, so the surface is
+recomputed at resolution and projection time and the rows carry no port list.
+
+`PipelineBuilder.svelte` mounts it behind the **Workflows** tab (the Builder's
+tab bar is Pipelines / Phases / Workflows / Models) and supplies the one thing
+the editor may not compute for itself: the `trusted` verdict, derived from
+`snapshot.resolvedTrust.workflowOverrides` under the workspace-trust ceiling.
+That capability is deliberately **distinct** from `pipelineOverrides` — see
+[`../docs/security/threat-model.md`](../docs/security/threat-model.md) T22 and
+its per-capability trust scopes section. The webview fails closed when a host
+bundle omits the field.
+
+Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
+
+| File | Owns |
+|---|---|
+| [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) | The Library: scope, identity fields, draft lifecycle, revision handshake, and the save |
+| [`WorkflowLibraryList.svelte`](src/components/PipelineBuilderEditors/WorkflowLibraryList.svelte) | The row list, each row's node sequence, and its derived input/output ports |
+| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar and the FR-045 "no effective Pipeline" explanation beside the control it disables |
+| [`WorkflowGraphEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowGraphEditor.svelte) | The graph surface: connections, conditions, and start-node selection |
+| [`WorkflowNodeRows.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeRows.svelte) | One node row — its Pipeline binding and ordering controls |
+| [`WorkflowRowDefects.svelte`](src/components/PipelineBuilderEditors/WorkflowRowDefects.svelte) | Field-associated defect regions (`aria-describedby` → `role="alert"`) |
+| [`workflow-catalog-state.ts`](src/components/PipelineBuilderEditors/workflow-catalog-state.ts) | Pure draft logic — every edit routes through `applyGraphEdit`, so no rule is expressible in markup |
+| [`workflow-catalog-actions.ts`](src/components/PipelineBuilderEditors/workflow-catalog-actions.ts) | The two destructive writes, each with its confirmation in the same scope as the mutation it authorises |
+
+Connections address a node by its stable `nodeId`, never by index — the inverse
+of a Pipeline binding's `phaseIndex`, which must be remapped on every reorder.
+A connection **condition** is structured data (`{ left, operator, right? }`)
+compared field-wise against closed enums; there is no string form, parser,
+evaluator, or sandbox, and there must never be one.
+
+[`webview-ui/src/lib/save-workflows.ts`](src/lib/save-workflows.ts) is the
+**single call site** for `CMD_SAVE_WORKFLOWS`, with the same UUIDv4
+correlation, `snapshotStore.markPending`, one-shot ack listener, and 5-second
+timeout as `save-pipelines.ts`. It does not reuse `save-catalog-command.ts`
+because that helper discards `ack.result`, and a `stale-catalog` or
+`workflow-validation` rejection carries the structured payload the Builder
+needs to anchor a host defect to a field path. The request is forwarded
+verbatim: authored node and connection order is part of the payload's meaning
+(FR-049), so nothing client-side sorts, dedupes, or normalizes the graph.
+[`../tests/lint/no-inline-save-catalog.test.ts`](../tests/lint/no-inline-save-catalog.test.ts)
+fails the build if a component posts the command inline;
+[`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts)
+covers the `catalog.remove-workflow` and `catalog.reset-workflows` confirmations.
+
+The UI stays pending after a save until a snapshot arrives whose
+`revisions[scope]` differs from the one submitted, or a rejection is received —
+waiting on the revision rather than the ack, since the ack only says the host
+accepted the write. With an empty or wholly invalid effective Pipeline catalog
+the editor explains the prerequisite and disables save rather than offering a
+control that cannot succeed; a refreshed snapshot carrying a newly valid
+Pipeline re-enables it without a reload.
+
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 
 The Dashboard's new-task pipeline selector at

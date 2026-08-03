@@ -236,9 +236,16 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
   // destructive is the declared *mutation intent*, so the same
   // enclosing-scope `useConfirm(` rule is applied to the sites that build a
   // layer-shrinking mutation (FR-023).
+  //
+  // Feature 083 (US5, T059) — the Workflow Builder joins the same gate. Its
+  // `reset` intent is here too: `reset` empties the whole scope layer, so it is
+  // strictly more destructive than the single-row `remove` and would otherwise
+  // be the one layer-shrinking mutation with no key of its own.
   const CATALOG_REMOVAL_ACTION_KEYS: readonly string[] = [
     'catalog.remove-pipeline',
-    'catalog.remove-phase'
+    'catalog.remove-phase',
+    'catalog.remove-workflow',
+    'catalog.reset-workflows'
   ];
 
   // `{ kind: 'remove' | 'reset' }` as *constructed*, not as declared: the

@@ -16,6 +16,13 @@ const ALLOWED_BY_COMMAND: Record<string, ReadonlySet<string>> = {
     'webview-ui/src/lib/messages.ts',
     'webview-ui/src/lib/save-models.ts',
     'webview-ui/src/lib/__tests__/save-catalog-command.test.ts'
+  ]),
+  // Feature 083 (T035) — same gate as the Pipeline save: a per-component send
+  // would bypass the correlation, pending, and timeout handling the helper owns.
+  CMD_SAVE_WORKFLOWS: new Set([
+    'webview-ui/src/lib/messages.ts',
+    'webview-ui/src/lib/save-workflows.ts',
+    'webview-ui/src/lib/__tests__/save-workflows.test.ts'
   ])
 };
 

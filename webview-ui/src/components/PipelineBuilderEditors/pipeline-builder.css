@@ -62,6 +62,25 @@
 .pb .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
 .pb .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+.pb .graph-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
+.pb .graph-editor .sequence-item { flex-wrap: wrap; }
+.pb .condition-value { display: flex; align-items: center; gap: 4px; }
+/* Feature 083 (US5, T056) — the node and connection lists are <ol>: their order
+   is authored and meaningful (FR-049), so the semantics carry the position and
+   the count to assistive technology while the markers stay hidden. */
+.pb ol.sequence-list { margin: 0; list-style: none; }
+.pb .node-rows { display: flex; flex-direction: column; gap: 8px; }
+.pb .node-id { font-family: var(--vscode-editor-font-family); font-size: 0.9em; color: var(--schegent-muted-fg); }
+.pb .connection-arrow { color: var(--schegent-muted-fg); }
+/* A defective row is bordered AND says "Error": color alone reaches neither a
+   screen-reader user nor a monochrome display (FR-044). The marker is `data-`,
+   not `aria-invalid`, which ARIA does not support on a `listitem`; the AT
+   association is carried by `aria-describedby` and the visible cue. */
+.pb .sequence-item[data-invalid='true'] { border-color: var(--vscode-errorForeground); }
+.pb .row-defects { display: flex; align-items: flex-start; gap: 6px; width: 100%; font-size: 0.85em; color: var(--vscode-errorForeground); }
+.pb .row-defect-cue { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-weight: 600; text-transform: uppercase; font-size: 0.85em; }
+.pb .row-defect-list { margin: 0; padding-left: 16px; }
+.pb .row-ports { display: flex; flex-wrap: wrap; gap: 4px; font-size: 0.85em; color: var(--schegent-muted-fg); }
 .pb .add-phase-row { display: flex; gap: 8px; margin-top: 8px; }
 .pb .flex-1 { flex: 1; }
 .pb .models-container { display: flex; flex-direction: column; gap: 12px; flex: 1; }

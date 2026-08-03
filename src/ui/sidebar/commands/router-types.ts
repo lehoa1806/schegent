@@ -2,6 +2,7 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { WritablePhaseDefinitionScope } from '../../../contracts/process-definitions';
+import type { WorkflowDefinitionScope } from '../../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type {
   CommandAckMessage,
@@ -100,11 +101,37 @@ export interface PhaseOps {
   ): Promise<{ ok: boolean; reason?: string }>;
 }
 
-/** One Workflow → Pipeline reference the removal gate must not break (FR-022a). */
-export interface WorkflowPipelineReference {
+/**
+ * One Workflow → Pipeline reference the removal gate must not break (FR-022a,
+ * 083 FR-041). Two senses of "Workflow" reach this type and the discriminant
+ * keeps them apart: a queued run request waiting on a Pipeline, and a stored
+ * Workflow *definition* whose node names one.
+ *
+ * A union rather than one shape with an optional `scope`, because the two
+ * senses differ in exactly that field: a definition reference must name the
+ * layer that blocked (the same identifier may exist in more than one scope,
+ * FR-041), and a queued request has no layer at all. Narrowing on `kind`
+ * yields `scope` without a fallback for a state that cannot occur.
+ *
+ * Host-internal: never persisted, never sent over IPC.
+ */
+export interface WorkflowRunRequestPipelineReference {
+  readonly kind: 'run-request';
   readonly workflowId: string;
   readonly pipelineId: string;
 }
+
+export interface WorkflowDefinitionPipelineReference {
+  readonly kind: 'workflow-definition';
+  readonly workflowId: string;
+  readonly pipelineId: string;
+  /** The layer that holds the referencing record — the one worth editing. */
+  readonly scope: WorkflowDefinitionScope;
+}
+
+export type WorkflowPipelineReference =
+  | WorkflowRunRequestPipelineReference
+  | WorkflowDefinitionPipelineReference;
 
 export interface RouterDeps {
   readonly executeCommand: <T = unknown>(commandId: string, ...args: unknown[]) => Thenable<T> | Promise<T>;
@@ -138,7 +165,7 @@ export interface RouterDeps {
     }): Promise<unknown>;
   };
   readonly updateConfig?: (
-    key: 'phases' | 'pipelines' | 'models',
+    key: 'phases' | 'pipelines' | 'models' | 'workflows',
     value: unknown,
     scope?: WritablePhaseDefinitionScope
   ) => Promise<void>;
@@ -147,6 +174,11 @@ export interface RouterDeps {
     readonly workspace: readonly unknown[];
   };
   readonly readPipelineConfig?: () => {
+    readonly user: readonly unknown[];
+    readonly workspace: readonly unknown[];
+  };
+  /** Feature 083 — the two writable Workflow layers, read fresh on every save. */
+  readonly readWorkflowConfig?: () => {
     readonly user: readonly unknown[];
     readonly workspace: readonly unknown[];
   };

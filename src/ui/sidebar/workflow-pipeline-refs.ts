@@ -20,7 +20,7 @@
 // request that pins no `pipelineId` is never a consumer either.
 
 import type { FeatureRequest, FeatureRequestStatus } from '../../queue/feature-request';
-import type { WorkflowPipelineReference } from './commands/router-types';
+import type { WorkflowRunRequestPipelineReference } from './commands/router-types';
 
 /**
  * Statuses no request leaves except through `QueueManager.retry()`, which resets
@@ -34,14 +34,14 @@ const TERMINAL_STATUSES: ReadonlySet<FeatureRequestStatus> = new Set([
 
 export function collectWorkflowPipelineRefs(
   requests: readonly FeatureRequest[]
-): readonly WorkflowPipelineReference[] {
-  const refs: WorkflowPipelineReference[] = [];
+): readonly WorkflowRunRequestPipelineReference[] {
+  const refs: WorkflowRunRequestPipelineReference[] = [];
   for (const request of requests) {
     if (request.runId !== null) continue;
     if (TERMINAL_STATUSES.has(request.status)) continue;
     const pipelineId = request.pipelineId;
     if (pipelineId === undefined) continue;
-    refs.push({ workflowId: request.id, pipelineId });
+    refs.push({ workflowId: request.id, pipelineId, kind: 'run-request' });
   }
   return refs;
 }

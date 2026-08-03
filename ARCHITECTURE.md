@@ -71,7 +71,7 @@ src/
 ├── activation/   extension-host composition helpers; no workflow policy
 ├── audit/        evidence sinks — structured audit, raw transcript, verbose diagnostics, gitignore
 ├── commands/     extension command palette and command handlers
-├── config/       settings schema (single source of truth), pipeline catalog, precedence, validation
+├── config/       settings schema (single source of truth), phase/pipeline/workflow catalogs, precedence, validation
 ├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
 ├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
 ├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
@@ -439,6 +439,18 @@ is pure and UI-only — it computes projection metadata that is never
 persisted or logged. [pipeline-config.ts](src/config/pipeline-config.ts)
 and [pipeline-config-loader.ts](src/config/pipeline-config-loader.ts) own
 the host-owned pipeline catalog.
+[workflow-config.ts](src/config/workflow-config.ts),
+[workflow-catalog.ts](src/config/workflow-catalog.ts), and
+[workflow-graph-validator.ts](src/config/workflow-graph-validator.ts) own the
+third definition family — saved Workflow *graphs* whose nodes are Pipelines,
+which are documents and not executions. This is a different thing from the
+run-side `WorkflowRun`, which is unchanged; both senses of the word are
+recorded in [docs/reference/glossary.md](docs/reference/glossary.md).
+[workflow-graph.ts](src/config/workflow-graph.ts) holds the pure graph
+algorithms with no Pipeline knowledge, and
+[workflow-derived-ports.ts](src/config/workflow-derived-ports.ts) derives a
+Workflow's own ports on read rather than storing them. The full contract is in
+the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ### IPC and Webview (`src/contracts/`, `src/ui/sidebar/`, `src/ui/dashboard/`)
 

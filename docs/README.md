@@ -70,8 +70,9 @@ Each page follows the same structure: what it does, why you'd use it, how it wor
 
 ## Reference
 
-Authoritative lookup tables. Every entry is generated from the running extension's contributions and source-of-truth contracts.
+Authoritative lookup tables, derived from the running extension's contributions and source-of-truth contracts.
 
+- [Glossary](reference/glossary.md) — the composition, catalog, and run vocabularies, including which of the two senses of "Workflow" is meant where.
 - [Settings](reference/settings.md) — every `schegent.*` configuration key, with type, default, scope, and validation rules.
 - [Commands](reference/commands.md) — every command contributed to the VS Code command palette, plus the internal ones routed only from the sidebar.
 - [Audit Events](reference/audit-events.md) — every structured event written to `.schegent/audit.log`, with payload schema and trigger.

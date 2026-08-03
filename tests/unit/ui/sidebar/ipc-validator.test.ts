@@ -251,6 +251,69 @@ describe('validateInboundMessage', () => {
     ).toBe(false);
   });
 
+  // Feature 083 (US1, T026) — CMD_SAVE_WORKFLOWS reuses the same envelope. The
+  // rows themselves stay `unknown` here; the host validator owns graph shape.
+  const scopedWorkflowSave = {
+    type: 'CMD_SAVE_WORKFLOWS',
+    correlationId: 'c',
+    payload: {
+      scope: 'user',
+      expectedRevision: 'a'.repeat(64),
+      mutation: { kind: 'create', workflowId: 'design-then-build' },
+      workflows: [
+        {
+          id: 'design-then-build',
+          name: 'Design then Build',
+          version: 1,
+          nodes: [{ nodeId: 'design', pipelineId: 'design-review' }],
+          connections: [],
+          startNodeIds: ['design']
+        }
+      ]
+    }
+  };
+
+  it('accepts the scoped CMD_SAVE_WORKFLOWS envelope', () => {
+    expect(validateInboundMessage(scopedWorkflowSave).ok).toBe(true);
+  });
+
+  it.each(['scope', 'expectedRevision', 'mutation', 'workflows'])(
+    'rejects a CMD_SAVE_WORKFLOWS envelope missing %s',
+    (key) => {
+      const payload = { ...scopedWorkflowSave.payload } as Record<string, unknown>;
+      delete payload[key];
+      expect(validateInboundMessage({ ...scopedWorkflowSave, payload }).ok).toBe(false);
+    }
+  );
+
+  it.each([
+    ['a non-writable scope', { scope: 'built-in' }],
+    ['a non-string revision', { expectedRevision: 7 }],
+    ['an over-long revision', { expectedRevision: 'a'.repeat(129) }],
+    ['a non-array workflows value', { workflows: {} }],
+    ['an unknown mutation kind', { mutation: { kind: 'promote', workflowId: 'a' } }],
+    ['a create without a workflowId', { mutation: { kind: 'create' } }],
+    ['a duplicate without a source', { mutation: { kind: 'duplicate', workflowId: 'copy' } }],
+    ['a reset carrying a workflowId', { mutation: { kind: 'reset', workflowId: 'a' } }],
+    ['an over-long workflowId', { mutation: { kind: 'edit', workflowId: 'a'.repeat(65) } }]
+  ])('rejects a CMD_SAVE_WORKFLOWS envelope with %s', (_label, override) => {
+    expect(
+      validateInboundMessage({
+        ...scopedWorkflowSave,
+        payload: { ...scopedWorkflowSave.payload, ...override }
+      }).ok
+    ).toBe(false);
+  });
+
+  it('rejects undeclared keys on the CMD_SAVE_WORKFLOWS payload', () => {
+    expect(
+      validateInboundMessage({
+        ...scopedWorkflowSave,
+        payload: { ...scopedWorkflowSave.payload, pipelines: [] }
+      }).ok
+    ).toBe(false);
+  });
+
   it('rejects unsafe wake-up session-log payload shapes before router dispatch', () => {
     expect(
       validateInboundMessage({
