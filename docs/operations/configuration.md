@@ -158,11 +158,17 @@ Editing rules that will show up in the UI:
   mutation intent, and the host writes once. A `stale-catalog` rejection means
   another window won the race — it returns the row as the host holds it plus the
   legal next actions (`refresh`, then `reapply`).
-- **Removal is blocked while a queued Workflow still references the Pipeline**
-  and no other layer would supply it. The error lists the consuming Workflows.
-  Define the same `pipelineId` at a lower scope and the removal is permitted —
-  the lower definition becomes effective. Workflows that have already started
-  are not consumers: their Pipeline contract is frozen in the Run.
+- **Removal is blocked while anything still references the Pipeline** and no
+  other layer would supply it. The error lists the consumers. Two different
+  things count as a consumer, and both are checked (feature 083):
+  a **queued Workflow Run** that still resolves its `pipelineId` from the
+  catalog, and a stored **Workflow definition** whose node names the Pipeline.
+  For definitions this counts *every stored row*, including shadowed and invalid
+  ones — a shadowed reference goes live the moment the shadow is deleted, so
+  removing the Pipeline first would break it. Define the same `pipelineId` at a
+  lower scope and the removal is permitted, because the lower definition becomes
+  effective. Runs that have already started are not consumers: their Pipeline
+  contract is frozen in the Run.
 - **Built-ins are read-only** — duplicate them into a writable scope instead.
 - **Advisory conditions never block a save**: exceeding 20 effective Pipelines
   or 50 Phases in one Pipeline warns without truncating anything, and a
@@ -170,6 +176,64 @@ Editing rules that will show up in the UI:
 - **An invalid row stays visible** with its field errors while the next valid
   scope for that id becomes effective, so a broken workspace row never hides the
   user or built-in definition behind it.
+
+### Workflow graphs and scoped saves (feature 083)
+
+`schegent.workflows` is the third definition catalog, alongside `schegent.phases`
+and `schegent.pipelines`. A **Workflow definition** is a saved acyclic graph
+whose nodes are Pipelines — a document describing how one Pipeline's output may
+guide an explicit follow-up run.
+
+Two things share the name. The queue and audit log have always used "workflow"
+for a run in flight; that sense is unchanged and is written **Workflow Run**
+where the distinction matters. This section is about the definition sense. See
+[Glossary](../reference/glossary.md) if a surface is ambiguous.
+
+Saving a Workflow starts nothing. The full field reference is in
+[Settings › `schegent.workflows`](../reference/settings.md). The rules you will
+meet while editing:
+
+- **A node is an occurrence, not a Pipeline.** Each node carries its own
+  `nodeId` and names exactly one `pipelineId`. Two nodes may run the same
+  Pipeline; only the `nodeId` distinguishes them, and the Builder shows which
+  Pipeline a node runs rather than hiding it.
+- **Connections address nodes by id, never by position.** This is the opposite
+  of Pipeline bindings, which are index-keyed. Reordering, inserting, or
+  removing a node leaves every connection intact — there is no remap step to
+  get wrong.
+- **Everything is validated against the effective Pipeline catalog.** A node
+  naming a Pipeline that no scope resolves is an error, as is a port that the
+  node's Pipeline does not declare, or an output type the receiving input type
+  does not accept. Compatibility is a fixed table, so a Workflow you export
+  behaves the same on a colleague's machine.
+- **A collection output into a single-valued input needs a `selection` rule**
+  (`first`, `last`, or `exactlyOne`). "Which one of these" is a decision the
+  graph has to state rather than imply.
+- **Conditions are structured data, not expressions.** A guard is
+  `{ left, operator, right }` over a closed operand set, compared field-wise.
+  There is no expression language, so nothing is parsed or evaluated. This is a
+  different mechanism from a phase `retryCondition`, which is a sandboxed DSL.
+  A condition may only read a node that is an **ancestor** of the connection it
+  guards — you cannot branch on a result that has not been produced yet.
+- **Cycles and unreachable nodes block the save.** The graph must be acyclic,
+  and every node must be reachable from `startNodeIds`, which must be non-empty.
+- **Every defect is reported at once.** Validation does not stop at the first
+  error, so a graph is repaired in one pass rather than one error per save.
+- **A Workflow declares no ports of its own.** Its inputs and outputs are
+  derived from the unbound ports of its node Pipelines and recomputed on read,
+  so they cannot drift when a node's Pipeline changes shape.
+- **Scope and saves work exactly as they do for Pipelines.** Create and
+  duplicate ask for a target scope; every save sends the complete selected
+  layer, its authoritative revision, and exactly one mutation intent. A
+  `stale-catalog` rejection means another window won the race and returns the
+  legal next actions (`refresh`, then `reapply`). The built-in layer is
+  read-only and ships empty in this release.
+- **Editing is gated by `schegent.trust.allowWorkflowOverrides`**, a capability
+  distinct from `allowPipelineOverrides`. See [Trust Scopes](trust-scopes.md).
+- **No valid Pipeline means no Workflow.** If the effective Pipeline catalog
+  resolves nothing, the Builder still opens and existing rows stay readable, but
+  saving is disabled and the reason is stated on screen — add or restore a valid
+  Pipeline first. The Builder recovers as soon as one resolves; no reload needed.
 
 ## How saves work
 

@@ -1,5 +1,5 @@
 // Feature 059 — shared helpers for the per-capability trust gate used by
-// `cmd-save-phases.ts` and `cmd-save-pipelines.ts`.
+// `cmd-save-phases.ts`, `cmd-save-pipelines.ts`, and `cmd-save-workflows.ts`.
 // Contract: specs/059-fine-grained-trust-scopes/contracts/save-command-trust-gate-contract.md
 
 import * as path from 'node:path';
@@ -34,6 +34,10 @@ export function reasonFor(
       return scope === 'workspace'
         ? TRUST_DENIED_REASONS.pipelineOverridesWorkspace
         : TRUST_DENIED_REASONS.pipelineOverridesUser;
+    case 'workflowOverrides':
+      return scope === 'workspace'
+        ? TRUST_DENIED_REASONS.workflowOverridesWorkspace
+        : TRUST_DENIED_REASONS.workflowOverridesUser;
   }
 }
 

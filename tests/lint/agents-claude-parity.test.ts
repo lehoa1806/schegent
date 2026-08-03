@@ -62,7 +62,12 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'emit the literal `\'running\'` as a `queuelifecycle`',
   // Feature 082 — Pipeline contract hard-rule anchors.
   'resolve a pipeline binding',
-  'write a pipeline layer'
+  'write a pipeline layer',
+  // Feature 083 — Workflow graph hard-rule anchors.
+  'give a workflow condition a string form',
+  'convert a workflow connection endpoint to index addressing',
+  "store a workflow's inputs or outputs",
+  'write a workflow layer'
 ];
 
 function readClaudeMd(): string {

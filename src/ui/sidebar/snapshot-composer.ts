@@ -20,6 +20,7 @@ import {
 } from './run-projector';
 import { ProjectorBookkeeping } from './projector-bookkeeping';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
+import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
 import type { StateProjectorDeps } from './state-projector';
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -202,6 +203,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       : {}),
     onError: (message) => ctx.logger?.warn(message)
   });
+  const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.warn(m));
   const wakeUp = Object.freeze({
     model: (deps.getWakeupModel?.() ?? RUNNER_DEFAULT_MODEL) as WakeUpModelSelection,
     sessionLogPath: deps.getWakeupSessionLogPath?.() ?? ''
@@ -215,7 +217,8 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     resolvedTrust = Object.freeze({
       phases: resolved.phases,
       retryConditions: resolved.retryConditions,
-      pipelineOverrides: resolved.pipelineOverrides
+      pipelineOverrides: resolved.pipelineOverrides,
+      workflowOverrides: resolved.workflowOverrides
     });
   } catch (error) {
     ctx.logger?.warn(
@@ -288,6 +291,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ...(pipelineCatalogProjection !== undefined
       ? { pipelineCatalog: pipelineCatalogProjection }
       : {}),
+    ...(workflowCatalog !== undefined ? { workflowCatalog } : {}),
     ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
     ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
   });

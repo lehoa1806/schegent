@@ -522,6 +522,7 @@ export function formatPipelineSaveRejection(reason: string, result: unknown): st
   const details = result as
     | {
         dependentWorkflowIds?: readonly string[];
+        dependentWorkflowDefinitionIds?: readonly string[];
         errors?: readonly {
           pipelineId?: string;
           field?: string;
@@ -531,8 +532,16 @@ export function formatPipelineSaveRejection(reason: string, result: unknown): st
         total?: number;
       }
     | undefined;
-  if (details?.dependentWorkflowIds?.length) {
-    return `${reason} — used by workflows: ${details.dependentWorkflowIds.join(', ')}`;
+  // Feature 083 (FR-041) — a removal can be blocked by a queued run, by a
+  // stored Workflow definition, or by both. Both lists are named, because
+  // showing only one would leave the operator editing the wrong thing; the
+  // definition names carry `scope::` so they point at the layer that blocked.
+  const dependents = [
+    ...(details?.dependentWorkflowIds ?? []),
+    ...(details?.dependentWorkflowDefinitionIds ?? [])
+  ];
+  if (dependents.length) {
+    return `${reason} — used by workflows: ${dependents.join(', ')}`;
   }
   if (reason === 'pipeline-validation' && details?.errors?.length) {
     const visible = details.errors.slice(0, 3).map((error) => {

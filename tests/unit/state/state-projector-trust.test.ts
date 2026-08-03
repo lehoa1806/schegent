@@ -25,12 +25,14 @@ const mocks = vi.hoisted(() => {
       workspaceTrust: true,
       phases: true,
       retryConditions: true,
-      pipelineOverrides: true
+      pipelineOverrides: true,
+      workflowOverrides: true
     } as {
       workspaceTrust: boolean;
       phases: boolean;
       retryConditions: boolean;
       pipelineOverrides: boolean;
+      workflowOverrides: boolean;
     },
     throwOnNext: false as boolean,
     callCount: 0 as number
@@ -57,6 +59,7 @@ interface TrustFields {
     phases: boolean;
     retryConditions: boolean;
     pipelineOverrides: boolean;
+    workflowOverrides: boolean;
   };
 }
 
@@ -94,7 +97,8 @@ beforeEach(() => {
     workspaceTrust: true,
     phases: true,
     retryConditions: true,
-    pipelineOverrides: true
+    pipelineOverrides: true,
+    workflowOverrides: true
   };
   mocks.state.throwOnNext = false;
   mocks.state.callCount = 0;
@@ -110,6 +114,7 @@ describe('state-projector trust projection (059, T021) — happy path', () => {
     expect(trust.resolvedTrust.phases).toBe(true);
     expect(trust.resolvedTrust.retryConditions).toBe(true);
     expect(trust.resolvedTrust.pipelineOverrides).toBe(true);
+    expect(trust.resolvedTrust.workflowOverrides).toBe(true);
     expect(warnings).toEqual([]);
     projector.dispose();
   });
@@ -119,7 +124,10 @@ describe('state-projector trust projection (059, T021) — happy path', () => {
       workspaceTrust: true,
       phases: false,
       retryConditions: true,
-      pipelineOverrides: false
+      pipelineOverrides: false,
+      // Feature 083 — a distinct capability, so it must survive a
+      // projection that denies `pipelineOverrides` in the same pass.
+      workflowOverrides: true
     };
     const { logger } = buildLogger();
     const projector = makeProjector(logger);
@@ -128,6 +136,7 @@ describe('state-projector trust projection (059, T021) — happy path', () => {
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(true);
     expect(trust.resolvedTrust.pipelineOverrides).toBe(false);
+    expect(trust.resolvedTrust.workflowOverrides).toBe(true);
     projector.dispose();
   });
 });
@@ -138,7 +147,8 @@ describe('state-projector trust projection (059, T021) — untrusted workspace',
       workspaceTrust: false,
       phases: false,
       retryConditions: false,
-      pipelineOverrides: false
+      pipelineOverrides: false,
+      workflowOverrides: false
     };
     const { logger } = buildLogger();
     const projector = makeProjector(logger);
@@ -147,6 +157,7 @@ describe('state-projector trust projection (059, T021) — untrusted workspace',
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(false);
     expect(trust.resolvedTrust.pipelineOverrides).toBe(false);
+    expect(trust.resolvedTrust.workflowOverrides).toBe(false);
     projector.dispose();
   });
 });
@@ -161,6 +172,7 @@ describe('state-projector trust projection (059, T021) — fail-closed on resolv
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(false);
     expect(trust.resolvedTrust.pipelineOverrides).toBe(false);
+    expect(trust.resolvedTrust.workflowOverrides).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
     expect(warnings.some((w) => /trust/i.test(w))).toBe(true);
     projector.dispose();

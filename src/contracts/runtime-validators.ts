@@ -35,6 +35,7 @@ import {
   CMD_START,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_PHASES,
+  CMD_SAVE_WORKFLOWS,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
@@ -77,6 +78,7 @@ import { validateReadMetrics } from './validators/metrics';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import { validateSavePhases } from './validators/save-phases';
 import { validateSavePipelines } from './validators/save-pipelines';
+import { validateSaveWorkflows } from './validators/save-workflows';
 import {
   validateReadWakeupSessionLog,
   validateRevealWakeupSessionLog,
@@ -164,6 +166,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateNoPayload(CMD_RETRY_ACTIVE_RUN, obj, correlationId);
     case CMD_SAVE_PIPELINES:
       return validateSavePipelines(obj, correlationId);
+    case CMD_SAVE_WORKFLOWS:
+      return validateSaveWorkflows(obj, correlationId);
     case CMD_SAVE_PHASES:
       return validateSavePhases(obj, correlationId);
     case CMD_SAVE_MODELS:

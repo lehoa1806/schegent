@@ -26,6 +26,7 @@ import {
   validatePipelineDefinition
 } from '../../../config/pipeline-definition-validator';
 import { resolvePhaseCatalog } from '../../../config/process-catalog';
+import { WORKFLOW_ID_MAX_LEN } from '../../../config/workflow-definition-validator';
 import type {
   PipelineCatalogMutation,
   PipelineDefinition,
@@ -182,22 +183,39 @@ function currentMetadata(
  * would leave with no effective source, it answers which consuming Workflows
  * still reference them.
  *
- * This is deliberately the ONLY place that knows what a consumer is. Today the
- * host supplies queued Workflow requests that pin a Pipeline; when a Workflow
- * catalog lands it feeds the same hook, and the save algebra above this
- * function is untouched. `recommendedNext` is NOT a consumer: a recommendation
- * pointing at a removed Pipeline degrades to the
+ * This is deliberately the ONLY place that knows what a consumer is. The host
+ * feeds it both senses through one hook — queued run requests that pin a
+ * Pipeline (FR-022a) and stored Workflow definitions whose nodes name one
+ * (083 FR-041) — and they are reported in separate lists so the operator can
+ * tell "a queued run is waiting on this" from "a saved Workflow references
+ * this"; the two call for different repairs. `recommendedNext` is NOT a
+ * consumer: a recommendation pointing at a removed Pipeline degrades to the
  * `pipeline-recommended-next-unresolved` warning and never blocks (FR-019a).
+ *
+ * Definition names carry their scope. The same Workflow identifier may exist
+ * in more than one layer, and only the blocking layer is worth editing.
  */
-function consumingWorkflowIdsReferencing(
+/**
+ * `${scope}::${workflowId}` — the longest scope is `workspace`, so eleven
+ * characters of prefix sit on top of a full-length Workflow identifier.
+ */
+const SCOPED_WORKFLOW_NAME_MAX_LEN = WORKFLOW_ID_MAX_LEN + 'workspace::'.length;
+
+function consumingWorkflowsReferencing(
   ctx: Parameters<typeof handler>[0],
   pipelineIds: ReadonlySet<string>
-): string[] {
-  const ids = new Set<string>();
+): { runRequestIds: string[]; definitionIds: string[] } {
+  const runRequestIds = new Set<string>();
+  const definitionIds = new Set<string>();
   for (const reference of ctx.deps.readWorkflowPipelineRefs?.() ?? []) {
-    if (pipelineIds.has(reference.pipelineId)) ids.add(reference.workflowId);
+    if (!pipelineIds.has(reference.pipelineId)) continue;
+    if (reference.kind === 'workflow-definition') {
+      definitionIds.add(`${reference.scope}::${reference.workflowId}`);
+    } else {
+      runRequestIds.add(reference.workflowId);
+    }
   }
-  return [...ids].sort();
+  return { runRequestIds: [...runRequestIds].sort(), definitionIds: [...definitionIds].sort() };
 }
 
 export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command) => {
@@ -372,16 +390,20 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     );
     const unresolvedIds = new Set(candidateIds.filter((id) => !effectiveIds.has(id)));
     if (unresolvedIds.size > 0) {
-      const dependentWorkflowIds = consumingWorkflowIdsReferencing(ctx, unresolvedIds);
-      if (dependentWorkflowIds.length > 0) {
+      const { runRequestIds, definitionIds } = consumingWorkflowsReferencing(ctx, unresolvedIds);
+      if (runRequestIds.length + definitionIds.length > 0) {
+        const bounded = (ids: readonly string[], maxLength = 64) =>
+          ids.slice(0, 20).map((id) => ctx.deps.logger.sanitize(id).slice(0, maxLength));
         await ack(ctx, 'rejected', 'pipeline-removal-blocked', {
-          pipelineIds: [...unresolvedIds]
-            .slice(0, 20)
-            .map((id) => ctx.deps.logger.sanitize(id).slice(0, 64)),
-          dependentWorkflowIds: dependentWorkflowIds
-            .slice(0, 20)
-            .map((id) => ctx.deps.logger.sanitize(id).slice(0, 64)),
-          total: dependentWorkflowIds.length
+          pipelineIds: bounded([...unresolvedIds]),
+          dependentWorkflowIds: bounded(runRequestIds),
+          // Additive (083 FR-041); `dependentWorkflowIds` keeps its 082 meaning
+          // of queued run requests so the existing contract stays valid. The
+          // wider cap leaves room for the scope prefix on top of a full-length
+          // workflow id — truncating one would defeat "the refusal names the
+          // referencing Workflows".
+          dependentWorkflowDefinitionIds: bounded(definitionIds, SCOPED_WORKFLOW_NAME_MAX_LEN),
+          total: runRequestIds.length + definitionIds.length
         });
         return;
       }

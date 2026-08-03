@@ -519,6 +519,157 @@ export interface PipelineCatalogProjection {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
+/*
+ * Feature 083 — webview mirror of the portable Workflow contract in
+ * `src/contracts/workflow-definitions.ts` and the projection in
+ * contracts/workflow-catalog-snapshot.md. Types and closed unions only; the
+ * host remains the sole authority for validation and resolution.
+ *
+ * "Workflow" here is the *definition* sense — a reusable acyclic graph of
+ * Pipeline nodes. The run-side sense (`WorkflowSnapshot`, `workflowId` on a
+ * queued request) keeps every surface it already owns in this file; neither
+ * vocabulary is renamed.
+ */
+
+export type WorkflowDefinitionScope = 'built-in' | 'user' | 'workspace';
+export type WritableWorkflowDefinitionScope = Exclude<WorkflowDefinitionScope, 'built-in'>;
+export type WorkflowSourceStatus = 'effective' | 'shadowed' | 'invalid';
+
+/** Collection selection rules; `exactlyOne` fails at run time on any size but one. */
+export const WORKFLOW_SELECTION_RULES = ['first', 'last', 'exactlyOne'] as const;
+export type WorkflowSelectionRule = (typeof WORKFLOW_SELECTION_RULES)[number];
+
+/**
+ * Closed comparison operator set. Adding a member is a contract change, not a
+ * configuration change — there is no operator registry and no way for an
+ * authored definition to introduce one.
+ */
+export const WORKFLOW_CONDITION_OPERATORS = [
+  'equals',
+  'notEquals',
+  'in',
+  'exists',
+  'greaterThan',
+  'greaterThanOrEqual',
+  'lessThan',
+  'lessThanOrEqual'
+] as const;
+export type WorkflowConditionOperator = (typeof WORKFLOW_CONDITION_OPERATORS)[number];
+
+/** Terminal run statuses a `node-status` operand may be compared against. */
+export const WORKFLOW_NODE_TERMINAL_STATUSES = ['completed', 'failed', 'canceled'] as const;
+export type WorkflowNodeTerminalStatus = (typeof WORKFLOW_NODE_TERMINAL_STATUSES)[number];
+
+/**
+ * A condition is structured data, never an expression string. The Builder edits
+ * these fields directly; there is no text to compile, evaluate, or sandbox.
+ */
+export type WorkflowConditionOperand =
+  | { readonly source: 'node-output'; readonly nodeId: string; readonly field: string }
+  | { readonly source: 'node-status'; readonly nodeId: string };
+
+export type WorkflowConditionLiteral = string | number | boolean;
+
+export interface WorkflowCondition {
+  readonly left: WorkflowConditionOperand;
+  readonly operator: WorkflowConditionOperator;
+  readonly right?: WorkflowConditionLiteral | readonly WorkflowConditionLiteral[];
+}
+
+/**
+ * `nodeId` is the address, not `pipelineId`: two nodes may reference the same
+ * Pipeline and are distinguished solely by `nodeId`. Reorder, insert, and remove
+ * preserve every surviving `nodeId`, so no connection endpoint needs remapping —
+ * deliberately unlike Pipeline bindings, which address a Phase by position.
+ */
+export interface WorkflowNode {
+  readonly nodeId: string;
+  readonly pipelineId: string;
+  readonly label?: string;
+}
+
+/**
+ * A connection carries no identifier of its own: defects address it by position
+ * in the authored list (`connections[2].to`), while its endpoints address nodes
+ * by `nodeId`. It carries no fan-out marker either — several outgoing
+ * connections on one node are mutually exclusive alternatives.
+ */
+export interface WorkflowConnection {
+  readonly from: { readonly nodeId: string; readonly portId: string };
+  readonly to: { readonly nodeId: string; readonly portId: string };
+  readonly condition?: WorkflowCondition;
+  /** Integer; ascending evaluation order, then authored order for ties. */
+  readonly priority?: number;
+  /** At most one per source node; considered last. */
+  readonly isDefault?: boolean;
+  readonly selection?: WorkflowSelectionRule;
+}
+
+export interface PortableWorkflowDefinition {
+  readonly workflowId: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly version: number;
+  /** Authored order preserved; carries no execution semantics. */
+  readonly nodes: readonly WorkflowNode[];
+  /** Authored order preserved; the equal-priority tie-break only. */
+  readonly connections: readonly WorkflowConnection[];
+  /** Non-empty; every entry names an existing node. */
+  readonly startNodeIds: readonly string[];
+}
+
+export type WorkflowCatalogMutation =
+  | { readonly kind: 'create'; readonly workflowId: string }
+  | { readonly kind: 'edit'; readonly workflowId: string }
+  | {
+      readonly kind: 'duplicate';
+      readonly sourceScope: WorkflowDefinitionScope;
+      readonly sourceWorkflowId: string;
+      readonly workflowId: string;
+    }
+  | { readonly kind: 'remove'; readonly workflowId: string }
+  | { readonly kind: 'reset' };
+
+/** `field` is wider than the Pipeline cap so it can hold `connections[12].to`. */
+export interface WorkflowCatalogFieldErrorProjection {
+  readonly field: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * Derived at projection time and absent from the persisted row: a Workflow's
+ * inputs are the node input ports no connection binds, and its outputs are the
+ * node output ports no connection consumes.
+ */
+export interface WorkflowCatalogPortProjection {
+  readonly nodeId: string;
+  readonly portId: string;
+  readonly label: string;
+  readonly type: PipelineInputPortType | PipelineOutputPortType;
+}
+
+export interface WorkflowCatalogSourceProjection {
+  readonly key: string;
+  readonly workflowId: string;
+  readonly scope: WorkflowDefinitionScope;
+  readonly status: WorkflowSourceStatus;
+  readonly definition: PortableWorkflowDefinition | null;
+  readonly display: Readonly<Record<string, unknown>>;
+  readonly errors: readonly WorkflowCatalogFieldErrorProjection[];
+  readonly derivedInputs: readonly WorkflowCatalogPortProjection[];
+  readonly derivedOutputs: readonly WorkflowCatalogPortProjection[];
+}
+
+export interface WorkflowCatalogProjection {
+  readonly state: 'ready' | 'error';
+  readonly records: readonly WorkflowCatalogSourceProjection[];
+  readonly effective: readonly PortableWorkflowDefinition[];
+  readonly revisions: Readonly<Record<WritableWorkflowDefinitionScope, string>>;
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
 /**
  * Feature 011 — webview mirror of `DelayedRetryState` in
  * src/ui/sidebar/snapshot.ts. The host always emits this object (even
@@ -887,6 +1038,13 @@ export interface WorkflowSnapshot {
    */
   readonly pipelineCatalog?: PipelineCatalogProjection;
   /**
+   * Feature 083 — resolved Workflow catalog for the Workflow Library and Graph
+   * Builder. Additive and optional on the same terms as `pipelineCatalog`:
+   * absent means the authoritative catalog is still loading, and every mutating
+   * control stays disabled until it arrives (FR-036).
+   */
+  readonly workflowCatalog?: WorkflowCatalogProjection;
+  /**
    * Feature 059 — per-capability trust projection. Optional for legacy-
    * tolerance: an older host bundle may not include either field, in
    * which case the webview must fail closed (treat as `false`) per the
@@ -900,6 +1058,12 @@ export interface WorkflowSnapshot {
     readonly phases: boolean;
     readonly retryConditions: boolean;
     readonly pipelineOverrides: boolean;
+    /**
+     * Feature 083 — gates non-default entries in the Workflow catalog. A
+     * capability distinct from `pipelineOverrides`, projected separately so
+     * the Builder cannot infer one from the other.
+     */
+    readonly workflowOverrides: boolean;
   };
   /**
    * Feature 033 — ephemeral per-subprocess telemetry sample. Never
