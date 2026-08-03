@@ -82,7 +82,7 @@ src/
 ├── parser/       stdout/audit-block/usage/rate-limit/credit-error parsers
 ├── queue/        single-active-run queue registry and scheduling primitives
 ├── runner/       Claude/Codex/Agy adapters, lazy registry, factory, prompt builder
-├── services/     auto-drain, guarded-run, history-recorder, phase-log, session-cleanup
+├── services/     auto-drain, guarded-run, history-recorder, phase-log, process-yaml, session-cleanup
 ├── state/        memento-backed run/queue/history state and forward-only migrators
 ├── telemetry/    local process-resource sampling — must not import vscode
 ├── ui/           VS Code-facing UI surfaces (sidebar provider, dashboard panel, output channel, status bar)
@@ -452,6 +452,18 @@ algorithms with no Pipeline knowledge, and
 Workflow's own ports on read rather than storing them. The full contract is in
 the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
+[src/services/process-yaml/](src/services/process-yaml/) is the portable
+exchange format for the first of those families — `schegent/v1` `Phase`
+documents. It imports no `vscode` and no configuration, and it imports the
+catalog's own field bounds from
+[process-definition-validator.ts](src/config/process-definition-validator.ts)
+rather than restating them, so the format cannot drift from what the catalog
+accepts. The scanner reads a deliberately small YAML subset rather than
+delegating to a general parser, and
+[scalar-style.ts](src/services/process-yaml/scalar-style.ts) is the single rule
+both the scanner and the serializer consult, so what one refuses to write the
+other refuses to read.
+
 ### IPC and Webview (`src/contracts/`, `src/ui/sidebar/`, `src/ui/dashboard/`)
 
 [contracts/sidebar-ipc.ts](src/contracts/sidebar-ipc.ts) defines every
@@ -473,6 +485,16 @@ adding a mutating command without updating both lists is a hard rule
 violation (CLAUDE.md). The four config-save commands
 (`saveGeneralSettings`, `saveModels`, `savePhases`, `savePipelines`)
 were added to the gate in spec 056 Track 1.
+
+The Phase YAML exchange adds two commands and **neither** is mutating:
+`CMD_EXPORT_PROCESS_YAML` writes a file the operator named in a host dialog and
+changes no extension state, and `CMD_PREFLIGHT_PROCESS_YAML` reads one chosen
+document and returns a plan. The import commits through the pre-existing
+`CMD_SAVE_PHASES`, so it inherits that command's revision gate, mutation-intent
+check, and trust gate rather than declaring a second write path. Both dialogs are
+injected seams wired in [src/extension.ts](src/extension.ts), so no filesystem
+path crosses the IPC boundary in either direction. Operator documentation:
+[docs/features/phase-yaml-exchange.md](docs/features/phase-yaml-exchange.md).
 
 Individual command handlers live under
 [src/ui/sidebar/commands/](src/ui/sidebar/commands/) (~45 files).

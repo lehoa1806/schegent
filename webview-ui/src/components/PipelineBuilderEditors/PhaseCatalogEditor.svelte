@@ -1,5 +1,12 @@
 <script lang="ts">
   import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import ProcessExportButton from '../ProcessImport/ProcessExportButton.svelte';
+  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
+  import {
+    importDisabledReason,
+    phaseExportAvailability,
+    storedWritableLayers
+  } from '../ProcessImport/process-exchange-entry';
   import RawJsonPhaseEditor from '../settings/RawJsonPhaseEditor.svelte';
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import TrustBanner from '../TrustBanner.svelte';
@@ -145,6 +152,19 @@
   function phaseErrorId(phase: MutablePhase): string | undefined {
     return phase.sourceErrors.length > 0 ? `phase-errors-${phase.scope}-${phase.id}` : undefined;
   }
+
+  /**
+   * T066 — the exchange entry points (FR-052, FR-053).
+   *
+   * Both live inside the `phaseCatalog.state === 'ready'` arm below, so the layers
+   * an import appends to are the authoritative ones by construction rather than by
+   * a check: an empty projection taken while the catalog was still loading would
+   * make a commit erase the layer it wrote to.
+   */
+  const importLayers = $derived(storedWritableLayers(snapshot.phaseCatalog?.records ?? []));
+  const importUnavailable = $derived(
+    importDisabledReason({ trusted, savePending, mutationActive })
+  );
 </script>
 
 {#if showTrustBanner}
@@ -182,10 +202,15 @@
     <button class="save-error-dismiss" aria-label="Dismiss Phase save error" onclick={ondismisssaveerror}>✕</button>
   </div>
 {/if}
+<!-- FR-053 — the import entry point. Its own region rather than a toolbar button,
+     because the preflight it opens renders in place: the plan, the scope choice,
+     and the per-row result all belong to this landmark. -->
+<ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
 <div class="split-pane">
   <div class="pane-left">
     <div class="phase-list">
       {#each phases as phase, index (phase.sourceKey)}
+        {@const exportable = phaseExportAvailability(phase)}
         <div class="phase-list-row">
           <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.scope}-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
             <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
@@ -199,6 +224,15 @@
           <div class="phase-list-actions">
             <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0 || phase.scope === 'built-in' || phases[index - 1]?.scope !== phase.scope} onclick={() => onmoveup(index)}>↑</button>
             <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1 || phase.scope === 'built-in' || phases[index + 1]?.scope !== phase.scope} onclick={() => onmovedown(index)}>↓</button>
+            <!-- FR-052 — Export is per row, and unlike every control beside it does
+                 not depend on trust or on a pending mutation: it writes a file the
+                 operator names and changes no catalog state. -->
+            <ProcessExportButton
+              phaseId={phase.id}
+              rowKey={phase.sourceKey}
+              resolves={exportable.resolves}
+              disabledReason={exportable.disabledReason}
+            />
           </div>
         </div>
       {/each}

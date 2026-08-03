@@ -6,6 +6,7 @@ import type { WorkflowDefinitionScope } from '../../../contracts/workflow-defini
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type {
   CommandAckMessage,
+  ExportProcessYamlResult,
   ReadMetricsRequest,
   ReadMetricsResponse,
   ReadPhaseLogRequest,
@@ -248,6 +249,37 @@ export interface RouterDeps {
     read(req: { correlationId: string }): Promise<ReadWakeupSessionLogResponse>;
   };
   readonly revealWakeupSessionLog?: () => Promise<RevealWakeupSessionLogResponse>;
+  /**
+   * Feature 084 (FR-018, FR-019, research R3) — hands a serialized document to
+   * the host's own save flow. This directory is vscode-free, so the dialog and
+   * the write live in an adapter wired in `src/extension.ts`, matching
+   * `revealWakeupSessionLog` above.
+   *
+   * `suggestedFileName` is a bare name the dialog seeds its field with, never a
+   * location; the adapter decides where to anchor it and never reports back
+   * where the operator put it. `'unavailable'` is not in the return type
+   * because resolving the resource is the handler's job, not the adapter's.
+   */
+  readonly saveProcessYamlDocument?: (request: {
+    readonly suggestedFileName: string;
+    readonly text: string;
+  }) => Promise<Exclude<ExportProcessYamlResult, { readonly outcome: 'unavailable' }>>;
+  /**
+   * Feature 084 (FR-020, FR-020a, research R3) — the mirror of
+   * `saveProcessYamlDocument` for import preflight. The host opens its own open
+   * dialog and does its own read, so no location is supplied by the webview and
+   * none is returned to it.
+   *
+   * Returns BYTES, not text: the decode is the parser's job, because "not valid
+   * UTF-8" and "has a byte-order mark" are refusals this format states rather
+   * than repairs (FR-004). Reads the chosen file exactly once and retains
+   * nothing — no lock, no watch, no copy (FR-031, FR-045).
+   */
+  readonly openProcessYamlDocument?: () => Promise<
+    | { readonly outcome: 'read'; readonly bytes: Uint8Array }
+    | { readonly outcome: 'canceled' }
+    | { readonly outcome: 'failed'; readonly message: string }
+  >;
   readonly metricsService?: {
     read(req: ReadMetricsRequest): Promise<ReadMetricsResponse>;
   };

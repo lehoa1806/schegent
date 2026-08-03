@@ -48,6 +48,12 @@ export interface SavePhaseRow {
 
 export type SavePhasesMutation =
   | { readonly kind: 'create'; readonly phaseId: string }
+  /**
+   * Feature 084 (FR-046a) — a `create` whose row came from a portable document,
+   * so its declared `version` is stored as authored instead of being renumbered.
+   * A `create` in every other respect, including the gates it passes.
+   */
+  | { readonly kind: 'import'; readonly phaseId: string }
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';

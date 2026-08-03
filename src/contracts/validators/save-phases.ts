@@ -10,7 +10,12 @@ function validMutation(value: unknown): value is PhaseCatalogMutation {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const mutation = value as Record<string, unknown>;
   if (mutation.kind === 'reset') return !hasUnexpectedKeys(mutation, ['kind']);
-  if (mutation.kind === 'create' || mutation.kind === 'edit' || mutation.kind === 'remove') {
+  if (
+    mutation.kind === 'create' ||
+    mutation.kind === 'import' ||
+    mutation.kind === 'edit' ||
+    mutation.kind === 'remove'
+  ) {
     return !hasUnexpectedKeys(mutation, ['kind', 'phaseId']) && validPhaseId(mutation.phaseId);
   }
   return mutation.kind === 'duplicate'
