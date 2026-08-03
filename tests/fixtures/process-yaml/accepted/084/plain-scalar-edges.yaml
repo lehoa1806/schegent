@@ -1,0 +1,5 @@
+spec:
+  timeoutSeconds: -1
+  model: a#b
+  effort: value # trailing comment is not part of the value
+  runner: ?not-a-complex-key

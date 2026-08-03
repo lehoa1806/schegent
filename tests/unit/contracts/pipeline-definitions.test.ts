@@ -104,6 +104,10 @@ describe('mutation kind exhaustiveness', () => {
         return `remove:${mutation.pipelineId}`;
       case 'reset':
         return 'reset';
+      case 'import-package':
+        // The one intent that names a SET rather than a single id: a confirmed
+        // package import appends every eligible resource in a single write.
+        return `import-package:${mutation.pipelineIds.join(',')}`;
       default: {
         const unreachable: never = mutation;
         return unreachable;
@@ -111,20 +115,22 @@ describe('mutation kind exhaustiveness', () => {
     }
   };
 
-  it('covers all five intents with no residual union member', () => {
+  it('covers all six intents with no residual union member', () => {
     const mutations: readonly PipelineCatalogMutation[] = [
       { kind: 'create', pipelineId: 'alpha' },
       { kind: 'edit', pipelineId: 'alpha' },
       { kind: 'duplicate', sourceScope: 'built-in', sourcePipelineId: 'alpha', pipelineId: 'beta' },
       { kind: 'remove', pipelineId: 'alpha' },
-      { kind: 'reset' }
+      { kind: 'reset' },
+      { kind: 'import-package', pipelineIds: ['alpha', 'beta'] }
     ];
     expect(mutations.map(describeMutation)).toEqual([
       'create:alpha',
       'edit:alpha',
       'duplicate:built-in:alpha:beta',
       'remove:alpha',
-      'reset'
+      'reset',
+      'import-package:alpha,beta'
     ]);
   });
 });

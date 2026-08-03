@@ -1,0 +1,12 @@
+values:
+  bool: true
+  boolWord: yes
+  boolOff: off
+  number: 3
+  float: 1.5
+  hex: 0x1f
+  nullWord: null
+  nullTilde: ~
+  date: 2026-08-03
+  infinity: .inf
+  quotedNumber: "3"

@@ -23,6 +23,11 @@ import type { SavePhasesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 import {
+  auditImportCommitted,
+  auditImportRefused,
+  type ImportCommitTarget
+} from './process-exchange-commit-audit';
+import {
   definitionMap,
   identityRepairTarget,
   layerDiff,
@@ -54,6 +59,16 @@ const phaseIntentAdapter: LayerIntentAdapter<PhaseDefinition> = {
 };
 
 /**
+ * The ids one mutation declares as its targets. Empty for `reset`; a set for
+ * feature 085's `import-package`; a single id for every other kind.
+ */
+function declaredPhaseIds(mutation: PhaseCatalogMutation): readonly string[] {
+  if (mutation.kind === 'reset') return [];
+  if (mutation.kind === 'import-package') return mutation.phaseIds;
+  return [mutation.phaseId];
+}
+
+/**
  * Projects a Phase mutation onto the entity-agnostic intent the algebra reads.
  *
  * `import` projects to `create` (feature 084, research R2): an import adds
@@ -61,21 +76,29 @@ const phaseIntentAdapter: LayerIntentAdapter<PhaseDefinition> = {
  * already validates a create to be. Keeping it a create here means the diff
  * check, the positional shape check, and the identity-repair rule are the
  * shipped ones rather than a second copy that can rot.
+ *
+ * `import-package` (feature 085, research R5) is the one kind that does NOT
+ * project onto an existing one: it appends a SET in a single write, which no
+ * single-id kind describes, so the algebra carries its own branch and this
+ * function passes the set through as `targetIds`.
  */
 function phaseIntent(mutation: PhaseCatalogMutation): LayerMutationIntent {
+  if (mutation.kind === 'import-package') {
+    return { kind: 'import-package', targetId: null, targetIds: mutation.phaseIds };
+  }
   const kind = mutation.kind === 'import' ? 'create' : mutation.kind;
   return { kind, targetId: mutation.kind === 'reset' ? null : mutation.phaseId };
 }
 
 /**
- * Feature 084 (FR-046a) — the one row an import introduces keeps the `version`
- * its document declared, so exporting an imported Phase reproduces the source
- * document.
+ * Feature 084 (FR-046a) / feature 085 (FR-044) — the rows an import introduces
+ * keep the `version` their document declared, so exporting an imported Phase
+ * reproduces the source document.
  *
  * Every other row in the same save, including the rest of the layer, still gets
  * its version from {@link withHostVersions}. The exemption is safe precisely
- * because the algebra has already established that this identity is absent from
- * the current layer: the invariant the version rules protect is that a save
+ * because the algebra has already established that these identities are absent
+ * from the current layer: the invariant the version rules protect is that a save
  * cannot dictate a version *transition*, and there is no prior version here to
  * transition from.
  */
@@ -84,14 +107,15 @@ function withImportedVersion(
   proposedById: ReadonlyMap<string, PhaseDefinition>,
   mutation: PhaseCatalogMutation
 ): readonly PhaseDefinition[] {
-  if (mutation.kind !== 'import') return versioned;
-  const authored = proposedById.get(mutation.phaseId);
-  if (authored === undefined) return versioned;
-  return versioned.map((definition) =>
-    definition.phaseId === mutation.phaseId
-      ? Object.freeze({ ...definition, version: authored.version })
-      : definition
-  );
+  if (mutation.kind !== 'import' && mutation.kind !== 'import-package') return versioned;
+  const importedIds = new Set(declaredPhaseIds(mutation));
+  return versioned.map((definition) => {
+    if (!importedIds.has(definition.phaseId)) return definition;
+    const authored = proposedById.get(definition.phaseId);
+    return authored === undefined
+      ? definition
+      : Object.freeze({ ...definition, version: authored.version });
+  });
 }
 
 function normalizeLayer(rows: readonly unknown[]): NormalizedLayer {
@@ -163,6 +187,10 @@ function currentMetadata(
   sanitize: (value: string) => string
 ): unknown {
   if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  // A package names a set, not a row, and `reapply` is not offered: the plan was
+  // computed against the revision this gate just rejected, so its skip and
+  // blocked decisions may no longer hold. The operator re-runs the preflight.
+  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
   const phaseId = mutation.kind === 'duplicate' ? mutation.sourcePhaseId : mutation.phaseId;
   const definition = current.get(phaseId);
   return {
@@ -204,12 +232,21 @@ function configuredPipelineIdsReferencing(
 }
 
 export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) => {
+  const { scope, expectedRevision, mutation } = command.payload;
+  // Feature 085 (FR-061) — the one layer write a package import is about, or
+  // null for every other mutation. Read before the first gate so a refusal at
+  // any of them leaves a record; every audit call below is a no-op when null.
+  const exchange: ImportCommitTarget | null =
+    mutation.kind === 'import-package'
+      ? { resourceKind: 'phase', resourceIds: mutation.phaseIds, scope }
+      : null;
+
   if (!ctx.deps.updateConfig || !ctx.deps.readPhaseConfig) {
+    await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
 
-  const { scope, expectedRevision, mutation } = command.payload;
   const intent = phaseIntent(mutation);
   const layers = ctx.deps.readPhaseConfig();
   const currentRows = layers[scope];
@@ -219,6 +256,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
   const currentIdentities = layerIdentities(currentRows, phaseIntentAdapter);
 
   if (expectedRevision !== currentRevision) {
+    await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
       current: currentMetadata(mutation, currentById, scope, ctx.deps.logger.sanitize)
@@ -228,6 +266,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
 
   const proposedLayer = normalizeLayer(command.payload.phases);
   if (proposedLayer.errors.length > 0) {
+    await auditImportRefused(ctx, exchange, 'phase-validation');
     await ack(
       ctx,
       'rejected',
@@ -247,6 +286,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     } satisfies PhaseFieldError];
   });
   if (runnerPolicyErrors.length > 0) {
+    await auditImportRefused(ctx, exchange, 'phase-validation');
     await ack(
       ctx,
       'rejected',
@@ -283,23 +323,22 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       return;
     }
     const builtInIds = new Set(BUILT_IN_PHASES.map((phase) => phase.id));
-    const targetId = mutation.kind === 'reset'
-      ? null
-      : mutation.kind === 'duplicate'
-        ? mutation.sourcePhaseId
-        : mutation.phaseId;
+    // Only `edit` and `remove` can name a row this layer does not own, so the
+    // target is read from the single-id kinds alone.
     const builtInOnly = (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && targetId !== null
-      && builtInIds.has(targetId)
-      && !currentById.has(targetId);
-    await ack(
-      ctx,
-      'rejected',
-      builtInOnly ? 'built-in-immutable' : 'phase-mutation-mismatch'
-    );
+      && builtInIds.has(mutation.phaseId)
+      && !currentById.has(mutation.phaseId);
+    const reason = builtInOnly ? 'built-in-immutable' : 'phase-mutation-mismatch';
+    await auditImportRefused(ctx, exchange, reason);
+    await ack(ctx, 'rejected', reason);
     return;
   }
 
+  const importedIds = new Set(
+    mutation.kind === 'import' || mutation.kind === 'import-package'
+      ? declaredPhaseIds(mutation)
+      : []
+  );
   for (const raw of command.payload.phases) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const row = raw as Record<string, unknown>;
@@ -307,13 +346,14 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       ? row.phaseId
       : typeof row.id === 'string' ? row.id : null;
     if (phaseId === null || row.version === undefined) continue;
-    // The imported identity declares its own version (FR-046a). Skipping the
-    // echo check for it alone leaves the check in force for every other row.
-    if (mutation.kind === 'import' && phaseId === mutation.phaseId) continue;
+    // An imported identity declares its own version (FR-046a, FR-044). Skipping
+    // the echo check for those alone leaves it in force for every other row.
+    if (importedIds.has(phaseId)) continue;
     const expectedVersions = currentIdentities.versions.get(
       phaseId === repairTargetId && mutation.kind === 'edit' ? mutation.phaseId : phaseId
     ) ?? new Set([1]);
     if (!expectedVersions.has(row.version as number)) {
+      await auditImportRefused(ctx, exchange, 'phase-version-invalid');
       await ack(ctx, 'rejected', 'phase-version-invalid', {
         phaseId: ctx.deps.logger.sanitize(phaseId).slice(0, 64),
         expectedVersions: [...expectedVersions].sort((a, b) => a - b)
@@ -402,10 +442,12 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     ctx.deps.logger.warn(
       `phase catalog save failed: ${ctx.deps.logger.sanitize((error as Error).message)}`
     );
+    await auditImportRefused(ctx, exchange, 'persistence-failed');
     await ack(ctx, 'rejected', 'persistence-failed');
     return;
   }
 
+  await auditImportCommitted(ctx, exchange);
   await ack(ctx, 'accepted', undefined, {
     scope,
     revision: phaseLayerRevision(persistedRows),

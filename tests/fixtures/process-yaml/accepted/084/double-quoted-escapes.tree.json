@@ -1,0 +1,26 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "metadata",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "name",
+            "value": {
+              "kind": "scalar",
+              "value": "tab:\t nl:\n quote:\" back:\\ u:é",
+              "quoted": true,
+              "line": 2
+            },
+            "line": 2
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    }
+  ],
+  "line": 1
+}

@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "single-quoted scalars are not part of this format (line 1)"
+}

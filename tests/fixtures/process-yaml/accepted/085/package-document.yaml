@@ -1,0 +1,45 @@
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: ship-it
+  name: Ship It
+  version: 2
+spec:
+  phaseIds:
+    - specify
+    - plan
+  inputs:
+    - portId: feature-brief
+      label: Feature Brief
+      type: text
+      required: true
+  outputs:
+    - portId: plan-document
+      label: Plan
+      type: markdown
+  bindings:
+    - kind: input
+      phaseIndex: 0
+      inputKey: brief
+      source:
+        from: pipeline-input
+        portId: feature-brief
+    - kind: output
+      phaseIndex: 1
+      portId: plan-document
+      outputKey: plan
+  executionDefaults:
+    runner: claude
+    timeoutSeconds: 600
+  recommendedNext:
+    - review
+included:
+  phases:
+    - metadata:
+        phaseId: specify
+        name: Specify
+        version: 1
+      spec:
+        instruction: |-
+          Write the spec.
+          Then stop.

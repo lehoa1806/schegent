@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a document must begin with a mapping, not a sequence (line 1)"
+}

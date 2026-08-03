@@ -9,11 +9,31 @@
 // Nothing here posts, reads, or retains anything. The commit itself is the
 // existing `savePhases` helper — import adds no mutating IPC command (research
 // R2) — so this module's job ends at building its request and reading its ack.
+//
+// Feature 085 T035 — the plan is now kind-tagged. Preflight takes no kind from
+// the request (FR-055a), so one plan can carry Phase rows and Pipeline rows at
+// once, and every question this module answers had to be re-asked per kind:
+// which rows the operator is being shown (FR-056), which rows are eligible
+// (FR-057), and which of those THIS commit can write.
+//
+// Feature 085 T048 — the commit is now two ordered layer writes: the Phase layer
+// first, then the Pipeline layer (FR-038), each carrying its OWN expected
+// revision (FR-043) and its own single mutation intent. They are two writes and
+// not one because they are two independently-revisioned catalogs; that is also
+// why the outcome has three values rather than two (FR-042a) and why a failed
+// second write triggers no compensating delete (FR-042c) — what landed is left
+// in place, and importing the same document again finishes the job (FR-042b).
 
 import type { DocumentRefusalCode, ImportPlan, ImportPlanRow } from '../../lib/messages';
 import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
+import type {
+  SavePipelineRow,
+  SavePipelinesRequest,
+  SavePipelinesResult
+} from '../../lib/save-pipelines';
 import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
+import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
 
 /**
  * The definition an `import` plan row carries.
@@ -21,13 +41,27 @@ import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalo
  * Derived from the contract rather than mirrored, because a second declaration
  * of the portable field set is a second thing to keep in step with the host, and
  * FR-046a turns any divergence into a lossy round trip.
+ *
+ * Narrowed to the `'phase'` arm as of feature 085, which widened the row union
+ * with a Pipeline arm; `ImportedPipelineDefinition` is its counterpart.
  */
 export type ImportedPhaseDefinition = Extract<
   ImportPlanRow,
-  { outcome: 'import' }
+  { outcome: 'import'; resourceKind: 'phase' }
 >['definition'];
 
-type ImportOutcomeRow = Extract<ImportPlanRow, { outcome: 'import' }>;
+/** The definition a Pipeline `import` plan row carries, derived the same way. */
+export type ImportedPipelineDefinition = Extract<
+  ImportPlanRow,
+  { outcome: 'import'; resourceKind: 'pipeline' }
+>['definition'];
+
+type ImportOutcomeRow = Extract<ImportPlanRow, { outcome: 'import'; resourceKind: 'phase' }>;
+
+type PipelineImportOutcomeRow = Extract<
+  ImportPlanRow,
+  { outcome: 'import'; resourceKind: 'pipeline' }
+>;
 
 /**
  * The scopes an import may target. Built-in is absent, and unrepresentable in
@@ -52,7 +86,7 @@ export interface ConfirmGate {
   readonly scope: WritablePhaseDefinitionScope | null;
 }
 
-export type ImportResultOutcome = 'imported' | 'skipped' | 'invalid' | 'failed';
+export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed';
 
 export interface ImportResultRow {
   readonly resourceId: string | null;
@@ -60,28 +94,84 @@ export interface ImportResultRow {
   readonly detail: string;
 }
 
-/** The `import` rows of a plan, in plan order. */
-export function importRows(plan: ImportPlan): readonly ImportOutcomeRow[] {
-  return plan.rows.filter((row): row is ImportOutcomeRow => row.outcome === 'import');
+/**
+ * Every row a confirmed import would write, in plan order (FR-057).
+ *
+ * Eligibility is the PLAN's property and reads no kind: a references-only
+ * package whose single writable row is the Pipeline is a plan with something to
+ * do, and answering "nothing to import" for it would describe a different
+ * document. What this surface can currently express is a separate, narrower
+ * question — see `confirmBlockedReason`.
+ */
+export function eligibleRows(plan: ImportPlan): readonly ImportPlanRow[] {
+  return plan.rows.filter((row) => row.outcome === 'import');
+}
+
+/** The Phase `import` rows of a plan, in plan order. */
+export function phaseImportRows(plan: ImportPlan): readonly ImportOutcomeRow[] {
+  return plan.rows.filter(
+    (row): row is ImportOutcomeRow => row.outcome === 'import' && row.resourceKind === 'phase'
+  );
+}
+
+/**
+ * The Pipeline `import` rows of a plan, in plan order.
+ *
+ * Separate from the Phase accessor rather than a filter at the call site,
+ * because the two are written by different layer saves under different intents,
+ * in a fixed order (FR-038). A single list would make the ordering an accident
+ * of how the plan happened to arrive.
+ */
+export function pipelineImportRows(plan: ImportPlan): readonly PipelineImportOutcomeRow[] {
+  return plan.rows.filter(
+    (row): row is PipelineImportOutcomeRow =>
+      row.outcome === 'import' && row.resourceKind === 'pipeline'
+  );
+}
+
+/**
+ * The kind word shown in a row's own column (FR-056).
+ *
+ * Shown per row rather than once for the document, because a package declares
+ * both kinds and the same outcome means different things for each: a `skip` on
+ * a Phase is a dependency the catalog already holds, a `skip` on the Pipeline is
+ * the thing the operator opened the file for not happening.
+ */
+export function resourceKindLabel(row: ImportPlanRow): string {
+  return row.resourceKind === 'pipeline' ? 'Pipeline' : 'Phase';
 }
 
 /** The outcome word shown in a row's own column. */
 export function outcomeLabel(row: ImportPlanRow): string {
   if (row.outcome === 'import') return 'Import';
   if (row.outcome === 'skip') return 'Skip';
+  if (row.outcome === 'blocked') return 'Blocked';
   return 'Invalid';
 }
 
 /**
- * FR-054 — `skip` and `invalid` must state the reason without the operator
- * opening the file. An `import` row has no reason to state beyond the advisory
- * that it declares a retry condition, whose capability gate is re-evaluated at
- * commit time (FR-012a), so it must not read as already granted here.
+ * FR-054 — `skip`, `blocked`, and `invalid` must state the reason without the
+ * operator opening the file. An `import` row has no reason to state beyond the
+ * advisory that it declares a retry condition, whose capability gate is
+ * re-evaluated at commit time (FR-012a), so it must not read as already granted
+ * here.
+ *
+ * `blocked` and `invalid` are deliberately different sentences: 085 FR-033
+ * separates a resource that is defective from one that is well-formed and whose
+ * dependency is not available, because only the second is fixed by importing
+ * something else first.
  */
 export function reasonLines(row: ImportPlanRow): readonly string[] {
   if (row.outcome === 'skip') {
     return [
       `Already present in the ${row.presentIn} layer as a ${row.presentRowStatus} row, so this import would not change it.`
+    ];
+  }
+  if (row.outcome === 'blocked') {
+    return [
+      row.reason.code === 'dependency-absent'
+        ? `Needs the Phase ${row.reason.phaseId}, which is in no catalog layer and this document does not supply.`
+        : `Needs the Phase ${row.reason.phaseId}, which a catalog layer claims but does not currently resolve.`
     ];
   }
   if (row.outcome === 'invalid') {
@@ -91,7 +181,7 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
     }
     return lines;
   }
-  if (row.requiresRetryConditionCapability) {
+  if (row.resourceKind === 'phase' && row.requiresRetryConditionCapability) {
     return ['Declares a retry condition, which the commit checks separately.'];
   }
   return [];
@@ -113,6 +203,7 @@ const REFUSAL_HEADLINES: Readonly<Record<DocumentRefusalCode, string>> = {
   'unsupported-kind': 'This document declares a different kind of resource.',
   'disallowed-syntax': 'This document uses YAML the Phase format does not accept.',
   'multi-document': 'This file holds more than one document, and an import reads exactly one.',
+  'duplicate-id': 'This document declares the same id twice, so which one was meant is unclear.',
   empty: 'This document declares no Phase.'
 };
 
@@ -146,16 +237,50 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   if (gate.state === 'idle' || gate.plan === null) {
     return 'Inspect a document first.';
   }
-  const rows = importRows(gate.plan);
-  if (rows.length === 0) return 'This plan has nothing to import.';
-  if (rows.length > 1) {
-    // FR-044 — one Phase per document. A plan with more rows is a sibling
-    // package feature's shape, and the save intent cannot declare two added
-    // identities, so it fails closed rather than importing part of the plan.
-    return 'This plan declares more than one Phase, which this import cannot apply.';
+  // FR-057 — the eligibility question, asked of the plan and of no kind.
+  if (eligibleRows(gate.plan).length === 0) return 'This plan has nothing to import.';
+  // The writability question, now narrow enough to have exactly one case left
+  // (T048). A Pipeline row whose plan carries no Pipeline revision has no gate
+  // for its own write to present, so writing it would drop FR-040 for that layer
+  // — a plan computed against a Pipeline catalog that has since moved would be
+  // applied silently. Held closed instead; re-inspecting the document rebuilds a
+  // plan that carries it.
+  if (
+    pipelineImportRows(gate.plan).length > 0 &&
+    gate.plan.computedAgainstPipelineRevision === undefined
+  ) {
+    return 'This plan does not carry the Pipeline catalog revision its write has to check. Inspect the document again.';
   }
   if (gate.scope === null) return 'Choose the scope to import into.';
   return null;
+}
+
+/**
+ * What confirming would do, stated before the click (FR-058).
+ *
+ * Two facts the operator cannot read off the table quickly: that the write is
+ * limited to the eligible rows, and where it lands. Both are stated even while
+ * Confirm is unavailable, because the reason it is unavailable is often exactly
+ * the second one — an operator who has not chosen a scope needs to know a scope
+ * is what confirming needs, not merely that something is missing.
+ *
+ * The scope is named as the operator's choice (FR-046): the document has no say
+ * in where it is written, so nothing here is derived from it.
+ */
+export function commitStatement(
+  plan: ImportPlan,
+  scope: WritablePhaseDefinitionScope | null
+): string {
+  const eligible = eligibleRows(plan).length;
+  if (eligible === 0) return 'No row here is eligible, so confirming would write nothing.';
+  const others = plan.rows.length - eligible;
+  const subject = eligible === 1 ? '1 resource' : `${eligible} resources`;
+  const target = scope === null ? 'the scope you choose' : `the ${scope} layer`;
+  const rest =
+    others === 0
+      ? ''
+      : ` The other ${others === 1 ? 'row is' : `${others} rows are`} left unchanged.`;
+  return `Confirming writes ${subject} into ${target}, and nothing else.${rest}`;
 }
 
 /**
@@ -173,67 +298,173 @@ export function savePhaseRowFromDefinition(definition: ImportedPhaseDefinition):
 }
 
 /**
- * The save that applies a plan, or `null` when the plan cannot be applied.
+ * The declared Pipeline definition as a catalog row.
  *
- * Written as a fold over the plan's `import` rows rather than around a single
- * resource (FR-044), so a sibling package feature driving many rows reuses this
- * merge instead of writing a second one. What is single here is the declared
- * mutation: the shared intent algebra admits exactly one added identity per
- * save, so a plan with more than one `import` row is refused rather than applied
- * in part. `confirmBlockedReason` states that to the operator before the click.
- *
- * `expectedRevision` is the revision the PLAN was computed against for the
- * chosen scope, not the catalog's current one (FR-038) — that is what makes a
- * layer written since preflight refuse as `stale-catalog`.
- *
- * `existingLayer` is passed through in the order given, so a row the catalog
- * could not parse is carried across rather than dropped by an import.
+ * Two key names change rather than one — stored rows key identity as `id` and
+ * the sequence as `phases`, while the portable document and the host contract
+ * use `pipelineId` and `phaseIds`. Every other field spreads through, for the
+ * same reason as the Phase row: a field added to the contract later must not be
+ * silently dropped on the import path (FR-046a). `phaseIds` is copied rather
+ * than aliased so the row does not share an array with the plan.
  */
-export function buildImportSave(
+export function savePipelineRowFromDefinition(
+  definition: ImportedPipelineDefinition
+): SavePipelineRow {
+  const { pipelineId, phaseIds, ...declared } = definition;
+  return { id: pipelineId, phases: [...phaseIds], ...declared };
+}
+
+/** The stored rows of each catalog the commit appends to, for one scope. */
+export interface ImportTargetLayers {
+  readonly phases: readonly SavePhaseRow[];
+  readonly pipelines: readonly SavePipelineRow[];
+}
+
+export type ImportLayerKey = 'phases' | 'pipelines';
+
+/** One layer write. The key says which catalog, and so which save sends it. */
+export type ImportLayerWrite =
+  | { readonly key: 'phases'; readonly request: SavePhasesRequest }
+  | { readonly key: 'pipelines'; readonly request: SavePipelinesRequest };
+
+/**
+ * The writes that apply a plan, in the order they must be sent (FR-038, FR-043).
+ *
+ * The Phase layer is first and unconditionally so: a Pipeline that references a
+ * Phase this same document supplies does not validate until that Phase is in the
+ * catalog, so the reverse order would refuse a package that is internally
+ * consistent. Each write carries the revision the PLAN was computed against for
+ * the chosen scope — its own, from its own catalog — because that is what makes
+ * a layer written since preflight refuse as `stale-catalog` (FR-040) rather than
+ * overwrite an operator's work. Reading either revision live at this moment
+ * would leave that gate unable to fire.
+ *
+ * The intent is `import` only for the shipped single-Phase standalone case, and
+ * `import-package` for everything else. The distinction is observable: the host
+ * returns different legal actions on a `stale-catalog` rejection per kind, so
+ * relabelling the standalone path would change an operator's recovery
+ * affordances for no gain.
+ *
+ * Returns nothing at all — not a partial list — when a Pipeline row's plan
+ * carries no Pipeline revision. Half a package is the one outcome no requirement
+ * here admits, so a caller that ignores `confirmBlockedReason` writes nothing
+ * rather than the Phase half.
+ *
+ * Each `existingLayer` is passed through in the order given, so a row the
+ * catalog could not parse is carried across rather than dropped by an import.
+ */
+export function buildImportWrites(
   plan: ImportPlan,
   scope: WritablePhaseDefinitionScope,
-  existingLayer: readonly SavePhaseRow[]
-): SavePhasesRequest | null {
-  const rows = importRows(plan);
-  if (rows.length !== 1) return null;
-  const merged = rows.reduce<readonly SavePhaseRow[]>(
-    (layer, row) => [...layer, savePhaseRowFromDefinition(row.definition)],
-    existingLayer
-  );
-  return {
-    scope,
-    expectedRevision: plan.computedAgainstRevision[scope],
-    mutation: { kind: 'import', phaseId: rows[0].resourceId },
-    phases: merged
-  };
+  layers: ImportTargetLayers
+): readonly ImportLayerWrite[] {
+  const phases = phaseImportRows(plan);
+  const pipelines = pipelineImportRows(plan);
+  const pipelineRevisions = plan.computedAgainstPipelineRevision;
+  if (pipelines.length > 0 && pipelineRevisions === undefined) return [];
+
+  const writes: ImportLayerWrite[] = [];
+  if (phases.length > 0) {
+    const standalone = phases.length === 1 && pipelines.length === 0;
+    writes.push({
+      key: 'phases',
+      request: {
+        scope,
+        expectedRevision: plan.computedAgainstRevision[scope],
+        mutation: standalone
+          ? { kind: 'import', phaseId: phases[0].resourceId }
+          : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
+        phases: [
+          ...layers.phases,
+          ...phases.map((row) => savePhaseRowFromDefinition(row.definition))
+        ]
+      }
+    });
+  }
+  if (pipelines.length > 0 && pipelineRevisions !== undefined) {
+    writes.push({
+      key: 'pipelines',
+      request: {
+        scope,
+        expectedRevision: pipelineRevisions[scope],
+        mutation: {
+          kind: 'import-package',
+          pipelineIds: pipelines.map((row) => row.resourceId)
+        },
+        pipelines: [
+          ...layers.pipelines,
+          ...pipelines.map((row) => savePipelineRowFromDefinition(row.definition))
+        ]
+      }
+    });
+  }
+  return writes;
+}
+
+/** What a confirmed import did, taken as a whole (FR-042a). */
+export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
+
+export interface ImportLayerResult {
+  readonly key: ImportLayerKey;
+  readonly ack: SavePhasesResult | SavePipelinesResult;
 }
 
 /**
- * The save's single ack, as one result per plan row (FR-042).
+ * The three outcomes, read off the acks that actually came back (FR-042a).
  *
- * Total over `plan.rows` by construction, and because the commit is
- * all-or-nothing (FR-044a) the projection cannot report a mixed outcome that did
- * not happen: on `accepted` every `import` row is `imported`, on `rejected`
- * every one is `failed` with the same reason. Rows the commit never addressed
- * keep the outcome and the reason preflight gave them.
+ * `partial` exists because the two writes are independently gated and the first
+ * can succeed while the second is refused. It is reported rather than repaired:
+ * FR-042c forbids a compensating delete, so the honest report is the only thing
+ * this surface owes the operator.
+ *
+ * An empty result list is `failed`, not `imported`. It means the commit sent
+ * nothing — a plan `buildImportWrites` refused — and calling that success would
+ * put an "imported" line under a document that was never written.
+ */
+export function commitOutcome(results: readonly ImportLayerResult[]): ImportCommitOutcome {
+  if (results.length === 0) return 'failed';
+  const accepted = results.filter((result) => result.ack.status === 'accepted').length;
+  if (accepted === results.length) return 'imported';
+  return accepted === 0 ? 'failed' : 'partial';
+}
+
+/**
+ * The layer acks, as one result per plan row (FR-042).
+ *
+ * Total over `plan.rows` by construction. Each `import` row reads the ack of ITS
+ * OWN layer, which is what lets a partial outcome be reported exactly: the
+ * Phases say imported and the Pipeline says why it was not, in the same table.
+ * A row whose layer was never reached — the sequence stopped at the first
+ * rejection — says that rather than borrowing the other layer's reason. Rows the
+ * commit never addressed keep the outcome and the reason preflight gave them.
  *
  * The scope named in an `imported` detail is the one the operator chose, which is
  * by FR-046 the resolution origin — never anything the document claimed.
  */
-export function projectSaveAck(
+export function projectCommitResults(
   plan: ImportPlan,
-  ack: SavePhasesResult,
-  scope: WritablePhaseDefinitionScope
+  scope: WritablePhaseDefinitionScope,
+  results: readonly ImportLayerResult[]
 ): readonly ImportResultRow[] {
-  const failure =
-    ack.status === 'rejected' ? formatPhaseSaveRejection(ack.reason, ack.result) : null;
+  const failureFor = (key: ImportLayerKey): string | null => {
+    const entry = results.find((result) => result.key === key);
+    if (entry === undefined) return 'Not written — the import stopped before this layer.';
+    if (entry.ack.status === 'accepted') return null;
+    return key === 'phases'
+      ? formatPhaseSaveRejection(entry.ack.reason, entry.ack.result)
+      : formatPipelineSaveRejection(entry.ack.reason, entry.ack.result);
+  };
   return plan.rows.map((row) => {
     if (row.outcome === 'skip') {
       return { resourceId: row.resourceId, outcome: 'skipped' as const, detail: reasonLines(row).join(' ') };
     }
+    if (row.outcome === 'blocked') {
+      return { resourceId: row.resourceId, outcome: 'blocked' as const, detail: reasonLines(row).join(' ') };
+    }
     if (row.outcome === 'invalid') {
       return { resourceId: row.resourceId, outcome: 'invalid' as const, detail: reasonLines(row).join(' ') };
     }
+    const failure = failureFor(row.resourceKind === 'pipeline' ? 'pipelines' : 'phases');
     return failure === null
       ? {
           resourceId: row.resourceId,
@@ -242,4 +473,68 @@ export function projectSaveAck(
         }
       : { resourceId: row.resourceId, outcome: 'failed' as const, detail: failure };
   });
+}
+
+/**
+ * The whole-commit sentence shown above the result table (FR-042a, FR-042b/c).
+ *
+ * `partial` is the one that has to be written carefully. It states two facts the
+ * per-row table cannot: that what landed is still there — no compensating delete
+ * was performed and none is offered — and that the recovery is to import the
+ * same document again, which is safe precisely because an already-present id is
+ * a `skip` (FR-030).
+ */
+export function commitOutcomeStatement(
+  outcome: ImportCommitOutcome,
+  scope: WritablePhaseDefinitionScope
+): string {
+  if (outcome === 'imported') return `Every eligible resource was written to the ${scope} layer.`;
+  if (outcome === 'failed') return 'Nothing was written.';
+  return `Part of this document was written to the ${scope} layer and part was not. What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.`;
+}
+
+/** The two saves, injected so the commit can be exercised without a host. */
+export interface ImportCommitDeps {
+  readonly savePhases: (request: SavePhasesRequest) => Promise<SavePhasesResult>;
+  readonly savePipelines: (request: SavePipelinesRequest) => Promise<SavePipelinesResult>;
+}
+
+export interface ImportCommitReport {
+  readonly outcome: ImportCommitOutcome;
+  readonly results: readonly ImportLayerResult[];
+  readonly rows: readonly ImportResultRow[];
+}
+
+/**
+ * Send the plan's writes in order and report what happened (FR-038, FR-042).
+ *
+ * Sequential and short-circuiting by design: the Pipeline write is only sent
+ * once the Phase write has been accepted, because a Pipeline referencing a Phase
+ * from the same document would otherwise be validated against a catalog that
+ * never received it. A rejection therefore stops the sequence — and stopping is
+ * all it does. Nothing already written is retracted (FR-042c).
+ */
+export async function runImportCommit(
+  plan: ImportPlan,
+  scope: WritablePhaseDefinitionScope,
+  layers: ImportTargetLayers,
+  deps: ImportCommitDeps
+): Promise<ImportCommitReport> {
+  const results: ImportLayerResult[] = [];
+  for (const write of buildImportWrites(plan, scope, layers)) {
+    // Awaited inside the loop deliberately: the writes are ordered, and the
+    // second is conditional on the first. Issuing them together would send the
+    // Pipeline before its Phases exist.
+    const ack =
+      write.key === 'phases'
+        ? await deps.savePhases(write.request)
+        : await deps.savePipelines(write.request);
+    results.push({ key: write.key, ack });
+    if (ack.status !== 'accepted') break;
+  }
+  return {
+    outcome: commitOutcome(results),
+    results,
+    rows: projectCommitResults(plan, scope, results)
+  };
 }

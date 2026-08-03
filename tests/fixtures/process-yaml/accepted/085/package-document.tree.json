@@ -1,0 +1,454 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "apiVersion",
+      "value": {
+        "kind": "scalar",
+        "value": "schegent/v1",
+        "quoted": false,
+        "line": 1
+      },
+      "line": 1
+    },
+    {
+      "key": "kind",
+      "value": {
+        "kind": "scalar",
+        "value": "Pipeline",
+        "quoted": false,
+        "line": 2
+      },
+      "line": 2
+    },
+    {
+      "key": "metadata",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "id",
+            "value": {
+              "kind": "scalar",
+              "value": "ship-it",
+              "quoted": false,
+              "line": 4
+            },
+            "line": 4
+          },
+          {
+            "key": "name",
+            "value": {
+              "kind": "scalar",
+              "value": "Ship It",
+              "quoted": false,
+              "line": 5
+            },
+            "line": 5
+          },
+          {
+            "key": "version",
+            "value": {
+              "kind": "scalar",
+              "value": "2",
+              "quoted": false,
+              "line": 6
+            },
+            "line": 6
+          }
+        ],
+        "line": 4
+      },
+      "line": 3
+    },
+    {
+      "key": "spec",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "phaseIds",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "scalar",
+                  "value": "specify",
+                  "quoted": false,
+                  "line": 9
+                },
+                {
+                  "kind": "scalar",
+                  "value": "plan",
+                  "quoted": false,
+                  "line": 10
+                }
+              ],
+              "line": 9
+            },
+            "line": 8
+          },
+          {
+            "key": "inputs",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "portId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "feature-brief",
+                        "quoted": false,
+                        "line": 12
+                      },
+                      "line": 12
+                    },
+                    {
+                      "key": "label",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "Feature Brief",
+                        "quoted": false,
+                        "line": 13
+                      },
+                      "line": 13
+                    },
+                    {
+                      "key": "type",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "text",
+                        "quoted": false,
+                        "line": 14
+                      },
+                      "line": 14
+                    },
+                    {
+                      "key": "required",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "true",
+                        "quoted": false,
+                        "line": 15
+                      },
+                      "line": 15
+                    }
+                  ],
+                  "line": 12
+                }
+              ],
+              "line": 12
+            },
+            "line": 11
+          },
+          {
+            "key": "outputs",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "portId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "plan-document",
+                        "quoted": false,
+                        "line": 17
+                      },
+                      "line": 17
+                    },
+                    {
+                      "key": "label",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "Plan",
+                        "quoted": false,
+                        "line": 18
+                      },
+                      "line": 18
+                    },
+                    {
+                      "key": "type",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "markdown",
+                        "quoted": false,
+                        "line": 19
+                      },
+                      "line": 19
+                    }
+                  ],
+                  "line": 17
+                }
+              ],
+              "line": 17
+            },
+            "line": 16
+          },
+          {
+            "key": "bindings",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "kind",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "input",
+                        "quoted": false,
+                        "line": 21
+                      },
+                      "line": 21
+                    },
+                    {
+                      "key": "phaseIndex",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "0",
+                        "quoted": false,
+                        "line": 22
+                      },
+                      "line": 22
+                    },
+                    {
+                      "key": "inputKey",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "brief",
+                        "quoted": false,
+                        "line": 23
+                      },
+                      "line": 23
+                    },
+                    {
+                      "key": "source",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "from",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "pipeline-input",
+                              "quoted": false,
+                              "line": 25
+                            },
+                            "line": 25
+                          },
+                          {
+                            "key": "portId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "feature-brief",
+                              "quoted": false,
+                              "line": 26
+                            },
+                            "line": 26
+                          }
+                        ],
+                        "line": 25
+                      },
+                      "line": 24
+                    }
+                  ],
+                  "line": 21
+                },
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "kind",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "output",
+                        "quoted": false,
+                        "line": 27
+                      },
+                      "line": 27
+                    },
+                    {
+                      "key": "phaseIndex",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "1",
+                        "quoted": false,
+                        "line": 28
+                      },
+                      "line": 28
+                    },
+                    {
+                      "key": "portId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "plan-document",
+                        "quoted": false,
+                        "line": 29
+                      },
+                      "line": 29
+                    },
+                    {
+                      "key": "outputKey",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "plan",
+                        "quoted": false,
+                        "line": 30
+                      },
+                      "line": 30
+                    }
+                  ],
+                  "line": 27
+                }
+              ],
+              "line": 21
+            },
+            "line": 20
+          },
+          {
+            "key": "executionDefaults",
+            "value": {
+              "kind": "mapping",
+              "entries": [
+                {
+                  "key": "runner",
+                  "value": {
+                    "kind": "scalar",
+                    "value": "claude",
+                    "quoted": false,
+                    "line": 32
+                  },
+                  "line": 32
+                },
+                {
+                  "key": "timeoutSeconds",
+                  "value": {
+                    "kind": "scalar",
+                    "value": "600",
+                    "quoted": false,
+                    "line": 33
+                  },
+                  "line": 33
+                }
+              ],
+              "line": 32
+            },
+            "line": 31
+          },
+          {
+            "key": "recommendedNext",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "scalar",
+                  "value": "review",
+                  "quoted": false,
+                  "line": 35
+                }
+              ],
+              "line": 35
+            },
+            "line": 34
+          }
+        ],
+        "line": 8
+      },
+      "line": 7
+    },
+    {
+      "key": "included",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "phases",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "metadata",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "phaseId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "specify",
+                              "quoted": false,
+                              "line": 39
+                            },
+                            "line": 39
+                          },
+                          {
+                            "key": "name",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "Specify",
+                              "quoted": false,
+                              "line": 40
+                            },
+                            "line": 40
+                          },
+                          {
+                            "key": "version",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "1",
+                              "quoted": false,
+                              "line": 41
+                            },
+                            "line": 41
+                          }
+                        ],
+                        "line": 39
+                      },
+                      "line": 38
+                    },
+                    {
+                      "key": "spec",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "instruction",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "Write the spec.\nThen stop.",
+                              "quoted": true,
+                              "line": 43
+                            },
+                            "line": 43
+                          }
+                        ],
+                        "line": 43
+                      },
+                      "line": 42
+                    }
+                  ],
+                  "line": 38
+                }
+              ],
+              "line": 38
+            },
+            "line": 37
+          }
+        ],
+        "line": 37
+      },
+      "line": 36
+    }
+  ],
+  "line": 1
+}

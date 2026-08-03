@@ -34,7 +34,7 @@ const PAYLOAD = 'CONSTRUCTED-PAYLOAD';
 const COMMAND: PreflightProcessYamlCommand = {
   type: CMD_PREFLIGHT_PROCESS_YAML,
   correlationId: 'refusal-test-1',
-  payload: { resourceKind: 'phase' }
+  payload: {}
 };
 
 async function preflight(documentBytes: Uint8Array): Promise<CommandAckMessage> {
@@ -108,7 +108,14 @@ const CASES: readonly RefusalCase[] = [
   { label: 'QS-9 a %YAML directive', code: 'disallowed-syntax', bytes: utf8(`%YAML 1.2\n---\nkind: Phase\n`) },
   { label: 'QS-9 a flow mapping', code: 'disallowed-syntax', bytes: utf8(`metadata: { name: ${PAYLOAD} }\n`) },
   { label: 'QS-9 a flow sequence', code: 'disallowed-syntax', bytes: utf8(`metadata: [ ${PAYLOAD} ]\n`) },
-  { label: 'QS-9 a block sequence', code: 'disallowed-syntax', bytes: utf8(`spec:\n  - ${PAYLOAD}\n`) },
+  // Feature 085 admits a block sequence, so what stands here now is a narrowing
+  // ON that production rather than its outright refusal. Still refused at the
+  // token, so it still cannot echo PAYLOAD back.
+  {
+    label: 'QS-9 a nested block sequence',
+    code: 'disallowed-syntax',
+    bytes: utf8(`spec:\n  - - ${PAYLOAD}\n`)
+  },
   { label: 'QS-9 a complex key', code: 'disallowed-syntax', bytes: utf8(`? ${PAYLOAD}\n: value\n`) },
   {
     label: 'QS-9 a tab in the indentation',
@@ -136,7 +143,10 @@ const CASES: readonly RefusalCase[] = [
     bytes: utf8(`- apiVersion: schegent/v1\n  kind: Phase\n  metadata:\n    name: ${PAYLOAD}\n`)
   },
 
-  // QS-11 — the document says what it is, and this build only reads one thing.
+  // QS-11 — the document says what it is, and this build reads a closed set of
+  // kinds. `Deployment` is deliberately foreign: feature 085 made `Pipeline`
+  // readable, so a fixture that named a kind Schegent plans to add would stop
+  // meaning "another kind" the moment that kind shipped.
   {
     label: 'QS-11 an unsupported apiVersion',
     code: 'unsupported-version',
@@ -150,7 +160,7 @@ const CASES: readonly RefusalCase[] = [
   {
     label: 'QS-11 another kind',
     code: 'unsupported-kind',
-    bytes: utf8(document(['apiVersion: schegent/v1', 'kind: Pipeline']))
+    bytes: utf8(document(['apiVersion: schegent/v1', 'kind: Deployment']))
   },
   {
     label: 'QS-11 a missing kind',
@@ -200,18 +210,27 @@ describe('Feature 084 — document-level refusals reach the operator named (QS-8
     });
   }
 
-  it('T048 covers every refusal code this build can emit', () => {
-    // Keeps the table honest: a new code added to the union without a case here
-    // fails, rather than shipping a class no boundary test describes.
-    const codes: readonly DocumentRefusalCode[] = [
-      'unreadable',
-      'too-large',
-      'unsupported-version',
-      'unsupported-kind',
-      'disallowed-syntax',
-      'multi-document',
-      'empty'
-    ];
+  it('T048 covers every refusal code reachable on the single-Phase path', () => {
+    // Keeps the table honest: a new code added to the union without a decision
+    // here fails to compile, rather than shipping a class no boundary test
+    // describes. A code marked `false` is unreachable from a standalone Phase
+    // document and is covered where it IS reachable.
+    const REACHABILITY: Readonly<Record<DocumentRefusalCode, boolean>> = {
+      unreadable: true,
+      'too-large': true,
+      'unsupported-version': true,
+      'unsupported-kind': true,
+      'disallowed-syntax': true,
+      'multi-document': true,
+      // Feature 085 FR-031 — a standalone Phase document declares one resource,
+      // so it has nothing to duplicate an id with. Covered by the package suite,
+      // tests/integration/process-yaml/pipeline-preflight.test.ts.
+      'duplicate-id': false,
+      empty: true
+    };
+    const codes = Object.entries(REACHABILITY)
+      .filter(([, reachable]) => reachable)
+      .map(([code]) => code);
     expect([...new Set(CASES.map((testCase) => testCase.code))].sort()).toEqual([...codes].sort());
   });
 });
@@ -237,7 +256,7 @@ describe('Feature 084 QS-25 — a skill reference is never followed (FR-007)', (
     const result = ack.result as PreflightProcessYamlResult;
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
-    expect(result.plan.counts).toEqual({ import: 1, skip: 0, invalid: 0 });
+    expect(result.plan.counts).toEqual({ import: 1, skip: 0, invalid: 0, blocked: 0 });
     const [row] = result.plan.rows;
     expect(row?.outcome).toBe('import');
     if (row?.outcome !== 'import') return;

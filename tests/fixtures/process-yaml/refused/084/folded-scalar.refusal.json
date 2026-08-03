@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "folded scalars are not part of this format (line 1)"
+}

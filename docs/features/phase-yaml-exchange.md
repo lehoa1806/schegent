@@ -1,15 +1,22 @@
-# Phase YAML Exchange
+# Process YAML Exchange
 
-Export a Phase definition to a portable YAML document, and import someone
-else's document back into your own catalog after inspecting exactly what it
-would do. This is how a Phase moves between machines, repositories, and
-operators without anybody pasting JSON into a settings file.
+Export a Phase or a Pipeline definition to a portable YAML document, and import
+someone else's document back into your own catalog after inspecting exactly what
+it would do. This is how a process definition moves between machines,
+repositories, and operators without anybody pasting JSON into a settings file.
 
 The exchange is a **transport**, not a second authoring surface. Everything an
 imported Phase is allowed to be, it is allowed to be because
 [Custom Phases](custom-phases.md) already allows it. The exchange adds no field,
 no capability, and no path into the catalog that the Phase manager does not
 already have.
+
+Most of this page describes the Phase document, which is the simpler case and
+the one every rule is stated on. A Pipeline document follows all of the same
+rules and adds one thing — it can carry the Phases it references, making the file
+a runnable **package**. What that changes is collected under
+[Pipeline packages](#pipeline-packages); nothing before that section is different
+for a Pipeline.
 
 ## When you'd use it
 
@@ -118,22 +125,32 @@ Phase. See [Custom Phases](custom-phases.md) for what the DSL admits.
 
 ### One resource per document
 
-A document declares **exactly one** Phase. There is no resource list, no
-`items:`, and no multi-document stream. A file holding a YAML sequence, a second
-`---` document start, or nothing at all is refused at the document level before
-any field is looked at.
+A document declares **exactly one** subject — one Phase, or one Pipeline. There
+is no resource list, no `items:`, and no multi-document stream. A file holding a
+second `---` document start, or nothing at all, is refused at the document level
+before any field is looked at.
 
 This keeps the unit of exchange the same as the unit of review: one file, one
-Phase, one decision.
+subject, one decision. A Pipeline package is not an exception: it carries the
+Phases its one Pipeline references, as that Pipeline's dependencies, and you are
+still reviewing and deciding on a single Pipeline.
 
 ### The subset of YAML the format reads
 
 The exchange has its own scanner for a deliberately small subset, not a general
-YAML parser. What it reads: block mappings, plain scalars, double-quoted
-scalars, block literals (`|`, `|-`), comments, and blank lines. What it refuses
-outright: anchors (`&x`), aliases (`*x`), merge keys (`<<:`), tags (`!!str`),
-directives (`%YAML`), flow collections (`{a: b}`, `[a, b]`), sequences, folded
-scalars (`>`), single-quoted scalars, and tab characters.
+YAML parser. What it reads: block mappings, block sequences whose entries are
+scalars or mappings, plain scalars, double-quoted scalars, block literals
+(`|`, `|-`), comments, and blank lines. What it refuses outright: anchors (`&x`),
+aliases (`*x`), merge keys (`<<:`), tags (`!!str`), directives (`%YAML`), flow
+collections (`{a: b}`, `[a, b]`), folded scalars (`>`), single-quoted scalars,
+and tab characters.
+
+The block sequence is the one production the Pipeline format added, and it is
+written one way: `- ` is exactly two characters, with the entry's body one indent
+level past the dash. `-` with no space, `-` followed by two spaces, and a bare
+`-` on its own line are each refused as `disallowed-syntax`. A Phase document
+uses no sequences at all, and every document the Phase-only reader accepted still
+parses to the same tree.
 
 A quoted or block scalar is always text — the scanner never re-types a scalar —
 so `version: "1"` is a defect rather than silently the number 1. On the way out,
@@ -276,6 +293,109 @@ An import cannot be started while a Phase mutation is outstanding —
 the whole persisted layer, so starting one with a draft open would ask you to
 confirm a write that silently drops the edit you are mid-way through.
 
+## Pipeline packages
+
+A Pipeline document declares `kind: Pipeline` and carries the Pipeline's own
+fields under `spec`. It may additionally carry an `included:` section holding the
+complete definitions of the Phases its `phaseIds` name — that is what makes the
+file a **package**, runnable on a machine that has none of those Phases yet.
+
+```yaml
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: review-and-ship
+  name: Review and Ship
+  version: 2
+spec:
+  phaseIds:
+    - lint-and-scan
+    - ship
+included:
+  phases:
+    - metadata:
+        phaseId: lint-and-scan
+        name: Lint and Scan
+        version: 1
+      spec:
+        instruction: Run the linter and the security scanner.
+```
+
+An included Phase entry is the same `metadata` + `spec` body as a standalone
+Phase document, minus the two declaration keys the root already carries. Every
+Phase field rule above applies unchanged. `included` is omitted entirely when
+there is nothing to include, like every other empty collection in the format.
+
+### Choosing what an export discloses
+
+Exporting a Pipeline asks you one question that exporting a Phase does not:
+
+| Choice | What the file carries | When you want it |
+|---|---|---|
+| References only | `phaseIds` and nothing else | The recipient already has the Phases, or you do not want their text leaving. |
+| Include referenced Phases | `phaseIds` plus an `included:` definition for each | The recipient should be able to run this Pipeline with nothing else. |
+
+The choice is yours and travels with the request, because the same Pipeline is
+legitimately exported both ways and only you know which the recipient needs.
+
+Including resolves each referenced Phase against the **effective** catalog. If
+one does not resolve, the export is refused and **names** the first unresolved
+Phase in reference order — nothing partial is written, because a package missing
+one of its Phases is exactly the file this choice exists to avoid. A
+references-only export needs nothing to resolve: it writes identifiers, and an
+identifier does not have to be satisfiable to be written down.
+
+### What the plan shows
+
+A package preflight produces one plan row per resource — one for the Pipeline,
+one for each included Phase — with the same `import` / `skip` / `invalid`
+outcomes, plus a fourth that only a Pipeline can have:
+
+| Outcome | Meaning |
+|---|---|
+| `blocked` | The Pipeline references a Phase this catalog cannot resolve, and the package does not supply it. Committing would write a Pipeline that cannot run. |
+
+The skip guarantee is unchanged and applies per resource: nothing you already
+have is overwritten, whichever layer holds it and whatever status it has.
+
+That produces one row pair worth recognizing, because it reads like a
+contradiction and is not:
+
+> The Phase row says `skip` — the id is already claimed.
+> The Pipeline row says `blocked` on that same id — the claim does not resolve.
+
+Both are true at once. Presence and resolution are different questions:
+presence asks "would a write destroy something someone authored?" and counts
+shadowed and invalid rows, because those are still authored work. Resolution asks
+"can this Pipeline actually run?" and does not, because a shadowed or invalid row
+is not what runs. Fix the existing row, and both go away.
+
+### Committing a package: two writes, in order
+
+A package commit is **two** catalog writes, not one: the Phases first, then the
+Pipeline. The order is load-bearing — a Pipeline written first would, for as long
+as the second write took, reference Phases the catalog did not have.
+
+Each write carries its own revision and its own declared intent, and each passes
+its own trust gate. So the two can disagree, and the outcome says so:
+
+| Outcome | Meaning |
+|---|---|
+| `imported` | Both writes were accepted. |
+| `partial` | The Phases landed and the Pipeline did not, or the reverse was never reached. |
+| `failed` | Nothing was written. |
+
+**A `partial` is reported, not repaired.** Nothing already written is retracted.
+A compensating delete would mean this feature deciding to remove rows from your
+catalog on the strength of a write it did not manage to finish — a worse outcome
+than an unfinished import. Re-run the same document once the cause is addressed
+and it finishes the job; the part that already landed simply reads as `skip`.
+
+The most common cause of a `partial` is the third capability a package can
+require: the Pipeline layer needs `schegent.trust.allowPipelineOverrides` on top
+of the two a Phase import needs. Grant it and re-run. See
+[Trust Scopes](../operations/trust-scopes.md).
+
 ## Refusal classes
 
 Seven document-level refusals, each with a fixed operator sentence:
@@ -285,7 +405,7 @@ Seven document-level refusals, each with a fixed operator sentence:
 | `unreadable` | This file could not be read as text. |
 | `too-large` | This document is larger than an import will read. |
 | `unsupported-version` | This document declares a format version this build does not read. |
-| `unsupported-kind` | This document declares a different kind of resource. |
+| `unsupported-kind` | This document declares a different kind of resource. Fires for any `kind:` other than `Phase` or `Pipeline`. |
 | `disallowed-syntax` | This document uses YAML the Phase format does not accept. |
 | `multi-document` | This file holds more than one document, and an import reads exactly one. |
 | `empty` | This document declares no Phase. |
@@ -319,22 +439,39 @@ By construction, not by convention:
 
 ## Audit events
 
-Two events, both metadata-only:
+Three events, all metadata-only:
 
 | Event | When |
 |---|---|
 | `process-exchange-export` | Every export attempt, whatever its outcome — `saved`, `canceled`, `failed`, or `unavailable`. |
-| `process-exchange-import-refused` | A preflight refuses a document at the document level. |
+| `process-exchange-import-refused` | A preflight refuses a document at the document level, **or** a confirmed package write is refused at any gate. |
+| `process-exchange-import-committed` | One catalog layer of a package import landed. |
 
-The payload carries the operation (`export` or `import-preflight`), the resource
-kind (`phase`), the resource ids involved, the scope, the outcomes, and counts.
-It does not carry document contents, field values, instruction text, or a
-filesystem path.
+The payload carries the operation (`export`, `import-preflight`, or
+`import-commit`), the resource kind (`phase` or `pipeline`), the resource ids
+involved, the scope, the outcomes, and counts. It does not carry document
+contents, field values, instruction text, port labels, a file name, or a
+filesystem path. An export additionally counts `includedPhases` — how many
+complete Phase definitions actually left this installation — because without it
+a package export and a references-only export record identically, and the
+difference between them is precisely whether someone else's Phase text was
+disclosed.
 
-Note what is *not* in this list: a successful import is not audited by this
-feature. It is audited as what it is — a Phase catalog save — by the save path
-that performs it. Adding a second event for the same write would produce two
-records of one change.
+A successful **single-Phase** import is still not audited by this feature. It is
+audited as what it is — a Phase catalog save — by the save path that performs it,
+and one write either landed or it did not, so the catalog itself is the record.
+
+A **package** import is different, and that is the whole reason the third event
+exists. It writes two layers that can succeed independently, so a workspace
+holding the Phases and no Pipeline is indistinguishable from an operator who
+imported the Phases alone. The commit and refusal records are what tell those
+apart after the fact — which is also why a refusal is recorded at *every* gate a
+package write can be turned away by. An unaudited refusal is indistinguishable
+from an operator who closed the dialog.
+
+A capability denial is **not** one of these. It stays `trust.capability-denied`,
+the same event as any other denied catalog write, because it is a different
+decision taken at a different time about a different thing.
 
 ## Things to watch out for
 
@@ -396,6 +533,10 @@ catalog does not model as a portable Phase field is not in the format.
 - Specification: [specs/084-phase-yaml-exchange/spec.md](../../../specs/084-phase-yaml-exchange/spec.md)
 - Grammar: [specs/084-phase-yaml-exchange/contracts/phase-yaml-grammar.ebnf](../../../specs/084-phase-yaml-exchange/contracts/phase-yaml-grammar.ebnf)
 - Data model: [specs/084-phase-yaml-exchange/data-model.md](../../../specs/084-phase-yaml-exchange/data-model.md)
+- Pipeline packages — specification: [specs/085-pipeline-package-exchange/spec.md](../../../specs/085-pipeline-package-exchange/spec.md)
+- Pipeline packages — grammar: [specs/085-pipeline-package-exchange/contracts/yaml-grammar.md](../../../specs/085-pipeline-package-exchange/contracts/yaml-grammar.md)
+- Pipeline packages — IPC contract: [specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md](../../../specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md)
+- Pipeline packages — data model: [specs/085-pipeline-package-exchange/data-model.md](../../../specs/085-pipeline-package-exchange/data-model.md)
 - [Custom Phases](custom-phases.md) — authoring a Phase directly, and the retry-condition DSL.
 - [Trust Scopes](../operations/trust-scopes.md) — the per-capability gates a commit passes.
 - [Glossary](../reference/glossary.md) — layer, effective catalog, revision, mutation intent.

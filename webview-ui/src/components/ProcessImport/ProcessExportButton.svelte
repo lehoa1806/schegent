@@ -1,7 +1,7 @@
 <script lang="ts">
   // Feature 084 T026 — the per-Phase Export control (FR-052, FR-057).
   //
-  // The request goes through `exportProcessYaml`, the single call site for the
+  // The request goes through `exportPhaseYaml`, the single call site for the
   // exchange family (FR-058). This component never names a location: the host
   // opens its own save dialog and reports only whether a document was written
   // (FR-019).
@@ -9,7 +9,7 @@
   // A row that carries no valid definition cannot produce a document (FR-015),
   // so the control is disabled AND says why, rather than failing after the
   // click (FR-057).
-  import { exportProcessYaml } from '../../lib/process-yaml-ipc';
+  import { exportPhaseYaml } from '../../lib/process-yaml-ipc';
 
   interface Props {
     /** The Phase id to export, resolved from the effective catalog by the host. */
@@ -40,7 +40,7 @@
 
   function onClick(): void {
     if (disabled) return;
-    exportProcessYaml('phase', phaseId);
+    exportPhaseYaml(phaseId);
   }
 </script>
 

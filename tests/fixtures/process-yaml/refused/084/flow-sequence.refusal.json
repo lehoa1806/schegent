@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "flow sequences are not part of this format (line 1)"
+}

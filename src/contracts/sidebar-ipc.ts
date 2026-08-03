@@ -263,9 +263,12 @@ export type {
 } from './sidebar-ipc/metrics';
 export type {
   ProcessYamlResourceKind,
+  PipelineExportInclusion,
   ExportProcessYamlRequest,
   ExportProcessYamlCommand,
   ExportProcessYamlResult,
+  ExportProcessYamlUnavailable,
+  ExportProcessYamlUnavailableReason,
   PreflightProcessYamlRequest,
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult,
@@ -854,29 +857,41 @@ export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
   return runner === 'claude' || runner === 'codex' || runner === 'agy';
 }
 
-// Feature 084 — read-only Phase export guard. Both payload fields are
-// required; `resourceKind` is the only kind this format admits today, and the
-// discriminator plus that literal is what the deeper validator relies on.
+// Feature 084 / feature 085 — read-only export guard. The payload is the
+// discriminated union `ExportProcessYamlRequest`: a Phase carries an id and
+// nothing else, a Pipeline additionally carries the operator's inclusion choice
+// (FR-012). The two arms are checked separately so `inclusion` cannot ride along
+// on a Phase export — that is the whole reason the wire type is a union rather
+// than an optional field, and a guard that ignored it would let the boundary
+// admit a shape the type forbids. Length bounds stay in
+// `src/contracts/validators/process-yaml.ts`, which is what the router runs.
 export function isCmdExportProcessYaml(value: unknown): value is ExportProcessYamlCommand {
   if (!isObjectWithType(value, CMD_EXPORT_PROCESS_YAML)) return false;
   const payload = (value as { payload?: unknown }).payload;
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  const { resourceKind, resourceId } = payload as {
+  const { resourceKind, resourceId, inclusion } = payload as {
     resourceKind?: unknown;
     resourceId?: unknown;
+    inclusion?: unknown;
   };
-  return resourceKind === 'phase' && typeof resourceId === 'string';
+  if (typeof resourceId !== 'string') return false;
+  if (resourceKind === 'phase') return inclusion === undefined;
+  if (resourceKind !== 'pipeline') return false;
+  return inclusion === 'references-only' || inclusion === 'include-referenced';
 }
 
-// Feature 084 — read-only import preflight guard. The payload is the resource
-// kind and nothing else: no location, no bytes, no scope (FR-020a).
+// Feature 084 / feature 085 — read-only import preflight guard. The payload is
+// empty and stays empty: no location, no bytes, no scope (FR-020a), and as of
+// 085 no kind either, because the host dispatches on the `kind:` the document
+// itself declares (FR-055a). Every field is rejected rather than ignored, so a
+// kind can only come back by a deliberate edit here.
 export function isCmdPreflightProcessYaml(
   value: unknown
 ): value is PreflightProcessYamlCommand {
   if (!isObjectWithType(value, CMD_PREFLIGHT_PROCESS_YAML)) return false;
   const payload = (value as { payload?: unknown }).payload;
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  return (payload as { resourceKind?: unknown }).resourceKind === 'phase';
+  return Object.keys(payload).length === 0;
 }
 
 // Exhaustive guard registry. The drift test asserts the keys of this

@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a mapping key must be followed by ': ' (line 1)"
+}

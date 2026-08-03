@@ -1,6 +1,6 @@
 // Feature 084 T026/T067 — the per-Phase Export control.
 //
-// `exportProcessYaml` is the single call site for the exchange family (FR-058),
+// `exportPhaseYaml` is the single call site for the exchange family (FR-058),
 // so stubbing it is stubbing the whole boundary. What matters here: the request
 // names a resource and never a location (FR-019), a row that cannot produce a
 // document is refused before the click with a stated reason (FR-015, FR-057),
@@ -9,9 +9,9 @@
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const exportSpy = vi.fn<(kind: string, resourceId: string) => void>();
+const exportSpy = vi.fn<(resourceId: string) => void>();
 vi.mock('../../lib/process-yaml-ipc', () => ({
-  exportProcessYaml: (kind: string, resourceId: string) => exportSpy(kind, resourceId)
+  exportPhaseYaml: (resourceId: string) => exportSpy(resourceId)
 }));
 
 // Late import so the component binds to the mocked call site above.
@@ -25,10 +25,13 @@ describe('Feature 084 T026 — exporting a Phase', () => {
     const { getByTestId } = render(ProcessExportButton, { props: { phaseId: 'specify' } });
     await fireEvent.click(getByTestId('process-export-button'));
 
-    // Two arguments, both identifiers: the host opens its own save dialog, so no
-    // path crosses the boundary in either direction (FR-019, FR-020a).
+    // One argument, an identifier: the host opens its own save dialog, so no
+    // path crosses the boundary in either direction (FR-019, FR-020a). The kind
+    // is the helper's, not this control's — feature 085 split the single
+    // `exportProcessYaml` into one helper per resource kind so the request shape
+    // each kind carries is declared once, at the boundary.
     expect(exportSpy).toHaveBeenCalledTimes(1);
-    expect(exportSpy).toHaveBeenCalledWith('phase', 'specify');
+    expect(exportSpy).toHaveBeenCalledWith('specify');
   });
 
   it('offers no reason when the row resolves', () => {

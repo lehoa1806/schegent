@@ -1,0 +1,126 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "values",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "bool",
+            "value": {
+              "kind": "scalar",
+              "value": "true",
+              "quoted": false,
+              "line": 2
+            },
+            "line": 2
+          },
+          {
+            "key": "boolWord",
+            "value": {
+              "kind": "scalar",
+              "value": "yes",
+              "quoted": false,
+              "line": 3
+            },
+            "line": 3
+          },
+          {
+            "key": "boolOff",
+            "value": {
+              "kind": "scalar",
+              "value": "off",
+              "quoted": false,
+              "line": 4
+            },
+            "line": 4
+          },
+          {
+            "key": "number",
+            "value": {
+              "kind": "scalar",
+              "value": "3",
+              "quoted": false,
+              "line": 5
+            },
+            "line": 5
+          },
+          {
+            "key": "float",
+            "value": {
+              "kind": "scalar",
+              "value": "1.5",
+              "quoted": false,
+              "line": 6
+            },
+            "line": 6
+          },
+          {
+            "key": "hex",
+            "value": {
+              "kind": "scalar",
+              "value": "0x1f",
+              "quoted": false,
+              "line": 7
+            },
+            "line": 7
+          },
+          {
+            "key": "nullWord",
+            "value": {
+              "kind": "scalar",
+              "value": "null",
+              "quoted": false,
+              "line": 8
+            },
+            "line": 8
+          },
+          {
+            "key": "nullTilde",
+            "value": {
+              "kind": "scalar",
+              "value": "~",
+              "quoted": false,
+              "line": 9
+            },
+            "line": 9
+          },
+          {
+            "key": "date",
+            "value": {
+              "kind": "scalar",
+              "value": "2026-08-03",
+              "quoted": false,
+              "line": 10
+            },
+            "line": 10
+          },
+          {
+            "key": "infinity",
+            "value": {
+              "kind": "scalar",
+              "value": ".inf",
+              "quoted": false,
+              "line": 11
+            },
+            "line": 11
+          },
+          {
+            "key": "quotedNumber",
+            "value": {
+              "kind": "scalar",
+              "value": "3",
+              "quoted": true,
+              "line": 12
+            },
+            "line": 12
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    }
+  ],
+  "line": 1
+}

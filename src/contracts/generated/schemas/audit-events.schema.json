@@ -120,7 +120,8 @@
           "backend-ping",
           "metrics-view-opened",
           "process-exchange-export",
-          "process-exchange-import-refused"
+          "process-exchange-import-refused",
+          "process-exchange-import-committed"
         ]
       },
       "uniqueItems": true

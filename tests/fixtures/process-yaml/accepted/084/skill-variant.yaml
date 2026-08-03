@@ -1,0 +1,8 @@
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: planner
+  name: Planner
+  version: 1
+spec:
+  skill: speckit-plan

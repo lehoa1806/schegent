@@ -479,6 +479,12 @@ export interface PortablePipelineDefinition {
 
 export type PipelineCatalogMutation =
   | { readonly kind: 'create'; readonly pipelineId: string }
+  /**
+   * Feature 085 (FR-043) — the Pipeline half of a package import, written after
+   * the Phase layer (FR-038) and gated on its own expected revision. Mirrors
+   * `SavePhasesMutation['import-package']`.
+   */
+  | { readonly kind: 'import-package'; readonly pipelineIds: readonly string[] }
   | { readonly kind: 'edit'; readonly pipelineId: string }
   | {
       readonly kind: 'duplicate';

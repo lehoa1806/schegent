@@ -339,10 +339,19 @@ export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 // capability gate produced is audited by the trust gate at commit instead, under
 // `trust.capability-denied` — the two are separate events because they are
 // separate decisions, taken at different times, about different things.
+//
+// Feature 085 adds `process-exchange-import-committed`, and only because a
+// package can land in pieces (FR-042a). 084 audited no write at all: one Phase
+// either landed or it did not, and the catalog was the record. A package writes
+// two layers that can succeed independently, so two layers agreeing with each
+// other no longer says anything about the document that produced them — the
+// commit record is what makes a partial import distinguishable from an operator
+// who imported the Phases alone (FR-061).
 // Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export const PROCESS_EXCHANGE_EVENT_TYPES = [
   'process-exchange-export',
-  'process-exchange-import-refused'
+  'process-exchange-import-refused',
+  'process-exchange-import-committed'
 ] as const;
 
 export const ALL_AUDIT_EVENT_TYPES = [
@@ -406,14 +415,25 @@ export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
 
 /**
- * Feature 084 — the closed payload for a Phase exchange audit entry. Closed on
- * purpose: FR-048 forbids document contents, authored text, file names,
- * absolute paths, and workspace roots, and the way to keep them out is to give
- * the payload nowhere to put them.
+ * Feature 084 — the closed payload for a process exchange audit entry, widened
+ * by feature 085 to name the Pipeline kind as well. Closed on purpose: FR-048
+ * forbids document contents, authored text, file names, absolute paths, and
+ * workspace roots, and the way to keep them out is to give the payload nowhere
+ * to put them.
+ *
+ * Widening `resourceKind` adds a second literal and nothing else. A Pipeline
+ * document carries strictly more operator-authored text than a Phase one — port
+ * labels, binding keys, a whole referenced sequence — so the way the envelope
+ * holds is that it still has no field any of that could go in.
+ *
+ * `import-commit` is the third and last operation: what a confirmed package
+ * write did to one catalog layer. It reuses this envelope rather than getting
+ * one of its own (research R10), so the fields a package import can record stay
+ * the fields a Phase export could record, which is the property FR-060 rests on.
  */
 export interface ProcessExchangePayload {
-  readonly operation: 'export' | 'import-preflight';
-  readonly resourceKind: 'phase';
+  readonly operation: 'export' | 'import-preflight' | 'import-commit';
+  readonly resourceKind: 'phase' | 'pipeline';
   /**
    * Empty for a document-level refusal: a refused document named no resource,
    * which is itself the fact worth recording (FR-027).
@@ -427,7 +447,9 @@ export interface ProcessExchangePayload {
   readonly scope: PhaseDefinitionScope | null;
   /**
    * For an export, the result outcome. For a refusal, the refusal code — one of a
-   * closed set of seven literals, never document-derived text (FR-048).
+   * closed set of seven literals, never document-derived text (FR-048). For a
+   * commit, `'imported'` or the rejection reason the save gate returned, which is
+   * likewise a literal this build chose.
    */
   readonly outcomes: readonly string[];
   readonly counts: Readonly<Record<string, number>>;
@@ -739,7 +761,10 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     // workflow run, so it belongs in the System scope alongside the other
     // run-independent events above.
     'process-exchange-export',
-    'process-exchange-import-refused'
+    'process-exchange-import-refused',
+    // Feature 085 — a package import commit is the same kind of thing: a
+    // catalog write the operator asked for, belonging to no run.
+    'process-exchange-import-committed'
   ])
 );
 

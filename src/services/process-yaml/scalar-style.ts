@@ -36,7 +36,10 @@ export const PLAIN_FIRST_EXCLUDED: ReadonlyMap<string, string> = new Map([
   [',', 'flow separators are not part of this format'],
   ['?', 'complex keys are not part of this format'],
   [':', 'a value may not begin with a colon'],
-  ['-', 'block sequences are not part of this format'],
+  // Feature 085 T009: the format now HAS block sequences, so the old wording
+  // was wrong in both places this fires — `key: - a`, where a sequence may not
+  // be inline, and `- - a`, where a sequence may not be another's entry.
+  ['-', "a value may not begin with '- '"],
   ['#', 'a value may not begin with a comment marker']
 ]);
 

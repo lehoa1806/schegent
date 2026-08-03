@@ -16,17 +16,34 @@
 // strings are author-supplied: defect messages quote the value the document
 // carried, and `name` is whatever the document said. `SECRET_PATTERNS` is not
 // forked — `logger.sanitize` remains the single source (FR-050).
+//
+// Feature 085 T033 — the same command now reads two kinds of document, chosen by
+// the document's own `kind:` (FR-055a). The REQUEST names no kind: asking an
+// operator to classify a file before opening it would make "picked the wrong
+// per-kind action" a reachable failure, and this makes it unrepresentable rather
+// than handled. Everything downstream is kind-tagged per row, because one
+// package declares resources of both kinds.
 
-import { BUILT_IN_PHASES } from '../../../config/pipeline-config';
+import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../config/pipeline-config';
+import { resolvePipelineCatalog } from '../../../config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../config/process-catalog';
-import { planPhaseImport } from '../../../services/process-yaml/import-planner';
-import { validatePhaseDocument } from '../../../services/process-yaml/phase-yaml-validator';
+import { planPhaseImport, planPipelineImport } from '../../../services/process-yaml/import-planner';
+import type { PackageImportContext } from '../../../services/process-yaml/import-planner';
+import { findScalar, validatePhaseDocument } from '../../../services/process-yaml/phase-yaml-validator';
+import { parsePipelinePackage } from '../../../services/process-yaml/pipeline-document';
 import { parseDocumentBytes } from '../../../services/process-yaml/yaml-parser';
+import {
+  PHASE_YAML_API_VERSION,
+  PHASE_YAML_KIND,
+  PIPELINE_YAML_KIND
+} from '../../../services/process-yaml/types';
 import type { ProcessExchangePayload } from '../../../contracts/audit-events';
 import type {
   DocumentRefusal,
   ImportPlan,
-  ImportPlanRow
+  ImportPlanRow,
+  ProcessYamlResourceKind,
+  YamlMappingNode
 } from '../../../services/process-yaml/types';
 import type { PreflightProcessYamlCommand, PreflightProcessYamlResult } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
@@ -50,6 +67,7 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
   if (row.outcome === 'invalid') {
     return {
       outcome: 'invalid',
+      resourceKind: row.resourceKind,
       resourceId:
         row.resourceId === null ? null : bound(row.resourceId, RESOURCE_ID_MAX, sanitize),
       defects: row.defects.slice(0, DEFECTS_MAX).map((defect) => ({
@@ -64,26 +82,47 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
   if (row.outcome === 'skip') {
     return {
       outcome: 'skip',
+      resourceKind: row.resourceKind,
       resourceId: bound(row.resourceId, RESOURCE_ID_MAX, sanitize),
       name: bound(row.name, NAME_MAX, sanitize),
       presentIn: row.presentIn,
       presentRowStatus: row.presentRowStatus
     };
   }
-  return {
+  if (row.outcome === 'blocked') {
+    return {
+      outcome: 'blocked',
+      resourceKind: row.resourceKind,
+      resourceId: bound(row.resourceId, RESOURCE_ID_MAX, sanitize),
+      name: bound(row.name, NAME_MAX, sanitize),
+      // The reason names a `phaseId` the document declared, so it is bounded
+      // exactly like the other declared identifiers on this row.
+      reason: {
+        code: row.reason.code,
+        phaseId: bound(row.reason.phaseId, RESOURCE_ID_MAX, sanitize)
+      },
+    };
+  }
+  // The `definition` on an import row is the one field passed through
+  // untouched. It is the value the commit writes, and FR-046a forbids rewriting
+  // a declared value — sanitizing it would silently alter what round-trips, and
+  // the caps above would truncate an `instruction`. Nothing renders it: the
+  // webview forwards it to `CMD_SAVE_PHASES` / `CMD_SAVE_PIPELINES`, whose own
+  // validators are the gate, and which it can already reach through the catalog
+  // managers. The bounded `resourceId` and `name` are the rendered fields.
+  const common = {
     outcome: 'import',
     resourceId: bound(row.resourceId, RESOURCE_ID_MAX, sanitize),
-    name: bound(row.name, NAME_MAX, sanitize),
-    requiresRetryConditionCapability: row.requiresRetryConditionCapability,
-    // The one field on this row that is passed through untouched. It is the
-    // value the commit writes, and FR-046a forbids rewriting a declared value —
-    // sanitizing it would silently alter what round-trips, and the caps above
-    // would truncate an `instruction`. Nothing renders it: the webview forwards
-    // it to `CMD_SAVE_PHASES`, whose own validator is the gate, and which it can
-    // already reach through the Phase manager. The bounded `resourceId` and
-    // `name` above are the fields the plan renders.
-    definition: row.definition
-  };
+    name: bound(row.name, NAME_MAX, sanitize)
+  } as const;
+  return row.resourceKind === 'phase'
+    ? {
+        ...common,
+        resourceKind: 'phase',
+        requiresRetryConditionCapability: row.requiresRetryConditionCapability,
+        definition: row.definition
+      }
+    : { ...common, resourceKind: 'pipeline', definition: row.definition };
 }
 
 function boundPlan(plan: ImportPlan, sanitize: Sanitize): ImportPlan {
@@ -93,12 +132,60 @@ function boundPlan(plan: ImportPlan, sanitize: Sanitize): ImportPlan {
     // the cap is on defects within a row rather than on rows, so they still
     // agree with `rows.length` (FR-028).
     counts: plan.counts,
-    computedAgainstRevision: plan.computedAgainstRevision
+    computedAgainstRevision: plan.computedAgainstRevision,
+    // Absent on the Phase path, and left absent here rather than defaulted: the
+    // webview reads its presence as "this plan can write the Pipeline layer".
+    ...(plan.computedAgainstPipelineRevision !== undefined
+      ? { computedAgainstPipelineRevision: plan.computedAgainstPipelineRevision }
+      : {})
   };
 }
 
 function boundRefusal(refusal: DocumentRefusal, sanitize: Sanitize): DocumentRefusal {
   return { code: refusal.code, message: bound(refusal.message, MESSAGE_MAX, sanitize) };
+}
+
+/** How much of an author-supplied value a dispatch refusal quotes back. */
+const ECHO_MAX = 64;
+
+/**
+ * Which reader this document is for (FR-055a), or the refusal for one no reader
+ * claims.
+ *
+ * The two identity gates are restated here rather than delegated because this
+ * decision is one neither reader can make: each is total for its own kind and
+ * refuses everything else, so handing an unknown document to one of them would
+ * report it in that kind's vocabulary ("expected Phase") when the build in fact
+ * reads two. Both readers keep their own gates — this is a dispatch, not the
+ * enforcement site, and the constants are shared so the three cannot disagree.
+ *
+ * Version before kind, matching both readers: a `kind` this build does not know,
+ * under an `apiVersion` it does not know either, is a document from another
+ * format, and naming its kind unsupported would judge it by a vocabulary that
+ * may not be its own.
+ */
+function dispatchKind(node: YamlMappingNode): ProcessYamlResourceKind | DocumentRefusal {
+  const apiVersion = findScalar(node, 'apiVersion');
+  if (apiVersion === undefined) {
+    return { code: 'unsupported-version', message: 'Document does not declare apiVersion' };
+  }
+  if (apiVersion.value !== PHASE_YAML_API_VERSION) {
+    return {
+      code: 'unsupported-version',
+      message: `Unsupported apiVersion '${apiVersion.value.slice(0, ECHO_MAX)}'; this build reads ${PHASE_YAML_API_VERSION}`
+    };
+  }
+
+  const kind = findScalar(node, 'kind');
+  if (kind === undefined) {
+    return { code: 'unsupported-kind', message: 'Document does not declare kind' };
+  }
+  if (kind.value === PHASE_YAML_KIND) return 'phase';
+  if (kind.value === PIPELINE_YAML_KIND) return 'pipeline';
+  return {
+    code: 'unsupported-kind',
+    message: `Unsupported kind '${kind.value.slice(0, ECHO_MAX)}'; this build reads ${PHASE_YAML_KIND} and ${PIPELINE_YAML_KIND}`
+  };
 }
 
 async function respond(ctx: HandlerContext, result: PreflightProcessYamlResult): Promise<void> {
@@ -124,12 +211,22 @@ async function respond(ctx: HandlerContext, result: PreflightProcessYamlResult):
  * is one of seven literals, while the message quotes what the document said.
  * `resourceIds` is empty because a document-level refusal identified no
  * resource, and `scope` is null because nothing had been targeted yet.
+ *
+ * `resourceKind` is the kind the dispatch settled on, and `'phase'` when it never
+ * got that far — a document refused for bad syntax, an unreadable size, or a
+ * `kind` no reader claims declared no kind this build can name. The payload has
+ * no null to record that with, and inventing one would widen a closed envelope
+ * for a distinction the operator reads off the refusal code anyway.
  */
-async function appendRefusalAudit(ctx: HandlerContext, refusal: DocumentRefusal): Promise<void> {
+async function appendRefusalAudit(
+  ctx: HandlerContext,
+  refusal: DocumentRefusal,
+  resourceKind: ProcessYamlResourceKind
+): Promise<void> {
   if (!ctx.deps.audit) return;
   const payload: ProcessExchangePayload = {
     operation: 'import-preflight',
-    resourceKind: 'phase',
+    resourceKind,
     resourceIds: [],
     scope: null,
     outcomes: [refusal.code],
@@ -160,11 +257,45 @@ async function appendRefusalAudit(ctx: HandlerContext, refusal: DocumentRefusal)
 async function refuse(
   ctx: HandlerContext,
   refusal: DocumentRefusal,
-  sanitize: Sanitize
+  sanitize: Sanitize,
+  resourceKind: ProcessYamlResourceKind = 'phase'
 ): Promise<void> {
   const bounded = boundRefusal(refusal, sanitize);
-  await appendRefusalAudit(ctx, bounded);
+  await appendRefusalAudit(ctx, bounded, resourceKind);
   await respond(ctx, { outcome: 'refused', refusal: bounded });
+}
+
+/**
+ * The two presence oracles and the one resolution oracle a package is planned
+ * against, gathered in the single place that can read both catalogs.
+ *
+ * The Pipeline catalog is resolved against the EFFECTIVE Phase catalog, which is
+ * what `resolvePipelineCatalog` validates stored bindings with — the standing
+ * rule that a binding is never resolved against anything else. That is a
+ * different question from the one the planner asks of `records`, which is who
+ * claims an id; both are supplied, and neither substitutes for the other.
+ */
+function packageContext(
+  ctx: HandlerContext,
+  phaseCatalog: ReturnType<typeof resolvePhaseCatalog>
+): PackageImportContext {
+  const layers = ctx.deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const pipelineCatalog = resolvePipelineCatalog({
+    builtIn: BUILT_IN_PIPELINES,
+    user: layers.user,
+    workspace: layers.workspace,
+    phaseCatalog: phaseCatalog.effective
+  });
+  return {
+    phaseRows: phaseCatalog.records,
+    pipelineRows: pipelineCatalog.records,
+    effectivePhases: phaseCatalog.effective,
+    revisions: phaseCatalog.revisions,
+    // Read here, from the same resolve the presence oracle came from, so the
+    // revision a confirmed write is gated on describes the layer this plan was
+    // actually computed against (FR-040, FR-043).
+    pipelineRevisions: pipelineCatalog.revisions
+  };
 }
 
 export const handler: CommandHandler<PreflightProcessYamlCommand> = async (ctx) => {
@@ -206,21 +337,35 @@ export const handler: CommandHandler<PreflightProcessYamlCommand> = async (ctx) 
     return;
   }
 
-  const validation = validatePhaseDocument(parsed.node);
-  const layers = ctx.deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
-  const catalog = resolvePhaseCatalog({
+  // The document says which reader it is for; the request never did (FR-055a).
+  const kind = dispatchKind(parsed.node);
+  if (typeof kind !== 'string') {
+    await refuse(ctx, kind, sanitize);
+    return;
+  }
+
+  const phaseLayers = ctx.deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
+  // `records` is the STORED ROWS of every layer, whatever their status — not
+  // `effective`. A shadowed or invalid row still claims its id, so an import
+  // cannot take an id the operator is repairing (FR-030, research R4).
+  const phaseCatalog = resolvePhaseCatalog({
     builtIn: BUILT_IN_PHASES,
-    user: layers.user,
-    workspace: layers.workspace
+    user: phaseLayers.user,
+    workspace: phaseLayers.workspace
   });
 
-  // `catalog.records` is the STORED ROWS of every layer, whatever their status —
-  // not `catalog.effective`. A shadowed or invalid row still claims its id, so
-  // an import cannot take an id the operator is repairing (FR-030, research R4).
-  const planned = planPhaseImport(validation, catalog.records, catalog.revisions);
+  const planned =
+    kind === 'phase'
+      ? planPhaseImport(
+          validatePhaseDocument(parsed.node),
+          phaseCatalog.records,
+          phaseCatalog.revisions
+        )
+      : planPipelineImport(parsePipelinePackage(parsed.node), packageContext(ctx, phaseCatalog));
+
   if (planned.outcome === 'refused') {
-    // A document-level refusal produces no partial plan (FR-027).
-    await refuse(ctx, planned.refusal, sanitize);
+    // A document-level refusal produces no partial plan (FR-027, FR-029).
+    await refuse(ctx, planned.refusal, sanitize, kind);
     return;
   }
 

@@ -1,0 +1,32 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "phaseIds",
+      "value": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "scalar",
+            "value": "specify",
+            "quoted": false,
+            "line": 2
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    },
+    {
+      "key": "kind",
+      "value": {
+        "kind": "scalar",
+        "value": "Pipeline",
+        "quoted": false,
+        "line": 3
+      },
+      "line": 3
+    }
+  ],
+  "line": 1
+}
