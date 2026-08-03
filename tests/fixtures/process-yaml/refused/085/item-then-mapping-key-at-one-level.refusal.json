@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a sequence entry and a mapping key may not share one level (line 3)"
+}

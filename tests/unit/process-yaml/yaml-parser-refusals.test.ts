@@ -39,7 +39,16 @@ const DISALLOWED: ReadonlyArray<readonly [string, string]> = [
   ['%TAG directive', `%TAG ! tag:x\n---\nkind: Phase\n`],
   ['flow mapping', `metadata: { name: ${PAYLOAD} }\n`],
   ['flow sequence', `metadata: [ ${PAYLOAD} ]\n`],
-  ['block sequence', `spec:\n  - ${PAYLOAD}\n`],
+  // Feature 085 widened the subset by exactly one production, so `spec:\n  - x`
+  // is now ACCEPTED (see yaml-scanner.test.ts / yaml-parser.test.ts). What
+  // replaced it here are the narrowings that keep that production bounded —
+  // specs/085-pipeline-package-exchange/contracts/yaml-grammar.md, "New, all of
+  // them narrowings". Each still refuses at the token, so none can echo PAYLOAD.
+  ['bare dash', `spec:\n  -\n`],
+  ['dash followed by two spaces', `spec:\n  -  ${PAYLOAD}\n`],
+  ['nested block sequence', `spec:\n  - - ${PAYLOAD}\n`],
+  ['a level mixing items and entries', `spec:\n  - ${PAYLOAD}\n  name: A\n`],
+  ['an item where a mapping key belongs', `spec:\n  name: A\n  - ${PAYLOAD}\n`],
   ['top-level block sequence', `- kind: Phase\n`],
   ['complex key', `? ${PAYLOAD}\n: value\n`],
   ['single-quoted scalar', `name: '${PAYLOAD}'\n`],

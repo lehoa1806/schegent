@@ -7,23 +7,44 @@
 // and backend-ping families.
 
 import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from './messages';
-import type { PreflightProcessYamlResult, ProcessYamlResourceKind } from './messages';
+import type {
+  ExportProcessYamlRequest,
+  PipelineExportInclusion,
+  PreflightProcessYamlResult
+} from './messages';
 import { postCommand, type PostCommandResult } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
 const ACK_TIMEOUT_MS = 5000;
 
 /**
- * Ask the host to export one resource as a portable document.
+ * Ask the host to export one Phase as a portable document.
  *
  * No location is supplied and none comes back: the host opens its own save
  * dialog and reports only whether a document was written (FR-019).
  */
-export function exportProcessYaml(
-  resourceKind: ProcessYamlResourceKind,
-  resourceId: string
+export function exportPhaseYaml(resourceId: string): PostCommandResult {
+  const request: ExportProcessYamlRequest = { resourceKind: 'phase', resourceId };
+  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
+}
+
+/**
+ * Ask the host to export one Pipeline as a portable package document.
+ *
+ * `inclusion` is the operator's choice and travels with the request rather than
+ * being inferred host-side: the same Pipeline is legitimately exported both ways
+ * (FR-012), and only the operator knows which the recipient needs.
+ */
+export function exportPipelineYaml(
+  resourceId: string,
+  inclusion: PipelineExportInclusion
 ): PostCommandResult {
-  return postCommand(CMD_EXPORT_PROCESS_YAML, { resourceKind, resourceId });
+  const request: ExportProcessYamlRequest = {
+    resourceKind: 'pipeline',
+    resourceId,
+    inclusion
+  };
+  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
 }
 
 /**
@@ -48,9 +69,14 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
 /**
  * Ask the host what importing a document would do, and resolve its answer.
  *
- * The payload is the resource kind and nothing else: the host opens its own open
- * dialog and does its own read, so this call supplies no location and no bytes
- * (FR-020, FR-020a). Nothing is written — the commit is a separate, gated save.
+ * The payload is empty. The host opens its own open dialog and does its own
+ * read, so this call supplies no location and no bytes (FR-020, FR-020a) — and
+ * as of feature 085 it supplies no resource kind either: the document declares
+ * its own `kind` and preflight dispatches on that (FR-055a, research R8). A kind
+ * on the request would be a second, unauthoritative claim about what the file is,
+ * and the only thing it could do is disagree with the file.
+ *
+ * Nothing is written — the commit is a separate, gated save.
  *
  * Resolves the wire `PreflightProcessYamlResult` verbatim; the union is declared
  * once, in the contract, so there is no webview copy to drift. Host silence past
@@ -63,12 +89,8 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
  * third copy of that generator is worse than the seam it buys. Tests observe the
  * envelope through `setHostTransport`, which is the transport-level injection
  * point built for exactly this, and `postCommand` stays the only poster.
- *
- * @param resourceKind The kind being imported.
  */
-export function preflightProcessYaml(
-  resourceKind: ProcessYamlResourceKind
-): Promise<PreflightProcessYamlResult> {
+export function preflightProcessYaml(): Promise<PreflightProcessYamlResult> {
   return new Promise<PreflightProcessYamlResult>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -92,7 +114,7 @@ export function preflightProcessYaml(
       resolve(result);
     };
 
-    const { correlationId } = postCommand(CMD_PREFLIGHT_PROCESS_YAML, { resourceKind });
+    const { correlationId } = postCommand(CMD_PREFLIGHT_PROCESS_YAML, {});
 
     snapshotStore.markPending(correlationId);
     unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {

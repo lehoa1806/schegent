@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a plain scalar may not contain ': ' (line 1)"
+}

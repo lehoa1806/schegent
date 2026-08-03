@@ -1,0 +1,8 @@
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: ship-it
+  name: Ship It
+  version: 1
+spec:
+  instruction: Ship the thing.

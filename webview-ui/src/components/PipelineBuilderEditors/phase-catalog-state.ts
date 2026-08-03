@@ -73,6 +73,11 @@ export function rebasePhaseMutation(
 ): MutablePhase[] {
   const fresh = records.map(sourceRecordToMutable);
   if (mutation.kind === 'reset') return fresh.filter((row) => row.scope !== scope);
+  // Feature 085 — a package import owns no draft row in this editor: the import
+  // surface holds the plan, and a rejected package is recovered by inspecting the
+  // same document again (FR-042b), not by rebasing a draft that does not exist.
+  // The fresh projection IS the answer.
+  if (mutation.kind === 'import-package') return fresh;
   if (mutation.kind === 'remove') {
     const removal = targetIndex(fresh, sourceKey, scope, mutation.phaseId);
     return removal < 0 ? fresh : fresh.filter((_, index) => index !== removal);

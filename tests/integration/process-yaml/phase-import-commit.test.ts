@@ -111,7 +111,7 @@ async function preflight(inst: Installation, text: string): Promise<PreflightRun
   const command: PreflightProcessYamlCommand = {
     type: CMD_PREFLIGHT_PROCESS_YAML,
     correlationId: 'import-commit-1',
-    payload: { resourceKind: 'phase' }
+    payload: {}
   };
   await preflightHandler(ctx, command);
   expect(acks).toHaveLength(1);
@@ -140,9 +140,13 @@ function commitCommand(
   scope: WritablePhaseDefinitionScope,
   layer: readonly unknown[]
 ): SavePhasesCommand {
-  const row = plan.rows.find((candidate) => candidate.outcome === 'import');
+  const row = plan.rows.find(
+    (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
+  );
   expect(row?.outcome).toBe('import');
-  if (row?.outcome !== 'import') throw new Error('unreachable');
+  if (row?.outcome !== 'import' || row.resourceKind !== 'phase') {
+    throw new Error('unreachable');
+  }
   const { phaseId, ...declared } = row.definition;
   return {
     type: CMD_SAVE_PHASES,
@@ -298,7 +302,7 @@ describe('Feature 084 QS-35 — the origin is the scope the operator chose (FR-0
     ]);
     const plan = await planFor(installation(), claiming);
 
-    expect(plan.counts).toEqual({ import: 0, skip: 0, invalid: 1 });
+    expect(plan.counts).toEqual({ import: 0, skip: 0, invalid: 1, blocked: 0 });
     const [row] = plan.rows;
     expect(row?.outcome).toBe('invalid');
     if (row?.outcome !== 'invalid') return;

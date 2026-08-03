@@ -34,6 +34,15 @@ inspecting a document and confirming it is honored as of the confirm. A denial o
 either is audited as the same `trust.capability-denied` event as any other
 refused catalog write.
 
+Importing a **Pipeline package** — one document carrying a Pipeline plus the
+Phases it references — can require a **third**: `allowPipelineOverrides`, for the
+Pipeline layer itself. The package commits as two separate writes, Phases first
+and then the Pipeline, each gated on its own capability. The practical
+consequence is that the two can disagree, and the outcome is reported as what it
+is: with `allowCustomPhases` granted and `allowPipelineOverrides` denied, the
+Phases land and the Pipeline does not. Nothing already written is rolled back —
+re-running the same document after granting the missing scope finishes the job.
+
 This page is the operator reference for the feature. See
 [specs/059-fine-grained-trust-scopes/](../../../specs/059-fine-grained-trust-scopes/)
 for the full specification and contract dossiers.

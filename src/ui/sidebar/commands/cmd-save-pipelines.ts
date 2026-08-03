@@ -39,6 +39,11 @@ import type { SavePipelinesCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 import {
+  auditImportCommitted,
+  auditImportRefused,
+  type ImportCommitTarget
+} from './process-exchange-commit-audit';
+import {
   definitionMap,
   identityRepairTarget,
   layerDiff,
@@ -68,9 +73,42 @@ const pipelineIntentAdapter: LayerIntentAdapter<PipelineDefinition> = {
     validatePipelineDefinition(row, { allowLegacyId: true, defaultVersion: 1 }).definition
 };
 
-/** Projects a Pipeline mutation onto the entity-agnostic intent the algebra reads. */
+/**
+ * Projects a Pipeline mutation onto the entity-agnostic intent the algebra reads.
+ *
+ * `import-package` (feature 085, research R5) is the one kind that names a SET:
+ * a confirmed package import appends every eligible Pipeline in a single write,
+ * which no single-id kind describes, so the set passes through as `targetIds`.
+ */
 function pipelineIntent(mutation: PipelineCatalogMutation): LayerMutationIntent {
+  if (mutation.kind === 'import-package') {
+    return { kind: 'import-package', targetId: null, targetIds: mutation.pipelineIds };
+  }
   return { kind: mutation.kind, targetId: mutation.kind === 'reset' ? null : mutation.pipelineId };
+}
+
+/**
+ * Feature 085 (FR-044) — the rows a package import introduces keep the `version`
+ * their document declared, so exporting an imported Pipeline reproduces the
+ * source document. Every other row still gets its version from
+ * {@link withHostVersions}. The exemption is safe because the algebra has
+ * already established that these identities are absent from the current layer:
+ * a save cannot dictate a version *transition*, and there is none here.
+ */
+function withImportedVersion(
+  versioned: readonly PipelineDefinition[],
+  proposedById: ReadonlyMap<string, PipelineDefinition>,
+  mutation: PipelineCatalogMutation
+): readonly PipelineDefinition[] {
+  if (mutation.kind !== 'import-package') return versioned;
+  const importedIds = new Set(mutation.pipelineIds);
+  return versioned.map((definition) => {
+    if (!importedIds.has(definition.pipelineId)) return definition;
+    const authored = proposedById.get(definition.pipelineId);
+    return authored === undefined
+      ? definition
+      : Object.freeze({ ...definition, version: authored.version });
+  });
 }
 
 /**
@@ -165,6 +203,10 @@ function currentMetadata(
   sanitize: (value: string) => string
 ): unknown {
   if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  // A package names a set, not a row, and `reapply` is not offered: the plan was
+  // computed against the revision this gate just rejected, so its skip and
+  // blocked decisions may no longer hold. The operator re-runs the preflight.
+  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
   const pipelineId =
     mutation.kind === 'duplicate' ? mutation.sourcePipelineId : mutation.pipelineId;
   const definition = current.get(pipelineId);
@@ -219,13 +261,22 @@ function consumingWorkflowsReferencing(
 }
 
 export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command) => {
+  const { scope, expectedRevision, mutation } = command.payload;
+  // Feature 085 (FR-061) — the one layer write a package import is about, or
+  // null for every other mutation. Read before gate 1 so a refusal at any gate
+  // leaves a record; every audit call below is a no-op when null.
+  const exchange: ImportCommitTarget | null =
+    mutation.kind === 'import-package'
+      ? { resourceKind: 'pipeline', resourceIds: mutation.pipelineIds, scope }
+      : null;
+
   // Gate 1 — host configuration operations.
   if (!ctx.deps.updateConfig || !ctx.deps.readPipelineConfig) {
+    await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
 
-  const { scope, expectedRevision, mutation } = command.payload;
   const intent = pipelineIntent(mutation);
   const layers = ctx.deps.readPipelineConfig();
   const currentRows = layers[scope];
@@ -236,6 +287,7 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
 
   // Gate 3 — the operator acted on the layer the host still holds (FR-030).
   if (expectedRevision !== currentRevision) {
+    await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
       current: currentMetadata(mutation, currentById, scope, ctx.deps.logger.sanitize)
@@ -246,6 +298,7 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
   // Gates 4 and 6 — complete-layer field, port, and execution-default validation.
   const proposedLayer = normalizeLayer(command.payload.pipelines);
   if (proposedLayer.errors.length > 0) {
+    await auditImportRefused(ctx, exchange, 'pipeline-validation');
     await ack(
       ctx,
       'rejected',
@@ -264,6 +317,7 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
   }).effective;
   const unresolved = crossReferenceErrors(proposedLayer.definitions, effectivePhases);
   if (unresolved.length > 0) {
+    await auditImportRefused(ctx, exchange, 'pipeline-validation');
     await ack(
       ctx,
       'rejected',
@@ -304,26 +358,22 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
       });
       return;
     }
-    // Gate 8 — the built-in layer is never a save target (FR-024).
+    // Gate 8 — the built-in layer is never a save target (FR-024). Only `edit`
+    // and `remove` can name a row this layer does not own.
     const builtInIds = new Set(BUILT_IN_PIPELINES.map((pipeline) => pipeline.id));
-    const targetId = mutation.kind === 'reset'
-      ? null
-      : mutation.kind === 'duplicate'
-        ? mutation.sourcePipelineId
-        : mutation.pipelineId;
     const builtInOnly = (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && targetId !== null
-      && builtInIds.has(targetId)
-      && !currentById.has(targetId);
-    await ack(
-      ctx,
-      'rejected',
-      builtInOnly ? 'built-in-immutable' : 'pipeline-mutation-mismatch'
-    );
+      && builtInIds.has(mutation.pipelineId)
+      && !currentById.has(mutation.pipelineId);
+    const reason = builtInOnly ? 'built-in-immutable' : 'pipeline-mutation-mismatch';
+    await auditImportRefused(ctx, exchange, reason);
+    await ack(ctx, 'rejected', reason);
     return;
   }
 
   // Gate 10 — a row may only assert a version the host previously issued (FR-010).
+  const importedIds = new Set(
+    mutation.kind === 'import-package' ? mutation.pipelineIds : []
+  );
   for (const raw of command.payload.pipelines) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const row = raw as Record<string, unknown>;
@@ -331,10 +381,14 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
       ? row.pipelineId
       : typeof row.id === 'string' ? row.id : null;
     if (pipelineId === null || row.version === undefined) continue;
+    // An imported identity declares its own version (FR-044). Skipping the echo
+    // check for those alone leaves it in force for every other row.
+    if (importedIds.has(pipelineId)) continue;
     const expectedVersions = currentIdentities.versions.get(
       pipelineId === repairTargetId && mutation.kind === 'edit' ? mutation.pipelineId : pipelineId
     ) ?? new Set([1]);
     if (!expectedVersions.has(row.version as number)) {
+      await auditImportRefused(ctx, exchange, 'pipeline-version-invalid');
       await ack(ctx, 'rejected', 'pipeline-version-invalid', {
         pipelineId: ctx.deps.logger.sanitize(pipelineId).slice(0, 64),
         expectedVersions: [...expectedVersions].sort((a, b) => a - b)
@@ -367,7 +421,7 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     intent,
     pipelineIntentAdapter
   );
-  const persistedRows = versioned.map(persistedRow);
+  const persistedRows = withImportedVersion(versioned, proposedById, mutation).map(persistedRow);
 
   // Gate 13 — a removal may not strand a consuming Workflow. Blocked only when
   // BOTH hold: the id has no effective source left after the write, AND some
@@ -417,10 +471,12 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     ctx.deps.logger.warn(
       `pipeline catalog save failed: ${ctx.deps.logger.sanitize((error as Error).message)}`
     );
+    await auditImportRefused(ctx, exchange, 'persistence-failed');
     await ack(ctx, 'rejected', 'persistence-failed');
     return;
   }
 
+  await auditImportCommitted(ctx, exchange);
   await ack(ctx, 'accepted', undefined, {
     scope,
     revision: pipelineLayerRevision(persistedRows),

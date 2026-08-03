@@ -161,7 +161,8 @@ export const AUDIT_EVENT_TYPES = [
   "backend-ping",
   "metrics-view-opened",
   "process-exchange-export",
-  "process-exchange-import-refused"
+  "process-exchange-import-refused",
+  "process-exchange-import-committed"
 ] as const;
 
 export const SETTINGS_KEYS = [

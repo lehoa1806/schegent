@@ -118,7 +118,7 @@ async function planFor(text: string, layers: Layers): Promise<ImportPlan> {
   const command: PreflightProcessYamlCommand = {
     type: CMD_PREFLIGHT_PROCESS_YAML,
     correlationId: 'gates-1',
-    payload: { resourceKind: 'phase' }
+    payload: {}
   };
   await preflightHandler(ctx, command);
   const result = acks[0]!.result as PreflightProcessYamlResult;
@@ -139,9 +139,13 @@ function commitCommand(
   layer: readonly unknown[],
   overrides: { readonly expectedRevision?: string } = {}
 ): SavePhasesCommand {
-  const row = plan.rows.find((candidate) => candidate.outcome === 'import');
+  const row = plan.rows.find(
+    (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
+  );
   expect(row?.outcome).toBe('import');
-  if (row?.outcome !== 'import') throw new Error('unreachable');
+  if (row?.outcome !== 'import' || row.resourceKind !== 'phase') {
+    throw new Error('unreachable');
+  }
   const { phaseId, ...declared } = row.definition;
   return {
     type: CMD_SAVE_PHASES,
@@ -387,7 +391,11 @@ describe('Feature 084 — requiresRetryConditionCapability is advisory (T062, FR
   function flagFor(plan: ImportPlan): boolean {
     const row = plan.rows[0]!;
     expect(row.outcome).toBe('import');
-    if (row.outcome !== 'import') throw new Error('unreachable');
+    // The flag exists only on a Phase import row: feature 085 widened the row to
+    // carry Pipelines too, and a Pipeline declares no `retryCondition` of its own.
+    if (row.outcome !== 'import' || row.resourceKind !== 'phase') {
+      throw new Error('unreachable');
+    }
     return row.requiresRetryConditionCapability;
   }
 

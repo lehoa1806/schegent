@@ -66,16 +66,17 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       // envelope with no `payload` key at all is correctly rejected.
       [Authoritative.CMD_READ_METRICS]: {},
       [Authoritative.CMD_PING_BACKEND]: { runner: 'claude' },
-      // Feature 084 — both export fields are required: `resourceKind` names
-      // the one kind this exchange format admits, and `resourceId` names what
-      // to resolve from the effective catalog.
+      // Feature 084/085 — the Phase arm of the export union is the minimal
+      // one: `resourceKind` discriminates, `resourceId` names what to resolve
+      // from the effective catalog, and there is no inclusion choice to make.
       [Authoritative.CMD_EXPORT_PROCESS_YAML]: {
         resourceKind: 'phase',
         resourceId: 'specify'
       },
-      // Feature 084 — preflight carries the resource kind and nothing else: no
-      // location, no bytes, no scope (FR-020a).
-      [Authoritative.CMD_PREFLIGHT_PROCESS_YAML]: { resourceKind: 'phase' }
+      // Feature 085 — preflight carries NOTHING (FR-020a, FR-055a). `{}` is
+      // the whole payload; the kind 084 sent here is gone, because the host
+      // dispatches on the `kind:` the document declares.
+      [Authoritative.CMD_PREFLIGHT_PROCESS_YAML]: {}
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];
@@ -98,6 +99,97 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       expect(guard({})).toBe(false);
       expect(guard({ type: undefined })).toBe(false);
     }
+  });
+
+  // Feature 085 (T068, research R8) — the export request stopped being a flat
+  // record and became a discriminated union, and the preflight request lost its
+  // last field. Both are boundary shapes, so the guard is pinned against the
+  // type here rather than left to drift until something starts consuming it.
+  //
+  // `hasUnexpectedKeys` in `src/contracts/validators/process-yaml.ts` is the
+  // deeper gate the router actually runs; these assertions pin the published
+  // guard surface agrees with it about what a legal command looks like.
+  describe('process-yaml request shapes (FR-012, FR-020a, FR-055a)', () => {
+    const exportCmd = (payload: unknown): unknown => ({
+      type: Authoritative.CMD_EXPORT_PROCESS_YAML,
+      correlationId: 'c-test',
+      payload
+    });
+
+    it('accepts both arms of the export union', () => {
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'phase', resourceId: 'specify' })
+        )
+      ).toBe(true);
+      for (const inclusion of ['references-only', 'include-referenced'] as const) {
+        expect(
+          Authoritative.isCmdExportProcessYaml(
+            exportCmd({ resourceKind: 'pipeline', resourceId: 'default', inclusion })
+          ),
+          `pipeline export with inclusion '${inclusion}' must be accepted`
+        ).toBe(true);
+      }
+    });
+
+    it('rejects a Phase export carrying an inclusion choice a Phase cannot have', () => {
+      // The union exists precisely so this shape is unrepresentable. A guard
+      // that merely ignored the extra field would let it cross the boundary.
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({
+            resourceKind: 'phase',
+            resourceId: 'specify',
+            inclusion: 'include-referenced'
+          })
+        )
+      ).toBe(false);
+    });
+
+    it('rejects a Pipeline export with a missing or unrecognized inclusion', () => {
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'pipeline', resourceId: 'default' })
+        ),
+        'inclusion is required for a Pipeline — it is the operator’s disclosure choice'
+      ).toBe(false);
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'pipeline', resourceId: 'default', inclusion: 'all' })
+        )
+      ).toBe(false);
+    });
+
+    it('rejects an export naming a kind this format does not admit', () => {
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'workflow', resourceId: 'default' })
+        )
+      ).toBe(false);
+      expect(
+        Authoritative.isCmdExportProcessYaml(exportCmd({ resourceId: 'specify' }))
+      ).toBe(false);
+    });
+
+    it('accepts an empty preflight payload and rejects every field, including 084’s kind', () => {
+      const preflight = (payload: unknown): unknown => ({
+        type: Authoritative.CMD_PREFLIGHT_PROCESS_YAML,
+        correlationId: 'c-test',
+        payload
+      });
+      expect(Authoritative.isCmdPreflightProcessYaml(preflight({}))).toBe(true);
+      // 084's payload. An operator must not have to classify a file before
+      // opening it, so the kind is not the webview's to send any more.
+      expect(
+        Authoritative.isCmdPreflightProcessYaml(preflight({ resourceKind: 'phase' }))
+      ).toBe(false);
+      // A location must never be representable on this command in either
+      // direction — the same invariant `process-yaml-no-paths.test.ts` covers.
+      expect(
+        Authoritative.isCmdPreflightProcessYaml(preflight({ path: '/tmp/x.pipeline.yaml' }))
+      ).toBe(false);
+      expect(Authoritative.isCmdPreflightProcessYaml(preflight(undefined))).toBe(false);
+    });
   });
 
   // Feature 082 (US1, T019) — the two catalog saves are one contract shape.

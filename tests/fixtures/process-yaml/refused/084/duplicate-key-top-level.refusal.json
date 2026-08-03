@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "duplicate key 'kind' in one mapping (line 2)"
+}

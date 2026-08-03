@@ -21,6 +21,15 @@ import type {
   PhaseDefinitionScope,
   PhaseSourceStatus
 } from '../../contracts/process-definitions';
+import type {
+  PhaseBinding,
+  PipelineDefinition,
+  PipelineDefinitionScope,
+  PipelineExecutionDefaults,
+  PipelineInputPort,
+  PipelineOutputPort,
+  PipelineSourceStatus
+} from '../../contracts/pipeline-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 
 /** The only `apiVersion` this format admits (FR-002). */
@@ -35,8 +44,14 @@ export const PHASE_YAML_MAX_BYTES = 1048576;
 /** One indent level. The format admits no other step (grammar "Layout"). */
 export const PHASE_YAML_INDENT = '  ';
 
-/** Which catalog kind an exchange operation addresses. */
-export type ProcessYamlResourceKind = 'phase';
+/**
+ * Which catalog kind an exchange operation addresses.
+ *
+ * Feature 085 T013 — `'pipeline'` joins `'phase'`. A single document may declare
+ * resources of both kinds, so this is a property of a plan ROW rather than of
+ * the request that produced it (FR-055a).
+ */
+export type ProcessYamlResourceKind = 'phase' | 'pipeline';
 
 // ---------------------------------------------------------------------------
 // Document
@@ -84,6 +99,83 @@ export interface PhaseYamlDocument {
   readonly spec: PhaseYamlSpec;
 }
 
+/**
+ * Feature 085 T025 — a Phase document without its root declarations.
+ *
+ * Derived from `PhaseYamlDocument` rather than declared beside it, because
+ * FR-008 says an included Phase carries the *same* `metadata` and `spec`
+ * mappings the single-Phase document defines. A second declaration of those two
+ * would be a thing that drifts, and the drift would only show up as a package
+ * whose Phases no longer round-trip through the single-Phase reader.
+ */
+export type PhaseYamlDocumentBody = Omit<PhaseYamlDocument, 'apiVersion' | 'kind'>;
+
+// ---------------------------------------------------------------------------
+// Package document — feature 085 (data-model.md §2)
+// ---------------------------------------------------------------------------
+
+/** The only `kind` the Pipeline package format admits (FR-002, FR-055a). */
+export const PIPELINE_YAML_KIND = 'Pipeline';
+
+/**
+ * The root Pipeline's identity. `id` rather than `pipelineId`: the document
+ * already declares what it is under `kind`, so the key does not repeat it
+ * (data-model.md §2.2). That rename is the ONLY one the mapping performs.
+ */
+export interface PipelineYamlMetadata {
+  readonly id: string;
+  readonly name: string;
+  readonly version: number;
+  readonly description?: string;
+}
+
+/**
+ * The root Pipeline's authored body, field for field from the shipped
+ * `PipelineDefinition` (research R4). The port, binding, and defaults shapes are
+ * the catalog's own types rather than copies — a second declaration of the same
+ * shape is a thing that drifts, and the round trip is what would break.
+ *
+ * The three list-typed fields are always present here and may be empty; export
+ * omits an empty one from the bytes and import reads an absent key as `[]`
+ * (data-model.md §2.5).
+ */
+export interface PipelineYamlSpec {
+  /** Order is authoritative and a repeat is meaningful (FR-019). */
+  readonly phaseIds: readonly string[];
+  readonly inputs: readonly PipelineInputPort[];
+  readonly outputs: readonly PipelineOutputPort[];
+  readonly bindings: readonly PhaseBinding[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext: readonly string[];
+}
+
+/**
+ * The optional dependency payload (data-model.md §2.4, FR-015).
+ *
+ * A mapping with one key rather than a bare list, so a later dependency class
+ * is an added key here instead of a change to what `included` means.
+ *
+ * `phases` is never empty. A references-only document omits `included` entirely
+ * (FR-013), and a present-but-childless key would read back as an empty mapping
+ * — the same round-trip hazard as an empty list (research R3).
+ */
+export interface PipelineYamlIncluded {
+  readonly phases: readonly PhaseYamlDocumentBody[];
+}
+
+export interface PipelineYamlDocument {
+  readonly apiVersion: typeof PHASE_YAML_API_VERSION;
+  readonly kind: typeof PIPELINE_YAML_KIND;
+  readonly metadata: PipelineYamlMetadata;
+  readonly spec: PipelineYamlSpec;
+  /**
+   * Absent for a references-only export (FR-013). Present only when the
+   * operator asked for dependency inclusion AND every referenced Phase resolved
+   * — a partial `included` is never written (FR-017).
+   */
+  readonly included?: PipelineYamlIncluded;
+}
+
 // ---------------------------------------------------------------------------
 // Parse tree — the only shapes the closed subset can produce
 // ---------------------------------------------------------------------------
@@ -113,7 +205,26 @@ export interface YamlMappingNode {
   readonly line: number;
 }
 
-export type YamlNode = YamlScalarNode | YamlMappingNode;
+/**
+ * Feature 085 T003 — the one production the closed subset gained.
+ *
+ * `items` is never empty: an empty list is not representable, because `key:`
+ * with nothing under it reads back as an empty MAPPING. The serializer omits
+ * the key instead, and a list-typed field reads an absent key as `[]`
+ * (research R3). A sequence node therefore exists only where at least one entry
+ * was read.
+ *
+ * Items are homogeneous in nothing. The grammar admits a list of scalars and a
+ * list of mappings and does not require a list to be one or the other; deciding
+ * which a given field wants is the validator's job, not the reader's.
+ */
+export interface YamlSequenceNode {
+  readonly kind: 'sequence';
+  readonly items: readonly YamlNode[];
+  readonly line: number;
+}
+
+export type YamlNode = YamlScalarNode | YamlMappingNode | YamlSequenceNode;
 
 // ---------------------------------------------------------------------------
 // Refusals and plan
@@ -132,6 +243,13 @@ export type DocumentRefusalCode =
   | 'disallowed-syntax'
   /** A second document start, an end marker, or a sequence of resources. */
   | 'multi-document'
+  /**
+   * Two resources of one package declare the same id (FR-031).
+   *
+   * Document-level rather than per-resource: naming one of the two the defect
+   * would be choosing which the author meant, and the document does not say.
+   */
+  | 'duplicate-id'
   /** No resource declared. */
   | 'empty';
 
@@ -148,42 +266,89 @@ export interface ImportDefect {
   readonly message: string;
 }
 
+/** The closed outcome set a planned resource can land in (FR-025). */
+export type ImportPlanOutcome = 'import' | 'skip' | 'blocked' | 'invalid';
+
+/**
+ * Feature 085 T014 (FR-030c) — the two ways a well-formed resource's dependency
+ * fails to resolve. The distinction is what the operator acts on: an absent
+ * Phase needs supplying, an unresolvable one needs repairing.
+ *
+ * Both codes name the `phaseId` at fault. A Pipeline with several unresolved
+ * references yields one reason — the first in `phaseIds` order — because the row
+ * reports a status, not a defect list; `invalid` is the outcome that enumerates.
+ */
+export type BlockedReason =
+  /** In no catalog layer, and not supplied by this document. */
+  | { readonly code: 'dependency-absent'; readonly phaseId: string }
+  /** A stored row claims the id, but it is not EFFECTIVE — shadowed or invalid. */
+  | { readonly code: 'dependency-unresolvable'; readonly phaseId: string };
+
+/**
+ * The scopes and statuses a presence scan can report. Both catalogs use the same
+ * three of each; the union is written out so a row's `resourceKind` and its
+ * presence fields cannot silently disagree about which catalog was scanned.
+ */
+export type ProcessYamlPresenceScope = PhaseDefinitionScope | PipelineDefinitionScope;
+export type ProcessYamlPresenceStatus = PhaseSourceStatus | PipelineSourceStatus;
+
+/**
+ * The definition an import row carries, verbatim, keyed by the row's kind
+ * (FR-029a/b).
+ *
+ * The plan carries it because the commit is a `CMD_SAVE_PHASES` /
+ * `CMD_SAVE_PIPELINES` sent by the webview (research R2) and the host retains
+ * nothing past the single read that produced this plan (FR-031). The
+ * alternatives were a host-side cache between preflight and commit, which is the
+ * thing FR-031 forbids, and a second read at commit, which is a second dialog
+ * and a window in which the file can change under the operator.
+ *
+ * Deliberately NOT sanitized or length-bounded, unlike every other string on the
+ * row: FR-046a forbids rewriting a declared value, and the caps the displayed
+ * fields use would truncate an `instruction`. Nothing renders this field — it is
+ * forwarded to the save command, whose own validator is the gate, and which the
+ * webview can already reach through the catalog managers. So round-tripping it
+ * grants no authority the webview did not already have.
+ */
 export type ImportPlanRow =
   | {
       readonly outcome: 'import';
+      readonly resourceKind: 'phase';
       readonly resourceId: string;
       readonly name: string;
       /** Advisory only. The gate is re-evaluated at commit time (FR-012a). */
       readonly requiresRetryConditionCapability: boolean;
-      /**
-       * The definition the document declared, exactly as authored (FR-046a).
-       *
-       * The plan carries it because the commit is a `CMD_SAVE_PHASES` sent by
-       * the webview (research R2) and the host retains nothing past the single
-       * read that produced this plan (FR-031). The alternatives were a host-side
-       * cache between preflight and commit, which is the thing FR-031 forbids,
-       * and a second read at commit, which is a second dialog and a window in
-       * which the file can change under the operator.
-       *
-       * Deliberately NOT sanitized or length-bounded, unlike every other string
-       * on this row: FR-046a forbids rewriting a declared value, and the caps
-       * the displayed fields use would truncate an `instruction`. Nothing
-       * renders this field — it is forwarded to the save command, whose own
-       * validator is the gate, and which the webview can already reach through
-       * the Phase manager. So round-tripping it grants no authority the webview
-       * did not already have.
-       */
       readonly definition: PhaseDefinition;
     }
   | {
-      readonly outcome: 'skip';
+      readonly outcome: 'import';
+      readonly resourceKind: 'pipeline';
       readonly resourceId: string;
       readonly name: string;
-      readonly presentIn: PhaseDefinitionScope;
-      readonly presentRowStatus: PhaseSourceStatus;
+      readonly definition: PipelineDefinition;
+    }
+  | {
+      readonly outcome: 'skip';
+      readonly resourceKind: ProcessYamlResourceKind;
+      readonly resourceId: string;
+      readonly name: string;
+      readonly presentIn: ProcessYamlPresenceScope;
+      readonly presentRowStatus: ProcessYamlPresenceStatus;
+    }
+  | {
+      /**
+       * The resource itself is well-formed; only its dependencies fail (FR-033).
+       * Distinct from `invalid`, which means the resource is defective.
+       */
+      readonly outcome: 'blocked';
+      readonly resourceKind: ProcessYamlResourceKind;
+      readonly resourceId: string;
+      readonly name: string;
+      readonly reason: BlockedReason;
     }
   | {
       readonly outcome: 'invalid';
+      readonly resourceKind: ProcessYamlResourceKind;
       readonly resourceId: string | null;
       /**
        * Bounded before it crosses the IPC boundary. `totalDefects` is the count
@@ -204,17 +369,32 @@ export interface ProcessYamlLayerRevisions {
   readonly workspace: string;
 }
 
+/** One count per outcome. The four sum to `rows.length` (FR-028). */
 export interface ImportPlanCounts {
   readonly import: number;
   readonly skip: number;
+  readonly blocked: number;
   readonly invalid: number;
 }
 
 export interface ImportPlan {
-  /** Always a list, even though this format yields at most one row (FR-022). */
+  /** One row per declared resource, always a list (FR-022, FR-024). */
   readonly rows: readonly ImportPlanRow[];
   readonly counts: ImportPlanCounts;
+  /** Phase catalog. Always present — every plan can write Phases. */
   readonly computedAgainstRevision: ProcessYamlLayerRevisions;
+  /**
+   * Pipeline catalog (feature 085, FR-043). Present exactly when the document
+   * declared a Pipeline, which is the only case a Pipeline layer is written.
+   *
+   * A second field rather than a second use of the first: the two layers are
+   * independently mutable, so one revision cannot gate both, and a confirmed
+   * package is two ordered writes each carrying its OWN expected revision. It is
+   * carried on the plan rather than read live at confirm time because FR-040 is
+   * about the catalog the operator's PREVIEW described — reading the current
+   * revision at the moment of the write would make the gate unable to fire.
+   */
+  readonly computedAgainstPipelineRevision?: ProcessYamlLayerRevisions;
 }
 
 /** Errors are values throughout this module. Nothing here throws. */

@@ -17,8 +17,21 @@
 //     that is not already taken in that scope (FR-004, FR-006, FR-007).
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PipelineExportInclusion } from '../../lib/messages';
 import type { PhaseBinding, WorkflowSnapshot } from '../../lib/snapshot-types';
+
+// Feature 085 T022 — the exchange family's single webview call site, stubbed so
+// the export control's request is observable without a host transport. The
+// property is a wrapper rather than the spy itself: the factory runs while the
+// component module is being evaluated, which is before `exportSpy` initialises,
+// so the reference has to stay inside a body that runs at click time.
+const exportSpy = vi.fn<(resourceId: string, inclusion: PipelineExportInclusion) => void>();
+vi.mock('../../lib/process-yaml-ipc', () => ({
+  exportPipelineYaml: (resourceId: string, inclusion: PipelineExportInclusion) =>
+    exportSpy(resourceId, inclusion)
+}));
+
 import PipelineCatalogEditor from '../PipelineBuilderEditors/PipelineCatalogEditor.svelte';
 import {
   FIELD_ERROR_MESSAGE_MAX_LEN,
@@ -28,6 +41,7 @@ import {
 } from '../PipelineBuilderEditors/pipeline-catalog-state';
 import type { MutablePhase, MutablePipeline } from '../PipelineBuilderEditors/types';
 
+beforeEach(() => exportSpy.mockReset());
 afterEach(cleanup);
 
 const READY_CATALOG = {
@@ -1137,5 +1151,140 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     expect(loadingState.getAttribute('role')).toBe('status');
     expect(loadingState.getAttribute('aria-live')).toBe('polite');
     expect(loadingState.textContent?.trim().length).toBeGreaterThan(0);
+  });
+});
+
+// Feature 085 T022 (FR-011, FR-055) — exporting the selected Pipeline.
+//
+// The control names a resource and never a location: the host opens its own
+// save dialog, so no path crosses the boundary in either direction (FR-019).
+// The inclusion choice (T027, FR-012) sits beside it and defaults to the
+// reference package (FR-013).
+describe('Feature 085 T022 — the Pipeline export control', () => {
+  const UNRESOLVED_ROW: MutablePipeline = {
+    ...WORKSPACE_PIPELINE,
+    sourceStatus: 'invalid',
+    sourceErrors: [
+      {
+        field: 'phases',
+        code: 'pipeline-phase-unknown',
+        message: 'Phase done is in no catalog layer.',
+        sourceKey: WORKSPACE_PIPELINE.sourceKey
+      }
+    ]
+  } as unknown as MutablePipeline;
+
+  it('asks the host for the selected Pipeline by id, naming no location', async () => {
+    const { getByTestId } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    await fireEvent.click(getByTestId('pipelines-export'));
+
+    expect(exportSpy).toHaveBeenCalledTimes(1);
+    expect(exportSpy).toHaveBeenCalledWith('custom-flow', 'references-only');
+  });
+
+  it('offers no reason when the selected Pipeline is exportable', () => {
+    const { container, getByTestId } = mount({
+      pipelines: [WORKSPACE_PIPELINE],
+      selectedIndex: 0
+    });
+    expect((getByTestId('pipelines-export') as HTMLButtonElement).disabled).toBe(false);
+    expect(container.querySelector('[data-testid="pipelines-export-disabled-reason"]')).toBeNull();
+    expect(getByTestId('pipelines-export').getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('refuses an unsaved draft, says why, and posts nothing (FR-057)', async () => {
+    const { getByTestId } = mount({ pipelines: [draftRow()], selectedIndex: 0 });
+
+    const button = getByTestId('pipelines-export') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(getByTestId('pipelines-export-disabled-reason').textContent).toContain('Save this');
+    // Refused before the click rather than failing after it.
+    await fireEvent.click(button);
+    expect(exportSpy).not.toHaveBeenCalled();
+  });
+
+  it('exports a saved row whose referenced Phases do not resolve (FR-018)', async () => {
+    // The exact case FR-018 exists for: a references-only document carries Phase
+    // identifiers and no Phase definitions, so a Pipeline the catalog marks
+    // `invalid` still exports with its sequence intact. Gating on `sourceStatus`
+    // here would refuse it, and only the host can tell a missing reference from
+    // a structural defect.
+    const { getByTestId } = mount({ pipelines: [UNRESOLVED_ROW], selectedIndex: 0 });
+
+    expect((getByTestId('pipelines-export') as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(getByTestId('pipelines-export'));
+    expect(exportSpy).toHaveBeenCalledWith('custom-flow', 'references-only');
+  });
+
+  it('stays available without trust and during an in-flight save', () => {
+    // Export writes nothing this extension owns, so neither the trust gate nor
+    // the mutation gate applies. Borrowing them would make a read-only action
+    // unavailable for reasons that describe writes.
+    const { getByTestId } = mount({
+      pipelines: [WORKSPACE_PIPELINE],
+      selectedIndex: 0,
+      trusted: false,
+      savePending: true,
+      mutationActive: true
+    });
+    expect((getByTestId('pipelines-export') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('names the Pipeline it belongs to and points at the reason it rendered', () => {
+    const enabled = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    expect(enabled.getByTestId('pipelines-export').getAttribute('aria-label')).toBe(
+      'Export custom-flow'
+    );
+    cleanup();
+
+    const disabled = mount({ pipelines: [draftRow()], selectedIndex: 0 });
+    const describedBy = disabled.getByTestId('pipelines-export').getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(disabled.getByTestId('pipelines-export-disabled-reason').id).toBe(describedBy);
+  });
+
+  // T027 (FR-012) — the operator chooses what the document carries before it is
+  // produced. The choice reaches the host as the inclusion argument and nothing
+  // else about the request changes.
+  it('defaults to the reference package and offers the choice unchecked (FR-013)', () => {
+    const { getByTestId } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    const toggle = getByTestId('pipelines-export-inclusion') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(false);
+  });
+
+  it('asks for the referenced definitions once the operator opts in (FR-012)', async () => {
+    const { getByTestId } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    await fireEvent.click(getByTestId('pipelines-export-inclusion'));
+    await fireEvent.click(getByTestId('pipelines-export'));
+
+    expect(exportSpy).toHaveBeenCalledTimes(1);
+    expect(exportSpy).toHaveBeenCalledWith('custom-flow', 'include-referenced');
+  });
+
+  it('returns to the reference package when the choice is taken back', async () => {
+    const { getByTestId } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    await fireEvent.click(getByTestId('pipelines-export-inclusion'));
+    await fireEvent.click(getByTestId('pipelines-export-inclusion'));
+    await fireEvent.click(getByTestId('pipelines-export'));
+
+    expect(exportSpy).toHaveBeenCalledWith('custom-flow', 'references-only');
+  });
+
+  it('stays available for a row whose referenced Phases do not resolve (FR-017)', async () => {
+    // Whether the references resolve is the host's call — it reads the effective
+    // catalog and this surface does not. Pre-checking here would refuse the
+    // export before the host could name which Phase was missing.
+    const { getByTestId } = mount({ pipelines: [UNRESOLVED_ROW], selectedIndex: 0 });
+    expect((getByTestId('pipelines-export-inclusion') as HTMLInputElement).disabled).toBe(false);
+
+    await fireEvent.click(getByTestId('pipelines-export-inclusion'));
+    await fireEvent.click(getByTestId('pipelines-export'));
+    expect(exportSpy).toHaveBeenCalledWith('custom-flow', 'include-referenced');
+  });
+
+  it('offers no choice on an unsaved draft, because there is nothing to export', () => {
+    const { getByTestId } = mount({ pipelines: [draftRow()], selectedIndex: 0 });
+    expect((getByTestId('pipelines-export-inclusion') as HTMLInputElement).disabled).toBe(true);
   });
 });

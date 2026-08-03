@@ -149,6 +149,13 @@ export interface PipelineCatalogResolution {
 
 export type PipelineCatalogMutation =
   | { readonly kind: 'create'; readonly pipelineId: string }
+  /**
+   * Feature 085 (FR-036, FR-044) — the Pipeline half of one confirmed package
+   * import, and the second of the two writes it performs (FR-038). Named ids
+   * keep the version their document declared; every other row echoes its
+   * current version as usual. Mirrors `PhaseCatalogMutation['import-package']`.
+   */
+  | { readonly kind: 'import-package'; readonly pipelineIds: readonly string[] }
   | { readonly kind: 'edit'; readonly pipelineId: string }
   | {
       readonly kind: 'duplicate';

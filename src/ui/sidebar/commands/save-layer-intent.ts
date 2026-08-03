@@ -25,15 +25,30 @@ import type { WorkflowDefinition } from '../../../contracts/workflow-definitions
 /** The identity pattern shared by Phase and Pipeline ids. */
 export const LAYER_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
-export type LayerMutationKind = 'create' | 'edit' | 'duplicate' | 'remove' | 'reset';
+export type LayerMutationKind =
+  | 'create'
+  | 'edit'
+  | 'duplicate'
+  | 'remove'
+  | 'reset'
+  | 'import-package';
 
 /**
  * The entity-agnostic view of a declared save intent. `targetId` is the id
  * being created, edited, duplicated to, or removed; `reset` carries none.
+ *
+ * Feature 085 (research R5) adds the one intent that names a SET rather than a
+ * single id: a confirmed package import appends every eligible resource of one
+ * kind in a single write, so `targetIds` carries the whole set and `targetId` is
+ * null. Splitting it into N `create` saves would mean N revision gates, and a
+ * failure part-way through would leave the layer in a state no single intent
+ * describes.
  */
 export interface LayerMutationIntent {
   readonly kind: LayerMutationKind;
   readonly targetId: string | null;
+  /** `import-package` only. Ignored by every other kind. */
+  readonly targetIds?: readonly string[];
 }
 
 export interface LayerDiff {
@@ -137,6 +152,19 @@ function countsMatchExcept(
 }
 
 /**
+ * The declared package targets, or `null` when the intent does not name a
+ * well-formed, non-empty, duplicate-free set. A repeated id is rejected rather
+ * than deduplicated: the set is what the write reports and what the version
+ * exemption keys on, so an ambiguous declaration must not be silently repaired.
+ */
+function packageTargets(mutation: LayerMutationIntent): ReadonlySet<string> | null {
+  const declared = mutation.targetIds ?? [];
+  if (declared.length === 0) return null;
+  const targets = new Set(declared);
+  return targets.size === declared.length ? targets : null;
+}
+
+/**
  * Returns `true` when the observed diff is exactly what the declared mutation
  * is allowed to produce, and nothing more.
  */
@@ -148,6 +176,28 @@ export function mutationMatches(
   proposedCounts: ReadonlyMap<string, number>
 ): boolean {
   if (mutation.kind === 'reset') return proposedCount === 0;
+  if (mutation.kind === 'import-package') {
+    const targets = packageTargets(mutation);
+    if (targets === null) return false;
+    // Every declared id is absent from the current layer — the presence scan
+    // already made an existing id a `skip`, so a package never overwrites
+    // (FR-030). Each arrives exactly once, and nothing else moves.
+    for (const id of targets) {
+      if ((currentCounts.get(id) ?? 0) !== 0) return false;
+      if ((proposedCounts.get(id) ?? 0) !== 1) return false;
+    }
+    const ids = new Set([...currentCounts.keys(), ...proposedCounts.keys()]);
+    for (const id of ids) {
+      if (targets.has(id)) continue;
+      if ((currentCounts.get(id) ?? 0) !== (proposedCounts.get(id) ?? 0)) return false;
+    }
+    return (
+      diff.removed.length === 0 &&
+      diff.changed.length === 0 &&
+      diff.added.length === targets.size &&
+      diff.added.every((id) => targets.has(id))
+    );
+  }
   const targetId = mutation.targetId;
   if (targetId === null) return false;
   const none = (values: readonly string[]) => values.length === 0;
@@ -268,6 +318,21 @@ export function layerShapeMatches<T extends VersionedDefinition>(
   adapter: LayerIntentAdapter<T>
 ): boolean {
   if (mutation.kind === 'reset') return proposedRows.length === 0;
+  if (mutation.kind === 'import-package') {
+    const targets = packageTargets(mutation);
+    if (targets === null) return false;
+    // Deleting the declared rows from the proposal must reproduce the current
+    // layer in order, so a package import cannot reorder what it appends to.
+    // No combinatorial search is needed here, unlike the single-id kinds: the
+    // declared ids are absent from the current layer, so which rows to delete
+    // is unambiguous.
+    return sameFingerprints(
+      layerEntries(currentRows, adapter).map((entry) => entry.fingerprint),
+      layerEntries(proposedRows, adapter)
+        .filter((entry) => !targets.has(entry.identity))
+        .map((entry) => entry.fingerprint)
+    );
+  }
   const targetId = mutation.targetId;
   if (targetId === null) return false;
   const current = layerEntries(currentRows, adapter);

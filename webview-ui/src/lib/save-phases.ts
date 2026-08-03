@@ -54,6 +54,13 @@ export type SavePhasesMutation =
    * A `create` in every other respect, including the gates it passes.
    */
   | { readonly kind: 'import'; readonly phaseId: string }
+  /**
+   * Feature 085 (FR-043) — the Phase half of a package import: a set of rows
+   * added under ONE intent, each keeping the version its document declared.
+   * A package is not expressible as N `import` saves, because each save writes
+   * the whole layer and gates on a revision the previous save has already moved.
+   */
+  | { readonly kind: 'import-package'; readonly phaseIds: readonly string[] }
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';

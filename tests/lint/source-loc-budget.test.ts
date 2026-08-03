@@ -31,7 +31,15 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // their guards, and the COMMAND_TYPES / SidebarCommand / COMMAND_GUARDS
   // entries the drift test requires be exhaustive. There is nothing left to
   // extract, so admitting a new family costs barrel lines by construction.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 950 },
+  // Feature 085 (T068) — 950 → 960. No new family: the two process-YAML guards
+  // gained bodies, because 085 made the export payload a discriminated union
+  // and emptied the preflight payload, and a guard that ignored either would
+  // admit a shape the wire type forbids. Moving them into
+  // sidebar-ipc/process-yaml.ts was measured first: that module imports the
+  // command literals `import type`, so it erases today, and the guards need
+  // them as runtime values — extraction buys ten barrel lines by creating a
+  // real import cycle where none exists. The ceiling is raised instead.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 960 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the

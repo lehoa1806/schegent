@@ -1,0 +1,16 @@
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: ship-it
+  name: Ship It
+  version: 3
+  description: A phase that does the thing
+spec:
+  instruction: Ship the thing.
+  runner: claude
+  model: opus
+  effort: high
+  timeoutSeconds: 120
+  loopable: true
+  isRequired: false
+  retryCondition: "attempts < 3"

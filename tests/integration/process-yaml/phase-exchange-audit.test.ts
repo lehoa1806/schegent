@@ -143,9 +143,14 @@ function document(body: readonly string[]): string {
 /**
  * A document that clears the version gate and fails the kind gate, so a test
  * using it is pinning `unsupported-kind` and not whichever gate happens to run
- * first. A bare `kind: Pipeline` would refuse as `unsupported-version`.
+ * first. A bare `kind: Deployment` would refuse as `unsupported-version`.
+ *
+ * The kind is foreign on purpose. This was `Pipeline` until feature 085 taught
+ * the handler to read one; a fixture standing for "a kind this build does not
+ * read" must not name a kind Schegent intends to add, or it quietly stops
+ * testing the gate it was written for.
  */
-const REFUSED_DOCUMENT = 'apiVersion: schegent/v1\nkind: Pipeline\n';
+const REFUSED_DOCUMENT = 'apiVersion: schegent/v1\nkind: Deployment\n';
 
 /** A valid document with every planted token in it. */
 const PLANTED_DOCUMENT = document([
@@ -215,7 +220,7 @@ async function preflight(
   const command: PreflightProcessYamlCommand = {
     type: CMD_PREFLIGHT_PROCESS_YAML,
     correlationId: 'audit-test-1',
-    payload: { resourceKind: 'phase' }
+    payload: {}
   };
   await preflightHandler(ctx, command);
   expect(acks).toHaveLength(1);
@@ -291,9 +296,13 @@ function commitCommand(
   scope: WritablePhaseDefinitionScope,
   layer: readonly unknown[]
 ): SavePhasesCommand {
-  const row = plan.rows.find((candidate) => candidate.outcome === 'import');
+  const row = plan.rows.find(
+    (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
+  );
   expect(row?.outcome).toBe('import');
-  if (row?.outcome !== 'import') throw new Error('unreachable');
+  if (row?.outcome !== 'import' || row.resourceKind !== 'phase') {
+    throw new Error('unreachable');
+  }
   const { phaseId, ...declared } = row.definition;
   return {
     type: CMD_SAVE_PHASES,
@@ -480,7 +489,7 @@ describe('Feature 084 — the audit records the operation, not the document (T05
     const cases = [
       { text: '', code: 'empty' },
       { text: 'apiVersion: schegent/v2\nkind: Phase\n', code: 'unsupported-version' },
-      { text: 'apiVersion: schegent/v1\nkind: Pipeline\n', code: 'unsupported-kind' },
+      { text: 'apiVersion: schegent/v1\nkind: Deployment\n', code: 'unsupported-kind' },
       { text: 'apiVersion: schegent/v1\nkind: Phase\nmetadata: &a {}\n', code: 'disallowed-syntax' },
       { text: 'apiVersion: schegent/v1\nkind: Phase\n---\nkind: Phase\n', code: 'multi-document' },
       { text: 'x'.repeat(PHASE_YAML_MAX_BYTES + 1), code: 'too-large' }
@@ -616,7 +625,7 @@ describe('Feature 084 — the document has no say in the target layer (T056, FR-
           '  instruction: Do the thing.'
         ])
       );
-      expect(plan.counts).toEqual({ import: 0, skip: 0, invalid: 1 });
+      expect(plan.counts).toEqual({ import: 0, skip: 0, invalid: 1, blocked: 0 });
       const row = plan.rows[0]!;
       expect(row.outcome).toBe('invalid');
       if (row.outcome !== 'invalid') throw new Error('unreachable');
