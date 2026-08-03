@@ -7,6 +7,7 @@ import {
   CMD_DISABLE_PHASE,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_ENABLE_PHASE,
+  CMD_EXPORT_PROCESS_YAML,
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
@@ -18,6 +19,7 @@ import {
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
   CMD_PING_BACKEND,
+  CMD_PREFLIGHT_PROCESS_YAML,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_READ_WAKEUP_SESSION_LOG,
@@ -60,6 +62,7 @@ import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
 import { handler as disablePhase } from './cmd-disable-phase';
 import { handler as dismissMigrationNotice } from './cmd-dismiss-migration-notice';
 import { handler as enablePhase } from './cmd-enable-phase';
+import { handler as exportProcessYaml } from './cmd-export-process-yaml';
 import { handler as modifyTask } from './cmd-modify-task';
 import { handler as moveQueueItemDown } from './cmd-move-queue-item-down';
 import { handler as moveQueueItemUp } from './cmd-move-queue-item-up';
@@ -71,6 +74,7 @@ import { handler as openVerboseSetting } from './cmd-open-verbose-setting';
 import { handler as pausePhase } from './cmd-pause-phase';
 import { handler as pauseQueue } from './cmd-pause-queue';
 import { handler as pingBackend } from './cmd-ping-backend';
+import { handler as preflightProcessYaml } from './cmd-preflight-process-yaml';
 import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as readWakeupSessionLog } from './cmd-read-wakeup-session-log';
@@ -123,6 +127,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_DISABLE_PHASE, disablePhase as CommandHandler],
   [CMD_DISMISS_MIGRATION_NOTICE, dismissMigrationNotice as CommandHandler],
   [CMD_ENABLE_PHASE, enablePhase as CommandHandler],
+  [CMD_EXPORT_PROCESS_YAML, exportProcessYaml as CommandHandler],
   [CMD_MODIFY_TASK, modifyTask as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_DOWN, moveQueueItemDown as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_UP, moveQueueItemUp as CommandHandler],
@@ -134,6 +139,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_PAUSE_PHASE, pausePhase as CommandHandler],
   [CMD_PAUSE_QUEUE, pauseQueue as CommandHandler],
   [CMD_PING_BACKEND, pingBackend as CommandHandler],
+  [CMD_PREFLIGHT_PROCESS_YAML, preflightProcessYaml as CommandHandler],
   [CMD_READ_METRICS, readMetrics as CommandHandler],
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
   [CMD_READ_WAKEUP_SESSION_LOG, readWakeupSessionLog as CommandHandler],

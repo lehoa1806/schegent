@@ -300,6 +300,61 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
     ).toEqual([]);
   });
 
+  // Feature 084 (T063, QS-40) — the exchange feature deliberately adds nothing
+  // here. FR-018 and FR-044b: the shared gate exists for actions that remove or
+  // replace something the operator holds INSIDE the product. Export writes a
+  // file the operator names in the host's own save dialog, where overwrite
+  // consent already lives; import only appends, and confirming the plan is the
+  // consent. Registering either here would ask twice for one decision and would
+  // teach the gate to fire on non-destructive actions.
+  //
+  // Pinned as a list rather than a count so a swap — one command out, one in —
+  // is as visible as an addition.
+  it('leaves the destructive-command list at the pinned 12 (FR-018, FR-044b, QS-40)', () => {
+    expect(DESTRUCTIVE_COMMANDS).toEqual([
+      'CMD_CLEAR_ALL',
+      'CMD_CLEAR_COMPLETED',
+      'CMD_CLEAR_FAILED',
+      'CMD_REMOVE_QUEUE_ITEM',
+      'CMD_CANCEL',
+      'CMD_PAUSE_QUEUE',
+      'CMD_RESUME_QUEUE',
+      'CMD_RETRY_PHASE_NOW',
+      'CMD_RESTART_CANCELED_TASK',
+      'CMD_MODIFY_TASK',
+      'CMD_RERUN_FROM_HISTORY',
+      'CMD_RESET'
+    ]);
+  });
+
+  it('registers no confirmation action for the exchange commands (FR-018, FR-044b)', () => {
+    const exchangeCommands = ['CMD_EXPORT_PROCESS_YAML', 'CMD_PREFLIGHT_PROCESS_YAML'];
+    for (const command of exchangeCommands) {
+      expect(
+        DESTRUCTIVE_COMMANDS,
+        `${command} must not be gated by the shared destructive-confirmation flow`
+      ).not.toContain(command);
+    }
+
+    // The other half of the same claim: no `ActionKey` describes an exchange, so
+    // there is no copy for a confirmation that should never be asked for.
+    const actionCopy = readFileSync(
+      resolve(REPO_ROOT, 'webview-ui', 'src', 'lib', 'action-copy.ts'),
+      'utf8'
+    );
+    const declaredKeys = [...actionCopy.matchAll(/^ {2}'([a-z]+\.[a-z-]+)':/gm)].map(
+      (match) => match[1]!
+    );
+    expect(declaredKeys.length).toBeGreaterThan(0);
+    const exchangeKeys = declaredKeys.filter((key) =>
+      /export|import|yaml|document/.test(key)
+    );
+    expect(
+      exchangeKeys,
+      `Exchange actions must not register a confirmation action:\n${exchangeKeys.join('\n')}`
+    ).toEqual([]);
+  });
+
   it('every LEGACY_FILES entry has at least one ungated destructive call site (otherwise it should leave the allowlist)', () => {
     const offendersByFile = new Map<string, number>();
     for (const site of allSites) {

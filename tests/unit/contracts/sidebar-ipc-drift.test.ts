@@ -65,7 +65,17 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       // itself optional, so `{}` is the minimal valid payload — a bare
       // envelope with no `payload` key at all is correctly rejected.
       [Authoritative.CMD_READ_METRICS]: {},
-      [Authoritative.CMD_PING_BACKEND]: { runner: 'claude' }
+      [Authoritative.CMD_PING_BACKEND]: { runner: 'claude' },
+      // Feature 084 — both export fields are required: `resourceKind` names
+      // the one kind this exchange format admits, and `resourceId` names what
+      // to resolve from the effective catalog.
+      [Authoritative.CMD_EXPORT_PROCESS_YAML]: {
+        resourceKind: 'phase',
+        resourceId: 'specify'
+      },
+      // Feature 084 — preflight carries the resource kind and nothing else: no
+      // location, no bytes, no scope (FR-020a).
+      [Authoritative.CMD_PREFLIGHT_PROCESS_YAML]: { resourceKind: 'phase' }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];
