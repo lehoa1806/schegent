@@ -19,12 +19,20 @@ import type {
   PreflightProcessYamlResult
 } from '../../lib/messages';
 import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
+import type {
+  SavePipelineRow,
+  SavePipelinesRequest,
+  SavePipelinesResult
+} from '../../lib/save-pipelines';
 import { refusalHeadline } from '../ProcessImport/process-import-state';
-import type { ImportedPhaseDefinition } from '../ProcessImport/process-import-state';
+import type {
+  ImportedPhaseDefinition,
+  ImportTargetLayers
+} from '../ProcessImport/process-import-state';
 
-const preflightSpy = vi.fn<(kind: string) => Promise<PreflightProcessYamlResult>>();
+const preflightSpy = vi.fn<() => Promise<PreflightProcessYamlResult>>();
 vi.mock('../../lib/process-yaml-ipc', () => ({
-  preflightProcessYaml: (kind: string) => preflightSpy(kind)
+  preflightProcessYaml: () => preflightSpy()
 }));
 
 // The commit goes through the shared savePhases helper — import adds no mutating
@@ -35,10 +43,22 @@ vi.mock('../../lib/save-phases', () => ({
   savePhases: (request: SavePhasesRequest) => saveSpy(request)
 }));
 
+// Feature 085 T048 — the Pipeline half of a package commit goes through the
+// Pipeline catalog's own shared helper, for the same reason: one write per layer,
+// each carrying its own expected revision and its own single intent (FR-043).
+const savePipelinesSpy = vi.fn<(request: SavePipelinesRequest) => Promise<SavePipelinesResult>>();
+vi.mock('../../lib/save-pipelines', () => ({
+  savePipelines: (request: SavePipelinesRequest) => savePipelinesSpy(request)
+}));
+
 // Late import so the component binds to the mocked call sites above.
 import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
 
 const REVISIONS = Object.freeze({ user: 'user-rev-1', workspace: 'workspace-rev-1' });
+const PIPELINE_REVISIONS = Object.freeze({
+  user: 'user-pipe-rev-1',
+  workspace: 'workspace-pipe-rev-1'
+});
 
 function plan(rows: readonly ImportPlanRow[]): ImportPlan {
   return {
@@ -46,10 +66,16 @@ function plan(rows: readonly ImportPlanRow[]): ImportPlan {
     counts: {
       import: rows.filter((row) => row.outcome === 'import').length,
       skip: rows.filter((row) => row.outcome === 'skip').length,
+      blocked: rows.filter((row) => row.outcome === 'blocked').length,
       invalid: rows.filter((row) => row.outcome === 'invalid').length
     },
     computedAgainstRevision: REVISIONS
   };
+}
+
+/** A plan whose Pipeline half can be written: it carries the Pipeline revision. */
+function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
+  return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISIONS };
 }
 
 /**
@@ -63,6 +89,7 @@ function importRow(
 ): ImportPlanRow {
   return {
     outcome: 'import',
+    resourceKind: 'phase',
     resourceId: definition.phaseId,
     name: definition.name,
     requiresRetryConditionCapability,
@@ -97,6 +124,8 @@ beforeEach(() => {
   preflightSpy.mockReset();
   saveSpy.mockReset();
   saveSpy.mockResolvedValue({ status: 'accepted' });
+  savePipelinesSpy.mockReset();
+  savePipelinesSpy.mockResolvedValue({ status: 'accepted' });
 });
 
 afterEach(cleanup);
@@ -140,12 +169,16 @@ describe('Feature 084 T036 — import preflight states', () => {
     expect((getByTestId('process-import-inspect') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('requests the phase kind and nothing else', async () => {
+  it('requests nothing — not a location, and as of 085 not a kind either', async () => {
     preflightSpy.mockResolvedValue({ outcome: 'planned', plan: plan([]) });
     const { getByTestId } = render(ProcessImportPreflight);
     await inspect(getByTestId);
     expect(preflightSpy).toHaveBeenCalledTimes(1);
-    expect(preflightSpy).toHaveBeenCalledWith('phase');
+    // Feature 085 research R8 — the document declares its own `kind` and
+    // preflight dispatches on that (FR-055a). A kind on the request would be a
+    // second, unauthoritative claim about what the file is, and the only thing
+    // it could do is disagree with the file.
+    expect(preflightSpy).toHaveBeenCalledWith();
   });
 
   it('renders a document-level refusal with its code and message, and no plan', async () => {
@@ -173,6 +206,7 @@ describe('Feature 084 T036 — import preflight states', () => {
     'unsupported-kind',
     'disallowed-syntax',
     'multi-document',
+    'duplicate-id',
     'empty'
   ];
 
@@ -258,6 +292,7 @@ describe('Feature 084 T036 — import preflight states', () => {
         ),
         {
           outcome: 'skip',
+          resourceKind: 'phase',
           resourceId: 'specify',
           name: 'Specify',
           presentIn: 'user',
@@ -265,6 +300,7 @@ describe('Feature 084 T036 — import preflight states', () => {
         },
         {
           outcome: 'invalid',
+          resourceKind: 'phase',
           resourceId: null,
           defects: [{ field: 'version', code: 'positive-integer-required', message: 'Saw "soon".' }],
           totalDefects: 1
@@ -310,6 +346,7 @@ describe('Feature 084 T036 — import preflight states', () => {
       plan: plan([
         {
           outcome: 'invalid',
+          resourceKind: 'phase',
           resourceId: 'over-cap',
           defects: Array.from({ length: 20 }, (_unused, index) => ({
             field: `field-${index}`,
@@ -338,6 +375,7 @@ describe('Feature 084 T036 — import preflight states', () => {
       plan: plan([
         {
           outcome: 'invalid',
+          resourceKind: 'phase',
           resourceId: hostile,
           defects: [{ field: hostile, code: 'unknown-key', message: hostile }],
           totalDefects: 1
@@ -398,7 +436,10 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     instruction: 'Do the thing.'
   };
   const HELD: SavePhaseRow = { id: 'held', name: 'Held', version: 4, instruction: 'Hold.' };
-  const LAYERS = Object.freeze({ user: [HELD], workspace: [] as readonly SavePhaseRow[] });
+  const LAYERS = Object.freeze({
+    user: { phases: [HELD], pipelines: [] as readonly SavePipelineRow[] },
+    workspace: { phases: [] as readonly SavePhaseRow[], pipelines: [] as readonly SavePipelineRow[] }
+  });
 
   function importable(): PreflightProcessYamlResult {
     return { outcome: 'planned', plan: plan([importRow(DEFINITION)]) };
@@ -434,7 +475,14 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
       plan: plan([
-        { outcome: 'skip', resourceId: 'specify', name: 'Specify', presentIn: 'user', presentRowStatus: 'effective' }
+        {
+          outcome: 'skip',
+          resourceKind: 'phase',
+          resourceId: 'specify',
+          name: 'Specify',
+          presentIn: 'user',
+          presentRowStatus: 'effective'
+        }
       ])
     });
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -473,10 +521,15 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
       // FR-038 — the revision the PLAN was computed against for that scope, so a
       // layer written since the preflight refuses as stale.
       expectedRevision: 'user-rev-1',
+      // The single-Phase standalone document keeps `import`, which the host reads
+      // differently from `import-package` when it refuses a stale save.
       mutation: { kind: 'import', phaseId: 'brought-in' },
       // The layer is carried across and the declared version is sent as authored.
       phases: [HELD, { id: 'brought-in', name: 'Brought In', version: 7, instruction: 'Do the thing.' }]
     });
+    // No Pipeline row in the plan, so no Pipeline write — a layer nobody asked to
+    // change must not be rewritten on its way past.
+    expect(savePipelinesSpy).not.toHaveBeenCalled();
   });
 
   it('gates on the chosen scope, not the one the plan was listed under', async () => {
@@ -499,7 +552,14 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
       outcome: 'planned',
       plan: plan([
         importRow(DEFINITION),
-        { outcome: 'skip', resourceId: 'specify', name: 'Specify', presentIn: 'user', presentRowStatus: 'effective' }
+        {
+          outcome: 'skip',
+          resourceKind: 'phase',
+          resourceId: 'specify',
+          name: 'Specify',
+          presentIn: 'user',
+          presentRowStatus: 'effective'
+        }
       ])
     });
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -587,8 +647,8 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     instruction: 'Do the thing.'
   };
   const LAYERS = Object.freeze({
-    user: [] as readonly SavePhaseRow[],
-    workspace: [] as readonly SavePhaseRow[]
+    user: { phases: [], pipelines: [] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
   });
 
   function importable(): PreflightProcessYamlResult {
@@ -691,5 +751,400 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
     expect(getByTestId('process-import-confirm').getAttribute('aria-describedby')).toBeNull();
     expect(getByTestId('process-import-scope').getAttribute('aria-describedby')).toBeNull();
+  });
+});
+
+// Feature 085 T034 — the same surface, handed a document it did not ask to
+// classify (FR-055a). What changes here is what it must SAY: a kind per row
+// (FR-056), counts that add up now that `blocked` is reachable (FR-028), what
+// confirming writes and where (FR-058), and an honest closed state when the plan
+// needs a write this commit does not yet perform (FR-057).
+//
+// The wording itself is pinned in process-import-state.test.ts. These assert the
+// component is wired to it — that the kind shown is the ROW's and not the
+// document's, and that the statement re-reads the scope when the operator picks
+// one.
+describe('Feature 085 T034 — a package in the plan', () => {
+  const DEFINITION: ImportedPhaseDefinition = {
+    phaseId: 'specify',
+    name: 'Specify',
+    version: 2,
+    instruction: 'Write the spec.'
+  };
+
+  const PIPELINE_ROW: ImportPlanRow = {
+    outcome: 'import',
+    resourceKind: 'pipeline',
+    resourceId: 'ship-it',
+    name: 'Ship It',
+    definition: {
+      pipelineId: 'ship-it',
+      name: 'Ship It',
+      version: 1,
+      phaseIds: ['specify'],
+      inputs: [],
+      outputs: [],
+      bindings: [],
+      recommendedNext: []
+    }
+  };
+
+  const HELD_PIPELINE: SavePipelineRow = {
+    id: 'held-pipeline',
+    name: 'Held Pipeline',
+    version: 2,
+    phases: ['specify']
+  };
+  const LAYERS = Object.freeze({
+    user: { phases: [], pipelines: [HELD_PIPELINE] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
+  });
+
+  it('labels each row with the kind that row declares, not the document (FR-056)', async () => {
+    preflightSpy.mockResolvedValue({
+      outcome: 'planned',
+      plan: plan([
+        importRow(DEFINITION),
+        PIPELINE_ROW,
+        {
+          outcome: 'blocked',
+          resourceKind: 'pipeline',
+          resourceId: 'deploy-it',
+          name: 'Deploy It',
+          reason: { code: 'dependency-absent', phaseId: 'finalize' }
+        }
+      ])
+    });
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+
+    const kinds = Array.from(
+      container.querySelectorAll('[data-testid="process-import-row-kind"]')
+    ).map((cell) => cell.textContent?.trim());
+    expect(kinds).toEqual(['Phase', 'Pipeline', 'Pipeline']);
+
+    // The machine-readable form travels with it, so a stylesheet or a later
+    // assertion never has to re-derive the kind from the label.
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-plan-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'pipeline', 'pipeline']);
+
+    // FR-033's distinction survives the trip: the blocked Pipeline names the
+    // Phase it needs, which is the thing importing something else would fix.
+    expect(rows[2]?.textContent).toContain('Blocked');
+    expect(rows[2]?.textContent).toContain('finalize');
+  });
+
+  it('states every count, so the four add up to the rows shown (FR-028)', async () => {
+    preflightSpy.mockResolvedValue({
+      outcome: 'planned',
+      plan: plan([
+        importRow(DEFINITION),
+        {
+          outcome: 'skip',
+          resourceKind: 'pipeline',
+          resourceId: 'ship-it',
+          name: 'Ship It',
+          presentIn: 'workspace',
+          presentRowStatus: 'effective'
+        },
+        {
+          outcome: 'blocked',
+          resourceKind: 'pipeline',
+          resourceId: 'deploy-it',
+          name: 'Deploy It',
+          reason: { code: 'dependency-unresolvable', phaseId: 'finalize' }
+        },
+        {
+          outcome: 'invalid',
+          resourceKind: 'pipeline',
+          resourceId: 'broken',
+          defects: [{ field: 'phases', code: 'non-empty-list-required', message: 'Saw none.' }],
+          totalDefects: 1
+        }
+      ])
+    });
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+
+    // `blocked` was unreachable before the package resolver, so omitting it used
+    // to be invisible. On this plan a missing count shows totals that do not sum
+    // to the four rows on screen.
+    const counts = getByTestId('process-import-counts').textContent ?? '';
+    expect(counts).toContain('1 to import');
+    expect(counts).toContain('1 skipped');
+    expect(counts).toContain('1 blocked');
+    expect(counts).toContain('1 invalid');
+    expect(container.querySelectorAll('[data-testid="process-import-plan-row"]')).toHaveLength(4);
+  });
+
+  it('says what confirming writes, and names the scope once one is chosen (FR-058)', async () => {
+    preflightSpy.mockResolvedValue({
+      outcome: 'planned',
+      plan: plan([
+        importRow(DEFINITION),
+        {
+          outcome: 'skip',
+          resourceKind: 'phase',
+          resourceId: 'plan',
+          name: 'Plan',
+          presentIn: 'user',
+          presentRowStatus: 'effective'
+        }
+      ])
+    });
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+
+    // Before a scope is chosen the statement is still true and still says what
+    // is excluded — it just cannot name a layer, and must not invent one.
+    const before = getByTestId('process-import-commit-statement').textContent ?? '';
+    expect(before).toContain('1 resource');
+    expect(before).toContain('the scope you choose');
+    expect(before).toContain('The other row is left unchanged.');
+    expect(before).not.toContain('workspace');
+
+    await chooseScope(getByTestId, 'workspace');
+
+    const after = getByTestId('process-import-commit-statement').textContent ?? '';
+    expect(after).toContain('the workspace layer');
+    expect(after).toContain('nothing else');
+  });
+
+  it('stops describing a pending write once the write has happened', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: plan([importRow(DEFINITION)]) });
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    // A sentence in the future tense left standing next to the results reads as
+    // a second, pending write.
+    expect(getByTestId('process-import-results')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="process-import-commit-statement"]')
+    ).toBeNull();
+  });
+
+  it('holds confirmation closed when the plan carries no Pipeline revision to gate on (FR-057)', async () => {
+    // `plan()` — not `packagePlan()`: a Pipeline row with no
+    // `computedAgainstPipelineRevision` has nothing for its write to check
+    // against. Both rows are eligible, so this is NOT "nothing to import"; the
+    // surface must say what is actually missing rather than letting Confirm write
+    // the Phase and drop the Pipeline silently.
+    preflightSpy.mockResolvedValue({
+      outcome: 'planned',
+      plan: plan([importRow(DEFINITION), PIPELINE_ROW])
+    });
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+
+    expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
+    const reason = getByTestId('process-import-confirm-blocked').textContent ?? '';
+    expect(reason).toContain('Pipeline catalog revision');
+    expect(reason).not.toContain('nothing to import');
+
+    await confirm(getByTestId);
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(savePipelinesSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Feature 085 T048/T049 — what a confirmed PACKAGE does: two ordered writes into
+// one chosen scope, each gated on its own layer's revision and carrying exactly
+// one intent (FR-036, FR-038, FR-043), and a three-valued outcome reported with
+// no compensating action (FR-042a, FR-042c).
+describe('Feature 085 T048/T049 — the confirmed package write', () => {
+  const PHASE: ImportedPhaseDefinition = {
+    phaseId: 'specify',
+    name: 'Specify',
+    version: 2,
+    instruction: 'Write the spec.'
+  };
+  const SECOND_PHASE: ImportedPhaseDefinition = {
+    phaseId: 'plan',
+    name: 'Plan',
+    version: 1,
+    instruction: 'Plan the work.'
+  };
+  const PIPELINE_ROW: ImportPlanRow = {
+    outcome: 'import',
+    resourceKind: 'pipeline',
+    resourceId: 'ship-it',
+    name: 'Ship It',
+    definition: {
+      pipelineId: 'ship-it',
+      name: 'Ship It',
+      version: 1,
+      phaseIds: ['specify'],
+      inputs: [],
+      outputs: [],
+      bindings: [],
+      recommendedNext: []
+    }
+  };
+  const HELD_PHASE: SavePhaseRow = { id: 'held', name: 'Held', version: 4, instruction: 'Hold.' };
+  const HELD_PIPELINE: SavePipelineRow = {
+    id: 'held-pipeline',
+    name: 'Held Pipeline',
+    version: 2,
+    phases: ['specify']
+  };
+  const LAYERS = Object.freeze({
+    user: { phases: [HELD_PHASE], pipelines: [HELD_PIPELINE] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
+  });
+
+  function packageResult(): PreflightProcessYamlResult {
+    return {
+      outcome: 'planned',
+      plan: packagePlan([importRow(PHASE), importRow(SECOND_PHASE), PIPELINE_ROW])
+    };
+  }
+
+  it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
+    const order: string[] = [];
+    saveSpy.mockImplementation(async () => {
+      order.push('phases');
+      return { status: 'accepted' };
+    });
+    savePipelinesSpy.mockImplementation(async () => {
+      order.push('pipelines');
+      return { status: 'accepted' };
+    });
+    preflightSpy.mockResolvedValue(packageResult());
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    // A Pipeline written first would reference Phases the catalog does not hold.
+    expect(order).toEqual(['phases', 'pipelines']);
+  });
+
+  it('gates each layer on its OWN revision and declares one intent per write (FR-043)', async () => {
+    preflightSpy.mockResolvedValue(packageResult());
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(saveSpy.mock.calls[0][0]).toEqual({
+      scope: 'user',
+      expectedRevision: 'user-rev-1',
+      // Two Phases under one intent — a package is not N `import` saves, because
+      // each save writes the whole layer and moves the revision the next would
+      // have gated on.
+      mutation: { kind: 'import-package', phaseIds: ['specify', 'plan'] },
+      phases: [
+        HELD_PHASE,
+        { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
+        { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
+      ]
+    });
+
+    expect(savePipelinesSpy).toHaveBeenCalledTimes(1);
+    expect(savePipelinesSpy.mock.calls[0][0]).toEqual({
+      scope: 'user',
+      // The Pipeline catalog's revision, not the Phase catalog's — they move
+      // independently, and cross-wiring them would gate on the wrong write.
+      expectedRevision: 'user-pipe-rev-1',
+      mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
+      pipelines: [
+        HELD_PIPELINE,
+        { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'], inputs: [], outputs: [], bindings: [], recommendedNext: [] }
+      ]
+    });
+  });
+
+  it('writes both layers into the one scope the operator chose (FR-036)', async () => {
+    preflightSpy.mockResolvedValue(packageResult());
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'workspace');
+    await confirm(getByTestId);
+
+    expect(saveSpy.mock.calls[0][0]).toMatchObject({
+      scope: 'workspace',
+      expectedRevision: 'workspace-rev-1'
+    });
+    expect(savePipelinesSpy.mock.calls[0][0]).toMatchObject({
+      scope: 'workspace',
+      expectedRevision: 'workspace-pipe-rev-1'
+    });
+    // The workspace layer held nothing, so each write is exactly its imports.
+    expect(saveSpy.mock.calls[0][0].phases.map((row) => row.id)).toEqual(['specify', 'plan']);
+    expect(savePipelinesSpy.mock.calls[0][0].pipelines.map((row) => row.id)).toEqual(['ship-it']);
+  });
+
+  it('reports every row imported when both layers are accepted', async () => {
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-result-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['outcome'])).toEqual(['imported', 'imported', 'imported']);
+    const outcome = getByTestId('process-import-outcome');
+    expect(outcome.dataset['outcome']).toBe('imported');
+    expect(outcome.textContent).toContain('user');
+  });
+
+  it('reports the partial outcome exactly, and offers no undo (FR-042a, FR-042c)', async () => {
+    savePipelinesSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    // The Phase write landed and the Pipeline write did not. Each row reports its
+    // OWN layer's fate — collapsing them to one verdict would either claim an
+    // unwritten Pipeline or disown two written Phases.
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-result-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['outcome'])).toEqual(['imported', 'imported', 'failed']);
+    expect(rows[2].textContent).toContain('stale-catalog');
+
+    const outcome = getByTestId('process-import-outcome');
+    expect(outcome.dataset['outcome']).toBe('partial');
+    // FR-042c — nothing is rolled back, and no control is offered that would.
+    expect(container.querySelector('[data-testid="process-import-undo"]')).toBeNull();
+    // FR-042b — the recovery named is re-running the same document, which skips
+    // what is already there.
+    expect(outcome.textContent).toContain('again');
+  });
+
+  it('does not send the Pipeline write when the Phase write is rejected', async () => {
+    saveSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await chooseScope(getByTestId, 'user');
+    await confirm(getByTestId);
+
+    // A Pipeline whose Phases were never written would reference absent rows.
+    expect(savePipelinesSpy).not.toHaveBeenCalled();
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-result-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['outcome'])).toEqual(['failed', 'failed', 'failed']);
+    // The Pipeline row was never attempted, so it must not borrow the Phase
+    // layer's reason and send the operator to fix the wrong thing.
+    expect(rows[2].textContent).toContain('stopped before this layer');
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
   });
 });

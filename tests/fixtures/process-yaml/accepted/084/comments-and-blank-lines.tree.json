@@ -1,0 +1,36 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "kind",
+      "value": {
+        "kind": "scalar",
+        "value": "Phase",
+        "quoted": false,
+        "line": 3
+      },
+      "line": 3
+    },
+    {
+      "key": "metadata",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "name",
+            "value": {
+              "kind": "scalar",
+              "value": "A",
+              "quoted": false,
+              "line": 7
+            },
+            "line": 7
+          }
+        ],
+        "line": 7
+      },
+      "line": 5
+    }
+  ],
+  "line": 3
+}

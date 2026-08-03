@@ -6,7 +6,10 @@
 // target layer that silently rewrites a row the import never mentioned.
 
 import { describe, expect, it } from 'vitest';
-import type { PhaseCatalogSourceRecord } from '../../lib/snapshot-types';
+import type {
+  PhaseCatalogSourceRecord,
+  PipelineCatalogSourceRecord
+} from '../../lib/snapshot-types';
 import {
   importDisabledReason,
   phaseExportAvailability,
@@ -25,6 +28,32 @@ function record(overrides: Partial<PhaseCatalogSourceRecord> = {}): PhaseCatalog
     ...overrides
   };
 }
+
+function pipelineRecord(
+  overrides: Partial<PipelineCatalogSourceRecord> = {}
+): PipelineCatalogSourceRecord {
+  return {
+    key: 'user:ship-it',
+    pipelineId: 'ship-it',
+    scope: 'user',
+    status: 'effective',
+    definition: {
+      pipelineId: 'ship-it',
+      name: 'Ship It',
+      version: 1,
+      phaseIds: ['specify'],
+      inputs: [],
+      outputs: [],
+      bindings: [],
+      recommendedNext: []
+    },
+    display: { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'] },
+    errors: [],
+    ...overrides
+  };
+}
+
+const EMPTY_LAYERS = { phases: [], pipelines: [] };
 
 describe('Feature 084 — which rows can be exported (T066, FR-052, FR-015)', () => {
   it('offers an effective row', () => {
@@ -102,7 +131,7 @@ describe('Feature 084 — when an import can be started (T066, FR-053, FR-057)',
   });
 });
 
-describe('Feature 084 — the layers an import appends to (T066, FR-037)', () => {
+describe('Feature 084/085 — the layers an import appends to (T066/T048, FR-037, FR-043)', () => {
   it('carries only the addressed scope into each layer', () => {
     const layers = storedWritableLayers([
       record({ key: 'user:a', phaseId: 'a', scope: 'user', display: { id: 'a', version: 1 } }),
@@ -113,15 +142,16 @@ describe('Feature 084 — the layers an import appends to (T066, FR-037)', () =>
         display: { id: 'b', version: 1 }
       })
     ]);
-    expect(layers.user.map((row) => row.id)).toEqual(['a']);
-    expect(layers.workspace.map((row) => row.id)).toEqual(['b']);
+    expect(layers.user.phases.map((row) => row.id)).toEqual(['a']);
+    expect(layers.workspace.phases.map((row) => row.id)).toEqual(['b']);
   });
 
   it('leaves out the built-in scope, which no save can write', () => {
-    const layers = storedWritableLayers([
-      record({ key: 'built-in:specify', scope: 'built-in', display: { id: 'specify', version: 1 } })
-    ]);
-    expect(layers).toEqual({ user: [], workspace: [] });
+    const layers = storedWritableLayers(
+      [record({ key: 'built-in:specify', scope: 'built-in', display: { id: 'specify', version: 1 } })],
+      [pipelineRecord({ key: 'built-in:ship-it', scope: 'built-in' })]
+    );
+    expect(layers).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
   });
 
   it('carries rows of every status, in catalog order — the layer is the stored array', () => {
@@ -131,7 +161,7 @@ describe('Feature 084 — the layers an import appends to (T066, FR-037)', () =>
       record({ key: 'user:two', phaseId: 'two', status: 'invalid', display: { id: 'two' } }),
       record({ key: 'user:three', phaseId: 'three', status: 'effective', display: { id: 'three' } })
     ]);
-    expect(layers.user.map((row) => row.id)).toEqual(['one', 'two', 'three']);
+    expect(layers.user.phases.map((row) => row.id)).toEqual(['one', 'two', 'three']);
   });
 
   it('passes a broken row through as authored rather than repairing it', () => {
@@ -150,10 +180,10 @@ describe('Feature 084 — the layers an import appends to (T066, FR-037)', () =>
         errors: [{ field: 'name', code: 'missing', message: 'name is required' }]
       })
     ]);
-    expect(layers.user).toHaveLength(1);
-    expect(layers.user[0]).toEqual({ id: 'broken', instruction: 'Half-written.' });
-    expect(layers.user[0]).not.toHaveProperty('name');
-    expect(layers.user[0]).not.toHaveProperty('version');
+    expect(layers.user.phases).toHaveLength(1);
+    expect(layers.user.phases[0]).toEqual({ id: 'broken', instruction: 'Half-written.' });
+    expect(layers.user.phases[0]).not.toHaveProperty('name');
+    expect(layers.user.phases[0]).not.toHaveProperty('version');
   });
 
   it('keeps the identity key under the name the row authored', () => {
@@ -163,16 +193,74 @@ describe('Feature 084 — the layers an import appends to (T066, FR-037)', () =>
     const layers = storedWritableLayers([
       record({ key: 'user:aliased', display: { phaseId: 'aliased', name: 'Aliased', version: 3 } })
     ]);
-    expect(layers.user[0]).toEqual({ phaseId: 'aliased', name: 'Aliased', version: 3 });
+    expect(layers.user.phases[0]).toEqual({ phaseId: 'aliased', name: 'Aliased', version: 3 });
   });
 
   it('copies each row rather than aliasing the projection', () => {
     const source = record({ display: { id: 'specify', version: 1 } });
-    const layers = storedWritableLayers([source]);
-    expect(layers.user[0]).not.toBe(source.display);
+    const pipelineSource = pipelineRecord();
+    const layers = storedWritableLayers([source], [pipelineSource]);
+    expect(layers.user.phases[0]).not.toBe(source.display);
+    expect(layers.user.pipelines[0]).not.toBe(pipelineSource.display);
   });
 
-  it('yields two empty layers for an empty catalog', () => {
-    expect(storedWritableLayers([])).toEqual({ user: [], workspace: [] });
+  it('yields two empty pairs for an empty catalog', () => {
+    expect(storedWritableLayers([], [])).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
+  });
+
+  // Feature 085 T048 — the Pipeline half. A confirmed package writes both layers,
+  // and each write sends its whole layer, so the Pipeline catalog has to be read
+  // exactly as the Phase catalog is: stored rows, every status, per scope.
+  it('carries the stored Pipeline rows of the addressed scope, every status, in order', () => {
+    const layers = storedWritableLayers(
+      [],
+      [
+        pipelineRecord({ key: 'user:one', pipelineId: 'one', status: 'shadowed', display: { id: 'one' } }),
+        pipelineRecord({ key: 'user:two', pipelineId: 'two', status: 'invalid', display: { id: 'two' } }),
+        pipelineRecord({
+          key: 'workspace:three',
+          pipelineId: 'three',
+          scope: 'workspace',
+          display: { id: 'three' }
+        })
+      ]
+    );
+    expect(layers.user.pipelines.map((row) => row.id)).toEqual(['one', 'two']);
+    expect(layers.workspace.pipelines.map((row) => row.id)).toEqual(['three']);
+  });
+
+  it('passes a broken Pipeline row through as authored rather than repairing it', () => {
+    const layers = storedWritableLayers(
+      [],
+      [
+        pipelineRecord({
+          key: 'user:broken',
+          pipelineId: 'broken',
+          status: 'invalid',
+          definition: null,
+          display: { id: 'broken', phases: ['specify'] },
+          errors: [{ field: 'name', code: 'missing', message: 'name is required' }]
+        })
+      ]
+    );
+    expect(layers.user.pipelines[0]).toEqual({ id: 'broken', phases: ['specify'] });
+    expect(layers.user.pipelines[0]).not.toHaveProperty('version');
+  });
+
+  it('keeps each catalog on its own side of the pair', () => {
+    // The pair is what one commit consumes; crossing them would send Phases to
+    // the Pipeline save and vice versa, and each host validator would refuse a
+    // row the operator never authored.
+    const layers = storedWritableLayers([record()], [pipelineRecord()]);
+    expect(layers.user.phases.map((row) => row.id)).toEqual(['specify']);
+    expect(layers.user.pipelines.map((row) => row.id)).toEqual(['ship-it']);
+  });
+
+  it('treats an absent Pipeline catalog as an empty Pipeline layer, not an absent pair', () => {
+    // A host that has not sent the Pipeline projection yet must not make the
+    // Phase half unavailable — the Phase-only import still has to work.
+    const layers = storedWritableLayers([record()]);
+    expect(layers.user.pipelines).toEqual([]);
+    expect(layers.user.phases).toHaveLength(1);
   });
 });

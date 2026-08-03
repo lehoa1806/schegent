@@ -1,0 +1,8 @@
+bindings:
+  - kind: input
+    phaseIndex: 1
+    inputKey: spec
+    source:
+      from: phase-output
+      phaseIndex: 0
+      portId: spec-document

@@ -76,6 +76,15 @@ export type PhaseCatalogMutation =
    * a save to dictate. Every other row still echoes its current version.
    */
   | { readonly kind: 'import'; readonly phaseId: string }
+  /**
+   * Feature 085 (FR-036, FR-044) — the Phase half of one confirmed package
+   * import. One write appends every eligible Phase at once, so the intent names
+   * the whole set: a per-row `import` would make a multi-resource document N
+   * writes with N revision gates, and a failure part-way through would leave the
+   * layer in a state no single intent describes. Every named id keeps the
+   * version its document declared, exactly as the single-Phase `import` does.
+   */
+  | { readonly kind: 'import-package'; readonly phaseIds: readonly string[] }
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';

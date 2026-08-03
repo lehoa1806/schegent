@@ -1,0 +1,8 @@
+# leading comment
+
+kind: Phase
+
+metadata:
+  # an indented comment
+  name: A
+

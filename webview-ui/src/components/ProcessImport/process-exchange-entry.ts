@@ -9,9 +9,12 @@
 
 import type {
   PhaseCatalogSourceRecord,
+  PipelineCatalogSourceRecord,
   WritablePhaseDefinitionScope
 } from '../../lib/snapshot-types';
 import type { SavePhaseRow } from '../../lib/save-phases';
+import type { SavePipelineRow } from '../../lib/save-pipelines';
+import type { ImportTargetLayers } from './process-import-state';
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */
 export interface ExportableRow {
@@ -72,10 +75,18 @@ export interface ImportEntryGate {
  * write that silently excludes the edit they are in the middle of making. The
  * existing catalog toolbar already holds Add, Undo, and Redo closed for the same
  * reason: one declared mutation at a time.
+ *
+ * Feature 085 T035 — this gates the SINGLE import entry point (FR-055a), which
+ * now opens documents of either kind. Only the trust sentence changed: the
+ * document is not classified before it is read, so naming the kind there would
+ * be a claim about a file nobody has opened yet. The other two still name the
+ * Phase catalog because that is literally what they observe — a Phase save, a
+ * Phase draft — and generalizing their wording would describe a condition this
+ * gate is not being told about.
  */
 export function importDisabledReason(gate: ImportEntryGate): string | null {
   if (!gate.trusted) {
-    return 'This workspace is not trusted, so an imported Phase could not be saved.';
+    return 'This workspace is not trusted, so an imported resource could not be saved.';
   }
   if (gate.savePending) return 'A Phase save is still in progress.';
   if (gate.mutationActive) {
@@ -85,7 +96,8 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
 }
 
 /**
- * The two writable layers as they are STORED, for the commit to append to.
+ * Both writable catalogs, per writable scope, as they are STORED — what the
+ * commit appends to.
  *
  * Taken from each record's `display` — the host's bounded projection of the row
  * as authored — and not rebuilt from the parsed definition. The difference only
@@ -98,17 +110,31 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
  *
  * Rows of every status are carried, in catalog order, because the layer is the
  * stored array — dropping one would delete it (FR-025).
+ *
+ * Feature 085 T048 — the Pipeline catalog is read the same way and for the same
+ * reason: a confirmed package writes both layers, and each write sends its whole
+ * layer. Two record lists rather than one call per catalog, because the pair is
+ * what a single commit consumes; splitting them would make it possible to supply
+ * one and forget the other.
  */
 export function storedWritableLayers(
-  records: readonly PhaseCatalogSourceRecord[]
-): Readonly<Record<WritablePhaseDefinitionScope, readonly SavePhaseRow[]>> {
-  const layerFor = (scope: WritablePhaseDefinitionScope): readonly SavePhaseRow[] =>
-    records
+  phaseRecords: readonly PhaseCatalogSourceRecord[],
+  pipelineRecords: readonly PipelineCatalogSourceRecord[] = []
+): Readonly<Record<WritablePhaseDefinitionScope, ImportTargetLayers>> {
+  // `display` carries the identity key under whichever name the row used, so the
+  // spread is the whole row. The assertion is the boundary this module owns: the
+  // host re-validates every row it is handed, and a row that does not satisfy the
+  // shape is precisely one it must keep refusing.
+  const phasesFor = (scope: WritablePhaseDefinitionScope): readonly SavePhaseRow[] =>
+    phaseRecords
       .filter((record) => record.scope === scope)
-      // `display` carries the identity key under whichever name the row used, so
-      // the spread is the whole row. The assertion is the boundary this module
-      // owns: the host re-validates every row it is handed, and a row that does
-      // not satisfy the shape is precisely one it must keep refusing.
       .map((record) => ({ ...record.display }) as unknown as SavePhaseRow);
-  return { user: layerFor('user'), workspace: layerFor('workspace') };
+  const pipelinesFor = (scope: WritablePhaseDefinitionScope): readonly SavePipelineRow[] =>
+    pipelineRecords
+      .filter((record) => record.scope === scope)
+      .map((record) => ({ ...record.display }) as unknown as SavePipelineRow);
+  return {
+    user: { phases: phasesFor('user'), pipelines: pipelinesFor('user') },
+    workspace: { phases: phasesFor('workspace'), pipelines: pipelinesFor('workspace') }
+  };
 }

@@ -91,7 +91,7 @@ function buildHarness(layers: Layers, documentText: string): Harness {
 const COMMAND: PreflightProcessYamlCommand = {
   type: CMD_PREFLIGHT_PROCESS_YAML,
   correlationId: 'import-skip-1',
-  payload: { resourceKind: 'phase' }
+  payload: {}
 };
 
 /**
@@ -209,13 +209,14 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
       expect(result.plan.rows).toEqual([
         {
           outcome: 'skip',
+          resourceKind: 'phase',
           resourceId: testCase.phaseId,
           name: 'Incoming Definition',
           presentIn: testCase.presentIn,
           presentRowStatus: testCase.presentRowStatus
         }
       ]);
-      expect(result.plan.counts).toEqual({ import: 0, skip: 1, invalid: 0 });
+      expect(result.plan.counts).toEqual({ import: 0, skip: 1, invalid: 0, blocked: 0 });
 
       // T045 — the layer, byte for byte, either side of the call.
       expect(JSON.stringify(testCase.layers.user)).toBe(before.user);

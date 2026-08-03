@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "'|-' is the only block scalar form this format admits (line 1)"
+}

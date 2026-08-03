@@ -14,6 +14,7 @@
     WorkflowSnapshot,
     WritablePipelineDefinitionScope
   } from '../../lib/snapshot-types';
+  import { exportPipelineYaml } from '../../lib/process-yaml-ipc';
   import TrustBanner from '../TrustBanner.svelte';
   import PipelineFieldErrors from './PipelineFieldErrors.svelte';
   import PipelinePortsEditor from './PipelinePortsEditor.svelte';
@@ -239,6 +240,68 @@
     );
     return record?.consumingWorkflowIds ?? [];
   }
+
+  /**
+   * Feature 085 T022 (FR-011, FR-055) — why the selected Pipeline cannot be
+   * exported, or `null` when it can.
+   *
+   * Export reads the catalog the host holds, so a draft that has never been
+   * saved names nothing to read; that is the one condition this surface can
+   * decide on its own, and it is stated rather than merely applied.
+   *
+   * Deliberately NOT gated on `sourceStatus`. A references-only document carries
+   * Phase identifiers and no Phase definitions, so a Pipeline whose referenced
+   * Phases are missing from every layer is still exportable with its sequence
+   * intact (FR-018) — refusing it here would break the exact case that
+   * requirement exists for. Whether a row resolves is the host's decision,
+   * because only the host can tell a missing reference from a structural defect.
+   */
+  const exportDisabledReason = $derived(
+    selectedPipeline === null || selectedPipeline.persisted
+      ? null
+      : 'Save this Pipeline first. Export writes the definition the catalog holds, not an unsaved draft.'
+  );
+
+  function exportReasonId(pipeline: MutablePipeline): string {
+    return `pipeline-export-reason-${pipeline.scope}-${pipeline.id}`;
+  }
+
+  /**
+   * Feature 085 T027 (FR-012) — the inclusion choice, made BEFORE the document
+   * is produced rather than discovered in the save dialog after it.
+   *
+   * A property of how this operator is handing the definition over, not of the
+   * Pipeline, so it survives changing the selection instead of resetting under
+   * someone exporting several rows in a row. Nothing is persisted: it describes
+   * one session's exports, and the default is the smaller document (FR-013).
+   */
+  let includeReferencedPhases = $state(false);
+
+  function exportInclusionId(pipeline: MutablePipeline): string {
+    return `pipeline-export-inclusion-${pipeline.scope}-${pipeline.id}`;
+  }
+
+  /**
+   * FR-013 / FR-015 — references only unless the operator asked for the
+   * definitions. Either way `phaseIds` is what the Pipeline runs and in what
+   * order; inclusion only adds a section (FR-019).
+   *
+   * Whether every referenced Phase actually resolves is the host's call
+   * (FR-017): only it reads the effective catalog, and only it can tell a
+   * missing reference from a structural defect. Pre-checking here would refuse
+   * exports the host would have allowed and would need a second copy of the
+   * resolution rule to do it.
+   *
+   * No location is named here and none comes back: the host opens its own save
+   * dialog (FR-019, FR-021).
+   */
+  function onExport(pipeline: MutablePipeline): void {
+    if (exportDisabledReason !== null) return;
+    exportPipelineYaml(
+      pipeline.id,
+      includeReferencedPhases ? 'include-referenced' : 'references-only'
+    );
+  }
 </script>
 
 {#if showTrustBanner}
@@ -308,6 +371,18 @@
             <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
             {#if pipeline.scope !== 'built-in'}<button class="btn btn-ghost" data-testid="pipelines-discard" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>{/if}
             <button class="btn btn-ghost" data-testid="pipelines-duplicate" disabled={!trusted || savePending || mutationActive || noEffectivePhase} onclick={() => onduplicate(index)}>Duplicate Pipeline</button>
+            <!-- FR-012 — the choice sits beside the control it changes, so it is
+                 made before the document is produced rather than after. -->
+            <label class="form-field checkbox-field" for={exportInclusionId(pipeline)}>
+              <input type="checkbox" id={exportInclusionId(pipeline)} data-testid="pipelines-export-inclusion" disabled={exportDisabledReason !== null} checked={includeReferencedPhases} onchange={(event) => (includeReferencedPhases = event.currentTarget.checked)} />
+              <span class="form-label" title="Carry a complete definition of every Phase this Pipeline references, so it opens on a catalog that does not have them">Include Phase definitions</span>
+            </label>
+            <!-- Export is read-only: it needs neither trust nor an idle save,
+                 because it writes nothing this extension owns. -->
+            <button class="btn btn-ghost" data-testid="pipelines-export" disabled={exportDisabledReason !== null} title={exportDisabledReason ?? `Export ${pipeline.id} as a document`} aria-label={`Export ${pipeline.id}`} aria-describedby={exportDisabledReason !== null ? exportReasonId(pipeline) : undefined} onclick={() => onExport(pipeline)}>Export Pipeline</button>
+            {#if exportDisabledReason !== null}
+              <span class="field-help" id={exportReasonId(pipeline)} data-testid="pipelines-export-disabled-reason">{exportDisabledReason}</span>
+            {/if}
             {#if !selectedReadOnly}<button class="btn btn-secondary" disabled={saveDisabled} onclick={onsave}>Save Pipeline</button>{/if}
             {#if !selectedReadOnly}<button class="btn btn-destructive" data-testid="pipelines-remove" disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Delete Pipeline</button>{/if}
           </div>

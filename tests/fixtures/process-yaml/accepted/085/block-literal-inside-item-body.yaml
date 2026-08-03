@@ -1,0 +1,4 @@
+phases:
+  - instruction: |-
+      line one
+      line two

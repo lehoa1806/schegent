@@ -1,0 +1,49 @@
+/*
+ * Feature 085 T070 — styles shared by the preflight surface and the two table
+ * components split out of it.
+ *
+ * Svelte's `<style>` is component-scoped, so a class used by both tables would
+ * otherwise have to be copied into each of them and kept in sync by hand. This
+ * follows the convention `MetricsDashboard/metrics-shared.css` already sets: a
+ * plain stylesheet imported once by the family's root component, with every
+ * selector anchored to the family's root class so "global" means "inside this
+ * surface" rather than "everywhere".
+ */
+
+.preflight .preflight-note,
+.preflight .preflight-counts {
+  margin: 0;
+  color: var(--schegent-muted-fg);
+}
+
+.preflight .preflight-table {
+  border-collapse: collapse;
+  width: 100%;
+  text-align: left;
+}
+
+.preflight .preflight-table th,
+.preflight .preflight-table td {
+  border-bottom: 1px solid var(--schegent-focus-border);
+  padding: 2px var(--schegent-pad);
+  vertical-align: top;
+}
+
+/* The row headers added for T067 are structure, not emphasis: the column
+   headers stay the only bold row. */
+.preflight .preflight-table tbody th {
+  font-weight: normal;
+}
+
+.preflight .preflight-id {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.preflight .preflight-missing-id {
+  color: var(--schegent-muted-fg);
+  font-style: italic;
+}
+
+.preflight .preflight-reason-line {
+  display: block;
+}

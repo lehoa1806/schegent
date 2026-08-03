@@ -5,9 +5,18 @@
 // This is NOT a YAML scanner. It admits exactly the constructs the grammar
 // names and refuses everything else AT THE TOKEN, before any value the
 // document declares has been constructed (FR-003a). An anchor, alias, merge
-// key, tag, directive, flow collection or block sequence is rejected the
-// moment its indicator is read — never expanded, resolved, or constructed and
-// then discarded.
+// key, tag, directive or flow collection is rejected the moment its indicator
+// is read — never expanded, resolved, or constructed and then discarded.
+//
+// Feature 085 widened the subset by exactly one production: a block sequence
+// whose entry is a scalar or a mapping. The widening is additive — every
+// document the feature-084 reader accepted parses to the same tree, and every
+// refusal it produced is produced here with the same code. The new refusals
+// (specs/085-pipeline-package-exchange/contracts/yaml-grammar.md) are all
+// narrowings on the new production. `- ` is exactly two characters, so THE DASH
+// OCCUPIES EXACTLY ONE INDENT LEVEL: an item whose dash sits at level L has its
+// body at level L + 1, and the body's continuation keys are ordinary lines at
+// that same column. That is arithmetic, not a special case.
 //
 // Errors are values. Nothing in this file throws, mirroring the shipped
 // hand-rolled-parser precedent in src/lib/retry-condition.ts (research R1).
@@ -25,12 +34,26 @@ export interface YamlEntryToken {
   readonly line: number;
 }
 
+/**
+ * Feature 085 T004 — one sequence entry. Kept beside `YamlEntryToken` rather
+ * than in `types.ts` so the token family has one home; `types.ts` owns the node
+ * family, which is what callers outside this module consume.
+ */
+export interface YamlSequenceItemToken {
+  readonly kind: 'item';
+  /** Level of the DASH. The entry's body sits at `indent + 1`. */
+  readonly indent: number;
+  /** The scalar entry, or `null` when the entry opens a mapping. */
+  readonly value: YamlScalarNode | null;
+  readonly line: number;
+}
+
 export interface YamlDocumentStartToken {
   readonly kind: 'document-start';
   readonly line: number;
 }
 
-export type YamlToken = YamlEntryToken | YamlDocumentStartToken;
+export type YamlToken = YamlEntryToken | YamlSequenceItemToken | YamlDocumentStartToken;
 
 export type ScanResult =
   | { readonly ok: true; readonly tokens: readonly YamlToken[] }
@@ -61,6 +84,9 @@ type ScalarResult = ScalarParse | { readonly ok: false; readonly result: ScanRes
 export function scanDocument(text: string): ScanResult {
   const lines = text.split(/\r?\n/);
   const tokens: YamlToken[] = [];
+  // The level of the last construct's OWN content, and whether that construct
+  // left a block open beneath it. For an entry the content level is the key's
+  // level; for a sequence entry it is the body's, one level past the dash.
   let previousLevel = -1;
   // The document itself is the enclosing mapping, so level 0 is always open.
   let previousOpensMapping = true;
@@ -101,9 +127,6 @@ export function scanDocument(text: string): ScanResult {
     if (rest.startsWith('%')) {
       return refuse('disallowed-syntax', 'directives are not part of this format', lineNo);
     }
-    if (rest === '-' || rest.startsWith('- ')) {
-      return refuse('disallowed-syntax', 'block sequences are not part of this format', lineNo);
-    }
     if (rest === '?' || rest.startsWith('? ')) {
       return refuse('disallowed-syntax', 'complex keys are not part of this format', lineNo);
     }
@@ -122,49 +145,191 @@ export function scanDocument(text: string): ScanResult {
       return refuse('disallowed-syntax', 'indented entry does not belong to a mapping', lineNo);
     }
 
-    const keyMatch = KEY_PATTERN.exec(rest);
-    if (!keyMatch) {
-      const reason = PLAIN_FIRST_EXCLUDED.get(rest[0]) ?? 'unrecognized construct';
-      return refuse('disallowed-syntax', reason, lineNo);
+    // ----- sequence entry -------------------------------------------------
+    if (rest[0] === '-') {
+      const item = readSequenceItem(lines, index, leading.length, rest, lineNo);
+      if (!item.ok) return item.result;
+      index = item.lastLineIndex;
+      sawContent = true;
+      // The dash occupies one level, so the body — and anything the body opens
+      // — is measured from `level + 1`.
+      previousLevel = level + 1;
+      previousOpensMapping = item.opensMapping;
+      for (const token of item.tokens) tokens.push(token);
+      continue;
     }
-    const key = keyMatch[0];
-    const afterKey = rest.slice(key.length);
-    if (!afterKey.startsWith(':')) {
-      return refuse('disallowed-syntax', "expected ':' after a mapping key", lineNo);
-    }
-    const afterColon = afterKey.slice(1);
-    if (afterColon.length > 0 && !afterColon.startsWith(' ')) {
-      return refuse('disallowed-syntax', "a mapping key must be followed by ': '", lineNo);
-    }
-    const valueText = afterColon.replace(/^ +/, '');
 
+    // ----- mapping entry --------------------------------------------------
+    const keyed = readKeyedLine(lines, index, leading.length, rest, lineNo, level);
+    if (!keyed.ok) return keyed.result;
+    index = keyed.lastLineIndex;
     sawContent = true;
     previousLevel = level;
-
-    if (valueText.length === 0 || valueText.startsWith('#')) {
-      previousOpensMapping = true;
-      tokens.push({ kind: 'entry', indent: level, key, value: null, line: lineNo });
-      continue;
-    }
-
-    if (valueText.startsWith('|')) {
-      const literal = readBlockLiteral(lines, index, leading.length, valueText, lineNo);
-      if (!literal.ok) return literal.result;
-      index = literal.lastLineIndex;
-      previousOpensMapping = false;
-      tokens.push({ kind: 'entry', indent: level, key, value: literal.node, line: lineNo });
-      continue;
-    }
-
-    const parsed = valueText.startsWith('"')
-      ? readDoubleQuoted(valueText, lineNo)
-      : readPlain(valueText, lineNo);
-    if (!parsed.ok) return parsed.result;
-    previousOpensMapping = false;
-    tokens.push({ kind: 'entry', indent: level, key, value: parsed.node, line: lineNo });
+    previousOpensMapping = keyed.token.value === null;
+    tokens.push(keyed.token);
   }
 
   return { ok: true, tokens };
+}
+
+type KeyedLineResult =
+  | { readonly ok: true; readonly token: YamlEntryToken; readonly lastLineIndex: number }
+  | { readonly ok: false; readonly result: ScanResult };
+
+/** Whether `text` opens `key:` — the discriminator between an entry and a scalar. */
+function looksKeyed(text: string): boolean {
+  const keyMatch = KEY_PATTERN.exec(text);
+  return keyMatch !== null && text.slice(keyMatch[0].length).startsWith(':');
+}
+
+/**
+ * Read `key: value` starting at `column`. Shared by the mapping-entry path and
+ * the sequence entry whose body opens a mapping, so the two cannot disagree
+ * about what a key is or how a value is read.
+ */
+function readKeyedLine(
+  lines: readonly string[],
+  index: number,
+  column: number,
+  text: string,
+  lineNo: number,
+  level: number
+): KeyedLineResult {
+  const keyMatch = KEY_PATTERN.exec(text);
+  if (!keyMatch) {
+    const reason = PLAIN_FIRST_EXCLUDED.get(text[0]) ?? 'unrecognized construct';
+    return { ok: false, result: refuse('disallowed-syntax', reason, lineNo) };
+  }
+  const key = keyMatch[0];
+  const afterKey = text.slice(key.length);
+  if (!afterKey.startsWith(':')) {
+    return { ok: false, result: refuse('disallowed-syntax', "expected ':' after a mapping key", lineNo) };
+  }
+  const afterColon = afterKey.slice(1);
+  if (afterColon.length > 0 && !afterColon.startsWith(' ')) {
+    return {
+      ok: false,
+      result: refuse('disallowed-syntax', "a mapping key must be followed by ': '", lineNo)
+    };
+  }
+  const valueText = afterColon.replace(/^ +/, '');
+
+  if (valueText.length === 0 || valueText.startsWith('#')) {
+    return {
+      ok: true,
+      token: { kind: 'entry', indent: level, key, value: null, line: lineNo },
+      lastLineIndex: index
+    };
+  }
+
+  const scalarResult = readScalarValue(lines, index, column, valueText, lineNo);
+  if (!scalarResult.ok) return { ok: false, result: scalarResult.result };
+  return {
+    ok: true,
+    token: { kind: 'entry', indent: level, key, value: scalarResult.node, line: lineNo },
+    lastLineIndex: scalarResult.lastLineIndex
+  };
+}
+
+type ScalarValueResult =
+  | { readonly ok: true; readonly node: YamlScalarNode; readonly lastLineIndex: number }
+  | { readonly ok: false; readonly result: ScanResult };
+
+/**
+ * Read one scalar in value position. `column` is the column the construct that
+ * owns the scalar starts at, which is what a block literal measures its body
+ * from.
+ */
+function readScalarValue(
+  lines: readonly string[],
+  index: number,
+  column: number,
+  valueText: string,
+  lineNo: number
+): ScalarValueResult {
+  if (valueText.startsWith('|')) {
+    const literal = readBlockLiteral(lines, index, column, valueText, lineNo);
+    if (!literal.ok) return { ok: false, result: literal.result };
+    return { ok: true, node: literal.node, lastLineIndex: literal.lastLineIndex };
+  }
+  const parsed = valueText.startsWith('"')
+    ? readDoubleQuoted(valueText, lineNo)
+    : readPlain(valueText, lineNo);
+  if (!parsed.ok) return { ok: false, result: parsed.result };
+  return { ok: true, node: parsed.node, lastLineIndex: index };
+}
+
+type SequenceItemResult =
+  | {
+      readonly ok: true;
+      readonly tokens: readonly YamlToken[];
+      readonly lastLineIndex: number;
+      readonly opensMapping: boolean;
+    }
+  | { readonly ok: false; readonly result: ScanResult };
+
+/**
+ * Read one `- …` line. Exactly one space follows the dash, and the entry is a
+ * scalar or a mapping — the three narrowings below are what keep the widening
+ * bounded (grammar "New, all of them narrowings").
+ *
+ * A mapping entry emits TWO tokens: the item itself at the dash's level, and
+ * the first key at the body's level. The body's remaining keys are ordinary
+ * lines the main loop reads at that same level, so a continuation key needs no
+ * special case.
+ */
+function readSequenceItem(
+  lines: readonly string[],
+  index: number,
+  column: number,
+  rest: string,
+  lineNo: number
+): SequenceItemResult {
+  if (!rest.startsWith('- ')) {
+    // `-`, `-x`, `--`. One canonical spelling only (FR-004b).
+    return {
+      ok: false,
+      result: refuse('disallowed-syntax', "a sequence entry is written '- ' followed by a value", lineNo)
+    };
+  }
+  if (rest.startsWith('-  ')) {
+    return {
+      ok: false,
+      result: refuse('disallowed-syntax', "a sequence entry uses exactly one space after '-'", lineNo)
+    };
+  }
+  const body = rest.slice(2);
+  if (body.length === 0 || body.startsWith('#')) {
+    return {
+      ok: false,
+      result: refuse('disallowed-syntax', "a sequence entry is written '- ' followed by a value", lineNo)
+    };
+  }
+
+  const level = column / INDENT_WIDTH;
+  const bodyColumn = column + INDENT_WIDTH;
+
+  if (looksKeyed(body)) {
+    const keyed = readKeyedLine(lines, index, bodyColumn, body, lineNo, level + 1);
+    if (!keyed.ok) return { ok: false, result: keyed.result };
+    return {
+      ok: true,
+      tokens: [{ kind: 'item', indent: level, value: null, line: lineNo }, keyed.token],
+      lastLineIndex: keyed.lastLineIndex,
+      opensMapping: keyed.token.value === null
+    };
+  }
+
+  // A scalar entry. `- - a` lands here and is refused by the shared plain-scalar
+  // oracle, which excludes a leading `- ` — the same rule that keeps `-1` legal.
+  const scalarResult = readScalarValue(lines, index, bodyColumn, body, lineNo);
+  if (!scalarResult.ok) return { ok: false, result: scalarResult.result };
+  return {
+    ok: true,
+    tokens: [{ kind: 'item', indent: level, value: scalarResult.node, line: lineNo }],
+    lastLineIndex: scalarResult.lastLineIndex,
+    opensMapping: false
+  };
 }
 
 /**

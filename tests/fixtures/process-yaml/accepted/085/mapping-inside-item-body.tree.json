@@ -1,0 +1,92 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "bindings",
+      "value": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "mapping",
+            "entries": [
+              {
+                "key": "kind",
+                "value": {
+                  "kind": "scalar",
+                  "value": "input",
+                  "quoted": false,
+                  "line": 2
+                },
+                "line": 2
+              },
+              {
+                "key": "phaseIndex",
+                "value": {
+                  "kind": "scalar",
+                  "value": "1",
+                  "quoted": false,
+                  "line": 3
+                },
+                "line": 3
+              },
+              {
+                "key": "inputKey",
+                "value": {
+                  "kind": "scalar",
+                  "value": "spec",
+                  "quoted": false,
+                  "line": 4
+                },
+                "line": 4
+              },
+              {
+                "key": "source",
+                "value": {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "from",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "phase-output",
+                        "quoted": false,
+                        "line": 6
+                      },
+                      "line": 6
+                    },
+                    {
+                      "key": "phaseIndex",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "0",
+                        "quoted": false,
+                        "line": 7
+                      },
+                      "line": 7
+                    },
+                    {
+                      "key": "portId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "spec-document",
+                        "quoted": false,
+                        "line": 8
+                      },
+                      "line": 8
+                    }
+                  ],
+                  "line": 6
+                },
+                "line": 5
+              }
+            ],
+            "line": 2
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    }
+  ],
+  "line": 1
+}

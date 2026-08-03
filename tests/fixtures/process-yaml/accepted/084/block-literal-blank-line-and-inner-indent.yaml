@@ -1,0 +1,6 @@
+spec:
+  instruction: |-
+    first
+
+      indented
+    last
