@@ -116,6 +116,15 @@ export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as co
 // Feature 073 — read-only Metrics Dashboard scan.
 export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
 export const CMD_PING_BACKEND = 'CMD_PING_BACKEND' as const;
+// Feature 084 — read-only Phase export. NOT a member of
+// `MUTATING_COMMAND_REASONS`: it writes a file the operator named in a host
+// dialog and changes no extension state. Import commits through the existing
+// `CMD_SAVE_PHASES`, so the exchange feature adds no mutating command.
+export const CMD_EXPORT_PROCESS_YAML = 'CMD_EXPORT_PROCESS_YAML' as const;
+// Feature 084 — read-only import preflight. Also NOT mutating: it reads the
+// operator's chosen document once and returns a plan. Nothing is written until
+// the operator confirms, and that confirmation is a `CMD_SAVE_PHASES`.
+export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -176,7 +185,9 @@ export const COMMAND_TYPES = [
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_READ_METRICS,
-  CMD_PING_BACKEND
+  CMD_PING_BACKEND,
+  CMD_EXPORT_PROCESS_YAML,
+  CMD_PREFLIGHT_PROCESS_YAML
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -215,6 +226,10 @@ import type {
   RevealWakeupSessionLogCommand
 } from './sidebar-ipc/wakeup';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
+import type {
+  ExportProcessYamlCommand,
+  PreflightProcessYamlCommand
+} from './sidebar-ipc/process-yaml';
 
 export type {
   ReadPhaseLogRequest,
@@ -246,6 +261,22 @@ export type {
   ReadMetricsCommand,
   ReadMetricsResponse
 } from './sidebar-ipc/metrics';
+export type {
+  ProcessYamlResourceKind,
+  ExportProcessYamlRequest,
+  ExportProcessYamlCommand,
+  ExportProcessYamlResult,
+  PreflightProcessYamlRequest,
+  PreflightProcessYamlCommand,
+  PreflightProcessYamlResult,
+  DocumentRefusal,
+  DocumentRefusalCode,
+  ImportDefect,
+  ImportPlan,
+  ImportPlanCounts,
+  ImportPlanRow,
+  ProcessYamlLayerRevisions
+} from './sidebar-ipc/process-yaml';
 export { TRUST_DENIED_REASONS } from './sidebar-ipc/trust';
 export type {
   TrustCapability,
@@ -567,7 +598,9 @@ export type SidebarCommand =
   | SetConfirmSuppressionCommand
   | DismissMigrationNoticeCommand
   | ReadMetricsCommand
-  | PingBackendCommand;
+  | PingBackendCommand
+  | ExportProcessYamlCommand
+  | PreflightProcessYamlCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -821,6 +854,31 @@ export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
   return runner === 'claude' || runner === 'codex' || runner === 'agy';
 }
 
+// Feature 084 — read-only Phase export guard. Both payload fields are
+// required; `resourceKind` is the only kind this format admits today, and the
+// discriminator plus that literal is what the deeper validator relies on.
+export function isCmdExportProcessYaml(value: unknown): value is ExportProcessYamlCommand {
+  if (!isObjectWithType(value, CMD_EXPORT_PROCESS_YAML)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const { resourceKind, resourceId } = payload as {
+    resourceKind?: unknown;
+    resourceId?: unknown;
+  };
+  return resourceKind === 'phase' && typeof resourceId === 'string';
+}
+
+// Feature 084 — read-only import preflight guard. The payload is the resource
+// kind and nothing else: no location, no bytes, no scope (FR-020a).
+export function isCmdPreflightProcessYaml(
+  value: unknown
+): value is PreflightProcessYamlCommand {
+  if (!isObjectWithType(value, CMD_PREFLIGHT_PROCESS_YAML)) return false;
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  return (payload as { resourceKind?: unknown }).resourceKind === 'phase';
+}
+
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
 export const COMMAND_GUARDS: Readonly<
@@ -878,5 +936,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
   [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice,
   [CMD_READ_METRICS]: isCmdReadMetrics,
-  [CMD_PING_BACKEND]: isCmdPingBackend
+  [CMD_PING_BACKEND]: isCmdPingBackend,
+  [CMD_EXPORT_PROCESS_YAML]: isCmdExportProcessYaml,
+  [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml
 });

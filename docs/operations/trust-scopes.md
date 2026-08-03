@@ -25,6 +25,15 @@ workflow-graph edits. A workflow decides which pipelines run and in what
 relation to each other, which is a broader authority than editing one pipeline's
 phase order.
 
+Committing a [Phase YAML import](../features/phase-yaml-exchange.md) can require
+**two** of these scopes: `allowCustomPhases` always, because an imported Phase is
+a custom Phase, and `allowCustomRetryConditions` additionally when the imported
+document declares a `retryCondition`. Both are read at commit time, never
+inherited from the earlier read-only preflight, so a scope changed between
+inspecting a document and confirming it is honored as of the confirm. A denial on
+either is audited as the same `trust.capability-denied` event as any other
+refused catalog write.
+
 This page is the operator reference for the feature. See
 [specs/059-fine-grained-trust-scopes/](../../../specs/059-fine-grained-trust-scopes/)
 for the full specification and contract dossiers.

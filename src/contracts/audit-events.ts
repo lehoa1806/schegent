@@ -1,5 +1,6 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { TerminationReason } from '../state/workflow-run';
+import type { PhaseDefinitionScope } from './process-definitions';
 
 // Feature 031 — bumped 1 → 2 to reflect the three additive scalar fields on
 // the `wakeup-runner-invocation` audit payload: `correlationId` (UUIDv4),
@@ -326,6 +327,24 @@ export const BACKEND_PING_EVENT_TYPES = ['backend-ping'] as const;
 // `AUDIT_SCHEMA_VERSION` bump.
 export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 
+// Feature 084 — Phase exchange (FR-047, FR-049). The payload records the
+// operation, the resource ids, the scope, the per-resource outcomes, and the
+// counts, and nothing else. Document contents, instruction or skill text, file
+// names, absolute paths, and workspace roots are forbidden (FR-048) — see
+// `ProcessExchangePayload` below, which has no field that could carry them.
+//
+// `process-exchange-import-refused` is what makes FR-049 hold on the read side:
+// a document this build declined leaves a record, so a blocked import is
+// distinguishable from an import that never happened. A refusal that a
+// capability gate produced is audited by the trust gate at commit instead, under
+// `trust.capability-denied` — the two are separate events because they are
+// separate decisions, taken at different times, about different things.
+// Additive — no `AUDIT_SCHEMA_VERSION` bump.
+export const PROCESS_EXCHANGE_EVENT_TYPES = [
+  'process-exchange-export',
+  'process-exchange-import-refused'
+] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -353,7 +372,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
-  ...METRICS_EVENT_TYPES
+  ...METRICS_EVENT_TYPES,
+  ...PROCESS_EXCHANGE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -383,6 +403,35 @@ export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number]
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
+export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
+
+/**
+ * Feature 084 — the closed payload for a Phase exchange audit entry. Closed on
+ * purpose: FR-048 forbids document contents, authored text, file names,
+ * absolute paths, and workspace roots, and the way to keep them out is to give
+ * the payload nowhere to put them.
+ */
+export interface ProcessExchangePayload {
+  readonly operation: 'export' | 'import-preflight';
+  readonly resourceKind: 'phase';
+  /**
+   * Empty for a document-level refusal: a refused document named no resource,
+   * which is itself the fact worth recording (FR-027).
+   */
+  readonly resourceIds: readonly string[];
+  /**
+   * The layer the exported definition resolved from, or null when none did. Null
+   * for a preflight, which targets no layer — the operator chooses the scope
+   * after seeing the plan (FR-046, FR-056).
+   */
+  readonly scope: PhaseDefinitionScope | null;
+  /**
+   * For an export, the result outcome. For a refusal, the refusal code — one of a
+   * closed set of seven literals, never document-derived text (FR-048).
+   */
+  readonly outcomes: readonly string[];
+  readonly counts: Readonly<Record<string, number>>;
+}
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
@@ -685,7 +734,12 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
     // specific workflow run.
     'backend-ping',
-    'metrics-view-opened'
+    'metrics-view-opened',
+    // Feature 084 — Phase exchange is a catalog operation, not part of any
+    // workflow run, so it belongs in the System scope alongside the other
+    // run-independent events above.
+    'process-exchange-export',
+    'process-exchange-import-refused'
   ])
 );
 

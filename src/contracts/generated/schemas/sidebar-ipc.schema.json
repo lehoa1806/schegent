@@ -74,7 +74,9 @@
           "CMD_SET_CONFIRM_SUPPRESSION",
           "CMD_DISMISS_MIGRATION_NOTICE",
           "CMD_READ_METRICS",
-          "CMD_PING_BACKEND"
+          "CMD_PING_BACKEND",
+          "CMD_EXPORT_PROCESS_YAML",
+          "CMD_PREFLIGHT_PROCESS_YAML"
         ]
       },
       "uniqueItems": true

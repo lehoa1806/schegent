@@ -172,3 +172,54 @@ describe('Phase catalog source editor states', () => {
       .toBe(true);
   });
 });
+
+// Feature 084 T066 — the exchange entry points, as the manager offers them. The
+// decisions themselves are pinned in process-exchange-entry.test.ts; what is
+// asserted here is that the surface is wired to them.
+describe('Phase catalog exchange entry points', () => {
+  it('offers Export per row and Import once for the catalog', () => {
+    const { container } = mount({ phases: [WORKSPACE_PHASE] });
+    expect(container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
+  });
+
+  it('keeps Export enabled where every other row control is closed', () => {
+    // Export writes a file the operator names and changes no catalog state, so a
+    // pending mutation is not a reason to withhold it.
+    const { container } = mount({ phases: [WORKSPACE_PHASE], mutationActive: true });
+    expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
+      .disabled).toBe(false);
+    expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
+      .toBe(true);
+  });
+
+  it('refuses to export an unsaved draft, and says why (FR-015, FR-057)', () => {
+    const draft = { ...WORKSPACE_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
+    const { container } = mount({ phases: [draft] });
+    expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
+      .disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-export-disabled-reason"]')?.textContent)
+      .toContain('Save this Phase');
+  });
+
+  it('closes Import while a Phase mutation is outstanding, and says why', () => {
+    // The commit sends the whole persisted layer, so an import started now would
+    // ask the operator to confirm a write that excludes their pending edit.
+    const { container } = mount({ phases: [WORKSPACE_PHASE], mutationActive: true });
+    expect((container.querySelector('[data-testid="process-import-inspect"]') as HTMLButtonElement)
+      .disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent)
+      .toContain('pending');
+  });
+
+  it('offers neither control while the catalog is still loading', () => {
+    // Structural, not checked: the entry points live inside the ready arm, so an
+    // empty layer projection — which a commit would write as a layer erasure —
+    // cannot be reached.
+    const { container } = mount({
+      snapshot: { ...SNAPSHOT, phaseCatalog: undefined } as WorkflowSnapshot
+    });
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    expect(container.querySelector('[data-testid="process-export-button"]')).toBeNull();
+  });
+});

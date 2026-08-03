@@ -53,7 +53,9 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_SET_CONFIRM_SUPPRESSION",
   "CMD_DISMISS_MIGRATION_NOTICE",
   "CMD_READ_METRICS",
-  "CMD_PING_BACKEND"
+  "CMD_PING_BACKEND",
+  "CMD_EXPORT_PROCESS_YAML",
+  "CMD_PREFLIGHT_PROCESS_YAML"
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [
@@ -157,7 +159,9 @@ export const AUDIT_EVENT_TYPES = [
   "phase-jumped",
   "phase-optional-failure-continued",
   "backend-ping",
-  "metrics-view-opened"
+  "metrics-view-opened",
+  "process-exchange-export",
+  "process-exchange-import-refused"
 ] as const;
 
 export const SETTINGS_KEYS = [

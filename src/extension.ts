@@ -1153,6 +1153,58 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         return { status: 'rejected' as const, reason: 'reveal-failed' as const };
       }
     },
+    // Feature 084 — Phase export adapter (FR-018, FR-019, research R3).
+    // Mirrors `src/commands/export-audit.ts`: the host owns the dialog and the
+    // write, so no location crosses the IPC boundary in either direction. The
+    // dialog seeds its name field from the workspace root and the suggested
+    // name; where the operator actually saves is never returned, logged, or
+    // audited. Overwrite consent is the dialog's own (FR-018).
+    saveProcessYamlDocument: async ({ suggestedFileName, text }) => {
+      try {
+        const target = await vscode.window.showSaveDialog({
+          defaultUri: vscode.Uri.file(path.join(workspaceRoot, suggestedFileName)),
+          filters: { YAML: ['yaml', 'yml'] },
+          saveLabel: 'Export Phase'
+        });
+        if (!target) return { outcome: 'canceled' as const };
+        await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+        return { outcome: 'saved' as const };
+      } catch (err) {
+        logger.warn(
+          `extension: phase export write failed: ${logger.sanitize(
+            (err as Error).message ?? 'unknown error'
+          )}`
+        );
+        return { outcome: 'failed' as const, message: 'Could not write the document.' };
+      }
+    },
+    // Feature 084 — Phase import preflight adapter (FR-020, FR-020a, R3).
+    // The host owns the dialog and the read; the webview supplies no location
+    // and is told none. Reads the chosen file exactly once and returns the raw
+    // bytes: decoding is the parser's job, because invalid UTF-8 and a leading
+    // byte-order mark are refusals this format states rather than repairs.
+    // Nothing is locked, watched, copied, or retained past this call (FR-031).
+    openProcessYamlDocument: async () => {
+      try {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          defaultUri: vscode.Uri.file(workspaceRoot),
+          filters: { YAML: ['yaml', 'yml'] },
+          openLabel: 'Inspect Phase document'
+        });
+        const target = picked?.[0];
+        if (!target) return { outcome: 'canceled' as const };
+        const bytes = await vscode.workspace.fs.readFile(target);
+        return { outcome: 'read' as const, bytes };
+      } catch (err) {
+        logger.warn(
+          `extension: phase import read failed: ${logger.sanitize(
+            (err as Error).message ?? 'unknown error'
+          )}`
+        );
+        return { outcome: 'failed' as const, message: 'Could not read the document.' };
+      }
+    },
     // Feature 073 — metrics read adapter. Full-file scan of
     // `.schegent/audit.log` on every CMD_READ_METRICS call (T009/T010).
     // Workspace root reaches the reader only via this closure — the

@@ -67,6 +67,15 @@ export interface PhaseCatalogResolution {
 
 export type PhaseCatalogMutation =
   | { readonly kind: 'create'; readonly phaseId: string }
+  /**
+   * Feature 084 (FR-046a) — a `create` whose row came from a portable document
+   * rather than from the editor, so its authored `version` is data and MUST be
+   * stored as declared. The shared intent algebra sees it as a `create`: the
+   * diff and shape checks are the same ones, and the target identity is by
+   * construction absent from the layer, so there is no version *transition* for
+   * a save to dictate. Every other row still echoes its current version.
+   */
+  | { readonly kind: 'import'; readonly phaseId: string }
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';
