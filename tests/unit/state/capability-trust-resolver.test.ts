@@ -63,7 +63,8 @@ import {
 const KEYS: Record<TrustCapability, string> = {
   phases: 'schegent.trust.allowCustomPhases',
   retryConditions: 'schegent.trust.allowCustomRetryConditions',
-  pipelineOverrides: 'schegent.trust.allowPipelineOverrides'
+  pipelineOverrides: 'schegent.trust.allowPipelineOverrides',
+  workflowOverrides: 'schegent.trust.allowWorkflowOverrides'
 };
 
 function setScope(
@@ -95,7 +96,12 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
   // every capability. Expected values match `data-model.md §2`.
   const trustValues = [true, false] as const;
   const settingValues = [true, false, null] as const;
-  const capabilities: TrustCapability[] = ['phases', 'retryConditions', 'pipelineOverrides'];
+  const capabilities: TrustCapability[] = [
+    'phases',
+    'retryConditions',
+    'pipelineOverrides',
+    'workflowOverrides'
+  ];
 
   function expectedAllowed(
     isTrusted: boolean,
@@ -141,28 +147,32 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
 });
 
 describe('capability-trust-resolver — getResolvedCapabilities composition', () => {
-  it('returns workspaceTrust=true and three booleans aligned with the ladder', () => {
+  it('returns workspaceTrust=true and four booleans aligned with the ladder', () => {
     mocks.state.isTrusted = true;
     setScope('phases', false, null);
     setScope('retryConditions', null, true);
     setScope('pipelineOverrides', null, null);
+    setScope('workflowOverrides', false, true);
     const out = getResolvedCapabilities();
     expect(out.workspaceTrust).toBe(true);
     expect(out.phases).toBe(false);
     expect(out.retryConditions).toBe(true);
     expect(out.pipelineOverrides).toBe(true);
+    expect(out.workflowOverrides).toBe(false);
   });
 
-  it('untrusted workspace forces all three to false', () => {
+  it('untrusted workspace forces all four to false', () => {
     mocks.state.isTrusted = false;
     setScope('phases', true, true);
     setScope('retryConditions', true, true);
     setScope('pipelineOverrides', true, true);
+    setScope('workflowOverrides', true, true);
     const out = getResolvedCapabilities();
     expect(out.workspaceTrust).toBe(false);
     expect(out.phases).toBe(false);
     expect(out.retryConditions).toBe(false);
     expect(out.pipelineOverrides).toBe(false);
+    expect(out.workflowOverrides).toBe(false);
   });
 });
 
@@ -212,7 +222,7 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
     expect(onInvalidate).not.toHaveBeenCalled();
   });
 
-  it('config change for any of the three trust keys (separately) fires once each', () => {
+  it('config change for any of the four trust keys (separately) fires once each', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -220,7 +230,8 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
     const trustKeys = [
       'schegent.trust.allowCustomPhases',
       'schegent.trust.allowCustomRetryConditions',
-      'schegent.trust.allowPipelineOverrides'
+      'schegent.trust.allowPipelineOverrides',
+      'schegent.trust.allowWorkflowOverrides'
     ];
     for (const targetKey of trustKeys) {
       for (const listener of mocks.state.configListeners) {
@@ -251,5 +262,59 @@ describe('capability-trust-resolver — no-cache invariant (I-1)', () => {
     expect(isCapabilityAllowed('phases')).toBe(false);
     setScope('phases', true, null);
     expect(isCapabilityAllowed('phases')).toBe(true);
+  });
+});
+
+// Feature 083 (US1, T021) — `workflowOverrides` is a fourth capability, not a
+// reuse of `pipelineOverrides`: permitting Pipeline edits in an untrusted
+// workspace does not thereby permit Workflow-graph edits (research R8).
+describe('capability-trust-resolver — workflowOverrides (083)', () => {
+  it('reads schegent.trust.allowWorkflowOverrides and no other key', () => {
+    mocks.state.isTrusted = true;
+    setScope('pipelineOverrides', false, false);
+    mocks.state.inspectMap.set('schegent.trust.allowWorkflowOverrides', { workspaceValue: true });
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
+    expect(isCapabilityAllowed('pipelineOverrides')).toBe(false);
+  });
+
+  it('stays independent of pipelineOverrides in both directions', () => {
+    mocks.state.isTrusted = true;
+    setScope('pipelineOverrides', null, true);
+    setScope('workflowOverrides', null, false);
+    expect(isCapabilityAllowed('pipelineOverrides')).toBe(true);
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
+    expect(getResolvedScope('workflowOverrides')).toBe('user');
+  });
+
+  it('honors the untrusted ceiling even with both overrides set to true (I-2)', () => {
+    mocks.state.isTrusted = false;
+    setScope('workflowOverrides', true, true);
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
+    expect(getResolvedScope('workflowOverrides')).toBe('workspace-trust');
+  });
+
+  it('is read fresh on every call rather than cached (I-1)', () => {
+    mocks.state.isTrusted = true;
+    setScope('workflowOverrides', null, null);
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
+    setScope('workflowOverrides', false, null);
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
+    setScope('workflowOverrides', true, null);
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
+    mocks.state.isTrusted = false;
+    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
+  });
+
+  it('invalidates the projection when its own key changes', () => {
+    const ctx = makeContext();
+    const onInvalidate = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    initCapabilityTrustResolver(ctx as any, onInvalidate);
+    for (const listener of mocks.state.configListeners) {
+      listener({
+        affectsConfiguration: (k: string) => k === 'schegent.trust.allowWorkflowOverrides'
+      });
+    }
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
   });
 });

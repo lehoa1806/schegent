@@ -210,7 +210,10 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'wakeUp.periodicInterval',
       'wakeUp.model'
     ]);
-    const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines']);
+    // Catalog layers validated per row by their own resolver rather than by
+    // the general-settings IPC handler. Feature 083 adds `workflows`, which
+    // `src/config/workflow-catalog.ts` resolves and defect-annotates.
+    const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines', 'workflows']);
     const backendRunnerKey = new Set<string>([
       'backend.runner',
       'backend.probeTimeoutSeconds'
@@ -234,7 +237,7 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // the value. Not part of KEY_SPECS because it does not flow through
     // the general-settings IPC handler.
     const multiRootKeys = new Set<string>(['multiRoot.suppressWarning']);
-    // Feature 059 — per-capability trust scopes. These three keys are
+    // Features 059 and 083 — per-capability trust scopes. These keys are
     // `nullable boolean` settings consumed exclusively by
     // `src/state/capability-trust-resolver.ts` via `getConfiguration().inspect()`.
     // They never flow through the general-settings IPC handler — the
@@ -244,7 +247,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     const trustScopeKeys = new Set<string>([
       'trust.allowCustomPhases',
       'trust.allowCustomRetryConditions',
-      'trust.allowPipelineOverrides'
+      'trust.allowPipelineOverrides',
+      'trust.allowWorkflowOverrides'
     ]);
     const uiKeys = new Set<string>(['ui.confirmations.enable']);
 

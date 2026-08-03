@@ -476,7 +476,11 @@ export interface MultiRootWarningShownPayload {
 // audit-contract.md (I-1..I-6) and the workspace-root-serialization
 // hard rule.
 export interface TrustCapabilityDeniedPayload {
-  readonly capability: 'phases' | 'retryConditions' | 'pipelineOverrides';
+  readonly capability:
+    | 'phases'
+    | 'retryConditions'
+    | 'pipelineOverrides'
+    | 'workflowOverrides';
   readonly resolvedScope: 'user' | 'workspace' | 'workspace-trust';
   readonly workspaceBasename: string;
   readonly reason: string;

@@ -51,7 +51,11 @@ import {
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
-import { pipelineLayerRevision } from '../../src/config/pipeline-catalog';
+import { pipelineLayerRevision, resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
+import { resolvePhaseCatalog } from '../../src/config/process-catalog';
+import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
+import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
+import { collectWorkflowDefinitionPipelineRefs } from '../../src/ui/sidebar/workflow-definition-pipeline-refs';
 import type { PipelineCatalogMutation } from '../../src/contracts/pipeline-definitions';
 
 const CUSTOM_ROW = {
@@ -74,11 +78,64 @@ interface Harness {
   layers: Layers;
 }
 
+const WORKSPACE_PHASE_ROW = { id: 'done', name: 'Done', version: 1, instruction: 'Done.' };
+
+/**
+ * Feature 083 (T052) — the definition-side half of gate 13's reference list,
+ * assembled the way `extension.ts` assembles it: resolve the raw
+ * `schegent.workflows` layers against the resolved Pipeline catalog, then
+ * collect over **every stored record**. Going through real resolution is the
+ * point — a hand-authored reference literal could not tell a shadowed or
+ * invalid record apart from an effective one, which is precisely what FR-041
+ * turns on.
+ */
+function workflowRefs(
+  workflows: { user?: readonly unknown[]; workspace?: readonly unknown[] },
+  pipelines: Layers
+) {
+  const pipelineCatalog = resolvePipelineCatalog({
+    builtIn: BUILT_IN_PIPELINES,
+    user: pipelines.user,
+    workspace: pipelines.workspace,
+    phaseCatalog: resolvePhaseCatalog({
+      builtIn: BUILT_IN_PHASES,
+      user: [],
+      workspace: [WORKSPACE_PHASE_ROW]
+    }).effective
+  });
+  return collectWorkflowDefinitionPipelineRefs(
+    resolveWorkflowCatalog({
+      builtIn: [],
+      user: workflows.user,
+      workspace: workflows.workspace,
+      pipelineCatalog
+    }).records
+  );
+}
+
+/** A Workflow definition row whose single node names `custom-flow`. */
+const workflowRow = (id: string, overrides: Record<string, unknown> = {}) => ({
+  id,
+  name: id,
+  version: 1,
+  nodes: [{ nodeId: 'a', pipelineId: CUSTOM_ROW.id }],
+  connections: [],
+  startNodeIds: ['a'],
+  ...overrides
+});
+
 function buildRouter(
   opts: {
     layers?: Layers;
     omitConfigOps?: boolean;
     updateConfigThrows?: boolean;
+    /**
+     * Feature 083 (T052) — raw `schegent.workflows` layers. Resolved and
+     * collected here exactly as `extension.ts` does, so gate 13 sees the same
+     * reference list production does rather than hand-authored literals; that
+     * is what makes the shadowed and invalid cases below meaningful.
+     */
+    workflows?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
   } = {}
 ): Harness {
   const acks: CommandAckMessage[] = [];
@@ -101,10 +158,7 @@ function buildRouter(
         // Feature 082 (T038) — gate 5 resolves every `phaseId` against the
         // effective Phase catalog, so the workspace-authored `done` these
         // fixtures use has to exist as a Phase.
-        readPhaseConfig: () => ({
-          user: [],
-          workspace: [{ id: 'done', name: 'Done', version: 1, instruction: 'Done.' }]
-        })
+        readPhaseConfig: () => ({ user: [], workspace: [WORKSPACE_PHASE_ROW] })
       };
 
   const deps = {
@@ -127,6 +181,9 @@ function buildRouter(
         auditCalls.push(entry);
       }
     },
+    ...(opts.workflows
+      ? { readWorkflowPipelineRefs: () => workflowRefs(opts.workflows ?? {}, layers) }
+      : {}),
     ...configOps
   } as unknown as RouterDeps;
 
@@ -669,4 +726,184 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
       })).toMatchObject({ ok: false, reason: 'invalid-payload' });
     }
   );
+});
+
+// Feature 083 (US6, T052) — gate 13's second consumer sense.
+//
+// 082 shipped gate 13 knowing one kind of consuming Workflow: a queued run
+// request that pins a Pipeline. FR-041 adds a second: a stored Workflow
+// *definition* whose node names one. The gate's decision logic is unchanged —
+// it still blocks when the removal leaves the id with no effective source AND
+// something still references it. Only the reference list grew.
+//
+// The cases that matter are the ones the *effective* Workflow catalog would
+// drop. A shadowed record's reference goes live the moment the shadow is
+// deleted; an invalid record's goes live the moment its defects are fixed.
+// Removing the Pipeline under either would strand a definition an operator
+// restores with one edit, so both must block (FR-041, FR-031, SC-011).
+describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 FR-041)', () => {
+  const removal = (layer: readonly unknown[] = [CUSTOM_ROW]) =>
+    savePayload({
+      scope: 'workspace',
+      expectedRevision: pipelineLayerRevision(layer),
+      mutation: { kind: 'remove', pipelineId: CUSTOM_ROW.id },
+      pipelines: []
+    });
+
+  it('blocks a removal referenced only by an effective stored definition', async () => {
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: { workspace: [workflowRow('release')] }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'pipeline-removal-blocked',
+      result: {
+        pipelineIds: [CUSTOM_ROW.id],
+        dependentWorkflowIds: [],
+        dependentWorkflowDefinitionIds: ['workspace::release'],
+        total: 1
+      }
+    });
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  it('blocks a removal referenced only by a shadowed record (FR-041)', async () => {
+    // `release` exists in both writable layers; the workspace copy wins and the
+    // user copy is `shadowed`. The user copy is the ONLY record naming
+    // `custom-flow`, so nothing but the shadowed reference can block here.
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: {
+        user: [workflowRow('release')],
+        workspace: [workflowRow('release', {
+          nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }]
+        })]
+      }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'pipeline-removal-blocked',
+      result: { dependentWorkflowDefinitionIds: ['user::release'], total: 1 }
+    });
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  it('blocks a removal referenced only by an invalid record (FR-041, FR-031)', async () => {
+    // Invalid for a reason that has nothing to do with the node: no name. The
+    // node's `pipelineId` is still well formed, so the reference survives the
+    // best-effort parse and still blocks.
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: { user: [workflowRow('release', { name: '' })] }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'pipeline-removal-blocked',
+      result: { dependentWorkflowDefinitionIds: ['user::release'], total: 1 }
+    });
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  it('names every referencing Workflow with its scope, since one id may span layers', async () => {
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: {
+        user: [workflowRow('release'), workflowRow('audit')],
+        workspace: [workflowRow('release')]
+      }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0].result).toMatchObject({
+      dependentWorkflowDefinitionIds: ['user::audit', 'user::release', 'workspace::release'],
+      total: 3
+    });
+  });
+
+  it('reports a Workflow once even when two of its nodes name the same Pipeline', async () => {
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: {
+        workspace: [workflowRow('release', {
+          nodes: [
+            { nodeId: 'a', pipelineId: CUSTOM_ROW.id },
+            { nodeId: 'b', pipelineId: CUSTOM_ROW.id }
+          ],
+          connections: [{ fromNodeId: 'a', toNodeId: 'b' }]
+        })]
+      }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0].result).toMatchObject({
+      dependentWorkflowDefinitionIds: ['workspace::release'],
+      total: 1
+    });
+  });
+
+  it('permits the removal when no stored definition names the Pipeline', async () => {
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: {
+        workspace: [workflowRow('release', {
+          nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }]
+        })]
+      }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.updateConfigCalls).toHaveLength(1);
+  });
+
+  // FR-022's "either condition alone permits the removal" is unchanged by
+  // FR-041: a definition reference blocks only when the id is left with no
+  // effective source, exactly as a run-request reference does.
+  it('permits the removal when a lower-precedence Pipeline source stays effective', async () => {
+    const harness = buildRouter({
+      layers: { user: [{ ...CUSTOM_ROW, name: 'Fallback' }], workspace: [CUSTOM_ROW] },
+      workflows: { workspace: [workflowRow('release')] }
+    });
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.updateConfigCalls).toHaveLength(1);
+  });
+
+  it('keeps the two consumer senses in separate lists', async () => {
+    const harness = buildRouter({
+      layers: { user: [], workspace: [CUSTOM_ROW] },
+      workflows: { workspace: [workflowRow('release')] }
+    });
+    // A queued run request alongside the stored definition, injected at the
+    // same seam `extension.ts` concatenates into.
+    const deps = (harness.router as unknown as { deps: Record<string, unknown> }).deps;
+    const definitionRefs = deps.readWorkflowPipelineRefs as () => readonly unknown[];
+    deps.readWorkflowPipelineRefs = () => [
+      { workflowId: 'queued-1', pipelineId: CUSTOM_ROW.id, kind: 'run-request' },
+      ...definitionRefs()
+    ];
+
+    await dispatch(harness, removal());
+
+    expect(harness.acks[0].result).toMatchObject({
+      dependentWorkflowIds: ['queued-1'],
+      dependentWorkflowDefinitionIds: ['workspace::release'],
+      total: 2
+    });
+  });
 });

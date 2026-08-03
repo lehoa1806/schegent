@@ -251,9 +251,10 @@ Frequently used keys:
 | `schegent.trust.allowCustomPhases` | boolean\|null | `null` | Per-capability trust scope (feature 059). When `null`, follows Workspace Trust; when `false`, denies non-default phase prompts. See [Trust Scopes](docs/operations/trust-scopes.md). |
 | `schegent.trust.allowCustomRetryConditions` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `retryCondition` DSL expressions. See [Trust Scopes](docs/operations/trust-scopes.md). |
 | `schegent.trust.allowPipelineOverrides` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `schegent.pipelines` entries. See [Trust Scopes](docs/operations/trust-scopes.md). |
+| `schegent.trust.allowWorkflowOverrides` | boolean\|null | `null` | Per-capability trust scope (feature 083) gating non-default `schegent.workflows` entries. A distinct capability from `allowPipelineOverrides`. See [Trust Scopes](docs/operations/trust-scopes.md). |
 
 The full schema (`schegent.phases`, `schegent.pipelines`,
-`schegent.models`, validation rules) is documented in
+`schegent.workflows`, `schegent.models`, validation rules) is documented in
 [`docs/reference/settings.md`](docs/reference/settings.md).
 
 ## On-disk layout
@@ -325,7 +326,7 @@ The defenses below reduce risk; they are not absolute guarantees.
   through VS Code commands and the sidebar UI.
 
 See [`docs/security/threat-model.md`](docs/security/threat-model.md)
-for the threat catalog (T1–T20), explicit non-defenses, and the knobs
+for the threat catalog (T1–T22), explicit non-defenses, and the knobs
 you control. To report a security issue, see [SECURITY.md](SECURITY.md).
 
 ## Building from source

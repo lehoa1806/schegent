@@ -4,7 +4,7 @@ Schegent runs an autonomous local CLI backend (Claude, Codex, or Agy) with broad
 
 > For a non-contributor-facing projection of this threat model — trust ceiling, audit boundary, network boundary, seven failure modes, and five escape hatches in ≤15 pages — see [Security White-Paper](whitepaper.md).
 
-## Threat catalog (T1–T20)
+## Threat catalog (T1–T22)
 
 The catalog below enumerates each in-scope threat, the primary mitigation, and the prose section that elaborates. CLAUDE.md hard rules and `SECURITY.md` cite these identifiers directly; every cited `Tn` resolves to an anchor here. The `tests/lint/threat-id-anchor-parity.test.ts` regression fails the build on any drift.
 
@@ -31,6 +31,7 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 | [T19](#t19--runtime-log-sink-forking-the-redaction-set) | The runtime log sink forking or doubling the redaction set, breaking the "single SECRET_PATTERNS source of truth" guarantee. | Sink at `src/lib/runtime-log/runtime-log-sink.ts` is a `LogSink` registered on `SanitizedLogger`; no second sanitizer; `tests/lint/no-direct-syslog-fs-writes.test.ts` pins the writer allowlist. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T20](#t20--phase-log-ipc-double-or-skipped-sanitization) | The phase-log IPC pipeline (manifest read + live tail) double-sanitizing, skipping sanitization, or routing operator-influenced strings to the webview via `{@html}` interpolation. | Fixed order project → truncate → sanitize at the IPC boundary; one injected `SanitizedLogger.sanitize`; webview never re-sanitizes; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T21](#t21--untrusted-stdout-names-local-files) | A CLI audit-event JSON line names a `phase-message.env` path outside the run's diagnostics tree (attacker-influenced absolute path or `..`-traversal), and the host reads through the steered path. | Canonical-path containment in `src/controller/phase-sidecar-reader.ts`: the host computes the expected path from `(workspaceRoot, runId, pipelineId, phaseId, iterationN)`; audit-reported paths are accepted only when they canonicalize byte-equal, and ignored entirely when the canonical file exists. | [T21 anchor](#t21--untrusted-stdout-names-local-files) |
+| [T22](#t22--workflow-condition-acquiring-an-evaluator) | A Workflow connection condition acquiring a string form — and therefore a parser, evaluator, template engine, or sandbox — reopening the T11 surface on a second operator-authored input without T11's sandbox invariants. | A condition is structured data (`{ left, operator, right? }`) compared field-wise against closed enums; there is no expression text to evaluate. Pinned by the CLAUDE.md hard rule and by a source scan over both condition modules in `tests/unit/config/workflow-graph-validator.test.ts`. | [T22 anchor](#t22--workflow-condition-acquiring-an-evaluator) |
 
 ## What Schegent has access to
 
@@ -155,13 +156,24 @@ You must explicitly trust the workspace before Schegent does anything. This is t
 
 ## Per-capability trust scopes
 
-VS Code's Workspace Trust is binary; Schegent layers three
+VS Code's Workspace Trust is binary; Schegent layers four
 independently-configurable trust scopes on top to give enterprise IT a
 narrower gate than "trust everything or trust nothing":
 
 - `schegent.trust.allowCustomPhases` — gates non-default phase prompts.
 - `schegent.trust.allowCustomRetryConditions` — gates non-default retry-condition DSL expressions on phase rows.
 - `schegent.trust.allowPipelineOverrides` — gates non-default entries in the pipeline catalog.
+- `schegent.trust.allowWorkflowOverrides` — gates non-default entries in the workflow catalog (`schegent.workflows`).
+
+`workflowOverrides` is a **distinct capability**, not a reuse of
+`pipelineOverrides`: a workflow graph decides which pipelines relate to
+which and under what conditions, which is a broader authority than
+editing one pipeline's phase order. Permitting pipeline-catalog edits
+therefore does not thereby permit workflow-graph edits, and the two
+resolve independently through the same ladder. Like every other
+capability, `workflowOverrides` returns `false` on an untrusted
+workspace regardless of any explicit `true` at user or workspace
+scope — the ceiling is not widened by adding a fourth scope.
 
 Each setting is `boolean | null`, defaults to `null` (follow Workspace
 Trust), and is resolved against a four-step ladder:
@@ -286,7 +298,7 @@ This page is a summary. For the underlying invariants and the long list of code-
 
 ## Threat anchors
 
-The headings below are the canonical anchor targets for the [Threat catalog (T1–T20)](#threat-catalog-t1t20) table. Each entry restates the threat, names the load-bearing defenses, and points to the elaborating prose.
+The headings below are the canonical anchor targets for the [Threat catalog (T1–T22)](#threat-catalog-t1t22) table. Each entry restates the threat, names the load-bearing defenses, and points to the elaborating prose.
 
 ### T1 — Secret leakage to operator-visible sinks
 
@@ -385,3 +397,17 @@ The phase-log IPC pipeline (manifest read + live tail) must sanitize exactly onc
 **Pre-feature mitigation**: basename filter (`path.basename === 'phase-message.env'`). Defeated by any attacker-named symlink or any operator-influenced file already named `phase-message.env`.
 **Post-feature mitigation (feature 056, T1-T20 floor preserved)**: canonical-path containment in [src/controller/phase-sidecar-reader.ts](../../src/controller/phase-sidecar-reader.ts) `parsePhaseMessage()`. The host computes the expected sidecar path from `(workspaceRoot, runId, pipelineId, phaseId, iterationN)`. When the canonical file exists, the audit-reported path is IGNORED entirely; when it does not, audit-reported paths are accepted only if they canonicalize byte-equal to the canonical path (via `fs.realpathSync.native`). Otherwise the runner emits `phase-message-invalid` with `reason: 'path-outside-run-dir'` or `'missing-canonical-sidecar'` and proceeds with `sidecar: null, suspicious: true`.
 **Residual risk**: If the operator places a malicious symlink AT the canonical path before the run starts, the host reads through it. This is operator-on-operator (the symlink had to be authored by the operator) and outside the trust boundary.
+
+### T22 — Workflow condition acquiring an evaluator
+
+**Source**: operator-authored Workflow definitions in `schegent.workflows`, reaching the host either through the Workflow Builder (`CMD_SAVE_WORKFLOWS`) or a hand-edited `settings.json`.
+
+**Vector**: A Workflow connection may carry a condition that decides whether the branch is offered. The obvious design — an expression string — is the design Schegent already has once, in the phase `retryCondition` DSL ([T11](#t11--retrycondition-dsl-escape)). Repeating it here would put a second operator-authored expression language on a surface that also names pipelines and reads prior node output, and it would arrive without T11's sandbox invariants unless someone rebuilt them.
+
+**Mitigation (by construction, not by blocklist)**: a `WorkflowCondition` is structured data — `{ left, operator, right? }`. `left` and `right` are `{ source: 'node-output', nodeId, field }` or `{ source: 'node-status', nodeId }`; `operator` is one of the eight members of `WORKFLOW_CONDITION_OPERATORS`; a `node-status` operand compares only against `WORKFLOW_NODE_TERMINAL_STATUSES`. Everything is a closed enum or an identifier resolved against the graph, so there is **no expression text, no parser, no evaluator, no template engine, and no sandbox** — there is nothing to evaluate. The host compares fields.
+
+Because "we did not add an evaluator" is invisible to behavioral tests (every one of them would keep passing the day someone adds an expression escape hatch), the property is pinned against the module source: the `Feature 083 T046` block in [tests/unit/config/workflow-graph-validator.test.ts](../../tests/unit/config/workflow-graph-validator.test.ts) asserts that both condition modules — [src/config/workflow-graph-validator.ts](../../src/config/workflow-graph-validator.ts) and [src/config/workflow-definition-validator.ts](../../src/config/workflow-definition-validator.ts), which owns `readCondition` and runs first — import nothing but relative project modules, and contain no `eval`, `Function` constructor, `.constructor` access, dynamic `import(`, `require(`, or `node:vm`. The rule is stricter than a forbidden-package list on purpose: a blocklist would have to be maintained forever and would still miss the next engine published. The corresponding CLAUDE.md hard rule states the invariant for reviewers.
+
+**Trust boundary**: authoring a Workflow graph is gated by `schegent.trust.allowWorkflowOverrides`, a **distinct** `TrustCapability` from `pipelineOverrides` — permitting pipeline-catalog edits does not thereby permit workflow-graph edits. Like every capability it is subject to the untrusted-workspace ceiling: step 1 of the resolution ladder returns `false` on an untrusted workspace regardless of any explicit `true` at user or workspace scope. See [Per-capability trust scopes](#per-capability-trust-scopes).
+
+**Residual risk**: An operator who is permitted to author workflow graphs can route between any pipelines they are permitted to author. Conditions bound *which* branch is offered, never *whether* the operator is asked — a Workflow never starts a follow-up run on its own, so a mis-authored condition mis-suggests rather than mis-executes.

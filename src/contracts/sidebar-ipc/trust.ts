@@ -10,10 +10,17 @@ export const TRUST_DENIED_REASONS = {
   retryConditionsUser: 'allowCustomRetryConditions is false at user scope.',
   pipelineOverridesWorkspace:
     'allowPipelineOverrides is false at workspace scope.',
-  pipelineOverridesUser: 'allowPipelineOverrides is false at user scope.'
+  pipelineOverridesUser: 'allowPipelineOverrides is false at user scope.',
+  workflowOverridesWorkspace:
+    'allowWorkflowOverrides is false at workspace scope.',
+  workflowOverridesUser: 'allowWorkflowOverrides is false at user scope.'
 } as const;
 
-export type TrustCapability = 'phases' | 'retryConditions' | 'pipelineOverrides';
+export type TrustCapability =
+  | 'phases'
+  | 'retryConditions'
+  | 'pipelineOverrides'
+  | 'workflowOverrides';
 export type ResolvedScope = 'user' | 'workspace' | 'workspace-trust';
 export type TrustDeniedReason =
   (typeof TRUST_DENIED_REASONS)[keyof typeof TRUST_DENIED_REASONS];

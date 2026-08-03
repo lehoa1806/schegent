@@ -12,6 +12,8 @@
 //   - schegent.trust.allowCustomPhases
 //   - schegent.trust.allowCustomRetryConditions
 //   - schegent.trust.allowPipelineOverrides
+// Feature 083 added a fourth on the same terms:
+//   - schegent.trust.allowWorkflowOverrides
 //
 // This module is intentionally `vscode`-free: it is imported by host
 // validators (transitively via `general-settings.ts`) and by tests.
@@ -202,6 +204,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Custom pipeline definitions'
   },
+  'schegent.workflows': {
+    key: 'schegent.workflows',
+    type: 'array',
+    default: [],
+    itemType: 'object',
+    scope: 'resource',
+    docLabel: 'Custom workflow definitions'
+  },
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
@@ -349,6 +359,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     nullable: true,
     scope: 'window',
     docLabel: 'Trust scope: allow saving non-default pipeline catalog entries'
+  },
+  'schegent.trust.allowWorkflowOverrides': {
+    key: 'schegent.trust.allowWorkflowOverrides',
+    type: 'boolean',
+    default: null,
+    nullable: true,
+    scope: 'window',
+    docLabel: 'Trust scope: allow saving non-default workflow catalog entries'
   },
   'schegent.wakeUp.enabled': {
     key: 'schegent.wakeUp.enabled',

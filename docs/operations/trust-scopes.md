@@ -1,33 +1,40 @@
 # Per-Capability Trust Scopes
 
 VS Code's built-in Workspace Trust is a single on/off switch. Schegent
-adds three independently-configurable **trust scopes** on top of it so
+adds four independently-configurable **trust scopes** on top of it so
 enterprise IT can grant workspace trust (which the seven built-in
 Spec Driven Development workflow phases require) while still denying operator-authored prompt
 overrides on the same workspace.
 
-The three scopes are:
+The four scopes are:
 
 | Setting | Capability gated | Resets-to-defaults allowed? |
 |---|---|---|
 | `schegent.trust.allowCustomPhases` | Saving non-default phase definitions (`schegent.phases[]`) | Yes |
 | `schegent.trust.allowCustomRetryConditions` | Saving a non-default `retryCondition` expression on any phase row | Yes (the row's default retry-condition is unaffected) |
 | `schegent.trust.allowPipelineOverrides` | Saving non-default entries in the pipeline catalog (`schegent.pipelines`) | Yes |
+| `schegent.trust.allowWorkflowOverrides` | Saving non-default entries in the workflow catalog (`schegent.workflows`) | Yes |
 
-All three default to `null`, which means "follow Workspace Trust". When
+All four default to `null`, which means "follow Workspace Trust". When
 explicitly set to `true` or `false`, they are independent of each other
 but **never widen the Workspace Trust ceiling**.
+
+`allowPipelineOverrides` and `allowWorkflowOverrides` are deliberately separate
+capabilities: permitting pipeline-catalog edits does not thereby permit
+workflow-graph edits. A workflow decides which pipelines run and in what
+relation to each other, which is a broader authority than editing one pipeline's
+phase order.
 
 This page is the operator reference for the feature. See
 [specs/059-fine-grained-trust-scopes/](../../../specs/059-fine-grained-trust-scopes/)
 for the full specification and contract dossiers.
 
-## Why three scopes (and not one)
+## Why four scopes (and not one)
 
 Workspace Trust is workspace-wide: granting it enables every Schegent
 phase, including the built-ins (`speckit-specify`, `speckit-plan`,
 …). Operators who only need the built-ins shouldn't have to grant a
-blank cheque on custom phase prompts. The three scopes let your IT
+blank cheque on custom phase prompts. The four scopes let your IT
 team approve the built-in flow on a per-workspace or per-user basis
 while still denying:
 
@@ -36,7 +43,9 @@ while still denying:
 - operator-authored retry-condition **DSL expressions** (sandboxed at
   evaluation, but still operator-controlled looping logic),
 - operator-authored **pipeline catalogs** (which decide which phases
-  run in what order).
+  run in what order),
+- operator-authored **workflow graphs** (which decide which pipelines
+  relate to which, and under what conditions).
 
 The Workspace Trust ceiling guarantees a denied workspace can never be
 overridden by user-scope settings — see the resolution ladder below.
@@ -47,7 +56,7 @@ For each capability, Schegent runs four checks in order. The **first
 explicit answer wins**:
 
 ```text
-INPUT: capability ∈ { phases, retryConditions, pipelineOverrides }
+INPUT: capability ∈ { phases, retryConditions, pipelineOverrides, workflowOverrides }
 
 STEP 1: if vscode.workspace.isTrusted === false  → return false
 STEP 2: read workspace-scope setting via .inspect(key).workspaceValue
@@ -71,7 +80,7 @@ Two consequences:
 ### 1. Default-allow (typical individual developer)
 
 - Workspace is trusted.
-- Neither workspace nor user setting set any of the three scopes.
+- Neither workspace nor user setting set any of the four scopes.
 
 Step 1 passes. Steps 2 and 3 find no explicit value. Step 4 returns
 `true` for every capability. The webview shows no trust banners; every
@@ -115,7 +124,7 @@ retry-conditions remain enabled (default-allow). The resolver reports
 ### 4. Workspace-trust ceiling (untrusted workspace)
 
 - Workspace is not trusted.
-- Any value at any scope for any of the three settings.
+- Any value at any scope for any of the four settings.
 
 Step 1 returns `false` for every capability. The webview shows the
 **workspace-trust** banner; the per-capability banners are suppressed
@@ -175,7 +184,7 @@ Field guarantees (see the
 [`trust-capability-denied-audit-contract.md`](../../../specs/059-fine-grained-trust-scopes/contracts/trust-capability-denied-audit-contract.md)
 for the canonical invariants):
 
-- `capability` ∈ `{ phases, retryConditions, pipelineOverrides }` —
+- `capability` ∈ `{ phases, retryConditions, pipelineOverrides, workflowOverrides }` —
   closed enum.
 - `resolvedScope` ∈ `{ user, workspace, workspace-trust }` — closed
   enum identifying the layer that produced the denial decision.

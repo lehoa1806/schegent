@@ -300,6 +300,100 @@ Builder is gated by `schegent.trust.allowPipelineOverrides`; see
 [Trust Scopes](../operations/trust-scopes.md) and
 [Configuration](../operations/configuration.md).
 
+### `schegent.workflows`
+
+- **Type:** `array of objects`
+- **Default:** `[]`
+- **Scope:** `resource`
+
+Saved Workflow **definitions**: reusable acyclic graphs whose nodes are
+pipelines. A Workflow definition is a document, not an execution — saving one
+starts nothing. This is a different thing from the run-side "workflow" you see
+in the queue and the audit log; see [Glossary](glossary.md) for both senses.
+
+Each Workflow accepts:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `workflowId` | string | yes | Unique id, kebab-case, ≤64 chars. Same grammar as `pipelineId`. Immutable once saved. |
+| `name` | string | yes | Display name, non-empty. |
+| `description` | string | no | Optional summary. |
+| `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
+| `nodes` | array of objects | yes | `{ nodeId, pipelineId, label? }`. Each node runs exactly one pipeline. Two nodes may name the same pipeline; they are distinguished only by `nodeId`. |
+| `connections` | array of objects | yes | Typed edges between node ports. See below. |
+| `startNodeIds` | array of strings | yes | Non-empty. Where a composed run would begin. Every other node must be reachable from one of them. |
+
+Connections address a node by **`nodeId`**, never by position — the opposite of
+pipeline `bindings`, which are index-keyed. Reordering, inserting, or removing a
+node therefore preserves every endpoint with no remapping:
+
+```jsonc
+{
+  "from": { "nodeId": "design", "portId": "spec" },
+  "to":   { "nodeId": "build",  "portId": "brief" },
+  "condition": {
+    "left": { "source": "node-status", "nodeId": "design" },
+    "operator": "equals",
+    "right": "completed"
+  },
+  "priority": 10,
+  "isDefault": false,
+  "selection": "first"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `from`, `to` | object | yes | `{ nodeId, portId }`. Both nodes must exist; the port must be declared on that node's pipeline. |
+| `condition` | object | no | A structured guard, never a string. See below. |
+| `priority` | integer | no | Ascending evaluation order; authored order breaks ties. |
+| `isDefault` | boolean | no | At most one per source node. |
+| `selection` | string | conditional | `first`, `last`, or `exactlyOne`. Required when a collection output (`file-set`) feeds a non-collection input. |
+
+Port compatibility is a fixed table, not something a definition may declare —
+a portable Workflow must behave the same on every host that opens it:
+
+| Output type | Accepted input types |
+|---|---|
+| `markdown` | `text`, `source` |
+| `file` | `local-file`, `source` |
+| `file-set` | `local-folder`, `source-list` |
+| `structured-data` | `pipeline-output` |
+| `run-request` | `pipeline-output` |
+| `external-reference` | `web-url`, `source` |
+
+A **condition** is structured data — `{ left, operator, right? }` — and never a
+string. There is no expression language here, so nothing is parsed or evaluated;
+operands are compared field-wise. This is unrelated to the sandboxed
+`retryCondition` DSL on phases.
+
+- `left` is `{ "source": "node-output", "nodeId": "...", "field": "..." }` or
+  `{ "source": "node-status", "nodeId": "..." }`.
+- `operator` is one of `equals`, `notEquals`, `in`, `exists`, `greaterThan`,
+  `greaterThanOrEqual`, `lessThan`, `lessThanOrEqual`.
+- `right` is a string, number, boolean, or array of those. A `node-status`
+  operand compares against `completed`, `failed`, or `canceled`.
+- `left.nodeId` must name an **ancestor** of the connection's source node — you
+  cannot branch on a result that has not been produced yet.
+
+A Workflow declares no ports of its own. Its inputs and outputs are derived on
+read from the unbound ports of its node pipelines, so they cannot go stale when
+a node's pipeline changes shape.
+
+Validation reports **every** defect at once rather than stopping at the first,
+so a graph can be repaired in one pass. Cycles, unreachable nodes, unresolved
+pipelines, port-type mismatches, duplicate input bindings, missing selection
+rules, and non-ancestor condition operands all block the save.
+
+Rows resolve workspace > user > built-in, one effective definition per id. The
+built-in layer is read-only and ships empty in this release. An invalid row stays
+visible with its field errors while the next valid scope for that id becomes
+effective. Editing this key from the Builder is gated by
+`schegent.trust.allowWorkflowOverrides` — a capability distinct from
+`schegent.trust.allowPipelineOverrides`; see
+[Trust Scopes](../operations/trust-scopes.md) and
+[Configuration](../operations/configuration.md).
+
 ### `schegent.models`
 
 - **Type:** `array of strings`
@@ -505,6 +599,7 @@ For quick lookup, the full list of keys:
 | `schegent.defaultPipelineId` | resource | `"speckit-new-feature"` |
 | `schegent.phases` | resource | `[]` |
 | `schegent.pipelines` | resource | `[]` |
+| `schegent.workflows` | resource | `[]` |
 | `schegent.models` | resource | `[]` |
 | `schegent.retry.maxAttempts` | resource | `5` |
 | `schegent.queue.globalConcurrencyCap` | resource | `1` |

@@ -25,6 +25,7 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_SAVE_PIPELINES",
   "CMD_SAVE_PHASES",
   "CMD_SAVE_MODELS",
+  "CMD_SAVE_WORKFLOWS",
   "CMD_SAVE_GENERAL_SETTINGS",
   "CMD_RETRY_PHASE_NOW",
   "CMD_SAVE_WAKEUP_SETTINGS",
@@ -192,13 +193,15 @@ export const SETTINGS_KEYS = [
   "schegent.trust.allowCustomPhases",
   "schegent.trust.allowCustomRetryConditions",
   "schegent.trust.allowPipelineOverrides",
+  "schegent.trust.allowWorkflowOverrides",
   "schegent.ui.confirmations.enable",
   "schegent.wakeUp.chronologicalTime",
   "schegent.wakeUp.enabled",
   "schegent.wakeUp.model",
   "schegent.wakeUp.periodicInterval",
   "schegent.wakeUp.schedulerType",
-  "schegent.watchdog.pollIntervalMinutes"
+  "schegent.watchdog.pollIntervalMinutes",
+  "schegent.workflows"
 ] as const;
 
 export const QUEUE_STATUSES = [

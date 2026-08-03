@@ -12,7 +12,7 @@ If you do not have a GitHub account, or your situation prevents you from using G
 
 ## What Is In Scope
 
-Schegent runs the upstream `claude` CLI with the `--dangerously-skip-permissions` flag on the operator's behalf, which means the extension's safety posture depends on a small number of code-resident defenses. The threat catalog in [docs/security/threat-model.md](../docs/security/threat-model.md) enumerates each threat (T1–T20) in detail; this policy summarizes the four in-scope surfaces that the maintainers triage as Schegent vulnerabilities.
+Schegent runs the upstream `claude` CLI with the `--dangerously-skip-permissions` flag on the operator's behalf, which means the extension's safety posture depends on a small number of code-resident defenses. The threat catalog in [docs/security/threat-model.md](../docs/security/threat-model.md) enumerates each threat (T1–T22) in detail; this policy summarizes the four in-scope surfaces that the maintainers triage as Schegent vulnerabilities.
 
 - **Secret leakage** — the `SECRET_PATTERNS` redaction set in `src/lib/logger.ts` and every downstream sink (audit log, runtime log, phase-log IPC, wake-up session log). A finding that bypasses redaction at any sink is in scope. See [docs/security/threat-model.md](../docs/security/threat-model.md).
 - **Audit-log tampering** — the append-only `<workspaceRoot>/.schegent/audit.log` write path and its parser. A finding that mutates, truncates, or corrupts the log without the append-only invariant being honored is in scope. See [docs/security/threat-model.md](../docs/security/threat-model.md).
@@ -36,4 +36,4 @@ For reports that fall under "What Is Out of Scope", expect a redirect to the app
 
 ## Further Reading
 
-- [docs/security/threat-model.md](../docs/security/threat-model.md) — the authoritative threat catalog (T1–T20) that this policy summarizes.
+- [docs/security/threat-model.md](../docs/security/threat-model.md) — the authoritative threat catalog (T1–T22) that this policy summarizes.

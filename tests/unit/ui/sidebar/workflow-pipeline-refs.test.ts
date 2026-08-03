@@ -6,6 +6,11 @@
 // is that a request stops being a consumer the moment it starts, because the
 // Run has by then frozen the Pipeline contract (FR-027) and no catalog edit can
 // reach it.
+//
+// Feature 083 (FR-041) added a second sense of "consuming Workflow" — a stored
+// Workflow *definition* whose node names a Pipeline — so every reference now
+// carries a `kind` discriminant. This collector's selection rule is unchanged;
+// it only stamps `run-request` on what it already reported.
 
 import { describe, expect, it } from 'vitest';
 import { collectWorkflowPipelineRefs } from '../../../../src/ui/sidebar/workflow-pipeline-refs';
@@ -34,7 +39,7 @@ describe('collectWorkflowPipelineRefs', () => {
   it('reports a pending request that pins a pipelineId', () => {
     expect(
       collectWorkflowPipelineRefs([request({ id: 'wf-a', pipelineId: 'custom-flow' })])
-    ).toEqual([{ workflowId: 'wf-a', pipelineId: 'custom-flow' }]);
+    ).toEqual([{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]);
   });
 
   it('drops a request that has started a Run — its contract is frozen (FR-027)', () => {
@@ -63,7 +68,7 @@ describe('collectWorkflowPipelineRefs', () => {
       collectWorkflowPipelineRefs([
         request({ id: 'wf-a', pipelineId: 'custom-flow', status: 'paused', runId: null })
       ])
-    ).toEqual([{ workflowId: 'wf-a', pipelineId: 'custom-flow' }]);
+    ).toEqual([{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]);
   });
 
   it('drops a request that pins no pipelineId', () => {
@@ -78,9 +83,9 @@ describe('collectWorkflowPipelineRefs', () => {
         request({ id: 'wf-c', pipelineId: 'other-flow' })
       ])
     ).toEqual([
-      { workflowId: 'wf-a', pipelineId: 'custom-flow' },
-      { workflowId: 'wf-b', pipelineId: 'custom-flow' },
-      { workflowId: 'wf-c', pipelineId: 'other-flow' }
+      { workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' },
+      { workflowId: 'wf-b', pipelineId: 'custom-flow', kind: 'run-request' },
+      { workflowId: 'wf-c', pipelineId: 'other-flow', kind: 'run-request' }
     ]);
   });
 
