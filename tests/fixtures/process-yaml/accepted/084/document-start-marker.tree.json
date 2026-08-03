@@ -1,0 +1,86 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "apiVersion",
+      "value": {
+        "kind": "scalar",
+        "value": "schegent/v1",
+        "quoted": false,
+        "line": 2
+      },
+      "line": 2
+    },
+    {
+      "key": "kind",
+      "value": {
+        "kind": "scalar",
+        "value": "Phase",
+        "quoted": false,
+        "line": 3
+      },
+      "line": 3
+    },
+    {
+      "key": "metadata",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "phaseId",
+            "value": {
+              "kind": "scalar",
+              "value": "ship-it",
+              "quoted": false,
+              "line": 5
+            },
+            "line": 5
+          },
+          {
+            "key": "name",
+            "value": {
+              "kind": "scalar",
+              "value": "Ship It",
+              "quoted": false,
+              "line": 6
+            },
+            "line": 6
+          },
+          {
+            "key": "version",
+            "value": {
+              "kind": "scalar",
+              "value": "1",
+              "quoted": false,
+              "line": 7
+            },
+            "line": 7
+          }
+        ],
+        "line": 5
+      },
+      "line": 4
+    },
+    {
+      "key": "spec",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "instruction",
+            "value": {
+              "kind": "scalar",
+              "value": "Ship the thing.",
+              "quoted": false,
+              "line": 9
+            },
+            "line": 9
+          }
+        ],
+        "line": 9
+      },
+      "line": 8
+    }
+  ],
+  "line": 2
+}

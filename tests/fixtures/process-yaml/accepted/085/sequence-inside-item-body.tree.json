@@ -1,0 +1,54 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "included",
+      "value": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "mapping",
+            "entries": [
+              {
+                "key": "id",
+                "value": {
+                  "kind": "scalar",
+                  "value": "nested",
+                  "quoted": false,
+                  "line": 2
+                },
+                "line": 2
+              },
+              {
+                "key": "phaseIds",
+                "value": {
+                  "kind": "sequence",
+                  "items": [
+                    {
+                      "kind": "scalar",
+                      "value": "specify",
+                      "quoted": false,
+                      "line": 4
+                    },
+                    {
+                      "kind": "scalar",
+                      "value": "plan",
+                      "quoted": false,
+                      "line": 5
+                    }
+                  ],
+                  "line": 4
+                },
+                "line": 3
+              }
+            ],
+            "line": 2
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    }
+  ],
+  "line": 1
+}

@@ -149,7 +149,7 @@ async function preflight(inst: Installation, file: SourceFile) {
   const command: PreflightProcessYamlCommand = {
     type: CMD_PREFLIGHT_PROCESS_YAML,
     correlationId: 'roundtrip-preflight',
-    payload: { resourceKind: 'phase' }
+    payload: {}
   };
   await preflightHandler(ctx, command);
   const result = acks[0]!.result as PreflightProcessYamlResult;
@@ -168,9 +168,13 @@ async function commit(
   plan: Awaited<ReturnType<typeof preflight>>,
   scope: WritablePhaseDefinitionScope
 ): Promise<CommandAckMessage> {
-  const row = plan.rows.find((candidate) => candidate.outcome === 'import');
+  const row = plan.rows.find(
+    (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
+  );
   expect(row?.outcome).toBe('import');
-  if (row?.outcome !== 'import') throw new Error('unreachable');
+  if (row?.outcome !== 'import' || row.resourceKind !== 'phase') {
+    throw new Error('unreachable');
+  }
   const { phaseId, ...declared } = row.definition;
 
   const acks: CommandAckMessage[] = [];

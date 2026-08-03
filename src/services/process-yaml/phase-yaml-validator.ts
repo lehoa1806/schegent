@@ -95,7 +95,12 @@ function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-function defect(field: string, code: string, message: string): ImportDefect {
+/**
+ * One bounded defect. Exported because feature 085's package reader classifies
+ * resources of two kinds and must produce defects the operator sees beside these
+ * ones; a second copy of the three caps is a second thing to keep in step.
+ */
+export function defect(field: string, code: string, message: string): ImportDefect {
   return Object.freeze({
     field: bounded(field, DEFECT_FIELD_MAX),
     code: bounded(code, DEFECT_CODE_MAX),
@@ -111,11 +116,13 @@ function refuseDocument(code: DocumentRefusalCode, message: string): PhaseYamlDo
   };
 }
 
-function unknownField(key: string): ImportDefect {
+/** Exported for the package reader, so both kinds report a stray key identically. */
+export function unknownField(key: string): ImportDefect {
   return defect(key, 'unknown-field', `Unknown field '${bounded(key, DEFECT_FIELD_MAX)}'`);
 }
 
-function findScalar(node: YamlMappingNode, key: string): YamlScalarNode | undefined {
+/** First entry wins on a duplicate key; the package reader agrees with this. */
+export function findScalar(node: YamlMappingNode, key: string): YamlScalarNode | undefined {
   const entry = node.entries.find((candidate) => candidate.key === key);
   return entry !== undefined && entry.value.kind === 'scalar' ? entry.value : undefined;
 }
@@ -171,7 +178,12 @@ function readBoolean(scalar: YamlScalarNode): boolean | null {
   return null;
 }
 
-function readSection(
+/**
+ * A required mapping section. Returning null rather than throwing is what lets a
+ * caller report the structural defect alone instead of inventing a field defect
+ * for every key the missing section would have carried.
+ */
+export function readSection(
   node: YamlMappingNode,
   key: string,
   defects: ImportDefect[]
@@ -403,6 +415,27 @@ function readOptionalBoolean(
 }
 
 /**
+ * The id an invalid resource reports, read independently of whether the rest of
+ * `metadata` validated.
+ *
+ * `validateMetadata` returns null on ANY metadata defect, so reading the id off
+ * its result would drop a perfectly readable `phaseId` because some *other*
+ * field — a version, a name length — was wrong. Feature 085 makes that visible:
+ * a package names several resources, and an invalid row with no id is the
+ * difference between "this Phase is wrong" and "something in this file is
+ * wrong". The pattern test is what keeps the documented contract honest — an id
+ * that is not well-formed still reports `null`, so a malformed id is never
+ * echoed back as though it were one.
+ */
+function readableResourceId(section: YamlMappingNode | null): string | null {
+  if (section === null) return null;
+  const node = findScalar(section, 'phaseId');
+  if (node === undefined) return null;
+  const phaseId = node.value.trim();
+  return PHASE_ID_PATTERN.test(phaseId) ? phaseId : null;
+}
+
+/**
  * Validate one parsed document against the closed format.
  *
  * The version and kind gates run first and in that order: a document from a
@@ -445,7 +478,7 @@ export function validatePhaseDocument(node: YamlMappingNode): PhaseYamlValidatio
     return {
       ok: false,
       kind: 'resource',
-      resourceId: metadata?.phaseId ?? null,
+      resourceId: readableResourceId(metadataSection),
       defects: Object.freeze(defects)
     };
   }

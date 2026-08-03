@@ -6,6 +6,13 @@
 // that says whether its source form fixed it as text. Type interpretation is
 // the validator's job, where the field's declared type is known.
 //
+// Feature 085 T007/T008 — a key whose value is a block opens EITHER a mapping
+// or a sequence, decided by the first token beneath it and by nothing else. A
+// level is one or the other, never both: `buildMapping` refuses an item at its
+// own level and `buildSequence` refuses an entry at its own, so a document that
+// mixes them is refused at the point the second kind appears rather than being
+// silently reinterpreted.
+//
 // Guard order in parseDocumentBytes is load-bearing (FR-011, QS-8):
 //
 //   size bound  ->  byte-order mark  ->  strict UTF-8 decode  ->  scanner
@@ -23,7 +30,9 @@ import {
   type DocumentRefusalCode,
   type ParseDocumentResult,
   type YamlMappingEntry,
-  type YamlMappingNode
+  type YamlMappingNode,
+  type YamlNode,
+  type YamlSequenceNode
 } from './types';
 
 const BYTE_ORDER_MARK = '\uFEFF';
@@ -97,6 +106,39 @@ type MappingResult =
   | { readonly ok: true; readonly node: YamlMappingNode; readonly cursor: number }
   | { readonly ok: false; readonly refusal: DocumentRefusal };
 
+type SequenceResult =
+  | { readonly ok: true; readonly node: YamlSequenceNode; readonly cursor: number }
+  | { readonly ok: false; readonly refusal: DocumentRefusal };
+
+function syntaxRefusal(message: string, line: number): DocumentRefusal {
+  return { code: 'disallowed-syntax', message: `${message} (line ${line})` };
+}
+
+function multiDocumentRefusal(line: number): DocumentRefusal {
+  return {
+    code: 'multi-document',
+    message: `a second document start is not part of this format (line ${line})`
+  };
+}
+
+type BlockResult =
+  | { readonly ok: true; readonly node: YamlNode; readonly cursor: number }
+  | { readonly ok: false; readonly refusal: DocumentRefusal };
+
+/**
+ * Build whatever block sits beneath a key that took no inline value. The first
+ * token at the child level decides: an item opens a sequence, an entry opens a
+ * mapping. There is no third possibility, because the scanner emits no third
+ * token kind at a content level.
+ */
+function buildBlock(tokens: readonly YamlToken[], start: number, level: number): BlockResult {
+  const first = start < tokens.length ? tokens[start] : undefined;
+  if (first !== undefined && first.kind === 'item' && first.indent === level) {
+    return buildSequence(tokens, start, level);
+  }
+  return buildMapping(tokens, start, level);
+}
+
 function buildMapping(tokens: readonly YamlToken[], start: number, level: number): MappingResult {
   const entries: YamlMappingEntry[] = [];
   const seen = new Set<string>();
@@ -106,37 +148,32 @@ function buildMapping(tokens: readonly YamlToken[], start: number, level: number
   while (cursor < tokens.length) {
     const token = tokens[cursor];
     if (token.kind === 'document-start') {
-      return {
-        ok: false,
-        refusal: {
-          code: 'multi-document',
-          message: `a second document start is not part of this format (line ${token.line})`
-        }
-      };
+      return { ok: false, refusal: multiDocumentRefusal(token.line) };
     }
     if (token.indent < level) break;
     if (token.indent > level) {
-      return {
-        ok: false,
-        refusal: {
-          code: 'disallowed-syntax',
-          message: `unexpected indentation (line ${token.line})`
-        }
-      };
+      return { ok: false, refusal: syntaxRefusal('unexpected indentation', token.line) };
+    }
+    if (token.kind === 'item') {
+      // A sequence where a mapping key was expected. At the root this is the
+      // whole document's shape; anywhere else it is a level that started as a
+      // mapping and changed its mind.
+      const message =
+        entries.length === 0 && level === 0
+          ? 'a document must begin with a mapping, not a sequence'
+          : 'a sequence entry and a mapping key may not share one level';
+      return { ok: false, refusal: syntaxRefusal(message, token.line) };
     }
     if (seen.has(token.key)) {
       return {
         ok: false,
-        refusal: {
-          code: 'disallowed-syntax',
-          message: `duplicate key '${token.key}' in one mapping (line ${token.line})`
-        }
+        refusal: syntaxRefusal(`duplicate key '${token.key}' in one mapping`, token.line)
       };
     }
     seen.add(token.key);
 
     if (token.value === null) {
-      const nested = buildMapping(tokens, cursor + 1, level + 1);
+      const nested = buildBlock(tokens, cursor + 1, level + 1);
       if (!nested.ok) return nested;
       entries.push({ key: token.key, value: nested.node, line: token.line });
       cursor = nested.cursor;
@@ -147,4 +184,44 @@ function buildMapping(tokens: readonly YamlToken[], start: number, level: number
   }
 
   return { ok: true, node: { kind: 'mapping', entries, line }, cursor };
+}
+
+/**
+ * Assemble the items at `level`. An item carrying a scalar is that scalar; an
+ * item carrying none opens a mapping at `level + 1`, whose first key the
+ * scanner already emitted as an ordinary entry token.
+ */
+function buildSequence(tokens: readonly YamlToken[], start: number, level: number): SequenceResult {
+  const items: YamlNode[] = [];
+  const line = start < tokens.length ? tokens[start].line : 0;
+  let cursor = start;
+
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token.kind === 'document-start') {
+      return { ok: false, refusal: multiDocumentRefusal(token.line) };
+    }
+    if (token.indent < level) break;
+    if (token.indent > level) {
+      return { ok: false, refusal: syntaxRefusal('unexpected indentation', token.line) };
+    }
+    if (token.kind === 'entry') {
+      return {
+        ok: false,
+        refusal: syntaxRefusal('a sequence entry and a mapping key may not share one level', token.line)
+      };
+    }
+
+    if (token.value === null) {
+      const body = buildMapping(tokens, cursor + 1, level + 1);
+      if (!body.ok) return body;
+      items.push(body.node);
+      cursor = body.cursor;
+      continue;
+    }
+    items.push(token.value);
+    cursor += 1;
+  }
+
+  return { ok: true, node: { kind: 'sequence', items, line }, cursor };
 }

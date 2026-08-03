@@ -108,9 +108,9 @@ function buildHarness(
 const COMMAND: PreflightProcessYamlCommand = Object.freeze({
   type: CMD_PREFLIGHT_PROCESS_YAML,
   correlationId: 'preflight-test-1',
-  // `as const` because `Object.freeze` infers from the literal rather than from
-  // the annotation, which would widen this to `string`.
-  payload: { resourceKind: 'phase' as const }
+  // Preflight carries nothing: no location, no bytes, no scope, and — since
+  // feature 085 — no kind either. The document declares its own `kind:`.
+  payload: {}
 });
 
 function bytes(text: string): Uint8Array {
@@ -150,6 +150,7 @@ describe('Feature 084 — Phase import preflight', () => {
     expect(result.plan.rows).toEqual([
       {
         outcome: 'import',
+        resourceKind: 'phase',
         resourceId: 'ship-it',
         name: 'Ship It',
         requiresRetryConditionCapability: false,
@@ -165,7 +166,7 @@ describe('Feature 084 — Phase import preflight', () => {
         }
       }
     ]);
-    expect(result.plan.counts).toEqual({ import: 1, skip: 0, invalid: 0 });
+    expect(result.plan.counts).toEqual({ import: 1, skip: 0, invalid: 0, blocked: 0 });
     const expected = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, user: [], workspace: [] });
     expect(result.plan.computedAgainstRevision).toEqual(expected.revisions);
     expect(h.acks[0]!.status).toBe('accepted');
@@ -224,13 +225,14 @@ describe('Feature 084 — Phase import preflight', () => {
     expect(result.plan.rows).toEqual([
       {
         outcome: 'skip',
+        resourceKind: 'phase',
         resourceId: 'ship-it',
         name: 'Ship It',
         presentIn: 'user',
         presentRowStatus: 'invalid'
       }
     ]);
-    expect(result.plan.counts).toEqual({ import: 0, skip: 1, invalid: 0 });
+    expect(result.plan.counts).toEqual({ import: 0, skip: 1, invalid: 0, blocked: 0 });
   });
 
   it('QS-8 refuses an over-size document before the scanner is entered, with no plan', async () => {
@@ -378,6 +380,6 @@ describe('Feature 084 — Phase import preflight', () => {
     expect(row.defects).toHaveLength(20);
     expect(row.totalDefects).toBe(25);
     // Counts describe rows, so the defect cap does not desynchronize them.
-    expect(result.plan.counts).toEqual({ import: 0, skip: 0, invalid: 1 });
+    expect(result.plan.counts).toEqual({ import: 0, skip: 0, invalid: 1, blocked: 0 });
   });
 });

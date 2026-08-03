@@ -1,0 +1,32 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "phases",
+      "value": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "mapping",
+            "entries": [
+              {
+                "key": "instruction",
+                "value": {
+                  "kind": "scalar",
+                  "value": "line one\nline two",
+                  "quoted": true,
+                  "line": 2
+                },
+                "line": 2
+              }
+            ],
+            "line": 2
+          }
+        ],
+        "line": 2
+      },
+      "line": 1
+    }
+  ],
+  "line": 1
+}

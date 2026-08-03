@@ -161,7 +161,17 @@
    * a check: an empty projection taken while the catalog was still loading would
    * make a commit erase the layer it wrote to.
    */
-  const importLayers = $derived(storedWritableLayers(snapshot.phaseCatalog?.records ?? []));
+  const importLayers = $derived(
+    // Feature 085 T048 — both catalogs, because a confirmed package writes both
+    // and each write sends its whole layer. The Pipeline records come off the
+    // same snapshot for the same reason the Phase records do: it is the one the
+    // host resolved, so the layer an import appends to is authoritative by
+    // construction rather than by a check.
+    storedWritableLayers(
+      snapshot.phaseCatalog?.records ?? [],
+      snapshot.pipelineCatalog?.records ?? []
+    )
+  );
   const importUnavailable = $derived(
     importDisabledReason({ trusted, savePending, mutationActive })
   );

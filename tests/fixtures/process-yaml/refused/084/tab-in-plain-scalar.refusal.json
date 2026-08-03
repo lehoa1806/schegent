@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a tab may not appear in a plain scalar (line 1)"
+}

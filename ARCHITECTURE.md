@@ -453,16 +453,30 @@ Workflow's own ports on read rather than storing them. The full contract is in
 the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 [src/services/process-yaml/](src/services/process-yaml/) is the portable
-exchange format for the first of those families — `schegent/v1` `Phase`
-documents. It imports no `vscode` and no configuration, and it imports the
-catalog's own field bounds from
-[process-definition-validator.ts](src/config/process-definition-validator.ts)
-rather than restating them, so the format cannot drift from what the catalog
-accepts. The scanner reads a deliberately small YAML subset rather than
+exchange format for the first two of those families — `schegent/v1` `Phase`
+documents and `Pipeline` documents, the latter optionally carrying the complete
+definitions of the Phases it references so one file is a runnable package. It
+imports no `vscode` and no configuration, and it imports the catalogs' own field
+bounds from
+[process-definition-validator.ts](src/config/process-definition-validator.ts) and
+[pipeline-definition-validator.ts](src/config/pipeline-definition-validator.ts)
+rather than restating them, so the format cannot drift from what the catalogs
+accept. The scanner reads a deliberately small YAML subset rather than
 delegating to a general parser, and
 [scalar-style.ts](src/services/process-yaml/scalar-style.ts) is the single rule
 both the scanner and the serializer consult, so what one refuses to write the
 other refuses to read.
+
+Two oracles answer two different questions about the same catalog, and never
+from one read:
+[import-planner.ts](src/services/process-yaml/import-planner.ts) answers
+*presence* — scanning stored rows at every status, `shadowed` and `invalid`
+included, so a write cannot silently destroy authored work — while
+[package-resolver.ts](src/services/process-yaml/package-resolver.ts) answers
+*resolution* against the effective Phase catalog, because a shadowed or invalid
+row is not what runs. A package can therefore legitimately show a Phase row as
+`skip` beside a Pipeline row `blocked` on that same id. The full rationale is in
+the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ### IPC and Webview (`src/contracts/`, `src/ui/sidebar/`, `src/ui/dashboard/`)
 
@@ -486,12 +500,17 @@ violation (CLAUDE.md). The four config-save commands
 (`saveGeneralSettings`, `saveModels`, `savePhases`, `savePipelines`)
 were added to the gate in spec 056 Track 1.
 
-The Phase YAML exchange adds two commands and **neither** is mutating:
+The process exchange adds two commands and **neither** is mutating:
 `CMD_EXPORT_PROCESS_YAML` writes a file the operator named in a host dialog and
 changes no extension state, and `CMD_PREFLIGHT_PROCESS_YAML` reads one chosen
-document and returns a plan. The import commits through the pre-existing
-`CMD_SAVE_PHASES`, so it inherits that command's revision gate, mutation-intent
-check, and trust gate rather than declaring a second write path. Both dialogs are
+document and returns a plan. The import commits through the pre-existing catalog
+saves, so it inherits their revision gate, mutation-intent check, and trust gate
+rather than declaring a second write path: a Phase document through
+`CMD_SAVE_PHASES`, and a Pipeline package through **both** — Phases first, then
+`CMD_SAVE_PIPELINES` — each write carrying its own `expectedRevision` and its own
+single `import-package` intent. The order is load-bearing (a Pipeline written
+first would reference Phases the catalog does not yet have), and a rejection
+stops the sequence without retracting what already landed. Both dialogs are
 injected seams wired in [src/extension.ts](src/extension.ts), so no filesystem
 path crosses the IPC boundary in either direction. Operator documentation:
 [docs/features/phase-yaml-exchange.md](docs/features/phase-yaml-exchange.md).

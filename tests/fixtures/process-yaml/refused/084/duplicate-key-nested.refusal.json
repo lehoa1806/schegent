@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "duplicate key 'phaseId' in one mapping (line 3)"
+}

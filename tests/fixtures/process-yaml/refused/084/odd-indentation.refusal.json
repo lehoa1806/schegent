@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "indentation must be a multiple of two spaces (line 2)"
+}

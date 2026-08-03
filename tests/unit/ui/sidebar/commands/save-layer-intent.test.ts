@@ -57,6 +57,13 @@ const intent = (
   targetId: string | null = null
 ): LayerMutationIntent => ({ kind, targetId });
 
+/** Feature 085 — the package intent names a SET and no single target. */
+const packageIntent = (...targetIds: readonly string[]): LayerMutationIntent => ({
+  kind: 'import-package',
+  targetId: null,
+  targetIds
+});
+
 const identitiesOf = (rows: readonly unknown[]) => layerIdentities(rows, adapter);
 
 describe('stableAuthoredJson / authoredEqual', () => {
@@ -187,6 +194,68 @@ describe('mutationMatches', () => {
     expect(match(intent('reset'), [row('a')], [])).toBe(true);
     expect(match(intent('reset'), [row('a')], [row('a')])).toBe(false);
   });
+
+  // Feature 085 T042 (FR-036, research R5). One write appends every eligible
+  // resource at once, so the intent names the whole set rather than one id.
+  describe('import-package', () => {
+    it('accepts an append of exactly the declared set', () => {
+      expect(
+        match(packageIntent('one', 'two'), [row('a')], [row('a'), row('one'), row('two')])
+      ).toBe(true);
+    });
+
+    it('accepts a single-resource package, and an append to an empty layer', () => {
+      expect(match(packageIntent('one'), [row('a')], [row('a'), row('one')])).toBe(true);
+      expect(match(packageIntent('one', 'two'), [], [row('one'), row('two')])).toBe(true);
+    });
+
+    it('rejects an unnamed row added alongside the declared set', () => {
+      expect(
+        match(packageIntent('one'), [row('a')], [row('a'), row('one'), row('stowaway')])
+      ).toBe(false);
+    });
+
+    it('rejects a declared target that is absent from the proposal', () => {
+      expect(match(packageIntent('one', 'two'), [row('a')], [row('a'), row('one')])).toBe(false);
+    });
+
+    it('rejects a declared target the current layer already claims (FR-030)', () => {
+      expect(match(packageIntent('a'), [row('a')], [row('a'), row('a', 'A2')])).toBe(false);
+    });
+
+    it('rejects a package that also removes a row', () => {
+      expect(match(packageIntent('one'), [row('a'), row('b')], [row('a'), row('one')])).toBe(false);
+    });
+
+    it('rejects a package that also changes a row', () => {
+      expect(
+        match(packageIntent('one'), [row('a', 'A')], [row('a', 'Changed'), row('one')])
+      ).toBe(false);
+    });
+
+    it('rejects a package that also duplicates an untouched id', () => {
+      expect(
+        match(packageIntent('one'), [row('a')], [row('a'), row('a'), row('one')])
+      ).toBe(false);
+    });
+
+    it('rejects a package that appends its own target twice', () => {
+      expect(
+        match(packageIntent('one'), [row('a')], [row('a'), row('one'), row('one', 'One2')])
+      ).toBe(false);
+    });
+
+    it('rejects a declared set that repeats an id, and an empty declared set', () => {
+      expect(match(packageIntent('one', 'one'), [row('a')], [row('a'), row('one')])).toBe(false);
+      expect(match(packageIntent(), [row('a')], [row('a')])).toBe(false);
+    });
+
+    it('rejects the intent when `targetIds` is missing entirely', () => {
+      expect(
+        match({ kind: 'import-package', targetId: null }, [row('a')], [row('a'), row('one')])
+      ).toBe(false);
+    });
+  });
 });
 
 describe('layerShapeMatches', () => {
@@ -223,6 +292,93 @@ describe('layerShapeMatches', () => {
     expect(
       layerShapeMatches(intent('edit', 'BAD ID'), [row('BAD ID'), row('b')], [row('good'), row('b')], 'good', adapter)
     ).toBe(true);
+  });
+
+  // Feature 085 T042 — deleting the added rows from the proposal must reproduce
+  // the current layer IN ORDER, so a package import cannot silently reorder the
+  // layer it appends to.
+  describe('import-package', () => {
+    const shape = (
+      mutation: LayerMutationIntent,
+      currentRows: readonly unknown[],
+      proposedRows: readonly unknown[]
+    ) => layerShapeMatches(mutation, currentRows, proposedRows, null, adapter);
+
+    it('accepts the declared rows inserted at any position', () => {
+      expect(shape(packageIntent('one', 'two'), [row('a'), row('b')], [row('a'), row('b'), row('one'), row('two')])).toBe(true);
+      expect(shape(packageIntent('one', 'two'), [row('a'), row('b')], [row('one'), row('a'), row('two'), row('b')])).toBe(true);
+    });
+
+    it('rejects a package that also reorders the surrounding rows', () => {
+      expect(shape(packageIntent('one'), [row('a'), row('b')], [row('b'), row('a'), row('one')])).toBe(false);
+    });
+
+    it('rejects a package that also drops a surrounding row', () => {
+      expect(shape(packageIntent('one'), [row('a'), row('b')], [row('a'), row('one')])).toBe(false);
+    });
+
+    it('rejects a package that also rewrites a surrounding row', () => {
+      expect(shape(packageIntent('one'), [row('a', 'A')], [row('a', 'Changed'), row('one')])).toBe(false);
+    });
+
+    it('rejects an empty declared set', () => {
+      expect(shape(packageIntent(), [row('a')], [row('a')])).toBe(false);
+    });
+  });
+});
+
+/**
+ * Feature 085 T042 — the five pre-existing kinds are unchanged by the new one.
+ * A `targetIds` field is `import-package`-only: attaching it to a legacy kind
+ * must not alter that kind's behavior in either gate.
+ */
+describe('the pre-085 mutation kinds are unaffected by targetIds', () => {
+  const withIds = (mutation: LayerMutationIntent): LayerMutationIntent => ({
+    ...mutation,
+    targetIds: ['smuggled']
+  });
+
+  const match = (
+    mutation: LayerMutationIntent,
+    currentRows: readonly unknown[],
+    proposedRows: readonly unknown[]
+  ) => {
+    const current = definitionMap(
+      currentRows.map((r) => adapter.parse(r)).filter((d): d is Toy => d !== null),
+      adapter
+    );
+    const proposed = definitionMap(
+      proposedRows.map((r) => adapter.parse(r)).filter((d): d is Toy => d !== null),
+      adapter
+    );
+    return mutationMatches(
+      mutation,
+      layerDiff(current, proposed),
+      proposed.size,
+      identitiesOf(currentRows).counts,
+      identitiesOf(proposedRows).counts
+    );
+  };
+
+  it.each([
+    ['create', intent('create', 'new'), [row('a')], [row('a'), row('new')], true],
+    ['duplicate', intent('duplicate', 'copy'), [row('a')], [row('a'), row('copy')], true],
+    ['edit', intent('edit', 'a'), [row('a', 'Before')], [row('a', 'After')], true],
+    ['remove', intent('remove', 'b'), [row('a'), row('b')], [row('a')], true],
+    ['reset', intent('reset'), [row('a')], [], true],
+    ['create (spread)', intent('create', 'new'), [row('a', 'A')], [row('a', 'B'), row('new')], false]
+  ] as const)('%s decides the same with and without targetIds', (_label, mutation, current, proposed, expected) => {
+    expect(match(mutation, current, proposed)).toBe(expected);
+    expect(match(withIds(mutation), current, proposed)).toBe(expected);
+    expect(layerShapeMatches(withIds(mutation), current, proposed, null, adapter)).toBe(
+      layerShapeMatches(mutation, current, proposed, null, adapter)
+    );
+  });
+
+  it('never lets targetIds admit a row the declared kind forbids', () => {
+    expect(match(withIds(intent('create', 'new')), [row('a')], [row('a'), row('new'), row('smuggled')])).toBe(
+      false
+    );
   });
 });
 

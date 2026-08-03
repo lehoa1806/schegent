@@ -1,0 +1,5 @@
+included:
+  - id: nested
+    phaseIds:
+      - specify
+      - plan

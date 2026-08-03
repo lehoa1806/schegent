@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "indented entry does not belong to a mapping (line 2)"
+}

@@ -43,29 +43,54 @@
   // stop, so its reason is a live region — announced when it changes and while
   // reading the region — and the scope select, which IS focusable, carries the
   // same reason as its description.
-  import type { DocumentRefusal, ImportPlan, ImportPlanRow } from '../../lib/messages';
+  //
+  // T049 — the commit is now two ordered writes, so this component gained one
+  // fact and no new judgment: an outcome that can be `partial`. Everything that
+  // decides — which writes, in what order, on which revision, and what each row
+  // is then reported as — stays in `process-import-state.ts`; `runImportCommit`
+  // is handed the two save helpers and returns the whole report. No compensating
+  // action is offered here, because there is none to offer (FR-042c).
+  //
+  // T070 — the two tables are child components. The split is presentational
+  // only: this file keeps every decision (what to request, when a commit is
+  // allowed, what the commit writes) and the children keep none. The styles
+  // both tables share live in `process-import-shared.css` rather than being
+  // copied into each, following `MetricsDashboard/metrics-shared.css`.
+  import './process-import-shared.css';
+  import type { DocumentRefusal, ImportPlan } from '../../lib/messages';
   import { preflightProcessYaml } from '../../lib/process-yaml-ipc';
+  import ProcessImportPlanTable from './ProcessImportPlanTable.svelte';
+  import ProcessImportResultsTable from './ProcessImportResultsTable.svelte';
   import { savePhases } from '../../lib/save-phases';
-  import type { SavePhaseRow } from '../../lib/save-phases';
+  import { savePipelines } from '../../lib/save-pipelines';
   import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
+  //
+  // Feature 085 T034 — one entry point, two kinds of document (FR-055a). The
+  // operator no longer picks a per-kind action, so this surface can be handed a
+  // Pipeline package it did not ask for and must describe it accurately: a kind
+  // per row (FR-056), and a statement of what confirming writes and where
+  // (FR-058). Both are read from `process-import-state.ts` rather than composed
+  // in the template, for the same reason the reasons already are — a sentence
+  // built in markup is a sentence no test can pin.
   import {
     IMPORT_TARGET_SCOPES,
-    buildImportSave,
+    commitStatement,
     confirmBlockedReason,
-    outcomeLabel,
-    projectSaveAck,
-    reasonLines,
     refusalHeadline,
-    type ImportResultRow
+    runImportCommit,
+    type ImportCommitOutcome,
+    type ImportResultRow,
+    type ImportTargetLayers
   } from './process-import-state';
 
   interface Props {
     /**
-     * The two writable layers as the catalog currently holds them, projected the
-     * same way the Phase manager projects them for a save. The parent owns the
-     * projection because it owns the snapshot; this component only appends to it.
+     * Both writable catalogs, per writable scope, as the snapshot currently holds
+     * them, projected the same way the managers project them for a save. The
+     * parent owns the projection because it owns the snapshot; this component
+     * only appends to it.
      */
-    layers?: Readonly<Record<WritablePhaseDefinitionScope, readonly SavePhaseRow[]>>;
+    layers?: Readonly<Record<WritablePhaseDefinitionScope, ImportTargetLayers>>;
     /**
      * T066 — why the surrounding manager cannot start an import right now, or
      * `null` when it can. Stated rather than merely applied (FR-057), and owned by
@@ -75,7 +100,11 @@
     disabledReason?: string | null;
   }
 
-  const { layers = { user: [], workspace: [] }, disabledReason = null }: Props = $props();
+  const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [] };
+  const {
+    layers = { user: EMPTY_LAYERS, workspace: EMPTY_LAYERS },
+    disabledReason = null
+  }: Props = $props();
 
   type PreflightSurface =
     | { readonly kind: 'idle' }
@@ -88,6 +117,10 @@
   let surface = $state<PreflightSurface>({ kind: 'idle' });
   let committing = $state(false);
   let results = $state<readonly ImportResultRow[] | null>(null);
+  /** Set with `results`, and only with them. Never inferred from the rows. */
+  let outcome = $state<ImportCommitOutcome | null>(null);
+  /** The scope the completed commit wrote to, held so the summary cannot drift. */
+  let committedScope = $state<WritablePhaseDefinitionScope | null>(null);
   /** No default. An unchosen scope never resolves to the workspace (FR-056). */
   let scope = $state<WritablePhaseDefinitionScope | null>(null);
 
@@ -112,9 +145,11 @@
     // choice with it — FR-056 forbids carrying a target the operator picked for
     // some other document.
     results = null;
+    outcome = null;
+    committedScope = null;
     scope = null;
     surface = { kind: 'validating' };
-    const result = await preflightProcessYaml('phase');
+    const result = await preflightProcessYaml();
     if (result.outcome === 'planned') {
       surface = { kind: 'planned', plan: result.plan };
       return;
@@ -134,21 +169,24 @@
     // The gate is re-read here, not trusted from the rendered `disabled`: a
     // keyboard activation can arrive in the same tick the state changed.
     if (blockedReason !== null || plan === null || scope === null) return;
-    const request = buildImportSave(plan, scope, layers[scope]);
-    if (request === null) return;
+    const target = scope;
     committing = true;
-    const ack = await savePhases(request);
+    // The two writes, in order, each gated on its own revision. `runImportCommit`
+    // stops at the first rejection and reports what did land — there is nothing
+    // to undo here and nothing offered (FR-042b/c).
+    const report = await runImportCommit(plan, target, layers[target], {
+      savePhases,
+      savePipelines
+    });
     committing = false;
-    results = projectSaveAck(plan, ack, scope);
+    committedScope = target;
+    outcome = report.outcome;
+    results = report.rows;
   }
 
   function onScopeChange(event: Event): void {
     const chosen = (event.currentTarget as HTMLSelectElement).value;
     scope = IMPORT_TARGET_SCOPES.find((candidate) => candidate === chosen) ?? null;
-  }
-
-  function rowKey(row: ImportPlanRow, index: number): string {
-    return `${index}:${row.outcome}:${row.resourceId ?? ''}`;
   }
 </script>
 
@@ -158,7 +196,10 @@
   aria-labelledby="process-import-title"
 >
   <header class="preflight-header">
-    <h3 class="preflight-title" id="process-import-title">Import a Phase document</h3>
+    <!-- FR-055a — the operator does not classify the file; the host dispatches
+         on what the document declares. The title names the readable kinds so it
+         is clear what this accepts, not so a choice has to be made first. -->
+    <h3 class="preflight-title" id="process-import-title">Import a Phase or Pipeline document</h3>
     <button
       type="button"
       class="preflight-button"
@@ -219,48 +260,18 @@
         This document declares nothing to import.
       </p>
     {:else}
-      <p class="preflight-counts" id="process-import-counts" data-testid="process-import-counts">
-        {plan.counts.import} to import, {plan.counts.skip} skipped, {plan.counts.invalid} invalid.
-      </p>
-      <!-- T067 — named, so the plan and the results are distinguishable, and
-           described by the counts so the totals are heard before the rows. -->
-      <table
-        class="preflight-table"
-        data-testid="process-import-plan"
-        aria-label="Import plan"
-        aria-describedby="process-import-counts"
-      >
-        <thead>
-          <tr>
-            <th scope="col">Phase</th>
-            <th scope="col">Outcome</th>
-            <th scope="col">Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each plan.rows as row, index (rowKey(row, index))}
-            <tr data-testid="process-import-plan-row" data-outcome={row.outcome}>
-              <!-- T067 — the row's subject, so the outcome and reason cells are
-                   announced against the Phase they describe. -->
-              <th scope="row" data-testid="process-import-row-id">
-                {#if row.resourceId === null}
-                  <span class="preflight-missing-id">no id declared</span>
-                {:else}
-                  <span class="preflight-id">{row.resourceId}</span>
-                {/if}
-              </th>
-              <td data-testid="process-import-row-outcome">{outcomeLabel(row)}</td>
-              <td data-testid="process-import-row-reason">
-                {#each reasonLines(row) as line, lineIndex (lineIndex)}
-                  <span class="preflight-reason-line">{line}</span>
-                {/each}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <ProcessImportPlanTable {plan} />
 
       {#if results === null}
+        <!-- FR-058 — what Confirm does, said before it is pressed: only the
+             eligible rows, and into the scope the operator picked. Stated as
+             visible prose next to the controls rather than wired into their
+             descriptions, because it is true of the surface at all times and
+             not a reason a particular control is unavailable. -->
+        <p class="preflight-note" data-testid="process-import-commit-statement">
+          {commitStatement(plan, scope)}
+        </p>
+
         <div class="preflight-commit">
           <!-- FR-034/FR-035/FR-056 — an explicit choice between the two writable
                layers. The placeholder is the initial selection and is not a
@@ -318,36 +329,7 @@
     {/if}
 
     {#if results !== null}
-      <!-- FR-042 — one result per plan row, so a row the commit never addressed
-           still says what happened to it and why. -->
-      <table
-        class="preflight-table"
-        data-testid="process-import-results"
-        aria-label="Import results"
-      >
-        <thead>
-          <tr>
-            <th scope="col">Phase</th>
-            <th scope="col">Result</th>
-            <th scope="col">Detail</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each results as result, index (`${index}:${result.resourceId ?? ''}`)}
-            <tr data-testid="process-import-result-row" data-outcome={result.outcome}>
-              <th scope="row" data-testid="process-import-result-id">
-                {#if result.resourceId === null}
-                  <span class="preflight-missing-id">no id declared</span>
-                {:else}
-                  <span class="preflight-id">{result.resourceId}</span>
-                {/if}
-              </th>
-              <td data-testid="process-import-result-outcome">{result.outcome}</td>
-              <td data-testid="process-import-result-detail">{result.detail}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <ProcessImportResultsTable {results} {outcome} {committedScope} />
     {/if}
   {/if}
 </section>
@@ -389,9 +371,9 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
-  .preflight-progress,
-  .preflight-note,
-  .preflight-counts {
+  /* `.preflight-note` and `.preflight-counts` are shared with the table
+     components and live in process-import-shared.css. */
+  .preflight-progress {
     margin: 0;
     color: var(--schegent-muted-fg);
   }
@@ -407,32 +389,6 @@
   .preflight-refusal-code {
     font-family: var(--vscode-editor-font-family, monospace);
     color: var(--schegent-muted-fg);
-  }
-  .preflight-table {
-    border-collapse: collapse;
-    width: 100%;
-    text-align: left;
-  }
-  .preflight-table th,
-  .preflight-table td {
-    border-bottom: 1px solid var(--schegent-focus-border);
-    padding: 2px var(--schegent-pad);
-    vertical-align: top;
-  }
-  /* The row headers added for T067 are structure, not emphasis: the column
-     headers stay the only bold row. */
-  .preflight-table tbody th {
-    font-weight: normal;
-  }
-  .preflight-id {
-    font-family: var(--vscode-editor-font-family, monospace);
-  }
-  .preflight-missing-id {
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-  }
-  .preflight-reason-line {
-    display: block;
   }
   .preflight-commit {
     display: flex;

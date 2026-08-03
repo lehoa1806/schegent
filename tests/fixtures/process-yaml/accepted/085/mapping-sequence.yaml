@@ -1,0 +1,5 @@
+bindings:
+  - kind: input
+    phaseIndex: 0
+  - kind: output
+    phaseIndex: 1
