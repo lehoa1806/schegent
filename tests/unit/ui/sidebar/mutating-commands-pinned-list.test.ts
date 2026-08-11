@@ -4,6 +4,13 @@
 // they were NOT mutating encoded the F-001 documentation-vs-implementation
 // drift and is now flipped.
 //
+// Feature 089 T025 (FR-026) — Pinned the four process-platform commands the
+// snapshot had never named: the Workflow catalog save (083) and the three
+// run-launch commands (087, 088).
+// Feature 089 T026 (FR-026, FR-027) — Added the complement assertion, and
+// completed the snapshot to the whole live set on the way. See the two blocks
+// at the foot of this file.
+//
 // MUTATING_COMMANDS is the only gate preventing a secondary VS Code host
 // from mutating workspace settings during a multi-window session
 // (CLAUDE.md hard rule). This test pins the current set as a snapshot so
@@ -30,9 +37,34 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
+  CMD_SAVE_WORKFLOWS,
+  CMD_LAUNCH_PIPELINE,
+  CMD_LAUNCH_WORKFLOW,
+  CMD_CONTINUE_WORKFLOW,
+  CMD_PAUSE_PHASE,
+  CMD_RESUME_PHASE,
+  CMD_RESTART_PHASE,
+  CMD_SKIP_PHASE,
+  CMD_DISABLE_PHASE,
+  CMD_ENABLE_PHASE,
+  CMD_REMOVE_TASK_PHASE,
+  CMD_MODIFY_TASK,
+  CMD_REORDER_TASK,
+  CMD_RESTART_CANCELED_TASK,
+  CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_WAKE_UP_NOW,
+  CMD_SET_PHASE_BREAKPOINT,
+  CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_START_QUEUE,
+  CMD_CLEAR_ALL,
+  CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_READ_WAKEUP_SESSION_LOG,
+  CMD_REVEAL_WAKEUP_SESSION_LOG,
+  CMD_DISMISS_MIGRATION_NOTICE,
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML
 } from '../../../../src/ui/sidebar/messages';
+import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
 
 const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
@@ -56,7 +88,91 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES
+  CMD_SAVE_PIPELINES,
+  // Feature 083 — the Workflow catalog layer. It writes VS Code configuration
+  // exactly as the three saves above do, and belongs to the same gate.
+  CMD_SAVE_WORKFLOWS,
+  // Feature 087 (T009) — Pipeline run composition. Admits a queue item and a
+  // Run: appends to the queue memento and creates durable state.
+  CMD_LAUNCH_PIPELINE,
+  // Feature 088 (T032) — connected Workflow runs. The launch creates the
+  // aggregate and enqueues its first child; the continuation enqueues a child
+  // and increments the run's revision.
+  //
+  // None of these three names carries a mutating verb prefix, so the
+  // naming-convention lint would not have caught an omission here. That is
+  // precisely why they are pinned by hand.
+  CMD_LAUNCH_WORKFLOW,
+  CMD_CONTINUE_WORKFLOW,
+  // Feature 089 T026 (FR-026) — the seventeen entries below have been mutating
+  // since as far back as Feature 014 and were never pinned. The snapshot was
+  // taken at Feature 012 and only ever grew when someone remembered; FR-026's
+  // second clause ("the pinned list MUST name every such command the platform
+  // now has") is what closes that gap, and the complement assertion at the foot
+  // of this file is what keeps it closed.
+  //
+  // Feature 014 — wake-up settings write and the manual runner invocation.
+  CMD_SAVE_WAKEUP_SETTINGS,
+  CMD_WAKE_UP_NOW,
+  // Feature 017 — phase controls. Each writes an override onto the run.
+  CMD_PAUSE_PHASE,
+  CMD_RESUME_PHASE,
+  CMD_RESTART_PHASE,
+  CMD_SKIP_PHASE,
+  CMD_DISABLE_PHASE,
+  CMD_ENABLE_PHASE,
+  CMD_REMOVE_TASK_PHASE,
+  // Feature 017 task CRUD, narrowed to reorder-only by Feature 030.
+  CMD_MODIFY_TASK,
+  CMD_REORDER_TASK,
+  // Feature 017 BUG-001 — transitions a canceled request back to pending.
+  CMD_RESTART_CANCELED_TASK,
+  // Feature 028 — future-phase breakpoints. Both write to the run.
+  CMD_SET_PHASE_BREAKPOINT,
+  CMD_CLEAR_PHASE_BREAKPOINT,
+  // BUG-002 (FR-012a) — promotes a pending task to in-flight.
+  CMD_START_QUEUE,
+  // Feature 063 — atomic Clean All, and the confirmation-suppression
+  // preference write.
+  CMD_CLEAR_ALL,
+  CMD_SET_CONFIRM_SUPPRESSION
+];
+
+// Feature 089 T026 (FR-027) — commands whose own declaration in
+// `src/contracts/sidebar-ipc.ts` records a decision NOT to gate them.
+//
+// The scope is deliberate and not "every non-mutating command": most of the
+// IPC surface is plainly read-only and needs no defence. These five are the
+// ones an author could reasonably have expected to be mutating — one reveals a
+// file, one writes a document, one writes a memento — so each was reasoned
+// about and the reasoning was written down. FR-027 asks that the reason exist;
+// this table is where the fixture can check that it still holds.
+const NON_MUTATING_BY_DESIGN: ReadonlyArray<readonly [string, string]> = [
+  [
+    CMD_READ_WAKEUP_SESSION_LOG,
+    'Feature 031 — read-only. Gating it would stop a secondary window from ' +
+      'inspecting captured sessions during a multi-window session.'
+  ],
+  [
+    CMD_REVEAL_WAKEUP_SESSION_LOG,
+    'Feature 031 — read-only. The reveal side effect is still primary-host ' +
+      'gated by the dispatcher, so one OS file-manager window opens, not many.'
+  ],
+  [
+    CMD_DISMISS_MIGRATION_NOTICE,
+    'Feature 065 (FR-020) — writes one UI flag and no workflow, queue, or ' +
+      'task state; dismissing a notice is non-destructive UX state.'
+  ],
+  [
+    CMD_EXPORT_PROCESS_YAML,
+    'Feature 084 — writes a file the operator named in a host dialog and ' +
+      'changes no extension state.'
+  ],
+  [
+    CMD_PREFLIGHT_PROCESS_YAML,
+    'Feature 084 — reads the chosen document once and returns a plan; the ' +
+      'write it precedes goes through CMD_SAVE_PHASES, which is gated.'
+  ]
 ];
 
 describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => {
@@ -90,17 +206,86 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 19', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 40', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(19);
+    expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(40);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_SAVE_PHASES, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 19', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 40', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(19);
+    expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(40);
+  });
+});
+
+// Feature 089 (T026, US5, FR-026, FR-027) — the complement.
+//
+// Everything above reads in one direction: for each command the fixture names,
+// is it still mutating? That catches a **demotion** — a pinned command dropped
+// from `MUTATING_COMMAND_REASONS` during a refactor. It cannot catch an
+// **omission**, which is the failure that actually happened: a command was
+// registered as mutating and nobody added it here. Before T025/T026 the fixture
+// pinned 19 of the 40 commands the platform gates — 21 unpinned, the oldest
+// since Feature 014 — and every test in this file passed throughout.
+//
+// This block reads the other way — for each command the platform gates, is it
+// named here? — and that is the direction FR-026's second clause states.
+//
+// The list stays hand-written on purpose. Deriving it from
+// `MUTATING_COMMAND_TYPES` would make every assertion in this file
+// `X === X`: a command deleted from the gate would vanish from both sides at
+// once and the fixture would report clean on the exact change it exists to
+// catch. The cost of writing it by hand is one line per new mutating command,
+// paid by the author who adds the command, which is the point.
+describe('Feature 089 T026 — the pinned list names every gated command (FR-026)', () => {
+  it('pins every command in the live mutating set', () => {
+    const pinned = new Set(PINNED_MUTATING_COMMANDS);
+    const unpinned = MUTATING_COMMAND_TYPES.filter((type) => !pinned.has(type));
+
+    // If this fails, a mutating command was registered without being pinned.
+    // Add it to PINNED_MUTATING_COMMANDS above with a comment naming the
+    // feature and what it writes — do not delete it from the gate.
+    expect(unpinned).toEqual([]);
+  });
+
+  it('pins nothing the live mutating set does not gate, and pins nothing twice', () => {
+    const live = new Set<string>(MUTATING_COMMAND_TYPES);
+    const stale = PINNED_MUTATING_COMMANDS.filter((type) => !live.has(type));
+
+    // The pin is a mirror, not an archive: a command retired from the gate has
+    // to be removed here too, deliberately, rather than left behind to make the
+    // count look right.
+    expect(stale).toEqual([]);
+    // A duplicate would satisfy the length assertions above while leaving a
+    // real command unpinned, so the count is only meaningful alongside this.
+    expect(new Set(PINNED_MUTATING_COMMANDS).size).toBe(PINNED_MUTATING_COMMANDS.length);
+  });
+});
+
+describe('Feature 089 T026 — deliberate exclusions carry a recorded reason (FR-027)', () => {
+  it('records a substantive reason for each command kept out of the gate', () => {
+    expect(NON_MUTATING_BY_DESIGN.length).toBeGreaterThan(0);
+    for (const [command, reason] of NON_MUTATING_BY_DESIGN) {
+      // A reason has to say something. The floor is deliberately low — this
+      // asserts a reason was written, not that it is a good one.
+      expect(reason.length, `${command} carries no recorded reason`).toBeGreaterThan(40);
+    }
+  });
+
+  it('holds only commands that really are outside the gate', () => {
+    // The record goes stale the moment one of these is reclassified as
+    // mutating. That is a decision worth forcing back through this file rather
+    // than letting a comment quietly contradict the gate.
+    for (const [command] of NON_MUTATING_BY_DESIGN) {
+      expect(isMutatingCommand(command), `${command} is gated but recorded as excluded`).toBe(
+        false
+      );
+      expect(PINNED_MUTATING_COMMANDS).not.toContain(command);
+    }
   });
 });

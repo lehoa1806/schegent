@@ -1,5 +1,6 @@
 import {
   PHASE_EFFORT_LEVELS,
+  PHASE_ID_MAX_LEN,
   type PhaseDefinition,
   type PhaseFieldError
 } from '../contracts/process-definitions';
@@ -7,7 +8,7 @@ import { validate as validateRetryCondition } from '../lib/retry-condition';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
-export const PHASE_ID_MAX_LEN = 64;
+export { PHASE_ID_MAX_LEN };
 export const PHASE_NAME_MAX_LEN = 80;
 export const PHASE_DESCRIPTION_MAX_LEN = 1024;
 export const PHASE_INSTRUCTION_MAX_LEN = 8192;

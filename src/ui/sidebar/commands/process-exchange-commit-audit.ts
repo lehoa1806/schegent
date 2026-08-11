@@ -24,15 +24,9 @@
 
 import type { ProcessExchangePayload } from '../../../contracts/audit-events';
 import type { PhaseDefinitionScope } from '../../../contracts/process-definitions';
+import { RESOURCE_ID_MAX_LEN } from '../../../contracts/sidebar-ipc/process-yaml';
 import type { ProcessYamlResourceKind } from '../../../services/process-yaml/types';
 import type { HandlerContext } from './handler-contract';
-
-/**
- * Matches the identifier cap the preflight and export boundaries already use.
- * `logger.sanitize` stays the single redaction source — `SECRET_PATTERNS` is not
- * forked (standing hard rule).
- */
-const RESOURCE_ID_MAX = 64;
 
 /** Matches the row cap every other bounded list in these two handlers uses. */
 const RESOURCE_IDS_MAX = 20;
@@ -61,9 +55,12 @@ function payloadFor(
   return {
     operation: 'import-commit',
     resourceKind: target.resourceKind,
+    // Bounded at the catalog's own id length for this kind (FR-037), never at a
+    // second limit declared here. `logger.sanitize` stays the single redaction
+    // source — `SECRET_PATTERNS` is not forked (standing hard rule).
     resourceIds: target.resourceIds
       .slice(0, RESOURCE_IDS_MAX)
-      .map((id) => sanitize(id).slice(0, RESOURCE_ID_MAX)),
+      .map((id) => sanitize(id).slice(0, RESOURCE_ID_MAX_LEN[target.resourceKind])),
     scope: target.scope,
     outcomes: [outcome],
     counts

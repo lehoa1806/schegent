@@ -189,6 +189,19 @@
     { "id": "dev-new-feature", "name": "New Feature", "phases": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"] },
     { "id": "bugfix", "name": "Bug Fix", "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"] }
   ],
+  "pipelineCatalog": {
+    "state": "ready",
+    "records": [
+      { "key": "built-in::dev-new-feature::0", "pipelineId": "dev-new-feature", "scope": "built-in", "status": "effective", "definition": { "pipelineId": "dev-new-feature", "name": "New Feature", "version": 1, "phaseIds": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "dev-new-feature", "name": "New Feature", "version": 1, "phases": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"] }, "errors": [] },
+      { "key": "built-in::bugfix::0", "pipelineId": "bugfix", "scope": "built-in", "status": "effective", "definition": { "pipelineId": "bugfix", "name": "Bug Fix", "version": 1, "phaseIds": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "bugfix", "name": "Bug Fix", "version": 1, "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"] }, "errors": [] }
+    ],
+    "effective": [
+      { "pipelineId": "dev-new-feature", "name": "New Feature", "version": 1, "phaseIds": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] },
+      { "pipelineId": "bugfix", "name": "Bug Fix", "version": 1, "phaseIds": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }
+    ],
+    "revisions": { "user": "visual-user-revision", "workspace": "visual-workspace-revision" },
+    "warnings": []
+  },
   "availablePhases": [
     { "id": "speckit-specify", "name": "Specify", "instruction": "Define scope and acceptance criteria.", "model": "claude-sonnet-4-6", "effort": "high", "timeoutSeconds": 1800, "loopable": false, "runner": "claude" },
     { "id": "speckit-clarify", "name": "Clarify", "instruction": "Resolve material ambiguity.", "model": "claude-sonnet-4-6", "effort": "medium", "timeoutSeconds": 1200, "loopable": true, "retryCondition": "ambiguities_remain", "runner": "claude" },

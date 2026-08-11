@@ -1061,7 +1061,7 @@
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run test && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run build:webview && npm run test && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
