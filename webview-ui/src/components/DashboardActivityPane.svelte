@@ -3,6 +3,7 @@
   import type { PhaseLogStore } from '../lib/phase-log-store.svelte';
   import PhaseProgression from './PhaseProgression.svelte';
   import PhaseLogFeed from './PhaseLogFeed/PhaseLogFeed.svelte';
+  import RunOutputs from './RunOutputs.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -49,6 +50,13 @@
     />
   </div>
 
+  <!-- Feature 087 (T064, FR-043) — recorded named outputs sit between the Phase
+       progression and the activity feed, so Run details reads as one surface.
+       The component renders nothing when the Run recorded none. -->
+  <div class="glass-card run-outputs-card">
+    <RunOutputs outputs={snapshot.runOutputs ?? []} />
+  </div>
+
   <section
     class="zone activity-audit glass-card activity-feed-card"
     data-testid="dashboard-activity-audit-feed"
@@ -76,6 +84,11 @@
     transition: flex 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .phase-progression-card { flex-shrink: 0; }
+  .run-outputs-card {
+    flex-shrink: 0;
+    max-height: 25%;
+    overflow: hidden;
+  }
   .activity-feed-card {
     flex: 1 1 0;
     min-height: 120px;

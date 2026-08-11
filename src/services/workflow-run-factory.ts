@@ -59,7 +59,18 @@ export class WorkflowRunFactory {
     featureDir: string | null,
     requestedId: string
   ): Promise<WorkflowRun> {
-    const pipeline = this.resolvePipeline(requestedId);
+    // Feature 087 (T040, US4, FR-030/FR-033) — a composed item already carries
+    // the definition it was submitted against, expanded through the effective
+    // catalog at that moment. Resolving again here would re-read the catalog as
+    // it stands *now*, which is the drift this feature exists to close, and
+    // `resolvePipeline()` fails open on top of it: an unknown Pipeline becomes
+    // the built-in one and a deleted Phase becomes `done`, silently.
+    //
+    // Every other path — items enqueued before this feature, and the existing
+    // non-composed starts — carries no plan and takes the original branch
+    // unchanged.
+    const plan = feature.runPlan;
+    const pipeline = plan?.pipeline ?? this.resolvePipeline(requestedId);
     const mutationPlan = buildMutationPlan(pipeline);
     const approved = mutationPlan.gitCapablePhaseIds.length === 0 ||
       await (this.deps.requestGitApproval?.(mutationPlan) ?? Promise.resolve(true));
@@ -80,6 +91,9 @@ export class WorkflowRunFactory {
         approvedPhaseIds: mutationPlan.gitCapablePhaseIds
       } } : {}),
       pipeline,
+      // Written only for a composed Run, so a Run created from any other path
+      // serializes exactly as it did before this feature (T035).
+      ...(plan ? { runInputs: plan.inputs } : {}),
       defaultRunnerKind: this.deps.defaultRunnerKind ?? DEFAULT_BACKEND,
       delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null,
       phaseOverrides: [], manualPauseAt: null, manualPauseCause: null,

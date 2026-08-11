@@ -125,6 +125,9 @@ export const CMD_EXPORT_PROCESS_YAML = 'CMD_EXPORT_PROCESS_YAML' as const;
 // operator's chosen document once and returns a plan. Nothing is written until
 // the operator confirms, and that confirmation is a `CMD_SAVE_PHASES`.
 export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
+// Feature 087 — compose, validate, freeze, enqueue. Mutating, unlike the two
+// exchange commands above; see `MUTATING_COMMAND_REASONS`.
+export const CMD_LAUNCH_PIPELINE = 'CMD_LAUNCH_PIPELINE' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -187,7 +190,8 @@ export const COMMAND_TYPES = [
   CMD_READ_METRICS,
   CMD_PING_BACKEND,
   CMD_EXPORT_PROCESS_YAML,
-  CMD_PREFLIGHT_PROCESS_YAML
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_LAUNCH_PIPELINE
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -231,6 +235,10 @@ import type {
   PreflightProcessYamlCommand
 } from './sidebar-ipc/process-yaml';
 import { admitsExportInclusion } from './sidebar-ipc/process-yaml';
+import { isLaunchPipelinePayload, type LaunchPipelineCommand } from './sidebar-ipc/run-launcher';
+export type {
+  LaunchPipelineRequest, LaunchPipelineCommand, LaunchPipelineResult,
+  LaunchPipelineOutcome, LaunchPipelineRejectionReason } from './sidebar-ipc/run-launcher';
 
 export type {
   ReadPhaseLogRequest,
@@ -606,7 +614,8 @@ export type SidebarCommand =
   | ReadMetricsCommand
   | PingBackendCommand
   | ExportProcessYamlCommand
-  | PreflightProcessYamlCommand;
+  | PreflightProcessYamlCommand
+  | LaunchPipelineCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -895,6 +904,12 @@ export function isCmdPreflightProcessYaml(
   return Object.keys(payload).length === 0;
 }
 
+// Feature 087 — only the discriminator needs a runtime value from this module.
+export function isCmdLaunchPipeline(value: unknown): value is LaunchPipelineCommand {
+  return isObjectWithType(value, CMD_LAUNCH_PIPELINE)
+    && isLaunchPipelinePayload((value as { payload?: unknown }).payload);
+}
+
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
 export const COMMAND_GUARDS: Readonly<
@@ -954,5 +969,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_READ_METRICS]: isCmdReadMetrics,
   [CMD_PING_BACKEND]: isCmdPingBackend,
   [CMD_EXPORT_PROCESS_YAML]: isCmdExportProcessYaml,
-  [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml
+  [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml,
+  [CMD_LAUNCH_PIPELINE]: isCmdLaunchPipeline
 });

@@ -1,3 +1,5 @@
+import type { FrozenRunPlan } from '../contracts/run-request';
+
 export type FeatureRequestStatus =
   | 'pending'
   | 'in-flight'
@@ -76,6 +78,16 @@ export interface FeatureRequest {
   pausedReason: string | null;
   pipelineId?: string;
   rerun?: FeatureRequestRerun;
+  /**
+   * Feature 087 (T034) — the plan frozen at submission, when this item came
+   * from the run composer. Present only then: an item enqueued before this
+   * feature, or from any other path, still carries none and is resolved
+   * through the effective catalog at drain exactly as before.
+   *
+   * Additive and optional, so a pre-feature record reads back byte-identical
+   * and no `STATE_SCHEMA_VERSION` bump is needed (the feature-082 precedent).
+   */
+  runPlan?: FrozenRunPlan;
 }
 
 export interface QueueState {

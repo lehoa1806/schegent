@@ -25,6 +25,7 @@ import type {
   ScheduledStartSource
 } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import type { FrozenRunPlan } from '../contracts/run-request';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import { phaseRunnerPolicyError } from '../config/phase-runner-policy';
 import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
@@ -81,6 +82,13 @@ export interface GuardedScheduleRequest {
   // or leave this undefined.
   callerKind?: 'human' | 'automation';
   callerId?: string;
+  // Feature 087 (T042, US3, FR-029/FR-030) — a composed Pipeline run arrives
+  // here already validated and frozen by `validateRunRequest()`. The service
+  // does not construct, inspect, or re-expand the plan; it carries it into the
+  // one durable write the enqueue performs, so the item that lands in the queue
+  // is the definition the operator submitted against. Omission is valid and
+  // leaves every pre-existing path byte-identical.
+  runPlan?: FrozenRunPlan;
 }
 
 export interface GuardedScheduleResult {
@@ -201,7 +209,8 @@ export class GuardedRunService {
         ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
         ...(req.queueId ? { queueId: req.queueId } : {}),
         ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
-        ...(req.rerun ? { rerun: req.rerun } : {})
+        ...(req.rerun ? { rerun: req.rerun } : {}),
+        ...(req.runPlan ? { runPlan: req.runPlan } : {})
       });
       const lifecycleAfter = await this.applyStartIntentPolicy(req, policy);
       return { outcome: 'enqueued', queueItemId: feature.id, lifecycleAfter };

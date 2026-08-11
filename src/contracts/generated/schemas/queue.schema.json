@@ -153,6 +153,11 @@
           "name": "rerun",
           "optional": true,
           "type": "FeatureRequestRerun"
+        },
+        {
+          "name": "runPlan",
+          "optional": true,
+          "type": "FrozenRunPlan"
         }
       ]
     },

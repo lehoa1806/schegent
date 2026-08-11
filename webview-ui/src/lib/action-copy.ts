@@ -22,7 +22,8 @@ export type ActionKey =
   | 'catalog.remove-phase'
   | 'catalog.remove-pipeline'
   | 'catalog.remove-workflow'
-  | 'catalog.reset-workflows';
+  | 'catalog.reset-workflows'
+  | 'run.overwrite-output';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -76,6 +77,13 @@ export type ActionCopyContext = {
   'catalog.reset-workflows': {
     readonly scope: 'user' | 'workspace';
     readonly workflowCount: number;
+  };
+  // Feature 087 (FR-023) — the operator named a target that already holds
+  // content. `target` is workspace-relative: that is the only form that crosses
+  // the IPC boundary, and the only form the operator typed.
+  'run.overwrite-output': {
+    readonly portName: string;
+    readonly target: string;
   };
 };
 
@@ -181,6 +189,13 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     bodyTemplate: 'Deletes all {workflowCount} Workflow definitions in {scope} scope. A lower-precedence layer may become effective. The Pipelines they composed are not affected.',
     confirmLabel: 'Reset Workflows',
     severity: 'destructive'
+  },
+  'run.overwrite-output': {
+    title: 'Overwrite existing content?',
+    bodyTemplate:
+      'The **{portName}** output is targeted at `{target}`, which already exists. Running this Pipeline replaces it. This cannot be undone.',
+    confirmLabel: 'Overwrite',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -273,6 +288,12 @@ export function renderActionBody<K extends ActionKey>(
       return entry.bodyTemplate
         .replace('{workflowCount}', String(ctx.workflowCount))
         .replace('{scope}', ctx.scope);
+    }
+    case 'run.overwrite-output': {
+      const ctx = context as ActionCopyContext['run.overwrite-output'];
+      return entry.bodyTemplate
+        .replace('{portName}', ctx.portName)
+        .replace('{target}', ctx.target);
     }
     case 'queue.pause':
     case 'queue.resume':

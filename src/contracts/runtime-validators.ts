@@ -68,6 +68,7 @@ import {
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_LAUNCH_PIPELINE,
   type SidebarCommand
 } from './sidebar-ipc';
 import { isValidEnqueueStartIntent } from './start-intent-types';
@@ -81,6 +82,7 @@ import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
 } from './validators/process-yaml';
+import { validateLaunchPipeline } from './validators/launch-pipeline';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import { validateSavePhases } from './validators/save-phases';
 import { validateSavePipelines } from './validators/save-pipelines';
@@ -239,6 +241,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateExportProcessYaml(obj, correlationId);
     case CMD_PREFLIGHT_PROCESS_YAML:
       return validatePreflightProcessYaml(obj, correlationId);
+    case CMD_LAUNCH_PIPELINE:
+      return validateLaunchPipeline(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
