@@ -6,6 +6,9 @@ import type { WorkflowDefinitionScope } from '../../../contracts/workflow-defini
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { RunOutputRecord } from '../../../contracts/run-results';
 import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
+import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
+import type { ChildRunStateReader } from '../connected-run-projector';
 import type {
   GuardedScheduleRequest,
   GuardedScheduleResult
@@ -140,6 +143,26 @@ export type WorkflowPipelineReference =
   | WorkflowRunRequestPipelineReference
   | WorkflowDefinitionPipelineReference;
 
+/**
+ * Feature 088 (T036, T037) — the connected-run store, as the two connected-run
+ * commands need it: one read, one compare-and-set write, and one oracle for the
+ * state of a child Pipeline Run.
+ *
+ * `readChildState` is a single reader rather than a pair, even though the launcher
+ * wants a settled/not-settled boolean and the projector wants a state. Two ports
+ * would be two answers to one question, and the FR-044 gate and the action set the
+ * view renders would drift apart the first time one of them changed; the boolean is
+ * derived from the state at the call site instead.
+ */
+export interface ConnectedRunPort {
+  get(connectedRunId: string): ConnectedWorkflowRun | null;
+  compareAndSetConnectedRun(
+    next: ConnectedWorkflowRun,
+    expectedRevision: number
+  ): Promise<ConnectedRunWriteResult>;
+  readChildState: ChildRunStateReader;
+}
+
 export interface RouterDeps {
   readonly executeCommand: <T = unknown>(commandId: string, ...args: unknown[]) => Thenable<T> | Promise<T>;
   readonly queueRemover: QueueRemover;
@@ -246,6 +269,13 @@ export interface RouterDeps {
    * is the same answer as an empty queue.
    */
   readonly readWorkflowPipelineRefs?: () => readonly WorkflowPipelineReference[];
+  /**
+   * Feature 088 — the connected-run store behind `CMD_LAUNCH_WORKFLOW` and
+   * `CMD_CONTINUE_WORKFLOW`. Optional like every other port here; a host that
+   * supplies none refuses both commands as `queue-refused`, which is the same
+   * answer `startPipelineRun` already gives when `guardedRun` is absent.
+   */
+  readonly connectedRuns?: ConnectedRunPort;
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;

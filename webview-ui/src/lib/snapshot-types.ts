@@ -302,6 +302,51 @@ export interface RunOutputRecord {
   readonly reference?: string;
 }
 
+/**
+ * Feature 088 (FR-055, FR-055a, FR-057, FR-058) — the connected-run read model,
+ * mirroring the host's `contracts/sidebar-ipc/workflow-run.ts`.
+ *
+ * Derived on read and never stored: the first four node states are readings of
+ * the node's most recent child run, and the last three are a fold over the
+ * recorded routing decisions. `actions` is what the host would accept at this
+ * `revision` — the view renders controls from it rather than inferring them, so
+ * a stale view offers nothing the host would refuse (FR-057).
+ *
+ * `in-flight` is the vocabulary of this family deliberately: the pinned
+ * `'running'` status literal belongs to the per-task projection paths and this
+ * feature does not widen that allowlist.
+ */
+export type ConnectedNodeState =
+  | 'completed'
+  | 'in-flight'
+  | 'failed'
+  | 'canceled'
+  | 'available'
+  | 'blocked'
+  | 'unvisited';
+
+export type ConnectedNodeAction = 'start' | 'restart';
+
+export interface ConnectedNodeProjection {
+  readonly nodeId: string;
+  readonly pipelineId: string;
+  readonly state: ConnectedNodeState;
+  readonly actions: readonly ConnectedNodeAction[];
+  readonly attemptCount: number;
+  /** The most recent attempt's queue item, so the existing Run surfaces can be reused (FR-056). */
+  readonly latestQueueItemId?: string;
+}
+
+export interface ConnectedRunProjection {
+  readonly connectedRunId: string;
+  readonly workflowId: string;
+  /** The compare-and-set token to echo back on the next continuation (FR-046). */
+  readonly revision: number;
+  /** True until the aggregate and every referenced child run have loaded (FR-058). */
+  readonly hydrating: boolean;
+  readonly nodes: readonly ConnectedNodeProjection[];
+}
+
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 
@@ -1079,6 +1124,13 @@ export interface WorkflowSnapshot {
    * control stays disabled until it arrives (FR-036).
    */
   readonly workflowCatalog?: WorkflowCatalogProjection;
+  /**
+   * Feature 088 — the connected runs the operator can act on, already folded to
+   * per-node state, legal actions, and `hydrating` host-side. Additive and
+   * optional: a host with no connected-run wiring omits it, so the view treats
+   * absence as "none" rather than as an error.
+   */
+  readonly connectedRuns?: readonly ConnectedRunProjection[];
   /**
    * Feature 059 — per-capability trust projection. Optional for legacy-
    * tolerance: an older host bundle may not include either field, in

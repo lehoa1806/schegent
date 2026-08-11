@@ -294,6 +294,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       ? { pipelineCatalog: pipelineCatalogProjection }
       : {}),
     ...(workflowCatalog !== undefined ? { workflowCatalog } : {}),
+    ...(deps.getConnectedRuns ? { connectedRuns: deps.getConnectedRuns() } : {}),
     ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
     ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
   });
