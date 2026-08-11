@@ -13,6 +13,7 @@ import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WakeUpModelSelection } from '../../wakeup/settings';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
+import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 import type { WorkflowPipelineReference } from './commands/router-types';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
@@ -84,6 +85,14 @@ export interface StateProjectorDeps {
    * renders as a loading state (FR-036).
    */
   readonly getWorkflowCatalog?: () => WorkflowCatalogResolution | undefined;
+  /**
+   * Feature 088 — the connected runs, already projected. The host folds them
+   * (aggregate + child-run states) rather than handing the composer the raw
+   * aggregates, because the same fold answers the continuation handler's gate 4
+   * and there must be exactly one. Absent on a host with no connected-run
+   * wiring; the snapshot then omits the field entirely.
+   */
+  readonly getConnectedRuns?: () => readonly ConnectedRunProjection[];
   readonly getConfirmationsEnabled?: () => boolean;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;

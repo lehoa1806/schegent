@@ -18,7 +18,7 @@ import type {
   WatchdogState,
   WorkspaceLock
 } from './workflow-run';
-import { STATE_SCHEMA_VERSION } from '../contracts/state-schema';
+import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../contracts/state-schema';
 import {
   migrateLegacyRun,
   migrateQueueRegistryV4ToV5,
@@ -110,11 +110,18 @@ export const KEYS = {
   history: 'schegent.history',
   terminalTransitionIntent: 'schegent.terminalTransitionIntent',
   // Feature 063 (FR-021) — per-action "don't ask again" suppression set.
-  confirmSuppression: 'schegent.ui.confirmSuppression'
+  confirmSuppression: 'schegent.ui.confirmSuppression',
+  // Feature 088 (FR-006) — connected Workflow runs, keyed by connectedRunId.
+  // A separate key from `run`/`queue` on purpose: the connected run is a
+  // different aggregate, and keeping it separate is what makes its migration
+  // a no-op for every workspace that predates the feature (FR-007).
+  connectedRuns: 'schegent.connectedRuns'
 } as const;
 
 import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
 export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
+import { migrateConnectedRuns } from './connected-run-migrator';
+import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
 
 export const HISTORY_CAP = 50;
 
@@ -126,7 +133,8 @@ export type StoreChangeKey =
   | typeof KEYS.queueGlobalConcurrencyCap
   | typeof KEYS.lock
   | typeof KEYS.history
-  | typeof KEYS.terminalTransitionIntent;
+  | typeof KEYS.terminalTransitionIntent
+  | typeof KEYS.connectedRuns;
 
 export type StoreChangeListener = (key: StoreChangeKey) => void;
 
@@ -137,6 +145,26 @@ export interface Disposable {
 export interface Memento {
   get<T>(key: string): T | undefined;
   update(key: string, value: unknown): Thenable<void>;
+}
+
+/**
+ * Feature 088 (FR-046) — the outcome of a compare-and-set connected-run write.
+ * `current` is the authoritative record at the moment of the refusal, and is
+ * `null` when the run does not exist at all.
+ */
+export type ConnectedRunWriteResult =
+  | { readonly outcome: 'written'; readonly run: ConnectedWorkflowRun }
+  | { readonly outcome: 'stale'; readonly current: ConnectedWorkflowRun | null };
+
+/**
+ * The refusal arm, built through a function so the variable that holds it keeps
+ * its declared union type. Assigning the object literal directly would narrow
+ * the variable to the refusal arm, and the write arm assigned inside the
+ * serialized closure would then be unreachable as far as the checker is
+ * concerned.
+ */
+function staleConnectedRunWrite(current: ConnectedWorkflowRun | null): ConnectedRunWriteResult {
+  return { outcome: 'stale', current };
 }
 
 export type QueueMutationRejectReason =
@@ -322,6 +350,21 @@ export class WorkspaceStateStore {
     }
   }
 
+  /**
+   * Whether the legacy `WorkflowRun` forward-migrator has anything to do.
+   *
+   * A record persisted at v8 already carries every field the runtime expects,
+   * so running `migrateLegacyRun()` over it would rewrite it — adding a
+   * `mutationPlan` fingerprint it never had — for no reason. Feature 088's
+   * v8 → v9 step touches only the new `schegent.connectedRuns` key and MUST
+   * leave existing `WorkflowRun` records byte-identical (FR-007), so the gate
+   * is the persisted version rather than "the numeric version moved at all".
+   * Every earlier version still migrates exactly as before.
+   */
+  private static needsLegacyRunMigration(persistedNumeric: number | undefined): boolean {
+    return typeof persistedNumeric !== 'number' || persistedNumeric < STATE_SCHEMA_VERSION_V8;
+  }
+
   public async initialize(): Promise<InitializeResult> {
     const persistedNumeric = this.memento.get<number>(KEYS.schemaVersionNumeric);
     if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION) {
@@ -333,7 +376,9 @@ export class WorkspaceStateStore {
     if (!persistedVersion) {
       await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
       await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      const runRepairEvents = await this.normalizeRunForInitialize(true);
+      const runRepairEvents = await this.normalizeRunForInitialize(
+        WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
+      );
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
@@ -345,7 +390,9 @@ export class WorkspaceStateStore {
         await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
         // Numeric schema bump only (additive fields) — apply forward
         // migrator so legacy `WorkflowRun` records gain the new fields.
-        const runRepairEvents = await this.normalizeRunForInitialize(true);
+        const runRepairEvents = await this.normalizeRunForInitialize(
+          WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
+        );
         await this.migrateQueueRegistryIfNeeded();
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
         const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
@@ -369,7 +416,9 @@ export class WorkspaceStateStore {
     if (persistedMajor === runtimeMajor) {
       await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
       await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
-      const runRepairEvents = await this.normalizeRunForInitialize(true);
+      const runRepairEvents = await this.normalizeRunForInitialize(
+        WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
+      );
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
@@ -1048,6 +1097,67 @@ export class WorkspaceStateStore {
     await this.memento.update(KEYS.confirmSuppression, next);
   }
 
+  /**
+   * Feature 088 (FR-006, FR-007) — the connected-run collection.
+   *
+   * Narrowing and the v8 → v9 lift live in `./connected-run-migrator.ts`; an
+   * absent key reads as an empty collection. A record that fails the aggregate's
+   * invariants is named in a WARN rather than dropped silently.
+   */
+  public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> {
+    const result = migrateConnectedRuns(this.memento.get<unknown>(KEYS.connectedRuns));
+    if (result.dropped.length > 0) {
+      this.logger?.warn(
+        `workspace-state: dropped ${result.dropped.length} connected run(s) failing persisted invariants: ${result.dropped.join(', ')}`
+      );
+    }
+    return result.runs;
+  }
+
+  public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null {
+    return this.getConnectedRuns()[connectedRunId] ?? null;
+  }
+
+  /**
+   * The single write path for connected-run state (FR-046).
+   *
+   * Compare-and-set, not last-writer-wins: `expectedRevision` is the revision
+   * the caller read, `0` for a run that does not exist yet, and the write is
+   * refused with the authoritative record when it does not match. The refusal
+   * carries `current` so a stale caller can correct itself in one round trip
+   * instead of re-reading and racing again.
+   *
+   * The stored revision must advance, but not necessarily by one: a caller may
+   * compose several in-memory mutations — creating a run and recording its
+   * first attempt is the common case — and persist them in a single write. Each
+   * helper still increments by exactly one, so the count of mutations remains
+   * readable from the revision.
+   *
+   * Serialized on the key, so two accepted writes cannot interleave between
+   * their read and their update.
+   */
+  public async compareAndSetConnectedRun(
+    next: ConnectedWorkflowRun,
+    expectedRevision: number
+  ): Promise<ConnectedRunWriteResult> {
+    let result = staleConnectedRunWrite(null);
+    await this.serialize(KEYS.connectedRuns, async () => {
+      const runs = this.getConnectedRuns();
+      const current = runs[next.connectedRunId] ?? null;
+      if ((current?.revision ?? 0) !== expectedRevision || next.revision <= expectedRevision) {
+        result = staleConnectedRunWrite(current);
+        return;
+      }
+      // A violation here is a defect in the caller, not an operator-facing
+      // outcome, so it throws rather than joining the refusal arm.
+      assertConnectedRunInvariants(next);
+      await this.memento.update(KEYS.connectedRuns, { ...runs, [next.connectedRunId]: next });
+      result = { outcome: 'written', run: next };
+    });
+    if (result.outcome === 'written') this.notify(KEYS.connectedRuns);
+    return result;
+  }
+
   public async reset(): Promise<void> {
     await Promise.all([
       this.memento.update(KEYS.queue, undefined),
@@ -1060,6 +1170,7 @@ export class WorkspaceStateStore {
       this.memento.update(KEYS.watchdog, undefined),
       this.memento.update(KEYS.history, undefined),
       this.memento.update(KEYS.terminalTransitionIntent, undefined),
+      this.memento.update(KEYS.connectedRuns, undefined),
       // Feature 063 (FR-022a) — Reset Workspace clears the suppression
       // set so reopened operators always see confirmation prompts again.
       this.memento.update(KEYS.confirmSuppression, undefined),

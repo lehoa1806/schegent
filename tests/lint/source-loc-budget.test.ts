@@ -15,14 +15,31 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // them under src/activation was measured first and lands at ~1,307, so it
   // buys headroom rather than compliance while splitting one adapter family
   // across two files; the ceiling is raised instead.
-  { path: 'src/extension.ts', maxLines: 1_360 },
+  // Feature 088 (T040) — 1,360 → 1,362, a recorded deviation from plan D7,
+  // which budgeted one line. The connected-run service itself moved out, to
+  // `createConnectedRunService` in src/activation/ui-wiring.ts, exactly as D7
+  // directed; what could not move is that two already-constructed consumers
+  // need the same instance — the projector (`getConnectedRuns`, for the
+  // snapshot) and the message router (`connectedRuns`, for the two commands) —
+  // and both literals are built here. That is one construction line plus one
+  // reference each. Constructing the (stateless) service twice inline would
+  // have bought the const line back while putting a factory call inside a
+  // per-projection closure, which is worse code for a line of budget.
+  { path: 'src/extension.ts', maxLines: 1_362 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
   { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log, wake-up, and metrics validators own shape rules.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 775 },
+  // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
+  // validators live in validators/workflow-run.ts and neither re-states the
+  // nested `RunRequest` shape (it is imported from validators/launch-pipeline.ts,
+  // so there is one oracle for it, not three). What landed here is the
+  // irreducible registration: two literal imports, one module import, and two
+  // switch arms — seven lines for two command families, against a ceiling that
+  // had seven to give.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 776 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -50,7 +67,15 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // this file without creating a real import cycle. Admitting a family costs
   // barrel lines by construction; the ceiling is raised rather than the
   // registration split.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 975 },
+  // Feature 088 (T035) — 975 → 1009 for the connected-run family. Two command
+  // literals this time, not one, and the same irreducible five apiece; its wire
+  // shapes, its projection, and both payload predicates live in
+  // sidebar-ipc/workflow-run.ts. The one line item above the 087 pattern is the
+  // type re-export block: the projection travels on the snapshot and on two
+  // refusal arms, so the webview needs the names, and re-exporting through the
+  // barrel is what every other family here does. Measured after registration,
+  // not estimated.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1009 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the
@@ -72,7 +97,16 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // file now measures, not to a round number with slack: an unearned ceiling
   // is a budget that has stopped being a forcing function. Recorded as a plan
   // deviation under specs/087-pipeline-run-composition/tasks.md T068.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 301 },
+  // Feature 088 (T039) — 301 → 302 for the connected-run projection. The same
+  // shape as the bump above, and for the same reason: the fold lives in
+  // connected-run-projector.ts (which also answers the continuation handler's
+  // gate 4, so there is one oracle rather than two), and what landed here is
+  // the single conditional spread that cannot live anywhere else. The file was
+  // measured at exactly 301 before the edit — the note on T039 said zero slack
+  // and it was right — so there was no line to absorb it into short of
+  // reflowing unrelated code, which would hide the growth rather than record
+  // it. Raised to exactly what the file now measures, per D7.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 302 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

@@ -93,7 +93,13 @@ function validOutput(value: unknown): boolean {
     && optionalBoolean(output.externalSideEffectConfirmed);
 }
 
-function validRunRequest(value: unknown): boolean {
+/**
+ * The transport shape of a `RunRequest`, exported so the connected-run
+ * validators reuse it rather than forking it (feature 088). A second copy of
+ * this rule would drift, and the two commands carry the identical nested
+ * object — a `RunRequest` composed against a Pipeline's contract.
+ */
+export function validRunRequest(value: unknown): boolean {
   const request = record(value);
   return request !== null
     && !hasUnexpectedKeys(request, [
