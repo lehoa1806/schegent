@@ -216,6 +216,16 @@
           "name": "resumePrompt",
           "optional": true,
           "type": "string"
+        },
+        {
+          "name": "runInputs",
+          "optional": true,
+          "type": "readonly FrozenInputBinding[]"
+        },
+        {
+          "name": "runOutputs",
+          "optional": true,
+          "type": "readonly RunOutputRecord[]"
         }
       ]
     }

@@ -37,7 +37,13 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   'run.modify-task',
   'history.rerun',
   'workspace.reset',
-  'run.skip-phase'
+  'run.skip-phase',
+  // Feature 087 (FR-023) — a run whose declared output targets existing content
+  // replaces it, and the operator confirms that during composition, before any
+  // durable state exists. Launching a run is not itself destructive; only this
+  // one decision inside it is, which is why the key is scoped to the overwrite
+  // rather than to the launch.
+  'run.overwrite-output'
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
@@ -65,6 +71,9 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
       'catalog.remove-workflow',
       'catalog.reset-workflows',
       'queue.clean-all',
+      // Feature 087 — replacing existing content has no undo, which is what
+      // `destructive` means here.
+      'run.overwrite-output',
       'workspace.reset'
     ]);
   });
@@ -174,5 +183,25 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(renderActionBody('workspace.reset', {})).toBe(
       ACTION_COPY['workspace.reset'].bodyTemplate
     );
+  });
+
+  it('run.overwrite-output: substitutes the port name and the relative target', () => {
+    const body = renderActionBody('run.overwrite-output', {
+      portName: 'Report',
+      target: 'docs/report.md'
+    });
+    expect(body).toContain('**Report**');
+    expect(body).toContain('`docs/report.md`');
+    expect(body).not.toContain('{');
+  });
+
+  it('run.overwrite-output: leaves an absolute-looking target to the caller, never resolving one', () => {
+    // The composer only ever holds workspace-relative targets (FR-020), so the
+    // renderer has nothing to resolve; this pins that it does not try.
+    const body = renderActionBody('run.overwrite-output', {
+      portName: 'Report',
+      target: 'out/nested/report.md'
+    });
+    expect(body).toContain('`out/nested/report.md`');
   });
 });

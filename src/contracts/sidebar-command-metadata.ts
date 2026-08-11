@@ -6,6 +6,7 @@ import {
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
+  CMD_LAUNCH_PIPELINE,
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
@@ -83,7 +84,14 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_CLEAR_ALL]: 'queue full reset',
   // Feature 063 — confirmation suppression preference write. Mutating
   // because it persists to the `schegent.ui.confirmSuppression` memento.
-  [CMD_SET_CONFIRM_SUPPRESSION]: 'confirmation suppression preference write'
+  [CMD_SET_CONFIRM_SUPPRESSION]: 'confirmation suppression preference write',
+  // Feature 087 (T009) — Pipeline run composition. Unlike the two exchange
+  // commands, which read a document or write one the operator named, this
+  // admits a queue item and a Run: it appends to the queue memento and
+  // creates durable state. Its name carries no mutating verb prefix, so the
+  // naming-convention lint would not have caught the omission — the entry is
+  // deliberate, not incidental.
+  [CMD_LAUNCH_PIPELINE]: 'run enqueue'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

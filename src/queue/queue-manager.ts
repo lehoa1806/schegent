@@ -21,6 +21,7 @@
 import { randomUUID } from 'crypto';
 import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
+import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   DEFAULT_QUEUE_ID,
@@ -203,6 +204,10 @@ export class QueueManager {
       rerun?: FeatureRequestRerun;
       queueId?: string;
       position?: number;
+      // Feature 087 (T042, US3, FR-030) — a composed run arrives with its
+      // Pipeline already frozen at validation. The manager carries the plan
+      // through verbatim; it never inspects or re-expands it.
+      runPlan?: FrozenRunPlan;
     } = {}
   ): Promise<FeatureRequest> {
     const validated = validateDescription(description);
@@ -224,7 +229,10 @@ export class QueueManager {
       lastError: null,
       pausedReason: null,
       ...(options.pipelineId ? { pipelineId: options.pipelineId } : {}),
-      ...(options.rerun ? { rerun: options.rerun } : {})
+      ...(options.rerun ? { rerun: options.rerun } : {}),
+      // Written only when supplied, so an item enqueued by any pre-existing
+      // path serializes exactly as it did before this feature (T034).
+      ...(options.runPlan ? { runPlan: options.runPlan } : {})
     };
     const inserted = await this.store.insertPendingRequest(request, {
       queueId: options.queueId,

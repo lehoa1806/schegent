@@ -1004,6 +1004,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // layer as it stands now, not as it stood when the catalog last resolved.
     readWorkflowConfig: () => readWorkflowLayers(workflowConfigReader),
     getCatalog: () => activeCatalog,
+    guardedRun: guardedRunService,
+    defaultRunnerKind: backendKind,
     // Feature 082 (US7, FR-022a) / 083 (FR-041) — the consumer side of the
     // Pipeline removal gate, from the same collector that feeds the Library's
     // consuming-Workflow list (FR-002) so the two can never disagree about who
