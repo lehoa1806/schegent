@@ -6,6 +6,11 @@ import type {
   PipelineInputPort,
   PipelineOutputPort
 } from '../contracts/pipeline-definitions';
+// Feature 087 — type-only, and deliberately so: `contracts/run-request` imports
+// `WorkflowRunPipeline` from this file, so a value import either way would be a
+// real cycle. Both directions are erased at compile time.
+import type { FrozenInputBinding } from '../contracts/run-request';
+import type { RunOutputRecord } from '../contracts/run-results';
 
 export interface WorkflowRunPipeline {
   readonly id: string;
@@ -261,6 +266,24 @@ export interface WorkflowRun {
    * the phase prompt, allowing a literal "continue" message.
    */
   resumePrompt?: string;
+  /**
+   * Feature 087 (T035, US4) — the bindings this Run executed with, frozen at
+   * submission. Present only on a composed Run; a Run started from any other
+   * path carries none.
+   *
+   * The Pipeline snapshot above already pins *what* runs. This pins *what it
+   * was given*, which is the other half of reproducing the Run: the same
+   * definition with different inputs is a different execution.
+   */
+  runInputs?: readonly FrozenInputBinding[];
+  /**
+   * Feature 087 (T035, US6, FR-040) — the named outputs recorded at completion.
+   * Each carries a **location, never content** (FR-040a), and one the Phases
+   * never produced is recorded as `unresolved` rather than dropped (FR-042).
+   *
+   * Absent until the Run completes, and on every Run that declared no outputs.
+   */
+  runOutputs?: readonly RunOutputRecord[];
 }
 
 export interface WorkflowRunSummary {
