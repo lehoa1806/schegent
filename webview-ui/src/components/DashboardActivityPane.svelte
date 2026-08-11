@@ -28,6 +28,8 @@
     onSelectPhase,
     onJumpToCurrent
   }: Props = $props();
+
+  const runOutputs = $derived(snapshot.runOutputs ?? []);
 </script>
 
 <div class="right-panel" data-testid="dashboard-right-panel">
@@ -52,10 +54,16 @@
 
   <!-- Feature 087 (T064, FR-043) — recorded named outputs sit between the Phase
        progression and the activity feed, so Run details reads as one surface.
-       The component renders nothing when the Run recorded none. -->
-  <div class="glass-card run-outputs-card">
-    <RunOutputs outputs={snapshot.runOutputs ?? []} />
-  </div>
+       The component renders nothing when the Run recorded none, and neither does
+       this wrapper: `.right-panel` is a gapped flex column, so an empty card is
+       not free — it still costs one `--schegent-pad` of column height and
+       shrinks the activity feed, which is `flex: 1 1 0`. Gate the wrapper on the
+       same condition the component gates itself on. -->
+  {#if runOutputs.length > 0}
+    <div class="glass-card run-outputs-card">
+      <RunOutputs outputs={runOutputs} />
+    </div>
+  {/if}
 
   <section
     class="zone activity-audit glass-card activity-feed-card"

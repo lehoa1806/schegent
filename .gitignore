@@ -1,7 +1,11 @@
 # Node / TypeScript build artifacts
 node_modules/
 dist/
-build/
+# Anchored: an unanchored `build/` matches at every depth, and the only such
+# directory in this tree is `tests/unit/build/` — the release-gate suite. It
+# silently swallowed every new file added there, so `release-qualification.test.ts`
+# ran locally for several features while never existing in the repository.
+/build/
 out/
 coverage/
 *.tsbuildinfo

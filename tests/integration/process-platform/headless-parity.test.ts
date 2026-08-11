@@ -1,0 +1,1636 @@
+// Feature 089 (T032, US1, FR-002, FR-008, SC-001) — one document, two adapters.
+//
+// **The two entry points, named** ([plan.md D8](../../../specs/089-headless-parity-qualification/plan.md)):
+//
+//   1. automation — `previewProcessDocument`, `importProcessDocument`, and
+//      `exportProcessDefinitions` from `src/headless/process-yaml-api.ts`
+//   2. operator   — `MessageRouter.dispatch` of `CMD_PREFLIGHT_PROCESS_YAML`,
+//      then of `CMD_SAVE_PHASES` / `CMD_SAVE_PIPELINES` / `CMD_SAVE_WORKFLOWS`,
+//      and of `CMD_EXPORT_PROCESS_YAML` — the real router running the real handlers
+//
+// The same bytes go in both, and what comes out is compared row by row on the
+// four things an operator or a client acts on: the action, the reason, the
+// resource id, and the blocked dependencies. Then each plan is confirmed into its
+// OWN configuration fixture, and the two fixtures are compared on the effective
+// catalogs they resolve to. Comparing the writes alone would pass on two surfaces
+// that both wrote the same wrong thing; comparing what the catalog then resolves
+// is the property the requirement is about.
+//
+// **What is shared and what is mirrored, stated plainly.** The three save
+// handlers ARE shared — both arms dispatch the same `CMD_SAVE_*` through the same
+// router, so the revision gate, the trust gate, the intent algebra, and the audit
+// envelope are one implementation and cannot diverge. The plan-to-request
+// composer is not: the operator's lives in the webview
+// (`webview-ui/src/components/ProcessImport/process-import-state.ts`,
+// `buildImportWrites`) and is pinned as pure logic by the webview's own unit
+// test, and the webview is a separate program that a host test does not import —
+// the same rule `pipeline-package-import.test.ts` and `workflow-package-import.
+// test.ts` already follow. It is mirrored below, and `SIDEBAR_COMPOSER_SOURCE`
+// records where the original lives so a reader can check the mirror rather than
+// take it on faith. What this file therefore proves about the import half is that
+// `importProcessDocument` sends the same three payloads the operator's path sends,
+// in the same order, and that the catalogs afterwards are the same.
+//
+// The document is a three-layer Workflow package because that is the shape with
+// the most to be wrong about: a two-layer package cannot catch a Workflow write
+// that precedes its Pipelines.
+//
+// **What "byte-identical" means for export, precisely.** FR-009's assertion is
+// the strictest in the feature, so it should not be overstated. The two surfaces
+// do not independently produce bytes: `exportProcessDefinitions` returns
+// `TextEncoder().encode(selection.text)`, and `cmd-export-process-yaml.ts` hands
+// the same `selection.text` STRING to the injected save seam. So what the export
+// cases establish is that both surfaces carry the identical string out of the one
+// shared serializer, with exactly one deterministic UTF-8 encoding between the
+// string and the bytes on each side and no decode round trip anywhere between.
+// Given that, string identity and byte identity are the same claim — but they are
+// asserted separately below, because the day someone adds a BOM, a newline
+// normalization, or a second encoder to one path is the day they stop being.
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const capabilities = vi.hoisted(() => new Map<string, boolean>());
+vi.mock('../../../src/state/capability-trust-resolver', () => ({
+  isCapabilityAllowed: (name: string) => capabilities.get(name) ?? true,
+  getResolvedScope: () => 'workspace-trust'
+}));
+// Mutable, because the launch cases below need the operator's arm to read a REAL
+// directory — the output gate resolves a target against it and probes the
+// filesystem, so a path that does not exist would refuse for the wrong reason.
+// The exchange cases never touch it, and keep the fixed placeholder.
+const workspaceRoot = vi.hoisted(() => ({ path: '/tmp/headless-parity' }));
+vi.mock('../../../src/state/workspace-folder-picker', () => ({
+  getCanonicalWorkspaceRoot: () => ({
+    uri: { fsPath: workspaceRoot.path, scheme: 'file' },
+    name: 'headless-parity',
+    index: 0
+  })
+}));
+
+import {
+  BUILT_IN_PHASES,
+  BUILT_IN_PIPELINES,
+  buildCatalog,
+  type PhaseDef,
+  type PipelineDef
+} from '../../../src/config/pipeline-config';
+import { BUILT_IN_WORKFLOWS } from '../../../src/config/workflow-config';
+import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
+import { phaseLayerRevision, resolvePhaseCatalog } from '../../../src/config/process-catalog';
+import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
+import {
+  CMD_CONTINUE_WORKFLOW,
+  type CommandAckMessage,
+  type ConnectedRunProjection,
+  type ContinueWorkflowPayload,
+  type ImportPlan,
+  type ImportPlanRow,
+  type PreflightProcessYamlResult,
+  type SidebarCommand
+} from '../../../src/contracts/sidebar-ipc';
+import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import { createConnectedRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
+import type { ContinuationDeps } from '../../../src/services/workflow-execution/continuation-service';
+import {
+  appendAttempt,
+  appendDecision,
+  type ConnectedWorkflowRun
+} from '../../../src/state/connected-workflow-run';
+import { isNodeStartable, projectConnectedRun } from '../../../src/ui/sidebar/connected-run-projector';
+import { continueWorkflowRun } from '../../../src/headless/workflow-run-api';
+import {
+  exportProcessDefinitions,
+  importProcessDocument,
+  previewProcessDocument,
+  type ImportProcessDocumentResult,
+  type LayerSaveAck
+} from '../../../src/headless/process-yaml-api';
+import { launchPipelineRun } from '../../../src/headless/pipeline-run-api';
+import { loadCatalog } from '../../../src/config/pipeline-config-loader';
+import type { RunRequest } from '../../../src/contracts/run-request';
+import type { NodeRunStartResult } from '../../../src/services/workflow-execution/node-run-starter';
+import { MessageRouter, type RouterDeps } from '../../../src/ui/sidebar/message-router';
+import {
+  CMD_EXPORT_PROCESS_YAML,
+  CMD_LAUNCH_PIPELINE,
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_SAVE_PHASES,
+  CMD_SAVE_PIPELINES,
+  CMD_SAVE_WORKFLOWS
+} from '../../../src/ui/sidebar/messages';
+import {
+  RecordingQueue,
+  makeWorkspaceRoot,
+  removeWorkspaceRoot
+} from './built-in-run-harness';
+import type { ExportProcessYamlRequest } from '../../../src/contracts/sidebar-ipc/process-yaml';
+import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
+
+/** Where the mirrored operator-side composer actually lives. */
+const SIDEBAR_COMPOSER_SOURCE =
+  'webview-ui/src/components/ProcessImport/process-import-state.ts';
+
+type Scope = WritablePhaseDefinitionScope;
+type LayerKey = 'phases' | 'pipelines' | 'workflows';
+
+// ---------------------------------------------------------------------------
+// The document corpus
+// ---------------------------------------------------------------------------
+
+function includedResource(
+  metadata: readonly string[],
+  spec: readonly string[]
+): readonly string[] {
+  return [
+    '    - metadata:',
+    ...metadata.map((line) => `        ${line}`),
+    '      spec:',
+    ...spec.map((line) => `        ${line}`)
+  ];
+}
+
+function workflowDocument(body: {
+  readonly spec?: readonly string[];
+  readonly pipelines?: readonly (readonly string[])[];
+  readonly phases?: readonly (readonly string[])[];
+}): string {
+  const lines = [
+    'apiVersion: schegent/v1',
+    'kind: Workflow',
+    'metadata:',
+    '  id: parity-flow',
+    '  name: Parity Flow',
+    '  version: 3',
+    'spec:',
+    ...(body.spec ?? DEFAULT_SPEC).map((line) => `  ${line}`)
+  ];
+  if (body.pipelines !== undefined || body.phases !== undefined) {
+    lines.push('included:');
+    if (body.pipelines !== undefined) lines.push('  pipelines:', ...body.pipelines.flat());
+    if (body.phases !== undefined) lines.push('  phases:', ...body.phases.flat());
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+const DEFAULT_SPEC = [
+  'nodes:',
+  '  - nodeId: draft',
+  '    pipelineId: parity-authoring',
+  '  - nodeId: review',
+  '    pipelineId: parity-review',
+  'connections:',
+  '  - from:',
+  '      nodeId: draft',
+  '      portId: spec-document',
+  '    to:',
+  '      nodeId: review',
+  '      portId: spec',
+  'startNodeIds:',
+  '  - draft'
+];
+
+const INCLUDED_AUTHORING = includedResource(
+  ['id: parity-authoring', 'name: Parity Authoring', 'version: 2'],
+  [
+    'phaseIds:',
+    '  - parity-specify',
+    'outputs:',
+    '  - portId: spec-document',
+    '    label: Spec',
+    '    type: markdown'
+  ]
+);
+
+const INCLUDED_REVIEW = includedResource(
+  ['id: parity-review', 'name: Parity Review', 'version: 1'],
+  ['phaseIds:', '  - parity-specify', 'inputs:', '  - portId: spec', '    label: Spec', '    type: text']
+);
+
+const INCLUDED_SPECIFY = includedResource(
+  ['phaseId: parity-specify', 'name: Parity Specify', 'version: 2'],
+  ['instruction: Write the spec.']
+);
+
+/** Every id the root names is supplied by the same document; nothing resolves by accident. */
+const SELF_CONTAINED = workflowDocument({
+  pipelines: [INCLUDED_AUTHORING, INCLUDED_REVIEW],
+  phases: [INCLUDED_SPECIFY]
+});
+
+/**
+ * One row of each outcome the plan can carry, so the row-by-row comparison is
+ * over a set of four kinds and not over four instances of `import`:
+ *
+ *   import   the Phase and the one well-formed Pipeline
+ *   skip     the Pipeline whose id the target layer already holds
+ *   blocked  the root, which names a Pipeline nothing supplies
+ *   invalid  the Pipeline whose id the grammar refuses
+ *
+ * `blocked` and `invalid` are the two that carry the fields most easily lost in
+ * translation — a reason with a nested dependency, and a defect list — which is
+ * why the comparison names them rather than comparing outcomes alone.
+ */
+const MIXED = workflowDocument({
+  spec: [
+    'nodes:',
+    '  - nodeId: draft',
+    '    pipelineId: parity-authoring',
+    '  - nodeId: polish',
+    '    pipelineId: no-such-pipeline',
+    'startNodeIds:',
+    '  - draft'
+  ],
+  pipelines: [
+    INCLUDED_AUTHORING,
+    includedResource(
+      ['id: parity-held', 'name: Parity Held', 'version: 1'],
+      ['phaseIds:', '  - parity-specify']
+    ),
+    includedResource(
+      ['id: Not A Legal Id', 'name: Illegal', 'version: 1'],
+      ['phaseIds:', '  - parity-specify']
+    )
+  ],
+  phases: [INCLUDED_SPECIFY]
+});
+
+/** Already in the target layer, so `parity-held` plans as `skip` rather than `import`. */
+const HELD_PIPELINE = Object.freeze({
+  id: 'parity-held',
+  name: 'Parity Held',
+  version: 1,
+  phases: ['speckit-specify']
+});
+
+/**
+ * An unrelated Phase already in the target layer. It collides with nothing either
+ * document declares, so it changes no plan row — its only job is to give the Phase
+ * layer a different revision from the Pipeline layer. See the seeded control in
+ * the positive-controls block for why that matters.
+ */
+const HELD_PHASE = Object.freeze({
+  id: 'parity-unrelated',
+  name: 'Parity Unrelated',
+  version: 1,
+  instruction: 'Do something unrelated.'
+});
+
+/** The seed that makes the three layer revisions distinguishable. */
+const SEEDED = { phases: [HELD_PHASE], pipelines: [HELD_PIPELINE] } as const;
+
+const DOCUMENTS: readonly { readonly label: string; readonly text: string }[] = [
+  { label: 'a self-contained package', text: SELF_CONTAINED },
+  { label: 'a document with one row of each outcome', text: MIXED }
+];
+
+// ---------------------------------------------------------------------------
+// One isolated configuration fixture per surface
+// ---------------------------------------------------------------------------
+
+interface Layers {
+  user: readonly unknown[];
+  workspace: readonly unknown[];
+}
+
+interface Store {
+  readonly phases: Layers;
+  readonly pipelines: Layers;
+  readonly workflows: Layers;
+  /** Configuration keys written, in the order `updateConfig` saw them. */
+  readonly writes: LayerKey[];
+}
+
+function makeStore(
+  seed: {
+    readonly phases?: readonly unknown[];
+    readonly pipelines?: readonly unknown[];
+  } = {}
+): Store {
+  return {
+    phases: { user: seed.phases ?? [], workspace: [] },
+    pipelines: { user: seed.pipelines ?? [], workspace: [] },
+    workflows: { user: [], workspace: [] },
+    writes: []
+  };
+}
+
+function heldLayers(store: Store, scope: Scope) {
+  return {
+    phases: store.phases[scope],
+    pipelines: store.pipelines[scope],
+    workflows: store.workflows[scope]
+  };
+}
+
+function logger() {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    sanitize: (value: string) => value
+  };
+}
+
+/**
+ * The dependency bag both surfaces read the catalog through.
+ *
+ * `RouterDeps` satisfies `ExchangeDeps` structurally, which is the whole point of
+ * the extracted service ports — the same object is handed to the router and to
+ * the headless entrypoint, so a divergence cannot be an artifact of two differently
+ * shaped fixtures.
+ */
+function depsFor(store: Store, bytes?: Uint8Array) {
+  return {
+    readPhaseConfig: () => store.phases,
+    readPipelineConfig: () => store.pipelines,
+    readWorkflowConfig: () => store.workflows,
+    ...(bytes !== undefined
+      ? { openProcessYamlDocument: async () => ({ outcome: 'read' as const, bytes }) }
+      : {}),
+    updateConfig: async (key: string, value: unknown, target: Scope) => {
+      expect(['phases', 'pipelines', 'workflows']).toContain(key);
+      store.writes.push(key as LayerKey);
+      store[key as LayerKey][target] = value as readonly unknown[];
+    },
+    executeCommand: vi.fn(),
+    queueRemover: { remove: vi.fn() },
+    isPrimary: () => true,
+    isTrusted: () => true,
+    audit: { append: async () => undefined },
+    logger: logger()
+  } as unknown as RouterDeps;
+}
+
+let dispatched = 0;
+
+/**
+ * Dispatch one command through the real router and return its ack.
+ *
+ * A fresh correlation id per dispatch: `MutationCommandExecutor` caches acks by
+ * correlation id, so a reused one would replay the previous command's answer and
+ * every write after the first would assert nothing.
+ */
+async function dispatch(
+  deps: RouterDeps,
+  type: string,
+  payload: unknown
+): Promise<CommandAckMessage> {
+  dispatched += 1;
+  const acks: CommandAckMessage[] = [];
+  await new MessageRouter(deps).dispatch(
+    {
+      type,
+      correlationId: `parity-${dispatched}-${type}`,
+      payload: payload ?? {}
+    } as unknown as SidebarCommand,
+    async (message) => {
+      acks.push(message);
+      return true;
+    }
+  );
+  const ack = acks[0];
+  expect(ack, `no ack for ${type}`).toBeDefined();
+  return ack!;
+}
+
+// ---------------------------------------------------------------------------
+// Surface 1 — automation
+// ---------------------------------------------------------------------------
+
+function bytesOf(text: string): Uint8Array {
+  return new Uint8Array(Buffer.from(text, 'utf8'));
+}
+
+async function headlessPreview(store: Store, text: string): Promise<ImportPlan> {
+  const result = await previewProcessDocument(depsFor(store), { bytes: bytesOf(text) });
+  if (!('outcome' in result) || result.outcome !== 'planned') {
+    throw new Error(`headless preview did not plan: ${JSON.stringify(result)}`);
+  }
+  return result.plan;
+}
+
+/**
+ * The write port is the router, so the headless import reaches the same three
+ * handlers the operator's does. Injecting a stub here instead would leave the two
+ * arms comparing a real save against a fake one.
+ */
+async function headlessImport(
+  store: Store,
+  plan: ImportPlan,
+  scope: Scope
+): Promise<ImportProcessDocumentResult> {
+  const deps = depsFor(store);
+  const send = async (type: string, payload: unknown): Promise<LayerSaveAck> => {
+    const ack = await dispatch(deps, type, payload);
+    return ack.status === 'accepted'
+      ? { status: 'accepted', result: ack.result }
+      : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
+  };
+  return importProcessDocument(
+    {
+      savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
+      savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
+      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload)
+    },
+    { plan, scope, layers: heldLayers(store, scope) }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Surface 2 — operator
+// ---------------------------------------------------------------------------
+
+async function sidebarPreview(store: Store, text: string): Promise<ImportPlan> {
+  const ack = await dispatch(depsFor(store, bytesOf(text)), CMD_PREFLIGHT_PROCESS_YAML, {});
+  const result = ack.result as PreflightProcessYamlResult;
+  if (result.outcome !== 'planned') {
+    throw new Error(`sidebar preflight did not plan: ${JSON.stringify(result)}`);
+  }
+  return result.plan;
+}
+
+type ImportRow<K extends ImportPlanRow['resourceKind']> = Extract<
+  ImportPlanRow,
+  { outcome: 'import'; resourceKind: K }
+>;
+
+function importRows<K extends ImportPlanRow['resourceKind']>(
+  plan: ImportPlan,
+  resourceKind: K
+): readonly ImportRow<K>[] {
+  return plan.rows.filter(
+    (row): row is ImportRow<K> => row.outcome === 'import' && row.resourceKind === resourceKind
+  );
+}
+
+interface LayerWrite {
+  readonly key: LayerKey;
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+}
+
+/**
+ * `buildImportWrites`, mirrored from {@link SIDEBAR_COMPOSER_SOURCE}.
+ *
+ * Kept structurally identical to the original rather than tidied: the standalone
+ * `import` intent for the single-Phase case, each layer carrying the revision the
+ * PLAN was computed against for the chosen scope, and nothing at all returned when
+ * a layer has rows but no revision to gate them with.
+ */
+function sidebarWrites(plan: ImportPlan, scope: Scope, layers: ReturnType<typeof heldLayers>) {
+  const phases = importRows(plan, 'phase');
+  const pipelines = importRows(plan, 'pipeline');
+  const workflows = importRows(plan, 'workflow');
+  const pipelineRevisions = plan.computedAgainstPipelineRevision;
+  const workflowRevisions = plan.computedAgainstWorkflowRevision;
+  if (pipelines.length > 0 && pipelineRevisions === undefined) return [];
+  if (workflows.length > 0 && workflowRevisions === undefined) return [];
+
+  const writes: LayerWrite[] = [];
+  if (phases.length > 0) {
+    const standalone = phases.length === 1 && pipelines.length === 0 && workflows.length === 0;
+    writes.push({
+      key: 'phases',
+      type: CMD_SAVE_PHASES,
+      payload: {
+        scope,
+        expectedRevision: plan.computedAgainstRevision[scope],
+        mutation: standalone
+          ? { kind: 'import', phaseId: phases[0].resourceId }
+          : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
+        phases: [
+          ...layers.phases,
+          ...phases.map(({ definition }) => {
+            const { phaseId, ...declared } = definition;
+            return { id: phaseId, ...declared };
+          })
+        ]
+      }
+    });
+  }
+  if (pipelines.length > 0 && pipelineRevisions !== undefined) {
+    writes.push({
+      key: 'pipelines',
+      type: CMD_SAVE_PIPELINES,
+      payload: {
+        scope,
+        expectedRevision: pipelineRevisions[scope],
+        mutation: { kind: 'import-package', pipelineIds: pipelines.map((row) => row.resourceId) },
+        pipelines: [
+          ...layers.pipelines,
+          ...pipelines.map(({ definition }) => {
+            const { pipelineId, phaseIds, ...declared } = definition;
+            return { id: pipelineId, phases: [...phaseIds], ...declared };
+          })
+        ]
+      }
+    });
+  }
+  if (workflows.length > 0 && workflowRevisions !== undefined) {
+    writes.push({
+      key: 'workflows',
+      type: CMD_SAVE_WORKFLOWS,
+      payload: {
+        scope,
+        expectedRevision: workflowRevisions[scope],
+        mutation: { kind: 'import-package', workflowIds: workflows.map((row) => row.resourceId) },
+        workflows: [
+          ...layers.workflows,
+          ...workflows.map(({ definition }) => ({ ...definition }))
+        ]
+      }
+    });
+  }
+  return writes;
+}
+
+interface SidebarCommit {
+  readonly results: readonly { readonly key: LayerKey; readonly ack: CommandAckMessage }[];
+  readonly outcome: 'imported' | 'partial' | 'failed';
+  readonly sent: readonly LayerWrite[];
+}
+
+async function sidebarImport(store: Store, plan: ImportPlan, scope: Scope): Promise<SidebarCommit> {
+  const deps = depsFor(store);
+  const sent = sidebarWrites(plan, scope, heldLayers(store, scope));
+  const results: { key: LayerKey; ack: CommandAckMessage }[] = [];
+  for (const write of sent) {
+    const ack = await dispatch(deps, write.type, write.payload);
+    results.push({ key: write.key, ack });
+    // A rejection stops the sequence. The order exists so a layer never lands
+    // ahead of its dependency; carrying on past a refusal would be exactly that.
+    if (ack.status !== 'accepted') break;
+  }
+  const accepted = results.filter((result) => result.ack.status === 'accepted').length;
+  const outcome =
+    results.length === 0
+      ? 'failed'
+      : accepted === results.length
+        ? 'imported'
+        : accepted === 0
+          ? 'failed'
+          : 'partial';
+  return { results, outcome, sent };
+}
+
+// -- Export, both surfaces (T033) -------------------------------------------
+
+/**
+ * The operator's export. The save seam is injected and captures rather than
+ * writes, which is also the only way to observe the document at all: no path
+ * crosses this boundary in either direction, so the dialog is where the text
+ * stops.
+ */
+async function sidebarExport(
+  store: Store,
+  selection: ExportProcessYamlRequest
+): Promise<{ readonly ack: CommandAckMessage; readonly text: string | null }> {
+  let captured: string | null = null;
+  const deps = {
+    ...(depsFor(store) as unknown as Record<string, unknown>),
+    saveProcessYamlDocument: async (document: {
+      suggestedFileName: string;
+      text: string;
+    }): Promise<{ outcome: 'saved' }> => {
+      captured = document.text;
+      return { outcome: 'saved' };
+    }
+  } as unknown as RouterDeps;
+  const ack = await dispatch(deps, CMD_EXPORT_PROCESS_YAML, selection);
+  return { ack, text: captured };
+}
+
+async function headlessExport(
+  store: Store,
+  selection: ExportProcessYamlRequest
+): Promise<Uint8Array> {
+  const result = await exportProcessDefinitions(depsFor(store), { selection });
+  if (!('outcome' in result) || result.outcome !== 'serialized') {
+    throw new Error(`headless export did not serialize: ${JSON.stringify(result)}`);
+  }
+  return result.bytes;
+}
+
+/** A store holding the whole self-contained package, imported through the real writes. */
+async function storeWithPackage(): Promise<Store> {
+  const store = makeStore();
+  const plan = await headlessPreview(store, SELF_CONTAINED);
+  const result = await headlessImport(store, plan, 'user');
+  expect(result.outcome, 'export fixture failed to import').toBe('imported');
+  return store;
+}
+
+/**
+ * A Pipeline whose referenced Phase is absent. The reference-relaxed pass still
+ * resolves the Pipeline itself, so an `include-referenced` export of it reaches the
+ * *dependency* arm of the refusal — the one arm that carries an identifier, and
+ * therefore the only arm where a rebuilt refusal differs from a spread one.
+ */
+const GHOST_PIPELINE = Object.freeze({
+  id: 'parity-ghost',
+  name: 'Parity Ghost',
+  version: 1,
+  phases: ['parity-missing-phase']
+});
+
+/** Both refusal arms: the one that carries only a reason, and the one that names a dependency. */
+const EXPORT_REFUSALS: readonly {
+  readonly label: string;
+  readonly seed: { readonly phases?: readonly unknown[]; readonly pipelines?: readonly unknown[] };
+  readonly selection: ExportProcessYamlRequest;
+  readonly expected: Record<string, unknown>;
+}[] = [
+  {
+    label: 'an id no layer carries',
+    seed: {},
+    selection: { resourceKind: 'phase', resourceId: 'no-such-phase' },
+    expected: { outcome: 'unavailable', reason: 'not-found' }
+  },
+  {
+    label: 'a referenced Phase that does not resolve',
+    seed: { pipelines: [GHOST_PIPELINE] },
+    selection: {
+      resourceKind: 'pipeline',
+      resourceId: 'parity-ghost',
+      inclusion: 'include-referenced'
+    },
+    expected: {
+      outcome: 'unavailable',
+      reason: 'dependency-does-not-resolve',
+      unresolvedDependency: { kind: 'phase', resourceId: 'parity-missing-phase' }
+    }
+  }
+];
+
+/** Every inclusion mode the three kinds admit, so no serializer branch is unexercised. */
+const EXPORTS: readonly { readonly label: string; readonly selection: ExportProcessYamlRequest }[] =
+  [
+    { label: 'a Phase', selection: { resourceKind: 'phase', resourceId: 'parity-specify' } },
+    {
+      label: 'a Pipeline, references only',
+      selection: {
+        resourceKind: 'pipeline',
+        resourceId: 'parity-authoring',
+        inclusion: 'references-only'
+      }
+    },
+    {
+      label: 'a Pipeline and its Phases',
+      selection: {
+        resourceKind: 'pipeline',
+        resourceId: 'parity-authoring',
+        inclusion: 'include-referenced'
+      }
+    },
+    {
+      label: 'a Workflow, references only',
+      selection: {
+        resourceKind: 'workflow',
+        resourceId: 'parity-flow',
+        inclusion: 'references-only'
+      }
+    },
+    {
+      label: 'a Workflow and its Pipelines',
+      selection: {
+        resourceKind: 'workflow',
+        resourceId: 'parity-flow',
+        inclusion: 'include-pipelines'
+      }
+    },
+    {
+      label: 'a Workflow and its whole closure',
+      selection: {
+        resourceKind: 'workflow',
+        resourceId: 'parity-flow',
+        inclusion: 'include-closure'
+      }
+    }
+  ];
+
+// ---------------------------------------------------------------------------
+// What the two are compared on
+// ---------------------------------------------------------------------------
+
+/**
+ * The four fields T032 names, per row: the action, the reason, the resource id,
+ * and the blocked dependencies.
+ *
+ * `reason` is the row's whole reason object for a `blocked` row — code, dependency,
+ * and `via` — because a comparison on the code alone would agree while the two
+ * surfaces pointed an operator at different dependencies. `defects` come along for
+ * an `invalid` row on the same argument.
+ */
+function comparableRow(row: ImportPlanRow): Record<string, unknown> {
+  return {
+    action: row.outcome,
+    resourceKind: row.resourceKind,
+    resourceId: row.resourceId,
+    reason: row.outcome === 'blocked' ? row.reason : undefined,
+    blockedDependencies:
+      row.outcome === 'blocked'
+        ? [row.reason.dependency, ...(row.reason.code === 'dependency-blocked' ? [row.reason.via] : [])]
+        : undefined,
+    presence:
+      row.outcome === 'skip' ? { in: row.presentIn, status: row.presentRowStatus } : undefined,
+    defects: row.outcome === 'invalid' ? row.defects : undefined
+  };
+}
+
+function comparablePlan(plan: ImportPlan): Record<string, unknown> {
+  return {
+    rows: plan.rows.map(comparableRow),
+    counts: plan.counts,
+    computedAgainstRevision: plan.computedAgainstRevision,
+    computedAgainstPipelineRevision: plan.computedAgainstPipelineRevision,
+    computedAgainstWorkflowRevision: plan.computedAgainstWorkflowRevision
+  };
+}
+
+/** The three effective catalogs a store resolves to, ids and all. */
+function effectiveCatalogs(store: Store) {
+  const phaseCatalog = resolvePhaseCatalog({
+    builtIn: BUILT_IN_PHASES,
+    user: store.phases.user,
+    workspace: store.phases.workspace
+  }).effective;
+  const pipelineCatalog = resolvePipelineCatalog({
+    builtIn: BUILT_IN_PIPELINES,
+    user: store.pipelines.user,
+    workspace: store.pipelines.workspace,
+    phaseCatalog
+  });
+  const workflowCatalog = resolveWorkflowCatalog({
+    builtIn: BUILT_IN_WORKFLOWS,
+    user: store.workflows.user,
+    workspace: store.workflows.workspace,
+    pipelineCatalog
+  });
+  return {
+    phases: phaseCatalog,
+    pipelines: pipelineCatalog.effective,
+    workflows: workflowCatalog.effective
+  };
+}
+
+const IMPORTED_IDS = {
+  phases: 'parity-specify',
+  pipelines: 'parity-authoring',
+  workflows: 'parity-flow'
+} as const;
+
+beforeEach(() => {
+  capabilities.clear();
+  dispatched = 0;
+});
+
+describe('the fixture drives both surfaces for real (positive controls)', () => {
+  it('names a composer source that exists, so the mirror can be checked', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const source = readFileSync(
+      resolve(__dirname, '../../..', SIDEBAR_COMPOSER_SOURCE),
+      'utf8'
+    );
+    // Not a parity assertion — a staleness one. If the original is renamed or its
+    // composer removed, the mirror below is describing something that no longer
+    // exists and the header's claim about it is false.
+    expect(source).toContain('export function buildImportWrites(');
+  });
+
+  it('reaches all three writes and changes the catalog (positive control)', async () => {
+    // Without this, two surfaces that both refused before writing anything would
+    // agree on an empty catalog and every assertion below would hold vacuously.
+    const store = makeStore();
+    const plan = await headlessPreview(store, SELF_CONTAINED);
+    const result = await headlessImport(store, plan, 'user');
+
+    expect(result.outcome).toBe('imported');
+    expect(store.writes).toEqual(['phases', 'pipelines', 'workflows']);
+    const catalogs = effectiveCatalogs(store);
+    expect(catalogs.phases.map((row) => row.phaseId)).toContain(IMPORTED_IDS.phases);
+    expect(catalogs.pipelines.map((row) => row.pipelineId)).toContain(IMPORTED_IDS.pipelines);
+    expect(catalogs.workflows.map((row) => row.workflowId)).toContain(IMPORTED_IDS.workflows);
+  });
+
+  it('seeds three layers whose revisions differ (positive control)', async () => {
+    // A probe found this the hard way. On an empty fixture all three layers carry
+    // the same revision, so the three `expectedRevision` fields are interchangeable
+    // and a Pipeline write gated on the PHASE layer's revision compares equal to a
+    // correct one. Seeding two of the three layers differently is what gives the
+    // payload comparison below the resolution to see that mistake; this control
+    // fails if a future fixture change flattens them again.
+    const plan = await headlessPreview(makeStore(SEEDED), SELF_CONTAINED);
+    const revisions = [
+      plan.computedAgainstRevision.user,
+      plan.computedAgainstPipelineRevision?.user,
+      plan.computedAgainstWorkflowRevision?.user
+    ];
+    expect(revisions.every((revision) => revision !== undefined)).toBe(true);
+    expect(new Set(revisions).size).toBe(3);
+  });
+
+  it('produces all four plan outcomes from the mixed document (positive control)', async () => {
+    const store = makeStore({ pipelines: [HELD_PIPELINE] });
+    const plan = await headlessPreview(store, MIXED);
+
+    expect(new Set(plan.rows.map((row) => row.outcome))).toEqual(
+      new Set(['import', 'skip', 'blocked', 'invalid'])
+    );
+    // A row-by-row comparison over a single outcome kind would not exercise the
+    // reason or defect fields at all.
+    expect(plan.rows.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('previewProcessDocument matches the sidebar preflight (T032, FR-002, SC-001)', () => {
+  it.each(DOCUMENTS)('plans $label identically on both surfaces', async ({ text }) => {
+    // Two stores seeded the same way, so neither surface can be reading a catalog
+    // the other cannot see.
+    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+
+    const headless = await headlessPreview(headlessStore, text);
+    const sidebar = await sidebarPreview(sidebarStore, text);
+
+    expect(comparablePlan(sidebar)).toEqual(comparablePlan(headless));
+  });
+
+  it('agrees on the blocked row down to the dependency it names', async () => {
+    // The narrow assertion behind the broad one. `dependency-absent` on
+    // `no-such-pipeline` is what tells an operator what to supply; a comparison
+    // that stopped at `outcome: 'blocked'` would agree while the two surfaces sent
+    // them looking for different things.
+    const headless = await headlessPreview(makeStore({ pipelines: [HELD_PIPELINE] }), MIXED);
+    const sidebar = await sidebarPreview(makeStore({ pipelines: [HELD_PIPELINE] }), MIXED);
+
+    const blockedOf = (plan: ImportPlan) => plan.rows.filter((row) => row.outcome === 'blocked');
+    const headlessBlocked = blockedOf(headless);
+    expect(headlessBlocked).toHaveLength(1);
+    expect(headlessBlocked[0]).toMatchObject({
+      resourceId: 'parity-flow',
+      reason: { code: 'dependency-absent', dependency: { resourceId: 'no-such-pipeline' } }
+    });
+    expect(blockedOf(sidebar).map(comparableRow)).toEqual(headlessBlocked.map(comparableRow));
+  });
+
+  it('changes nothing on either surface — preview is read-only (FR-002)', async () => {
+    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+
+    await headlessPreview(headlessStore, SELF_CONTAINED);
+    await sidebarPreview(sidebarStore, SELF_CONTAINED);
+
+    expect(headlessStore.writes).toEqual([]);
+    expect(sidebarStore.writes).toEqual([]);
+  });
+});
+
+describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001)', () => {
+  /**
+   * Both documents, and both stores seeded, because a probe showed the unseeded
+   * single-document form could not tell a correct write from one gated on another
+   * layer's revision — see the seeded control in the positive-controls block.
+   */
+  it.each(DOCUMENTS)('sends the same per-layer payloads, in order, for $label', async ({ text }) => {
+    const headlessStore = makeStore(SEEDED);
+    const sidebarStore = makeStore(SEEDED);
+    const headlessPlan = await headlessPreview(headlessStore, text);
+    const sidebarPlan = await sidebarPreview(sidebarStore, text);
+
+    // The operator's payloads, from the mirrored composer.
+    const operator = sidebarWrites(sidebarPlan, 'user', heldLayers(sidebarStore, 'user'));
+
+    // The automation payloads, recorded at the port rather than inferred. The
+    // acks are stubbed accepted so the whole sequence is observed: a real write
+    // here would refuse the second layer and the comparison would stop early.
+    const sent: LayerWrite[] = [];
+    const record =
+      (key: LayerKey, type: string) =>
+      async (payload: unknown): Promise<LayerSaveAck> => {
+        sent.push({ key, type, payload: payload as Record<string, unknown> });
+        return { status: 'accepted' };
+      };
+    await importProcessDocument(
+      {
+        savePhases: record('phases', CMD_SAVE_PHASES),
+        savePipelines: record('pipelines', CMD_SAVE_PIPELINES),
+        saveWorkflows: record('workflows', CMD_SAVE_WORKFLOWS)
+      },
+      { plan: headlessPlan, scope: 'user', layers: heldLayers(headlessStore, 'user') }
+    );
+
+    expect(sent.map((write) => write.key)).toEqual(operator.map((write) => write.key));
+    expect(sent.map((write) => write.payload)).toEqual(operator.map((write) => write.payload));
+  });
+
+  it.each([
+    { label: 'a self-contained package', text: SELF_CONTAINED, held: [] as readonly unknown[] },
+    { label: 'a document with one row of each outcome', text: MIXED, held: [HELD_PIPELINE] }
+  ])('leaves the same effective catalogs after importing $label', async ({ text, held }) => {
+    const headlessStore = makeStore({ pipelines: held });
+    const sidebarStore = makeStore({ pipelines: held });
+
+    const headlessResult = await headlessImport(
+      headlessStore,
+      await headlessPreview(headlessStore, text),
+      'user'
+    );
+    const sidebarResult = await sidebarImport(
+      sidebarStore,
+      await sidebarPreview(sidebarStore, text),
+      'user'
+    );
+
+    expect(headlessResult.outcome).toBe(sidebarResult.outcome);
+    expect(headlessResult.results.map((result) => [result.key, result.ack.status])).toEqual(
+      sidebarResult.results.map((result) => [result.key, result.ack.status])
+    );
+    expect(headlessStore.writes).toEqual(sidebarStore.writes);
+    // The property the requirement is about: not that the two wrote the same
+    // bytes, but that the catalog afterwards resolves to the same definitions.
+    expect(effectiveCatalogs(headlessStore)).toEqual(effectiveCatalogs(sidebarStore));
+  });
+
+  it('writes fewer layers, identically, when the document declares fewer', async () => {
+    // The mixed document's root is blocked, so the Workflow layer is never
+    // written. A surface that wrote a fixed three would diverge here and nowhere
+    // else.
+    const headlessStore = makeStore({ pipelines: [HELD_PIPELINE] });
+    const sidebarStore = makeStore({ pipelines: [HELD_PIPELINE] });
+
+    await headlessImport(headlessStore, await headlessPreview(headlessStore, MIXED), 'user');
+    await sidebarImport(sidebarStore, await sidebarPreview(sidebarStore, MIXED), 'user');
+
+    expect(headlessStore.writes).toEqual(['phases', 'pipelines']);
+    expect(sidebarStore.writes).toEqual(headlessStore.writes);
+  });
+
+  it('refuses a stale revision identically on both surfaces (FR-008)', async () => {
+    // The plan is computed, then the layer moves underneath it. Both surfaces
+    // carry the plan's revision into the write, so both must report the staleness
+    // rather than overwrite the row that appeared.
+    const headlessStore = makeStore();
+    const sidebarStore = makeStore();
+    const headlessPlan = await headlessPreview(headlessStore, SELF_CONTAINED);
+    const sidebarPlan = await sidebarPreview(sidebarStore, SELF_CONTAINED);
+
+    const intruder = [{ id: 'intruder', name: 'Intruder', version: 1, instruction: 'Intrude.' }];
+    headlessStore.phases.user = intruder;
+    sidebarStore.phases.user = intruder;
+
+    const headlessResult = await headlessImport(headlessStore, headlessPlan, 'user');
+    const sidebarResult = await sidebarImport(sidebarStore, sidebarPlan, 'user');
+
+    expect(headlessResult.outcome).toBe('failed');
+    expect(sidebarResult.outcome).toBe('failed');
+    const headlessAck = headlessResult.results[0]?.ack;
+    expect(headlessAck?.status).toBe('rejected');
+    expect(headlessAck && 'reason' in headlessAck ? headlessAck.reason : undefined).toBe(
+      'stale-catalog'
+    );
+    expect(sidebarResult.results[0]?.ack.reason).toBe('stale-catalog');
+    expect(headlessStore.writes).toEqual([]);
+    expect(sidebarStore.writes).toEqual([]);
+  });
+});
+
+describe('exportProcessDefinitions matches the sidebar export (T033, FR-009, SC-002)', () => {
+  it('produces a document that previews back to import rows (positive control)', async () => {
+    // Two empty buffers compare equal. This is what rules that out: the exported
+    // bytes are fed back through the preview path and must plan as a real package,
+    // so the byte comparisons below are over a document with content in it.
+    const bytes = await headlessExport(await storeWithPackage(), {
+      resourceKind: 'workflow',
+      resourceId: 'parity-flow',
+      inclusion: 'include-closure'
+    });
+    expect(bytes.byteLength).toBeGreaterThan(0);
+
+    const plan = await headlessPreview(makeStore(), Buffer.from(bytes).toString('utf8'));
+    expect(plan.rows.filter((row) => row.outcome === 'import').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(EXPORTS)('writes byte-identical documents for $label', async ({ selection }) => {
+    // One store, both surfaces: export is read-only, so there is nothing for the
+    // two to diverge on except the document itself.
+    const store = await storeWithPackage();
+
+    const sidebar = await sidebarExport(store, selection);
+    const headless = await headlessExport(store, selection);
+
+    expect(sidebar.ack.status).toBe('accepted');
+    expect(sidebar.text).not.toBeNull();
+
+    const operatorBytes = Buffer.from(sidebar.text ?? '', 'utf8');
+    const automationBytes = Buffer.from(headless);
+
+    // Compared as text first, because that is the failure a reader can act on...
+    expect(automationBytes.toString('utf8')).toBe(operatorBytes.toString('utf8'));
+    // ...then as bytes, which is the assertion FR-009 actually makes. The two are
+    // the same claim only while one deterministic encoder sits on each path; the
+    // second assertion is what notices if that stops being true.
+    expect(Buffer.compare(automationBytes, operatorBytes)).toBe(0);
+  });
+
+  it('changes nothing on either surface — export is read-only', async () => {
+    const store = await storeWithPackage();
+    const before = [...store.writes];
+
+    await sidebarExport(store, { resourceKind: 'phase', resourceId: 'parity-specify' });
+    await headlessExport(store, { resourceKind: 'phase', resourceId: 'parity-specify' });
+
+    expect(store.writes).toEqual(before);
+  });
+
+  it.each(EXPORT_REFUSALS)(
+    'refuses $label identically on both surfaces',
+    async ({ seed, selection, expected }) => {
+      const store = makeStore(seed);
+
+      const sidebar = await sidebarExport(store, selection);
+      const headless = await exportProcessDefinitions(depsFor(store), { selection });
+
+      expect(sidebar.ack.status).toBe('rejected');
+      expect(sidebar.text).toBeNull();
+      // Asserted against a literal BEFORE the two are compared to each other. A
+      // probe that rebuilt the headless refusal as `{ outcome, reason }` — dropping
+      // the identifier FR-017 requires it to carry — passed a surface-to-surface
+      // comparison on the `not-found` arm, where the rebuild happens to be
+      // identical. Only the dependency arm below distinguishes them, and only the
+      // literal says what the payload must actually contain.
+      expect(headless).toEqual(expected);
+      // Then the parity claim itself. The refusal payload is compared; the ack
+      // envelope is not — the transport is the one difference the contract permits.
+      expect(headless).toEqual(sidebar.ack.result);
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Pipeline launch (T034)
+// ---------------------------------------------------------------------------
+//
+// Feature 089 (T034, US2, FR-010, FR-013, SC-003) — one request, two adapters,
+// one queue row.
+//
+// The two entry points here are `launchPipelineRun` from
+// `src/headless/pipeline-run-api.ts` and `MessageRouter.dispatch` of
+// `CMD_LAUNCH_PIPELINE`, and they are thinner than the exchange pair: both call
+// `startPipelineRun()` and neither adds a gate. That is exactly what makes the
+// comparison worth writing — the contract's R6 ("there is no shorter path to the
+// runner") is a claim about this seam, and the only way to hold it is to keep
+// asserting that the four gates, in their fixed order, produce the same row from
+// both sides.
+//
+// **The clock is pinned, and why that is not a dropped field.** `startPipelineRun`
+// reads `Date.now()` twice — once as the validator's `now` (which becomes the
+// plan's `frozenAt`) and once as the queue row's `scheduledAt`. Two runs
+// milliseconds apart therefore produce two rows that differ in two fields, and
+// the usual repair is to delete them before comparing. That would stop pinning
+// them altogether: a surface that stamped the wrong one, or forgot to stamp it,
+// would compare equal. Pinning `Date.now` instead keeps both fields inside the
+// comparison.
+//
+// **On the audit sequence.** The obligations table names "audit event sequence"
+// for this row, and the honest reading is that the sequence is empty on both
+// sides: `NodeRunStartDeps` declares no audit member, `node-run-starter.ts`
+// emits nothing, and the router's mutation executor emits nothing either — a
+// run's audit trail begins downstream, at drain. So what is asserted is that
+// NEITHER adapter adds an event of its own, over a recorder proven live by a
+// command that does emit. The audit-boundary assertions proper are T036-T038.
+
+const LAUNCH_PIPELINE = Object.freeze({
+  id: 'parity-launch',
+  name: 'Parity Launch',
+  phases: ['speckit-specify'],
+  outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
+});
+
+/** The effective catalog both arms resolve against, through the real loader. */
+const LAUNCH_CATALOG = loadCatalog({
+  getPhases: () => undefined,
+  getPipelines: (scope) => (scope === 'user' ? [LAUNCH_PIPELINE] : undefined),
+  getModels: () => undefined,
+  getDefaultPipelineId: () => undefined
+}).catalog;
+
+/** A live audit port and the events it saw, in order. */
+function auditRecorder() {
+  const events: unknown[] = [];
+  return {
+    events,
+    port: {
+      append: async (event: unknown) => {
+        events.push(event);
+      }
+    }
+  };
+}
+
+/**
+ * The launch dependency bag, built on the exchange one so both arms keep reading
+ * the same config seams — and so the audit control below can dispatch a saving
+ * command through the *same* object the launch cases use.
+ */
+function launchDeps(
+  queue: RecordingQueue,
+  audit: ReturnType<typeof auditRecorder>,
+  store: Store = makeStore()
+): RouterDeps {
+  return {
+    ...(depsFor(store) as unknown as Record<string, unknown>),
+    guardedRun: queue,
+    getCatalog: () => LAUNCH_CATALOG,
+    defaultRunnerKind: 'claude',
+    audit: audit.port
+  } as unknown as RouterDeps;
+}
+
+function runRequest(overrides: Partial<RunRequest> = {}): RunRequest {
+  return {
+    pipelineId: LAUNCH_PIPELINE.id,
+    inputs: [],
+    supplemental: [],
+    outputs: [],
+    instructions: 'Draft the report.',
+    ...overrides
+  };
+}
+
+interface LaunchArm {
+  readonly result: unknown;
+  readonly queue: RecordingQueue;
+  readonly audit: readonly unknown[];
+}
+
+async function headlessLaunch(request: RunRequest): Promise<LaunchArm> {
+  const queue = new RecordingQueue();
+  const audit = auditRecorder();
+  const result = await launchPipelineRun(launchDeps(queue, audit), {
+    request,
+    workspaceRoot: workspaceRoot.path
+  });
+  return { result, queue, audit: audit.events };
+}
+
+async function sidebarLaunch(request: RunRequest): Promise<LaunchArm> {
+  const queue = new RecordingQueue();
+  const audit = auditRecorder();
+  const ack = await dispatch(launchDeps(queue, audit), CMD_LAUNCH_PIPELINE, { request });
+  return { result: ack.result, queue, audit: audit.events };
+}
+
+describe('Pipeline launch parity (T034, US2, FR-010, FR-013)', () => {
+  const FROZEN_NOW = 1_760_000_000_000;
+  let root: string;
+
+  beforeAll(async () => {
+    root = await makeWorkspaceRoot();
+    workspaceRoot.path = root;
+  });
+
+  afterAll(async () => {
+    workspaceRoot.path = '/tmp/headless-parity';
+    await removeWorkspaceRoot(root);
+  });
+
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(FROZEN_NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('records an audit event when a command emits one (positive control)', async () => {
+    // The two launch assertions below are "both sequences are empty", which any
+    // dead recorder satisfies. This proves the recorder in `launchDeps` is the
+    // one the handlers reach: the same bag, and a command that does audit.
+    //
+    // A package import specifically, because that is the phase save that emits a
+    // commit event — `cmd-save-phases.ts` builds its `ImportCommitTarget` only
+    // for `import-package`, so a `create` would have been accepted and recorded
+    // nothing, and the control would have proved the opposite of what it claims.
+    const audit = auditRecorder();
+    const store = makeStore();
+    const deps = launchDeps(new RecordingQueue(), audit, store);
+    const ack = await dispatch(deps, CMD_SAVE_PHASES, {
+      scope: 'user',
+      expectedRevision: phaseLayerRevision(store.phases.user),
+      mutation: { kind: 'import-package', phaseIds: [HELD_PHASE.id] },
+      phases: [HELD_PHASE]
+    });
+    expect(ack.status, `save rejected: ${ack.reason}`).toBe('accepted');
+    expect(audit.events.length).toBeGreaterThan(0);
+  });
+
+  it('enqueues the same row, the same frozen snapshot, and no audit event', async () => {
+    const request = runRequest({
+      outputs: [{ portId: 'report', target: 'out/report.md' }]
+    });
+    const headless = await headlessLaunch(request);
+    const sidebar = await sidebarLaunch(request);
+
+    // Both arms reached the queue exactly once. `only` throws otherwise, so a
+    // double enqueue cannot pass as a match.
+    expect(headless.queue.only).toEqual(sidebar.queue.only);
+
+    // The frozen snapshot, named separately because it is the durable half — the
+    // `WorkflowRun` materializes from it later, at drain.
+    const frozen = headless.queue.only.runPlan;
+    expect(frozen).toEqual(sidebar.queue.only.runPlan);
+    expect(frozen?.pipeline.id).toBe(LAUNCH_PIPELINE.id);
+    expect(frozen?.pipeline.phases.map((phase) => phase.id)).toEqual(['speckit-specify']);
+    expect(frozen?.outputs).toEqual([
+      { portId: 'report', type: 'markdown', target: 'out/report.md', overwriteConfirmed: false }
+    ]);
+    expect(frozen?.frozenAt).toBe(FROZEN_NOW);
+
+    // Neither adapter emitted an audit event of its own.
+    expect(headless.audit).toEqual([]);
+    expect(sidebar.audit).toEqual([]);
+
+    // The one permitted vocabulary difference, pinned rather than skipped: the
+    // seam's `queueItemId` is this wire's `requestId`, and nothing else differs.
+    const started = headless.result as Extract<NodeRunStartResult, { outcome: 'enqueued' }>;
+    expect(started.outcome).toBe('enqueued');
+    expect(sidebar.result).toEqual({ outcome: 'enqueued', requestId: started.queueItemId });
+  });
+
+  it('refuses an unknown Pipeline id the same way, and enqueues nothing', async () => {
+    const request = runRequest({ pipelineId: 'parity-no-such-pipeline' });
+    const headless = await headlessLaunch(request);
+    const sidebar = await sidebarLaunch(request);
+
+    // The literal first: comparing the two arms to each other agrees when both
+    // lost the same field, and `rejected-definition` carries exactly one.
+    expect(headless.result).toEqual({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
+    expect(sidebar.result).toEqual(headless.result);
+
+    // FR-033's fail-closed half: no substituted built-in reached the queue.
+    expect(headless.queue.submitted).toEqual([]);
+    expect(sidebar.queue.submitted).toEqual([]);
+  });
+
+  it('refuses an output target that escapes the workspace the same way', async () => {
+    const request = runRequest({
+      outputs: [{ portId: 'report', target: '../outside-the-workspace.md' }]
+    });
+    const headless = await headlessLaunch(request);
+    const sidebar = await sidebarLaunch(request);
+
+    expect(headless.result).toEqual({
+      outcome: 'rejected-validation',
+      errors: [
+        {
+          field: 'outputs.report',
+          code: 'path-escapes-workspace',
+          message: 'This target resolves outside the workspace.'
+        }
+      ]
+    });
+    expect(sidebar.result).toEqual(headless.result);
+    expect(headless.queue.submitted).toEqual([]);
+    expect(sidebar.queue.submitted).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow continuation (T035)
+// ---------------------------------------------------------------------------
+//
+// Feature 089 (T035, US2, FR-011, FR-014, SC-003) — one payload, two adapters,
+// one recorded attempt.
+//
+// The pair is `continueWorkflowRun` from `src/headless/workflow-run-api.ts` and
+// `MessageRouter.dispatch` of `CMD_CONTINUE_WORKFLOW`. Both call
+// `continueConnectedRun()`, which owns gate 1 and the launcher-result to
+// wire-result mapping; gates 2-7 live below it in `workflow-launcher.ts`. Neither
+// adapter adds a gate.
+//
+// **What each adapter still supplies, and why that is the part worth asserting.**
+// The handler resolves the workspace root from `getCanonicalWorkspaceRoot()`,
+// reads the clock, and hands the projector over **by reference** —
+// `projectConnectedRun` and `isNodeStartable`, the same two functions the view
+// renders from. A headless caller resolves the root and the clock itself and must
+// pass those same two references. Gate 4 *is* `isNodeStartable` over
+// `projectConnectedRun`, so a caller that supplied a predicate of its own would be
+// running a second eligibility oracle — a shorter path to the runner in R6's
+// sense, and the one way this seam can diverge with neither service changing.
+// Both arms below pass the identical references.
+//
+// **The run fixture**, one shape serving all three cases:
+//
+//   first  ──report→brief──▶  second  ──report→seed──▶  third
+//
+// with one terminal attempt on `first` and one recorded decision offering
+// connection 0. So `second` is `available`, and `third` is `unvisited` — nothing
+// has decided it, because `second` has never run. That gives the offered node, the
+// node the projection does not offer, and (at any revision but 3) the stale
+// record, with no contrivance in any of them.
+//
+// **Nothing here reads a catalog**, on either arm: a continuation resolves the
+// graph, the Pipeline, and the Phases from what the run froze at launch. The
+// catalog-read counters that prove it belong to `tests/contract/continue-workflow.
+// test.ts`; what this file adds is that the two adapters agree.
+
+const CONTINUE_PHASE: PhaseDef = {
+  id: 'parity-continue-phase',
+  name: 'Parity Continue Phase',
+  version: 1,
+  instruction: 'Continue the work.',
+  sourceScope: 'workspace'
+};
+
+const CONTINUE_FLOW: PipelineDef = {
+  id: 'parity-continue-flow',
+  name: 'Parity Continue Flow',
+  phases: [CONTINUE_PHASE.id],
+  sourceScope: 'workspace',
+  inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
+  outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
+};
+
+const CONTINUE_TAIL: PipelineDef = {
+  id: 'parity-continue-tail',
+  name: 'Parity Continue Tail',
+  phases: [CONTINUE_PHASE.id],
+  sourceScope: 'workspace',
+  inputs: [{ portId: 'seed', label: 'Seed', type: 'text', required: true }],
+  outputs: []
+};
+
+const CONTINUE_GRAPH: WorkflowDefinition = {
+  workflowId: 'parity-continue',
+  name: 'Parity Continue',
+  version: 1,
+  nodes: [
+    { nodeId: 'first', pipelineId: CONTINUE_FLOW.id },
+    { nodeId: 'second', pipelineId: CONTINUE_FLOW.id },
+    { nodeId: 'third', pipelineId: CONTINUE_TAIL.id }
+  ],
+  connections: [
+    { from: { nodeId: 'first', portId: 'report' }, to: { nodeId: 'second', portId: 'brief' } },
+    { from: { nodeId: 'second', portId: 'report' }, to: { nodeId: 'third', portId: 'seed' } }
+  ],
+  startNodeIds: ['first']
+};
+
+const CONTINUE_RUN_ID = 'parity-continue-run';
+const CONTINUE_STARTED_AT = 1_700_000_000_000;
+/** Opened (1), one attempt on `first` (2), one decision (3). */
+const CURRENT_REVISION = 3;
+/** The clock both arms see: pinned for the operator's, passed to the automation's. */
+const CONTINUE_NOW = 1_760_000_100_000;
+
+function storedContinueRun(): ConnectedWorkflowRun {
+  const snapshot = createConnectedRunSnapshot({
+    connectedRunId: CONTINUE_RUN_ID,
+    workflow: CONTINUE_GRAPH,
+    catalog: buildCatalog(
+      [CONTINUE_PHASE],
+      [CONTINUE_FLOW, CONTINUE_TAIL],
+      { claude: [], codex: [], agy: [] },
+      CONTINUE_FLOW.id
+    ),
+    startedAt: CONTINUE_STARTED_AT,
+    defaultRunnerKind: 'claude'
+  });
+  if (snapshot.outcome !== 'created') {
+    throw new Error(`fixture could not open a run: ${snapshot.reason}`);
+  }
+  const withAttempt = appendAttempt(snapshot.run, 'first', {
+    queueItemId: 'child-1',
+    startedAt: CONTINUE_STARTED_AT
+  });
+  return appendDecision(withAttempt, {
+    nodeId: 'first',
+    attemptIndex: 0,
+    decidedAt: CONTINUE_STARTED_AT + 1_000,
+    operands: [],
+    connections: [{ index: 0, matched: true, isDefault: false }],
+    defaultApplied: false,
+    eligible: [0]
+  });
+}
+
+/**
+ * What the projector derives from that run — pinned as a literal, because both
+ * refusal arms below carry it and comparing the arms to each other would agree on
+ * two identically empty projections.
+ */
+const CONTINUE_PROJECTION = {
+  connectedRunId: CONTINUE_RUN_ID,
+  workflowId: CONTINUE_GRAPH.workflowId,
+  revision: CURRENT_REVISION,
+  hydrating: false,
+  nodes: [
+    {
+      nodeId: 'first',
+      pipelineId: CONTINUE_FLOW.id,
+      state: 'completed',
+      actions: ['restart'],
+      attemptCount: 1,
+      latestQueueItemId: 'child-1'
+    },
+    {
+      nodeId: 'second',
+      pipelineId: CONTINUE_FLOW.id,
+      state: 'available',
+      actions: ['start'],
+      attemptCount: 0
+    },
+    {
+      nodeId: 'third',
+      pipelineId: CONTINUE_TAIL.id,
+      state: 'unvisited',
+      actions: [],
+      attemptCount: 0
+    }
+  ]
+};
+
+function continuePayload(
+  overrides: Partial<ContinueWorkflowPayload> = {}
+): ContinueWorkflowPayload {
+  return {
+    connectedRunId: CONTINUE_RUN_ID,
+    expectedRevision: CURRENT_REVISION,
+    nodeId: 'second',
+    request: {
+      pipelineId: CONTINUE_FLOW.id,
+      inputs: [{ portId: 'brief', type: 'text', value: 'carry on' }],
+      supplemental: [],
+      outputs: [{ portId: 'report', target: 'out/second.md' }]
+    },
+    ...overrides
+  } as ContinueWorkflowPayload;
+}
+
+interface ConnectedRunWrite {
+  readonly run: ConnectedWorkflowRun;
+  readonly expectedRevision: number;
+}
+
+interface ContinueArm {
+  readonly result: unknown;
+  readonly queue: RecordingQueue;
+  readonly writes: readonly ConnectedRunWrite[];
+}
+
+/** One arm's isolated world: its own stored run, queue, and write log. */
+function continueWorld() {
+  const queue = new RecordingQueue();
+  const writes: ConnectedRunWrite[] = [];
+  const current = storedContinueRun();
+  const connectedRuns = {
+    get: (connectedRunId: string) =>
+      connectedRunId === current.connectedRunId ? current : null,
+    compareAndSetConnectedRun: async (run: ConnectedWorkflowRun, expectedRevision: number) => {
+      writes.push({ run, expectedRevision });
+      return { outcome: 'written' as const, run };
+    },
+    readChildState: () => 'completed' as const
+  };
+  const deps = {
+    ...(depsFor(makeStore()) as unknown as Record<string, unknown>),
+    guardedRun: queue,
+    defaultRunnerKind: 'claude',
+    connectedRuns
+  } as unknown as RouterDeps & ContinuationDeps;
+  return { queue, writes, deps };
+}
+
+async function headlessContinue(payload: ContinueWorkflowPayload): Promise<ContinueArm> {
+  const world = continueWorld();
+  const result = await continueWorkflowRun(
+    // The projector by reference — the two functions the handler passes, not a
+    // pair of look-alikes. See the note above on why this is the seam.
+    { ...world.deps, projectRun: projectConnectedRun, isNodeStartable },
+    { payload, workspaceRoot: workspaceRoot.path, startedAt: CONTINUE_NOW }
+  );
+  return { result, queue: world.queue, writes: world.writes };
+}
+
+async function sidebarContinue(payload: ContinueWorkflowPayload): Promise<ContinueArm> {
+  const world = continueWorld();
+  const ack = await dispatch(world.deps, CMD_CONTINUE_WORKFLOW, payload);
+  return { result: ack.result, queue: world.queue, writes: world.writes };
+}
+
+function projectionOf(result: unknown): ConnectedRunProjection {
+  return (result as { projection: ConnectedRunProjection }).projection;
+}
+
+describe('Workflow continuation parity (T035, US2, FR-011, FR-014)', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await makeWorkspaceRoot();
+    workspaceRoot.path = root;
+  });
+
+  afterAll(async () => {
+    workspaceRoot.path = '/tmp/headless-parity';
+    await removeWorkspaceRoot(root);
+  });
+
+  beforeEach(() => {
+    // The operator's arm reads the clock inside the handler; the automation's is
+    // handed the same value. Pinning keeps `startedAt` inside the comparison
+    // rather than deleting it from both sides.
+    vi.spyOn(Date, 'now').mockReturnValue(CONTINUE_NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('records the same attempt, enqueues the same row, and returns the same revision', async () => {
+    const headless = await headlessContinue(continuePayload());
+    const sidebar = await sidebarContinue(continuePayload());
+
+    expect(headless.result).toEqual({
+      outcome: 'started',
+      revision: CURRENT_REVISION + 1,
+      queueItemId: 'q-1'
+    });
+    expect(sidebar.result).toEqual(headless.result);
+
+    // The recorded attempt: one compare-and-set, against the revision the caller
+    // addressed, carrying the new attempt on the node that was started.
+    expect(headless.writes).toEqual(sidebar.writes);
+    expect(headless.writes).toHaveLength(1);
+    const written = headless.writes[0]!;
+    expect(written.expectedRevision).toBe(CURRENT_REVISION);
+    expect(written.run.revision).toBe(CURRENT_REVISION + 1);
+    expect(written.run.nodes.second?.attempts).toEqual([
+      { queueItemId: 'q-1', startedAt: CONTINUE_NOW }
+    ]);
+    // `first`'s attempt survives: a continuation appends, it never rewrites.
+    expect(written.run.nodes.first?.attempts).toEqual([
+      { queueItemId: 'child-1', startedAt: CONTINUE_STARTED_AT }
+    ]);
+
+    // The queued row, and the Pipeline it froze — resolved from the run's own
+    // snapshot on both arms, never from a catalog.
+    expect(headless.queue.only).toEqual(sidebar.queue.only);
+    const frozen = headless.queue.only.runPlan;
+    expect(frozen?.pipeline.id).toBe(CONTINUE_FLOW.id);
+    expect(frozen?.outputs).toEqual([
+      { portId: 'report', type: 'markdown', target: 'out/second.md', overwriteConfirmed: false }
+    ]);
+  });
+
+  it('refuses a node the projection does not offer, and carries the same projection', async () => {
+    // `third`'s own Pipeline, so eligibility is the only thing wrong: gate 4
+    // precedes gate 4a, and a mismatched Pipeline id would refuse for the other
+    // reason and prove nothing about the projection.
+    const payload = continuePayload({
+      nodeId: 'third',
+      request: {
+        pipelineId: CONTINUE_TAIL.id,
+        inputs: [{ portId: 'seed', type: 'text', value: 'carry on' }],
+        supplemental: [],
+        outputs: []
+      }
+    });
+    const headless = await headlessContinue(payload);
+    const sidebar = await sidebarContinue(payload);
+
+    expect(headless.result).toEqual({
+      outcome: 'rejected-state',
+      reason: 'node-not-eligible',
+      projection: CONTINUE_PROJECTION
+    });
+    expect(sidebar.result).toEqual(headless.result);
+
+    expect(headless.writes).toEqual([]);
+    expect(sidebar.writes).toEqual([]);
+    expect(headless.queue.submitted).toEqual([]);
+    expect(sidebar.queue.submitted).toEqual([]);
+  });
+
+  it('refuses a stale expectedRevision with the authoritative record', async () => {
+    const payload = continuePayload({ expectedRevision: CURRENT_REVISION - 1 });
+    const headless = await headlessContinue(payload);
+    const sidebar = await sidebarContinue(payload);
+
+    expect(headless.result).toEqual({
+      outcome: 'rejected-stale',
+      projection: CONTINUE_PROJECTION
+    });
+    expect(sidebar.result).toEqual(headless.result);
+    // The point of the arm (FR-014): the record reported is the one the store
+    // holds, not the revision the caller addressed.
+    expect(projectionOf(headless.result).revision).toBe(CURRENT_REVISION);
+    expect(projectionOf(sidebar.result).revision).toBe(CURRENT_REVISION);
+
+    expect(headless.writes).toEqual([]);
+    expect(sidebar.writes).toEqual([]);
+    expect(headless.queue.submitted).toEqual([]);
+    expect(sidebar.queue.submitted).toEqual([]);
+  });
+});

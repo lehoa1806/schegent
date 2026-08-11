@@ -1,5 +1,16 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 
+/**
+ * How long a Phase id may be (feature 089, FR-037).
+ *
+ * Declared here rather than in `config/process-definition-validator.ts` so the
+ * exchange wire contract can read it without importing a validator: that module
+ * pulls `runner/backend-runner-factory`, and the sidebar contract barrel is
+ * bundled into the webview, where a Node-only import fails the build. The
+ * validator re-exports this name, so it remains the one bound every caller sees.
+ */
+export const PHASE_ID_MAX_LEN = 64;
+
 export const PHASE_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
 export type PhaseDefinitionScope = (typeof PHASE_DEFINITION_SCOPES)[number];
 export type WritablePhaseDefinitionScope = Exclude<PhaseDefinitionScope, 'built-in'>;

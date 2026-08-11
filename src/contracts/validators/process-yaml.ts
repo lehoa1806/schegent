@@ -6,27 +6,13 @@
 // is checked against the closed set the format admits (FR-020a). No field here
 // names a filesystem location, in either direction.
 
-import { PIPELINE_ID_MAX_LEN } from '../../config/pipeline-definition-validator';
-import { PHASE_ID_MAX_LEN } from '../../config/process-definition-validator';
-import { WORKFLOW_ID_MAX_LEN } from '../../config/workflow-definition-validator';
 import {
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML,
   type SidebarCommand
 } from '../sidebar-ipc';
-import { admitsExportInclusion } from '../sidebar-ipc/process-yaml';
+import { RESOURCE_ID_MAX_LEN, admitsExportInclusion } from '../sidebar-ipc/process-yaml';
 import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
-
-/**
- * Each kind's id bound is its own catalog's, not a shared maximum. They are all
- * 64 today; reading each from the validator that owns it means a catalog that
- * widens its own bound does not silently widen the other two.
- */
-const RESOURCE_ID_MAX_LEN = Object.freeze({
-  phase: PHASE_ID_MAX_LEN,
-  pipeline: PIPELINE_ID_MAX_LEN,
-  workflow: WORKFLOW_ID_MAX_LEN
-});
 
 type ExportableKind = keyof typeof RESOURCE_ID_MAX_LEN;
 
