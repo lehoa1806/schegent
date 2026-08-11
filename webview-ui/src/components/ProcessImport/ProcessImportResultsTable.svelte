@@ -13,6 +13,14 @@
   // (FR-042b/c), and the sentence — composed in `process-import-state.ts`, not
   // in this markup — is what says so.
   //
+  // Feature 086 T055 — with a third layer, `partial` has two shapes: a refused
+  // Pipeline write after a Phase write, and a refused Workflow write after both
+  // (FR-051). "Part of this document" no longer tells the operator where to
+  // look, so the sentence names the layers that landed — and it names them from
+  // the layer ACKS, which is why this component now takes them. It still
+  // composes nothing: the naming lives in `commitOutcomeStatement`, so the
+  // markup cannot come to disagree with what the commit actually sent.
+  //
   // Rendering discipline (FR-050, FR-062) is inherited unchanged: the detail
   // column can carry host-sanitized, document-derived text, and is rendered by
   // text interpolation only.
@@ -20,19 +28,26 @@
   import {
     commitOutcomeStatement,
     type ImportCommitOutcome,
+    type ImportLayerResult,
     type ImportResultRow
   } from './process-import-state';
 
   interface Props {
     /** One result per plan row (FR-042), including rows the commit never reached. */
     results: readonly ImportResultRow[];
+    /**
+     * The acks the commit actually collected, in the order it sent them. Passed
+     * through untouched — the outcome sentence reads them to name which layers
+     * landed, and a layer the sequence never reached has no entry here at all.
+     */
+    layerResults: readonly ImportLayerResult[];
     /** Set with `results`, and only with them. Never inferred from the rows. */
     outcome: ImportCommitOutcome | null;
     /** The scope the completed commit wrote to, so the summary cannot drift. */
     committedScope: WritablePhaseDefinitionScope | null;
   }
 
-  const { results, outcome, committedScope }: Props = $props();
+  const { results, layerResults, outcome, committedScope }: Props = $props();
 </script>
 
 {#if outcome !== null && committedScope !== null}
@@ -46,7 +61,7 @@
     role="status"
     aria-live="polite"
   >
-    {commitOutcomeStatement(outcome, committedScope)}
+    {commitOutcomeStatement(outcome, committedScope, layerResults)}
   </p>
 {/if}
 <!-- FR-042 — one result per plan row, so a row the commit never addressed still

@@ -226,6 +226,10 @@ describe('Feature 084 — document-level refusals reach the operator named (QS-8
       // so it has nothing to duplicate an id with. Covered by the package suite,
       // tests/integration/process-yaml/pipeline-preflight.test.ts.
       'duplicate-id': false,
+      // Feature 086 FR-026 — a Phase declares no graph, so there is no cycle to
+      // find in one. Covered where it IS reachable, on the Workflow path, in
+      // tests/integration/process-yaml/workflow-preflight.test.ts.
+      'graph-cycle': false,
       empty: true
     };
     const codes = Object.entries(REACHABILITY)

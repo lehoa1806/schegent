@@ -140,6 +140,11 @@ describe('mutation kind exhaustiveness (FR-029)', () => {
         return `remove:${mutation.workflowId}`;
       case 'reset':
         return 'reset';
+      // Feature 086 FR-037 — the one kind that names a SET rather than a single
+      // id, so it is described by its whole target list. Joined, not summarized:
+      // a count would let a wrong set past this exhaustiveness check.
+      case 'import-package':
+        return `import-package:${mutation.workflowIds.join(',')}`;
       default: {
         const unreachable: never = mutation;
         return unreachable;
@@ -147,20 +152,22 @@ describe('mutation kind exhaustiveness (FR-029)', () => {
     }
   };
 
-  it('covers all five intents with no residual union member', () => {
+  it('covers all six intents with no residual union member', () => {
     const mutations: readonly WorkflowCatalogMutation[] = [
       { kind: 'create', workflowId: 'alpha' },
       { kind: 'edit', workflowId: 'alpha' },
       { kind: 'duplicate', sourceScope: 'built-in', sourceWorkflowId: 'alpha', workflowId: 'beta' },
       { kind: 'remove', workflowId: 'alpha' },
-      { kind: 'reset' }
+      { kind: 'reset' },
+      { kind: 'import-package', workflowIds: ['alpha', 'beta'] }
     ];
     expect(mutations.map(describeMutation)).toEqual([
       'create:alpha',
       'edit:alpha',
       'duplicate:built-in:alpha:beta',
       'remove:alpha',
-      'reset'
+      'reset',
+      'import-package:alpha,beta'
     ]);
   });
 });

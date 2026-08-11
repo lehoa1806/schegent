@@ -230,6 +230,7 @@ import type {
   ExportProcessYamlCommand,
   PreflightProcessYamlCommand
 } from './sidebar-ipc/process-yaml';
+import { admitsExportInclusion } from './sidebar-ipc/process-yaml';
 
 export type {
   ReadPhaseLogRequest,
@@ -264,6 +265,7 @@ export type {
 export type {
   ProcessYamlResourceKind,
   PipelineExportInclusion,
+  WorkflowExportInclusion,
   ExportProcessYamlRequest,
   ExportProcessYamlCommand,
   ExportProcessYamlResult,
@@ -272,6 +274,7 @@ export type {
   PreflightProcessYamlRequest,
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult,
+  BlockedDependency,
   DocumentRefusal,
   DocumentRefusalCode,
   ImportDefect,
@@ -875,9 +878,7 @@ export function isCmdExportProcessYaml(value: unknown): value is ExportProcessYa
     inclusion?: unknown;
   };
   if (typeof resourceId !== 'string') return false;
-  if (resourceKind === 'phase') return inclusion === undefined;
-  if (resourceKind !== 'pipeline') return false;
-  return inclusion === 'references-only' || inclusion === 'include-referenced';
+  return admitsExportInclusion(resourceKind, inclusion);
 }
 
 // Feature 084 / feature 085 — read-only import preflight guard. The payload is

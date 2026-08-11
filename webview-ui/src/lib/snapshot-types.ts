@@ -626,6 +626,15 @@ export interface PortableWorkflowDefinition {
 
 export type WorkflowCatalogMutation =
   | { readonly kind: 'create'; readonly workflowId: string }
+  /**
+   * Feature 086 (FR-045) — the Workflow half of a package import, written last
+   * because its nodes only resolve once the Pipelines they name are effective,
+   * and gated on its own expected revision. Mirrors
+   * `PipelineCatalogMutation['import-package']`. There is no single-id `import`
+   * kind to mirror: the Workflow catalog has no standalone import form, so every
+   * Workflow import is a package write, even one carrying a single Workflow.
+   */
+  | { readonly kind: 'import-package'; readonly workflowIds: readonly string[] }
   | { readonly kind: 'edit'; readonly workflowId: string }
   | {
       readonly kind: 'duplicate';

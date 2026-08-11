@@ -30,6 +30,13 @@ import type {
   PipelineOutputPort,
   PipelineSourceStatus
 } from '../../contracts/pipeline-definitions';
+import type {
+  WorkflowConnection,
+  WorkflowDefinition,
+  WorkflowDefinitionScope,
+  WorkflowNode,
+  WorkflowSourceStatus
+} from '../../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 
 /** The only `apiVersion` this format admits (FR-002). */
@@ -50,8 +57,12 @@ export const PHASE_YAML_INDENT = '  ';
  * Feature 085 T013 — `'pipeline'` joins `'phase'`. A single document may declare
  * resources of both kinds, so this is a property of a plan ROW rather than of
  * the request that produced it (FR-055a).
+ *
+ * Feature 086 T004 — `'workflow'` joins them, and the closure it heads is the
+ * first that is two levels deep: a Workflow depends on Pipelines, which depend
+ * on Phases (data-model.md §3.1).
  */
-export type ProcessYamlResourceKind = 'phase' | 'pipeline';
+export type ProcessYamlResourceKind = 'phase' | 'pipeline' | 'workflow';
 
 // ---------------------------------------------------------------------------
 // Document
@@ -176,6 +187,103 @@ export interface PipelineYamlDocument {
   readonly included?: PipelineYamlIncluded;
 }
 
+/**
+ * Feature 086 T022 — a Pipeline document without its root declarations.
+ *
+ * Derived from `PipelineYamlDocument` for the reason `PhaseYamlDocumentBody` is:
+ * FR-008 says an included Pipeline carries the *same* `metadata` and `spec`
+ * mappings the single-Pipeline document defines, and a second declaration of
+ * those two is a thing that drifts.
+ *
+ * `included` is omitted as well as the two declarations, because the payload does
+ * not nest. A Workflow package's `included` is flat and names both dependency
+ * classes itself, so a Pipeline inside one has no dependencies of its own to
+ * carry — and a nested `included` would put the same Phase at two depths with no
+ * rule for which one wins on read.
+ */
+export type PipelineYamlDocumentBody = Omit<
+  PipelineYamlDocument,
+  'apiVersion' | 'kind' | 'included'
+>;
+
+/** The only `kind` the Workflow package format admits (feature 086, FR-002). */
+export const WORKFLOW_YAML_KIND = 'Workflow';
+
+/**
+ * The root Workflow's identity (feature 086 data-model.md §2.2).
+ *
+ * `id` rather than `workflowId`, for the same reason the Pipeline document
+ * renames: the document already declares what it is under `kind`. That rename is
+ * the ONLY one the mapping performs.
+ *
+ * `version` is required in both directions and is never defaulted on read
+ * (FR-003a) — a document that omits it is malformed, not one that meant 1.
+ */
+export interface WorkflowYamlMetadata {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly version: number;
+}
+
+/**
+ * The root Workflow's authored body, field for field from the shipped
+ * `WorkflowDefinition` (data-model.md §2.3). The node and connection shapes are
+ * the catalog's own types rather than copies — a second declaration of the same
+ * shape is a thing that drifts, and the round trip is what would break.
+ *
+ * `connections` is always present here and may be empty; export omits an empty
+ * one from the bytes and import reads an absent key as `[]` (data-model.md §2.5).
+ * `nodes` and `startNodeIds` are exempt from that rule in both directions: a
+ * Workflow with neither is not a Workflow, so their absence is a defect rather
+ * than an emptiness.
+ *
+ * There is deliberately no `inputs` and no `outputs`. A Workflow's ports are the
+ * unbound ports of its nodes' Pipelines, derived on read and never stored, so a
+ * serialized copy would be a second source of truth that goes stale the moment a
+ * node's Pipeline changes shape (FR-012, and the standing hard rule).
+ */
+export interface WorkflowYamlSpec {
+  readonly nodes: readonly WorkflowNode[];
+  readonly connections: readonly WorkflowConnection[];
+  readonly startNodeIds: readonly string[];
+}
+
+/**
+ * The optional dependency payload (feature 086 data-model.md §2.4, FR-015).
+ *
+ * Two keys rather than one, because a Workflow has two dependency classes and the
+ * operator can ask for the first without the second (FR-017 vs FR-019). The
+ * payload is FLAT: a Phase is named here, never nested inside the Pipeline that
+ * references it, so no Phase can appear at two depths with no rule for which one
+ * wins on read.
+ *
+ * Neither key is ever empty. A references-only document omits `included` entirely
+ * (FR-015), and a present-but-childless key would read back as an empty mapping —
+ * the same round-trip hazard as an empty list (research R3). `phases` is absent
+ * rather than empty in the `include-pipelines` mode, which is what makes the two
+ * inclusion modes distinguishable in the bytes.
+ */
+export interface WorkflowYamlIncluded {
+  readonly pipelines: readonly PipelineYamlDocumentBody[];
+  readonly phases?: readonly PhaseYamlDocumentBody[];
+}
+
+/**
+ * A Workflow package document.
+ *
+ * `included` is present only when the operator asked for dependency inclusion AND
+ * every referenced dependency resolved — a partial `included` is never written
+ * (FR-022). It is absent, not empty, for a references-only export (FR-015).
+ */
+export interface WorkflowYamlDocument {
+  readonly apiVersion: typeof PHASE_YAML_API_VERSION;
+  readonly kind: typeof WORKFLOW_YAML_KIND;
+  readonly metadata: WorkflowYamlMetadata;
+  readonly spec: WorkflowYamlSpec;
+  readonly included?: WorkflowYamlIncluded;
+}
+
 // ---------------------------------------------------------------------------
 // Parse tree — the only shapes the closed subset can produce
 // ---------------------------------------------------------------------------
@@ -250,6 +358,18 @@ export type DocumentRefusalCode =
    * would be choosing which the author meant, and the document does not say.
    */
   | 'duplicate-id'
+  /**
+   * A declared Workflow's node graph contains a cycle (feature 086, FR-023
+   * family; data-model.md §4.4).
+   *
+   * Document-level rather than a row outcome, like every refusal above it: a
+   * cycle is a property of the graph, so there is no one node to name as the
+   * defect, and with ancestry undefined the rest of the plan cannot be computed
+   * either. The detector is `validateCycles` in
+   * `src/config/workflow-graph-validator.ts` — the same one the save gate runs,
+   * reused rather than reimplemented so the two can never disagree.
+   */
+  | 'graph-cycle'
   /** No resource declared. */
   | 'empty';
 
@@ -270,27 +390,62 @@ export interface ImportDefect {
 export type ImportPlanOutcome = 'import' | 'skip' | 'blocked' | 'invalid';
 
 /**
- * Feature 085 T014 (FR-030c) — the two ways a well-formed resource's dependency
- * fails to resolve. The distinction is what the operator acts on: an absent
- * Phase needs supplying, an unresolvable one needs repairing.
+ * Which resource a blocked row is waiting on (feature 086 T004,
+ * data-model.md §3.3).
  *
- * Both codes name the `phaseId` at fault. A Pipeline with several unresolved
- * references yields one reason — the first in `phaseIds` order — because the row
- * reports a status, not a defect list; `invalid` is the outcome that enumerates.
+ * Feature 085 named the dependency `phaseId`, because with a one-level closure
+ * a blocked resource was always a Pipeline waiting on a Phase. A Workflow
+ * blocked by an unresolvable PIPELINE has no `phaseId` to put there, so the
+ * dependency has to say which catalog it belongs to. `kind` is deliberately
+ * narrower than `ProcessYamlResourceKind`: nothing depends on a Workflow, so
+ * `'workflow'` is not a value a dependency can take.
+ */
+export interface BlockedDependency {
+  readonly kind: 'phase' | 'pipeline';
+  readonly resourceId: string;
+}
+
+/**
+ * Feature 085 T014 (FR-030c) — the ways a well-formed resource's dependency
+ * fails to resolve. The distinction is what the operator acts on: an absent
+ * dependency needs supplying, an unresolvable one needs repairing, and a blocked
+ * one needs neither because the fault is one level further down.
+ *
+ * Feature 086 T004 adds that third arm. With a two-level closure a blocked row
+ * is no longer always a root cause: a Workflow can be well-formed, name a
+ * Pipeline that exists, and still be unable to import because that Pipeline is
+ * itself blocked on a missing Phase. `via` names the intermediate so the
+ * operator can walk from what they selected to what is actually wrong (FR-040).
+ *
+ * One reason per row, as before: a row reports a status, not a defect list —
+ * `invalid` is the outcome that enumerates. When several dependencies fail, the
+ * reason names the first in authored reference order.
  */
 export type BlockedReason =
   /** In no catalog layer, and not supplied by this document. */
-  | { readonly code: 'dependency-absent'; readonly phaseId: string }
+  | { readonly code: 'dependency-absent'; readonly dependency: BlockedDependency }
   /** A stored row claims the id, but it is not EFFECTIVE — shadowed or invalid. */
-  | { readonly code: 'dependency-unresolvable'; readonly phaseId: string };
+  | { readonly code: 'dependency-unresolvable'; readonly dependency: BlockedDependency }
+  /** The dependency resolves, but is itself blocked. Propagated, not root cause. */
+  | {
+      readonly code: 'dependency-blocked';
+      readonly dependency: BlockedDependency;
+      readonly via: BlockedDependency;
+    };
 
 /**
- * The scopes and statuses a presence scan can report. Both catalogs use the same
- * three of each; the union is written out so a row's `resourceKind` and its
+ * The scopes and statuses a presence scan can report. All three catalogs use the
+ * same three of each; the union is written out so a row's `resourceKind` and its
  * presence fields cannot silently disagree about which catalog was scanned.
  */
-export type ProcessYamlPresenceScope = PhaseDefinitionScope | PipelineDefinitionScope;
-export type ProcessYamlPresenceStatus = PhaseSourceStatus | PipelineSourceStatus;
+export type ProcessYamlPresenceScope =
+  | PhaseDefinitionScope
+  | PipelineDefinitionScope
+  | WorkflowDefinitionScope;
+export type ProcessYamlPresenceStatus =
+  | PhaseSourceStatus
+  | PipelineSourceStatus
+  | WorkflowSourceStatus;
 
 /**
  * The definition an import row carries, verbatim, keyed by the row's kind
@@ -326,6 +481,13 @@ export type ImportPlanRow =
       readonly resourceId: string;
       readonly name: string;
       readonly definition: PipelineDefinition;
+    }
+  | {
+      readonly outcome: 'import';
+      readonly resourceKind: 'workflow';
+      readonly resourceId: string;
+      readonly name: string;
+      readonly definition: WorkflowDefinition;
     }
   | {
       readonly outcome: 'skip';
@@ -395,6 +557,15 @@ export interface ImportPlan {
    * revision at the moment of the write would make the gate unable to fire.
    */
   readonly computedAgainstPipelineRevision?: ProcessYamlLayerRevisions;
+  /**
+   * Workflow catalog (feature 086, FR-036). Present exactly when the document
+   * declared a Workflow.
+   *
+   * A third field for the same reason there is a second: three independently
+   * mutable layers cannot share one gate, and a confirmed package is three
+   * ordered writes each carrying its own expected revision (data-model.md §3.4).
+   */
+  readonly computedAgainstWorkflowRevision?: ProcessYamlLayerRevisions;
 }
 
 /** Errors are values throughout this module. Nothing here throws. */

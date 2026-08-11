@@ -59,6 +59,15 @@ import type {
   PipelineOutputPort
 } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
+import {
+  admitSection,
+  declaresSecondRoot,
+  echo,
+  firstRepeatedDeclaredId,
+  hasOwn,
+  readIncludedSections,
+  standaloneNode
+} from './package-reader';
 import { documentFromPhaseDefinition } from './phase-yaml-mapper';
 import {
   defect,
@@ -74,13 +83,12 @@ import type {
   PhaseYamlDocument,
   PhaseYamlDocumentBody,
   PipelineYamlDocument,
+  PipelineYamlDocumentBody,
   PipelineYamlIncluded,
   PipelineYamlSpec,
   ProcessYamlResourceKind,
-  YamlMappingEntry,
   YamlMappingNode,
-  YamlNode,
-  YamlScalarNode
+  YamlNode
 } from './types';
 import {
   PHASE_YAML_API_VERSION,
@@ -292,6 +300,32 @@ function renderSpec(indent: string, spec: PipelineYamlSpec): string {
 }
 
 /**
+ * A Pipeline's two body mappings, at any indent.
+ *
+ * Feature 086 T022 — exported for the same reason `emitPhaseDocumentBody` is: a
+ * Workflow package's `included.pipelines` writes exactly this (FR-008), and a
+ * second walk of `PIPELINE_METADATA_KEY_ORDER` and the spec renderer is a second
+ * thing to keep in step. The only difference between a root Pipeline document and
+ * an included one is the indent and the two declaration keys the root carries, so
+ * that is the only difference in the code.
+ *
+ * The root document renders through here too, which is what makes "the same
+ * mappings" a property of the code rather than a claim about it.
+ */
+export function emitPipelineDocumentBody(
+  indent: string,
+  body: PipelineYamlDocumentBody
+): string {
+  const fieldIndent = `${indent}${PHASE_YAML_INDENT}`;
+  return (
+    emitKey(indent, 'metadata') +
+    emitMapping(fieldIndent, PIPELINE_METADATA_KEY_ORDER, body.metadata) +
+    emitKey(indent, 'spec') +
+    renderSpec(fieldIndent, body.spec)
+  );
+}
+
+/**
  * Render a package document. The same document always renders to the same bytes
  * (FR-017), and the result parses back to the same document.
  */
@@ -304,12 +338,13 @@ export function serializePipelineDocument(document: PipelineYamlDocument): strin
         out += emitMapping('', [key], document);
         break;
       case 'metadata':
-        out += emitKey('', 'metadata');
-        out += emitMapping(PHASE_YAML_INDENT, PIPELINE_METADATA_KEY_ORDER, document.metadata);
+        // Both body mappings are written here, by the shared emitter, in the
+        // order `PACKAGE_DOCUMENT_KEY_ORDER` declares. The `spec` arm below is
+        // deliberately empty rather than absent, so a key added to that constant
+        // still has to be answered here.
+        out += emitPipelineDocumentBody('', document);
         break;
       case 'spec':
-        out += emitKey('', 'spec');
-        out += renderSpec(PHASE_YAML_INDENT, document.spec);
         break;
       case 'included':
         // A references-only document has no such key — not an empty one, not a
@@ -330,10 +365,15 @@ const PACKAGE_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set<string>(PACKAGE_DOCU
 const PIPELINE_METADATA_KEYS: ReadonlySet<string> = new Set<string>(PIPELINE_METADATA_KEY_ORDER);
 const PIPELINE_SPEC_KEYS: ReadonlySet<string> = new Set<string>(PIPELINE_SPEC_KEY_ORDER);
 
-const INTEGER_PATTERN = /^[-+]?\d+$/;
-
-/** How much of an author-supplied value a refusal may quote back. */
-const ECHO_MAX = 64;
+/**
+ * What an INCLUDED Pipeline may declare: the body, and nothing else.
+ *
+ * The document keys are the envelope's, and an included resource does not carry
+ * one — `declaresSecondRoot` already refuses `apiVersion` and `kind` there, and a
+ * nested `included` is a dependency of a dependency, which the format does not
+ * express. Reusing the root's key set would admit both silently.
+ */
+const PIPELINE_BODY_KEYS: ReadonlySet<string> = new Set<string>(['metadata', 'spec']);
 
 /** One classified resource. FR-024: the document declares it, this describes it. */
 export type PipelinePackageResource =
@@ -364,58 +404,8 @@ export type PipelinePackageResult =
   | { readonly ok: true; readonly resources: readonly PipelinePackageResource[] }
   | { readonly ok: false; readonly refusal: DocumentRefusal };
 
-function echo(value: string): string {
-  return value.length <= ECHO_MAX ? value : value.slice(0, ECHO_MAX);
-}
-
 function refuse(code: DocumentRefusalCode, message: string): PipelinePackageResult {
   return { ok: false, refusal: { code, message } };
-}
-
-function hasOwn(target: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(target, key);
-}
-
-/**
- * A scalar's value as the catalog validator will see it.
- *
- * A quoted scalar is text by the author's own hand and stays text; an unquoted
- * one becomes an integer or a boolean when it reads as one. That split is not a
- * guess — `chooseScalarStyle` quotes exactly the scalars whose unquoted form
- * another reader would re-type, so a document this project wrote round-trips to
- * the values it started from. A float deliberately does not coerce: it reaches
- * the catalog as text and is refused there, rather than being silently rounded.
- */
-function scalarValue(node: YamlScalarNode): string | number | boolean {
-  if (node.quoted) return node.value;
-  if (INTEGER_PATTERN.test(node.value)) {
-    const parsed = Number(node.value);
-    if (Number.isSafeInteger(parsed)) return parsed;
-  }
-  if (node.value === 'true') return true;
-  if (node.value === 'false') return false;
-  return node.value;
-}
-
-/**
- * A node as a plain value.
- *
- * Every synthesized mapping is prototype-less. A mapping below the admitted key
- * sets — a port, a binding, `executionDefaults` — is forwarded wholesale to the
- * catalog validator, so a `__proto__` key in a document the operator did not
- * write would otherwise set a prototype instead of an own property and escape
- * both the unknown-field scan and `Object.keys`. First entry wins on a duplicate
- * key, which is the rule `findScalar` already follows.
- */
-function plainValue(node: YamlNode): unknown {
-  if (node.kind === 'scalar') return scalarValue(node);
-  if (node.kind === 'sequence') return node.items.map(plainValue);
-  const mapping = Object.create(null) as Record<string, unknown>;
-  for (const entry of node.entries) {
-    if (hasOwn(mapping, entry.key)) continue;
-    mapping[entry.key] = plainValue(entry.value);
-  }
-  return mapping;
 }
 
 interface IncludedSectionRead {
@@ -424,122 +414,31 @@ interface IncludedSectionRead {
 }
 
 /**
- * The `included` section, read once.
+ * The `included` section of a Pipeline package: Phases, or nothing.
  *
- * Once, because the items feed two things that must agree: the second-root gate,
- * which runs before anything is classified, and the per-Phase classification
- * after it. Its structural defects belong to the root Pipeline — there is no
- * other resource to own them, and ignoring a malformed `included` would quietly
- * drop resources the document declared.
+ * The reading is shared with the Workflow package (`readIncludedSections`); which
+ * sections are mandatory is not, and that rule is here. A Pipeline has exactly one
+ * level of dependency, so an `included` that declares no `phases` is an empty
+ * section — written where FR-013 says it should have been omitted.
  */
 function readIncluded(node: YamlMappingNode): IncludedSectionRead {
-  const entry = node.entries.find((candidate) => candidate.key === 'included');
-  if (entry === undefined) return { items: [], defects: [] };
-
-  const defects: ImportDefect[] = [];
-  if (entry.value.kind !== 'mapping') {
-    defects.push(defect('included', 'mapping-required', 'included must be a mapping'));
-    return { items: [], defects };
-  }
-  for (const child of entry.value.entries) {
-    if (child.key !== 'phases') defects.push(unknownField(`included.${child.key}`));
-  }
-  const phases = entry.value.entries.find((candidate) => candidate.key === 'phases');
-  if (phases === undefined) {
+  const read = readIncludedSections(node, ['phases']);
+  const defects = [...read.defects];
+  if (read.present && !read.declared.has('phases')) {
     defects.push(defect('included.phases', 'required', 'included.phases is required'));
-    return { items: [], defects };
   }
-  if (phases.value.kind !== 'sequence') {
-    defects.push(
-      defect('included.phases', 'sequence-required', 'included.phases must be a sequence')
-    );
-    return { items: [], defects };
-  }
-  return { items: phases.value.items, defects };
+  return { items: read.bySection.get('phases') ?? [], defects };
 }
 
 /**
- * FR-003a — a package has exactly one root. An included Phase that repeats
- * `apiVersion` or `kind` is a second one, and the whole document is refused
- * before any resource is classified so FR-029 holds.
- */
-function declaresSecondRoot(items: readonly YamlNode[]): boolean {
-  return items.some(
-    (item) =>
-      item.kind === 'mapping' &&
-      item.entries.some((entry) => entry.key === 'apiVersion' || entry.key === 'kind')
-  );
-}
-
-/**
- * The id an included Phase DECLARES, before anyone asks whether it is a good one.
+ * An included Phase, classified by the shipped Phase rules.
  *
- * Read raw rather than taken from classification, because the check it feeds runs
- * before any resource is classified (FR-029) and because a malformed resource
- * still declared something. `classifyIncludedPhase` reports `resourceId: null` for
- * an id that fails the pattern — correct there, since a malformed row claims no id
- * for dependency resolution (FR-032) — but reusing that answer here would let a
- * well-formed resource silently win over a broken twin, which is exactly the
- * outcome FR-031 excludes.
- *
- * An absent or empty declaration is not a claim: two resources that name no id are
- * not two claims on one id, and each reports its own defect.
+ * Exported for the Workflow package reader (feature 086 T034), which carries the
+ * same section one level down and must classify it identically. A second copy
+ * there would be a second oracle for the same resource kind — the read analogue of
+ * the shared body emitter above (FR-008).
  */
-function declaredPhaseId(item: YamlNode): string | null {
-  if (item.kind !== 'mapping') return null;
-  const metadata = item.entries.find((entry) => entry.key === 'metadata');
-  if (metadata === undefined || metadata.value.kind !== 'mapping') return null;
-  const declared = findScalar(metadata.value, 'phaseId');
-  if (declared === undefined || declared.value.length === 0) return null;
-  return declared.value;
-}
-
-/**
- * FR-031 — the first id two included resources both claim, or `null`.
- *
- * Ids are compared within `included.phases` only. The root Pipeline lives in a
- * different catalog, so a Phase spelled like the Pipeline is not a second claim on
- * the Pipeline's id, and a package declares exactly one root by construction —
- * `declaresSecondRoot` has already refused anything else.
- */
-function firstRepeatedPhaseId(items: readonly YamlNode[]): string | null {
-  const seen = new Set<string>();
-  for (const item of items) {
-    const declared = declaredPhaseId(item);
-    if (declared === null) continue;
-    if (seen.has(declared)) return declared;
-    seen.add(declared);
-  }
-  return null;
-}
-
-/**
- * An included Phase as the standalone document it is the body of.
- *
- * The package declared `apiVersion` and `kind` once, for every resource in it
- * (FR-003). Putting them back on each Phase is what lets the shipped Phase
- * reader do the work: the defects and the id an included Phase gets are the ones
- * a standalone Phase document would have got, produced by the same rules rather
- * than by a second copy of them (FR-008).
- */
-function standalonePhaseNode(item: YamlMappingNode): YamlMappingNode {
-  const declare = (key: string, value: string): YamlMappingEntry => ({
-    key,
-    value: { kind: 'scalar', value, quoted: false, line: item.line },
-    line: item.line
-  });
-  return {
-    kind: 'mapping',
-    line: item.line,
-    entries: [
-      declare('apiVersion', PHASE_YAML_API_VERSION),
-      declare('kind', PHASE_YAML_KIND),
-      ...item.entries
-    ]
-  };
-}
-
-function classifyIncludedPhase(item: YamlNode): PipelinePackageResource {
+export function classifyIncludedPhase(item: YamlNode): PipelinePackageResource {
   if (item.kind !== 'mapping') {
     return {
       ok: false,
@@ -551,7 +450,7 @@ function classifyIncludedPhase(item: YamlNode): PipelinePackageResource {
     };
   }
 
-  const result = validatePhaseDocument(standalonePhaseNode(item));
+  const result = validatePhaseDocument(standaloneNode(item, PHASE_YAML_KIND));
   if (result.ok) return { ok: true, resourceKind: 'phase', document: result.document };
   if (result.kind === 'document') {
     // Unreachable while this reader supplies the envelope itself, and reported
@@ -575,28 +474,6 @@ function classifyIncludedPhase(item: YamlNode): PipelinePackageResource {
 }
 
 /**
- * Collect the admitted keys of one section into the raw object the catalog
- * validator reads, reporting anything the closed format does not admit.
- */
-function admitSection(
-  section: YamlMappingNode,
-  admitted: ReadonlySet<string>,
-  raw: Record<string, unknown>,
-  defects: ImportDefect[],
-  rename?: Readonly<Record<string, string>>
-): void {
-  for (const entry of section.entries) {
-    if (!admitted.has(entry.key)) {
-      defects.push(unknownField(entry.key));
-      continue;
-    }
-    const key = rename?.[entry.key] ?? entry.key;
-    if (hasOwn(raw, key)) continue;
-    raw[key] = plainValue(entry.value);
-  }
-}
-
-/**
  * The root Pipeline.
  *
  * A missing or malformed `metadata` or `spec` is reported alone. Running the
@@ -613,11 +490,12 @@ function admitSection(
  */
 function classifyPipeline(
   node: YamlMappingNode,
-  includedDefects: readonly ImportDefect[]
+  includedDefects: readonly ImportDefect[],
+  topLevelKeys: ReadonlySet<string> = PACKAGE_TOP_LEVEL_KEYS
 ): PipelinePackageResource {
   const defects: ImportDefect[] = [];
   for (const entry of node.entries) {
-    if (!PACKAGE_TOP_LEVEL_KEYS.has(entry.key)) defects.push(unknownField(entry.key));
+    if (!topLevelKeys.has(entry.key)) defects.push(unknownField(entry.key));
   }
   defects.push(...includedDefects);
 
@@ -658,6 +536,35 @@ function classifyPipeline(
     return { ok: false, resourceKind: 'pipeline', resourceId, defects: Object.freeze(defects) };
   }
   return { ok: true, resourceKind: 'pipeline', definition: validated.definition };
+}
+
+/**
+ * An included Pipeline, classified by the shipped Pipeline rules.
+ *
+ * Feature 086 T034 — the read analogue of the shared body emitter above: an
+ * included Pipeline gets exactly the defects a root Pipeline document would,
+ * produced HERE rather than by a copy in the Workflow reader, so a rule this
+ * function gains is gained one level up without anything being edited (FR-008).
+ *
+ * The one difference from the root is which keys it may declare, and that is the
+ * argument rather than a second body of rules.
+ */
+export function classifyIncludedPipeline(item: YamlNode): PipelinePackageResource {
+  if (item.kind !== 'mapping') {
+    return {
+      ok: false,
+      resourceKind: 'pipeline',
+      resourceId: null,
+      defects: Object.freeze([
+        defect(
+          'included.pipelines',
+          'mapping-required',
+          'Each included pipeline must be a mapping'
+        )
+      ])
+    };
+  }
+  return classifyPipeline(item, [], PIPELINE_BODY_KEYS);
 }
 
 /**
@@ -702,7 +609,7 @@ export function parsePipelinePackage(node: YamlMappingNode): PipelinePackageResu
   // asked per row against the STORED catalog, never against the document's other
   // rows; two rows for one id would each plan a write and the last one to land
   // would win with nothing recording that it had.
-  const repeated = firstRepeatedPhaseId(included.items);
+  const repeated = firstRepeatedDeclaredId(included.items, 'phaseId');
   if (repeated !== null) {
     return refuse(
       'duplicate-id',

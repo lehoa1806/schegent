@@ -55,7 +55,23 @@ import {
 } from './types';
 import { DOCUMENT_KEY_ORDER, METADATA_KEY_ORDER, SPEC_KEY_ORDER } from './yaml-serializer';
 
-const DEFECT_FIELD_MAX = 32;
+/**
+ * How long a defect's field path may be.
+ *
+ * Bounded because part of a field path can be author-supplied — an unknown key
+ * from a document nobody here wrote is quoted back as the field it was found at,
+ * and an unbounded one is a wall of text in the plan table.
+ *
+ * Widened from 32 to 48 by feature 086. The format's own deepest path,
+ * `connections[0].condition.left.source`, is 36 characters, so 32 handed the
+ * operator `connections[0].condition.left.so` and no way to find the field. The
+ * catalog-side validator already chose 48 for exactly this shape
+ * (`WORKFLOW_ERROR_FIELD_MAX` in `workflow-definition-validator.ts`), which left
+ * the exchange reader as the narrower of two caps on the one kind with the
+ * deepest paths. Exported so a test asserts against the constant rather than a
+ * number written twice, since that is how the two came to disagree.
+ */
+export const DEFECT_FIELD_MAX = 48;
 const DEFECT_CODE_MAX = 64;
 const DEFECT_MESSAGE_MAX = 512;
 /** How much of an author-supplied value a refusal may quote back. */
