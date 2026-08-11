@@ -91,6 +91,39 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
           supplemental: [],
           outputs: []
         }
+      },
+      // Feature 088 — a launch adds the two identifiers a connected run needs
+      // that a Pipeline run does not: which Workflow, and which of its allowed
+      // starting nodes (FR-010, FR-011). Whether the node really is a starting
+      // node, and whether the request names that node's Pipeline, are gates 3
+      // and 3a — the predicate sees a `RunRequest` and not the graph, so it
+      // cannot reach either, and deliberately does not try.
+      [Authoritative.CMD_LAUNCH_WORKFLOW]: {
+        workflowId: 'release',
+        startNodeId: 'n-triage',
+        request: {
+          pipelineId: 'triage-flow',
+          inputs: [],
+          supplemental: [],
+          outputs: []
+        }
+      },
+      // Feature 088 — `expectedRevision: 0` is the minimal *shape*, not a
+      // legal continuation: a stored run's revision starts at 1, so this value
+      // is refused by gate 2 at run time. The predicate admits it because
+      // rejecting it would be the guard second-guessing the compare-and-set,
+      // and a caller that echoes back what it was given is exactly what
+      // FR-046 asks for.
+      [Authoritative.CMD_CONTINUE_WORKFLOW]: {
+        connectedRunId: 'connected-run-1',
+        expectedRevision: 0,
+        nodeId: 'n-ship',
+        request: {
+          pipelineId: 'ship-flow',
+          inputs: [],
+          supplemental: [],
+          outputs: []
+        }
       }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {

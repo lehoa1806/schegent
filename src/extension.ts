@@ -30,7 +30,7 @@ import {
   warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
-import { registerStage2Ui } from './activation/ui-wiring';
+import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
 import { Notifier } from './ui/notifications';
@@ -716,6 +716,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     sanitize: (msg) => logger.sanitize(msg)
   });
 
+  const connectedRuns = createConnectedRunService(store, historyStore);
   const projector = new StateProjector({
     store,
     audit: auditWriter,
@@ -769,7 +770,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getDebugLogTail: () => webviewLogSink.getEntries(),
     getAvailableModels: () => backendCapabilities.getAvailableModels(),
     getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
-    getBackendPingState: () => backendPing.getState()
+    getBackendPingState: () => backendPing.getState(),
+    getConnectedRuns: () => connectedRuns.listProjections()
   });
   capabilityProjector = projector;
   projector.start();
@@ -1011,6 +1013,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // consuming-Workflow list (FR-002) so the two can never disagree about who
     // a consumer is.
     readWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
+    connectedRuns,
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear
     // the sink's suppression for both the previous and the new

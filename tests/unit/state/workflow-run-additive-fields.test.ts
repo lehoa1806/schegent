@@ -23,7 +23,7 @@ import { describe, expect, it } from 'vitest';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
-import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
+import { STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 
@@ -65,8 +65,14 @@ async function seededStore(): Promise<{
 }
 
 describe('a Run persisted before feature 087 reads back unchanged (T036)', () => {
+  // The fixture was captured at v8 and stays there. Feature 088 moved the
+  // runtime to v9, which is exactly the situation the byte-for-byte assertions
+  // below are for: a record persisted at an earlier version must survive the
+  // bump untouched (088 FR-007). Pinning the fixture to the version it was
+  // actually captured at keeps that a real cross-version test rather than one
+  // that silently degrades to a same-version no-op on the next bump.
   it('is captured at the schema version this feature leaves alone', () => {
-    expect(loadFixture()[KEYS.schemaVersionNumeric]).toBe(STATE_SCHEMA_VERSION);
+    expect(loadFixture()[KEYS.schemaVersionNumeric]).toBe(STATE_SCHEMA_VERSION_V8);
   });
 
   it('injects neither runInputs nor runOutputs', async () => {

@@ -4,9 +4,11 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_CONTINUE_WORKFLOW,
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
   CMD_LAUNCH_PIPELINE,
+  CMD_LAUNCH_WORKFLOW,
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
@@ -91,7 +93,14 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   // creates durable state. Its name carries no mutating verb prefix, so the
   // naming-convention lint would not have caught the omission — the entry is
   // deliberate, not incidental.
-  [CMD_LAUNCH_PIPELINE]: 'run enqueue'
+  [CMD_LAUNCH_PIPELINE]: 'run enqueue',
+  // Feature 088 (T032) — connected Workflow runs. The launch creates the
+  // aggregate and enqueues its first child; the continuation enqueues a child
+  // and increments the run's revision. Both create durable state, and neither
+  // name carries a mutating verb prefix, so the naming-convention lint would
+  // not have caught an omission here.
+  [CMD_LAUNCH_WORKFLOW]: 'connected run enqueue',
+  [CMD_CONTINUE_WORKFLOW]: 'connected run enqueue'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

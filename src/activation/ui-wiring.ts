@@ -36,8 +36,14 @@ import type { GuardedRunService } from '../services/guarded-run-service';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import type { ConnectedRunProjection } from '../contracts/sidebar-ipc';
 import { DashboardBridge } from '../ui/dashboard/dashboard-bridge';
 import type { Notifier } from '../ui/notifications';
+import {
+  projectConnectedRun,
+  type ConnectedChildState
+} from '../ui/sidebar/connected-run-projector';
+import type { ConnectedRunPort } from '../ui/sidebar/commands/router-types';
 import type { StateProjector } from '../ui/sidebar/state-projector';
 
 interface Stage2UiWiringDeps {
@@ -61,6 +67,77 @@ interface Stage2UiWiringDeps {
 export interface Stage2UiWiring {
   readonly dashboardBridge: DashboardBridge;
   dispose(): void;
+}
+
+/**
+ * Feature 088 (T040) — the host-side facade over connected-run state.
+ *
+ * It lives here rather than in `extension.ts` for a budget reason recorded in
+ * [plan.md D7](../../../specs/088-workflow-continuation/plan.md): activation is
+ * at its LOC ceiling, and this is composition it can name in a few lines instead
+ * of building inline. It holds no state of its own — every method reads the
+ * store on call — so it is safe to construct once and share between the message
+ * router (which mutates) and the projector (which reads).
+ */
+export interface ConnectedRunService extends ConnectedRunPort {
+  /** Every connected run, already folded to the shape the snapshot carries. */
+  listProjections(): readonly ConnectedRunProjection[];
+}
+
+type ConnectedRunStore = Pick<
+  WorkspaceStateStore,
+  'getQueue' | 'getConnectedRun' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
+>;
+
+/**
+ * One child Pipeline Run's state, read from the queue and then from history.
+ *
+ * The queue is authoritative while an item is in it, including after it reaches
+ * a terminal status — the "done" section of the queue is the same array. History
+ * is the second reading and exists for one case: an operator who clears completed
+ * items would otherwise turn every child reference in every connected run into an
+ * unresolvable one, leaving finished nodes projecting as `hydrating` forever.
+ *
+ * `null` when neither knows the id. That is *no observation*, not a state: the
+ * projector falls the node through to its decision fold and the launcher's gate
+ * reads it as settled, which is what keeps a dead reference from wedging a run.
+ *
+ * `pending` and `paused` both read as `in-flight` because the only question this
+ * answers is whether the child has settled, and neither has (see
+ * data-model.md "Derived" on why the name is `in-flight`).
+ */
+function readChildState(
+  store: ConnectedRunStore,
+  history: Pick<HistoryStore, 'list'>,
+  queueItemId: string
+): ConnectedChildState | null {
+  const request = store.getQueue().requests.find((entry) => entry.id === queueItemId);
+  if (request !== undefined) {
+    if (request.status === 'completed') return 'completed';
+    if (request.status === 'failed') return 'failed';
+    if (request.status === 'canceled') return 'canceled';
+    return 'in-flight';
+  }
+  return history.list().find((entry) => entry.featureId === queueItemId)?.terminalStatus ?? null;
+}
+
+/** Constructs the facade above. Pure composition — no VS Code API is touched. */
+export function createConnectedRunService(
+  store: ConnectedRunStore,
+  history: Pick<HistoryStore, 'list'>
+): ConnectedRunService {
+  const reader = (queueItemId: string): ConnectedChildState | null =>
+    readChildState(store, history, queueItemId);
+  return {
+    get: (connectedRunId) => store.getConnectedRun(connectedRunId),
+    compareAndSetConnectedRun: (next, expectedRevision) =>
+      store.compareAndSetConnectedRun(next, expectedRevision),
+    readChildState: reader,
+    listProjections: () =>
+      Object.freeze(
+        Object.values(store.getConnectedRuns()).map((run) => projectConnectedRun(run, reader))
+      )
+  };
 }
 
 /**

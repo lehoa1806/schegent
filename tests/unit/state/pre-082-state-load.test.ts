@@ -18,7 +18,7 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
-import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
+import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { snapshotPipelineContract } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
@@ -70,9 +70,13 @@ async function seededStore(): Promise<{
 }
 
 describe('pre-082 persisted state loads unchanged (T066)', () => {
+  // Captured at v8; the runtime is at v9 since feature 088. That gap is the
+  // point — the byte-for-byte assertions below only test anything while the
+  // fixture predates the runtime, so it is pinned to the version it was
+  // captured at rather than to whatever the runtime happens to be.
   it('is captured at the schema version this feature leaves alone', () => {
     const fixture = loadFixture();
-    expect(fixture[KEYS.schemaVersionNumeric]).toBe(STATE_SCHEMA_VERSION);
+    expect(fixture[KEYS.schemaVersionNumeric]).toBe(STATE_SCHEMA_VERSION_V8);
     expect(fixture[KEYS.schemaVersion]).toBe(SCHEMA_VERSION);
   });
 

@@ -5,19 +5,18 @@
 // catalog suites unchanged, which the finalize gate does. What that run cannot
 // tell anyone six months from now is which suites were the claim. This file
 // names them, asserts they are still present, and pins the two facts a
-// regression would move first: the persisted state schema version, and the fact
-// that the exchange added no state key at all.
+// regression would move first: that the exchange reaches the persisted state
+// schema from nowhere, and that it added no state key at all.
 //
 // The state schema is the sharper of the two. A Phase lives in configuration,
-// not in workspace state, so an exchange that moved the state schema version
-// would mean it had reached somewhere it has no business being — and a moved
-// version forces every operator through a migration for a feature that stores
-// nothing.
+// not in workspace state, so an exchange that reached the state schema would
+// mean it had reached somewhere it has no business being — and a version it
+// moved would force every operator through a migration for a feature that
+// stores nothing.
 
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
@@ -44,10 +43,26 @@ const CATALOG_SUITES: Readonly<Record<string, readonly string[]>> = Object.freez
 });
 
 describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (SC-013, QS-39)', () => {
-  it('leaves the persisted state schema version where it was', () => {
+  it('reaches the persisted state schema from nowhere in the exchange', () => {
     // A Phase is configuration. Nothing in export or import writes workspace
     // state, so nothing here may force a migration.
-    expect(STATE_SCHEMA_VERSION).toBe(8);
+    //
+    // Scanned rather than pinned to a number. The pin read `=== 8` until feature
+    // 088 moved the runtime to v9 for the connected-run aggregate, which is a
+    // feature that does store state and did write its migration — and the pin
+    // failed on it, which is a false alarm on someone else's correct work rather
+    // than a defect in the exchange. What SC-013 actually claims is that the
+    // exchange never reaches the state schema at all; that is what is checked.
+    const tree = resolve(REPO_ROOT, 'src', 'services', 'process-yaml');
+    for (const entry of readdirSync(tree)) {
+      const source = readFileSync(resolve(tree, entry), 'utf8');
+      for (const term of ['STATE_SCHEMA_VERSION', 'state-schema', 'workspace-state']) {
+        expect(
+          source.includes(term),
+          `process-yaml/${entry} must not reach workspace state (found "${term}")`
+        ).toBe(false);
+      }
+    }
   });
 
   it('adds no workspace-state key for the exchange', () => {

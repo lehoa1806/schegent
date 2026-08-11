@@ -1,10 +1,13 @@
 <script lang="ts">
   // Feature 087 T055-T058 — the run composer's shell.
   //
-  // It owns the composition and nothing else decides anything about it. The three
-  // child sections are projections plus change callbacks; this file assembles
-  // their values into the one `RunRequest` that goes on the wire, and renders
-  // whatever the host says back.
+  // It owns what the operator typed and nothing else decides anything about it.
+  // The three child sections are projections plus change callbacks; their values
+  // become the one `RunRequest` that goes on the wire, and this file renders
+  // whatever the host says back. Feature 088 moved the assembly itself into
+  // `lib/run-composition.ts` when the connected-run continuation grew a second
+  // composer over the same four sections — one definition of what a composition
+  // is, consumed by both.
   //
   // Nothing here re-checks a field. `validateRunRequest()` host-side owns every
   // rule, and a webview pre-check would be a second oracle that disagrees with the
@@ -22,18 +25,16 @@
   import SupplementalInputs from './SupplementalInputs.svelte';
   import RunOutputTargets from './RunOutputTargets.svelte';
   import { launchPipeline } from '../../lib/run-launcher-ipc';
+  import {
+    composeRunRequest,
+    errorsByField as mapErrorsByField,
+    operatorPorts,
+    overwriteRequestedPorts,
+    supplementalErrors as mapSupplementalErrors
+  } from '../../lib/run-composition';
   import type { LaunchPipelineResult } from '../../lib/messages';
   import type { PipelineDefinition } from '../../lib/snapshot-types';
-  import type {
-    RunInputValue,
-    RunOutputTargetRequest,
-    RunRequest,
-    RunRequestFieldError,
-    SupplementalInput
-  } from '../../../../src/contracts/run-request';
-
-  /** Declared by a port that an earlier Phase feeds, never the operator (FR-001a). */
-  const PHASE_FED_PORT_TYPE = 'pipeline-output';
+  import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
   /** The outer bound on a submission (FR-046, SC-012). */
   const SUBMIT_TIMEOUT_MS = 30_000;
@@ -59,109 +60,27 @@
   /** Which control produced each supplemental entry of the LAST submission. */
   let submittedSupplementalKeys = $state<readonly string[]>([]);
 
-  const contractPorts = $derived(
-    (pipeline.inputs ?? []).filter((port) => port.type !== PHASE_FED_PORT_TYPE)
-  );
+  const contractPorts = $derived(operatorPorts(pipeline.inputs));
   const outputPorts = $derived(pipeline.outputs ?? []);
 
-  /** Whitespace-only is nothing typed; the raw value is what gets sent. */
-  function filled(value: string | undefined): value is string {
-    return value !== undefined && value.trim().length > 0;
-  }
-
-  interface Composition {
-    readonly request: RunRequest;
-    readonly supplementalKeys: readonly string[];
-  }
-
-  function compose(): Composition {
-    const inputs: RunInputValue[] = contractPorts
-      .filter((port) => filled(inputValues[port.portId]))
-      .map((port) => ({ portId: port.portId, type: port.type, value: inputValues[port.portId]! }));
-
-    const supplemental: SupplementalInput[] = [];
-    const supplementalKeys: string[] = [];
-    const add = (key: string, item: SupplementalInput): void => {
-      supplemental.push(item);
-      supplementalKeys.push(key);
-    };
-
-    const localFile = supplementalValues['local-file'];
-    if (filled(localFile)) add('local-file', { kind: 'local-file', path: localFile });
-    const localFolder = supplementalValues['local-folder'];
-    if (filled(localFolder)) add('local-folder', { kind: 'local-folder', path: localFolder });
-    const url = supplementalValues['url'];
-    if (filled(url)) add('url', { kind: 'url', url });
-    const text = supplementalValues['text'];
-    if (filled(text)) add('text', { kind: 'text', text });
-    const sourceRunId = supplementalValues['prior-run'];
-    const outputName = supplementalValues['prior-output'];
-    // Half a reference addresses nothing, so it is not sent: the operator is
-    // mid-typing, not making a request the host should refuse.
-    if (filled(sourceRunId) && filled(outputName)) {
-      add('prior-output', { kind: 'prior-output', reference: { sourceRunId, outputName } });
-    }
-
-    const outputs: RunOutputTargetRequest[] = outputPorts
-      .filter((port) => filled(outputTargets[port.portId]))
-      .map((port) => ({
-        portId: port.portId,
-        target: outputTargets[port.portId]!,
-        ...(overwriteConfirmed[port.portId] ? { overwriteConfirmed: true } : {}),
-        ...(sideEffectConfirmed[port.portId] ? { externalSideEffectConfirmed: true } : {})
-      }));
-
-    const instructions = supplementalValues['instruction'];
-
-    return {
-      request: {
-        pipelineId: pipeline.id,
-        inputs,
-        supplemental,
-        outputs,
-        ...(filled(instructions) ? { instructions } : {})
-      },
-      supplementalKeys
-    };
-  }
-
-  const composition = $derived(compose());
-
-  /** Port- and field-addressed refusals, rendered against their own control. */
-  const errorsByField = $derived(
-    new Map(fieldErrors.map((error) => [error.field, error.message] as const))
+  const composition = $derived(
+    composeRunRequest({
+      pipelineId: pipeline.id,
+      inputPorts: contractPorts,
+      outputPorts,
+      inputValues,
+      supplementalValues,
+      outputTargets,
+      sideEffectConfirmed,
+      overwriteConfirmed
+    })
   );
 
-  /**
-   * Supplemental refusals arrive addressed by position — the entries have no port
-   * to name them by — so they are mapped back to the control that produced each
-   * one. The instruction limit rides along here: it is reported against the
-   * request's own `instructions` field, and the control the operator used for it
-   * lives in this section.
-   */
-  const supplementalErrors = $derived.by(() => {
-    const mapped = new Map<string, string>();
-    for (const error of fieldErrors) {
-      if (error.field === 'instructions') {
-        mapped.set('instruction', error.message);
-        continue;
-      }
-      const match = /^supplemental\[(\d+)\]$/.exec(error.field);
-      if (!match) continue;
-      const key = submittedSupplementalKeys[Number(match[1])];
-      if (key !== undefined) mapped.set(key, error.message);
-    }
-    return mapped;
-  });
-
-  /** Ports the host refused for want of an overwrite confirmation (FR-023). */
-  const overwriteRequested = $derived(
-    new Set(
-      fieldErrors
-        .filter((error) => error.code === 'output-overwrite-unconfirmed')
-        .map((error) => error.field.slice('outputs.'.length))
-    )
+  const errorsByField = $derived(mapErrorsByField(fieldErrors));
+  const supplementalErrors = $derived(
+    mapSupplementalErrors(fieldErrors, submittedSupplementalKeys)
   );
+  const overwriteRequested = $derived(overwriteRequestedPorts(fieldErrors));
 
   const effectiveSettings = $derived.by(() => {
     const defaults = pipeline.executionDefaults;

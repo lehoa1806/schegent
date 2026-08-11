@@ -17,6 +17,7 @@ import type {
   WorkflowSourceStatus
 } from '../../contracts/workflow-definitions';
 import type { RunOutputRecord } from '../../contracts/run-results';
+import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -595,6 +596,16 @@ export interface WorkflowSnapshot {
    * never persisted, never written to `WorkflowRun` or the audit log.
    */
   readonly workflowCatalog?: WorkflowCatalogProjection;
+  /**
+   * Feature 088 — the connected runs the operator can act on, each already
+   * folded to per-node state, legal actions, and `hydrating` by
+   * `connected-run-projector.ts`. Derived on read from the stored aggregate and
+   * the current child-run states (FR-002); nothing here is persisted, and the
+   * refusal arms of `CMD_CONTINUE_WORKFLOW` carry this same shape so the view
+   * has one renderer rather than two. Additive and optional — a host with no
+   * connected-run wiring omits it and `SCHEMA_VERSION` does not move.
+   */
+  readonly connectedRuns?: readonly ConnectedRunProjection[];
   /**
    * Feature 033 — ephemeral per-subprocess telemetry for the in-flight
    * task. Present (non-null) only while a Claude CLI subprocess is alive
