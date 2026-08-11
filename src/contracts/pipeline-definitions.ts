@@ -1,5 +1,8 @@
 import type { PhaseDefinitionEffort } from './process-definitions';
 
+/** How long a Pipeline id may be. See `PHASE_ID_MAX_LEN` for why it lives here. */
+export const PIPELINE_ID_MAX_LEN = 64;
+
 export const PIPELINE_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
 export type PipelineDefinitionScope = (typeof PIPELINE_DEFINITION_SCOPES)[number];
 export type WritablePipelineDefinitionScope = Exclude<PipelineDefinitionScope, 'built-in'>;

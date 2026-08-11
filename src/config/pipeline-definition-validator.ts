@@ -1,4 +1,5 @@
 import {
+  PIPELINE_ID_MAX_LEN,
   PIPELINE_INPUT_PORT_TYPES,
   PIPELINE_OUTPUT_PORT_TYPES,
   isPipelineInputPortType,
@@ -14,7 +15,7 @@ import { PHASE_EFFORT_LEVELS } from '../contracts/process-definitions';
 import { SUPPORTED_BACKENDS } from '../runner/backend-runner-factory';
 
 export const PIPELINE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
-export const PIPELINE_ID_MAX_LEN = 64;
+export { PIPELINE_ID_MAX_LEN };
 export const PIPELINE_NAME_MAX_LEN = 80;
 export const PIPELINE_DESCRIPTION_MAX_LEN = 1024;
 export const PIPELINE_PORT_LABEL_MAX_LEN = 80;

@@ -1,5 +1,6 @@
 import {
   WORKFLOW_CONDITION_OPERATORS,
+  WORKFLOW_ID_MAX_LEN,
   isWorkflowConditionOperator,
   isWorkflowSelectionRule,
   type WorkflowCondition,
@@ -23,7 +24,7 @@ import { PIPELINE_ID_PATTERN } from './pipeline-definition-validator';
  * (`PIPELINE_ID_PATTERN`), reused rather than copied so the three families cannot drift.
  */
 
-export const WORKFLOW_ID_MAX_LEN = 64;
+export { WORKFLOW_ID_MAX_LEN };
 export const WORKFLOW_NAME_MAX_LEN = 80;
 export const WORKFLOW_DESCRIPTION_MAX_LEN = 1024;
 export const WORKFLOW_LABEL_MAX_LEN = 80;

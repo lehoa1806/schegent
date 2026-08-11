@@ -75,7 +75,7 @@ src/
 ├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
 ├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
 ├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
-├── headless/     non-extension-host entrypoints (wake-up runner) — must not import vscode
+├── headless/     non-extension-host entrypoints (wake-up runner, process/run APIs) — must not import vscode
 ├── host-services/ neutral host-service interfaces and VS Code adapter for future desktop host parity
 ├── lib/          shared pure helpers, SanitizedLogger, runtime-log sink, retry-condition DSL
 ├── monitor/      subprocess progress, stall detection, monitor events
@@ -200,6 +200,33 @@ operator action / IPC      ┌────────────────�
                                         │ postMessage
                                         ▼
                                 Svelte webview render
+```
+
+The webview command router is one **primary adapter**, not the only one.
+`src/headless/` is a second adapter over the same services: it validates its
+own arguments, then calls the identical service functions the router calls.
+Both enter at the service layer, so neither owns validation the other lacks:
+
+```text
+   webview IPC                              in-process caller
+        │                                          │
+        ▼                                          ▼
+┌────────────────────────┐             ┌──────────────────────────┐
+│ src/ui/sidebar/        │             │ src/headless/*-api.ts    │
+│   message-router.ts    │             │   process-api-validators │
+│   ipc-validator.ts     │             │   → BoundaryRefusal      │
+└───────────┬────────────┘             └────────────┬─────────────┘
+            │                                       │
+            └───────────────┬───────────────────────┘
+                            ▼
+        ┌────────────────────────────────────────────────┐
+        │ shared services (adapter-free, vscode-free)     │
+        │   services/process-yaml/preflight-service.ts    │
+        │   services/process-yaml/export-service.ts       │
+        │   services/workflow-execution/                  │
+        │       continuation-service.ts                   │
+        │   config/*-definition-validator.ts              │
+        └────────────────────────────────────────────────┘
 ```
 
 ## Subsystems
@@ -599,8 +626,43 @@ registry, and a workspace-root contamination check that aborts if its
 temp working directory resolves under any recorded workspace root.
 Audit payloads from this path are paths-free.
 
-`src/headless/` and `src/wakeup/` MUST NOT import `vscode`; the lint
-regression `tests/lint/no-vscode-in-headless.test.ts` enforces this.
+`src/headless/` also holds the **process and run entrypoints** — the second
+primary adapter described under Primary Flow. They are in-process functions
+reachable only by a caller that already holds a reference; feature 089 added no
+command, palette entry, executable, or listener for them.
+
+| Entrypoint | Module | Calls |
+|---|---|---|
+| `validateProcessDefinition` | [process-definition-api.ts](src/headless/process-definition-api.ts) | `config/{phase,pipeline,workflow}-definition-validator.ts` |
+| `previewProcessDocument` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | `services/process-yaml/preflight-service.ts` |
+| `importProcessDocument` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | preflight, then the ordered per-layer catalog writes |
+| `exportProcessDefinitions` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | `services/process-yaml/export-service.ts` |
+| `launchPipelineRun` | [pipeline-run-api.ts](src/headless/pipeline-run-api.ts) | `services/guarded-run-service.ts` + the queue |
+| `continueWorkflowRun` | [workflow-run-api.ts](src/headless/workflow-run-api.ts) | `services/workflow-execution/continuation-service.ts` |
+
+[process-api-validators.ts](src/headless/process-api-validators.ts) is the
+adapter's own boundary: `checkDefinitionArgs`, `checkDocumentBytes`,
+`checkExportSelection`, `checkRunRequest`, `checkContinuationArgs`, and
+`checkWorkspaceRoot` each return a `BoundaryRefusal` or `null`. It is the
+headless counterpart to `ipc-validator.ts`, not a replacement for the domain
+validation underneath — an argument that survives it still faces the same
+service-layer rules a webview payload does.
+
+Those three services under `src/services/` were extracted from the webview
+command handlers in feature 089's Phase 1 so both adapters call one
+implementation rather than two that drift: `preflight-service.ts` (import
+preflight, from a 509-line handler), `export-service.ts` (document
+serialization, from 473 lines), and `continuation-service.ts` (Workflow
+continuation, from 138 lines). The handlers remain, reduced to adapter
+concerns.
+
+`src/headless/`, `src/wakeup/`, and `src/telemetry/` MUST NOT import `vscode`;
+one lint regression per directory enforces it —
+[no-vscode-import-in-headless.test.ts](tests/lint/no-vscode-import-in-headless.test.ts),
+[no-vscode-import-in-wakeup.test.ts](tests/lint/no-vscode-import-in-wakeup.test.ts),
+and [no-vscode-import-in-telemetry.test.ts](tests/lint/no-vscode-import-in-telemetry.test.ts).
+That constraint is what makes the second adapter possible: a headless caller
+supplies host ports explicitly instead of inheriting an extension host.
 
 ### Monitor, Telemetry, Watchdog
 
@@ -665,8 +727,8 @@ For the full operator threat model see
 
 | Schema | Constant | Current | Migrators |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` ([state-schema.ts](src/contracts/state-schema.ts)) | `6` | 1→2 (011), 2→3 ([queue-state-migrator](src/state/queue-state-migrator.ts)), 3→4, 4→5, 5→6 (030) |
-| Audit event envelope | `AUDIT_SCHEMA_VERSION` ([audit-events.ts](src/contracts/audit-events.ts)) | `2` | Additive event types do not bump the version (per the comment policy) |
+| Workspace state | `STATE_SCHEMA_VERSION` ([state-schema.ts](src/contracts/state-schema.ts)) | `9` | 1→2 (011), 2→3 ([queue-state-migrator](src/state/queue-state-migrator.ts)), 3→4, 4→5, 5→6 (030), 6→7 (065, `migrateV6ToV7`), 7→8 (transcript retention + terminal-transition journal), 8→9 (088, [`migrateConnectedRuns`](src/state/connected-run-migrator.ts)) |
+| Audit event envelope | `AUDIT_SCHEMA_VERSION` ([audit-events.ts](src/contracts/audit-events.ts)) | `3` | Additive event types and additive payload fields do not bump the version (per the comment policy) |
 
 State migrators are forward-only and tolerate old records. Versions
 exceeding the runtime version raise an explicit "Update the extension"

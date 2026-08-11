@@ -1,3 +1,12 @@
+// Every cap below is asserted against a built artifact under `dist/webview/`,
+// which makes this the one unit test with an ordering dependency on a build step.
+// `npm run ci` therefore runs `build:webview` before `test`: until feature 089 it
+// did not, so these tests measured whatever `dist/webview/` happened to hold —
+// a months-old bundle locally, and nothing at all on a clean checkout, where
+// `it.runIf(existsSync(...))` skipped them into a silent pass. Keep the build
+// ahead of the test in `ci`; the `runIf` guards exist so a bare `vitest run`
+// still works, not so the gate can opt itself out.
+
 import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -12,6 +21,14 @@ const CHUNKS_DIR = resolve(WEBVIEW_DIST, 'chunks');
 const BASELINE_PATH = resolve(__dirname, 'bundle-size-baseline.json');
 
 const MAX_JS_BYTES = 200 * 1024;
+
+// The sidebar entry's own stylesheet. Until feature 089 this shared one constant
+// with `dashboard.css`, so every lift the dashboard needed silently widened the
+// sidebar's bound too — by 80 KB against an actual 5.3 KB, which is not a bound
+// at all. Split so each surface is measured against its own budget; 50 KB is the
+// figure both test names have claimed since they were written.
+const MAX_CSS_BYTES = 50 * 1024;
+
 // Feature 034 Item 053 (Webview component decomposition) lifted the dashboard
 // CSS cap from 56 KB → 60 KB to absorb the new operator-visible queue
 // surfaces (`QueueControls.svelte`, `QueueInputForm.svelte`,
@@ -19,9 +36,8 @@ const MAX_JS_BYTES = 200 * 1024;
 // (`settings/general/GeneralSettingFieldRow.svelte`,
 // `settings/wakeup/WakeupLogList.svelte`) that emerged from splitting the
 // 1047-LOC `Dashboard.svelte` and the 600+-LOC settings tabs into cohesive
-// sub-components. The sidebar `index.css` is well inside the cap; only
-// `dashboard.css` is at the new boundary. Lift again only when a feature
-// intentionally adds operator-visible UI.
+// sub-components. Lift again only when a feature intentionally adds
+// operator-visible UI.
 //
 // Feature 065 (T055 / 2026-05-22) lifted 60 KB → 70 KB to absorb the
 // operator-visible enqueue/start surfaces: `ScheduledStartIndicator.svelte`,
@@ -37,9 +53,30 @@ const MAX_JS_BYTES = 200 * 1024;
 // analytics, and the hand-rolled cost-trend SVG chart. The actual
 // post-build `dashboard.css` size is ~76.1 KB; the 80 KB cap leaves a small
 // forward-growth margin without re-lifting mid-feature.
-const MAX_CSS_BYTES = 80 * 1024;
-const MAX_DASHBOARD_JS_BYTES = 250 * 1024;
+//
+// Feature 089 (T048 / 2026-08-12) lifted 80 KB → 90 KB for the process-platform
+// UI merged in features 083-088: the Workflow catalog and graph editors, the
+// import/export plan and results tables, the run composer, and the connected-run
+// views — 18 new operator-visible components. Actual post-build size is 86,679
+// bytes (~84.6 KB).
+const MAX_DASHBOARD_CSS_BYTES = 90 * 1024;
+
+// Feature 089 (T048 / 2026-08-12) lifted the dashboard JS cap 250 KB → 350 KB,
+// the first lift since feature 004 set it. Actual post-build size is 337,732
+// bytes (~330 KB), grown by the same 18 components — 13,828 added lines of
+// first-party `webview-ui/src` across features 083-088.
+//
+// Verified before lifting that the guard's stated purpose still holds: the
+// growth is first-party component code, not a dependency. `webview-ui` declares
+// no runtime `dependencies` at all, and Svelte compiles away, so no icon set or
+// charting library can be hiding in the delta.
+const MAX_DASHBOARD_JS_BYTES = 350 * 1024;
 const SIDEBAR_GROWTH_BUDGET_BYTES = 8 * 1024;
+
+/** Keeps every cap's test name reading the number that name is asserted against. */
+function kb(bytes: number): string {
+  return `${bytes / 1024} KB`;
+}
 
 function totalChunkBytes(): number {
   if (!existsSync(CHUNKS_DIR)) return 0;
@@ -62,7 +99,7 @@ function readBaseline(): BundleBaseline | null {
 
 describe('webview bundle size (SC-010)', () => {
   it.runIf(existsSync(JS_BUNDLE))(
-    'index.js stays at or below 200 KB minified',
+    `index.js stays at or below ${kb(MAX_JS_BYTES)} minified`,
     () => {
       const size = statSync(JS_BUNDLE).size;
       expect(size, `index.js was ${size} bytes (limit ${MAX_JS_BYTES})`).toBeLessThanOrEqual(
@@ -72,7 +109,7 @@ describe('webview bundle size (SC-010)', () => {
   );
 
   it.runIf(existsSync(CSS_BUNDLE))(
-    'index.css stays at or below 50 KB',
+    `index.css stays at or below ${kb(MAX_CSS_BYTES)}`,
     () => {
       const size = statSync(CSS_BUNDLE).size;
       expect(size, `index.css was ${size} bytes (limit ${MAX_CSS_BYTES})`).toBeLessThanOrEqual(
@@ -86,7 +123,7 @@ describe('webview bundle size (SC-010)', () => {
   // sub-component lazy loading. Keeping it under 250 KB minified guards
   // against accidental icon-set / charting-library imports.
   it.runIf(existsSync(DASHBOARD_JS_BUNDLE))(
-    'dashboard.js stays at or below 250 KB minified',
+    `dashboard.js stays at or below ${kb(MAX_DASHBOARD_JS_BYTES)} minified`,
     () => {
       const size = statSync(DASHBOARD_JS_BUNDLE).size;
       expect(
@@ -97,13 +134,13 @@ describe('webview bundle size (SC-010)', () => {
   );
 
   it.runIf(existsSync(DASHBOARD_CSS_BUNDLE))(
-    'dashboard.css stays at or below 50 KB',
+    `dashboard.css stays at or below ${kb(MAX_DASHBOARD_CSS_BYTES)}`,
     () => {
       const size = statSync(DASHBOARD_CSS_BUNDLE).size;
       expect(
         size,
-        `dashboard.css was ${size} bytes (limit ${MAX_CSS_BYTES})`
-      ).toBeLessThanOrEqual(MAX_CSS_BYTES);
+        `dashboard.css was ${size} bytes (limit ${MAX_DASHBOARD_CSS_BYTES})`
+      ).toBeLessThanOrEqual(MAX_DASHBOARD_CSS_BYTES);
     }
   );
 

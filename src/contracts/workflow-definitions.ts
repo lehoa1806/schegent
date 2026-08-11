@@ -10,6 +10,9 @@ import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-d
  * projector, and the webview type mirror alike.
  */
 
+/** How long a Workflow id may be. See `PHASE_ID_MAX_LEN` for why it lives here. */
+export const WORKFLOW_ID_MAX_LEN = 64;
+
 export const WORKFLOW_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
 export type WorkflowDefinitionScope = (typeof WORKFLOW_DEFINITION_SCOPES)[number];
 export type WritableWorkflowDefinitionScope = Exclude<WorkflowDefinitionScope, 'built-in'>;
