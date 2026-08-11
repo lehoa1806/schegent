@@ -51,7 +51,10 @@ import {
   documentFromPhaseDefinition,
   phaseDefinitionFromDocument
 } from '../../../src/services/process-yaml/phase-yaml-mapper';
-import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
+import {
+  DEFECT_FIELD_MAX,
+  validatePhaseDocument
+} from '../../../src/services/process-yaml/phase-yaml-validator';
 import {
   documentFromPipelineDefinition,
   parsePipelinePackage,
@@ -703,12 +706,16 @@ describe('Feature 085 — an invalid resource names every defect, not the first 
   });
 
   it('bounds every defect field so a package cannot inject a wall of text', () => {
+    // Asserted against the exported constant rather than the number it happens to
+    // hold: this bound and the catalog validator's own came to disagree precisely
+    // because each was written as a literal in its own file (feature 086 widened
+    // this one from 32 to 48 so a Workflow's deepest field path fits).
     const found = defectsOf(
       pkg({ metadata: [...WELL_FORMED_METADATA, `${'k'.repeat(200)}: v`] })
     );
     expect(found.length).toBeGreaterThan(0);
     for (const defect of found) {
-      expect(defect.field.length).toBeLessThanOrEqual(32);
+      expect(defect.field.length).toBeLessThanOrEqual(DEFECT_FIELD_MAX);
       expect(defect.code.length).toBeLessThanOrEqual(64);
       expect(defect.message.length).toBeLessThanOrEqual(512);
     }
@@ -1003,7 +1010,7 @@ describe('Feature 085 T062 — the document carries only authored catalog fields
     const polluted = {
       ...MINIMAL,
       sessionId: 'sess-1',
-      apiKey: 'sk-not-a-real-key',
+      apiKey: 'sk-not-a-real-key', // pragma: allowlist secret — synthetic fixture, not a credential
       queue: ['task-1']
     } as unknown as PipelineDefinition;
     const text = emit(polluted);

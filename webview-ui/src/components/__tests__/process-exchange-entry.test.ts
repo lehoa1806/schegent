@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import type {
   PhaseCatalogSourceRecord,
-  PipelineCatalogSourceRecord
+  PipelineCatalogSourceRecord,
+  WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
 import {
   importDisabledReason,
@@ -53,7 +54,39 @@ function pipelineRecord(
   };
 }
 
-const EMPTY_LAYERS = { phases: [], pipelines: [] };
+/** Feature 086 T054 — a Workflow catalog record, the third stored layer. */
+function workflowRecord(
+  overrides: Partial<WorkflowCatalogSourceProjection> = {}
+): WorkflowCatalogSourceProjection {
+  return {
+    key: 'user:ship-it-flow',
+    workflowId: 'ship-it-flow',
+    scope: 'user',
+    status: 'effective',
+    definition: {
+      workflowId: 'ship-it-flow',
+      name: 'Ship It Flow',
+      version: 1,
+      nodes: [{ nodeId: 'draft', pipelineId: 'ship-it' }],
+      connections: [],
+      startNodeIds: ['draft']
+    },
+    display: {
+      workflowId: 'ship-it-flow',
+      name: 'Ship It Flow',
+      version: 1,
+      nodes: [{ nodeId: 'draft', pipelineId: 'ship-it' }],
+      connections: [],
+      startNodeIds: ['draft']
+    },
+    errors: [],
+    derivedInputs: [],
+    derivedOutputs: [],
+    ...overrides
+  };
+}
+
+const EMPTY_LAYERS = { phases: [], pipelines: [], workflows: [] };
 
 describe('Feature 084 — which rows can be exported (T066, FR-052, FR-015)', () => {
   it('offers an effective row', () => {
@@ -149,7 +182,8 @@ describe('Feature 084/085 — the layers an import appends to (T066/T048, FR-037
   it('leaves out the built-in scope, which no save can write', () => {
     const layers = storedWritableLayers(
       [record({ key: 'built-in:specify', scope: 'built-in', display: { id: 'specify', version: 1 } })],
-      [pipelineRecord({ key: 'built-in:ship-it', scope: 'built-in' })]
+      [pipelineRecord({ key: 'built-in:ship-it', scope: 'built-in' })],
+      [workflowRecord({ key: 'built-in:ship-it-flow', scope: 'built-in' })]
     );
     expect(layers).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
   });
@@ -199,13 +233,76 @@ describe('Feature 084/085 — the layers an import appends to (T066/T048, FR-037
   it('copies each row rather than aliasing the projection', () => {
     const source = record({ display: { id: 'specify', version: 1 } });
     const pipelineSource = pipelineRecord();
-    const layers = storedWritableLayers([source], [pipelineSource]);
+    const workflowSource = workflowRecord();
+    const layers = storedWritableLayers([source], [pipelineSource], [workflowSource]);
     expect(layers.user.phases[0]).not.toBe(source.display);
     expect(layers.user.pipelines[0]).not.toBe(pipelineSource.display);
+    expect(layers.user.workflows[0]).not.toBe(workflowSource.display);
+  });
+
+  // Feature 086 T054 — the Workflow layer, on the same terms as the other two.
+  // The failure this guards is not a missing row but a deleted catalog: the
+  // Workflow write sends its whole layer, so a projection that dropped the stored
+  // rows would replace the catalog with whatever the document supplied.
+  it('carries the stored Workflow rows into the scope that holds them', () => {
+    const layers = storedWritableLayers(
+      [],
+      [],
+      [
+        workflowRecord({ key: 'user:a', workflowId: 'a', display: { workflowId: 'a', version: 1 } }),
+        workflowRecord({
+          key: 'workspace:b',
+          workflowId: 'b',
+          scope: 'workspace',
+          display: { workflowId: 'b', version: 1 }
+        })
+      ]
+    );
+    expect(layers.user.workflows.map((row) => row.workflowId)).toEqual(['a']);
+    expect(layers.workspace.workflows.map((row) => row.workflowId)).toEqual(['b']);
+  });
+
+  it('carries Workflow rows of every status, in catalog order (FR-025)', () => {
+    const layers = storedWritableLayers(
+      [],
+      [],
+      [
+        workflowRecord({ key: 'user:one', status: 'shadowed', display: { workflowId: 'one' } }),
+        workflowRecord({ key: 'user:two', status: 'invalid', display: { workflowId: 'two' } }),
+        workflowRecord({ key: 'user:three', status: 'effective', display: { workflowId: 'three' } })
+      ]
+    );
+    expect(layers.user.workflows.map((row) => row.workflowId)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('passes a broken Workflow row through as authored rather than repairing it', () => {
+    const layers = storedWritableLayers(
+      [],
+      [],
+      [
+        workflowRecord({
+          key: 'user:broken',
+          workflowId: 'broken',
+          status: 'invalid',
+          definition: null,
+          display: { workflowId: 'broken', nodes: [] },
+          errors: [{ field: 'startNodeIds', code: 'missing', message: 'startNodeIds is required' }]
+        })
+      ]
+    );
+    expect(layers.user.workflows[0]).toEqual({ workflowId: 'broken', nodes: [] });
+    expect(layers.user.workflows[0]).not.toHaveProperty('startNodeIds');
+  });
+
+  it('yields three empty layers when only the Phase catalog is supplied', () => {
+    // The default arguments are what a caller that has not been updated passes.
+    // They must still produce the third member, or `buildImportWrites` would read
+    // `undefined` as the stored layer.
+    expect(storedWritableLayers([])).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
   });
 
   it('yields two empty pairs for an empty catalog', () => {
-    expect(storedWritableLayers([], [])).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
+    expect(storedWritableLayers([], [], [])).toEqual({ user: EMPTY_LAYERS, workspace: EMPTY_LAYERS });
   });
 
   // Feature 085 T048 — the Pipeline half. A confirmed package writes both layers,

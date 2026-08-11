@@ -384,7 +384,7 @@ Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
 |---|---|
 | [`WorkflowCatalogEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowCatalogEditor.svelte) | The Library: scope, identity fields, draft lifecycle, revision handshake, and the save |
 | [`WorkflowLibraryList.svelte`](src/components/PipelineBuilderEditors/WorkflowLibraryList.svelte) | The row list, each row's node sequence, and its derived input/output ports |
-| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar and the FR-045 "no effective Pipeline" explanation beside the control it disables |
+| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The action bar, the writable scope list it renders, the FR-045 "no effective Pipeline" explanation beside the control it disables, and Export — the one control whose own precondition (a saved row) is decided here rather than derived by the editor, because export writes nothing this extension owns and shares none of the mutation flags |
 | [`WorkflowGraphEditor.svelte`](src/components/PipelineBuilderEditors/WorkflowGraphEditor.svelte) | The graph surface: connections, conditions, and start-node selection |
 | [`WorkflowNodeRows.svelte`](src/components/PipelineBuilderEditors/WorkflowNodeRows.svelte) | One node row — its Pipeline binding and ordering controls |
 | [`WorkflowRowDefects.svelte`](src/components/PipelineBuilderEditors/WorkflowRowDefects.svelte) | Field-associated defect regions (`aria-describedby` → `role="alert"`) |
@@ -418,6 +418,77 @@ accepted the write. With an empty or wholly invalid effective Pipeline catalog
 the editor explains the prerequisite and disables save rather than offering a
 control that cannot succeed; a refreshed snapshot carrying a newly valid
 Pipeline re-enables it without a reload.
+
+### Process document exchange (specs 084 / 085 / 086)
+
+The three catalog managers above can hand a definition to another installation as
+a YAML document, and take one back. The webview owns the operator's decisions;
+the host owns the file. **No filesystem path crosses this boundary in either
+direction** — the webview names no path, receives none, and no plan row, payload,
+or message may carry one. Export reports only whether a document was written, and
+a write failure reports generically, because an adapter's own error text can name
+the location it tried to write.
+
+| File | Owns |
+|---|---|
+| [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportPipelineYaml`, `exportWorkflowYaml`, `preflightProcessYaml` |
+| [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export control and its disabled reason |
+| [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its three-mode inclusion list** |
+| [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the ordered commit |
+| [`ProcessImportPlanTable.svelte`](src/components/ProcessImport/ProcessImportPlanTable.svelte) / [`ProcessImportResultsTable.svelte`](src/components/ProcessImport/ProcessImportResultsTable.svelte) | Plan rows before the confirm, result rows after it |
+| [`process-import-state.ts`](src/components/ProcessImport/process-import-state.ts) | Pure projection — row labels, reason lines, `confirmBlockedReason`, `commitOutcome`, and the ordered-write sequencer |
+| [`process-exchange-entry.ts`](src/components/ProcessImport/process-exchange-entry.ts) | The three preconditions a manager must decide before offering the controls |
+
+**Three export arms, three inclusion vocabularies.** A Phase has no dependencies,
+so `exportPhaseYaml` takes an id and nothing else. A Pipeline has one level below
+it, so its control is a checkbox — one level admits only two depths
+(`references-only`, `include-referenced`). A Workflow has two levels, so its
+control is a **list**, not a boolean: "the Pipelines" and "the Pipelines and their
+Phases" are different answers and neither is the negation of the other
+(`references-only`, `include-pipelines`, `include-closure`). The vocabularies are
+declared per kind in `src/contracts/sidebar-ipc/process-yaml.ts` and both runtime
+validators route through the single `admitsExportInclusion(resourceKind,
+inclusion)` gate — one function rather than a copy per validator, because two
+copies drift and a mode then compiles but is rejected at run time.
+
+The inclusion choice lives in the toolbar's local state: it describes how *this
+operator* is handing the definition over, not a property of the Workflow, so it
+survives changing the selection rather than resetting under someone exporting
+several rows in a row. Nothing is persisted, and the default is the smallest
+document.
+
+Only one export precondition is decided webview-side — an **unsaved draft**,
+because export reads the catalog and a draft is not in it yet. Nothing else is
+pre-checked: a stored Workflow whose Pipelines are missing from every layer is
+still exportable with its graph intact, and whether a row resolves is the host's
+decision, since only the host reads the effective catalog.
+
+**Plan rows name the dependency's kind, and chain to the root cause.** A blocked
+row reads its dependency's `kind` from the reason rather than assuming one — as of
+086 a Pipeline waits on a Phase and a Workflow waits on a Pipeline, so a hard-coded
+"Phase" would misname half the cases and send the operator to the wrong catalog.
+When the dependency is *itself* blocked, the row renders two lines: what this row
+waits on, and the chain through to what would unblock it. The chain is at most
+three links and cannot be more (a Pipeline waits only on a Phase; a Phase waits on
+nothing), so it is a complete trace rather than one hop of an open-ended walk.
+Every identifier in those lines is the host's already-sanitized, already-bounded
+value and is never re-bounded — a second cap would disagree with the first and
+truncate an id the operator has to find in the catalog.
+
+**The commit is up to three ordered writes, not one.** A package commits through
+the existing `savePhases` → `savePipelines` → `saveWorkflows` helpers, in that
+order, each carrying its own `expectedRevision` and its own single
+`import-package` intent naming that layer's target set. The order is fixed by
+dependency: a Pipeline's bindings are only satisfiable once its Phases are
+effective, and a Workflow's nodes only resolve once its Pipelines are. Import adds
+**no** mutating IPC command — it reuses the three catalog saves, so it inherits
+their revision-before-trust ordering and their intent algebra unchanged.
+
+The sequencer stops at the first non-accepted ack and **never compensates with a
+delete**: whichever prefix landed stays written, and the outcome is reported as
+`partial` rather than repaired. Re-running the same document is the recovery path
+— the host's presence scan turns the already-written rows into `skip` rows, so the
+retry is self-healing at whatever depth it stopped.
 
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 

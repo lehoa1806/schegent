@@ -18,6 +18,21 @@
 // To resolve a failure: resolve the catalog first
 // (`resolvePipelineCatalog(...).effective`) and pass that, or pass a value
 // whose name ends in `.effective`.
+//
+// Feature 086 (US5, T041) adds exactly ONE exception, and narrows the gate while
+// doing so. FR-035a lets the import preflight validate a Workflow against the
+// effective catalog UNION the Pipelines the same confirmed write will make
+// effective, so a self-contained package is not reported broken on the very
+// Pipelines it ships. That carve-out is admitted here for one file, under one
+// name — `prospectivePipelineCatalog(...)` in the exchange resolver — and nothing
+// else changes: every other call site still has to pass `.effective`.
+//
+// Scoping it by file AND by name is the point. A blanket "allow anything that
+// looks augmented" would let a second, differently-built union appear at a save
+// or catalog call site, which is the original defect with extra steps: a Workflow
+// accepted on the strength of a Pipeline that write is not going to make
+// effective. The exception is a preflight-time projection of one pending write,
+// and the gate is written so it cannot quietly become anything larger.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -32,6 +47,21 @@ const SCAN_ROOT = resolve(REPO_ROOT, 'src');
  * parameter is how the validator's own helpers thread it downward.
  */
 const ACCEPTED_ARGUMENT = /^(?:[A-Za-z0-9_$.]*\.effective|effectivePipelines|effective)$/;
+
+/**
+ * The FR-035a preflight augmentation: the one file allowed to pass a union, and
+ * the one name it may pass. `prospectivePipelineCatalog` is itself tested against
+ * the rule it widens — the effective definition wins a collision, and a `skip` or
+ * `blocked` row contributes nothing — in
+ * tests/unit/process-yaml/package-resolver.test.ts.
+ */
+const AUGMENTED_SITE = 'src/services/process-yaml/package-resolver.ts';
+const ACCEPTED_AUGMENTATION = /^prospectivePipelineCatalog\([A-Za-z0-9_$.]*\)$/;
+
+function argumentIsAccepted(site: CallSite): boolean {
+  if (ACCEPTED_ARGUMENT.test(site.secondArgument)) return true;
+  return site.file === AUGMENTED_SITE && ACCEPTED_AUGMENTATION.test(site.secondArgument);
+}
 
 /** Reading configuration at a call site means the layer was never resolved. */
 const RAW_LAYER_MARKERS = [
@@ -124,14 +154,38 @@ describe('Feature 083 T043 — validateWorkflowGraph takes only the effective Pi
       'src/ui/sidebar/commands/cmd-save-workflows.ts'
     );
     expect(sites.map((site) => site.file)).toContain('src/config/workflow-catalog.ts');
+    expect(sites.map((site) => site.file)).toContain(AUGMENTED_SITE);
   });
 
   it('passes an effective catalog at every call site', () => {
-    const offenders = callSites().filter((site) => !ACCEPTED_ARGUMENT.test(site.secondArgument));
+    const offenders = callSites().filter((site) => !argumentIsAccepted(site));
     expect(
       offenders.map((site) => `${site.file}:${site.line} -> ${site.secondArgument}`),
       'each call must pass a `.effective` catalog; resolve the layers first'
     ).toEqual([]);
+  });
+
+  it('passes the UNAUGMENTED effective catalog everywhere but the preflight site (FR-035a)', () => {
+    // The half of T041 that keeps the carve-out a carve-out. Stated separately
+    // from the test above so the failure message says which rule broke: a new
+    // union at a save or catalog call site is a different defect from an
+    // unresolved layer, and it is the one FR-035a makes tempting.
+    const offenders = callSites().filter(
+      (site) => site.file !== AUGMENTED_SITE && !ACCEPTED_ARGUMENT.test(site.secondArgument)
+    );
+    expect(
+      offenders.map((site) => `${site.file}:${site.line} -> ${site.secondArgument}`),
+      'only the import preflight may pass the augmented catalog; every other site validates against what already runs'
+    ).toEqual([]);
+  });
+
+  it('admits the augmentation at the preflight site and nowhere else', () => {
+    const augmented = callSites().filter((site) =>
+      ACCEPTED_AUGMENTATION.test(site.secondArgument)
+    );
+
+    // Non-vacuous in both directions: the site exists, and it is the only one.
+    expect(augmented.map((site) => site.file)).toEqual([AUGMENTED_SITE]);
   });
 
   it.each([
@@ -154,6 +208,37 @@ describe('Feature 083 T043 — validateWorkflowGraph takes only the effective Pi
       expect(ACCEPTED_ARGUMENT.test(argument)).toBe(true);
     }
   );
+
+  it.each([
+    '[...pipelines.effective, ...planned]',
+    'prospectivePipelines(context)',
+    'unionCatalog(context)',
+    'pipelines.effective.concat(planned)'
+  ])('does not admit %s even at the preflight site', (argument) => {
+    // One named union, not "anything that looks like a union". An inline concat
+    // is a second implementation of the FR-035a projection, and a second
+    // implementation is a second oracle for which Pipelines this write makes
+    // effective — the thing the carve-out is scoped to avoid.
+    expect(ACCEPTED_AUGMENTATION.test(argument)).toBe(false);
+    expect(ACCEPTED_ARGUMENT.test(argument)).toBe(false);
+  });
+
+  it.each(['prospectivePipelineCatalog(context)', 'prospectivePipelineCatalog(resolutionContext)'])(
+    'admits %s as the named preflight augmentation',
+    (argument) => {
+      expect(ACCEPTED_AUGMENTATION.test(argument)).toBe(true);
+    }
+  );
+
+  it('does not admit the named augmentation outside the preflight file', () => {
+    const elsewhere = {
+      file: 'src/ui/sidebar/commands/cmd-save-workflows.ts',
+      line: 1,
+      secondArgument: 'prospectivePipelineCatalog(context)'
+    };
+
+    expect(argumentIsAccepted(elsewhere)).toBe(false);
+  });
 
   it('never passes a raw source layer or an unresolved row set', () => {
     const offenders = callSites().filter((site) =>

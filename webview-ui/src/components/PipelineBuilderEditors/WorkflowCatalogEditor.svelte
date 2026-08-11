@@ -63,8 +63,6 @@
   import WorkflowToolbar from './WorkflowToolbar.svelte';
   import type { MutableWorkflow } from './types';
 
-  const WRITABLE_SCOPES: readonly WritableWorkflowDefinitionScope[] = ['workspace', 'user'];
-
   interface Props {
     snapshot: WorkflowSnapshot;
     /** `workflowOverrides`, resolved host-side; the host re-checks on save. */
@@ -376,13 +374,13 @@
 {:else}
   <WorkflowToolbar
     {scope}
-    scopes={WRITABLE_SCOPES}
     {savePending}
     {mutatingDisabled}
     noPipelines={noEffectivePipeline && pipelinesResolved}
     {duplicateDisabled}
     {removeDisabled}
     {saveDisabled}
+    {selected}
     onscope={(next) => (scope = next)}
     onadd={addWorkflow}
     onduplicate={duplicateWorkflow}

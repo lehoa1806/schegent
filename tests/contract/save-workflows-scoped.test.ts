@@ -1433,3 +1433,279 @@ describe('gates 4-8 — bounded conditional routing (T045)', () => {
     expectRefusedCondition(harness, 'condition-right-invalid');
   });
 });
+
+// Feature 086 T048 (FR-046, FR-048, FR-049, FR-003a) — the third ordered write.
+//
+// This is the Workflow layer's half of the package-import contract. The envelope,
+// the revision gate, and the gate order are the ones 083 already shipped; what is
+// new is that one write may name a SET of ids and that each named row keeps the
+// version its document declared instead of the version the host would assign.
+describe('import-package — the Workflow layer write of a package import', () => {
+  const IMPORTED_A = {
+    id: 'imported-alpha',
+    name: 'Imported Alpha',
+    version: 3,
+    nodes: [{ nodeId: 'design', pipelineId: 'design-review' }],
+    connections: [],
+    startNodeIds: ['design']
+  };
+  const IMPORTED_B = {
+    id: 'imported-beta',
+    name: 'Imported Beta',
+    version: 7,
+    nodes: [{ nodeId: 'build', pipelineId: 'build-it' }],
+    connections: [],
+    startNodeIds: ['build']
+  };
+
+  const packageMutation = (...workflowIds: readonly string[]) =>
+    ({ kind: 'import-package', workflowIds } as unknown as WorkflowCatalogMutation);
+
+  describe('gate 2 — the envelope carries a declared set', () => {
+    const envelope = (mutation: unknown) => ({
+      type: CMD_SAVE_WORKFLOWS,
+      correlationId: 'import-package',
+      payload: { ...savePayload({ workflows: [IMPORTED_A] }), mutation }
+    });
+
+    it('accepts a package envelope naming its declared workflow ids', () => {
+      expect(
+        validateInboundMessage(envelope({ kind: 'import-package', workflowIds: ['imported-alpha'] }))
+      ).toMatchObject({ ok: true });
+    });
+
+    // The ingress gate is the only place a malformed set can be turned away
+    // before dispatch. An empty set would reach an algebra that rejects it as a
+    // mutation mismatch — a reason that describes the diff rather than the
+    // envelope, which is the wrong answer for a transport-shaped defect.
+    it.each([
+      { kind: 'import-package' },
+      { kind: 'import-package', workflowIds: [] },
+      { kind: 'import-package', workflowIds: 'imported-alpha' },
+      { kind: 'import-package', workflowIds: [''] },
+      { kind: 'import-package', workflowIds: ['x'.repeat(65)] },
+      { kind: 'import-package', workflowIds: [123] },
+      { kind: 'import-package', workflowIds: ['imported-alpha'], workflowId: 'imported-alpha' }
+    ])('rejects a malformed package mutation %o', (mutation) => {
+      expect(validateInboundMessage(envelope(mutation))).toMatchObject({
+        ok: false,
+        reason: 'invalid-payload'
+      });
+    });
+  });
+
+  it('appends the declared set and acknowledges the package intent (FR-046)', async () => {
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([TWO_NODE_WORKFLOW]),
+        mutation: packageMutation('imported-alpha', 'imported-beta'),
+        workflows: [TWO_NODE_WORKFLOW, IMPORTED_A, IMPORTED_B]
+      })
+    );
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.updateConfigCalls).toHaveLength(1);
+    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    expect(persisted.map((row) => row.id)).toEqual([
+      'design-then-build',
+      'imported-alpha',
+      'imported-beta'
+    ]);
+    expect(harness.acks[0].result).toEqual({
+      scope: 'workspace',
+      revision: workflowLayerRevision(persisted),
+      mutation: 'import-package'
+    });
+  });
+
+  // FR-003a. `withHostVersions` starts an id absent from the layer at 1, which is
+  // right for a Workflow the operator just created and wrong for one being read
+  // out of a document that already numbered it. The declared version is restored
+  // for the named rows only — the carried-across row keeps the host's.
+  it('keeps the version each named row declared, and only for those rows', async () => {
+    const carried = { ...TWO_NODE_WORKFLOW, version: 4 };
+    const harness = buildRouter({ layers: { user: [], workspace: [carried] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([carried]),
+        mutation: packageMutation('imported-alpha', 'imported-beta'),
+        workflows: [carried, IMPORTED_A, IMPORTED_B]
+      })
+    );
+    expect(harness.acks[0].status).toBe('accepted');
+    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    expect(persisted.map((row) => [row.id, row.version])).toEqual([
+      ['design-then-build', 4],
+      ['imported-alpha', 3],
+      ['imported-beta', 7]
+    ]);
+  });
+
+  // Gate 12 refuses a version the host never issued. An imported identity is the
+  // one exemption (FR-003a): it declares its own. The exemption is keyed on the
+  // declared set, so a row the intent does not name is still checked.
+  it('refuses a version echo from a row the package intent does not name', async () => {
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([TWO_NODE_WORKFLOW]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [{ ...TWO_NODE_WORKFLOW, version: 9 }, IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.acks[0].reason).toBe('workflow-version-invalid');
+    expect(harness.acks[0].result).toMatchObject({ workflowId: 'design-then-build' });
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  // FR-048. A set has no single authoritative row to report, so the record names
+  // the scope and the revision only, and `reapply` is not offered: the plan's skip
+  // and blocked decisions were computed against the revision just rejected.
+  it('rejects a superseded revision as stale-catalog with the authoritative record', async () => {
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [TWO_NODE_WORKFLOW, IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.acks[0].reason).toBe('stale-catalog');
+    expect(harness.acks[0].result).toMatchObject({
+      currentRevision: workflowLayerRevision([TWO_NODE_WORKFLOW]),
+      current: { scope: 'workspace', legalActions: ['refresh'] }
+    });
+    expect(harness.acks[0].result).not.toMatchObject({ current: { workflowId: expect.anything() } });
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  // FR-049 and a CLAUDE.md hard rule: the revision gate precedes the trust gate,
+  // so a stale untrusted package write reports the staleness.
+  it('reports staleness, not trust denial, for a stale untrusted package write', async () => {
+    mocks.state.capabilities.set('workflowOverrides', false);
+    mocks.state.scopes.set('workflowOverrides', 'user');
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [TWO_NODE_WORKFLOW, IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].reason).toBe('stale-catalog');
+    expect(harness.auditCalls.filter((entry) => entry.eventType === 'trust.capability-denied'))
+      .toEqual([]);
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  it('is not privileged past the workflowOverrides capability', async () => {
+    mocks.state.capabilities.set('workflowOverrides', false);
+    mocks.state.scopes.set('workflowOverrides', 'user');
+    const harness = buildRouter({ layers: { user: [], workspace: [] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.acks[0].reason).toBe('trust-denied');
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  // Exactly one intent, and it is the whole story of the diff (FR-046). Anything
+  // the set does not name is a second, undeclared mutation riding along.
+  it.each([
+    [
+      'an addition the set does not name',
+      [TWO_NODE_WORKFLOW, IMPORTED_A, { ...IMPORTED_B, id: 'stowaway' }]
+    ],
+    ['an edit to a carried row', [{ ...TWO_NODE_WORKFLOW, name: 'Renamed' }, IMPORTED_A]],
+    ['a removal of a carried row', [IMPORTED_A]]
+  ])('rejects a package write that also performs %s', async (_label, workflows) => {
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([TWO_NODE_WORKFLOW]),
+        mutation: packageMutation('imported-alpha'),
+        workflows
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.acks[0].reason).toBe('workflow-mutation-mismatch');
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  // A reorder needs two carried rows to be observable at all: with one, every
+  // position an imported row can take is a legal insertion. The shape gate deletes
+  // the added rows and requires what is left to reproduce the current layer IN
+  // ORDER, so a swap of the two survivors is refused even though the diff itself
+  // is a pure addition.
+  it('rejects a package write that also reorders the carried rows', async () => {
+    const other = {
+      id: 'other-flow',
+      name: 'Other',
+      version: 1,
+      nodes: [{ nodeId: 'only', pipelineId: 'build-it' }],
+      connections: [],
+      startNodeIds: ['only']
+    };
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW, other] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([TWO_NODE_WORKFLOW, other]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [other, TWO_NODE_WORKFLOW, IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.acks[0].reason).toBe('workflow-mutation-mismatch');
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  // FR-030 read forward from the planner: an id the layer already claims can
+  // never arrive here as an import, so the gate refuses it rather than letting a
+  // document overwrite authored work through the package arm.
+  it('rejects a declared id the target layer already holds', async () => {
+    const harness = buildRouter({ layers: { user: [], workspace: [TWO_NODE_WORKFLOW] } });
+    await dispatch(
+      harness,
+      savePayload({
+        expectedRevision: workflowLayerRevision([TWO_NODE_WORKFLOW]),
+        mutation: packageMutation('design-then-build'),
+        workflows: [TWO_NODE_WORKFLOW, { ...TWO_NODE_WORKFLOW, name: 'From the document' }]
+      })
+    );
+    expect(harness.acks[0].status).toBe('rejected');
+    expect(harness.updateConfigCalls).toEqual([]);
+  });
+
+  it('writes only the chosen scope and leaves the other layer byte-for-byte unchanged', async () => {
+    const harness = buildRouter({ layers: { user: [TWO_NODE_WORKFLOW], workspace: [] } });
+    const snapshot = JSON.stringify(harness.layers.user);
+    await dispatch(
+      harness,
+      savePayload({
+        scope: 'workspace',
+        expectedRevision: workflowLayerRevision([]),
+        mutation: packageMutation('imported-alpha'),
+        workflows: [IMPORTED_A]
+      })
+    );
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.updateConfigCalls).toHaveLength(1);
+    expect(harness.updateConfigCalls[0]).toMatchObject({ key: 'workflows', scope: 'workspace' });
+    expect(JSON.stringify(harness.layers.user)).toBe(snapshot);
+  });
+});

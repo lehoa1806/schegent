@@ -18,6 +18,16 @@ function validMutation(value: unknown): value is PhaseCatalogMutation {
   ) {
     return !hasUnexpectedKeys(mutation, ['kind', 'phaseId']) && validPhaseId(mutation.phaseId);
   }
+  // Feature 085 (FR-036) — the one kind that names a SET, and so the only one
+  // carrying no `phaseId`. Without this arm the envelope the import commit sends
+  // is dropped at the transport boundary and never reaches the handler that
+  // implements it.
+  if (mutation.kind === 'import-package') {
+    return !hasUnexpectedKeys(mutation, ['kind', 'phaseIds'])
+      && Array.isArray(mutation.phaseIds)
+      && mutation.phaseIds.length > 0
+      && mutation.phaseIds.every(validPhaseId);
+  }
   return mutation.kind === 'duplicate'
     && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourcePhaseId', 'phaseId'])
     && (mutation.sourceScope === 'built-in'

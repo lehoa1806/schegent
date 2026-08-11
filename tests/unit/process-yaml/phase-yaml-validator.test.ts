@@ -13,7 +13,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
-import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
+import {
+  DEFECT_FIELD_MAX,
+  validatePhaseDocument
+} from '../../../src/services/process-yaml/phase-yaml-validator';
 import type {
   ImportDefect,
   PhaseYamlDocument
@@ -329,7 +332,10 @@ describe('phase-yaml-validator — reports every defect in one pass (FR-026)', (
   it('bounds every defect field so a document cannot inject a wall of text', () => {
     const found = defects(doc({ metadata: ['phaseId: p', 'name: N', 'version: 1', `${'k'.repeat(200)}: v`] }));
     for (const defect of found) {
-      expect(defect.field.length).toBeLessThanOrEqual(32);
+      // Asserted against the constant, not a literal: this bound and the catalog
+      // validator's own came to disagree precisely because each was written as a
+      // number in its own file.
+      expect(defect.field.length).toBeLessThanOrEqual(DEFECT_FIELD_MAX);
       expect(defect.code.length).toBeLessThanOrEqual(64);
       expect(defect.message.length).toBeLessThanOrEqual(512);
     }

@@ -644,6 +644,186 @@ describe('workflowIntentAdapter', () => {
     });
   });
 
+  /**
+   * Feature 086 T047 (FR-003, FR-036, FR-044). The Workflow layer binds the
+   * entity-agnostic package intent with no new algebra: one write appends every
+   * eligible Workflow at once, so the intent names the whole SET rather than a
+   * single id. These assertions are the Workflow-layer half of the same
+   * guarantees 085 pinned for Phases and Pipelines — kept here, next to
+   * `workflowIntentAdapter`, so a future change to the adapter's parse or
+   * identity cannot pass the generic suite while breaking the third write.
+   */
+  describe('import-package', () => {
+    const shape = (
+      mutation: LayerMutationIntent,
+      currentRows: readonly unknown[],
+      proposedRows: readonly unknown[]
+    ) => layerShapeMatches(mutation, currentRows, proposedRows, null, workflowIntentAdapter);
+
+    it('accepts an append of exactly the declared set', () => {
+      expect(
+        match(packageIntent('one', 'two'), [wf('draft')], [wf('draft'), wf('one'), wf('two')])
+      ).toBe(true);
+    });
+
+    it('accepts a single-workflow package, and an append to an empty layer', () => {
+      expect(match(packageIntent('one'), [wf('draft')], [wf('draft'), wf('one')])).toBe(true);
+      expect(match(packageIntent('one', 'two'), [], [wf('one'), wf('two')])).toBe(true);
+    });
+
+    it('rejects an unnamed workflow added alongside the declared set', () => {
+      expect(
+        match(packageIntent('one'), [wf('draft')], [wf('draft'), wf('one'), wf('stowaway')])
+      ).toBe(false);
+    });
+
+    it('rejects a declared target that is absent from the proposal', () => {
+      expect(match(packageIntent('one', 'two'), [wf('draft')], [wf('draft'), wf('one')])).toBe(
+        false
+      );
+    });
+
+    // FR-030 at the algebra level: presence is decided by the planner's stored-row
+    // scan, and this gate is the backstop — a target the layer already claims can
+    // never arrive as an addition, so an import cannot overwrite authored work.
+    it('rejects a declared target the current layer already claims', () => {
+      expect(match(packageIntent('draft'), [wf('draft')], [wf('draft'), wf('draft', 'Second')])).toBe(
+        false
+      );
+    });
+
+    it('rejects a package that also removes a workflow', () => {
+      expect(match(packageIntent('one'), [wf('draft'), wf('ship')], [wf('draft'), wf('one')])).toBe(
+        false
+      );
+    });
+
+    it('rejects a package that also changes a workflow', () => {
+      expect(
+        match(packageIntent('one'), [wf('draft', 'Before')], [wf('draft', 'After'), wf('one')])
+      ).toBe(false);
+    });
+
+    it('rejects a package that appends its own target twice', () => {
+      expect(
+        match(packageIntent('one'), [wf('draft')], [wf('draft'), wf('one'), wf('one', 'Second')])
+      ).toBe(false);
+    });
+
+    it('rejects a declared set that repeats an id, and an empty declared set', () => {
+      expect(match(packageIntent('one', 'one'), [wf('draft')], [wf('draft'), wf('one')])).toBe(
+        false
+      );
+      expect(match(packageIntent(), [wf('draft')], [wf('draft')])).toBe(false);
+    });
+
+    it('rejects the intent when `targetIds` is missing entirely', () => {
+      expect(
+        match({ kind: 'import-package', targetId: null }, [wf('draft')], [wf('draft'), wf('one')])
+      ).toBe(false);
+    });
+
+    it('accepts the declared workflows inserted at any position', () => {
+      expect(
+        shape(
+          packageIntent('one', 'two'),
+          [wf('draft'), wf('review')],
+          [wf('draft'), wf('review'), wf('one'), wf('two')]
+        )
+      ).toBe(true);
+      expect(
+        shape(
+          packageIntent('one', 'two'),
+          [wf('draft'), wf('review')],
+          [wf('one'), wf('draft'), wf('two'), wf('review')]
+        )
+      ).toBe(true);
+    });
+
+    it('rejects a package that also reorders the surrounding workflows', () => {
+      expect(
+        shape(packageIntent('one'), [wf('draft'), wf('review')], [wf('review'), wf('draft'), wf('one')])
+      ).toBe(false);
+    });
+
+    it('rejects a package that also drops or rewrites a surrounding workflow', () => {
+      expect(shape(packageIntent('one'), [wf('draft'), wf('review')], [wf('draft'), wf('one')])).toBe(
+        false
+      );
+      expect(
+        shape(packageIntent('one'), [wf('draft', 'Before')], [wf('draft', 'After'), wf('one')])
+      ).toBe(false);
+    });
+
+    // The algebra deliberately knows nothing about a document's declared version:
+    // an id absent from the current layer is brand new, so it starts at 1. That is
+    // exactly why FR-003a's "keep the version the document declared" is restored a
+    // layer up, in the command, the way `cmd-save-pipelines.ts` already does it.
+    it('starts every imported workflow at host version 1, not the document version', () => {
+      const result = versioned(
+        packageIntent('one'),
+        [wf('draft', 'Design', 3)],
+        [wf('draft', 'Design', 3), wf('one', 'Design', 7)]
+      );
+      expect(result.find((entry) => entry.workflowId === 'one')?.version).toBe(1);
+      expect(result.find((entry) => entry.workflowId === 'draft')?.version).toBe(3);
+    });
+  });
+
+  // `targetIds` is `import-package`-only. Smuggling it onto one of the five
+  // pre-existing kinds must leave that kind's behavior byte-for-byte unchanged in
+  // both gates, so 086 cannot regress the Workflow saves 083 shipped.
+  describe('the five existing kinds are unaffected by targetIds', () => {
+    const withIds = (mutation: LayerMutationIntent): LayerMutationIntent => ({
+      ...mutation,
+      targetIds: ['smuggled']
+    });
+
+    it('leaves create, duplicate, edit, remove, and reset decisions unchanged', () => {
+      expect(match(withIds(intent('create', 'ship')), [wf('draft')], [wf('draft'), wf('ship')])).toBe(
+        true
+      );
+      expect(
+        match(withIds(intent('create', 'ship')), [wf('draft')], [wf('draft'), wf('other')])
+      ).toBe(false);
+      expect(
+        match(
+          withIds(intent('duplicate', 'draft-copy')),
+          [wf('draft')],
+          [wf('draft'), wf('draft-copy')]
+        )
+      ).toBe(true);
+      expect(
+        match(withIds(intent('edit', 'draft')), [wf('draft', 'Before')], [wf('draft', 'After')])
+      ).toBe(true);
+      expect(match(withIds(intent('remove', 'ship')), [wf('draft'), wf('ship')], [wf('draft')])).toBe(
+        true
+      );
+      expect(match(withIds(intent('reset')), [wf('draft')], [])).toBe(true);
+    });
+
+    it('leaves the shape gate unchanged for a legacy kind', () => {
+      expect(
+        layerShapeMatches(
+          withIds(intent('create', 'ship')),
+          [wf('draft'), wf('review')],
+          [wf('review'), wf('draft'), wf('ship')],
+          null,
+          workflowIntentAdapter
+        )
+      ).toBe(false);
+      expect(
+        layerShapeMatches(
+          withIds(intent('remove', 'review')),
+          [wf('draft'), wf('review')],
+          [wf('draft')],
+          null,
+          workflowIntentAdapter
+        )
+      ).toBe(true);
+    });
+  });
+
   describe('identity repair', () => {
     it('detects renaming a pattern-invalid workflow id to a legal one', () => {
       expect(

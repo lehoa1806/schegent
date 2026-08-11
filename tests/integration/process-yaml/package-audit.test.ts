@@ -59,14 +59,30 @@ import type {
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
+import {
+  ALL_AUDIT_EVENT_TYPES,
+  AUDIT_SCHEMA_VERSION,
+  PROCESS_EXCHANGE_EVENT_TYPES
+} from '../../../src/contracts/audit-events';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
+import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import { workflowLayerRevision } from '../../../src/config/workflow-catalog';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
 import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
-import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
+import { handler as saveWorkflowsHandler } from '../../../src/ui/sidebar/commands/cmd-save-workflows';
+import {
+  CMD_SAVE_PHASES,
+  CMD_SAVE_PIPELINES,
+  CMD_SAVE_WORKFLOWS
+} from '../../../src/ui/sidebar/messages';
+import type {
+  SavePhasesCommand,
+  SavePipelinesCommand,
+  SaveWorkflowsCommand
+} from '../../../src/ui/sidebar/messages';
 
 type Scope = 'user' | 'workspace';
 type LayerKey = 'phases' | 'pipelines';
@@ -937,5 +953,487 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
       'process-exchange-import-refused/pipeline/duplicate-id',
       'process-exchange-import-refused/pipeline/persistence-failed'
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 086 T052 — the third layer records itself the same way (FR-054)
+// ---------------------------------------------------------------------------
+//
+// 085 established that a package writing two catalog layers needs its own record,
+// because a partial write leaves a catalog that cannot describe what the operator
+// asked for. A Workflow package writes three, so there is one more record and one
+// more partial shape — and, deliberately, nothing else: the same envelope, the
+// same two event types, the same `AUDIT_SCHEMA_VERSION`.
+//
+// The tokens are planted in every authored slot a Workflow adds over a Pipeline:
+// its name, its description, a node label, and a condition's right-hand literal.
+// The last is the interesting one — a condition is structured data, and its
+// literal is the only place inside it that an operator's own words appear.
+
+const WORKFLOW_TOKENS = {
+  workflowName: 'WF-NAME-TOKEN-R1',
+  workflowDescription: 'WF-DESC-TOKEN-R2',
+  nodeLabel: 'NODE-LABEL-TOKEN-R3',
+  conditionLiteral: 'COND-LITERAL-TOKEN-R4'
+} as const;
+
+const FORBIDDEN_WORKFLOW_TOKENS = [
+  ...Object.values(WORKFLOW_TOKENS),
+  ...Object.values(TOKENS),
+  WORKSPACE_ROOT,
+  'PKG-ROOT-TOKEN-Q9',
+  'ship-it-flow.workflow.yaml'
+] as const;
+
+/**
+ * A self-contained three-layer package with a token in every slot a Workflow
+ * authors. `spec-authoring`, `spec-review`, and `specify` are free ids.
+ *
+ * `spec-authoring` declares a `structured-data` output alongside its markdown
+ * one because a `node-output` condition operand may only read a field from a
+ * structured output port (FR-022). Drop it and the row turns `invalid`, so the
+ * third write never happens and the record under test never appears.
+ */
+const PLANTED_WORKFLOW_PACKAGE = [
+  'apiVersion: schegent/v1',
+  'kind: Workflow',
+  'metadata:',
+  '  id: ship-it-flow',
+  `  name: ${WORKFLOW_TOKENS.workflowName}`,
+  `  description: ${WORKFLOW_TOKENS.workflowDescription}`,
+  '  version: 3',
+  'spec:',
+  '  nodes:',
+  '    - nodeId: draft',
+  '      pipelineId: spec-authoring',
+  `      label: ${WORKFLOW_TOKENS.nodeLabel}`,
+  '    - nodeId: review',
+  '      pipelineId: spec-review',
+  '  connections:',
+  '    - from:',
+  '        nodeId: draft',
+  '        portId: spec-document',
+  '      to:',
+  '        nodeId: review',
+  '        portId: spec',
+  '      condition:',
+  '        left:',
+  '          source: node-output',
+  '          nodeId: draft',
+  '          field: verdict',
+  '        operator: equals',
+  `        right: ${WORKFLOW_TOKENS.conditionLiteral}`,
+  '  startNodeIds:',
+  '    - draft',
+  'included:',
+  '  pipelines:',
+  '    - metadata:',
+  '        id: spec-authoring',
+  `        name: ${TOKENS.pipelineName}`,
+  '        version: 2',
+  '      spec:',
+  '        phaseIds:',
+  '          - specify',
+  '        outputs:',
+  '          - portId: spec-document',
+  `            label: ${TOKENS.portLabel}`,
+  '            type: markdown',
+  '          - portId: verdict',
+  '            label: Verdict',
+  '            type: structured-data',
+  '    - metadata:',
+  '        id: spec-review',
+  '        name: Spec Review',
+  '        version: 1',
+  '      spec:',
+  '        phaseIds:',
+  '          - specify',
+  '        inputs:',
+  '          - portId: spec',
+  `            label: ${TOKENS.portDescription}`,
+  '            type: text',
+  '  phases:',
+  '    - metadata:',
+  '        phaseId: specify',
+  '        name: Specify',
+  '        version: 2',
+  '      spec:',
+  `        instruction: ${TOKENS.instruction} and a planted ${TOKENS.secret}`,
+  `        retryCondition: ${TOKENS.retryCondition}`,
+  ''
+].join('\n');
+
+type WorkflowLayerKey = 'phases' | 'pipelines' | 'workflows';
+
+const WORKFLOW_LAYER_ORDER: readonly WorkflowLayerKey[] = ['phases', 'pipelines', 'workflows'];
+
+interface WorkflowInstallation {
+  readonly phases: Layers;
+  readonly pipelines: Layers;
+  readonly workflows: Layers;
+}
+
+function workflowInstallation(): WorkflowInstallation {
+  return {
+    phases: { user: [], workspace: [] },
+    pipelines: { user: [], workspace: [] },
+    workflows: { user: [], workspace: [] }
+  };
+}
+
+async function workflowPlanFor(inst: WorkflowInstallation, text: string): Promise<ImportPlan> {
+  const acks: CommandAckMessage[] = [];
+  const audits: AuditEntry[] = [];
+  const ctx = {
+    deps: {
+      readPhaseConfig: () => inst.phases,
+      readPipelineConfig: () => inst.pipelines,
+      readWorkflowConfig: () => inst.workflows,
+      openProcessYamlDocument: async () => ({
+        outcome: 'read' as const,
+        bytes: new Uint8Array(Buffer.from(text, 'utf8'))
+      }),
+      audit: {
+        append: async (entry: AuditEntry) => {
+          audits.push(entry);
+          return undefined;
+        }
+      },
+      logger: logger()
+    },
+    postAck: async (msg: CommandAckMessage) => {
+      acks.push(msg);
+      return true;
+    },
+    correlationId: CORRELATION
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  await preflightHandler(ctx, {
+    type: CMD_PREFLIGHT_PROCESS_YAML,
+    correlationId: CORRELATION,
+    payload: {}
+  } as PreflightProcessYamlCommand);
+  expect(acks).toHaveLength(1);
+  // A plan still records nothing, at three layers as at two.
+  expect(audits).toEqual([]);
+  const result = acks[0]!.result as PreflightProcessYamlResult;
+  expect(result.outcome).toBe('planned');
+  if (result.outcome !== 'planned') throw new Error('unreachable');
+  return result.plan;
+}
+
+function importedWorkflows(plan: ImportPlan): readonly WorkflowDefinition[] {
+  const definitions: WorkflowDefinition[] = [];
+  for (const row of plan.rows) {
+    if (row.outcome === 'import' && row.resourceKind === 'workflow') {
+      definitions.push(row.definition);
+    }
+  }
+  return definitions;
+}
+
+/**
+ * The row shape the webview emitter actually sends (feature 086 T054):
+ * `saveWorkflowRowFromDefinition` spreads the definition and renames nothing,
+ * because the Workflow catalog arrived after the `id` spelling was retired. The
+ * handler still accepts legacy `id` — `allowLegacyId: true` — so a helper that
+ * emitted it would pass while mirroring something no caller sends.
+ */
+function workflowRow(definition: WorkflowDefinition): Record<string, unknown> {
+  return { ...definition };
+}
+
+interface WorkflowCommitRun {
+  readonly audits: readonly AuditEntry[];
+  readonly results: readonly { key: WorkflowLayerKey; ack: CommandAckMessage }[];
+}
+
+async function commitWorkflowPackage(
+  inst: WorkflowInstallation,
+  plan: ImportPlan,
+  scope: Scope,
+  opts: {
+    readonly failOn?: WorkflowLayerKey;
+    readonly workflowRevision?: string;
+  } = {}
+): Promise<WorkflowCommitRun> {
+  const acks: CommandAckMessage[] = [];
+  const audits: AuditEntry[] = [];
+  const ctx = {
+    deps: {
+      readPhaseConfig: () => inst.phases,
+      readPipelineConfig: () => inst.pipelines,
+      readWorkflowConfig: () => inst.workflows,
+      readConfig: () => undefined,
+      updateConfig: async (key: string, value: unknown, target: Scope) => {
+        if (opts.failOn === key) throw new Error('EACCES: settings.json is read-only');
+        inst[key as WorkflowLayerKey][target] = value as readonly unknown[];
+      },
+      executeCommand: vi.fn(),
+      queueRemover: { remove: vi.fn() },
+      audit: {
+        append: async (entry: AuditEntry) => {
+          audits.push(entry);
+          return undefined;
+        }
+      },
+      logger: logger()
+    },
+    postAck: async (msg: CommandAckMessage) => {
+      acks.push(msg);
+      return true;
+    },
+    correlationId: CORRELATION
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  const phases = importedPhases(plan);
+  const pipelines = importedPipelines(plan);
+  const workflows = importedWorkflows(plan);
+  const results: { key: WorkflowLayerKey; ack: CommandAckMessage }[] = [];
+
+  const send = async (key: WorkflowLayerKey, command: unknown): Promise<boolean> => {
+    if (key === 'phases') await savePhasesHandler(ctx, command as SavePhasesCommand);
+    else if (key === 'pipelines') await savePipelinesHandler(ctx, command as SavePipelinesCommand);
+    else await saveWorkflowsHandler(ctx, command as SaveWorkflowsCommand);
+    const ack = acks[acks.length - 1]!;
+    results.push({ key, ack });
+    return ack.status === 'accepted';
+  };
+
+  if (phases.length > 0) {
+    const proceed = await send('phases', {
+      type: CMD_SAVE_PHASES,
+      correlationId: CORRELATION,
+      payload: {
+        scope,
+        expectedRevision: plan.computedAgainstRevision[scope],
+        mutation: {
+          kind: 'import-package',
+          phaseIds: phases.map((definition) => definition.phaseId)
+        },
+        phases: phases.map(phaseRow)
+      }
+    });
+    if (!proceed) return { audits, results };
+  }
+
+  if (pipelines.length > 0) {
+    const proceed = await send('pipelines', {
+      type: CMD_SAVE_PIPELINES,
+      correlationId: CORRELATION,
+      payload: {
+        scope,
+        expectedRevision: plan.computedAgainstPipelineRevision![scope],
+        mutation: {
+          kind: 'import-package',
+          pipelineIds: pipelines.map((definition) => definition.pipelineId)
+        },
+        pipelines: pipelines.map(pipelineRow)
+      }
+    });
+    if (!proceed) return { audits, results };
+  }
+
+  if (workflows.length > 0) {
+    await send('workflows', {
+      type: CMD_SAVE_WORKFLOWS,
+      correlationId: CORRELATION,
+      payload: {
+        scope,
+        expectedRevision:
+          opts.workflowRevision ?? plan.computedAgainstWorkflowRevision![scope],
+        mutation: {
+          kind: 'import-package',
+          workflowIds: workflows.map((definition) => definition.workflowId)
+        },
+        workflows: workflows.map(workflowRow)
+      }
+    });
+  }
+
+  return { audits, results };
+}
+
+describe('Feature 086 T052 — the Workflow write records itself through the existing envelope (FR-054)', () => {
+  it('bounds all three layer writes to the same six fields, naming the third kind', async () => {
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'workspace');
+
+    expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
+      ['phases', 'accepted'],
+      ['pipelines', 'accepted'],
+      ['workflows', 'accepted']
+    ]);
+
+    const records = exchangeAudits(run.audits);
+    // One per layer written. Three, not one — the three writes can succeed
+    // independently, so one record describing "the import" would be a record of
+    // something that never happens as a unit.
+    expect(records).toHaveLength(3);
+    for (const entry of records) {
+      expect(Object.keys(entry.payload).sort()).toEqual([...ENVELOPE_KEYS]);
+      expect(entry.payload.operation).toBe('import-commit');
+      expect(entry.payload.scope).toBe('workspace');
+      expect(entry.runId).toBe('process-exchange:import-commit');
+    }
+    expect(records.map((entry) => entry.payload.resourceKind)).toEqual([
+      'phase',
+      'pipeline',
+      'workflow'
+    ]);
+    expect(records[2]!.payload).toMatchObject({
+      resourceKind: 'workflow',
+      resourceIds: ['ship-it-flow'],
+      outcomes: ['imported'],
+      counts: { imported: 1 }
+    });
+    expect(records[2]!.outcome).toBe('info');
+  });
+
+  it('carries no authored text out of the Workflow write, though every slot held some', async () => {
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'workspace');
+
+    // The definitions landed, so the tokens were genuinely carried through the
+    // path that produced these records — the absence below is not the absence of
+    // the data itself.
+    expect(inst.workflows.workspace).toHaveLength(1);
+    const serialized = JSON.stringify(exchangeAudits(run.audits));
+    expect(serialized.length).toBeGreaterThan(100);
+    for (const token of FORBIDDEN_WORKFLOW_TOKENS) {
+      expect(serialized).not.toContain(token);
+    }
+    // The ids are the only document-derived strings in the log, and they are
+    // identifiers the format already bounds, not prose.
+    expect(serialized).toContain('ship-it-flow');
+  });
+
+  it('records the third partial shape as three records, the last a failure (FR-054)', async () => {
+    // data-model.md §5.3's second shape: Phases and Pipelines landed, the Workflow
+    // did not. Without the third record this is indistinguishable in the log from
+    // a package that only ever declared two layers.
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'workspace', { failOn: 'workflows' });
+
+    expect(inst.phases.workspace).toHaveLength(1);
+    expect(inst.pipelines.workspace).toHaveLength(2);
+    expect(inst.workflows.workspace).toEqual([]);
+
+    const records = exchangeAudits(run.audits);
+    expect(records).toHaveLength(3);
+    expect(records.slice(0, 2).map((entry) => entry.outcome)).toEqual(['info', 'info']);
+    expect(records[2]!.payload).toMatchObject({
+      resourceKind: 'workflow',
+      resourceIds: ['ship-it-flow'],
+      outcomes: ['persistence-failed'],
+      counts: { refused: 1 }
+    });
+    expect(records[2]!.outcome).toBe('failure');
+  });
+
+  it('records a stale Workflow write as a refusal, so it is not silence', async () => {
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'workspace', {
+      workflowRevision: 'moved-on'
+    });
+
+    expect(run.results[2]!.ack.reason).toBe('stale-catalog');
+    const records = exchangeAudits(run.audits);
+    expect(records).toHaveLength(3);
+    expect(records[2]!.payload).toMatchObject({
+      resourceKind: 'workflow',
+      outcomes: ['stale-catalog'],
+      counts: { refused: 1 }
+    });
+    expect(records[2]!.outcome).toBe('failure');
+  });
+
+  it('records nothing for an ordinary Workflow edit, which is not an exchange', async () => {
+    // Same rule as the two shipped handlers: the record is keyed on the mutation
+    // intent, not on the command.
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    // Land the two lower layers so the edit reaches the same gates a real one would.
+    await commitWorkflowPackage(inst, plan, 'workspace', { failOn: 'workflows' });
+
+    const audits: AuditEntry[] = [];
+    const ctx = {
+      deps: {
+        readWorkflowConfig: () => inst.workflows,
+        readPipelineConfig: () => inst.pipelines,
+        readPhaseConfig: () => inst.phases,
+        readConfig: () => undefined,
+        updateConfig: async () => undefined,
+        executeCommand: vi.fn(),
+        queueRemover: { remove: vi.fn() },
+        audit: {
+          append: async (entry: AuditEntry) => {
+            audits.push(entry);
+            return undefined;
+          }
+        },
+        logger: logger()
+      },
+      postAck: async () => true,
+      correlationId: CORRELATION
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const workflows = importedWorkflows(plan).map(workflowRow);
+    await saveWorkflowsHandler(ctx, {
+      type: CMD_SAVE_WORKFLOWS,
+      correlationId: CORRELATION,
+      payload: {
+        scope: 'workspace',
+        expectedRevision: workflowLayerRevision(inst.workflows.workspace),
+        mutation: { kind: 'create', workflowId: 'ship-it-flow' },
+        workflows
+      }
+    } as SaveWorkflowsCommand);
+
+    expect(exchangeAudits(audits)).toEqual([]);
+  });
+
+  it('adds no event type and needs no schema bump', async () => {
+    // The whole claim of T079, asserted rather than inferred. The third layer is
+    // one more record of an existing kind, so nothing about the persisted shape
+    // changes and no reader needs to learn a new name.
+    expect(AUDIT_SCHEMA_VERSION).toBe(3);
+    expect([...PROCESS_EXCHANGE_EVENT_TYPES]).toEqual([
+      'process-exchange-export',
+      'process-exchange-import-refused',
+      'process-exchange-import-committed'
+    ]);
+
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'workspace');
+    // Every record the three-layer write produced is one of the two 085 declared.
+    for (const entry of exchangeAudits(run.audits)) {
+      expect(['process-exchange-import-committed', 'process-exchange-import-refused']).toContain(
+        entry.eventType
+      );
+      expect(ALL_AUDIT_EVENT_TYPES as readonly string[]).toContain(entry.eventType);
+    }
+  });
+
+  it('records all three layers in dependency order, never a reordering', async () => {
+    // The log's order is the write order, which is the dependency order. A record
+    // sequence that put the Workflow first would describe an import that could not
+    // have resolved.
+    const inst = workflowInstallation();
+    const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
+    const run = await commitWorkflowPackage(inst, plan, 'user');
+
+    const kinds = exchangeAudits(run.audits).map((entry) => entry.payload.resourceKind);
+    expect(kinds).toEqual(['phase', 'pipeline', 'workflow']);
+    expect(run.results.map((result) => result.key)).toEqual([...WORKFLOW_LAYER_ORDER]);
   });
 });

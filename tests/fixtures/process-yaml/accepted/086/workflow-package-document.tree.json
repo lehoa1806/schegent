@@ -1,0 +1,606 @@
+{
+  "kind": "mapping",
+  "entries": [
+    {
+      "key": "apiVersion",
+      "value": {
+        "kind": "scalar",
+        "value": "schegent/v1",
+        "quoted": false,
+        "line": 1
+      },
+      "line": 1
+    },
+    {
+      "key": "kind",
+      "value": {
+        "kind": "scalar",
+        "value": "Workflow",
+        "quoted": false,
+        "line": 2
+      },
+      "line": 2
+    },
+    {
+      "key": "metadata",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "name",
+            "value": {
+              "kind": "scalar",
+              "value": "release",
+              "quoted": false,
+              "line": 4
+            },
+            "line": 4
+          },
+          {
+            "key": "version",
+            "value": {
+              "kind": "scalar",
+              "value": "3",
+              "quoted": false,
+              "line": 5
+            },
+            "line": 5
+          }
+        ],
+        "line": 4
+      },
+      "line": 3
+    },
+    {
+      "key": "spec",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "startNodeIds",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "scalar",
+                  "value": "build",
+                  "quoted": false,
+                  "line": 8
+                }
+              ],
+              "line": 8
+            },
+            "line": 7
+          },
+          {
+            "key": "nodes",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "nodeId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "build",
+                        "quoted": false,
+                        "line": 10
+                      },
+                      "line": 10
+                    },
+                    {
+                      "key": "pipelineId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "build-pipeline",
+                        "quoted": false,
+                        "line": 11
+                      },
+                      "line": 11
+                    },
+                    {
+                      "key": "label",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "Build\nthe artifact",
+                        "quoted": true,
+                        "line": 12
+                      },
+                      "line": 12
+                    }
+                  ],
+                  "line": 10
+                },
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "nodeId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "publish",
+                        "quoted": false,
+                        "line": 15
+                      },
+                      "line": 15
+                    },
+                    {
+                      "key": "pipelineId",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "publish-pipeline",
+                        "quoted": false,
+                        "line": 16
+                      },
+                      "line": 16
+                    }
+                  ],
+                  "line": 15
+                }
+              ],
+              "line": 10
+            },
+            "line": 9
+          },
+          {
+            "key": "connections",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "from",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "nodeId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "build",
+                              "quoted": false,
+                              "line": 19
+                            },
+                            "line": 19
+                          },
+                          {
+                            "key": "portId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "artifact",
+                              "quoted": false,
+                              "line": 20
+                            },
+                            "line": 20
+                          }
+                        ],
+                        "line": 19
+                      },
+                      "line": 18
+                    },
+                    {
+                      "key": "to",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "nodeId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "publish",
+                              "quoted": false,
+                              "line": 22
+                            },
+                            "line": 22
+                          },
+                          {
+                            "key": "portId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "artifact",
+                              "quoted": false,
+                              "line": 23
+                            },
+                            "line": 23
+                          }
+                        ],
+                        "line": 22
+                      },
+                      "line": 21
+                    },
+                    {
+                      "key": "priority",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "10",
+                        "quoted": false,
+                        "line": 24
+                      },
+                      "line": 24
+                    },
+                    {
+                      "key": "isDefault",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "true",
+                        "quoted": false,
+                        "line": 25
+                      },
+                      "line": 25
+                    },
+                    {
+                      "key": "condition",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "left",
+                            "value": {
+                              "kind": "mapping",
+                              "entries": [
+                                {
+                                  "key": "source",
+                                  "value": {
+                                    "kind": "scalar",
+                                    "value": "node-output",
+                                    "quoted": false,
+                                    "line": 28
+                                  },
+                                  "line": 28
+                                },
+                                {
+                                  "key": "nodeId",
+                                  "value": {
+                                    "kind": "scalar",
+                                    "value": "build",
+                                    "quoted": false,
+                                    "line": 29
+                                  },
+                                  "line": 29
+                                },
+                                {
+                                  "key": "field",
+                                  "value": {
+                                    "kind": "scalar",
+                                    "value": "status",
+                                    "quoted": false,
+                                    "line": 30
+                                  },
+                                  "line": 30
+                                }
+                              ],
+                              "line": 28
+                            },
+                            "line": 27
+                          },
+                          {
+                            "key": "operator",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "in",
+                              "quoted": false,
+                              "line": 31
+                            },
+                            "line": 31
+                          },
+                          {
+                            "key": "right",
+                            "value": {
+                              "kind": "sequence",
+                              "items": [
+                                {
+                                  "kind": "scalar",
+                                  "value": "ok",
+                                  "quoted": false,
+                                  "line": 33
+                                },
+                                {
+                                  "kind": "scalar",
+                                  "value": "warn",
+                                  "quoted": false,
+                                  "line": 34
+                                }
+                              ],
+                              "line": 33
+                            },
+                            "line": 32
+                          }
+                        ],
+                        "line": 27
+                      },
+                      "line": 26
+                    }
+                  ],
+                  "line": 18
+                },
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "from",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "nodeId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "build",
+                              "quoted": false,
+                              "line": 36
+                            },
+                            "line": 36
+                          },
+                          {
+                            "key": "portId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "report",
+                              "quoted": false,
+                              "line": 37
+                            },
+                            "line": 37
+                          }
+                        ],
+                        "line": 36
+                      },
+                      "line": 35
+                    },
+                    {
+                      "key": "to",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "nodeId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "publish",
+                              "quoted": false,
+                              "line": 39
+                            },
+                            "line": 39
+                          },
+                          {
+                            "key": "portId",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "notes",
+                              "quoted": false,
+                              "line": 40
+                            },
+                            "line": 40
+                          }
+                        ],
+                        "line": 39
+                      },
+                      "line": 38
+                    },
+                    {
+                      "key": "condition",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "left",
+                            "value": {
+                              "kind": "mapping",
+                              "entries": [
+                                {
+                                  "key": "source",
+                                  "value": {
+                                    "kind": "scalar",
+                                    "value": "node-status",
+                                    "quoted": false,
+                                    "line": 43
+                                  },
+                                  "line": 43
+                                },
+                                {
+                                  "key": "nodeId",
+                                  "value": {
+                                    "kind": "scalar",
+                                    "value": "build",
+                                    "quoted": false,
+                                    "line": 44
+                                  },
+                                  "line": 44
+                                }
+                              ],
+                              "line": 43
+                            },
+                            "line": 42
+                          },
+                          {
+                            "key": "operator",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "equals",
+                              "quoted": false,
+                              "line": 45
+                            },
+                            "line": 45
+                          },
+                          {
+                            "key": "right",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "succeeded",
+                              "quoted": false,
+                              "line": 46
+                            },
+                            "line": 46
+                          }
+                        ],
+                        "line": 42
+                      },
+                      "line": 41
+                    }
+                  ],
+                  "line": 35
+                }
+              ],
+              "line": 18
+            },
+            "line": 17
+          }
+        ],
+        "line": 7
+      },
+      "line": 6
+    },
+    {
+      "key": "included",
+      "value": {
+        "kind": "mapping",
+        "entries": [
+          {
+            "key": "pipelines",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "metadata",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "name",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "build-pipeline",
+                              "quoted": false,
+                              "line": 50
+                            },
+                            "line": 50
+                          },
+                          {
+                            "key": "version",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "1",
+                              "quoted": false,
+                              "line": 51
+                            },
+                            "line": 51
+                          }
+                        ],
+                        "line": 50
+                      },
+                      "line": 49
+                    },
+                    {
+                      "key": "spec",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "phaseIds",
+                            "value": {
+                              "kind": "sequence",
+                              "items": [
+                                {
+                                  "kind": "scalar",
+                                  "value": "compile",
+                                  "quoted": false,
+                                  "line": 54
+                                }
+                              ],
+                              "line": 54
+                            },
+                            "line": 53
+                          }
+                        ],
+                        "line": 53
+                      },
+                      "line": 52
+                    }
+                  ],
+                  "line": 49
+                }
+              ],
+              "line": 49
+            },
+            "line": 48
+          },
+          {
+            "key": "phases",
+            "value": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "mapping",
+                  "entries": [
+                    {
+                      "key": "metadata",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "name",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "compile",
+                              "quoted": false,
+                              "line": 57
+                            },
+                            "line": 57
+                          },
+                          {
+                            "key": "version",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "1",
+                              "quoted": false,
+                              "line": 58
+                            },
+                            "line": 58
+                          }
+                        ],
+                        "line": 57
+                      },
+                      "line": 56
+                    },
+                    {
+                      "key": "spec",
+                      "value": {
+                        "kind": "mapping",
+                        "entries": [
+                          {
+                            "key": "instruction",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "Compile everything.",
+                              "quoted": true,
+                              "line": 60
+                            },
+                            "line": 60
+                          }
+                        ],
+                        "line": 60
+                      },
+                      "line": 59
+                    }
+                  ],
+                  "line": 56
+                }
+              ],
+              "line": 56
+            },
+            "line": 55
+          }
+        ],
+        "line": 48
+      },
+      "line": 47
+    }
+  ],
+  "line": 1
+}

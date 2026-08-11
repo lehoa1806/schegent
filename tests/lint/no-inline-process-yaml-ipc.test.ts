@@ -4,6 +4,7 @@
 // helper", and this is that rule for this family.
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -39,4 +40,47 @@ describe('Phase exchange single webview call site', () => {
       expect(files).toContain(HELPER);
     });
   }
+});
+
+// Feature 086 T072 — the third kind is covered, and covered on purpose.
+//
+// 086 added `exportWorkflowYaml` beside `exportPhaseYaml` and `exportPipelineYaml`,
+// and the scan above already caught anything it could do wrong: all three send
+// `CMD_EXPORT_PROCESS_YAML`, and no file outside the helper may name that command.
+// So the coverage is real — but it is INCIDENTAL. It holds because 086 reused the
+// existing command constant, and a fourth kind that introduced its own would be
+// outside `COMMANDS` and therefore outside the lint, silently.
+//
+// These two checks make the coverage deliberate. The first says the helper is the
+// whole webview surface of this family; the second says the family has exactly the
+// commands the scan above enumerates.
+describe('Feature 086 T072 — the exchange helper is the whole webview surface', () => {
+  const HELPER_SOURCE = readFileSync(resolve(REPO_ROOT, HELPER), 'utf8');
+
+  it('declares one sender per kind, and one preflight for all three', () => {
+    // Export is per-kind because the operator picks a resource of a known kind;
+    // preflight is not, because the DOCUMENT declares its kind (FR-055a/FR-058).
+    // A second preflight helper would be a kind on the request in disguise.
+    const declared = [...HELPER_SOURCE.matchAll(/^export function (\w+)/gm)].map(
+      (match) => match[1]!
+    );
+    expect(declared.sort()).toEqual([
+      'exportPhaseYaml',
+      'exportPipelineYaml',
+      'exportWorkflowYaml',
+      'preflightProcessYaml'
+    ]);
+  });
+
+  it('enumerates every command the family declares, so a fourth cannot arrive unscanned', () => {
+    // Read from the contract rather than restated: `COMMANDS` above is a
+    // hand-maintained list, and this is the assertion that it is complete. The
+    // constants are declared in the aggregate contract module, not in the
+    // family's own `process-yaml.ts`, which only re-exports them.
+    const contract = readFileSync(resolve(REPO_ROOT, 'src/contracts/sidebar-ipc.ts'), 'utf8');
+    const declared = [...contract.matchAll(/export const (CMD_\w*PROCESS_YAML\w*)/g)].map(
+      (match) => match[1]!
+    );
+    expect(declared.sort()).toEqual([...COMMANDS].sort());
+  });
 });

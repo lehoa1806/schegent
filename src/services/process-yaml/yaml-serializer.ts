@@ -120,6 +120,81 @@ export const EXECUTION_DEFAULTS_KEY_ORDER = Object.freeze([
   'timeoutSeconds'
 ] as const);
 
+// --- Workflow package document orders (contracts/workflow-yaml-grammar.md §2) -
+//
+// Feature 086 adds orders, not productions. A Workflow document is written with
+// the same emitters as a Pipeline one — the grammar does not move — so what is
+// new here is nine declarations and nothing else.
+//
+// Each of these is also the unknown-key oracle on read, as `PACKAGE_TOP_LEVEL_KEYS`
+// already is: a key absent from the order is a key this format does not have.
+// That is why the document order below duplicates `PACKAGE_DOCUMENT_KEY_ORDER`
+// key for key rather than aliasing it — the two documents are free to diverge,
+// and an alias would silently accept the other's shape if either ever did.
+
+export const WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER = Object.freeze([
+  'apiVersion',
+  'kind',
+  'metadata',
+  'spec',
+  'included'
+] as const);
+
+export const WORKFLOW_METADATA_KEY_ORDER = Object.freeze([
+  'id',
+  'name',
+  'description',
+  'version'
+] as const);
+
+export const WORKFLOW_SPEC_KEY_ORDER = Object.freeze([
+  'nodes',
+  'connections',
+  'startNodeIds'
+] as const);
+
+export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
+  'nodeId',
+  'pipelineId',
+  'label'
+] as const);
+
+export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
+  'from',
+  'to',
+  'condition',
+  'priority',
+  'isDefault',
+  'selection'
+] as const);
+
+export const WORKFLOW_ENDPOINT_KEY_ORDER = Object.freeze([
+  'nodeId',
+  'portId'
+] as const);
+
+/**
+ * A condition is structured data, never an expression string, so its shape is a
+ * declared key order like any other mapping's. There is nothing here to parse
+ * and therefore nothing to sandbox.
+ */
+export const WORKFLOW_CONDITION_KEY_ORDER = Object.freeze([
+  'left',
+  'operator',
+  'right'
+] as const);
+
+export const WORKFLOW_OPERAND_KEY_ORDER = Object.freeze([
+  'source',
+  'nodeId',
+  'field'
+] as const);
+
+export const WORKFLOW_INCLUDED_KEY_ORDER = Object.freeze([
+  'pipelines',
+  'phases'
+] as const);
+
 export type ScalarValue = string | number | boolean;
 
 /**
