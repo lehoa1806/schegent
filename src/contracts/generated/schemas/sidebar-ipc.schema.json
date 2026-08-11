@@ -77,7 +77,9 @@
           "CMD_PING_BACKEND",
           "CMD_EXPORT_PROCESS_YAML",
           "CMD_PREFLIGHT_PROCESS_YAML",
-          "CMD_LAUNCH_PIPELINE"
+          "CMD_LAUNCH_PIPELINE",
+          "CMD_LAUNCH_WORKFLOW",
+          "CMD_CONTINUE_WORKFLOW"
         ]
       },
       "uniqueItems": true
@@ -306,6 +308,11 @@
           "name": "workflowCatalog",
           "optional": true,
           "type": "WorkflowCatalogProjection"
+        },
+        {
+          "name": "connectedRuns",
+          "optional": true,
+          "type": "readonly ConnectedRunProjection[]"
         },
         {
           "name": "telemetry",

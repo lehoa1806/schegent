@@ -50,8 +50,15 @@
  *       and Git mutation-plan/approval metadata on each run. Legacy runs
  *       retain the historical `always` transcript behavior. Also introduces
  *       the separately persisted terminal-transition intent journal.
+ *   9 — feature 088: introduces the connected-run aggregate under the new
+ *       `schegent.connectedRuns` key. Additive and forward-only: a workspace
+ *       with no such key reads as an empty collection, and no existing
+ *       record's shape changes — `WorkflowRun` in particular is untouched and
+ *       remains the per-Pipeline run record. Reader:
+ *       `migrateConnectedRuns()` in `src/state/connected-run-migrator.ts`.
+ *       Down-migration is unsupported.
  */
-export const STATE_SCHEMA_VERSION = 8 as const;
+export const STATE_SCHEMA_VERSION = 9 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -60,6 +67,7 @@ export const STATE_SCHEMA_VERSION_V5 = 5 as const;
 export const STATE_SCHEMA_VERSION_V6 = 6 as const;
 export const STATE_SCHEMA_VERSION_V7 = 7 as const;
 export const STATE_SCHEMA_VERSION_V8 = 8 as const;
+export const STATE_SCHEMA_VERSION_V9 = 9 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

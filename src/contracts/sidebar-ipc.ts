@@ -128,6 +128,13 @@ export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
 // Feature 087 — compose, validate, freeze, enqueue. Mutating, unlike the two
 // exchange commands above; see `MUTATING_COMMAND_REASONS`.
 export const CMD_LAUNCH_PIPELINE = 'CMD_LAUNCH_PIPELINE' as const;
+// Feature 088 — connected Workflow runs. Both mutating: the first creates the
+// aggregate and enqueues its first child, the second appends an attempt and
+// increments the revision. Neither name carries a mutating verb prefix, so the
+// naming-convention lint would not have caught an omission from
+// `MUTATING_COMMAND_REASONS` — both entries are deliberate.
+export const CMD_LAUNCH_WORKFLOW = 'CMD_LAUNCH_WORKFLOW' as const;
+export const CMD_CONTINUE_WORKFLOW = 'CMD_CONTINUE_WORKFLOW' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -191,7 +198,9 @@ export const COMMAND_TYPES = [
   CMD_PING_BACKEND,
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML,
-  CMD_LAUNCH_PIPELINE
+  CMD_LAUNCH_PIPELINE,
+  CMD_LAUNCH_WORKFLOW,
+  CMD_CONTINUE_WORKFLOW
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -239,6 +248,15 @@ import { isLaunchPipelinePayload, type LaunchPipelineCommand } from './sidebar-i
 export type {
   LaunchPipelineRequest, LaunchPipelineCommand, LaunchPipelineResult,
   LaunchPipelineOutcome, LaunchPipelineRejectionReason } from './sidebar-ipc/run-launcher';
+import {
+  isContinueWorkflowPayload, isLaunchWorkflowPayload,
+  type ContinueWorkflowCommand, type LaunchWorkflowCommand } from './sidebar-ipc/workflow-run';
+export type {
+  ConnectedNodeAction, ConnectedNodeProjection, ConnectedNodeState,
+  ConnectedRunProjection, ConnectedRunStateRefusal, ContinueWorkflowCommand,
+  ContinueWorkflowOutcome, ContinueWorkflowPayload, ContinueWorkflowResult,
+  LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload,
+  LaunchWorkflowResult, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
 
 export type {
   ReadPhaseLogRequest,
@@ -615,7 +633,9 @@ export type SidebarCommand =
   | PingBackendCommand
   | ExportProcessYamlCommand
   | PreflightProcessYamlCommand
-  | LaunchPipelineCommand;
+  | LaunchPipelineCommand
+  | LaunchWorkflowCommand
+  | ContinueWorkflowCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -910,6 +930,18 @@ export function isCmdLaunchPipeline(value: unknown): value is LaunchPipelineComm
     && isLaunchPipelinePayload((value as { payload?: unknown }).payload);
 }
 
+// Feature 088 — same split: the payload predicates live in the sub-module and
+// need nothing from here; only the discriminator does.
+export function isCmdLaunchWorkflow(value: unknown): value is LaunchWorkflowCommand {
+  return isObjectWithType(value, CMD_LAUNCH_WORKFLOW)
+    && isLaunchWorkflowPayload((value as { payload?: unknown }).payload);
+}
+
+export function isCmdContinueWorkflow(value: unknown): value is ContinueWorkflowCommand {
+  return isObjectWithType(value, CMD_CONTINUE_WORKFLOW)
+    && isContinueWorkflowPayload((value as { payload?: unknown }).payload);
+}
+
 // Exhaustive guard registry. The drift test asserts the keys of this
 // record equal `COMMAND_TYPES`; missing entries fail the test.
 export const COMMAND_GUARDS: Readonly<
@@ -970,5 +1002,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_PING_BACKEND]: isCmdPingBackend,
   [CMD_EXPORT_PROCESS_YAML]: isCmdExportProcessYaml,
   [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml,
-  [CMD_LAUNCH_PIPELINE]: isCmdLaunchPipeline
+  [CMD_LAUNCH_PIPELINE]: isCmdLaunchPipeline,
+  [CMD_LAUNCH_WORKFLOW]: isCmdLaunchWorkflow,
+  [CMD_CONTINUE_WORKFLOW]: isCmdContinueWorkflow
 });

@@ -4,11 +4,13 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_CONTINUE_WORKFLOW,
   CMD_DISABLE_PHASE,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_ENABLE_PHASE,
   CMD_EXPORT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
+  CMD_LAUNCH_WORKFLOW,
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
@@ -60,11 +62,13 @@ import { handler as clearAll } from './cmd-clear-all';
 import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
+import { handler as continueWorkflow } from './cmd-continue-workflow';
 import { handler as disablePhase } from './cmd-disable-phase';
 import { handler as dismissMigrationNotice } from './cmd-dismiss-migration-notice';
 import { handler as enablePhase } from './cmd-enable-phase';
 import { handler as exportProcessYaml } from './cmd-export-process-yaml';
 import { handler as launchPipeline } from './cmd-launch-pipeline';
+import { handler as launchWorkflow } from './cmd-launch-workflow';
 import { handler as modifyTask } from './cmd-modify-task';
 import { handler as moveQueueItemDown } from './cmd-move-queue-item-down';
 import { handler as moveQueueItemUp } from './cmd-move-queue-item-up';
@@ -126,11 +130,13 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
   [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
+  [CMD_CONTINUE_WORKFLOW, continueWorkflow as CommandHandler],
   [CMD_DISABLE_PHASE, disablePhase as CommandHandler],
   [CMD_DISMISS_MIGRATION_NOTICE, dismissMigrationNotice as CommandHandler],
   [CMD_ENABLE_PHASE, enablePhase as CommandHandler],
   [CMD_EXPORT_PROCESS_YAML, exportProcessYaml as CommandHandler],
   [CMD_LAUNCH_PIPELINE, launchPipeline as CommandHandler],
+  [CMD_LAUNCH_WORKFLOW, launchWorkflow as CommandHandler],
   [CMD_MODIFY_TASK, modifyTask as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_DOWN, moveQueueItemDown as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_UP, moveQueueItemUp as CommandHandler],

@@ -173,7 +173,7 @@ export class GuardedRunService {
       return { outcome: 'rejected-validation', reason: rerunCheck.reason };
     }
 
-    const pipelineCheck = this.validatePipelineId(req.pipelineId ?? null);
+    const pipelineCheck = this.validatePipelineId(req.pipelineId ?? null, req.runPlan ?? null);
     if (pipelineCheck.kind === 'invalid') {
       await this.emitRejection('schedule', 'rejected-validation', pipelineCheck.reason, req.via);
       return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
@@ -832,13 +832,32 @@ export class GuardedRunService {
     return { kind: 'ok' };
   }
 
+  /**
+   * The catalog is the authority for an item that has none of its own.
+   *
+   * A composed item carries the definition it will execute: `runPlan` was frozen
+   * from the effective catalog at validation, and `workflow-run-factory.ts` runs
+   * it at drain without re-resolving anything. Catalog membership is therefore
+   * not a precondition for enqueueing such a row, and requiring it would let
+   * catalog drift reach a submission that was already validated against the
+   * definition it froze — which is the drift feature 087 exists to close, and
+   * which feature 088 needs closed at this gate too: a connected run's node start
+   * must execute its snapshot even after the Pipeline is deleted from the catalog
+   * (FR-005, SC-003), and nothing else in the enqueue path reads the catalog.
+   *
+   * The plan must agree with the id the row claims. A plan for some other
+   * Pipeline falls through to the catalog check rather than vouching for a row
+   * that names something it does not describe.
+   */
   private validatePipelineId(
-    pipelineId: string | null
+    pipelineId: string | null,
+    plan: FrozenRunPlan | null = null
   ): { kind: 'ok' } | { kind: 'invalid'; reason: string } {
     if (pipelineId === null) return { kind: 'ok' };
     if (typeof pipelineId !== 'string' || pipelineId.length === 0) {
       return { kind: 'invalid', reason: 'pipeline-id-empty' };
     }
+    if (plan !== null && plan.pipeline.id === pipelineId) return { kind: 'ok' };
     const catalog =
       this.deps.catalogProvider?.() ?? this.deps.controller.getCatalog();
     if (!catalog.pipelinesById.has(pipelineId)) {
