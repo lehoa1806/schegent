@@ -24,6 +24,7 @@ import type {
   QueueLifecycle,
   ScheduledStartSource
 } from '../queue/feature-request';
+import { MAX_DESCRIPTION_LENGTH } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { PipelineCatalog } from '../config/pipeline-config';
@@ -806,7 +807,12 @@ export class GuardedRunService {
     if (trimmed.length === 0) {
       return { kind: 'invalid', reason: 'description-empty' };
     }
-    if (trimmed.length > 32_000) {
+    // Same bound as `validateDescription()` in `queue/feature-request.ts`, read
+    // from the one constant rather than restated. The two functions stay
+    // separate on purpose — that one throws, this one returns a `reason` code a
+    // command handler maps to a response — but a description accepted at one
+    // entry point and refused at the other would be a bound in name only.
+    if (trimmed.length > MAX_DESCRIPTION_LENGTH) {
       return { kind: 'invalid', reason: 'description-too-long' };
     }
     return { kind: 'ok', value: trimmed };
