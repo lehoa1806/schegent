@@ -10,10 +10,12 @@
 import type {
   PhaseCatalogSourceRecord,
   PipelineCatalogSourceRecord,
+  WorkflowCatalogSourceProjection,
   WritablePhaseDefinitionScope
 } from '../../lib/snapshot-types';
 import type { SavePhaseRow } from '../../lib/save-phases';
 import type { SavePipelineRow } from '../../lib/save-pipelines';
+import type { SaveWorkflowRow } from '../../lib/save-workflows';
 import type { ImportTargetLayers } from './process-import-state';
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */
@@ -116,10 +118,16 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
  * layer. Two record lists rather than one call per catalog, because the pair is
  * what a single commit consumes; splitting them would make it possible to supply
  * one and forget the other.
+ *
+ * Feature 086 T054 — the Workflow catalog joins them on exactly those terms, and
+ * the "forget one" failure is why it must: the Workflow write sends its whole
+ * layer, so a commit handed an empty projection would not add a Workflow to the
+ * catalog, it would replace the catalog with that one Workflow.
  */
 export function storedWritableLayers(
   phaseRecords: readonly PhaseCatalogSourceRecord[],
-  pipelineRecords: readonly PipelineCatalogSourceRecord[] = []
+  pipelineRecords: readonly PipelineCatalogSourceRecord[] = [],
+  workflowRecords: readonly WorkflowCatalogSourceProjection[] = []
 ): Readonly<Record<WritablePhaseDefinitionScope, ImportTargetLayers>> {
   // `display` carries the identity key under whichever name the row used, so the
   // spread is the whole row. The assertion is the boundary this module owns: the
@@ -133,8 +141,20 @@ export function storedWritableLayers(
     pipelineRecords
       .filter((record) => record.scope === scope)
       .map((record) => ({ ...record.display }) as unknown as SavePipelineRow);
+  const workflowsFor = (scope: WritablePhaseDefinitionScope): readonly SaveWorkflowRow[] =>
+    workflowRecords
+      .filter((record) => record.scope === scope)
+      .map((record) => ({ ...record.display }) as unknown as SaveWorkflowRow);
   return {
-    user: { phases: phasesFor('user'), pipelines: pipelinesFor('user') },
-    workspace: { phases: phasesFor('workspace'), pipelines: pipelinesFor('workspace') }
+    user: {
+      phases: phasesFor('user'),
+      pipelines: pipelinesFor('user'),
+      workflows: workflowsFor('user')
+    },
+    workspace: {
+      phases: phasesFor('workspace'),
+      pipelines: pipelinesFor('workspace'),
+      workflows: workflowsFor('workspace')
+    }
   };
 }

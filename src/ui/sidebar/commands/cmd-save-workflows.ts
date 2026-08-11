@@ -51,6 +51,11 @@ import type {
   WritableWorkflowDefinitionScope
 } from '../../../contracts/workflow-definitions';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
+import {
+  auditImportCommitted,
+  auditImportRefused,
+  type ImportCommitTarget
+} from './process-exchange-commit-audit';
 import type { SaveWorkflowsCommand } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
 import { ack } from './handler-helpers';
@@ -80,9 +85,49 @@ interface NormalizedLayer {
   readonly errors: readonly WorkflowFieldError[];
 }
 
-/** Projects a Workflow mutation onto the entity-agnostic intent the algebra reads. */
+/**
+ * Projects a Workflow mutation onto the entity-agnostic intent the algebra reads.
+ *
+ * `import-package` (feature 086, FR-046) names a SET rather than a single id, so
+ * it carries `targetIds` and no `targetId` at all. The algebra itself needed no
+ * change for the third layer — it was extracted entity-agnostic in 082 and takes
+ * the adapter as an argument.
+ */
 function workflowIntent(mutation: WorkflowCatalogMutation): LayerMutationIntent {
+  if (mutation.kind === 'import-package') {
+    return { kind: 'import-package', targetId: null, targetIds: mutation.workflowIds };
+  }
   return { kind: mutation.kind, targetId: mutation.kind === 'reset' ? null : mutation.workflowId };
+}
+
+/**
+ * Restores the version each imported row declared (feature 086, FR-003a).
+ *
+ * `withHostVersions` is right for every other kind and wrong for this one: an id
+ * absent from the layer is brand new to it, so the host assigns 1 — which is
+ * correct for a Workflow the operator just created and lossy for one read out of
+ * a document that already numbered it. Applied to the declared set only, so a row
+ * carried across from the current layer keeps the version the host issued it.
+ *
+ * The same post-processing `cmd-save-pipelines.ts` does, for the same reason. It
+ * stays at the command layer rather than moving into the algebra: the algebra
+ * knows nothing about documents, and giving it a "trust the proposal's version"
+ * mode would be a mode every other kind must then be proven not to reach.
+ */
+function withImportedVersion(
+  versioned: readonly WorkflowDefinition[],
+  proposedById: ReadonlyMap<string, WorkflowDefinition>,
+  mutation: WorkflowCatalogMutation
+): readonly WorkflowDefinition[] {
+  if (mutation.kind !== 'import-package') return versioned;
+  const importedIds = new Set(mutation.workflowIds);
+  return versioned.map((definition) => {
+    if (!importedIds.has(definition.workflowId)) return definition;
+    const authored = proposedById.get(definition.workflowId);
+    return authored === undefined
+      ? definition
+      : Object.freeze({ ...definition, version: authored.version });
+  });
 }
 
 /**
@@ -181,6 +226,10 @@ function currentMetadata(
   sanitize: (value: string) => string
 ): unknown {
   if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  // A package names a set, not a row, and `reapply` is not offered: the plan was
+  // computed against the revision this gate just rejected, so its skip and
+  // blocked decisions may no longer hold. The operator re-runs the preflight.
+  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
   const workflowId =
     mutation.kind === 'duplicate' ? mutation.sourceWorkflowId : mutation.workflowId;
   const definition = current.get(workflowId);
@@ -216,15 +265,28 @@ function persistedRow(
 }
 
 export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command) => {
+  const { scope, expectedRevision, mutation } = command.payload;
+  // Feature 086 T056 (FR-054) — the one layer write a package import is about, or
+  // null for every other mutation. Read before gate 1 so a refusal at any gate
+  // leaves a record; every audit call below is a no-op when null. Three writes
+  // that can succeed independently mean the catalog is no longer the record of
+  // what an import did, which is the whole reason 085 added these — a workspace
+  // holding the Phases and Pipelines and no Workflow is otherwise
+  // indistinguishable from a two-layer document.
+  const exchange: ImportCommitTarget | null =
+    mutation.kind === 'import-package'
+      ? { resourceKind: 'workflow', resourceIds: mutation.workflowIds, scope }
+      : null;
+
   // Gate 1 — host configuration operations.
   if (!ctx.deps.updateConfig || !ctx.deps.readWorkflowConfig) {
+    await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
   const updateConfig = ctx.deps.updateConfig;
   const sanitize = ctx.deps.logger.sanitize;
 
-  const { scope, expectedRevision, mutation } = command.payload;
   const intent = workflowIntent(mutation);
   const layers = ctx.deps.readWorkflowConfig();
   const currentRows = layers[scope];
@@ -240,6 +302,7 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
   // Gate 3 — the operator acted on the layer the host still holds (FR-028). This precedes the
   // trust gates so a stale untrusted save reports the staleness (CLAUDE.md hard rule).
   if (expectedRevision !== currentRevision) {
+    await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
       current: currentMetadata(mutation, currentById, scope, sanitize)
@@ -253,6 +316,7 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     effectivePipelineContext(ctx)
   );
   if (proposedLayer.errors.length > 0) {
+    await auditImportRefused(ctx, exchange, 'workflow-validation');
     await ack(
       ctx,
       'rejected',
@@ -298,24 +362,29 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     // ships, a mutation aimed at it is refused with the reason that names the cause rather
     // than falling through to a generic mismatch.
     const builtInIds = new Set(BUILT_IN_WORKFLOWS.map((workflow) => workflow.workflowId));
-    const targetId = mutation.kind === 'reset'
-      ? null
-      : mutation.kind === 'duplicate'
-        ? mutation.sourceWorkflowId
-        : mutation.workflowId;
-    const builtInOnly = (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && targetId !== null
-      && builtInIds.has(targetId)
-      && !currentById.has(targetId);
-    if (builtInOnly && targetId !== null) {
+    // Narrowed to the two kinds the gate is about before an id is read at all, as
+    // `cmd-save-pipelines.ts` does. Only `edit` and `remove` can aim at an existing
+    // built-in row: `duplicate` reads one as its source, `create` and
+    // `import-package` name ids that are absent by construction, and `reset` names
+    // none. That keeps the set-valued `import-package` arm out of a computation
+    // that only means anything for a single id.
+    const builtInTargetId =
+      (mutation.kind === 'edit' || mutation.kind === 'remove')
+      && builtInIds.has(mutation.workflowId)
+      && !currentById.has(mutation.workflowId)
+        ? mutation.workflowId
+        : null;
+    if (builtInTargetId !== null) {
+      await auditImportRefused(ctx, exchange, 'built-in-immutable');
       await ack(ctx, 'rejected', 'built-in-immutable', {
-        workflowId: sanitize(targetId).slice(0, WORKFLOW_ID_MAX_LEN)
+        workflowId: sanitize(builtInTargetId).slice(0, WORKFLOW_ID_MAX_LEN)
       });
       return;
     }
     // Gate 11 — the declared intent and the observed diff disagree.
     const reported = (ids: readonly string[]) =>
       ids.slice(0, REPORTED_ERROR_MAX).map((id) => sanitize(id).slice(0, WORKFLOW_ID_MAX_LEN));
+    await auditImportRefused(ctx, exchange, 'workflow-mutation-mismatch');
     await ack(ctx, 'rejected', 'workflow-mutation-mismatch', {
       expected: mutation.kind,
       actual: {
@@ -330,6 +399,9 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
   // Gate 12 — versions are host-owned, so a row may only assert one the host previously issued
   // (FR-001). Field validation already refused a non-positive integer; this refuses a
   // well-formed integer the host never wrote.
+  const importedIds = new Set(
+    mutation.kind === 'import-package' ? mutation.workflowIds : []
+  );
   for (const raw of command.payload.workflows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const row = raw as Record<string, unknown>;
@@ -337,10 +409,15 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
       ? row.workflowId
       : typeof row.id === 'string' ? row.id : null;
     if (workflowId === null || row.version === undefined) continue;
+    // An imported identity declares its own version (086 FR-003a). Skipping the
+    // echo check for those alone leaves it in force for every other row, so a
+    // package cannot smuggle a version onto a row it does not name.
+    if (importedIds.has(workflowId)) continue;
     const expectedVersions = currentIdentities.versions.get(
       workflowId === repairTargetId && mutation.kind === 'edit' ? mutation.workflowId : workflowId
     ) ?? new Set([1]);
     if (!expectedVersions.has(row.version as number)) {
+      await auditImportRefused(ctx, exchange, 'workflow-version-invalid');
       await ack(ctx, 'rejected', 'workflow-version-invalid', {
         workflowId: sanitize(workflowId).slice(0, WORKFLOW_ID_MAX_LEN),
         expectedVersions: [...expectedVersions].sort((a, b) => a - b)
@@ -365,14 +442,17 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
         [repairTargetId, currentIdentities.versions.get(mutation.workflowId) ?? new Set([1])]
       ])
     : currentIdentities.versions;
-  const persistedRows = withHostVersions(
+  const versioned = withHostVersions(
     proposedLayer.definitions,
     currentById,
     currentIdentities.counts,
     versionSources,
     intent,
     workflowIntentAdapter
-  ).map((definition) => persistedRow(definition, proposedLayer.unrecognized));
+  );
+  const persistedRows = withImportedVersion(versioned, proposedById, mutation).map((definition) =>
+    persistedRow(definition, proposedLayer.unrecognized)
+  );
 
   // Gate 15 — the single commit point for the targeted layer (FR-030).
   try {
@@ -381,12 +461,16 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     ctx.deps.logger.warn(
       `workflow catalog save failed: ${sanitize((error as Error).message)}`
     );
+    await auditImportRefused(ctx, exchange, 'persistence-failed');
     await ack(ctx, 'rejected', 'persistence-failed');
     return;
   }
 
-  // No audit event on success — a catalog mutation is a configuration write, and the audit log
-  // is the run-history record (FR-047). A trust denial still audits, via `denyAndAudit`.
+  // No audit event for an ordinary catalog mutation — that is a configuration write, and the
+  // audit log is the run-history record (FR-047). A trust denial still audits, via
+  // `denyAndAudit`, and a package import audits through `exchange` above, which is null for
+  // every other kind (FR-054).
+  await auditImportCommitted(ctx, exchange);
   await ack(ctx, 'accepted', undefined, {
     scope,
     revision: workflowLayerRevision(persistedRows),

@@ -22,9 +22,11 @@
 // Pure and total. Errors are values; nothing here throws or performs I/O.
 
 import { validatePipelineBindings } from '../../config/pipeline-binding-validator';
-import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
+import { validateWorkflowGraph } from '../../config/workflow-graph-validator';
+import type { PipelineDefinition, PipelineSourceRecord } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition, PhaseSourceRecord } from '../../contracts/process-definitions';
-import type { BlockedReason, ImportDefect, ImportPlanRow } from './types';
+import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
+import type { BlockedDependency, BlockedReason, ImportDefect, ImportPlanRow } from './types';
 
 /**
  * How one referenced `phaseId` resolves.
@@ -61,11 +63,23 @@ export type PipelineResolution =
   | { readonly outcome: 'blocked'; readonly reason: BlockedReason }
   | { readonly outcome: 'invalid'; readonly defects: readonly ImportDefect[] };
 
+/**
+ * `'dependency-blocked'` is deliberately not admitted here (feature 086): this
+ * helper reports how a PHASE reference resolved, and a Phase has no dependencies
+ * of its own, so its failure is always a root cause. The propagated arm belongs
+ * one level up, where a Workflow waits on a Pipeline that is itself blocked.
+ */
 function blocked(
-  code: BlockedReason['code'],
+  code: 'dependency-absent' | 'dependency-unresolvable',
   phaseId: string
 ): Extract<PhaseDependencyResolution, { status: 'blocked' }> {
-  return Object.freeze({ status: 'blocked' as const, reason: Object.freeze({ code, phaseId }) });
+  return Object.freeze({
+    status: 'blocked' as const,
+    reason: Object.freeze({
+      code,
+      dependency: Object.freeze({ kind: 'phase' as const, resourceId: phaseId })
+    })
+  });
 }
 
 /** The Phase definitions this plan's `import` rows will write, in plan order. */
@@ -194,6 +208,214 @@ export function resolvePipelineDependencies(
   // FR-046a — a binding defect is the Pipeline being wrong, found now rather
   // than as a write failure after the operator has already confirmed. Every
   // defect is carried, not the first (FR-027).
+  return Object.freeze({
+    outcome: 'invalid' as const,
+    defects: Object.freeze(errors.map(asDefect))
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature 086 T043/T044 — the third pass (FR-035 – FR-043, data-model.md §4.2).
+//
+// Pass 3 is pass 2 one level up, and everything above applies unchanged: the
+// EFFECTIVE Pipeline catalog decides resolution, stored rows only separate
+// "supply it" from "repair it", and references resolve BEFORE the graph is
+// validated.
+//
+// One thing is genuinely new, and it is the reason this pass could not simply be
+// the same function with different types. A Phase has no dependencies, so a
+// blocked Phase reference is always a root cause. A PIPELINE has dependencies, so
+// a Workflow can be well-formed, name a Pipeline the document supplies, and still
+// be unimportable because that Pipeline is itself blocked. Reporting that as
+// `dependency-absent` would tell the operator to supply a Pipeline the document
+// already contains; `dependency-blocked` carries `via` so they get a chain from
+// what they selected to what is actually wrong (FR-040).
+//
+// Pass 2's verdicts arrive the same way pass 1's do — through the PLANNED ROWS,
+// not a second verdict map. The planner already records a pass-2-blocked Pipeline
+// as a `blocked` row, so reading the rows means the two passes cannot disagree
+// about a Pipeline's fate: there is only one record of it.
+// ---------------------------------------------------------------------------
+
+/**
+ * How one referenced `pipelineId` resolves. Mirrors {@link PhaseDependencyResolution},
+ * with the propagated blocked arm now reachable in the `reason`.
+ */
+export type PipelineDependencyResolution =
+  | { readonly status: 'resolved-effective' }
+  | { readonly status: 'resolved-planned' }
+  | { readonly status: 'resolved-skipped' }
+  | { readonly status: 'blocked'; readonly reason: BlockedReason };
+
+/**
+ * Pass 3's reads. Extends the Phase context rather than replacing it because the
+ * planner holds one context for all three passes — a Workflow's node Pipelines
+ * were themselves resolved against `effectivePhases`, and splitting the context
+ * would let the two halves be built from different catalog reads.
+ *
+ * The Pipeline triple mirrors the Phase triple exactly. `invalidPipelines` is the
+ * one addition: `pipelineId` → short cause, supplied by the CALLER from the
+ * shipped `invalidPipelineCauses`, so an id that resolved to an invalid record
+ * stays distinguishable from an absent one when the graph pass names a transitive
+ * cause. Deriving it here would be a second implementation of a question the
+ * catalog already answers.
+ */
+export interface WorkflowResolutionContext extends PackageResolutionContext {
+  readonly effectivePipelines: readonly PipelineDefinition[];
+  readonly storedPipelines: readonly PipelineSourceRecord[];
+  readonly plannedPipelineRows: readonly ImportPlanRow[];
+  readonly invalidPipelines: ReadonlyMap<string, string>;
+}
+
+export type WorkflowResolution =
+  | { readonly outcome: 'resolved' }
+  | { readonly outcome: 'blocked'; readonly reason: BlockedReason }
+  | { readonly outcome: 'invalid'; readonly defects: readonly ImportDefect[] };
+
+function pipelineDependency(pipelineId: string): BlockedDependency {
+  return Object.freeze({ kind: 'pipeline' as const, resourceId: pipelineId });
+}
+
+/** The Pipeline definitions this plan's `import` rows will write, in plan order. */
+function plannedPipelines(context: WorkflowResolutionContext): readonly PipelineDefinition[] {
+  const definitions: PipelineDefinition[] = [];
+  for (const row of context.plannedPipelineRows) {
+    // `skip`, `blocked`, and `invalid` are all absent, for the three reasons
+    // pass 2 gives: a skipped row is not written, an invalid row does not claim
+    // its id (FR-029), and a blocked row is the one a node must NOT be able to
+    // resolve against — admitting it would let a Workflow validate against a
+    // Pipeline this write is not going to make effective.
+    if (row.outcome !== 'import' || row.resourceKind !== 'pipeline') continue;
+    definitions.push(row.definition);
+  }
+  return definitions;
+}
+
+/**
+ * The effective Pipeline catalog union the Pipelines this same confirmed write
+ * will make effective (FR-035a).
+ *
+ * The Pipeline-level twin of {@link prospectivePhaseCatalog}, and a carve-out on
+ * exactly the same terms: a planned Pipeline is a fully validated definition this
+ * write makes effective BEFORE the Workflow is written, so a self-contained
+ * package is not reported broken on the very Pipelines it ships. Preflight only —
+ * nothing persists this projection, and every other call site passes the
+ * unaugmented effective catalog.
+ */
+export function prospectivePipelineCatalog(
+  context: WorkflowResolutionContext
+): readonly PipelineDefinition[] {
+  const byId = new Map<string, PipelineDefinition>();
+  for (const definition of context.effectivePipelines) {
+    byId.set(definition.pipelineId, definition);
+  }
+  for (const definition of plannedPipelines(context)) {
+    if (!byId.has(definition.pipelineId)) byId.set(definition.pipelineId, definition);
+  }
+  return Object.freeze([...byId.values()]);
+}
+
+/**
+ * How one referenced Pipeline id resolves, and when it does not, which of the
+ * three failures it is.
+ *
+ * The rule set read top to bottom, and the order is the shipped Phase order with
+ * one arm inserted: this document's own `import` supplies it (FR-035); the
+ * effective catalog holds it, whether or not the document also declared it
+ * (FR-036); this document declared it and pass 2 blocked it, so the fault is one
+ * level further down (FR-039); otherwise the stored rows say only whether the
+ * operator should supply a Pipeline or repair one (FR-038).
+ *
+ * The blocked-row check sits AFTER the effective read on purpose. The two are
+ * mutually exclusive through the planner — a claimed id plans `skip`, never
+ * `blocked` — but the function must be total, and if an id does resolve in the
+ * effective catalog then the node resolves, whatever this document's own copy did.
+ */
+export function resolvePipelineDependency(
+  pipelineId: string,
+  context: WorkflowResolutionContext
+): PipelineDependencyResolution {
+  if (plannedPipelines(context).some((definition) => definition.pipelineId === pipelineId)) {
+    return Object.freeze({ status: 'resolved-planned' as const });
+  }
+
+  if (context.effectivePipelines.some((definition) => definition.pipelineId === pipelineId)) {
+    const declared = context.plannedPipelineRows.some(
+      (row) =>
+        row.outcome === 'skip' && row.resourceKind === 'pipeline' && row.resourceId === pipelineId
+    );
+    return Object.freeze({
+      status: declared ? ('resolved-skipped' as const) : ('resolved-effective' as const)
+    });
+  }
+
+  const blockedRow = context.plannedPipelineRows.find(
+    (row) =>
+      row.outcome === 'blocked' && row.resourceKind === 'pipeline' && row.resourceId === pipelineId
+  );
+  if (blockedRow?.outcome === 'blocked') {
+    // `via` is read straight off pass 2's own reason rather than re-derived, so
+    // both root-cause codes reach the operator unchanged — a `via` that always
+    // said "absent" would send them to supply a Phase that needs repairing. A
+    // Pipeline depends only on Phases, so what is read here is always a Phase;
+    // taking the whole `dependency` keeps that a fact about pass 2 rather than an
+    // assumption restated here.
+    return Object.freeze({
+      status: 'blocked' as const,
+      reason: Object.freeze({
+        code: 'dependency-blocked' as const,
+        dependency: pipelineDependency(pipelineId),
+        via: blockedRow.reason.dependency
+      })
+    });
+  }
+
+  // Not a second resolution attempt — the reference is already unresolved. This
+  // read only distinguishes the operator's next action.
+  const claimed = context.storedPipelines.some((row) => row.pipelineId === pipelineId);
+  return Object.freeze({
+    status: 'blocked' as const,
+    reason: Object.freeze({
+      code: claimed ? ('dependency-unresolvable' as const) : ('dependency-absent' as const),
+      dependency: pipelineDependency(pipelineId)
+    })
+  });
+}
+
+/**
+ * The root Workflow's outcome, so far as its node Pipelines decide it.
+ *
+ * Resolve before validate (FR-041), for the reason one level up from FR-033: a
+ * connection's ports are derived from its nodes' Pipelines, so with a Pipeline
+ * missing there is nothing to check the endpoints against. Reporting
+ * `unresolved-endpoint` here would tell the operator to fix a Workflow whose
+ * graph may be perfectly correct (FR-037).
+ *
+ * When every node resolves, `validateWorkflowGraph` runs — and it stays the single
+ * endpoint, cycle, and condition detector. Nothing in this module re-derives what
+ * it decides.
+ */
+export function resolveWorkflowDependencies(
+  definition: WorkflowDefinition,
+  context: WorkflowResolutionContext
+): WorkflowResolution {
+  for (const node of definition.nodes) {
+    // Authored node order, so which unresolved reference is reported is the
+    // document's own order. A repeated Pipeline resolves the same way each time
+    // by construction (FR-042).
+    const resolution = resolvePipelineDependency(node.pipelineId, context);
+    if (resolution.status === 'blocked') {
+      return Object.freeze({ outcome: 'blocked' as const, reason: resolution.reason });
+    }
+  }
+
+  const errors = validateWorkflowGraph(
+    definition,
+    prospectivePipelineCatalog(context),
+    context.invalidPipelines
+  );
+  if (errors.length === 0) return Object.freeze({ outcome: 'resolved' as const });
+
   return Object.freeze({
     outcome: 'invalid' as const,
     defects: Object.freeze(errors.map(asDefect))

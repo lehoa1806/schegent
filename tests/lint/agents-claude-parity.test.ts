@@ -67,7 +67,15 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'give a workflow condition a string form',
   'convert a workflow connection endpoint to index addressing',
   "store a workflow's inputs or outputs",
-  'write a workflow layer'
+  'write a workflow layer',
+  // Feature 086 — Workflow package exchange hard-rule anchors. Each phrase is
+  // one 086 amended into an existing rule rather than adding a bullet, so the
+  // anchor names the amended clause: the ordered-writes rule now spans three
+  // layers, the no-compensating-delete rule now covers every partial prefix,
+  // and the preflight carve-out now reaches the Workflow graph validator.
+  "write a package's catalog layers under one intent",
+  'compensate a failed package write with a delete',
+  'extends one level up to `validateworkflowgraph`'
 ];
 
 function readClaudeMd(): string {

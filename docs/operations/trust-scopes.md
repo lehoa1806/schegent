@@ -43,6 +43,29 @@ is: with `allowCustomPhases` granted and `allowPipelineOverrides` denied, the
 Phases land and the Pipeline does not. Nothing already written is rolled back —
 re-running the same document after granting the missing scope finishes the job.
 
+Importing a **Workflow package** — one document carrying a Workflow plus the
+Pipelines its nodes reference and, under those, their Phases — extends the same
+pattern to a **fourth** scope, `allowWorkflowOverrides`, and to three ordered
+writes: Phases, then Pipelines, then the Workflow. Each write is gated on its own
+capability, so the first denial stops the sequence where it stands and everything
+before it stays written. Two consequences are worth knowing before you grant or
+deny:
+
+- **Where the import stops tells you which scope is missing.** Phases written and
+  nothing else means `allowPipelineOverrides` is denied; Phases and Pipelines
+  written but no Workflow means `allowWorkflowOverrides` is. The commit reports
+  `partial` in both cases, and the `trust.capability-denied` audit entry names the
+  capability.
+- **Re-running is the recovery, at any depth.** Grant the missing scope and import
+  the same document again. Whatever already landed is detected as present and
+  skipped, so the retry finishes from where it stopped rather than starting over
+  or duplicating anything.
+
+Denying `allowWorkflowOverrides` while granting the other three is a coherent
+posture, not a misconfiguration: it lets operators receive and run someone else's
+Pipelines without letting a document decide which of them run in what relation to
+each other.
+
 This page is the operator reference for the feature. See
 [specs/059-fine-grained-trust-scopes/](../../../specs/059-fine-grained-trust-scopes/)
 for the full specification and contract dossiers.

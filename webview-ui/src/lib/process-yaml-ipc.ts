@@ -10,7 +10,8 @@ import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from './messages'
 import type {
   ExportProcessYamlRequest,
   PipelineExportInclusion,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  WorkflowExportInclusion
 } from './messages';
 import { postCommand, type PostCommandResult } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
@@ -41,6 +42,27 @@ export function exportPipelineYaml(
 ): PostCommandResult {
   const request: ExportProcessYamlRequest = {
     resourceKind: 'pipeline',
+    resourceId,
+    inclusion
+  };
+  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
+}
+
+/**
+ * Ask the host to export one Workflow as a portable package document.
+ *
+ * `inclusion` travels with the request for the same reason it does for a Pipeline:
+ * the same Workflow is legitimately exported at more than one depth, and only the
+ * operator knows how much the recipient already has. Its union is the Workflow's
+ * own — three depths rather than two — because a Workflow has two layers of
+ * dependency below it, not one.
+ */
+export function exportWorkflowYaml(
+  resourceId: string,
+  inclusion: WorkflowExportInclusion
+): PostCommandResult {
+  const request: ExportProcessYamlRequest = {
+    resourceKind: 'workflow',
     resourceId,
     inclusion
   };

@@ -51,6 +51,13 @@
   // is handed the two save helpers and returns the whole report. No compensating
   // action is offered here, because there is none to offer (FR-042c).
   //
+  // Feature 086 T054/T055 — a third ordered write, and again no new judgment
+  // here: one more save helper handed in, and the layer acks held alongside the
+  // rows so the outcome sentence can name which layers landed (FR-051). What is
+  // NOT added is a retry, a rollback, or any other compensating affordance —
+  // whichever prefix of the three writes landed, stays landed, and re-inspecting
+  // the same document is the whole recovery path (FR-042b).
+  //
   // T070 — the two tables are child components. The split is presentational
   // only: this file keeps every decision (what to request, when a commit is
   // allowed, what the commit writes) and the children keep none. The styles
@@ -63,6 +70,7 @@
   import ProcessImportResultsTable from './ProcessImportResultsTable.svelte';
   import { savePhases } from '../../lib/save-phases';
   import { savePipelines } from '../../lib/save-pipelines';
+  import { saveWorkflows } from '../../lib/save-workflows';
   import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
   //
   // Feature 085 T034 — one entry point, two kinds of document (FR-055a). The
@@ -79,6 +87,7 @@
     refusalHeadline,
     runImportCommit,
     type ImportCommitOutcome,
+    type ImportLayerResult,
     type ImportResultRow,
     type ImportTargetLayers
   } from './process-import-state';
@@ -100,7 +109,7 @@
     disabledReason?: string | null;
   }
 
-  const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [] };
+  const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [], workflows: [] };
   const {
     layers = { user: EMPTY_LAYERS, workspace: EMPTY_LAYERS },
     disabledReason = null
@@ -117,6 +126,13 @@
   let surface = $state<PreflightSurface>({ kind: 'idle' });
   let committing = $state(false);
   let results = $state<readonly ImportResultRow[] | null>(null);
+  /**
+   * The layer acks the commit collected, held so the outcome sentence can name
+   * which layers landed (FR-051). Set with `results`, and never derived from
+   * them: a row's outcome cannot distinguish "this layer was refused" from "the
+   * sequence stopped before this layer".
+   */
+  let layerResults = $state<readonly ImportLayerResult[]>([]);
   /** Set with `results`, and only with them. Never inferred from the rows. */
   let outcome = $state<ImportCommitOutcome | null>(null);
   /** The scope the completed commit wrote to, held so the summary cannot drift. */
@@ -145,6 +161,7 @@
     // choice with it — FR-056 forbids carrying a target the operator picked for
     // some other document.
     results = null;
+    layerResults = [];
     outcome = null;
     committedScope = null;
     scope = null;
@@ -171,16 +188,18 @@
     if (blockedReason !== null || plan === null || scope === null) return;
     const target = scope;
     committing = true;
-    // The two writes, in order, each gated on its own revision. `runImportCommit`
-    // stops at the first rejection and reports what did land — there is nothing
-    // to undo here and nothing offered (FR-042b/c).
+    // The three writes, in dependency order, each gated on its own revision.
+    // `runImportCommit` stops at the first rejection and reports what did land —
+    // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
     const report = await runImportCommit(plan, target, layers[target], {
       savePhases,
-      savePipelines
+      savePipelines,
+      saveWorkflows
     });
     committing = false;
     committedScope = target;
     outcome = report.outcome;
+    layerResults = report.results;
     results = report.rows;
   }
 
@@ -199,7 +218,9 @@
     <!-- FR-055a — the operator does not classify the file; the host dispatches
          on what the document declares. The title names the readable kinds so it
          is clear what this accepts, not so a choice has to be made first. -->
-    <h3 class="preflight-title" id="process-import-title">Import a Phase or Pipeline document</h3>
+    <h3 class="preflight-title" id="process-import-title">
+      Import a Phase, Pipeline, or Workflow document
+    </h3>
     <button
       type="button"
       class="preflight-button"
@@ -329,7 +350,7 @@
     {/if}
 
     {#if results !== null}
-      <ProcessImportResultsTable {results} {outcome} {committedScope} />
+      <ProcessImportResultsTable {results} {layerResults} {outcome} {committedScope} />
     {/if}
   {/if}
 </section>

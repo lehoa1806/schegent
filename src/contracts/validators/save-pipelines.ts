@@ -21,6 +21,16 @@ function validMutation(value: unknown): value is PipelineCatalogMutation {
   if (mutation.kind === 'create' || mutation.kind === 'edit' || mutation.kind === 'remove') {
     return !hasUnexpectedKeys(mutation, ['kind', 'pipelineId']) && validPipelineId(mutation.pipelineId);
   }
+  // Feature 085 (FR-036) — the one kind that names a SET, and so the only one
+  // carrying no `pipelineId`. Without this arm the envelope the import commit
+  // sends is dropped at the transport boundary and never reaches the handler that
+  // implements it.
+  if (mutation.kind === 'import-package') {
+    return !hasUnexpectedKeys(mutation, ['kind', 'pipelineIds'])
+      && Array.isArray(mutation.pipelineIds)
+      && mutation.pipelineIds.length > 0
+      && mutation.pipelineIds.every(validPipelineId);
+  }
   return mutation.kind === 'duplicate'
     && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourcePipelineId', 'pipelineId'])
     && (mutation.sourceScope === 'built-in'

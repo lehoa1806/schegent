@@ -15,22 +15,43 @@
 //      excluded because they are erased; they cannot make a request or touch the
 //      host at run time.
 //
-// The closure is 20-odd files rather than 8: `phase-yaml-validator` takes
-// `SUPPORTED_BACKENDS` as a value from the runner factory, which pulls the
-// runner CLIs in behind it. That reach is pre-existing and non-network — it
-// brings `child_process`, `fs/promises`, and `zlib` — and the denylist below is
-// what keeps it from ever bringing a socket. The set of reached built-ins is
-// deliberately not pinned exactly, so unrelated runner work does not fail this
-// file; the two claims above are what it exists to defend.
+// The closure is 20-odd files rather than the fifteen in the directory:
+// `phase-yaml-validator` takes `SUPPORTED_BACKENDS` as a value from the runner
+// factory, which pulls the runner CLIs in behind it. That reach is pre-existing
+// and non-network — it brings `child_process`, `fs/promises`, and `zlib` — and
+// the denylist below is what keeps it from ever bringing a socket. The set of
+// reached built-ins is deliberately not pinned exactly, so unrelated runner work
+// does not fail this file; the two claims above are what it exists to defend.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const EXCHANGE_DIR = resolve(REPO_ROOT, 'src', 'services', 'process-yaml');
 
-const EXCHANGE_MODULES = [
+/**
+ * Feature 086 T070 — the directory IS the list.
+ *
+ * 084 wrote its eight modules out by hand, and by 086 the directory held fifteen:
+ * `package-resolver`, `pipeline-document`, and `pipeline-export-selection` (085)
+ * and `package-reader`, `workflow-document`, `workflow-export-selection`, and
+ * `workflow-export-closure` (086) were all outside the scan. Nothing failed,
+ * because a hand-maintained list of pure modules cannot notice an impure one it
+ * does not name — the omission makes the lint quieter rather than louder, which is
+ * the worst failure mode a purity check can have.
+ *
+ * Reading the directory means the next module is scanned on the day it lands.
+ * `ANCHORS` is the vacuity guard: a glob that matched nothing, or a directory that
+ * moved, would otherwise make every assertion below trivially true.
+ */
+const EXCHANGE_MODULES: readonly string[] = readdirSync(EXCHANGE_DIR)
+  .filter((name) => name.endsWith('.ts'))
+  .map((name) => name.slice(0, -'.ts'.length))
+  .sort();
+
+/** The 084 eight. Present in every later revision of this directory. */
+const ANCHORS = [
   'import-planner',
   'phase-yaml-mapper',
   'phase-yaml-validator',
@@ -132,6 +153,20 @@ function moduleName(specifier: string): string {
 }
 
 describe('Feature 084 — the Phase exchange path depends on nothing but itself', () => {
+  it('scans every module in the directory, and found the ones 084 named (T070)', () => {
+    // The guard on the discovery above. Without it, a directory rename would empty
+    // `EXCHANGE_MODULES` and turn this whole file green for the wrong reason.
+    for (const anchor of ANCHORS) {
+      expect(EXCHANGE_MODULES, `${anchor}.ts must be discovered`).toContain(anchor);
+    }
+    // 085 and 086 each added modules to this directory, so the scan is strictly
+    // wider than the eight 084 wrote out by hand.
+    expect(EXCHANGE_MODULES.length).toBeGreaterThan(ANCHORS.length);
+    for (const name of EXCHANGE_MODULES) {
+      expect(existsSync(sourceOf(name)), `${name}.ts must resolve`).toBe(true);
+    }
+  });
+
   it('imports no package and no built-in from any exchange module (FR-051, FR-003)', () => {
     const offenders: string[] = [];
     for (const name of EXCHANGE_MODULES) {

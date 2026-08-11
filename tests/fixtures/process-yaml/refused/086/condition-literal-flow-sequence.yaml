@@ -1,0 +1,7 @@
+apiVersion: schegent/v1
+kind: Workflow
+spec:
+  connections:
+    - condition:
+        operator: in
+        right: [ ok, warn ]

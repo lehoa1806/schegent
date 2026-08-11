@@ -17,7 +17,7 @@
 // compromised or confused webview from directing a read or a write, and it is
 // why the check is a denylist of *shapes* rather than of known-bad names.
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -198,5 +198,84 @@ describe('Feature 085 T061 — the widened surface names no location either (FR-
       'utf8'
     );
     expect(handler).toContain("'Could not write the document.'");
+  });
+});
+
+// Feature 086 T069 — the third kind widened the surface without widening the
+// scan, and that is the shape of the next gap rather than a hypothetical one.
+//
+// Every 086 addition landed in a module `SOURCES` already lists, so the scan
+// covered the new members for free. Free coverage is coverage that nobody chose,
+// though: `SOURCES` is a hand-maintained list, so the invariant holds by the
+// coincidence that no feature has yet put a family member in a NEW module. The
+// three checks below turn that coincidence into an assertion — the list must be
+// complete, the members it is credited with must actually be there, and the seam
+// count must be the two the family declares.
+describe('Feature 086 T069 — the scan covers the whole widened surface (FR-056, SC-018)', () => {
+  /** Every module in the webview's exchange family, found rather than listed. */
+  function webviewFamily(): readonly string[] {
+    const dir = 'webview-ui/src/components/ProcessImport';
+    const inDir = readdirSync(resolve(REPO_ROOT, dir))
+      .filter((name) => name.endsWith('.ts') || name.endsWith('.svelte'))
+      .map((name) => `${dir}/${name}`);
+    return [...inDir, 'webview-ui/src/lib/process-yaml-ipc.ts'].sort();
+  }
+
+  it('lists every webview module in the family, so a fourth cannot arrive unscanned', () => {
+    // The failure this prevents: a feature adds `ProcessWorkflowImport.svelte`
+    // beside the others, declares a `sourcePath` prop on it, and every assertion
+    // above still passes because the file is not in the list.
+    const scanned = new Set<string>(SOURCES);
+    const unscanned = webviewFamily().filter((module) => !scanned.has(module));
+    expect(unscanned, 'add these to SOURCES, or state why the family excludes them').toEqual([
+      // Presentational components. They are scanned below for location-shaped
+      // members all the same — listed here, rather than omitted, so adding one
+      // is a deliberate edit to this array.
+      'webview-ui/src/components/ProcessImport/ProcessExportButton.svelte',
+      'webview-ui/src/components/ProcessImport/ProcessImportPlanTable.svelte',
+      'webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte',
+      'webview-ui/src/components/ProcessImport/ProcessImportResultsTable.svelte'
+    ]);
+  });
+
+  it.each(webviewFamily().filter((module) => module.endsWith('.svelte')))(
+    '%s declares no location-shaped member either',
+    (component) => {
+      // `memberNames` was written for type text and finds two things in a
+      // component: the props and locals it does declare with a `name:` type, and
+      // the CSS properties in its `<style>` block. Both are scanned, because a
+      // false positive here is a prompt to look at a real declaration and a
+      // narrower regex would be one more thing to keep in step with Svelte.
+      const text = typeText(component);
+      expect(HOST_HANDLES.filter((handle) => text.includes(handle))).toEqual([]);
+      expect(
+        memberNames(text).filter((name) =>
+          LOCATION_WORDS.some((word) => name.toLowerCase().includes(word))
+        )
+      ).toEqual([]);
+    }
+  );
+
+  it('finds the members feature 086 added, so their coverage is asserted not assumed', () => {
+    // `unresolvedDependency` replaced 085's `unresolvedPhaseId` (T005) and
+    // `UnresolvedDependency.kind`/`resourceId` are the members it brought. If any
+    // of them moved to a module outside `SOURCES`, the scan above would still be
+    // green while the new declaration went unchecked.
+    const members = memberNames(typeText('src/contracts/sidebar-ipc/process-yaml.ts'));
+    for (const member of ['unresolvedDependency', 'kind', 'resourceId', 'inclusion']) {
+      expect(members, `086's ${member} must be inside the scanned text`).toContain(member);
+    }
+    // 085's spelling is gone, not merely unused.
+    expect(members).not.toContain('unresolvedPhaseId');
+  });
+
+  it('declares exactly the two host seams, so a third cannot be added unscanned', () => {
+    // A third adapter is how a location would most plausibly re-enter: it would
+    // be a new `readonly …ProcessYaml…?:` signature, and `SEAMS` would not know.
+    const text = typeText('src/ui/sidebar/commands/router-types.ts');
+    const declared = [...text.matchAll(/readonly\s+(\w*ProcessYaml\w*)\??\s*:/g)].map(
+      (match) => match[1]!
+    );
+    expect([...new Set(declared)].sort()).toEqual([...SEAMS].sort());
   });
 });

@@ -1,5 +1,5 @@
-// Feature 084 T022/T023, feature 085 T021 — export one Phase or one Pipeline as
-// a portable document.
+// Feature 084 T022/T023, feature 085 T021, feature 086 T015 — export one Phase,
+// one Pipeline, or one Workflow as a portable document.
 //
 // Read-only: it writes a file the operator named in the host's own dialog and
 // changes no extension state, so it is deliberately NOT a member of
@@ -8,18 +8,29 @@
 // wired in `src/extension.ts`, so no location crosses this boundary in either
 // direction (FR-019, FR-020a, research R3).
 //
-// The two resource kinds differ only in how the definition is selected and how
+// The three resource kinds differ only in how the definition is selected and how
 // it is serialized. Everything after that — the missing-adapter refusal, the
 // generic write failure, the bounded audit envelope, the ack — is shared, so a
-// Pipeline export cannot drift into leaking a location that a Phase export does
-// not.
+// Workflow export cannot drift into leaking a location that a Phase export does
+// not. That sharing is the reason a third kind is a third branch here rather than
+// a third handler: the invariants the shared tail enforces are re-proven for the
+// new kind by construction, not by a second copy of them.
 
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../config/pipeline-config';
+import { resolvePipelineCatalog } from '../../../config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../config/process-catalog';
+import { BUILT_IN_WORKFLOWS } from '../../../config/workflow-config';
 import type { ProcessExchangePayload } from '../../../contracts/audit-events';
-import type { PipelineDefinitionScope } from '../../../contracts/pipeline-definitions';
+import type {
+  PipelineDefinition,
+  PipelineDefinitionScope
+} from '../../../contracts/pipeline-definitions';
 import type { PhaseDefinitionScope } from '../../../contracts/process-definitions';
 import type { PhaseDefinition } from '../../../contracts/process-definitions';
+import type {
+  WorkflowDefinitionScope,
+  WorkflowNode
+} from '../../../contracts/workflow-definitions';
 import { documentFromPhaseDefinition } from '../../../services/process-yaml/phase-yaml-mapper';
 import {
   documentFromPipelineDefinition,
@@ -28,6 +39,16 @@ import {
 } from '../../../services/process-yaml/pipeline-document';
 import { selectPipelineForExport } from '../../../services/process-yaml/pipeline-export-selection';
 import type { ProcessYamlResourceKind } from '../../../services/process-yaml/types';
+import type { WorkflowInclusion } from '../../../services/process-yaml/workflow-document';
+import {
+  documentFromWorkflowDefinition,
+  serializeWorkflowDocument
+} from '../../../services/process-yaml/workflow-document';
+import {
+  referencedPhaseClosure,
+  referencedPipelineOrder
+} from '../../../services/process-yaml/workflow-export-closure';
+import { selectWorkflowForExport } from '../../../services/process-yaml/workflow-export-selection';
 import { serializePhaseDocument } from '../../../services/process-yaml/yaml-serializer';
 import type {
   ExportProcessYamlCommand,
@@ -38,7 +59,7 @@ import type {
 import type { CommandHandler, HandlerContext } from './handler-contract';
 import { ack } from './handler-helpers';
 
-type ExportScope = PhaseDefinitionScope | PipelineDefinitionScope;
+type ExportScope = PhaseDefinitionScope | PipelineDefinitionScope | WorkflowDefinitionScope;
 
 /**
  * Matches the cap the preflight boundary puts on an identifier. `logger.sanitize`
@@ -67,6 +88,11 @@ type ExportSelection = ResolvedExport | ExportProcessYamlUnavailable;
 /** The included-Phase resolution, sharing `outcome` so the arms discriminate. */
 type IncludedPhaseResolution =
   | { readonly outcome: 'resolved'; readonly phases: readonly PhaseDefinition[] }
+  | ExportProcessYamlUnavailable;
+
+/** The same, one level up (feature 086 T023). */
+type IncludedPipelineResolution =
+  | { readonly outcome: 'resolved'; readonly pipelines: readonly PipelineDefinition[] }
   | ExportProcessYamlUnavailable;
 
 async function appendExportAudit(
@@ -186,7 +212,10 @@ function resolveIncludedPhases(
       return {
         outcome: 'unavailable',
         reason: 'dependency-does-not-resolve',
-        unresolvedPhaseId: ctx.deps.logger.sanitize(phaseId).slice(0, RESOURCE_ID_MAX)
+        unresolvedDependency: {
+          kind: 'phase',
+          resourceId: ctx.deps.logger.sanitize(phaseId).slice(0, RESOURCE_ID_MAX)
+        }
       };
     }
     phases.push(definition);
@@ -232,11 +261,150 @@ function selectPipeline(
   };
 }
 
+/**
+ * The effective Pipeline catalog and the rows behind it, which a Workflow's graph
+ * is resolved against per the project rule on graph resolution.
+ *
+ * Built here rather than threaded in, so it is resolved from the same layers the
+ * Pipeline branch above reads and cannot be a stale copy of them.
+ */
+function effectivePipelines(ctx: HandlerContext): ReturnType<typeof resolvePipelineCatalog> {
+  const layers = ctx.deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  return resolvePipelineCatalog({
+    builtIn: BUILT_IN_PIPELINES,
+    user: layers.user,
+    workspace: layers.workspace,
+    phaseCatalog: effectivePhases(ctx).effective
+  });
+}
+
+/**
+ * The Pipeline definitions a package must carry, or the first reference that does
+ * not resolve (FR-022).
+ *
+ * Each reference goes through `selectPipelineForExport`, the same strict-then-
+ * relaxed selection a single-Pipeline export uses — deliberately NOT the effective
+ * Pipeline catalog. FR-018 is a claim about WHICH level must resolve: a Pipeline
+ * naming a Phase this installation does not hold is not effective
+ * (`resolvePipelineCatalog` pushes `unknown-phase` and nulls the definition), so
+ * resolving against the effective catalog would let a missing PHASE refuse a mode
+ * that carries no Phase text at all. The relaxation reaches reference-class gaps
+ * only, so a Pipeline that is intrinsically broken still refuses here.
+ *
+ * Refusal is on the FIRST unresolved reference in node order, so the same catalog
+ * and the same Workflow always name the same Pipeline. Both of the selection's
+ * absences — a row that does not resolve and an id no layer mentions — are the one
+ * dependency refusal from the operator's side: the document cannot be written and
+ * this is the resource that stopped it. Nothing is written on the way; a partial
+ * payload is exactly what FR-022 forbids.
+ */
+function resolveIncludedPipelines(
+  ctx: HandlerContext,
+  nodes: readonly WorkflowNode[]
+): IncludedPipelineResolution {
+  const layers = ctx.deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const phaseCatalog = effectivePhases(ctx).effective;
+  const pipelines: PipelineDefinition[] = [];
+  for (const pipelineId of referencedPipelineOrder(nodes)) {
+    const selection = selectPipelineForExport({
+      builtIn: BUILT_IN_PIPELINES,
+      user: layers.user,
+      workspace: layers.workspace,
+      phaseCatalog,
+      pipelineId
+    });
+    if (selection.outcome === 'unavailable') {
+      return {
+        outcome: 'unavailable',
+        reason: 'dependency-does-not-resolve',
+        unresolvedDependency: {
+          kind: 'pipeline',
+          resourceId: ctx.deps.logger.sanitize(pipelineId).slice(0, RESOURCE_ID_MAX)
+        }
+      };
+    }
+    pipelines.push(selection.definition);
+  }
+  return { outcome: 'resolved', pipelines };
+}
+
+/**
+ * One Workflow: the graph, the Pipeline identifiers its nodes name, and — in the
+ * self-contained modes — the definitions behind them.
+ *
+ * The two self-contained modes share level 1 and differ only in whether they walk
+ * level 2, so the closure mode is the middle mode plus one step rather than a
+ * third branch resolving the graph again. Level 1 also refuses FIRST: a Phase
+ * reference exists only once the Pipeline naming it resolves, so reporting a
+ * missing Phase reached through a Pipeline that is itself missing would name the
+ * wrong resource (FR-022).
+ */
+function selectWorkflow(
+  ctx: HandlerContext,
+  request: Extract<ExportProcessYamlRequest, { resourceKind: 'workflow' }>
+): ExportSelection {
+  const layers = ctx.deps.readWorkflowConfig?.() ?? { user: [], workspace: [] };
+  const selection = selectWorkflowForExport({
+    builtIn: BUILT_IN_WORKFLOWS,
+    user: layers.user,
+    workspace: layers.workspace,
+    pipelineCatalog: effectivePipelines(ctx),
+    workflowId: request.resourceId
+  });
+  if (selection.outcome === 'unavailable') return selection;
+
+  let inclusion: WorkflowInclusion | undefined;
+  if (request.inclusion === 'include-pipelines' || request.inclusion === 'include-closure') {
+    // FR-017 — a complete definition for each distinct referenced Pipeline.
+    const resolved = resolveIncludedPipelines(ctx, selection.definition.nodes);
+    if (resolved.outcome === 'unavailable') return resolved;
+    inclusion = { pipelines: resolved.pipelines };
+
+    if (request.inclusion === 'include-closure') {
+      // FR-019 — level 2, walked from the Pipelines level 1 just resolved rather
+      // than from the graph, so the closure is exactly the Phases those
+      // definitions name and the two `included` sections cannot disagree about
+      // which Pipeline came first. The walk lives in one place
+      // (`referencedPhaseClosure`) and is not re-derived here.
+      //
+      // `resolveIncludedPhases` is the resolver a single-Pipeline package already
+      // uses, unchanged: the effective Phase catalog (FR-014), refusal on the
+      // first unresolved reference in the order it was handed, and one
+      // `{ kind: 'phase' }` dependency in the refusal. Re-ordering inside it is
+      // idempotent on an already-closure-ordered list, so the refused Phase is
+      // the first one in closure order.
+      const phases = resolveIncludedPhases(ctx, referencedPhaseClosure(resolved.pipelines));
+      if (phases.outcome === 'unavailable') return phases;
+      inclusion = { pipelines: resolved.pipelines, phases: phases.phases };
+    }
+  }
+
+  return {
+    outcome: 'resolved',
+    scope: selection.scope,
+    // Zero in the two shallower modes, and that is a count rather than an absence:
+    // the operator chose to disclose no Phase text and the log says so (FR-059).
+    includedPhaseCount: inclusion?.phases?.length ?? 0,
+    // A bare name, never a location.
+    suggestedFileName: `${selection.definition.workflowId}.workflow.yaml`,
+    // References-only (FR-015) passes no Pipelines, so the document carries no
+    // `included` section at all: the referenced Pipelines appear as identifiers on
+    // the nodes and nowhere else. Either way `spec` is untouched (FR-009).
+    text: serializeWorkflowDocument(
+      documentFromWorkflowDefinition(selection.definition, inclusion)
+    )
+  };
+}
+
 export const handler: CommandHandler<ExportProcessYamlCommand> = async (ctx, command) => {
   const request = command.payload;
   const { resourceKind, resourceId } = request;
   const selection =
-    request.resourceKind === 'pipeline' ? selectPipeline(ctx, request) : selectPhase(ctx, resourceId);
+    request.resourceKind === 'workflow'
+      ? selectWorkflow(ctx, request)
+      : request.resourceKind === 'pipeline'
+        ? selectPipeline(ctx, request)
+        : selectPhase(ctx, resourceId);
 
   if (selection.outcome === 'unavailable') {
     // Spread rather than rebuilt, so the identifier a dependency refusal carries

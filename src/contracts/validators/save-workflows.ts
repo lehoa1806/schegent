@@ -23,6 +23,18 @@ function validMutation(value: unknown): value is WorkflowCatalogMutation {
   if (mutation.kind === 'create' || mutation.kind === 'edit' || mutation.kind === 'remove') {
     return !hasUnexpectedKeys(mutation, ['kind', 'workflowId']) && validWorkflowId(mutation.workflowId);
   }
+  // Feature 086 (FR-046) — the one kind that names a SET, and so the only one
+  // carrying no `workflowId`. An empty set is refused here rather than left to the
+  // intent algebra: the algebra would report it as a mutation mismatch, a reason
+  // that describes the diff when the defect is in the envelope. The number of ids
+  // is deliberately not capped — the `workflows` layer beside it is not either,
+  // and the document that produced both was already bounded upstream.
+  if (mutation.kind === 'import-package') {
+    return !hasUnexpectedKeys(mutation, ['kind', 'workflowIds'])
+      && Array.isArray(mutation.workflowIds)
+      && mutation.workflowIds.length > 0
+      && mutation.workflowIds.every(validWorkflowId);
+  }
   return mutation.kind === 'duplicate'
     && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourceWorkflowId', 'workflowId'])
     && (mutation.sourceScope === 'built-in'

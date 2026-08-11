@@ -24,6 +24,7 @@ import type {
   SavePipelinesRequest,
   SavePipelinesResult
 } from '../../lib/save-pipelines';
+import type { SaveWorkflowRow } from '../../lib/save-workflows';
 import { refusalHeadline } from '../ProcessImport/process-import-state';
 import type {
   ImportedPhaseDefinition,
@@ -437,8 +438,16 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
   };
   const HELD: SavePhaseRow = { id: 'held', name: 'Held', version: 4, instruction: 'Hold.' };
   const LAYERS = Object.freeze({
-    user: { phases: [HELD], pipelines: [] as readonly SavePipelineRow[] },
-    workspace: { phases: [] as readonly SavePhaseRow[], pipelines: [] as readonly SavePipelineRow[] }
+    user: {
+      phases: [HELD],
+      pipelines: [] as readonly SavePipelineRow[],
+      workflows: [] as readonly SaveWorkflowRow[]
+    },
+    workspace: {
+      phases: [] as readonly SavePhaseRow[],
+      pipelines: [] as readonly SavePipelineRow[],
+      workflows: [] as readonly SaveWorkflowRow[]
+    }
   });
 
   function importable(): PreflightProcessYamlResult {
@@ -647,8 +656,8 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     instruction: 'Do the thing.'
   };
   const LAYERS = Object.freeze({
-    user: { phases: [], pipelines: [] } as ImportTargetLayers,
-    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
+    user: { phases: [], pipelines: [], workflows: [] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [], workflows: [] } as ImportTargetLayers
   });
 
   function importable(): PreflightProcessYamlResult {
@@ -796,8 +805,8 @@ describe('Feature 085 T034 — a package in the plan', () => {
     phases: ['specify']
   };
   const LAYERS = Object.freeze({
-    user: { phases: [], pipelines: [HELD_PIPELINE] } as ImportTargetLayers,
-    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
+    user: { phases: [], pipelines: [HELD_PIPELINE], workflows: [] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [], workflows: [] } as ImportTargetLayers
   });
 
   it('labels each row with the kind that row declares, not the document (FR-056)', async () => {
@@ -811,7 +820,7 @@ describe('Feature 085 T034 — a package in the plan', () => {
           resourceKind: 'pipeline',
           resourceId: 'deploy-it',
           name: 'Deploy It',
-          reason: { code: 'dependency-absent', phaseId: 'finalize' }
+          reason: { code: 'dependency-absent', dependency: { kind: 'phase', resourceId: 'finalize' } }
         }
       ])
     });
@@ -837,6 +846,53 @@ describe('Feature 085 T034 — a package in the plan', () => {
     expect(rows[2]?.textContent).toContain('finalize');
   });
 
+  // Feature 086 T038 — the third kind on the same table. Asserted through the
+  // rendered plan rather than through `resourceKindLabel` alone, because the two
+  // halves of the row can disagree: the label is a function of the kind and the
+  // `data-kind` attribute is the raw discriminator, and a Workflow row that
+  // renders "Phase" beside `data-kind="workflow"` is a surface that contradicts
+  // itself about which catalog the operator is about to change.
+  it('labels a Workflow row and states its blocked reason (FR-056, FR-040)', async () => {
+    preflightSpy.mockResolvedValue({
+      outcome: 'planned',
+      plan: plan([
+        importRow(DEFINITION),
+        PIPELINE_ROW,
+        {
+          outcome: 'blocked',
+          resourceKind: 'workflow',
+          resourceId: 'ship-it-flow',
+          name: 'Ship It Flow',
+          reason: {
+            code: 'dependency-blocked',
+            dependency: { kind: 'pipeline', resourceId: 'deploy-it' },
+            via: { kind: 'phase', resourceId: 'finalize' }
+          }
+        }
+      ])
+    });
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+
+    const kinds = Array.from(
+      container.querySelectorAll('[data-testid="process-import-row-kind"]')
+    ).map((cell) => cell.textContent?.trim());
+    expect(kinds).toEqual(['Phase', 'Pipeline', 'Workflow']);
+
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-plan-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'pipeline', 'workflow']);
+
+    // The reason names the Pipeline, because that is the dependency direction a
+    // Workflow has. Naming the Phase here would be the shipped 085 wording
+    // surviving a kind it was never written for.
+    const reason = rows[2]?.querySelector('[data-testid="process-import-row-reason"]');
+    expect(rows[2]?.textContent).toContain('Blocked');
+    expect(reason?.textContent).toContain('Pipeline deploy-it');
+  });
+
   it('states every count, so the four add up to the rows shown (FR-028)', async () => {
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
@@ -855,7 +911,7 @@ describe('Feature 085 T034 — a package in the plan', () => {
           resourceKind: 'pipeline',
           resourceId: 'deploy-it',
           name: 'Deploy It',
-          reason: { code: 'dependency-unresolvable', phaseId: 'finalize' }
+          reason: { code: 'dependency-unresolvable', dependency: { kind: 'phase', resourceId: 'finalize' } }
         },
         {
           outcome: 'invalid',
@@ -998,8 +1054,8 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     phases: ['specify']
   };
   const LAYERS = Object.freeze({
-    user: { phases: [HELD_PHASE], pipelines: [HELD_PIPELINE] } as ImportTargetLayers,
-    workspace: { phases: [], pipelines: [] } as ImportTargetLayers
+    user: { phases: [HELD_PHASE], pipelines: [HELD_PIPELINE], workflows: [] } as ImportTargetLayers,
+    workspace: { phases: [], pipelines: [], workflows: [] } as ImportTargetLayers
   });
 
   function packageResult(): PreflightProcessYamlResult {

@@ -1,9 +1,10 @@
 # Process YAML Exchange
 
-Export a Phase or a Pipeline definition to a portable YAML document, and import
-someone else's document back into your own catalog after inspecting exactly what
-it would do. This is how a process definition moves between machines,
-repositories, and operators without anybody pasting JSON into a settings file.
+Export a Phase, a Pipeline, or a Workflow definition to a portable YAML document,
+and import someone else's document back into your own catalog after inspecting
+exactly what it would do. This is how a process definition moves between
+machines, repositories, and operators without anybody pasting JSON into a
+settings file.
 
 The exchange is a **transport**, not a second authoring surface. Everything an
 imported Phase is allowed to be, it is allowed to be because
@@ -12,11 +13,14 @@ no capability, and no path into the catalog that the Phase manager does not
 already have.
 
 Most of this page describes the Phase document, which is the simpler case and
-the one every rule is stated on. A Pipeline document follows all of the same
-rules and adds one thing — it can carry the Phases it references, making the file
-a runnable **package**. What that changes is collected under
-[Pipeline packages](#pipeline-packages); nothing before that section is different
-for a Pipeline.
+the one every rule is stated on. The other two kinds follow all of the same rules
+and add one thing each: a Pipeline document can carry the Phases it references,
+and a Workflow document can carry the Pipelines *its* nodes reference and,
+through them, those Pipelines' Phases. Either makes the file a runnable
+**package**. What that changes is collected under
+[Pipeline packages](#pipeline-packages) and
+[Workflow packages](#workflow-packages); nothing before those sections is
+different for a Pipeline or a Workflow.
 
 ## When you'd use it
 
@@ -125,15 +129,17 @@ Phase. See [Custom Phases](custom-phases.md) for what the DSL admits.
 
 ### One resource per document
 
-A document declares **exactly one** subject — one Phase, or one Pipeline. There
-is no resource list, no `items:`, and no multi-document stream. A file holding a
-second `---` document start, or nothing at all, is refused at the document level
-before any field is looked at.
+A document declares **exactly one** subject — one Phase, one Pipeline, or one
+Workflow. There is no resource list, no `items:`, and no multi-document stream. A
+file holding a second `---` document start, or nothing at all, is refused at the
+document level before any field is looked at.
 
 This keeps the unit of exchange the same as the unit of review: one file, one
-subject, one decision. A Pipeline package is not an exception: it carries the
-Phases its one Pipeline references, as that Pipeline's dependencies, and you are
-still reviewing and deciding on a single Pipeline.
+subject, one decision. A package is not an exception: it carries what its one
+subject depends on, as that subject's dependencies, and you are still reviewing
+and deciding on a single Pipeline or a single Workflow. A Workflow package can
+carry a great deal — several Pipelines and all their Phases — and it is still one
+subject, because none of those Pipelines is what you are deciding to import.
 
 ### The subset of YAML the format reads
 
@@ -151,6 +157,13 @@ level past the dash. `-` with no space, `-` followed by two spaces, and a bare
 `-` on its own line are each refused as `disallowed-syntax`. A Phase document
 uses no sequences at all, and every document the Phase-only reader accepted still
 parses to the same tree.
+
+The Workflow format added **no** production at all. A Workflow document nests
+further than a Pipeline one — a connection holds an endpoint mapping, which holds
+a condition, which holds an operand — but every level is a block mapping or a
+block sequence the reader already accepted. That is checked rather than asserted:
+the scanner, the parser, and the scalar-style rule are pinned by digest, so an
+edit that quietly widened the grammar fails the build.
 
 A quoted or block scalar is always text — the scanner never re-types a scalar —
 so `version: "1"` is a defect rather than silently the number 1. On the way out,
@@ -396,18 +409,200 @@ require: the Pipeline layer needs `schegent.trust.allowPipelineOverrides` on top
 of the two a Phase import needs. Grant it and re-run. See
 [Trust Scopes](../operations/trust-scopes.md).
 
+## Workflow packages
+
+A Workflow document declares `kind: Workflow` and carries the Workflow's graph
+under `spec` — its nodes, the connections between them, and which nodes may
+start. It may additionally carry an `included:` section holding the complete
+definitions of the Pipelines its nodes name and, under those, the Phases *those*
+Pipelines name.
+
+```yaml
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: ship-it-flow
+  name: Ship It Flow
+  version: 4
+spec:
+  nodes:
+    - nodeId: draft
+      pipelineId: spec-authoring
+      label: Draft the spec
+    - nodeId: review
+      pipelineId: spec-review
+    - nodeId: redraft
+      pipelineId: spec-authoring
+  connections:
+    - from:
+        nodeId: review
+        portId: verdict
+      to:
+        nodeId: redraft
+        portId: spec
+      condition:
+        left:
+          source: node-output
+          nodeId: review
+          field: verdict
+        operator: equals
+        right: changes-requested
+    - from:
+        nodeId: review
+        portId: verdict
+      to:
+        nodeId: redraft
+        portId: spec
+      isDefault: true
+  startNodeIds:
+    - draft
+included:
+  pipelines:
+    - metadata:
+        id: spec-authoring
+        name: Spec Authoring
+        version: 1
+      spec:
+        phaseIds:
+          - lint-and-scan
+  phases:
+    - metadata:
+        phaseId: lint-and-scan
+        name: Lint and Scan
+        version: 1
+      spec:
+        instruction: Run the linter and the security scanner.
+```
+
+Two things in that example are worth pointing at, because they are the two most
+common surprises.
+
+**A node is addressed by `nodeId`, not by `pipelineId`.** `draft` and `redraft`
+both run `spec-authoring`; they are different nodes with the same Pipeline behind
+them, and every connection endpoint names the node. Reordering, inserting, or
+removing nodes therefore leaves every surviving connection pointing where it
+pointed before. (This is deliberately unlike a Pipeline's bindings, which address
+a Phase by its position in the sequence — a Pipeline may legitimately run the
+same Phase twice, so position is the only address that distinguishes them.)
+
+**A condition is data, not an expression.** `left` names an operand — a node's
+output field, or a node's terminal status — `operator` is one of a fixed list
+(`equals`, `notEquals`, `in`, `exists`, `greaterThan`, `greaterThanOrEqual`,
+`lessThan`, `lessThanOrEqual`), and `right` is a literal or a list of literals.
+There is no expression string anywhere in the format, so there is nothing to
+compile, evaluate, or sandbox. A condition written the way a query language would
+write it — `$.status == "done"` — is refused as a field the format does not
+admit, not parsed and found wanting.
+
+### Choosing what a Workflow export discloses
+
+The control sits in the Workflow builder's toolbar and acts on the selected
+Library row. The inclusion choice is a list rather than a checkbox, and defaults
+to the smallest document; it describes how *you* are handing this definition
+over, so it survives changing the selection rather than resetting under someone
+exporting several rows in a row. Nothing about it is persisted.
+
+An unsaved Workflow cannot be exported —
+`Save this Workflow first. Export writes the definition the catalog holds, not an
+unsaved draft.` Nothing else is pre-checked in the webview. In particular, a
+stored Workflow whose Pipelines are missing from every layer is still exportable
+in references-only form, graph intact: whether a reference resolves is the host's
+question to answer, because only the host reads the effective catalog.
+
+A Workflow has two levels of dependency where a Pipeline has one, so it offers
+three choices rather than two:
+
+| Choice | What the file carries | When you want it |
+|---|---|---|
+| References only | The graph, with `pipelineId`s and nothing behind them | The recipient already has everything. |
+| Include Pipeline definitions | The graph plus an `included.pipelines` entry for each referenced Pipeline | The recipient has the Phases but not the Pipelines. |
+| Include Pipelines and their Phases | Both levels — the full closure | The recipient should be able to run this with nothing else. |
+
+The closure is walked for you and de-duplicated, so a Pipeline two nodes share is
+written once, and a Phase two Pipelines share is written once. You pick the
+depth; you never list what to include.
+
+Each level resolves against the **effective** catalog, and the refusal rule is
+the Pipeline one unchanged: if something does not resolve, the export is refused
+and **names** the first unresolved dependency, along with which kind it is —
+because with two levels the thing an export fails on is no longer necessarily a
+Phase. Nothing partial is written.
+
+The suggested file name is `<workflowId>.workflow.yaml`.
+
+### What a Workflow plan shows
+
+A Workflow package preflight produces one plan row per resource — one for the
+Workflow, one for each included Pipeline, one for each included Phase — with the
+same `import` / `skip` / `invalid` / `blocked` outcomes. The skip guarantee
+applies per resource, exactly as before: nothing you already have is overwritten,
+whichever layer holds it and whatever status it has.
+
+Two things are specific to the third level.
+
+**A `blocked` reason can be a chain.** A Phase reference that does not resolve is
+always a root cause. A Pipeline reference that does not resolve might not be: the
+Pipeline may exist and be blocked itself, on a Phase. When that happens the
+Workflow row does not stop at "this Pipeline is blocked" — it reports the chain
+through to the cause, so you are pointed at the Phase to fix rather than at the
+Pipeline in the middle.
+
+**A package is not judged against Pipelines it supplies.** When the preflight
+checks that a node's ports exist and its connections type-match, it looks at your
+effective Pipeline catalog *plus* the Pipelines this same import would write. A
+self-contained Workflow package would otherwise be reported as broken on the very
+Pipelines it ships. This is a preflight-time projection of one pending write and
+nothing else: authoring, saving, and running a Workflow all still see only what
+is actually in the catalog.
+
+### Committing a Workflow package: three writes, in order
+
+A Workflow package commit is up to **three** catalog writes, in this order:
+Phases, then Pipelines, then the Workflow. A document that supplies fewer levels
+performs fewer writes; nothing is ever merged into one write to save a step.
+
+The order is fixed by dependency in both directions. A Pipeline written before
+its Phases references Phases the catalog does not have; a Workflow written before
+its Pipelines is a Workflow whose nodes do not resolve. Writing them the other
+way round would publish, for as long as the next write took, a definition that
+cannot run.
+
+Each write carries its own revision and its own declared `import-package` intent
+naming that layer's target set, and each passes its own trust gate — so the
+outcomes are the same three as for a Pipeline package, with one more shape of
+`partial` available:
+
+| Outcome | Meaning |
+|---|---|
+| `imported` | Every write the document called for was accepted. |
+| `partial` | Some prefix of the writes landed and a later one did not. |
+| `failed` | Nothing was written. |
+
+**A `partial` is still reported, not repaired**, for the same reason and with the
+same recovery: re-run the same document once the cause is addressed. Whatever
+already landed reads as `skip` on the second run, so the retry finishes the job
+from wherever it stopped, at any depth.
+
+The Workflow layer needs `schegent.trust.allowWorkflowOverrides`, on top of
+`allowPipelineOverrides` for the Pipeline layer and the Phase capabilities for
+the Phase layer. A package that stops one write short of finishing is most often
+missing the capability for the layer it stopped at. See
+[Trust Scopes](../operations/trust-scopes.md).
+
 ## Refusal classes
 
-Seven document-level refusals, each with a fixed operator sentence:
+Nine document-level refusals, each with a fixed operator sentence:
 
 | Code | What you see |
 |---|---|
 | `unreadable` | This file could not be read as text. |
 | `too-large` | This document is larger than an import will read. |
 | `unsupported-version` | This document declares a format version this build does not read. |
-| `unsupported-kind` | This document declares a different kind of resource. Fires for any `kind:` other than `Phase` or `Pipeline`. |
+| `unsupported-kind` | This document declares a different kind of resource. Fires for any `kind:` other than `Phase`, `Pipeline`, or `Workflow`. |
 | `disallowed-syntax` | This document uses YAML the Phase format does not accept. |
 | `multi-document` | This file holds more than one document, and an import reads exactly one. |
+| `duplicate-id` | This document declares the same id twice, so which one was meant is unclear. |
+| `graph-cycle` | This document declares a Workflow whose nodes form a cycle. |
 | `empty` | This document declares no Phase. |
 
 `unreadable` covers invalid UTF-8 and a leading byte-order mark. Neither is
@@ -418,6 +613,16 @@ the exchange cannot vouch for.
 entered. A file over the bound is never parsed, so an oversized document cannot
 spend parse time to be refused.
 
+`duplicate-id` is document-level rather than a defect on one row because naming
+one of the two the offender would be choosing which one the author meant, and the
+document does not say.
+
+`graph-cycle` is document-level for the same kind of reason: a cycle is a
+property of the graph as a whole, so there is no one node to blame and no
+sensible partial plan to show. Every other Workflow graph problem — an endpoint
+naming a node that does not exist, a port that does not exist, a type mismatch —
+is a defect on the Workflow's row, listed field by field like any other.
+
 ## What never crosses the boundary
 
 By construction, not by convention:
@@ -426,14 +631,18 @@ By construction, not by convention:
   the webview, and no plan row, audit payload, or error message carries one. An
   export write failure reports the generic `Could not write the document.`
   precisely because an adapter's own error text can name the location.
-- **No session, run, or evidence data.** A document carries a Phase definition
-  and nothing else. There is no run history, no transcript, no `runId`.
+- **No session, run, or evidence data.** A document carries process definitions
+  and nothing else. There is no run history, no transcript, no `runId`. A
+  Workflow document carries the graph, not anything the graph has ever done.
 - **No policy or trust state.** A document cannot grant itself a capability,
   raise a trust scope, or declare which scope it should land in. The target
   scope is your choice, made in your window, after the plan.
-- **No provenance link.** An imported Phase is a Phase. It is not marked as
-  imported, does not remember where it came from, and behaves identically to one
-  you typed in.
+- **No provenance link.** An imported Phase is a Phase, an imported Pipeline is a
+  Pipeline, an imported Workflow is a Workflow. None is marked as imported, none
+  remembers where it came from, and each behaves identically to one you typed in.
+- **No derived state.** A Workflow's inputs and outputs are worked out from its
+  nodes' unbound ports every time they are read, so the document has no place to
+  declare them and an import has nothing to disagree with.
 - **No retained state.** The exchange persists nothing of its own — no workspace
   state key, no cache between preflight and commit, no last-export memory.
 
@@ -448,8 +657,8 @@ Three events, all metadata-only:
 | `process-exchange-import-committed` | One catalog layer of a package import landed. |
 
 The payload carries the operation (`export`, `import-preflight`, or
-`import-commit`), the resource kind (`phase` or `pipeline`), the resource ids
-involved, the scope, the outcomes, and counts. It does not carry document
+`import-commit`), the resource kind (`phase`, `pipeline`, or `workflow`), the
+resource ids involved, the scope, the outcomes, and counts. It does not carry document
 contents, field values, instruction text, port labels, a file name, or a
 filesystem path. An export additionally counts `includedPhases` — how many
 complete Phase definitions actually left this installation — because without it
@@ -462,16 +671,45 @@ audited as what it is — a Phase catalog save — by the save path that perform
 and one write either landed or it did not, so the catalog itself is the record.
 
 A **package** import is different, and that is the whole reason the third event
-exists. It writes two layers that can succeed independently, so a workspace
-holding the Phases and no Pipeline is indistinguishable from an operator who
-imported the Phases alone. The commit and refusal records are what tell those
-apart after the fact — which is also why a refusal is recorded at *every* gate a
-package write can be turned away by. An unaudited refusal is indistinguishable
-from an operator who closed the dialog.
+exists. It writes up to three layers that can succeed independently, so a
+workspace holding the Phases and no Pipeline — or the Phases and Pipelines and no
+Workflow — is indistinguishable from an operator who imported only that much
+deliberately. The commit and refusal records are what tell those apart after the
+fact, and the third level does not change the shape of either: one
+`process-exchange-import-committed` per layer that landed, which is also why a
+refusal is recorded at *every* gate a package write can be turned away by. An
+unaudited refusal is indistinguishable from an operator who closed the dialog.
 
 A capability denial is **not** one of these. It stays `trust.capability-denied`,
 the same event as any other denied catalog write, because it is a different
 decision taken at a different time about a different thing.
+
+### Why no schema version moved
+
+Neither `AUDIT_SCHEMA_VERSION` nor `STATE_SCHEMA_VERSION` changes for the Pipeline
+kind or the Workflow kind, and the reason is worth stating rather than leaving to
+be inferred from their absence in the changelog.
+
+The audit envelope is reused unchanged. Adding the Workflow kind widened exactly
+one field of one payload — `resourceKind` gained the literal `'workflow'`
+alongside `'phase'` and `'pipeline'` — and added no event type, no field, and no
+new payload. A reader written against the previous version parses every new record
+successfully; it merely encounters a `resourceKind` value it does not recognize,
+which the audit parser is already required to preserve rather than drop. That is
+what the version number exists to signal, and nothing here trips it.
+
+The persisted state schema is untouched because the exchange persists nothing of
+its own. An export produces a document and keeps no record of having done so; the
+inclusion choice lives in the toolbar for the session and is never written. An
+import's plan is a projection recomputed from the document each time and is
+discarded when the flow closes. What a commit writes is a normal catalog save
+through the same three commands the Builders use, in the shapes those commands
+already had. There is no exchange-owned state to migrate, so there is no migration
+to version.
+
+The practical consequence: an installation can move to this release and back
+without a forward-only migration having consumed anything, and an audit log
+written across the boundary stays readable in both directions.
 
 ## Things to watch out for
 
@@ -493,16 +731,18 @@ decision taken at a different time about a different thing.
 
 **The Import button is disabled.**
 The reason is shown next to it, and there are three:
-`This workspace is not trusted, so an imported Phase could not be saved.`,
+`This workspace is not trusted, so an imported resource could not be saved.`,
 `A Phase save is still in progress.`, or
 `Save or discard your pending Phase changes before importing.`
 
 **Confirm is disabled after a successful preflight.**
-Checked in order: a commit or a validation is still running; the document was
-refused; the preflight was canceled or failed; no plan has been computed; the
-plan has nothing to import (every row is `skip` or `invalid`); the plan holds
-more than one Phase; or no target scope has been chosen yet. The surface says
-which.
+Checked in the order you hit them: a commit is already in progress; the document
+is still being read; the document was refused; no document was chosen; the
+document could not be read; no plan has been computed; the plan has nothing to
+import (every row is `skip`, `invalid`, or `blocked`); the plan has Pipeline or
+Workflow rows to write but does not carry that layer's catalog revision, so its
+staleness gate would have nothing to check — inspect the document again; or no
+target scope has been chosen yet. The surface says which.
 
 **The commit failed with `stale-catalog`.**
 The target layer changed between your preflight and your confirm — another
@@ -521,8 +761,11 @@ grep '"eventType":"trust.capability-denied"' .schegent/audit.log | jq .
 
 **The document was refused for `disallowed-syntax` and looks like valid YAML.**
 It probably is valid YAML. The exchange reads a subset — no anchors, aliases,
-merge keys, tags, directives, flow collections, sequences, or tabs. Rewrite the
-construct as a plain block mapping.
+merge keys, tags, directives, flow collections (`{a: b}`, `[a, b]`), folded
+scalars, single-quoted scalars, or tabs. Block sequences are accepted, but only
+in the one form described above: `- ` with exactly one space, and the entry's
+body one indent level past the dash. Rewrite the construct as a plain block
+mapping or a block sequence in that form.
 
 **A field I set was dropped on export.**
 Only the fields in the reference table above are portable. Anything the Phase
@@ -537,6 +780,10 @@ catalog does not model as a portable Phase field is not in the format.
 - Pipeline packages — grammar: [specs/085-pipeline-package-exchange/contracts/yaml-grammar.md](../../../specs/085-pipeline-package-exchange/contracts/yaml-grammar.md)
 - Pipeline packages — IPC contract: [specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md](../../../specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md)
 - Pipeline packages — data model: [specs/085-pipeline-package-exchange/data-model.md](../../../specs/085-pipeline-package-exchange/data-model.md)
+- Workflow packages — specification: [specs/086-workflow-package-exchange/spec.md](../../../specs/086-workflow-package-exchange/spec.md)
+- Workflow packages — grammar: [specs/086-workflow-package-exchange/contracts/workflow-yaml-grammar.md](../../../specs/086-workflow-package-exchange/contracts/workflow-yaml-grammar.md)
+- Workflow packages — IPC contract: [specs/086-workflow-package-exchange/contracts/process-yaml-ipc.md](../../../specs/086-workflow-package-exchange/contracts/process-yaml-ipc.md)
+- Workflow packages — data model: [specs/086-workflow-package-exchange/data-model.md](../../../specs/086-workflow-package-exchange/data-model.md)
 - [Custom Phases](custom-phases.md) — authoring a Phase directly, and the retry-condition DSL.
 - [Trust Scopes](../operations/trust-scopes.md) — the per-capability gates a commit passes.
 - [Glossary](../reference/glossary.md) — layer, effective catalog, revision, mutation intent.

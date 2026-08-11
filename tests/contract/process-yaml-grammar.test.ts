@@ -13,6 +13,12 @@
 //   085 — the one production the subset gained, and the narrowings that bound
 //         it. Every accepted fixture here was refused by the pre-change reader.
 //
+//   086 — the Workflow package kind. This half adds NO production: it exists to
+//         hold the subset's deepest reachable nesting — a condition literal list
+//         inside a connection item — and to pin that the 085 narrowings still
+//         bite at that depth. If a fixture here ever needed a scanner change to
+//         pass, the feature was mis-planned; see the T001 gate below.
+//
 // The corpus is also checked for its own integrity: an orphaned document or an
 // orphaned expectation fails, because a golden corpus that silently skips a case
 // is worse than no corpus.
@@ -33,7 +39,12 @@ import { PHASE_YAML_MAX_BYTES } from '../../src/services/process-yaml/types';
 const FIXTURES = resolve(__dirname, '../fixtures/process-yaml');
 
 type Half = 'accepted' | 'refused';
-type Vintage = '084' | '085';
+// The runner enumerates vintages explicitly, so a fixture directory named here
+// is executed and one that is not is silently never read. Adding a vintage
+// directory without adding it to this union is the failure mode 086's analyze
+// pass caught: the corpus half of the no-widening guarantee would have covered
+// nothing while still reporting green.
+type Vintage = '084' | '085' | '086';
 
 function directory(half: Half, vintage: Vintage): string {
   return join(FIXTURES, half, vintage);
@@ -74,7 +85,7 @@ function parse(text: string): YamlMappingNode {
   return result.node;
 }
 
-describe.each(['084', '085'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
+describe.each(['084', '085', '086'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
   const cases = names('accepted', vintage);
 
   it('has fixtures', () => {
@@ -96,7 +107,7 @@ describe.each(['084', '085'] as const)('process-yaml corpus — accepted/%s', (v
   });
 });
 
-describe.each(['084', '085'] as const)('process-yaml corpus — refused/%s', (vintage) => {
+describe.each(['084', '085', '086'] as const)('process-yaml corpus — refused/%s', (vintage) => {
   const cases = names('refused', vintage);
 
   it('has fixtures', () => {
@@ -238,6 +249,102 @@ describe('process-yaml corpus — the new production (FR-004)', () => {
       if (item.kind !== 'mapping') throw new Error('expected a mapping item');
       expect(item.entries.map((entry) => entry.key)).toContain('phaseIndex');
       expect(item.entries.map((entry) => entry.key)).not.toContain('phaseId');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 086 T001 — the stage-0 gate: this feature needs no new production
+// ---------------------------------------------------------------------------
+//
+// The single most load-bearing claim in 086's plan is that a Workflow package
+// fits the subset 085 left behind, unchanged. The shape that could have broken
+// it is a condition literal list — what the `in` / `not-in` operators need —
+// because it puts a block sequence two levels below a `- ` dash that is itself
+// a block sequence item, which is the deepest nesting the bounded form has ever
+// been asked for.
+//
+// This is a GATE, not a regression test. If it is red, the correct response is
+// to re-plan the feature, NOT to widen `yaml-scanner.ts`. The three grammar
+// modules are additionally pinned by content hash in
+// `tests/lint/process-yaml-grammar-frozen.test.ts` so that widening them to
+// make this pass fails a second, louder check.
+
+describe('Feature 086 T001 — a Workflow condition literal list needs no new production', () => {
+  // `spec.connections` is a bounded block sequence; each item is a mapping; that
+  // mapping's `condition.right` is itself a bounded block sequence. Nothing here
+  // is outside the form 085 admitted — the dash takes one indent level and its
+  // body sits at that level plus one, at both depths.
+  const DOCUMENT = [
+    'apiVersion: schegent/v1',
+    'kind: Workflow',
+    'metadata:',
+    '  name: release',
+    'spec:',
+    '  connections:',
+    '    - from:',
+    '        nodeId: build',
+    '        portId: artifact',
+    '      to:',
+    '        nodeId: publish',
+    '        portId: artifact',
+    '      condition:',
+    '        left:',
+    '          source: node-output',
+    '          nodeId: build',
+    '          field: status',
+    '        operator: in',
+    '        right:',
+    '          - ok',
+    '          - warn',
+    ''
+  ].join('\n');
+
+  it('parses, with the literal list read as a sequence node of scalars', () => {
+    const result = parseDocumentText(DOCUMENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const spec = result.node.entries.find((entry) => entry.key === 'spec')?.value;
+    if (spec?.kind !== 'mapping') throw new Error('expected spec to be a mapping');
+    const connections = spec.entries.find((entry) => entry.key === 'connections')?.value;
+    if (connections?.kind !== 'sequence') throw new Error('expected connections to be a sequence');
+    expect(connections.items).toHaveLength(1);
+
+    const item = connections.items[0];
+    if (item?.kind !== 'mapping') throw new Error('expected a mapping item');
+    const condition = item.entries.find((entry) => entry.key === 'condition')?.value;
+    if (condition?.kind !== 'mapping') throw new Error('expected condition to be a mapping');
+    const right = condition.entries.find((entry) => entry.key === 'right')?.value;
+
+    // Lines pinned too: the reader locates the deepest construct correctly, so a
+    // defect reported against a literal points at the literal.
+    expect(right).toEqual({
+      kind: 'sequence',
+      line: 20,
+      items: [
+        { kind: 'scalar', value: 'ok', quoted: false, line: 20 },
+        { kind: 'scalar', value: 'warn', quoted: false, line: 21 }
+      ]
+    });
+  });
+
+  it('keeps the endpoints structured, so no dotted string has to be parsed', () => {
+    const result = parseDocumentText(DOCUMENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const spec = result.node.entries.find((entry) => entry.key === 'spec')?.value;
+    if (spec?.kind !== 'mapping') throw new Error('expected spec to be a mapping');
+    const connections = spec.entries.find((entry) => entry.key === 'connections')?.value;
+    if (connections?.kind !== 'sequence') throw new Error('expected connections to be a sequence');
+    const item = connections.items[0];
+    if (item?.kind !== 'mapping') throw new Error('expected a mapping item');
+
+    for (const key of ['from', 'to'] as const) {
+      const endpoint = item.entries.find((entry) => entry.key === key)?.value;
+      if (endpoint?.kind !== 'mapping') throw new Error(`expected ${key} to be a mapping`);
+      expect(endpoint.entries.map((entry) => entry.key)).toEqual(['nodeId', 'portId']);
     }
   });
 });
