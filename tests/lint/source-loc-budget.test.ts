@@ -39,7 +39,18 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // command literals `import type`, so it erases today, and the guards need
   // them as runtime values — extraction buys ten barrel lines by creating a
   // real import cycle where none exists. The ceiling is raised instead.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 960 },
+  // Feature 087 (T008) — 960 → 975 for the run-launcher family. Its wire
+  // shapes and its payload predicate both live in sidebar-ipc/run-launcher.ts;
+  // extraction was taken as far as it goes, and the predicate moved out
+  // precisely because it needs none of this module's runtime values. What
+  // remains is the irreducible five: the command literal, the COMMAND_TYPES
+  // entry, the type re-export, the SidebarCommand member, and the COMMAND_GUARDS
+  // entry — plus the two-line guard that wraps the extracted predicate with the
+  // `isObjectWithType` discriminator check, which 085 established cannot leave
+  // this file without creating a real import cycle. Admitting a family costs
+  // barrel lines by construction; the ceiling is raised rather than the
+  // registration split.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 975 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the
@@ -51,7 +62,17 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   { path: 'src/ui/sidebar/state-projector.ts', maxLines: 250 },
   { path: 'src/ui/sidebar/state-projector-runtime.ts', maxLines: 300 },
   { path: 'src/ui/sidebar/projector-bookkeeping.ts', maxLines: 300 },
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 300 },
+  // Feature 087 (T064) — 300 → 301 for the recorded-run-outputs projection
+  // (FR-043). The composition itself was extracted first, to
+  // `projectRunOutputs` in run-projector.ts; what landed here is the one thing
+  // that cannot leave — a call site in the returned object and its name in the
+  // existing run-projector import. Packing that import list would have bought
+  // the line back while hiding the growth, so the ceiling is raised in the open
+  // instead, matching the justified bumps above. Raised to exactly what the
+  // file now measures, not to a round number with slack: an unearned ceiling
+  // is a budget that has stopped being a forcing function. Recorded as a plan
+  // deviation under specs/087-pipeline-run-composition/tasks.md T068.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 301 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

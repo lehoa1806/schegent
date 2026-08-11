@@ -76,7 +76,8 @@
           "CMD_READ_METRICS",
           "CMD_PING_BACKEND",
           "CMD_EXPORT_PROCESS_YAML",
-          "CMD_PREFLIGHT_PROCESS_YAML"
+          "CMD_PREFLIGHT_PROCESS_YAML",
+          "CMD_LAUNCH_PIPELINE"
         ]
       },
       "uniqueItems": true
@@ -175,6 +176,11 @@
           "name": "activeRunId",
           "optional": false,
           "type": "string | null"
+        },
+        {
+          "name": "runOutputs",
+          "optional": true,
+          "type": "readonly RunOutputRecord[]"
         },
         {
           "name": "defaultRunnerKind",

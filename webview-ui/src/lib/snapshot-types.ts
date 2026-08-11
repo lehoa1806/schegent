@@ -288,6 +288,20 @@ export interface ActivePipelineSummary {
   readonly name: string;
 }
 
+/**
+ * Feature 087 (FR-040, FR-040a, FR-042) — one declared output of a completed
+ * Run, mirroring the host's `contracts/run-results.ts`.
+ *
+ * `reference` is a workspace-relative **location**; artifact content never
+ * enters the snapshot. An `unresolved` entry has no reference and is shown
+ * beside the resolved ones rather than hidden.
+ */
+export interface RunOutputRecord {
+  readonly name: string;
+  readonly status: 'resolved' | 'unresolved';
+  readonly reference?: string;
+}
+
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 
@@ -983,6 +997,12 @@ export interface WorkflowSnapshot {
    * legacy-tolerance; required for breakpoint IPC targeting.
    */
   readonly activeRunId?: string | null;
+  /**
+   * Feature 087 (T064, FR-043) — the named outputs the Run recorded at
+   * completion. Absent on every Run that recorded none, so Run details shows
+   * the section only when there is something to show.
+   */
+  readonly runOutputs?: readonly RunOutputRecord[];
   /** Effective host default; absent only when paired with a legacy host. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];

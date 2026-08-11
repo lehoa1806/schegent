@@ -16,6 +16,7 @@ import type {
   WorkflowDerivedPort,
   WorkflowSourceStatus
 } from '../../contracts/workflow-definitions';
+import type { RunOutputRecord } from '../../contracts/run-results';
 export type { BackendPingState };
 import {
   IDLE_EVIDENCE_HEALTH,
@@ -490,6 +491,14 @@ export interface WorkflowSnapshot {
    * `CMD_CLEAR_PHASE_BREAKPOINT` at the controller.
    */
   readonly activeRunId: string | null;
+  /**
+   * Feature 087 (T064, FR-043) — the named outputs the Run recorded at
+   * completion, each a **location, never content** (FR-040a). Absent on every
+   * Run that recorded none, which is every Run started outside the composer and
+   * every composed Run before it completes. An entry whose status is
+   * `unresolved` carries no reference and is shown alongside the rest (FR-042).
+   */
+  readonly runOutputs?: readonly RunOutputRecord[];
   /** Backend inherited by phases whose run snapshot predates runner pinning. */
   readonly defaultRunnerKind: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];

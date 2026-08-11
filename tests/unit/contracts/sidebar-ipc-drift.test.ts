@@ -76,7 +76,22 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       // Feature 085 — preflight carries NOTHING (FR-020a, FR-055a). `{}` is
       // the whole payload; the kind 084 sent here is gone, because the host
       // dispatches on the `kind:` the document declares.
-      [Authoritative.CMD_PREFLIGHT_PROCESS_YAML]: {}
+      [Authoritative.CMD_PREFLIGHT_PROCESS_YAML]: {},
+      // Feature 087 — the minimal launch is a Pipeline that asks for nothing:
+      // an id plus the three collections, present and empty. The guard checks
+      // shape only and deliberately stops there, because a request whose
+      // collections are empty may still be perfectly legal (a Pipeline whose
+      // every input port is Phase-fed) or refused for a dozen reasons at once
+      // — and reporting every failing field at once (FR-013) is something a
+      // boolean predicate cannot do. `validateRunRequest()` owns that.
+      [Authoritative.CMD_LAUNCH_PIPELINE]: {
+        request: {
+          pipelineId: 'default',
+          inputs: [],
+          supplemental: [],
+          outputs: []
+        }
+      }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];

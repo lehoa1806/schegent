@@ -4,6 +4,12 @@ import type { BackendPingService } from '../../../services/backend-ping-service'
 import type { WritablePhaseDefinitionScope } from '../../../contracts/process-definitions';
 import type { WorkflowDefinitionScope } from '../../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
+import type { RunOutputRecord } from '../../../contracts/run-results';
+import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import type {
+  GuardedScheduleRequest,
+  GuardedScheduleResult
+} from '../../../services/guarded-run-service';
 import type {
   CommandAckMessage,
   ExportProcessYamlResult,
@@ -184,6 +190,44 @@ export interface RouterDeps {
     readonly workspace: readonly unknown[];
   };
   readonly getCatalog?: () => PipelineCatalog;
+  /**
+   * Feature 087 (T044, US3, plan D3) — the one seam `CMD_LAUNCH_PIPELINE`
+   * submits through: the `GuardedRunService` itself, narrowed to the single
+   * method the handler calls. A composed run therefore passes every foreign-lock,
+   * pause, and horizon guard the pre-existing start paths pass, and the
+   * `no-direct-run-start` allowlist does not grow.
+   *
+   * Deliberately NOT routed through `executeCommand('schegent.enqueue', …)` the
+   * way `cmd-start.ts` reaches the same service. That command is registered with
+   * VS Code and is therefore callable by any other extension in the window;
+   * carrying a `FrozenRunPlan` on it would let a third party submit arbitrary
+   * Phase instructions, runner, and model without the catalog being consulted at
+   * all. Keeping the composed path host-internal keeps that surface where it is.
+   *
+   * Optional so unit tests that do not exercise this command can omit it.
+   */
+  readonly guardedRun?: {
+    scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
+  };
+  /**
+   * Feature 087 (FR-030) — the effective global backend, as the run factory and
+   * the runner already receive it. The composed run freezes its Phase snapshot
+   * here rather than at drain, so the default a Phase inherits when it names no
+   * runner has to be the same value those two see; taking `DEFAULT_BACKEND`
+   * instead would make a composed run diverge from every other run the moment an
+   * operator configures a different backend (FR-037).
+   */
+  readonly defaultRunnerKind?: BackendRunnerKind;
+  /**
+   * Feature 087 (FR-028) — the outputs a completed Run recorded, for a
+   * supplemental `prior-output` reference.
+   *
+   * Optional, and a host that supplies none answers `prior-run-not-found` —
+   * which is also the honest answer today, because recording named outputs is
+   * Phase 6 work (T063) and no Run has written `runOutputs` yet. Wiring it is
+   * one line at the seam below once they do; nothing in the handler changes.
+   */
+  readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
   /**
    * Feature 082 (US7, FR-022a) — the only data source behind
    * `consumingWorkflowIdsReferencing(...)` in `cmd-save-pipelines.ts`, which

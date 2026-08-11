@@ -16,7 +16,8 @@ import {
   buildActiveFeature,
   computeIsPrimary,
   mapRunStatus,
-  projectDelayedRetry
+  projectDelayedRetry,
+  projectRunOutputs
 } from './run-projector';
 import { ProjectorBookkeeping } from './projector-bookkeeping';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
@@ -285,6 +286,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     telemetry: ctx.telemetry,
     workspaceTrust,
     resolvedTrust,
+    ...projectRunOutputs(run, sanitize),
     ...(activePipeline ? { activePipeline } : {}),
     ...(phasePrecedence !== undefined ? { phasePrecedence } : {}),
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
