@@ -599,11 +599,11 @@ Nine document-level refusals, each with a fixed operator sentence:
 | `too-large` | This document is larger than an import will read. |
 | `unsupported-version` | This document declares a format version this build does not read. |
 | `unsupported-kind` | This document declares a different kind of resource. Fires for any `kind:` other than `Phase`, `Pipeline`, or `Workflow`. |
-| `disallowed-syntax` | This document uses YAML the Phase format does not accept. |
+| `disallowed-syntax` | This document uses YAML the exchange format does not accept. |
 | `multi-document` | This file holds more than one document, and an import reads exactly one. |
 | `duplicate-id` | This document declares the same id twice, so which one was meant is unclear. |
 | `graph-cycle` | This document declares a Workflow whose nodes form a cycle. |
-| `empty` | This document declares no Phase. |
+| `empty` | This document declares no resource. |
 
 `unreadable` covers invalid UTF-8 and a leading byte-order mark. Neither is
 repaired: silently stripping a BOM would mean accepting a file whose encoding
@@ -631,6 +631,13 @@ By construction, not by convention:
   the webview, and no plan row, audit payload, or error message carries one. An
   export write failure reports the generic `Could not write the document.`
   precisely because an adapter's own error text can name the location.
+- **No resource kind, into the picker.** The two dialogs read `Export document`
+  and `Inspect document`, never `Export Phase`. There is one save seam and one
+  open seam, and Phase, Pipeline, and Workflow exports all route through them
+  without telling the dialog what they are carrying — on open the kind is not
+  even knowable yet, because nothing has read the document. The suggested file
+  name (`<id>.phase.yaml`, `.pipeline.yaml`, `.workflow.yaml`) names the kind
+  where it is actually known.
 - **No session, run, or evidence data.** A document carries process definitions
   and nothing else. There is no run history, no transcript, no `runId`. A
   Workflow document carries the graph, not anything the graph has ever done.
