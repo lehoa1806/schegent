@@ -99,6 +99,38 @@ function makeCleanOutput(): RawInvocationOutput {
   };
 }
 
+/** Advance the event loop a fixed number of rounds. */
+async function drain(rounds: number): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+/**
+ * Advance the event loop until `settled()` holds, then return.
+ *
+ * Replaces the fixed `for (let i = 0; i < 25; i++)` drains this file used to
+ * spell inline. A round count assumes N rounds is always enough for the
+ * controller's async chain to reach the state the next assertion reads —
+ * true on an idle machine, not true under full-suite CPU contention, where
+ * the US3 breakpoint test failed with `expected 1 to be greater than 1`
+ * while passing in isolation. Waiting on the condition removes the timing
+ * dependence; the bound stays, so a dispatch that genuinely never happens
+ * still fails here, naming what it was waiting for instead of hanging.
+ *
+ * Only for waits with an observable condition. The settle-before-cleanup
+ * drain at the end of the US4 test has none and stays a fixed `drain()`.
+ */
+async function drainUntil(settled: () => boolean, what: string, maxRounds = 500): Promise<void> {
+  for (let i = 0; i < maxRounds; i++) {
+    if (settled()) return;
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (!settled()) throw new Error(`drainUntil timed out waiting for: ${what}`);
+}
+
 /**
  * A scripted runner that records every invocation and returns scripted
  * raw outputs in order. Also exposes a controllable `cancelActive` so the
@@ -317,10 +349,7 @@ describe('Feature 033 US1 — pause then resume preserves -c continuation (032 i
     await harness.controller.startNew(feature, null);
 
     // Drain pending microtasks so the scheduled pause resolves.
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(() => harness.store.getRun()?.status === 'paused', 'the run to settle as paused');
 
     // The run must now be paused.
     const pausedRun = harness.store.getRun();
@@ -334,10 +363,7 @@ describe('Feature 033 US1 — pause then resume preserves -c continuation (032 i
     expect(resumeResult.ok).toBe(true);
 
     // Drain so the resume re-dispatches and the next invocation lands.
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(() => harness.invocations.length >= 2, 'the post-resume invocation');
 
     // Runner-level signal:
     //   call 0 — fresh dispatch from startNew: isContinue absent / false
@@ -425,10 +451,10 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
 
     // Drain pending microtasks so the breakpoint install + the breakpoint
     // fire on invocation 1 resolve.
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(
+      () => harness.store.getRun()?.manualPauseCause === 'breakpoint-paused',
+      'the breakpoint to fire and settle the run'
+    );
 
     // The run must now be paused at the breakpoint.
     const pausedRun = harness.store.getRun();
@@ -468,10 +494,10 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
     expect(resumeResult.ok).toBe(true);
 
     // Drain so the resume re-dispatches.
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(
+      () => harness.invocations.length > invocationsBeforeResume,
+      'the post-resume invocation'
+    );
 
     // Post-resume invocation MUST target speckit-clarify with isContinue=true.
     expect(harness.invocations.length).toBeGreaterThan(invocationsBeforeResume);
@@ -535,10 +561,7 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     await harness.controller.startNew(feature, null);
 
     // Drain so the scheduled pause path settles.
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(() => harness.store.getRun()?.status === 'paused', 'the run to settle as paused');
 
     // Verify both the phase and the queue are paused, with the queue's
     // pauseSource preserved as 'operator' (a cascade pause was attempted
@@ -556,10 +579,10 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     expect(resumeResult.ok).toBe(true);
 
     // Drain so the resume's cascadedResume completes.
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    await drainUntil(
+      () => harness.store.getRun()?.manualPauseAt === null,
+      "the resume to clear the run's manual pause"
+    );
 
     // Queue MUST still be manually-paused with pauseSource: 'operator'
     // (cascadedResume is a NO-OP — FR-004).
@@ -573,10 +596,8 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     expect(resumedRun?.manualPauseCause).toBeNull();
 
     // Extra drain iterations let the audit writer's internal write
-    // chain settle before afterEach's rm runs.
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    // chain settle before afterEach's rm runs. No observable condition to
+    // wait on here, so this one stays a fixed round count.
+    await drain(25);
   });
 });

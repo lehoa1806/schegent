@@ -6,7 +6,7 @@
 // how the save's single ack becomes a per-row result (FR-042, FR-044).
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ImportPlan, ImportPlanRow } from '../../lib/messages';
+import type { DocumentRefusalCode, ImportPlan, ImportPlanRow } from '../../lib/messages';
 import type { SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
 import type { SavePipelinesRequest, SavePipelinesResult } from '../../lib/save-pipelines';
 import type { SaveWorkflowsRequest, SaveWorkflowsResult } from '../../lib/save-workflows';
@@ -295,21 +295,53 @@ describe('Feature 084 — the retry-condition advisory (T062, FR-012a)', () => {
 });
 
 describe('Feature 084 — a refusal states a reason (T051, FR-057)', () => {
+  // Bulk-0 review. This list was written at 084 with the seven codes that
+  // existed then; 085 added `duplicate-id` and 086 added `graph-cycle` to the
+  // union without extending it, so for two features a new code could ship with a
+  // bare-code headline and nothing here would notice. The `Record<…, true>` is
+  // the fix rather than a longer literal: it is the same construct that keeps
+  // `REFUSAL_HEADLINES` itself exhaustive, so the next code added to the union
+  // breaks the build in both places at once instead of only one.
+  const REFUSAL_CODE_SET: Readonly<Record<DocumentRefusalCode, true>> = {
+    unreadable: true,
+    'too-large': true,
+    'unsupported-version': true,
+    'unsupported-kind': true,
+    'disallowed-syntax': true,
+    'multi-document': true,
+    'duplicate-id': true,
+    'graph-cycle': true,
+    empty: true
+  };
+  const ALL_REFUSAL_CODES = Object.keys(REFUSAL_CODE_SET) as readonly DocumentRefusalCode[];
+
   it('never returns a bare code', () => {
-    for (const code of [
-      'unreadable',
-      'too-large',
-      'unsupported-version',
-      'unsupported-kind',
-      'disallowed-syntax',
-      'multi-document',
-      'empty'
-    ] as const) {
+    for (const code of ALL_REFUSAL_CODES) {
       const headline = refusalHeadline(code);
       expect(headline).not.toBe(code);
       expect(headline).not.toContain(code);
       // A sentence, not a fragment.
       expect(headline.endsWith('.')).toBe(true);
+    }
+  });
+
+  // Bulk-0 review (B0-P03). Feature 085 wrote this table when Phase was the only
+  // document kind, and features 086/087 made Pipeline and Workflow documents reach
+  // the same refusal path without revisiting the copy — so a Workflow package with
+  // a tab in it read "the Phase format does not accept", naming a kind the operator
+  // was not importing. The host has always been neutral here; the webview was not.
+  // Only `graph-cycle` may name a kind, because only a Workflow has a graph.
+  it('a refusal that is not kind-specific does not name one resource kind', () => {
+    const KIND_SPECIFIC: ReadonlySet<string> = new Set(['graph-cycle']);
+    for (const code of ALL_REFUSAL_CODES) {
+      if (KIND_SPECIFIC.has(code)) continue;
+      const headline = refusalHeadline(code);
+      for (const kind of ['Phase', 'Pipeline', 'Workflow']) {
+        expect(
+          headline,
+          `refusalHeadline('${code}') names ${kind}, but the code is reachable for every document kind`
+        ).not.toContain(kind);
+      }
     }
   });
 

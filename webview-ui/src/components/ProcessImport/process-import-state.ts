@@ -293,14 +293,19 @@ const REFUSAL_HEADLINES: Readonly<Record<DocumentRefusalCode, string>> = {
   'too-large': 'This document is larger than an import will read.',
   'unsupported-version': 'This document declares a format version this build does not read.',
   'unsupported-kind': 'This document declares a different kind of resource.',
-  'disallowed-syntax': 'This document uses YAML the Phase format does not accept.',
+  // Kind-neutral on purpose. The scanner refuses a construct before anything
+  // has read which kind the document declares, and features 086/087 made
+  // Pipeline and Workflow documents reachable through the same path — so naming
+  // one kind here would misreport the other two. The host's own message
+  // ('Document declares no resource') is neutral for the same reason.
+  'disallowed-syntax': 'This document uses YAML the exchange format does not accept.',
   'multi-document': 'This file holds more than one document, and an import reads exactly one.',
   'duplicate-id': 'This document declares the same id twice, so which one was meant is unclear.',
   // Feature 086 FR-026 — a document-level refusal, not a row defect: a cycle is a
   // property of the graph as a whole, so there is no one node to blame and no
   // partial plan to show.
   'graph-cycle': 'This document declares a Workflow whose nodes form a cycle.',
-  empty: 'This document declares no Phase.'
+  empty: 'This document declares no resource.'
 };
 
 /**

@@ -94,8 +94,20 @@ function isKnownResult(value: unknown, known: ReadonlySet<string>): boolean {
  * keeps `postCommand`'s command-to-payload typing instead of widening it here. It
  * runs synchronously inside the Promise executor, before the listener is attached,
  * so two submissions cannot cross-resolve — the established idiom.
+ *
+ * `fallbacks` are passed in rather than read from the module constants, so each
+ * exported helper proves at its own call site that the shared refusal really is a
+ * member of *its* result union. Reading them here would need `as unknown as R` —
+ * a cast that keeps compiling if either command's `rejected-queue` arm gains a
+ * field, leaving the view rendering a refusal the contract no longer declares.
+ * The one remaining cast is on `ack.result`, which arrives as `unknown` and is
+ * narrowed by `isKnownResult` immediately above it.
  */
-function awaitResult<R>(post: () => { correlationId: string }, known: ReadonlySet<string>): Promise<R> {
+function awaitResult<R>(
+  post: () => { correlationId: string },
+  known: ReadonlySet<string>,
+  fallbacks: { readonly timeout: R; readonly unusable: R }
+): Promise<R> {
   return new Promise<R>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -123,15 +135,11 @@ function awaitResult<R>(post: () => { correlationId: string }, known: ReadonlySe
 
     snapshotStore.markPending(correlationId);
     unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(
-        isKnownResult(ack.result, known)
-          ? (ack.result as R)
-          : (UNUSABLE_ACK_RESULT as unknown as R)
-      );
+      finalise(isKnownResult(ack.result, known) ? (ack.result as R) : fallbacks.unusable);
     });
 
     timer = setTimeout(() => {
-      finalise(TIMEOUT_RESULT as unknown as R);
+      finalise(fallbacks.timeout);
     }, ACK_TIMEOUT_MS);
   });
 }
@@ -140,7 +148,8 @@ function awaitResult<R>(post: () => { correlationId: string }, known: ReadonlySe
 export function launchWorkflow(payload: LaunchWorkflowPayload): Promise<LaunchWorkflowResult> {
   return awaitResult<LaunchWorkflowResult>(
     () => postCommand(CMD_LAUNCH_WORKFLOW, payload),
-    LAUNCH_OUTCOMES
+    LAUNCH_OUTCOMES,
+    { timeout: TIMEOUT_RESULT, unusable: UNUSABLE_ACK_RESULT }
   );
 }
 
@@ -158,6 +167,7 @@ export function continueWorkflow(
 ): Promise<ContinueWorkflowResult> {
   return awaitResult<ContinueWorkflowResult>(
     () => postCommand(CMD_CONTINUE_WORKFLOW, payload),
-    CONTINUE_OUTCOMES
+    CONTINUE_OUTCOMES,
+    { timeout: TIMEOUT_RESULT, unusable: UNUSABLE_ACK_RESULT }
   );
 }

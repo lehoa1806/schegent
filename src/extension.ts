@@ -1169,7 +1169,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         const target = await vscode.window.showSaveDialog({
           defaultUri: vscode.Uri.file(path.join(workspaceRoot, suggestedFileName)),
           filters: { YAML: ['yaml', 'yml'] },
-          saveLabel: 'Export Phase'
+          saveLabel: 'Export document'
         });
         if (!target) return { outcome: 'canceled' as const };
         await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
@@ -1195,7 +1195,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           canSelectMany: false,
           defaultUri: vscode.Uri.file(workspaceRoot),
           filters: { YAML: ['yaml', 'yml'] },
-          openLabel: 'Inspect Phase document'
+          openLabel: 'Inspect document'
         });
         const target = picked?.[0];
         if (!target) return { outcome: 'canceled' as const };

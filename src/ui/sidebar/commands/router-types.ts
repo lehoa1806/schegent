@@ -246,9 +246,13 @@ export interface RouterDeps {
    * supplemental `prior-output` reference.
    *
    * Optional, and a host that supplies none answers `prior-run-not-found` —
-   * which is also the honest answer today, because recording named outputs is
-   * Phase 6 work (T063) and no Run has written `runOutputs` yet. Wiring it is
-   * one line at the seam below once they do; nothing in the handler changes.
+   * which is also the honest answer today. `run-output-resolver.ts` shipped
+   * with 087 T063 and resolves correctly in isolation, but nothing calls it at
+   * run completion, so no Run has ever written `runOutputs`. Feature 089
+   * records that as its one coverage gap (`FR-R2-007-S06`); until the
+   * completion path invokes the resolver, supplying this seam would only hand
+   * back an always-empty list. Wiring is one line here once a Run writes them;
+   * nothing in the handler changes.
    */
   readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
   /**

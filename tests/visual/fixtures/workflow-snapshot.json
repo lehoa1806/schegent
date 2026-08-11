@@ -226,7 +226,8 @@
   "resolvedTrust": {
     "phases": true,
     "retryConditions": true,
-    "pipelineOverrides": true
+    "pipelineOverrides": true,
+    "workflowOverrides": true
   },
   "generalSettings": {
     "cliPath": "claude",
