@@ -10,12 +10,15 @@
 // See specs/084-phase-yaml-exchange/contracts/process-yaml-ipc.md and
 // specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md.
 
+import { PIPELINE_ID_MAX_LEN } from '../pipeline-definitions';
+import { PHASE_ID_MAX_LEN } from '../process-definitions';
+import { WORKFLOW_ID_MAX_LEN } from '../workflow-definitions';
 import type {
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML,
   CommandBase
 } from '../sidebar-ipc';
-import type { DocumentRefusal, ImportPlan } from '../../services/process-yaml/types';
+import type { DocumentRefusal, ImportPlan, ProcessYamlResourceKind } from '../../services/process-yaml/types';
 
 // The plan types have exactly one definition, in the service module that also
 // produces them, rather than a host copy and a webview copy that can drift.
@@ -34,6 +37,35 @@ export type {
   ProcessYamlPresenceScope,
   ProcessYamlPresenceStatus
 } from '../../services/process-yaml/types';
+
+/**
+ * Feature 089 (FR-037) — how long an operator-authored identifier may be when it
+ * is carried into a bounded field: an IPC payload, a plan row, an unresolved
+ * dependency, or a structured audit record.
+ *
+ * Each kind's bound is its own catalog's, not a shared maximum. They are all 64
+ * today; reading each from the contract that declares it means a catalog that
+ * widens its own bound does not silently widen the other two.
+ *
+ * The three come from the `contracts/` leaf modules rather than from the three
+ * `config/*-definition-validator` modules that re-export them, because this
+ * barrel is bundled into the webview and a validator pulls the host runner graph
+ * (`runner/backend-runner-factory` -> `child_process`) behind it.
+ *
+ * Declared once, here, because FR-037 forbids a second limit for the same class
+ * of value. Four modules used to hold their own `RESOURCE_ID_MAX = 64` — they
+ * agreed by coincidence, and the day one catalog widened its id length every one
+ * of them would have started truncating identifiers the catalog itself accepts.
+ * `tests/integration/process-platform/audit-boundary.test.ts` scans the exchange
+ * boundary sources for a re-declaration.
+ */
+export const RESOURCE_ID_MAX_LEN: Readonly<Record<ProcessYamlResourceKind, number>> = Object.freeze(
+  {
+    phase: PHASE_ID_MAX_LEN,
+    pipeline: PIPELINE_ID_MAX_LEN,
+    workflow: WORKFLOW_ID_MAX_LEN
+  }
+);
 
 /**
  * Feature 085 (FR-012, research R8) — whether a Pipeline export carries the

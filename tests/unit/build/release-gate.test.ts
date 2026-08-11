@@ -21,6 +21,20 @@ function readScripts(): PkgScripts {
   return parsed.scripts;
 }
 
+/**
+ * Position of one step in a `&&`-joined npm-script chain, or -1 if absent.
+ *
+ * Ordering is asserted over the parsed step list rather than over substring
+ * positions because `indexOf('npm run build')` also matches
+ * `npm run build:webview`, and `indexOf('npm run test')` also matches
+ * `npm run test:evals`. Feature 089 inserted `build:webview` ahead of `test` —
+ * the bundle-size caps measure a built artifact, so the build has to precede
+ * them — and the prefix match reported the chain as mis-ordered when it was not.
+ */
+function stepIndex(chain: string, script: string): number {
+  return chain.split('&&').map((step) => step.trim()).indexOf(`npm run ${script}`);
+}
+
 describe('release-gate scripts (US6 / T048 / FR-033)', () => {
   it('exposes a `ci` script', () => {
     const scripts = readScripts();
@@ -49,9 +63,10 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     expect(scripts['package:smoke']).toContain('scripts/package-vsix-smoke.mjs');
 
     const ci = scripts.ci;
-    const idxBuild = ci.indexOf('npm run build');
-    const idxPackage = ci.indexOf('npm run package:smoke');
-    const idxIntegration = ci.indexOf('npm run test:integration');
+    const idxBuild = stepIndex(ci, 'build');
+    const idxPackage = stepIndex(ci, 'package:smoke');
+    const idxIntegration = stepIndex(ci, 'test:integration');
+    expect(idxBuild).toBeGreaterThanOrEqual(0);
     expect(idxPackage).toBeGreaterThan(idxBuild);
     expect(idxIntegration).toBeGreaterThan(idxPackage);
   });
@@ -68,20 +83,29 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
   it('the `ci` chain runs typecheck, lint, test, and build before integration', () => {
     const scripts = readScripts();
     const ci = scripts.ci;
-    // Sanity check: the documented chain is typecheck → typecheck:webview →
-    // lint → test → build → package:smoke → test:integration. We only assert
-    // presence and ordering of the load-bearing steps, not exact whitespace.
-    const idxTypecheck = ci.indexOf('npm run typecheck');
-    const idxTestTypecheck = ci.indexOf('npm run typecheck:tests');
-    const idxLint = ci.indexOf('npm run lint');
-    const idxTest = ci.indexOf('npm run test');
-    const idxBuild = ci.indexOf('npm run build');
-    const idxPackage = ci.indexOf('npm run package:smoke');
-    const idxIntegration = ci.indexOf('npm run test:integration');
+    // The documented chain is typecheck → typecheck:webview → typecheck:tests →
+    // lint → build:webview → test → … → build → package:smoke →
+    // test:integration. We assert presence and ordering of the load-bearing
+    // steps, not exact whitespace.
+    const idxTypecheck = stepIndex(ci, 'typecheck');
+    const idxTestTypecheck = stepIndex(ci, 'typecheck:tests');
+    const idxLint = stepIndex(ci, 'lint');
+    const idxBuildWebview = stepIndex(ci, 'build:webview');
+    const idxTest = stepIndex(ci, 'test');
+    const idxBuild = stepIndex(ci, 'build');
+    const idxPackage = stepIndex(ci, 'package:smoke');
+    const idxIntegration = stepIndex(ci, 'test:integration');
     expect(idxTypecheck).toBeGreaterThanOrEqual(0);
     expect(idxTestTypecheck).toBeGreaterThan(idxTypecheck);
     expect(idxLint).toBeGreaterThan(idxTestTypecheck);
-    expect(idxTest).toBeGreaterThan(idxLint);
+    // `build:webview` before `test`: `tests/unit/ui/sidebar/bundle-size.test.ts`
+    // measures `dist/webview/*`, and its `it.runIf(existsSync(...))` guards make
+    // a missing bundle a silent pass rather than a failure. Without this edge the
+    // caps read a stale artifact locally and no artifact at all on a clean
+    // checkout — which is how a 35% overrun of the dashboard JS cap went
+    // unreported until feature 089's T048.
+    expect(idxBuildWebview).toBeGreaterThan(idxLint);
+    expect(idxTest).toBeGreaterThan(idxBuildWebview);
     expect(idxBuild).toBeGreaterThan(idxTest);
     expect(idxPackage).toBeGreaterThan(idxBuild);
     expect(idxIntegration).toBeGreaterThan(idxPackage);
