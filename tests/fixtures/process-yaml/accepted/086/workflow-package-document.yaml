@@ -1,0 +1,61 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  name: release
+  version: 3
+spec:
+  startNodeIds:
+    - build
+  nodes:
+    - nodeId: build
+      pipelineId: build-pipeline
+      label: |-
+        Build
+        the artifact
+    - nodeId: publish
+      pipelineId: publish-pipeline
+  connections:
+    - from:
+        nodeId: build
+        portId: artifact
+      to:
+        nodeId: publish
+        portId: artifact
+      priority: 10
+      isDefault: true
+      condition:
+        left:
+          source: node-output
+          nodeId: build
+          field: status
+        operator: in
+        right:
+          - ok
+          - warn
+    - from:
+        nodeId: build
+        portId: report
+      to:
+        nodeId: publish
+        portId: notes
+      condition:
+        left:
+          source: node-status
+          nodeId: build
+        operator: equals
+        right: succeeded
+included:
+  pipelines:
+    - metadata:
+        name: build-pipeline
+        version: 1
+      spec:
+        phaseIds:
+          - compile
+  phases:
+    - metadata:
+        name: compile
+        version: 1
+      spec:
+        instruction: |-
+          Compile everything.

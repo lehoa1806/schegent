@@ -203,6 +203,15 @@ export interface WorkflowCatalogResolution {
 
 export type WorkflowCatalogMutation =
   | { readonly kind: 'create'; readonly workflowId: string }
+  /**
+   * Feature 086 (FR-037, FR-045) — the Workflow half of one confirmed package
+   * import, and the LAST of the three writes it performs (FR-038). The order is
+   * fixed: Phases, then Pipelines, then this. A Workflow's node Pipelines must
+   * already be effective before it is published, or it resolves against nothing.
+   * Mirrors `PhaseCatalogMutation['import-package']` and
+   * `PipelineCatalogMutation['import-package']`.
+   */
+  | { readonly kind: 'import-package'; readonly workflowIds: readonly string[] }
   | { readonly kind: 'edit'; readonly workflowId: string }
   | {
       readonly kind: 'duplicate';

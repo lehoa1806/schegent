@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ImportPlan, ImportPlanRow } from '../../lib/messages';
 import type { SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
 import type { SavePipelinesRequest, SavePipelinesResult } from '../../lib/save-pipelines';
+import type { SaveWorkflowsRequest, SaveWorkflowsResult } from '../../lib/save-workflows';
 import {
   IMPORT_TARGET_SCOPES,
   buildImportWrites,
@@ -26,16 +27,24 @@ import {
   runImportCommit,
   savePhaseRowFromDefinition,
   savePipelineRowFromDefinition,
+  saveWorkflowRowFromDefinition,
+  workflowImportRows,
+  type ImportLayerKey,
   type ImportLayerResult,
   type ImportTargetLayers,
   type ImportedPhaseDefinition,
-  type ImportedPipelineDefinition
+  type ImportedPipelineDefinition,
+  type ImportedWorkflowDefinition
 } from '../ProcessImport/process-import-state';
 
 const REVISIONS = Object.freeze({ user: 'user-rev-1', workspace: 'workspace-rev-1' });
 const PIPELINE_REVISIONS = Object.freeze({
   user: 'user-pipe-rev-1',
   workspace: 'workspace-pipe-rev-1'
+});
+const WORKFLOW_REVISIONS = Object.freeze({
+  user: 'user-flow-rev-1',
+  workspace: 'workspace-flow-rev-1'
 });
 
 /** Every portable field, so a dropped one is visible rather than plausible. */
@@ -126,7 +135,68 @@ const BLOCKED_PIPELINE_ROW: ImportPlanRow = {
   resourceKind: 'pipeline',
   resourceId: 'ship-it',
   name: 'Ship It',
-  reason: { code: 'dependency-absent', phaseId: 'specify' }
+  reason: { code: 'dependency-absent', dependency: { kind: 'phase', resourceId: 'specify' } }
+};
+
+/**
+ * Feature 086 T054 — every portable Workflow field, so a dropped one is visible
+ * rather than plausible. The connection carries all four of its optional fields
+ * because the write forwards the graph verbatim and a rewritten one is exactly
+ * what FR-046a forbids.
+ */
+const FULL_WORKFLOW: ImportedWorkflowDefinition = {
+  workflowId: 'ship-it-flow',
+  name: 'Ship It Flow',
+  description: 'As authored.',
+  version: 4,
+  nodes: [
+    { nodeId: 'draft', pipelineId: 'ship-it', label: 'Draft it' },
+    { nodeId: 'review', pipelineId: 'ship-it' }
+  ],
+  connections: [
+    {
+      from: { nodeId: 'draft', portId: 'out' },
+      to: { nodeId: 'review', portId: 'in' },
+      condition: {
+        left: { source: 'node-output', nodeId: 'draft', field: 'verdict' },
+        operator: 'equals',
+        right: 'ship'
+      },
+      priority: 2,
+      isDefault: false,
+      selection: 'exactlyOne'
+    }
+  ],
+  startNodeIds: ['draft']
+};
+
+/** Feature 086 — a Workflow `import` row, the third layer's write source. */
+const WORKFLOW_IMPORT_ROW: ImportPlanRow = {
+  outcome: 'import',
+  resourceKind: 'workflow',
+  resourceId: 'ship-it-flow',
+  name: 'Ship It Flow',
+  definition: {
+    workflowId: 'ship-it-flow',
+    name: 'Ship It Flow',
+    version: 1,
+    nodes: [{ nodeId: 'draft', pipelineId: 'ship-it' }],
+    connections: [],
+    startNodeIds: ['draft']
+  }
+};
+
+/** A Workflow waiting on a Pipeline — the dependency direction 086 adds. */
+const BLOCKED_WORKFLOW_ROW: ImportPlanRow = {
+  outcome: 'blocked',
+  resourceKind: 'workflow',
+  resourceId: 'ship-it-flow',
+  name: 'Ship It Flow',
+  reason: {
+    code: 'dependency-blocked',
+    dependency: { kind: 'pipeline', resourceId: 'ship-it' },
+    via: { kind: 'phase', resourceId: 'specify' }
+  }
 };
 
 /**
@@ -138,6 +208,22 @@ function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
   return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISIONS };
 }
 
+/**
+ * A plan carrying all three revision maps — what preflight produces for a
+ * document declaring a Workflow (FR-036). Kept separate from `packagePlan` for
+ * the same reason that one is separate from `plan`: the three shapes are what
+ * distinguish a writable layer from an absent one, and one fixture covering all
+ * of them would make every "held closed" case unreachable.
+ */
+function workflowPackagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
+  return { ...packagePlan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISIONS };
+}
+
+/** A references-only Workflow package: nothing to write but the Workflow itself. */
+function workflowOnlyPlan(rows: readonly ImportPlanRow[]): ImportPlan {
+  return { ...plan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISIONS };
+}
+
 const HELD = Object.freeze({ id: 'held', name: 'Held', version: 4, instruction: 'Hold.' });
 const HELD_PIPELINE = Object.freeze({
   id: 'held-pipeline',
@@ -145,8 +231,16 @@ const HELD_PIPELINE = Object.freeze({
   version: 2,
   phases: ['specify']
 });
+const HELD_WORKFLOW = Object.freeze({
+  workflowId: 'held-flow',
+  name: 'Held Flow',
+  version: 3,
+  nodes: [Object.freeze({ nodeId: 'only', pipelineId: 'held-pipeline' })],
+  connections: [],
+  startNodeIds: ['only']
+});
 
-const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [] };
+const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [], workflows: [] };
 
 describe('Feature 084 — the offerable import targets (FR-035)', () => {
   it('offers the two writable scopes and never built-in', () => {
@@ -278,6 +372,40 @@ describe('Feature 085 T035 — the plan is kind-tagged (FR-056)', () => {
     expect(resourceKindLabel(SKIP_ROW)).toBe('Phase');
   });
 
+  // Feature 086 T038. The label has to be total over the kind union, not a
+  // two-way test with a fallback: a fallback names the Workflow row "Phase",
+  // which is a wrong statement about which catalog the operator is changing
+  // rather than a missing one, and it points them at the wrong editor to fix it.
+  it('labels a Workflow row as its own kind (FR-056)', () => {
+    expect(resourceKindLabel(WORKFLOW_IMPORT_ROW)).toBe('Workflow');
+    expect(
+      resourceKindLabel({
+        outcome: 'skip',
+        resourceKind: 'workflow',
+        resourceId: 'ship-it-flow',
+        name: 'Ship It Flow',
+        presentIn: 'workspace',
+        presentRowStatus: 'shadowed'
+      })
+    ).toBe('Workflow');
+  });
+
+  it('names every kind exactly once across the row union', () => {
+    // Pins totality rather than the three cases: a fourth kind added to the
+    // contract without a label here shows up as a duplicate, because the
+    // fallback would answer with a kind that already has its own row.
+    const labels = [importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW].map(resourceKindLabel);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('states a blocked Workflow row reason naming the Pipeline it waits on', () => {
+    // The dependency direction 086 adds. A hard-coded "Phase" here would send
+    // the operator to the Phase catalog for a Pipeline that is what is missing.
+    const [line] = reasonLines(BLOCKED_WORKFLOW_ROW);
+    expect(line).toContain('Pipeline ship-it');
+    expect(line).not.toContain('Phase ship-it');
+  });
+
   it('partitions the import rows by kind, in plan order', () => {
     // The two are written by different layer saves in a fixed order (FR-038),
     // so they are separated here rather than at the write.
@@ -299,6 +427,105 @@ describe('Feature 085 T035 — the plan is kind-tagged (FR-056)', () => {
   it('treats a blocked Pipeline as ineligible, not as a Pipeline to write', () => {
     expect(eligibleRows(plan([BLOCKED_PIPELINE_ROW]))).toHaveLength(0);
     expect(pipelineImportRows(plan([BLOCKED_PIPELINE_ROW]))).toHaveLength(0);
+  });
+});
+
+describe('Feature 086 T046 — the propagated chain is rendered whole (FR-039, FR-040)', () => {
+  it('names all three links: the selected resource, the intermediate, and the root cause', () => {
+    // FR-039 asks the operator be able to "trace the chain to its origin". One
+    // line naming only the immediate dependency cannot do that: it says the
+    // Pipeline is blocked without saying what would unblock it, so the operator
+    // opens the Pipeline row, finds it also blocked, and walks the table by hand.
+    const lines = reasonLines(BLOCKED_WORKFLOW_ROW);
+    const text = lines.join(' ');
+
+    expect(text).toContain('Workflow ship-it-flow');
+    expect(text).toContain('Pipeline ship-it');
+    expect(text).toContain('Phase specify');
+  });
+
+  it('orders the chain from the selected resource to the root cause', () => {
+    // Direction is the whole point of rendering it. Reversed, the sentence tells
+    // the operator to fix the Workflow so the Phase resolves. Read off the chain
+    // line rather than the joined lines, because line one names the immediate
+    // dependency first by design and would make the joined order meaningless.
+    const chain = reasonLines(BLOCKED_WORKFLOW_ROW).slice(1).join(' ');
+
+    expect(chain.indexOf('Workflow ship-it-flow')).toBeLessThan(chain.indexOf('Pipeline ship-it'));
+    expect(chain.indexOf('Pipeline ship-it')).toBeLessThan(chain.indexOf('Phase specify'));
+  });
+
+  it('keeps the immediate dependency as its own first line', () => {
+    // The chain is additional, not a replacement: the first line still answers
+    // "what does THIS row wait on", which is the column's question, and the
+    // 085 assertion above reads it.
+    const [first] = reasonLines(BLOCKED_WORKFLOW_ROW);
+    expect(first).toContain('Pipeline ship-it');
+    expect(first).not.toContain('Phase specify');
+  });
+
+  it('points the operator at the root cause, not at the intermediate', () => {
+    // FR-040 — a consequence must be distinguishable from a root cause. Importing
+    // the Pipeline first would not help; the Phase is what is missing.
+    const chain = reasonLines(BLOCKED_WORKFLOW_ROW).slice(1).join(' ');
+    expect(chain).toContain('Phase specify');
+    expect(chain.toLowerCase()).toContain('first');
+  });
+
+  it('renders no chain line for a root-cause blocked row', () => {
+    // A `dependency-absent` or `dependency-unresolvable` row IS the origin, so
+    // there is nothing to trace. A chain line here would invent a third link.
+    expect(reasonLines(BLOCKED_PIPELINE_ROW)).toHaveLength(1);
+    expect(
+      reasonLines({
+        ...BLOCKED_PIPELINE_ROW,
+        outcome: 'blocked',
+        reason: { code: 'dependency-unresolvable', dependency: { kind: 'phase', resourceId: 'specify' } }
+      })
+    ).toHaveLength(1);
+  });
+
+  it('names the via link by its own kind, whatever that kind is', () => {
+    // `via` is a `BlockedDependency`, so its kind is read, never assumed. A
+    // hard-coded "Phase" here would misname the one case the type allows and
+    // send the operator to the wrong catalog — the defect `dependencyLabel`
+    // already exists to prevent one link up.
+    const text = reasonLines({
+      ...BLOCKED_WORKFLOW_ROW,
+      outcome: 'blocked',
+      reason: {
+        code: 'dependency-blocked',
+        dependency: { kind: 'pipeline', resourceId: 'ship-it' },
+        via: { kind: 'pipeline', resourceId: 'deep-one' }
+      }
+    }).join(' ');
+
+    expect(text).toContain('Pipeline deep-one');
+    expect(text).not.toContain('Phase deep-one');
+  });
+
+  it('renders the strings the host bounded, and bounds nothing again (FR-030)', () => {
+    // The boundary sanitizes and caps every author-supplied string on the row
+    // (`cmd-preflight-process-yaml.ts`: 64 for an identifier). Re-bounding here
+    // would be a second cap that silently disagrees with the first, and it would
+    // truncate an identifier the operator has to search the catalog for. So this
+    // asserts the value arrives verbatim — no ellipsis, no second slice.
+    const long = 'a'.repeat(64);
+    const text = reasonLines({
+      ...BLOCKED_WORKFLOW_ROW,
+      outcome: 'blocked',
+      resourceId: long,
+      reason: {
+        code: 'dependency-blocked',
+        dependency: { kind: 'pipeline', resourceId: long },
+        via: { kind: 'phase', resourceId: long }
+      }
+    }).join(' ');
+
+    expect(text).toContain(`Workflow ${long}`);
+    expect(text).toContain(`Pipeline ${long}`);
+    expect(text).toContain(`Phase ${long}`);
+    expect(text).not.toContain('…');
   });
 });
 
@@ -447,7 +674,8 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   it('appends the imported row to the chosen layer and gates on that layer revision', () => {
     const writes = buildImportWrites(plan([importRow()]), 'user', {
       phases: [HELD],
-      pipelines: []
+      pipelines: [],
+      workflows: []
     });
     expect(writes).toEqual([
       {
@@ -474,7 +702,8 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
     const unparseable = { id: 'broken', name: 'Invalid Phase', version: 1 };
     const writes = buildImportWrites(plan([importRow()]), 'workspace', {
       phases: [HELD, unparseable],
-      pipelines: []
+      pipelines: [],
+      workflows: []
     });
     expect((writes[0].request as SavePhasesRequest).phases.slice(0, 2)).toEqual([
       HELD,
@@ -483,9 +712,9 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   });
 
   it('builds nothing for a plan with no import rows', () => {
-    expect(buildImportWrites(plan([SKIP_ROW]), 'user', { phases: [HELD], pipelines: [] })).toEqual(
-      []
-    );
+    expect(
+      buildImportWrites(plan([SKIP_ROW]), 'user', { phases: [HELD], pipelines: [], workflows: [] })
+    ).toEqual([]);
   });
 
   // FR-038 — the Phase layer is written FIRST and unconditionally. A Pipeline
@@ -551,7 +780,8 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   it('appends the Pipeline row to the stored Pipeline layer, in order', () => {
     const writes = buildImportWrites(packagePlan([PIPELINE_IMPORT_ROW]), 'user', {
       phases: [],
-      pipelines: [HELD_PIPELINE]
+      pipelines: [HELD_PIPELINE],
+      workflows: []
     });
     expect((writes[0].request as SavePipelinesRequest).pipelines).toEqual([
       HELD_PIPELINE,
@@ -603,24 +833,72 @@ describe('Feature 085 T048 — the whole-commit outcome (FR-042a)', () => {
 });
 
 describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
+  const landed = (...keys: readonly ImportLayerKey[]): readonly ImportLayerResult[] =>
+    keys.map((key) => ({ key, ack: { status: 'accepted' } }));
+
   it('names the scope on a complete import', () => {
-    expect(commitOutcomeStatement('imported', 'workspace')).toContain('workspace layer');
+    expect(commitOutcomeStatement('imported', 'workspace', landed('phases'))).toContain(
+      'workspace layer'
+    );
   });
 
   it('says nothing was written on a failure', () => {
-    expect(commitOutcomeStatement('failed', 'user')).toContain('Nothing was written');
+    expect(commitOutcomeStatement('failed', 'user', [])).toContain('Nothing was written');
   });
 
   it('states that a partial write was left in place and how to finish it', () => {
     // FR-042c — no compensating delete happened, so the sentence must not imply
     // a rollback; FR-042b — the recovery is re-running the same document, which
     // is safe because an already-present id is a skip.
-    const statement = commitOutcomeStatement('partial', 'user');
+    const statement = commitOutcomeStatement('partial', 'user', [
+      ...landed('phases'),
+      { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
+    ]);
     expect(statement).toContain('user layer');
     expect(statement).toContain('still there');
     expect(statement.toLowerCase()).toContain('same document');
     for (const undone of ['rolled back', 'removed', 'reverted', 'undo']) {
       expect(statement.toLowerCase()).not.toContain(undone);
+    }
+  });
+
+  // Feature 086 T055 — with three layers "part of this document" is no longer
+  // enough: which part landed decides what the operator has to look at. The
+  // sentence reads the acks rather than the plan, so it can only name a layer
+  // that actually came back accepted.
+  it('names the one layer that landed when the second of three was refused', () => {
+    const statement = commitOutcomeStatement('partial', 'user', [
+      ...landed('phases'),
+      { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
+    ]);
+    expect(statement).toContain('Phase');
+    expect(statement).not.toContain('Pipeline');
+    expect(statement).not.toContain('Workflow');
+  });
+
+  it('names both layers that landed when only the Workflow write was refused', () => {
+    const statement = commitOutcomeStatement('partial', 'workspace', [
+      ...landed('phases', 'pipelines'),
+      { key: 'workflows', ack: { status: 'rejected', reason: 'stale-catalog' } }
+    ]);
+    expect(statement).toContain('Phase');
+    expect(statement).toContain('Pipeline');
+    expect(statement).not.toContain('Workflow');
+  });
+
+  it('offers no compensating action for either partial shape', () => {
+    // FR-042c/FR-051 — what landed stays landed, so no sentence may suggest an
+    // undo the host will not perform.
+    const shapes: readonly (readonly ImportLayerResult[])[] = [
+      [...landed('phases'), { key: 'pipelines', ack: { status: 'rejected', reason: 'r' } }],
+      [...landed('phases', 'pipelines'), { key: 'workflows', ack: { status: 'rejected', reason: 'r' } }]
+    ];
+    for (const results of shapes) {
+      const statement = commitOutcomeStatement('partial', 'user', results).toLowerCase();
+      for (const undone of ['rolled back', 'removed', 'reverted', 'undo', 'delete']) {
+        expect(statement).not.toContain(undone);
+      }
+      expect(statement).toContain('still there');
     }
   });
 });
@@ -735,10 +1013,15 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
   ): {
     readonly savePhases: ReturnType<typeof vi.fn>;
     readonly savePipelines: ReturnType<typeof vi.fn>;
+    readonly saveWorkflows: ReturnType<typeof vi.fn>;
   } {
     return {
       savePhases: vi.fn(async (_request: SavePhasesRequest) => phaseAck),
-      savePipelines: vi.fn(async (_request: SavePipelinesRequest) => pipelineAck)
+      savePipelines: vi.fn(async (_request: SavePipelinesRequest) => pipelineAck),
+      // No plan in this block declares a Workflow, so this must never be called.
+      saveWorkflows: vi.fn(async (_request: SaveWorkflowsRequest) => ({
+        status: 'accepted' as const
+      }))
     };
   }
 
@@ -751,6 +1034,10 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
       },
       savePipelines: async () => {
         order.push('pipelines');
+        return { status: 'accepted' };
+      },
+      saveWorkflows: async () => {
+        order.push('workflows');
         return { status: 'accepted' };
       }
     });
@@ -802,5 +1089,511 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
     expect(injected.savePipelines).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'workspace', expectedRevision: 'workspace-pipe-rev-1' })
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 086 T054 — the third ordered write
+// ---------------------------------------------------------------------------
+//
+// The Workflow layer is written LAST, and for the same reason the Pipeline layer
+// is written second: a node's Pipeline must already be effective before the
+// Workflow naming it is published, or the write is validated against a catalog
+// that never received it. So the sequence is Phases, Pipelines, Workflow — three
+// writes, three revision gates, three intents (FR-045, FR-046, FR-050).
+//
+// Nothing about the stopping rule or the outcome arithmetic changes: both were
+// written for "the first refusal ends the sequence" and "count the acks", which
+// are already total over three. These tests assert that rather than a rewrite.
+
+describe('Feature 086 T054 — the Workflow import rows (FR-045)', () => {
+  it('partitions the Workflow import rows, in plan order', () => {
+    const second: ImportPlanRow = {
+      outcome: 'import',
+      resourceKind: 'workflow',
+      resourceId: 'other-flow',
+      name: 'Other Flow',
+      definition: { ...FULL_WORKFLOW, workflowId: 'other-flow', name: 'Other Flow' }
+    };
+    const rows = workflowImportRows(
+      workflowPackagePlan([WORKFLOW_IMPORT_ROW, importRow(), second, BLOCKED_WORKFLOW_ROW])
+    );
+    expect(rows.map((row) => row.resourceId)).toEqual(['ship-it-flow', 'other-flow']);
+  });
+
+  it('excludes a blocked Workflow — it is not a Workflow to write', () => {
+    expect(workflowImportRows(workflowPackagePlan([BLOCKED_WORKFLOW_ROW]))).toEqual([]);
+  });
+});
+
+describe('Feature 086 T054 — the Workflow save row built from a document (FR-046a)', () => {
+  it('carries every declared field verbatim, renaming nothing', () => {
+    // Unlike the Phase and Pipeline rows there is no key to rename: the
+    // `schegent.workflows` layer is new as of feature 083, so `workflowId` is the
+    // only identity spelling the row has ever had.
+    expect(saveWorkflowRowFromDefinition(FULL_WORKFLOW)).toEqual(FULL_WORKFLOW);
+  });
+
+  it('keeps the authored graph exactly as declared, including every optional field', () => {
+    const row = saveWorkflowRowFromDefinition(FULL_WORKFLOW);
+    expect(row.nodes).toEqual(FULL_WORKFLOW.nodes);
+    expect(row.connections).toEqual(FULL_WORKFLOW.connections);
+    expect(row.startNodeIds).toEqual(FULL_WORKFLOW.startNodeIds);
+  });
+
+  it('declares no field the document left out', () => {
+    const minimal: ImportedWorkflowDefinition = {
+      workflowId: 'bare',
+      name: 'Bare',
+      version: 1,
+      nodes: [{ nodeId: 'only', pipelineId: 'ship-it' }],
+      connections: [],
+      startNodeIds: ['only']
+    };
+    expect(Object.keys(saveWorkflowRowFromDefinition(minimal)).sort()).toEqual([
+      'connections',
+      'name',
+      'nodes',
+      'startNodeIds',
+      'version',
+      'workflowId'
+    ]);
+  });
+});
+
+describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', () => {
+  const threeLayers = workflowPackagePlan([
+    importRow(),
+    PIPELINE_IMPORT_ROW,
+    WORKFLOW_IMPORT_ROW
+  ]);
+
+  it('orders the package as Phases, then Pipelines, then the Workflow', () => {
+    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
+    expect(writes.map((write) => write.key)).toEqual(['phases', 'pipelines', 'workflows']);
+  });
+
+  it('orders them by dependency, not by the order the plan happened to list', () => {
+    // The plan is deliberately reversed here. A write order read off the rows
+    // would publish a Workflow before the Pipelines its nodes name.
+    const reversed = workflowPackagePlan([WORKFLOW_IMPORT_ROW, PIPELINE_IMPORT_ROW, importRow()]);
+    expect(buildImportWrites(reversed, 'user', EMPTY_LAYERS).map((write) => write.key)).toEqual([
+      'phases',
+      'pipelines',
+      'workflows'
+    ]);
+  });
+
+  it('gates each of the three layers on its own catalog revision', () => {
+    const writes = buildImportWrites(threeLayers, 'workspace', EMPTY_LAYERS);
+    expect(writes.map((write) => write.request.expectedRevision)).toEqual([
+      'workspace-rev-1',
+      'workspace-pipe-rev-1',
+      'workspace-flow-rev-1'
+    ]);
+  });
+
+  it('takes all three revisions from the scope the operator chose', () => {
+    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
+    expect(writes.map((write) => write.request.expectedRevision)).toEqual([
+      'user-rev-1',
+      'user-pipe-rev-1',
+      'user-flow-rev-1'
+    ]);
+  });
+
+  it('declares exactly one intent per layer, naming every id it adds', () => {
+    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
+    expect(writes.map((write) => write.request.mutation)).toEqual([
+      { kind: 'import-package', phaseIds: ['brought-in'] },
+      { kind: 'import-package', pipelineIds: ['ship-it'] },
+      { kind: 'import-package', workflowIds: ['ship-it-flow'] }
+    ]);
+  });
+
+  it('appends the Workflow row to the stored Workflow layer, in order', () => {
+    const writes = buildImportWrites(threeLayers, 'user', {
+      phases: [],
+      pipelines: [],
+      workflows: [HELD_WORKFLOW]
+    });
+    const workflowWrite = writes[writes.length - 1].request as SaveWorkflowsRequest;
+    expect(workflowWrite.workflows).toEqual([
+      HELD_WORKFLOW,
+      saveWorkflowRowFromDefinition(WORKFLOW_IMPORT_ROW.definition as ImportedWorkflowDefinition)
+    ]);
+  });
+
+  // The references-only package: every Pipeline and Phase it names is already in
+  // the catalog, so there is exactly one layer to write.
+  it('writes only the Workflow layer for a package that supplies nothing else', () => {
+    const writes = buildImportWrites(
+      workflowOnlyPlan([WORKFLOW_IMPORT_ROW, SKIP_ROW]),
+      'user',
+      EMPTY_LAYERS
+    );
+    expect(writes.map((write) => write.key)).toEqual(['workflows']);
+    expect(writes[0].request.expectedRevision).toBe('user-flow-rev-1');
+  });
+
+  // The same rule the Pipeline half already obeys (FR-040): a layer with no gate
+  // to present is not written at all, and neither is anything else — half a
+  // package is the one outcome no requirement here admits.
+  it('builds nothing at all when a Workflow row has no revision to gate on', () => {
+    expect(
+      buildImportWrites(packagePlan([importRow(), WORKFLOW_IMPORT_ROW]), 'user', EMPTY_LAYERS)
+    ).toEqual([]);
+  });
+
+  it('still builds the two-layer package unchanged when no Workflow row is present', () => {
+    const writes = buildImportWrites(
+      packagePlan([importRow(), PIPELINE_IMPORT_ROW]),
+      'user',
+      EMPTY_LAYERS
+    );
+    expect(writes.map((write) => write.key)).toEqual(['phases', 'pipelines']);
+  });
+});
+
+describe('Feature 086 T054 — confirmation with a Workflow in the plan (FR-050)', () => {
+  it('confirms a three-layer package', () => {
+    const gate = {
+      state: 'planned' as const,
+      plan: workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]),
+      scope: 'user' as const
+    };
+    expect(confirmBlockedReason(gate)).toBeNull();
+  });
+
+  it('confirms a references-only Workflow package', () => {
+    const gate = {
+      state: 'planned' as const,
+      plan: workflowOnlyPlan([WORKFLOW_IMPORT_ROW]),
+      scope: 'user' as const
+    };
+    expect(confirmBlockedReason(gate)).toBeNull();
+  });
+
+  it('holds closed a Workflow plan carrying no Workflow revision, and says why', () => {
+    const gate = {
+      state: 'planned' as const,
+      plan: packagePlan([WORKFLOW_IMPORT_ROW]),
+      scope: 'user' as const
+    };
+    const reason = confirmBlockedReason(gate);
+    expect(reason).toContain('Workflow catalog revision');
+    expect(reason).toContain('again');
+  });
+});
+
+describe('Feature 086 T054 — projecting the third layer’s ack (FR-042, FR-051)', () => {
+  const threeKinds = workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]);
+
+  it('reports the Workflow row imported when its own layer was accepted', () => {
+    const results = projectCommitResults(threeKinds, 'workspace', [
+      { key: 'phases', ack: { status: 'accepted' } },
+      { key: 'pipelines', ack: { status: 'accepted' } },
+      { key: 'workflows', ack: { status: 'accepted' } }
+    ]);
+    expect(results[2]).toMatchObject({ resourceId: 'ship-it-flow', outcome: 'imported' });
+    expect(results[2].detail).toContain('workspace');
+  });
+
+  // FR-051's second partial shape, as the operator sees it: two layers say
+  // imported and the third says why it did not, in one table.
+  it('reports the Phases and Pipeline imported and the Workflow failed', () => {
+    const results = projectCommitResults(threeKinds, 'user', [
+      { key: 'phases', ack: { status: 'accepted' } },
+      { key: 'pipelines', ack: { status: 'accepted' } },
+      { key: 'workflows', ack: { status: 'rejected', reason: 'stale-catalog' } }
+    ]);
+    expect(results[0].outcome).toBe('imported');
+    expect(results[1].outcome).toBe('imported');
+    expect(results[2].outcome).toBe('failed');
+    expect(results[2].detail).toContain('reapply');
+  });
+
+  it('uses the Workflow rejection formatter for a Workflow row', () => {
+    // Not the Pipeline formatter: a Workflow rejection can carry the suppressed
+    // ancestry note, which the Pipeline formatter would drop.
+    const results = projectCommitResults(threeKinds, 'user', [
+      { key: 'phases', ack: { status: 'accepted' } },
+      { key: 'pipelines', ack: { status: 'accepted' } },
+      {
+        key: 'workflows',
+        ack: {
+          status: 'rejected',
+          reason: 'workflow-validation',
+          result: {
+            errors: [
+              { workflowId: 'ship-it-flow', field: 'nodes[0].pipelineId', message: 'unknown Pipeline' }
+            ],
+            ancestryChecksSuppressed: true
+          }
+        }
+      }
+    ]);
+    expect(results[2].detail).toContain('nodes[0].pipelineId');
+    expect(results[2].detail).toContain('unknown Pipeline');
+    expect(results[2].detail).toContain('cycle');
+  });
+
+  it('says the Workflow layer was never reached rather than borrowing a reason', () => {
+    const results = projectCommitResults(threeKinds, 'user', [
+      { key: 'phases', ack: { status: 'accepted' } },
+      { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
+    ]);
+    expect(results[1].detail).toContain('stale-catalog');
+    expect(results[2].outcome).toBe('failed');
+    expect(results[2].detail).toContain('stopped before this layer');
+    expect(results[2].detail).not.toContain('stale-catalog');
+  });
+});
+
+describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)', () => {
+  const threeLayers = workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]);
+
+  function deps(
+    phaseAck: SavePhasesResult,
+    pipelineAck: SavePipelinesResult,
+    workflowAck: SaveWorkflowsResult
+  ): {
+    readonly savePhases: ReturnType<typeof vi.fn>;
+    readonly savePipelines: ReturnType<typeof vi.fn>;
+    readonly saveWorkflows: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      savePhases: vi.fn(async (_request: SavePhasesRequest) => phaseAck),
+      savePipelines: vi.fn(async (_request: SavePipelinesRequest) => pipelineAck),
+      saveWorkflows: vi.fn(async (_request: SaveWorkflowsRequest) => workflowAck)
+    };
+  }
+
+  it('sends the three writes in dependency order', async () => {
+    const order: string[] = [];
+    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, {
+      savePhases: async () => {
+        order.push('phases');
+        return { status: 'accepted' };
+      },
+      savePipelines: async () => {
+        order.push('pipelines');
+        return { status: 'accepted' };
+      },
+      saveWorkflows: async () => {
+        order.push('workflows');
+        return { status: 'accepted' };
+      }
+    });
+    expect(order).toEqual(['phases', 'pipelines', 'workflows']);
+    expect(report.outcome).toBe('imported');
+  });
+
+  // The stopping rule is unchanged and total over three: the first refusal ends
+  // the sequence, so a refused Pipeline write means the Workflow is never sent.
+  it('never sends the Workflow write when the Pipeline write was refused', async () => {
+    const injected = deps(
+      { status: 'accepted' },
+      { status: 'rejected', reason: 'stale-catalog' },
+      { status: 'accepted' }
+    );
+    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, injected);
+    expect(injected.savePipelines).toHaveBeenCalledTimes(1);
+    expect(injected.saveWorkflows).not.toHaveBeenCalled();
+    expect(report.outcome).toBe('partial');
+  });
+
+  // FR-051 — the second partial shape. Two writes landed; nothing is retracted,
+  // and the only way to see that from here is that no further write is sent.
+  it('sends nothing further to undo the first two when the third is refused', async () => {
+    const injected = deps(
+      { status: 'accepted' },
+      { status: 'accepted' },
+      { status: 'rejected', reason: 'stale-catalog' }
+    );
+    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, injected);
+    expect(injected.savePhases).toHaveBeenCalledTimes(1);
+    expect(injected.savePipelines).toHaveBeenCalledTimes(1);
+    expect(injected.saveWorkflows).toHaveBeenCalledTimes(1);
+    expect(report.outcome).toBe('partial');
+    expect(report.rows[2].outcome).toBe('failed');
+  });
+
+  it('reports imported only when all three acks were accepted', async () => {
+    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+    const report = await runImportCommit(threeLayers, 'workspace', EMPTY_LAYERS, injected);
+    expect(report.outcome).toBe('imported');
+    expect(report.results.map((result) => result.key)).toEqual([
+      'phases',
+      'pipelines',
+      'workflows'
+    ]);
+  });
+
+  it('carries the Workflow request through to the save it belongs to', async () => {
+    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+    await runImportCommit(threeLayers, 'workspace', EMPTY_LAYERS, injected);
+    expect(injected.saveWorkflows).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'workspace',
+        expectedRevision: 'workspace-flow-rev-1',
+        mutation: { kind: 'import-package', workflowIds: ['ship-it-flow'] }
+      })
+    );
+  });
+
+  it('sends only the Workflow write for a references-only package', async () => {
+    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+    const report = await runImportCommit(
+      workflowOnlyPlan([WORKFLOW_IMPORT_ROW]),
+      'user',
+      EMPTY_LAYERS,
+      injected
+    );
+    expect(injected.savePhases).not.toHaveBeenCalled();
+    expect(injected.savePipelines).not.toHaveBeenCalled();
+    expect(injected.saveWorkflows).toHaveBeenCalledTimes(1);
+    expect(report.outcome).toBe('imported');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 086 — FR-030
+// ---------------------------------------------------------------------------
+
+// Feature 086 T071 — what a capped defect list tells the operator.
+//
+// FR-030 has two halves that pull in opposite directions, and both are asserted
+// here because each one on its own reads as a bug.
+//
+// The first: author-supplied text arrives VERBATIM. The boundary already
+// sanitized it and already capped it — 32 or 48 for a field path by resource kind,
+// 512 for a message, 64 for an identifier — so a second cap in the view would
+// disagree with the first and truncate a field path the operator has to navigate
+// by. `reasonLines` therefore adds no ellipsis and slices nothing.
+//
+// The second: the LIST is capped at twenty, and a capped list must not read as a
+// complete one. `totalDefects` is deliberately the pre-cap count, so the view can
+// say how many it is not showing. Without that line the operator fixes the twenty
+// they can see, re-imports, and finds the row still invalid for reasons that were
+// never named — which is the failure mode of a bound that hides itself.
+//
+// The Workflow kind is the one that makes this concrete: a Workflow document
+// carries three catalog levels, so it is the kind most likely to produce more than
+// twenty defects at once.
+describe('Feature 086 T071 — a capped defect list says it was capped (FR-030)', () => {
+  const DEFECTS_MAX = 20;
+
+  function defect(index: number): { field: string; code: string; message: string } {
+    return {
+      field: `connections[${index}].condition.left.source`,
+      code: 'unknown-operand',
+      message: `Saw "step-${index}".`
+    };
+  }
+
+  /** A row shaped as the boundary emits one: the list sliced, the count not. */
+  function invalidWorkflowRow(shown: number, total: number): ImportPlanRow {
+    return {
+      outcome: 'invalid',
+      resourceKind: 'workflow',
+      resourceId: 'ship-it-flow',
+      defects: Array.from({ length: shown }, (_, index) => defect(index)),
+      totalDefects: total
+    };
+  }
+
+  it('reports how many defects it is not showing', () => {
+    const lines = reasonLines(invalidWorkflowRow(DEFECTS_MAX, 57));
+
+    // One line per shown defect, plus the overflow line — nothing dropped to make
+    // room for it.
+    expect(lines).toHaveLength(DEFECTS_MAX + 1);
+    expect(lines[lines.length - 1]).toBe('and 37 more not shown.');
+  });
+
+  it('counts the overflow from the total the host sent, not from the cap', () => {
+    // The arithmetic must be `total - shown`, not `total - 20`. They agree at the
+    // cap and diverge everywhere else, so a hard-coded 20 would be invisible in the
+    // common case and wrong the moment a future bound differs.
+    expect(reasonLines(invalidWorkflowRow(3, 9)).at(-1)).toBe('and 6 more not shown.');
+  });
+
+  it('adds no overflow line when the list is complete', () => {
+    // The other direction, and the more damaging one: a complete list that claims
+    // to be truncated sends the operator looking for defects that do not exist.
+    const lines = reasonLines(invalidWorkflowRow(4, 4));
+    expect(lines).toHaveLength(4);
+    expect(lines.join(' ')).not.toContain('not shown');
+  });
+
+  it('adds no overflow line for a single defect either', () => {
+    // The 084 Phase shape, still the common case. `totalDefects === 1` with one
+    // defect shown must render exactly the one line.
+    expect(reasonLines(INVALID_ROW)).toEqual(['version: Saw "soon".']);
+  });
+
+  it('renders each defect as its field and message, verbatim', () => {
+    // No re-slice and no ellipsis, at the widest widths the boundary permits: 48
+    // for a Workflow field path, 512 for a message. A view-side cap here would cut
+    // `connections[0].condition.left.source` mid-word and name a field the operator
+    // cannot find.
+    const field = `connections[0].${'a'.repeat(48 - 'connections[0].'.length)}`;
+    const message = 'm'.repeat(512);
+    const [line] = reasonLines({
+      outcome: 'invalid',
+      resourceKind: 'workflow',
+      resourceId: 'ship-it-flow',
+      defects: [{ field, code: 'unknown-operand', message }],
+      totalDefects: 1
+    });
+
+    expect(line).toBe(`${field}: ${message}`);
+    expect(line).not.toContain('…');
+    expect(line).not.toContain('...');
+  });
+
+  it('renders a defect the host sanitized to empty without inventing text', () => {
+    // `sanitize` can redact a value down to nothing. The line is then structurally
+    // odd but honest; substituting a placeholder here would be the view describing
+    // a defect it does not know about.
+    expect(
+      reasonLines({
+        outcome: 'invalid',
+        resourceKind: 'workflow',
+        resourceId: null,
+        defects: [{ field: '', code: '', message: '' }],
+        totalDefects: 1
+      })
+    ).toEqual([': ']);
+  });
+
+  it('bounds nothing on a skip row either, whatever its identifier (FR-030)', () => {
+    // The 085 assertion covered blocked rows; a skip row also renders an
+    // author-supplied identifier, through a different arm. Both layers named in
+    // the sentence are host-supplied enums, so the only free text is the id.
+    const long = 'z'.repeat(64);
+    const [line] = reasonLines({ ...SKIP_ROW, outcome: 'skip', resourceId: long });
+    expect(line).not.toContain('…');
+    // The sentence is about the layer the row is already in, and it says which.
+    expect(line).toContain('user');
+    expect(line).toContain('invalid');
+  });
+
+  it('renders author text without interpreting it as markup', () => {
+    // Every line is plain text, interpolated into a sentence and handed to Svelte,
+    // which escapes it on render. Nothing here builds HTML, so an author-supplied
+    // angle bracket stays an angle bracket — asserted so a future "render the
+    // field path as code" change cannot quietly reach for `{@html}`.
+    const [line] = reasonLines({
+      outcome: 'invalid',
+      resourceKind: 'workflow',
+      resourceId: 'ship-it-flow',
+      defects: [
+        { field: 'nodes[0].nodeId', code: 'x', message: '<img src=x onerror=alert(1)>' }
+      ],
+      totalDefects: 1
+    });
+    expect(line).toBe('nodes[0].nodeId: <img src=x onerror=alert(1)>');
   });
 });

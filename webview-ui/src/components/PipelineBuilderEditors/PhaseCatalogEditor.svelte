@@ -162,14 +162,16 @@
    * make a commit erase the layer it wrote to.
    */
   const importLayers = $derived(
-    // Feature 085 T048 — both catalogs, because a confirmed package writes both
-    // and each write sends its whole layer. The Pipeline records come off the
-    // same snapshot for the same reason the Phase records do: it is the one the
-    // host resolved, so the layer an import appends to is authoritative by
-    // construction rather than by a check.
+    // Feature 085 T048 / 086 T054 — all three catalogs, because a confirmed
+    // package writes all three and each write sends its whole layer. The
+    // Pipeline and Workflow records come off the same snapshot for the same
+    // reason the Phase records do: it is the one the host resolved, so the layer
+    // an import appends to is authoritative by construction rather than by a
+    // check.
     storedWritableLayers(
       snapshot.phaseCatalog?.records ?? [],
-      snapshot.pipelineCatalog?.records ?? []
+      snapshot.pipelineCatalog?.records ?? [],
+      snapshot.workflowCatalog?.records ?? []
     )
   );
   const importUnavailable = $derived(

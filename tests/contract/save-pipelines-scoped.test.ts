@@ -277,6 +277,44 @@ describe('gate 2 — envelope validation at the transport boundary', () => {
       validateInboundMessage({ ...valid, payload: { ...valid.payload, mutation } })
     ).toMatchObject({ ok: false, reason: 'invalid-payload' });
   });
+
+  // Feature 085 (FR-036) shipped an `import-package` arm in the handler and a
+  // webview that emits it, but not in this gate — so the envelope was dropped at
+  // the transport boundary and the package import never reached the code that
+  // implements it. Every other test in the suite dispatches through the router
+  // directly, which is exactly why the gap was invisible. These two cases pin the
+  // arm from the outside: the set-naming kind is the only mutation carrying no
+  // `pipelineId`, and a malformed set is refused here rather than left to an
+  // algebra that would report it as a mutation mismatch.
+  describe('import-package (085 FR-036)', () => {
+    const packageEnvelope = (mutation: unknown) => ({
+      ...valid,
+      payload: { ...valid.payload, mutation }
+    });
+
+    it('accepts a package envelope naming its declared pipeline ids', () => {
+      expect(
+        validateInboundMessage(
+          packageEnvelope({ kind: 'import-package', pipelineIds: ['custom-flow'] })
+        )
+      ).toMatchObject({ ok: true });
+    });
+
+    it.each([
+      { kind: 'import-package' },
+      { kind: 'import-package', pipelineIds: [] },
+      { kind: 'import-package', pipelineIds: 'custom-flow' },
+      { kind: 'import-package', pipelineIds: [''] },
+      { kind: 'import-package', pipelineIds: ['x'.repeat(65)] },
+      { kind: 'import-package', pipelineIds: [123] },
+      { kind: 'import-package', pipelineIds: ['custom-flow'], pipelineId: 'custom-flow' }
+    ])('rejects a malformed package mutation %o', (mutation) => {
+      expect(validateInboundMessage(packageEnvelope(mutation))).toMatchObject({
+        ok: false,
+        reason: 'invalid-payload'
+      });
+    });
+  });
 });
 
 describe('gate 1 — host configuration operations unavailable', () => {

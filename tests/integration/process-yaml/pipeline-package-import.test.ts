@@ -514,7 +514,7 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     expect(blocked).toMatchObject({
       resourceKind: 'pipeline',
       resourceId: 'ship-it',
-      reason: { code: 'dependency-absent', phaseId: 'polish' }
+      reason: { code: 'dependency-absent', dependency: { kind: 'phase', resourceId: 'polish' } }
     });
   });
 

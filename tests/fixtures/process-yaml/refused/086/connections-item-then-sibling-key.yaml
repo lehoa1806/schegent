@@ -1,0 +1,8 @@
+apiVersion: schegent/v1
+kind: Workflow
+spec:
+  connections:
+    - from:
+        nodeId: build
+        portId: artifact
+    startNodeIds: build

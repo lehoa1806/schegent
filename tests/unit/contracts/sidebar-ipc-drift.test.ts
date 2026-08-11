@@ -116,7 +116,7 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       payload
     });
 
-    it('accepts both arms of the export union', () => {
+    it('accepts all three arms of the export union', () => {
       expect(
         Authoritative.isCmdExportProcessYaml(
           exportCmd({ resourceKind: 'phase', resourceId: 'specify' })
@@ -130,6 +130,55 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
           `pipeline export with inclusion '${inclusion}' must be accepted`
         ).toBe(true);
       }
+      // Feature 086 (T005, T068) — three modes, because a Workflow's closure is
+      // two levels deep. The middle one is what a Pipeline export has no use for.
+      for (const inclusion of [
+        'references-only',
+        'include-pipelines',
+        'include-closure'
+      ] as const) {
+        expect(
+          Authoritative.isCmdExportProcessYaml(
+            exportCmd({ resourceKind: 'workflow', resourceId: 'ship-it', inclusion })
+          ),
+          `workflow export with inclusion '${inclusion}' must be accepted`
+        ).toBe(true);
+      }
+    });
+
+    it('does not let the two kinds borrow each other’s inclusion vocabulary', () => {
+      // The three arms exist so no illegal kind/mode pair is constructible. A
+      // guard that checked `inclusion` against the UNION of both vocabularies
+      // would accept both of these and the type would be a comment again.
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({
+            resourceKind: 'pipeline',
+            resourceId: 'default',
+            inclusion: 'include-closure'
+          })
+        ),
+        'a Pipeline has one level of dependency and no closure mode'
+      ).toBe(false);
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({
+            resourceKind: 'workflow',
+            resourceId: 'ship-it',
+            inclusion: 'include-referenced'
+          })
+        ),
+        'a Workflow has two levels, so `include-referenced` names nothing'
+      ).toBe(false);
+    });
+
+    it('rejects a Workflow export with a missing inclusion', () => {
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'workflow', resourceId: 'ship-it' })
+        ),
+        'inclusion is required for a Workflow — it is the operator’s disclosure choice'
+      ).toBe(false);
     });
 
     it('rejects a Phase export carrying an inclusion choice a Phase cannot have', () => {
@@ -161,9 +210,11 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     });
 
     it('rejects an export naming a kind this format does not admit', () => {
+      // 085 spelled this case `workflow`, which 086 makes legal. `queue` stands
+      // in for the same thing: a kind outside the closed set the format admits.
       expect(
         Authoritative.isCmdExportProcessYaml(
-          exportCmd({ resourceKind: 'workflow', resourceId: 'default' })
+          exportCmd({ resourceKind: 'queue', resourceId: 'default' })
         )
       ).toBe(false);
       expect(

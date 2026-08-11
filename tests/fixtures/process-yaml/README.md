@@ -1,9 +1,13 @@
 # Process-YAML conformance corpus
 
-The authority for everything in this directory is
+The authority for the **grammar** — what the reader accepts as syntax, and what
+it refuses — is
 [`specs/085-pipeline-package-exchange/contracts/yaml-grammar.md`](../../../../specs/085-pipeline-package-exchange/contracts/yaml-grammar.md).
-Where a fixture and the grammar disagree, the grammar is right and the fixture is
-a bug.
+The authority for the **third document kind**, `kind: Workflow`, is
+[`specs/086-workflow-package-exchange/contracts/workflow-yaml-grammar.md`](../../../../specs/086-workflow-package-exchange/contracts/workflow-yaml-grammar.md),
+which adds no production to the grammar and so defers to the 085 contract on
+every syntactic question. Where a fixture and the grammar disagree, the grammar
+is right and the fixture is a bug.
 
 The corpus is driven by [`tests/contract/process-yaml-grammar.test.ts`](../../contract/process-yaml-grammar.test.ts).
 
@@ -28,6 +32,15 @@ refused/<vintage>/<name>.refusal.json the exact { code, message } it refuses wit
   bound it. Every fixture in `accepted/085/` was refused by the pre-change
   reader as `block sequences are not part of this format`, which is what makes
   each of them genuinely new rather than an accident of the old grammar.
+- **`086`** — the Workflow document kind. This half adds **no** production. It
+  exists because the Workflow kind reaches the subset's deepest nesting — a
+  condition literal list inside a connection item, four levels below `spec:` —
+  and someone has to prove that depth parses under the grammar as it already
+  stands. `accepted/086/` is that proof; `refused/086/` proves the 085
+  narrowings still bite down there (a flow sequence, a bare dash, and an item
+  sharing a level with a sibling key are all still refused, at the token). If a
+  fixture in this vintage ever needs a scanner change to pass, the feature was
+  mis-planned — see the T001 gate in the runner.
 
 The widening removes exactly one 084 refusal — an outright block sequence — so
 that case is deliberately absent from `refused/084/`. What stands in its place

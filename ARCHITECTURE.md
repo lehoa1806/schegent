@@ -453,13 +453,23 @@ Workflow's own ports on read rather than storing them. The full contract is in
 the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 [src/services/process-yaml/](src/services/process-yaml/) is the portable
-exchange format for the first two of those families — `schegent/v1` `Phase`
-documents and `Pipeline` documents, the latter optionally carrying the complete
-definitions of the Phases it references so one file is a runnable package. It
-imports no `vscode` and no configuration, and it imports the catalogs' own field
-bounds from
-[process-definition-validator.ts](src/config/process-definition-validator.ts) and
-[pipeline-definition-validator.ts](src/config/pipeline-definition-validator.ts)
+exchange format for all three of those families — `schegent/v1` `Phase`,
+`Pipeline`, and `Workflow` documents. The latter two optionally carry the
+complete definitions of what they reference, so one file is a runnable package:
+a Pipeline document may include its Phases, and a Workflow document may include
+its Pipelines **and**, through them, those Pipelines' Phases. Because a Workflow
+has two levels of dependency where a Pipeline has one, it has its own inclusion
+vocabulary rather than reusing the Pipeline's: `references-only`,
+`include-pipelines`, `include-closure`. Each mode is still a single choice that
+fixes the depth —
+[workflow-export-closure.ts](src/services/process-yaml/workflow-export-closure.ts)
+resolves node → Pipeline → Phase and de-duplicates, so a Phase reached by two
+Pipelines is written once and a Pipeline reached by two nodes likewise. The service imports no `vscode` and no configuration,
+and it imports the catalogs' own field bounds from
+[process-definition-validator.ts](src/config/process-definition-validator.ts),
+[pipeline-definition-validator.ts](src/config/pipeline-definition-validator.ts),
+and
+[workflow-definition-validator.ts](src/config/workflow-definition-validator.ts)
 rather than restating them, so the format cannot drift from what the catalogs
 accept. The scanner reads a deliberately small YAML subset rather than
 delegating to a general parser, and
@@ -467,16 +477,31 @@ delegating to a general parser, and
 both the scanner and the serializer consult, so what one refuses to write the
 other refuses to read.
 
+A Workflow's conditions cross the format as **structured data** —
+`{ left, operator, right }` over a closed operand set — never as a string. There
+is no expression language in a Workflow document, so there is nothing to parse
+on import and nothing to sandbox; the graph validator compares the fields and
+the runtime compares them again. The one field on the whole exchange path that
+*is* an expression, a Phase's `retryCondition`, stays inert text here: the
+service validates its presence, carries it verbatim, and lets
+[retry-condition.ts](src/lib/retry-condition.ts) be the only thing that ever
+reads it, at run time.
+
 Two oracles answer two different questions about the same catalog, and never
 from one read:
 [import-planner.ts](src/services/process-yaml/import-planner.ts) answers
 *presence* — scanning stored rows at every status, `shadowed` and `invalid`
 included, so a write cannot silently destroy authored work — while
 [package-resolver.ts](src/services/process-yaml/package-resolver.ts) answers
-*resolution* against the effective Phase catalog, because a shadowed or invalid
-row is not what runs. A package can therefore legitimately show a Phase row as
-`skip` beside a Pipeline row `blocked` on that same id. The full rationale is in
-the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
+*resolution* against the effective catalog, because a shadowed or invalid row is
+not what runs. A package can therefore legitimately show a Phase row as `skip`
+beside a Pipeline row `blocked` on that same id. With three levels the blocked
+reason also propagates: a Workflow blocked because its Pipeline is blocked
+reports the chain to its root cause, so the operator is pointed at the Phase to
+fix rather than at the intermediate. Export reads the *effective* catalog for
+the opposite reason — what it writes must be the definition that actually runs.
+The full rationale is in the workspace-root
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ### IPC and Webview (`src/contracts/`, `src/ui/sidebar/`, `src/ui/dashboard/`)
 
@@ -506,11 +531,20 @@ changes no extension state, and `CMD_PREFLIGHT_PROCESS_YAML` reads one chosen
 document and returns a plan. The import commits through the pre-existing catalog
 saves, so it inherits their revision gate, mutation-intent check, and trust gate
 rather than declaring a second write path: a Phase document through
-`CMD_SAVE_PHASES`, and a Pipeline package through **both** — Phases first, then
-`CMD_SAVE_PIPELINES` — each write carrying its own `expectedRevision` and its own
-single `import-package` intent. The order is load-bearing (a Pipeline written
-first would reference Phases the catalog does not yet have), and a rejection
-stops the sequence without retracting what already landed. Both dialogs are
+`CMD_SAVE_PHASES`, a Pipeline package through **both** — Phases first, then
+`CMD_SAVE_PIPELINES` — and a Workflow package through all **three**, adding
+`CMD_SAVE_WORKFLOWS` last. Each write carries its own `expectedRevision` and its
+own single `import-package` intent naming that layer's target set; a document
+supplying fewer layers performs fewer writes and never merges two into one
+intent to save a write. The order is load-bearing (a Pipeline written first would
+reference Phases the catalog does not yet have, and a Workflow written first
+would reference Pipelines it does not yet have), and a rejection stops the
+sequence without retracting what already landed. Whichever prefix landed stays
+written and the outcome is reported as partial — re-running the same document is
+the recovery path, because the presence scan turns the already-written rows into
+`skip` rows, so the retry is self-healing at whatever depth it stopped. There is
+no compensating delete: it would remove rows an operator may already have edited,
+on a failure path where no operator confirmed a destructive write. Both dialogs are
 injected seams wired in [src/extension.ts](src/extension.ts), so no filesystem
 path crosses the IPC boundary in either direction. Operator documentation:
 [docs/features/phase-yaml-exchange.md](docs/features/phase-yaml-exchange.md).

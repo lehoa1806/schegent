@@ -75,6 +75,19 @@ The trust model has three layers:
 
 The webview (the sidebar Svelte UI) is **untrusted with respect to mutating host state**. Every operator-action IPC message is sanitized at the host boundary; the host re-validates every input. The webview is the messenger, not the source of truth.
 
+### An imported process document is not a fourth trust layer
+
+The YAML exchange ([features/phase-yaml-exchange.md](../features/phase-yaml-exchange.md)) reads a file the operator did not necessarily write, which makes it worth stating plainly where it sits: it adds **no** trust boundary, and the third document kind (`Workflow`, feature 086) adds none either. It is a transport into the same three catalogs, gated by the same capabilities, that an operator could already have typed by hand.
+
+Four properties are what make that true rather than merely intended:
+
+- **No new authority.** An imported Phase is gated by `allowCustomPhases`, an imported Pipeline additionally by `allowPipelineOverrides`, an imported Workflow additionally by `allowWorkflowOverrides` — the same four scopes above, resolved by the same ladder, each re-read at commit rather than inherited from the preflight. A document cannot grant itself a capability, raise a scope, or choose which scope it lands in.
+- **No new parser.** The exchange reads a closed YAML subset with its own scanner, not a general library. Anchors, aliases, and merge keys — a general parser's amplification and aliasing surface on a file you did not write — cannot be expressed, so they cannot be expanded. The size bound is checked before the scanner is entered, so an oversized file is never parsed at all. The scanner, parser, and scalar-style modules are pinned by digest, so a refactor that widens the accepted language fails the build rather than shipping.
+- **No new evaluator.** This is the property most at risk from the third kind, because a Workflow's connections are conditional. A condition is structured data (`{ left, operator, right? }`) over closed enums, never an expression string, so T22's mitigation covers the imported case with nothing added. A Phase's `retryCondition` is the one expression the format carries, and to the exchange it is inert text: validated for presence, carried verbatim, never parsed — T11's sandboxed evaluator remains the only thing that ever reads it, at run time. The capability gate keys on the field's presence, never on its contents, so the import path has no reason to look inside it.
+- **No path across the IPC boundary.** The open and save dialogs run host-side; no plan row, audit payload, or error message carries a filesystem path in either direction. An export write failure reports a generic sentence precisely because an adapter's own error text can name the location it tried to write. This is the T4 paths-free discipline applied to a second surface, not an exception to it.
+
+What the exchange *does* add is a decision the operator has to make, which is why the preflight writes nothing: a document is inspected first, resource by resource, and an import never overwrites anything already present in any layer at any status. See [Decisions you make as an operator](#decisions-you-make-as-an-operator).
+
 ## Sanitization is centralized
 
 Every operator-controllable string that flows to disk passes through one redaction set defined at `src/lib/logger.ts`. The same `SECRET_PATTERNS` redacts:
@@ -280,6 +293,7 @@ Each rule has a specific failure mode it prevents. Together, they enforce the th
 - **Do you trust the CLI binary?** Verify `schegent.cli.path` points to a binary you installed.
 - **Do you want unredacted bytes on disk?** Leave `schegent.logging.verbose` off; the raw transcript is still written.
 - **Do you want the wake-up scheduler?** Off by default; on requires OS-level scheduling and per-invocation env-scrubbing.
+- **Do you trust the process document you are importing?** The preflight tells you exactly what a commit would write, resource by resource, and writes nothing itself. A package can carry a lot — a Workflow document may bring several Pipelines and all their Phases — and every one of them is instruction text that will be sent to the CLI if you run it. Read the plan, not just the file name.
 - **How often do you review the audit log?** It is your evidence trail; treat it accordingly.
 
 These choices belong to you. Schegent's job is to make the mechanisms transparent so you can make informed choices.

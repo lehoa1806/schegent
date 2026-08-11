@@ -24,6 +24,16 @@ import {
   PIPELINE_METADATA_KEY_ORDER,
   PIPELINE_SPEC_KEY_ORDER,
   SPEC_KEY_ORDER,
+  WORKFLOW_CONDITION_KEY_ORDER,
+  WORKFLOW_CONNECTION_KEY_ORDER,
+  WORKFLOW_ENDPOINT_KEY_ORDER,
+  WORKFLOW_INCLUDED_KEY_ORDER,
+  WORKFLOW_METADATA_KEY_ORDER,
+  WORKFLOW_NODE_KEY_ORDER,
+  WORKFLOW_OPERAND_KEY_ORDER,
+  WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER,
+  WORKFLOW_SPEC_KEY_ORDER,
+  emitEntry,
   emitKey,
   emitMapping,
   emitMappingSequence,
@@ -507,5 +517,178 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
       emitMapping(bodyIndent, ['instruction'], item)
     );
     expect(textAt(parsed(text), ['phases', 0, 'instruction'])).toBe('first\nsecond');
+  });
+});
+
+// Feature 086 T008 — the Workflow package document's nine key orders
+// (contracts/workflow-yaml-grammar.md §2), test-first.
+//
+// Nothing below reaches for a new emit primitive. That is the point: 086 widens
+// the grammar by ZERO productions, so a Workflow document must be expressible in
+// the exact primitives 084 and 085 already shipped. If one of these tests needed
+// a tenth emitter, the grammar would have moved and the T001 gate would be lying.
+describe('yaml-serializer — declared key order for the Workflow mappings', () => {
+  it('holds every order the Workflow format writes as a constant in this module', () => {
+    // The same five keys as PACKAGE_DOCUMENT_KEY_ORDER; a separate constant
+    // because each order is ALSO the unknown-key oracle on read, and a Workflow
+    // document that drifts from the Pipeline one must be free to say so.
+    expect(WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER).toEqual([
+      'apiVersion',
+      'kind',
+      'metadata',
+      'spec',
+      'included'
+    ]);
+    expect(WORKFLOW_METADATA_KEY_ORDER).toEqual(['id', 'name', 'description', 'version']);
+    expect(WORKFLOW_SPEC_KEY_ORDER).toEqual(['nodes', 'connections', 'startNodeIds']);
+    expect(WORKFLOW_NODE_KEY_ORDER).toEqual(['nodeId', 'pipelineId', 'label']);
+    expect(WORKFLOW_CONNECTION_KEY_ORDER).toEqual([
+      'from',
+      'to',
+      'condition',
+      'priority',
+      'isDefault',
+      'selection'
+    ]);
+    expect(WORKFLOW_ENDPOINT_KEY_ORDER).toEqual(['nodeId', 'portId']);
+    expect(WORKFLOW_CONDITION_KEY_ORDER).toEqual(['left', 'operator', 'right']);
+    expect(WORKFLOW_OPERAND_KEY_ORDER).toEqual(['source', 'nodeId', 'field']);
+    expect(WORKFLOW_INCLUDED_KEY_ORDER).toEqual(['pipelines', 'phases']);
+  });
+
+  it('emits a node in the declared order whatever order the object was built in', () => {
+    const forwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_NODE_KEY_ORDER, {
+      nodeId: 'design',
+      pipelineId: 'plan-pipeline',
+      label: 'Design'
+    });
+    const backwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_NODE_KEY_ORDER, {
+      label: 'Design',
+      pipelineId: 'plan-pipeline',
+      nodeId: 'design'
+    });
+    expect(backwards).toBe(forwards);
+    expect(forwards).toBe(
+      ['  nodeId: design', '  pipelineId: plan-pipeline', '  label: Design', ''].join('\n')
+    );
+  });
+
+  it('gives a multi-line label the block style, measured from the item body', () => {
+    // `label` is the one free-text field a Workflow carries, so it is the one
+    // field an operator can put a newline in. The literal's content sits one
+    // level below the mapping that owns it — the dash's level plus two — which
+    // is what the scanner measures when it reads the label back.
+    const text =
+      emitKey('', 'spec') +
+      emitMappingSequence(
+        PHASE_YAML_INDENT,
+        'nodes',
+        [{ nodeId: 'design', pipelineId: 'plan-pipeline', label: 'Draft the plan\nthen hand off' }],
+        (bodyIndent, item) => emitMapping(bodyIndent, WORKFLOW_NODE_KEY_ORDER, item)
+      );
+    expect(text).toBe(
+      [
+        'spec:',
+        '  nodes:',
+        '    - nodeId: design',
+        '      pipelineId: plan-pipeline',
+        '      label: |-',
+        '        Draft the plan',
+        '        then hand off',
+        ''
+      ].join('\n')
+    );
+    expect(textAt(parsed(text), ['spec', 'nodes', 0, 'label'])).toBe(
+      'Draft the plan\nthen hand off'
+    );
+  });
+
+  it('writes a condition, and its right-hand sequence, one level below its own key', () => {
+    // The deepest nesting the format reaches: a connection item body holds
+    // `condition`, whose `right` is a sequence for the `in` operator. Each level
+    // is exactly one indent below its parent, all the way down — no production
+    // beyond the bounded block sequence 085 admitted.
+    const text = emitMappingSequence(
+      '',
+      'connections',
+      [
+        {
+          from: { nodeId: 'design', portId: 'spec' },
+          to: { nodeId: 'build', portId: 'brief' },
+          condition: {
+            left: { source: 'node-output', nodeId: 'design', field: 'verdict' },
+            operator: 'in',
+            right: ['approved', 'conditionally-approved']
+          },
+          priority: 10,
+          isDefault: false
+        }
+      ],
+      (bodyIndent, item) => {
+        const conditionIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+        const operandIndent = `${conditionIndent}${PHASE_YAML_INDENT}`;
+        return (
+          emitKey(bodyIndent, 'from') +
+          emitMapping(conditionIndent, WORKFLOW_ENDPOINT_KEY_ORDER, item.from) +
+          emitKey(bodyIndent, 'to') +
+          emitMapping(conditionIndent, WORKFLOW_ENDPOINT_KEY_ORDER, item.to) +
+          emitKey(bodyIndent, 'condition') +
+          emitKey(conditionIndent, 'left') +
+          emitMapping(operandIndent, WORKFLOW_OPERAND_KEY_ORDER, item.condition.left) +
+          emitEntry(conditionIndent, 'operator', item.condition.operator) +
+          emitSequence(conditionIndent, 'right', item.condition.right) +
+          emitEntry(bodyIndent, 'priority', item.priority) +
+          emitEntry(bodyIndent, 'isDefault', item.isDefault)
+        );
+      }
+    );
+    expect(text).toBe(
+      [
+        'connections:',
+        '  - from:',
+        '      nodeId: design',
+        '      portId: spec',
+        '    to:',
+        '      nodeId: build',
+        '      portId: brief',
+        '    condition:',
+        '      left:',
+        '        source: node-output',
+        '        nodeId: design',
+        '        field: verdict',
+        '      operator: in',
+        '      right:',
+        '        - approved',
+        '        - conditionally-approved',
+        '    priority: 10',
+        '    isDefault: false',
+        ''
+      ].join('\n')
+    );
+    const tree = parsed(text);
+    expect(textAt(tree, ['connections', 0, 'condition', 'left', 'field'])).toBe('verdict');
+    expect(textAt(tree, ['connections', 0, 'condition', 'right', 1])).toBe(
+      'conditionally-approved'
+    );
+    expect(textAt(tree, ['connections', 0, 'priority'])).toBe('10');
+  });
+
+  it('omits an empty list rather than writing a bare key', () => {
+    // A Workflow whose graph is a single node has no connections and an included
+    // block with no Pipelines of its own. `key:` with no children reads back as an
+    // empty mapping, so every one of these must vanish entirely (research R3).
+    expect(
+      emitMappingSequence(PHASE_YAML_INDENT, 'connections', [], () => 'unreachable')
+    ).toBe('');
+    expect(emitSequence(PHASE_YAML_INDENT, 'startNodeIds', [])).toBe('');
+    expect(emitMappingSequence('', 'pipelines', [], () => 'unreachable')).toBe('');
+  });
+
+  it('skips an absent optional on a connection rather than emitting a bare key', () => {
+    // `condition`, `priority`, `isDefault` and `selection` are all optional; an
+    // unconditional connection writes its two endpoints and nothing else.
+    const text = emitMapping('', WORKFLOW_CONNECTION_KEY_ORDER, { priority: 1 });
+    expect(text).toBe('priority: 1\n');
+    expect(text).not.toMatch(/^\w+: *$/m);
   });
 });

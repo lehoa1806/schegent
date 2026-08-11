@@ -433,7 +433,8 @@ export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[num
  */
 export interface ProcessExchangePayload {
   readonly operation: 'export' | 'import-preflight' | 'import-commit';
-  readonly resourceKind: 'phase' | 'pipeline';
+  /** Feature 086 adds `'workflow'`; the envelope itself is unchanged. */
+  readonly resourceKind: 'phase' | 'pipeline' | 'workflow';
   /**
    * Empty for a document-level refusal: a refused document named no resource,
    * which is itself the fact worth recording (FR-027).

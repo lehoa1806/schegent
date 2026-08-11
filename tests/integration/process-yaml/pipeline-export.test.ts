@@ -471,7 +471,7 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     expect(h.acks[0]!.result).toEqual({
       outcome: 'unavailable',
       reason: 'dependency-does-not-resolve',
-      unresolvedPhaseId: 'ghost-one'
+      unresolvedDependency: { kind: 'phase', resourceId: 'ghost-one' }
     });
   });
 
@@ -484,7 +484,9 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
-    expect(h.acks[0]!.result).toMatchObject({ unresolvedPhaseId: 'ghost-two' });
+    expect(h.acks[0]!.result).toMatchObject({
+      unresolvedDependency: { kind: 'phase', resourceId: 'ghost-two' }
+    });
   });
 
   it('writes no partial document when a reference does not resolve (FR-017)', async () => {

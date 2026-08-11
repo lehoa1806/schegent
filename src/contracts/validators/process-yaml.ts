@@ -8,24 +8,44 @@
 
 import { PIPELINE_ID_MAX_LEN } from '../../config/pipeline-definition-validator';
 import { PHASE_ID_MAX_LEN } from '../../config/process-definition-validator';
+import { WORKFLOW_ID_MAX_LEN } from '../../config/workflow-definition-validator';
 import {
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML,
   type SidebarCommand
 } from '../sidebar-ipc';
-import type { PipelineExportInclusion } from '../sidebar-ipc/process-yaml';
+import { admitsExportInclusion } from '../sidebar-ipc/process-yaml';
 import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
-const EXPORT_INCLUSIONS: readonly PipelineExportInclusion[] = [
-  'references-only',
-  'include-referenced'
-];
+/**
+ * Each kind's id bound is its own catalog's, not a shared maximum. They are all
+ * 64 today; reading each from the validator that owns it means a catalog that
+ * widens its own bound does not silently widen the other two.
+ */
+const RESOURCE_ID_MAX_LEN = Object.freeze({
+  phase: PHASE_ID_MAX_LEN,
+  pipeline: PIPELINE_ID_MAX_LEN,
+  workflow: WORKFLOW_ID_MAX_LEN
+});
+
+type ExportableKind = keyof typeof RESOURCE_ID_MAX_LEN;
+
+function isExportableKind(value: unknown): value is ExportableKind {
+  return value === 'phase' || value === 'pipeline' || value === 'workflow';
+}
 
 /**
  * Feature 085 (FR-012, research R8) — a Phase has no references, so the
  * inclusion choice does not exist for it. The wire type is a discriminated
  * union, and this is where that discrimination is enforced: `inclusion` is
  * required for a Pipeline and rejected for a Phase, rather than being ignored.
+ *
+ * Feature 086 (T068) adds the Workflow arm, and the kind/mode decision moved to
+ * `admitsExportInclusion` beside the union. This validator had its own copy of the
+ * Pipeline vocabulary, which is why 086's type widening compiled while a Workflow
+ * export was still refused here as `invalid-resource-kind` — dropped at debug
+ * level, never reaching the handler that implements it. The distinct failure
+ * reasons stay local, because only this gate reports them.
  */
 export function validateExportProcessYaml(
   obj: Record<string, unknown>,
@@ -40,35 +60,31 @@ export function validateExportProcessYaml(
     return fail('unexpected-payload-fields', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
   const resourceKind = value['resourceKind'];
-  if (resourceKind !== 'phase' && resourceKind !== 'pipeline') {
+  if (!isExportableKind(resourceKind)) {
     return fail('invalid-resource-kind', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
   const resourceId = value['resourceId'];
   if (typeof resourceId !== 'string' || resourceId.length === 0) {
     return fail('invalid-resource-id', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
-  const maxLength = resourceKind === 'phase' ? PHASE_ID_MAX_LEN : PIPELINE_ID_MAX_LEN;
-  if (resourceId.length > maxLength) {
+  if (resourceId.length > RESOURCE_ID_MAX_LEN[resourceKind]) {
     return fail('resource-id-too-long', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
-  if (resourceKind === 'phase') {
-    if (value['inclusion'] !== undefined) {
-      return fail('unexpected-payload-fields', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
-    }
-    return ok({
-      type: CMD_EXPORT_PROCESS_YAML,
-      correlationId,
-      payload: { resourceKind: 'phase', resourceId }
-    } as SidebarCommand);
-  }
   const inclusion = value['inclusion'];
-  if (!EXPORT_INCLUSIONS.includes(inclusion as PipelineExportInclusion)) {
-    return fail('invalid-inclusion', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
+  if (!admitsExportInclusion(resourceKind, inclusion)) {
+    // A Phase admits only the absence of an inclusion, so its failure here is an
+    // extra field rather than a bad value — the two are different defects and the
+    // operator-facing reason should not conflate them.
+    const reason = resourceKind === 'phase' ? 'unexpected-payload-fields' : 'invalid-inclusion';
+    return fail(reason, { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
   return ok({
     type: CMD_EXPORT_PROCESS_YAML,
     correlationId,
-    payload: { resourceKind: 'pipeline', resourceId, inclusion: inclusion as PipelineExportInclusion }
+    payload:
+      resourceKind === 'phase'
+        ? { resourceKind, resourceId }
+        : { resourceKind, resourceId, inclusion }
   } as SidebarCommand);
 }
 
