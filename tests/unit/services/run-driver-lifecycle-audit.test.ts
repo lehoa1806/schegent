@@ -75,7 +75,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         handleDelayedRetry: vi.fn(),
         maybeEmitRetryRecovered: vi.fn().mockImplementation(async (r) => r) 
       } as any,
-      queue: { finish: vi.fn(), pause: vi.fn() } as any,
+      queue: { finish: vi.fn(), pause: vi.fn(), findById: vi.fn(() => null) } as any,
       notifier: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
       statusBar: { update: vi.fn(), dispose: vi.fn() } as any,
       historyRecorder: { record: vi.fn() } as any,
@@ -207,6 +207,171 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       id: runId,
       status: 'completed'
     }));
+  });
+
+  // Feature 091 (T004, US1) — recording declared outputs at completion.
+  //
+  // W7 is the one worth the setup. The `finally` at run-driver.ts:786-798 calls
+  // `terminalTransitions?.complete(run, description)`, which re-persists the
+  // outer `run`. Anything written *after* `persistTransition` is therefore
+  // overwritten by a value captured before it. Folding `runOutputs` into the
+  // `completed` literal is what makes it survive, and this test is what stops a
+  // later edit from moving the write one line down.
+  describe('declared outputs at completion (Feature 091, US1)', () => {
+    const DECLARED = [
+      { portId: 'report', type: 'markdown' as const, target: 'out/report.md', overwriteConfirmed: false },
+      { portId: 'summary', type: 'file' as const, target: 'out/summary.txt', overwriteConfirmed: false }
+    ];
+
+    async function seedRunningRun(runId: string, currentPhase = 'plan'): Promise<void> {
+      await store.setRun({
+        id: runId,
+        taskId: runId,
+        featureId: runId,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'running',
+        currentPhase,
+        currentIteration: 0,
+        pipeline: { id: 'pipe-1', name: 'Pipe', phases: [{ id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' }] },
+        phasesCompleted: [],
+        pendingRetry: false,
+        delayedRetryCount: 0,
+        manualPauseAt: null,
+        manualPauseCause: null,
+        phaseBreakpoints: [],
+        phaseOverrides: [],
+        resumeTargetPhaseId: null
+      } as any);
+    }
+
+    function declaring(outputs: readonly unknown[]): void {
+      (deps.queue as any).findById = vi.fn(() => ({ runPlan: { outputs } }));
+    }
+
+    function cleanPhase(): void {
+      phaseRunnerMock.run.mockResolvedValue({
+        result: { kind: 'clean', auditEntry: null as never },
+        outcome: 'clean',
+        terminationReason: 'token',
+        stdoutSummary: '',
+        stderrSummary: '',
+        exitCode: 0,
+        warnings: [],
+        auditEntryId: null
+      } as PhaseRunOutput);
+    }
+
+    function failingPhase(): void {
+      phaseRunnerMock.run.mockResolvedValue({
+        result: { kind: 'malformed', warnings: [], fatalCause: 'Fatal error occurred', auditEntry: null },
+        outcome: 'failed',
+        terminationReason: 'error',
+        stdoutSummary: '',
+        stderrSummary: 'Fatal error occurred',
+        exitCode: 1,
+        warnings: ['Fatal error occurred'],
+        auditEntryId: null
+      } as PhaseRunOutput);
+    }
+
+    it('records one entry per declared output, in declared order (W1, W2)', async () => {
+      await seedRunningRun('run-outputs-1');
+      declaring(DECLARED);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(store.getRun()?.runOutputs?.map((record) => record.name)).toEqual([
+        'report',
+        'summary'
+      ]);
+    });
+
+    it('survives the post-persistTransition finally re-persist (W7)', async () => {
+      // The `finally` re-persists the outer `run`. If `runOutputs` were written
+      // after `persistTransition` rather than folded into `completed`, the value
+      // read back here would be undefined.
+      const completeSpy = vi.fn(async () => {});
+      deps = { ...deps, terminalTransitions: { complete: completeSpy } as any };
+      driver = new RunDriver(deps);
+
+      await seedRunningRun('run-outputs-2');
+      declaring(DECLARED);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(completeSpy).toHaveBeenCalledOnce();
+      expect(store.getRun()?.status).toBe('completed');
+      expect(store.getRun()?.runOutputs).toHaveLength(2);
+    });
+
+    it('records nothing for a Run that ends failed (FR-008)', async () => {
+      await seedRunningRun('run-outputs-3');
+      declaring(DECLARED);
+      failingPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(store.getRun()?.status).toBe('failed');
+      expect(store.getRun()?.runOutputs).toBeUndefined();
+    });
+
+    it('records nothing when the plan declared no outputs (FR-008)', async () => {
+      await seedRunningRun('run-outputs-4');
+      declaring([]);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(store.getRun()?.status).toBe('completed');
+      expect(store.getRun()?.runOutputs).toBeUndefined();
+    });
+
+    it('records nothing when the queue row or its plan is absent', async () => {
+      // Not a failure: a Run with no frozen plan declared no outputs.
+      await seedRunningRun('run-outputs-5');
+      (deps.queue as any).findById = vi.fn(() => null);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(store.getRun()?.status).toBe('completed');
+      expect(store.getRun()?.runOutputs).toBeUndefined();
+    });
+
+    it('adds no audit event type and puts no location in any audit payload (W9)', async () => {
+      await seedRunningRun('run-outputs-6');
+      declaring(DECLARED);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      const eventTypes = emitTaskLifecycleAuditSpy.mock.calls.map(([type]) => type);
+      expect(eventTypes).toEqual(['task-execution-ended']);
+
+      const serialized = JSON.stringify(emitTaskLifecycleAuditSpy.mock.calls.map(([, , payload]) => payload));
+      expect(serialized).not.toContain('out/report.md');
+      expect(serialized).not.toContain('runOutputs');
+      expect(serialized).not.toContain('reference');
+    });
+
+    it('leaves the terminal status unchanged when an output does not resolve (W8)', async () => {
+      // Neither declared artifact exists under the test cwd, so both resolve
+      // unresolved — and the Run still completes.
+      await seedRunningRun('run-outputs-7');
+      declaring(DECLARED);
+      cleanPhase();
+
+      await driver.drive(store.getRun()!, 'Test description');
+
+      expect(store.getRun()?.status).toBe('completed');
+      expect(store.getRun()?.runOutputs?.every((record) => record.status === 'unresolved')).toBe(
+        true
+      );
+      expect(store.getRun()?.runOutputs?.some((record) => 'reference' in record)).toBe(false);
+    });
   });
 
   it.each(['failed', 'timeout'] as const)(

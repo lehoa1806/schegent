@@ -11,6 +11,7 @@ import {
   DESCRIPTION_PREVIEW_MAX,
   type HistoryEntry
 } from '../../../src/state/history-entry';
+import type { RunOutputRecord } from '../../../src/contracts/run-results';
 import { SanitizedLogger } from '../../../src/lib/logger';
 
 const logger = new SanitizedLogger();
@@ -150,5 +151,97 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
     });
     expect(out).not.toBeNull();
     expect(out instanceof Promise).toBe(false);
+  });
+});
+
+// Feature 091 (T005, US1) — FR-010: what a Run recorded must survive the trip
+// through history, because that is what a later Run's reference is resolved
+// against.
+//
+// The `ensureHistoryEntry` half is the higher-value one. A normaliser that
+// silently drops the new field passes every write-side test and still empties
+// the record on the next read, and nothing else in the suite would notice.
+
+describe('runOutputs survives the history round trip (Feature 091, FR-010)', () => {
+  const RECORDED: readonly RunOutputRecord[] = [
+    { name: 'report', status: 'resolved', reference: 'out/report.md' },
+    { name: 'summary', status: 'unresolved' }
+  ];
+
+  function built(runOutputs?: readonly RunOutputRecord[]): HistoryEntry {
+    return buildHistoryEntry({
+      runId: 'run-outputs-1',
+      featureId: 'feat-outputs-1',
+      description: 'a run that declared outputs',
+      terminalStatus: 'completed',
+      startedAt: 1_700_000_000_000,
+      completedAt: 1_700_000_001_000,
+      logger,
+      ...(runOutputs !== undefined ? { runOutputs } : {})
+    });
+  }
+
+  it('buildHistoryEntry carries the records through unchanged', () => {
+    expect(built(RECORDED).runOutputs).toEqual(RECORDED);
+  });
+
+  it('buildHistoryEntry omits the field entirely when the Run recorded nothing', () => {
+    const entry = built();
+    expect(entry.runOutputs).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'runOutputs')).toBe(false);
+  });
+
+  it('ensureHistoryEntry preserves the records across a read cycle', () => {
+    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))));
+    expect(entry).not.toBeNull();
+    expect(entry!.runOutputs).toEqual(RECORDED);
+  });
+
+  it('an unresolved record keeps having no reference after the read cycle', () => {
+    // The absent key is what makes `prior-output-not-found` reachable (FR-012).
+    // A normaliser that filled it with '' or null would make an unlocatable
+    // output look locatable to the resolver.
+    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))));
+    const summary = entry!.runOutputs!.find((record) => record.name === 'summary');
+    expect(summary).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(summary, 'reference')).toBe(false);
+  });
+
+  it('an entry written without the field reads back without it', () => {
+    // Every entry written before this feature. "Recorded nothing" must not
+    // become "recorded an empty list", because the two answer FR-011
+    // differently one layer up.
+    const legacyRaw = {
+      runId: 'legacy-outputs',
+      featureId: 'feat-legacy-outputs',
+      descriptionPreview: 'written before 091',
+      terminalStatus: 'completed',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:00:01.000Z',
+      durationMs: 1_000,
+      lastErrorSummary: null,
+      auditLogPointer: 'runId:legacy-outputs'
+    };
+    const entry = ensureHistoryEntry(legacyRaw);
+    expect(entry).not.toBeNull();
+    expect(entry!.runOutputs).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'runOutputs')).toBe(false);
+  });
+
+  it('a non-array runOutputs is treated as missing rather than coerced', () => {
+    const entry = ensureHistoryEntry({
+      runId: 'run-bad-outputs',
+      featureId: 'feat-bad-outputs',
+      descriptionPreview: '',
+      runOutputs: 'out/report.md' as unknown,
+      terminalStatus: 'completed',
+      startedAt: '2026-05-10T00:00:00.000Z',
+      completedAt: '2026-05-10T00:00:01.000Z',
+      durationMs: 1_000,
+      lastErrorSummary: null,
+      auditLogPointer: 'runId:run-bad-outputs'
+    });
+    expect(entry).not.toBeNull();
+    expect(entry!.runOutputs).toBeUndefined();
   });
 });

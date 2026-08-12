@@ -27,6 +27,9 @@ import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-ev
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
+import type { RunOutputRecord } from '../contracts/run-results';
+import { resolveRunOutputs } from './run-output/run-output-resolver';
+import { createBoundedOutputProbe } from './run-output/run-output-probe';
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -736,10 +739,16 @@ export class RunDriver {
         }
 
         if (run.currentPhase === 'done' && run.status === 'running') {
+          const runOutputs = await this.recordDeclaredOutputs(run);
           const completed: WorkflowRun = {
             ...run,
             status: 'completed',
-            lastTransitionAt: Date.now()
+            lastTransitionAt: Date.now(),
+            // Folded in *before* persistTransition, not written after it. The
+            // `finally` below re-persists the outer `run` through
+            // `terminalTransitions.complete`, so a later write is overwritten
+            // by a value captured earlier (W7).
+            ...(runOutputs.length > 0 ? { runOutputs } : {})
           };
           run = await this.deps.persistTransition(run, completed);
           await this.deps.emitRunEndedBreakpointAudit(run);
@@ -915,6 +924,29 @@ export class RunDriver {
 
   private phaseOverrideAbortKey(runId: string, phaseId: string): string {
     return `${runId}:${phaseId}`;
+  }
+
+  // Feature 091 (T011, US1) — the call site FR-001 was missing. `resolveRunOutputs`
+  // shipped with 087 and nothing invoked it, so `WorkflowRun.runOutputs` was never
+  // written and every downstream reader — prior-output references, the Run details
+  // projection — answered from an absence rather than from a record.
+  //
+  // The declaration is read from the **frozen plan** on the queue item, never from
+  // the live catalog: the plan is what the operator approved, and a Pipeline edited
+  // mid-Run must not change what this Run is judged to have produced.
+  //
+  // Returns `[]` — not a throw — for every "there is nothing to record" shape:
+  // no queue row, no plan, no declared outputs. FR-008's "records nothing" and
+  // "there was nothing to record" are the same observable outcome, and a completion
+  // transition must not be gated on the queue still holding a row for the Run.
+  private async recordDeclaredOutputs(run: WorkflowRun): Promise<readonly RunOutputRecord[]> {
+    const outputs = this.deps.queue.findById(run.featureId)?.runPlan?.outputs;
+    if (!outputs || outputs.length === 0) return [];
+
+    return resolveRunOutputs(outputs, {
+      workspaceRoot: this.deps.options.cwd,
+      probe: createBoundedOutputProbe()
+    });
   }
 
   // Feature 072 — derive phase stats from the pipeline snapshot and

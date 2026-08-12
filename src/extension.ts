@@ -955,6 +955,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // consuming-Workflow list (FR-002) so the two can never disagree about who
     // a consumer is.
     readWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
+    // Feature 091 (T014, FR-010/FR-011) — the supply the command router was
+    // declared to take and never received, so every `prior-output` reference
+    // refused as `prior-run-not-found` regardless of what the Run recorded.
+    //
+    // `outputsFor` keeps the two FR-011 answers apart: `null` for a Run this
+    // host cannot find, `[]` for a Run it found that recorded nothing. The
+    // distinction lives in the store rather than in this expression precisely
+    // because a `?.`-and-`?? null` written here is one edit away from
+    // collapsing it.
+    readPriorRunOutputs: (runId) => historyStore.outputsFor(runId),
     connectedRuns,
     // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
     // Feature 019 — on success that touches a runtime-log key, clear

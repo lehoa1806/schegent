@@ -46,7 +46,12 @@ const EXCHANGE_DIR = resolve(REPO_ROOT, 'src', 'services', 'process-yaml');
  * tokenizer, the tree builder, and the scalar-style rule both consult.
  */
 const FROZEN: ReadonlyMap<string, string> = new Map([
-  ['yaml-scanner', 'f5f54014b1cdce19ab4b43d56f313c76af781146531a155413f7379d1db3e47d'],
+  // Moved by feature 091 (T028, FR-034): `readDoubleQuoted` now decides the
+  // UTF-16 surrogate rule at the escape site, refusing a lone half as
+  // `disallowed-syntax` while a well-formed pair stays legal. A narrowing, not a
+  // widening — vintage 091 pins it with four `refused/` cases and one
+  // `accepted/` case for the pair that must keep round-tripping byte-identical.
+  ['yaml-scanner', 'a52994b8c3ad3d09e78d04ce1017b09fc375992acfcfdd05bb1c330d7eb8615d'],
   ['yaml-parser', '6536987fe243505f2caad0695fd59135c224162be1e84b893c3af058387ec1a0'],
   ['scalar-style', '5b48ed2a529feb85b808840d81c599162ecdeae0a2dac36720a0ed8c8e20cddf']
 ]);
