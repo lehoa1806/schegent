@@ -1,0 +1,4 @@
+{
+  "code": "disallowed-syntax",
+  "message": "a \\u escape must encode a whole character; this is half of a surrogate pair (line 2)"
+}

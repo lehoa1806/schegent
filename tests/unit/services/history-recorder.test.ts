@@ -99,3 +99,57 @@ describe('HistoryRecorder (T098 / T102)', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disk-full'));
   });
 });
+
+// Feature 091 (T006, US1) — FR-010. The recorder is the only writer of history
+// entries, so it is the only place `run.runOutputs` can reach one. Nothing else
+// in the terminal path carries it forward.
+
+describe('the recorder carries what the Run recorded (Feature 091, FR-010)', () => {
+  const RECORDED = [
+    { name: 'report', status: 'resolved' as const, reference: 'out/report.md' },
+    { name: 'summary', status: 'unresolved' as const }
+  ];
+
+  function appendedFor(run: WorkflowRun) {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const recorder = new HistoryRecorder({
+      historyStore: { append } as never,
+      logger: new SanitizedLogger()
+    });
+    return { append, recorded: recorder.record(run, 'declared outputs', 'completed') };
+  }
+
+  it('puts the Run records on the history entry unchanged', async () => {
+    const { append, recorded } = appendedFor(makeRun({ runOutputs: RECORDED }));
+    await recorded;
+    expect(append.mock.calls[0][0].runOutputs).toEqual(RECORDED);
+  });
+
+  it('preserves declaration order', async () => {
+    const { append, recorded } = appendedFor(makeRun({ runOutputs: RECORDED }));
+    await recorded;
+    expect(append.mock.calls[0][0].runOutputs.map((r: { name: string }) => r.name)).toEqual([
+      'report',
+      'summary'
+    ]);
+  });
+
+  it('omits the field when the Run recorded nothing', async () => {
+    const { append, recorded } = appendedFor(makeRun());
+    await recorded;
+    const entry = append.mock.calls[0][0];
+    expect(entry.runOutputs).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'runOutputs')).toBe(false);
+  });
+
+  it('does not put a recorded location anywhere else on the entry', async () => {
+    // FR-009a keeps a location out of the audit log; the same location must not
+    // arrive in history by an unintended route either — only under `runOutputs`,
+    // where the reader knows to look for it.
+    const { append, recorded } = appendedFor(makeRun({ runOutputs: RECORDED }));
+    await recorded;
+    const { runOutputs, ...rest } = append.mock.calls[0][0];
+    expect(runOutputs).toBeDefined();
+    expect(JSON.stringify(rest)).not.toContain('out/report.md');
+  });
+});

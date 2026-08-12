@@ -19,6 +19,12 @@
 //         bite at that depth. If a fixture here ever needed a scanner change to
 //         pass, the feature was mis-planned; see the T001 gate below.
 //
+//   091 — a narrowing, and the only vintage that removes documents from the
+//         language rather than adding them: a `\u` escape naming half of a
+//         surrogate pair is refused, because it decoded to a code unit that is
+//         not a character and that the export write silently rewrote to U+FFFD.
+//         The accepted half proves the well-formed pair still decodes.
+//
 // The corpus is also checked for its own integrity: an orphaned document or an
 // orphaned expectation fails, because a golden corpus that silently skips a case
 // is worse than no corpus.
@@ -44,7 +50,7 @@ type Half = 'accepted' | 'refused';
 // directory without adding it to this union is the failure mode 086's analyze
 // pass caught: the corpus half of the no-widening guarantee would have covered
 // nothing while still reporting green.
-type Vintage = '084' | '085' | '086';
+type Vintage = '084' | '085' | '086' | '091';
 
 function directory(half: Half, vintage: Vintage): string {
   return join(FIXTURES, half, vintage);
@@ -85,7 +91,7 @@ function parse(text: string): YamlMappingNode {
   return result.node;
 }
 
-describe.each(['084', '085', '086'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
+describe.each(['084', '085', '086', '091'] as const)('process-yaml corpus — accepted/%s', (vintage) => {
   const cases = names('accepted', vintage);
 
   it('has fixtures', () => {
@@ -107,7 +113,7 @@ describe.each(['084', '085', '086'] as const)('process-yaml corpus — accepted/
   });
 });
 
-describe.each(['084', '085', '086'] as const)('process-yaml corpus — refused/%s', (vintage) => {
+describe.each(['084', '085', '086', '091'] as const)('process-yaml corpus — refused/%s', (vintage) => {
   const cases = names('refused', vintage);
 
   it('has fixtures', () => {

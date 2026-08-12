@@ -357,6 +357,26 @@ const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
   '0': '\0'
 };
 
+/**
+ * Feature 091 (FR-028 – FR-031) — the halves of a surrogate pair.
+ *
+ * A `\u` escape names a UTF-16 code unit, and a code unit in either of these
+ * ranges is not a character: it is half of one. `String.fromCharCode` will
+ * happily produce a lone half, it survives in memory, and the export write —
+ * `Buffer.from(text, 'utf8')` — then substitutes U+FFFD for it without failing.
+ * Import → export corrupted the operator's document with no error and no
+ * warning, which is why this is refused at the escape rather than repaired.
+ */
+const HIGH_SURROGATE_FIRST = 0xd800;
+const HIGH_SURROGATE_LAST = 0xdbff;
+const LOW_SURROGATE_FIRST = 0xdc00;
+const LOW_SURROGATE_LAST = 0xdfff;
+
+/** `\uXXXX` is six characters, so a pair spans twelve. */
+const UNICODE_ESCAPE_LENGTH = 6;
+
+const HALF_A_PAIR = 'a \\u escape must encode a whole character; this is half of a surrogate pair';
+
 function readDoubleQuoted(valueText: string, lineNo: number): ScalarResult {
   let out = '';
   let i = 1;
@@ -379,8 +399,33 @@ function readDoubleQuoted(valueText: string, lineNo: number): ScalarResult {
         if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
           return { ok: false, result: refuse('disallowed-syntax', 'malformed unicode escape', lineNo) };
         }
-        out += String.fromCharCode(Number.parseInt(hex, 16));
-        i += 6;
+        const code = Number.parseInt(hex, 16);
+        if (code >= HIGH_SURROGATE_FIRST && code <= HIGH_SURROGATE_LAST) {
+          // The decision is made here, as the escape is read, and never over
+          // decoded text (FR-028a): an astral character that arrived correctly
+          // encoded in the source bytes is indistinguishable from this one once
+          // decoded, and must still be accepted.
+          const lowAt = i + UNICODE_ESCAPE_LENGTH;
+          const lowHex = valueText.slice(lowAt + 2, lowAt + UNICODE_ESCAPE_LENGTH);
+          const paired =
+            valueText[lowAt] === '\\' &&
+            valueText[lowAt + 1] === 'u' &&
+            /^[0-9a-fA-F]{4}$/.test(lowHex);
+          const low = paired ? Number.parseInt(lowHex, 16) : -1;
+          if (low < LOW_SURROGATE_FIRST || low > LOW_SURROGATE_LAST) {
+            return { ok: false, result: refuse('disallowed-syntax', HALF_A_PAIR, lineNo) };
+          }
+          out += String.fromCharCode(code, low);
+          i += UNICODE_ESCAPE_LENGTH * 2;
+          continue;
+        }
+        if (code >= LOW_SURROGATE_FIRST && code <= LOW_SURROGATE_LAST) {
+          // Unpaired by construction: a low half that followed a high one was
+          // consumed above, so reaching here means it stands alone.
+          return { ok: false, result: refuse('disallowed-syntax', HALF_A_PAIR, lineNo) };
+        }
+        out += String.fromCharCode(code);
+        i += UNICODE_ESCAPE_LENGTH;
         continue;
       }
       const simple = next === undefined ? undefined : SIMPLE_ESCAPES[next];
