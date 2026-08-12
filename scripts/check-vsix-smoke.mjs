@@ -19,6 +19,16 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/assets/logo.png',
   'extension/assets/sidebar-icon.svg',
   'extension/dist/extension.js',
+  // Vite code-split chunks and their extracted stylesheets. Names are
+  // build-assigned, so a new lazily-loaded surface or a change in CSS
+  // emission order shows up here as a smoke-test failure — that is the
+  // point: packaged content is pinned, not pattern-matched.
+  'extension/dist/webview/chunks/HistoryDashboard.js',
+  'extension/dist/webview/chunks/MetricsDashboard.js',
+  'extension/dist/webview/chunks/PipelineBuilder.js',
+  'extension/dist/webview/chunks/SettingsSurface.js',
+  'extension/dist/webview/chunks/SystemTab.js',
+  'extension/dist/webview/chunks/i18n.js',
   'extension/dist/webview/chunks/theme.js',
   'extension/dist/webview/dashboard.css',
   'extension/dist/webview/dashboard.html',
@@ -26,7 +36,12 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/dist/webview/index.css',
   'extension/dist/webview/index.html',
   'extension/dist/webview/index.js',
-  'extension/dist/webview/index2.css'
+  'extension/dist/webview/index2.css',
+  'extension/dist/webview/index3.css',
+  'extension/dist/webview/index4.css',
+  'extension/dist/webview/index5.css',
+  'extension/dist/webview/index6.css',
+  'extension/dist/webview/index7.css'
 ]);
 
 function findEndOfCentralDirectory(buf, vsixPath) {
