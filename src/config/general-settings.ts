@@ -197,13 +197,18 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
   'queue.globalConcurrencyCap': {
     type: 'number-int-range',
     typedField: 'queueGlobalConcurrencyCap',
-    // Feature 056 Track 4 (FR-018..FR-022) — v1 ships exactly one
-    // active run. The pinned cap of 1 lives here (host validation),
-    // in package.json (contribution metadata), and in the QueueManager
-    // (effective enforcement); all three agree.
-    defaultValue: 1,
+    // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
+    // 056 Track 4 (FR-018..FR-022) because one workspace lock meant one run.
+    // US2 split that lock into window primacy plus a per-queue execution
+    // lease, so the range opens to [1, 20] with a default of 3. The bound
+    // still lives in three agreeing sites — here (host validation),
+    // package.json (contribution metadata) and the QueueManager (effective
+    // enforcement) — and `settings-schema.ts` pins the same numbers a fourth
+    // time; `tests/unit/config/settings-schema-parity.test.ts` fails unless
+    // they agree.
+    defaultValue: 3,
     min: 1,
-    max: 1
+    max: 20
   },
   'queue.defaultQueueId': {
     type: 'string',

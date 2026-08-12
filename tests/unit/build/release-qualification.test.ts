@@ -19,9 +19,16 @@ function declaredRungs(source: string): ReadonlyArray<readonly [number, number]>
   );
 }
 
-/** The `N — …` entries of the version-history block. */
+/**
+ * The `N — …` entries of the version-history block.
+ *
+ * The leading run is 2–3 spaces rather than exactly 3: the block right-aligns
+ * the number, so it lost a space when the ladder reached two digits at v10.
+ * The alignment is cosmetic, and pinning the padding would fail the next
+ * feature for indenting its own entry the same way as every entry before it.
+ */
 function documentedVersions(source: string): readonly number[] {
-  return [...source.matchAll(/^ \*[ ]{3}(\d+) — /gm)].map((match) => Number(match[1]));
+  return [...source.matchAll(/^ \*[ ]{2,3}(\d+) — /gm)].map((match) => Number(match[1]));
 }
 
 /** Every ``migrateX()`` the history block names. */
@@ -56,15 +63,15 @@ describe('release qualification', () => {
     expect(existsSync('src/commands/export-audit.ts')).toBe(true);
   });
 
-  it('ships state v9 recovery controls without the dead Rust engine', () => {
+  it('ships state v10 recovery controls without the dead Rust engine', () => {
     expect(manifest.contributes.configuration.properties['schegent.logging.rawTranscriptMode'])
       .toBeTruthy();
     // Pinned to the version the build actually ships, and moved deliberately
-    // with each forward-only migration — v9 is feature 088's connected-run step.
+    // with each forward-only migration — v10 is feature 092's per-queue step.
     // The pin is the point: a version that changed without anyone editing this
     // line is a migration nobody wrote.
     expect(readFileSync('src/contracts/state-schema.ts', 'utf8'))
-      .toContain('STATE_SCHEMA_VERSION = 9');
+      .toContain('STATE_SCHEMA_VERSION = 10');
     expect(existsSync('src/services/terminal-transition-coordinator.ts')).toBe(true);
     expect(existsSync('Cargo.toml')).toBe(false);
     expect(existsSync('src/engine/index.ts')).toBe(false);

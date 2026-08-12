@@ -1,6 +1,6 @@
 # Schedule Multiple Features
 
-Schegent processes one workflow at a time. Multiple feature requests are handled by the queue.
+Schegent executes one workflow at a time. Multiple feature requests are handled by the queue — and, since multiple queues arrived, by as many as twenty independently scheduled queues that take turns at the run engine. This page covers enqueueing and draining; for creating, naming and scheduling queues see [Multiple queues and concurrency](multi-queue-concurrency.md).
 
 ## Enqueue
 
@@ -11,9 +11,9 @@ The first enqueued item starts immediately if no run is in flight; subsequent it
 
 ## Auto-drain
 
-After every terminal completion (`completed | failed | cancelled`), the queue manager checks for the next `pending` item and starts it — provided the queue is not globally paused.
+After every terminal completion (`completed | failed | cancelled`), the queue manager checks for the next `pending` item and starts it — provided that queue is not paused.
 
-There is no separate scheduler. The drain hook lives in `AutoDrainCoordinator.drainIfIdle()` ([src/services/auto-drain-coordinator.ts](../../src/services/auto-drain-coordinator.ts)) and fires inside the same `finally` block that releases the workspace lock. Earlier versions hosted this on the controller directly; the responsibility was extracted into the standalone coordinator during the Feature 056 Track 7 decomposition pass to break a type-only cycle between the controller and the coordinator. Audit log shows a `queue.auto-drain` entry on every transition.
+There is no separate scheduler. The drain hook lives in `AutoDrainCoordinator.drainIfIdle(queueId)` ([src/services/auto-drain-coordinator.ts](../../src/services/auto-drain-coordinator.ts)) and fires inside the same `finally` block that releases the workspace lock; `drainAll()` sweeps every queue in the registry from a rotating cursor, so no queue starves behind a busier sibling. Earlier versions hosted this on the controller directly; the responsibility was extracted into the standalone coordinator during the Feature 056 Track 7 decomposition pass to break a type-only cycle between the controller and the coordinator. Audit log shows a `queue.auto-drain` entry on every transition.
 
 ## Queue Management UI
 

@@ -4,7 +4,10 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CONTINUE_WORKFLOW,
+  CMD_CREATE_QUEUE,
+  CMD_DELETE_QUEUE,
   CMD_DISABLE_PHASE,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_ENABLE_PHASE,
@@ -14,6 +17,7 @@ import {
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
+  CMD_MOVE_TASK,
   CMD_OPEN_AUDIT_LOG,
   CMD_OPEN_DASHBOARD,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
@@ -27,6 +31,7 @@ import {
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
+  CMD_RENAME_QUEUE,
   CMD_REORDER_TASK,
   CMD_RERUN_FROM_HISTORY,
   CMD_RESET,
@@ -42,9 +47,11 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
+  CMD_SAVE_QUEUE_SETTINGS,
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_QUEUE_SCHEDULE,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_PHASE_LOG_TAIL,
@@ -58,7 +65,10 @@ import { handler as clearAll } from './cmd-clear-all';
 import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
+import { handler as clearQueueSchedule } from './cmd-clear-queue-schedule';
 import { handler as continueWorkflow } from './cmd-continue-workflow';
+import { handler as createQueue } from './cmd-create-queue';
+import { handler as deleteQueue } from './cmd-delete-queue';
 import { handler as disablePhase } from './cmd-disable-phase';
 import { handler as dismissMigrationNotice } from './cmd-dismiss-migration-notice';
 import { handler as enablePhase } from './cmd-enable-phase';
@@ -68,6 +78,7 @@ import { handler as launchWorkflow } from './cmd-launch-workflow';
 import { handler as modifyTask } from './cmd-modify-task';
 import { handler as moveQueueItemDown } from './cmd-move-queue-item-down';
 import { handler as moveQueueItemUp } from './cmd-move-queue-item-up';
+import { handler as moveTask } from './cmd-move-task';
 import { handler as openAuditLog } from './cmd-open-audit-log';
 import { handler as openDashboard } from './cmd-open-dashboard';
 import { handler as openHistoryItemDetails } from './cmd-open-history-item-details';
@@ -81,6 +92,7 @@ import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
 import { handler as removeTaskPhase } from './cmd-remove-task-phase';
+import { handler as renameQueue } from './cmd-rename-queue';
 import { handler as reorderTask } from './cmd-reorder-task';
 import { handler as rerunFromHistory } from './cmd-rerun-from-history';
 import { handler as reset } from './cmd-reset';
@@ -96,9 +108,11 @@ import { handler as saveGeneralSettings } from './cmd-save-general-settings';
 import { handler as saveModels } from './cmd-save-models';
 import { handler as savePhases } from './cmd-save-phases';
 import { handler as savePipelines } from './cmd-save-pipelines';
+import { handler as saveQueueSettings } from './cmd-save-queue-settings';
 import { handler as saveWorkflows } from './cmd-save-workflows';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
+import { handler as setQueueSchedule } from './cmd-set-queue-schedule';
 import { handler as skipPhase } from './cmd-skip-phase';
 import { handler as start } from './cmd-start';
 import { handler as startPhaseLogTail } from './cmd-start-phase-log-tail';
@@ -122,7 +136,10 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
   [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
+  [CMD_CLEAR_QUEUE_SCHEDULE, clearQueueSchedule as CommandHandler],
   [CMD_CONTINUE_WORKFLOW, continueWorkflow as CommandHandler],
+  [CMD_CREATE_QUEUE, createQueue as CommandHandler],
+  [CMD_DELETE_QUEUE, deleteQueue as CommandHandler],
   [CMD_DISABLE_PHASE, disablePhase as CommandHandler],
   [CMD_DISMISS_MIGRATION_NOTICE, dismissMigrationNotice as CommandHandler],
   [CMD_ENABLE_PHASE, enablePhase as CommandHandler],
@@ -132,6 +149,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_MODIFY_TASK, modifyTask as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_DOWN, moveQueueItemDown as CommandHandler],
   [CMD_MOVE_QUEUE_ITEM_UP, moveQueueItemUp as CommandHandler],
+  [CMD_MOVE_TASK, moveTask as CommandHandler],
   [CMD_OPEN_AUDIT_LOG, openAuditLog as CommandHandler],
   [CMD_OPEN_DASHBOARD, openDashboard as CommandHandler],
   [CMD_OPEN_HISTORY_ITEM_DETAILS, openHistoryItemDetails as CommandHandler],
@@ -145,6 +163,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
   [CMD_REMOVE_QUEUE_ITEM, removeQueueItem as CommandHandler],
   [CMD_REMOVE_TASK_PHASE, removeTaskPhase as CommandHandler],
+  [CMD_RENAME_QUEUE, renameQueue as CommandHandler],
   [CMD_REORDER_TASK, reorderTask as CommandHandler],
   [CMD_RERUN_FROM_HISTORY, rerunFromHistory as CommandHandler],
   [CMD_RESET, reset as CommandHandler],
@@ -160,9 +179,11 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_MODELS, saveModels as CommandHandler],
   [CMD_SAVE_PHASES, savePhases as CommandHandler],
   [CMD_SAVE_PIPELINES, savePipelines as CommandHandler],
+  [CMD_SAVE_QUEUE_SETTINGS, saveQueueSettings as CommandHandler],
   [CMD_SAVE_WORKFLOWS, saveWorkflows as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
+  [CMD_SET_QUEUE_SCHEDULE, setQueueSchedule as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],
   [CMD_START_PHASE_LOG_TAIL, startPhaseLogTail as CommandHandler],

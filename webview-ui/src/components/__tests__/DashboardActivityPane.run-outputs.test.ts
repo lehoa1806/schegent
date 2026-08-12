@@ -24,6 +24,7 @@ import type {
   RunOutputRecord,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
+import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
 // The pane hosts the activity feed, which reaches for the phase-log IPC on
 // mount. Neither the feed nor its transport is under test here; these stubs
@@ -76,11 +77,19 @@ const PHASES: readonly PhaseTile[] = Object.freeze([
 
 function buildSnapshot(runOutputs?: readonly RunOutputRecord[]): WorkflowSnapshot {
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'completed',
-    activeFeature: null,
-    phases: PHASES,
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'completed',
+      activeFeature: null,
+      phases: PHASES,
+      liveActivity: null,
+      workflowElapsedMs: 1_000,
+      runOutputs
+    }),
     queue: Object.freeze({
       orderedItems: Object.freeze([]),
       inFlight: null,
@@ -89,16 +98,13 @@ function buildSnapshot(runOutputs?: readonly RunOutputRecord[]): WorkflowSnapsho
       paused: false
     }),
     auditTail: Object.freeze([]),
-    liveActivity: null,
-    workflowElapsedMs: 1_000,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-08-01T00:00:00.000Z',
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }),
-    availableBackends: Object.freeze(['claude']),
-    ...(runOutputs !== undefined ? { runOutputs } : {})
+    availableBackends: Object.freeze(['claude'])
   }) as unknown as WorkflowSnapshot;
 }
 

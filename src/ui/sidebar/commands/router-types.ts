@@ -9,6 +9,7 @@ import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';
+import type { QueueDeletionImpact } from '../../../queue/queue-manager';
 import type {
   GuardedScheduleRequest,
   GuardedScheduleResult
@@ -43,6 +44,30 @@ export interface QueueOps {
     pauseSource?: 'operator' | 'cascade' | 'retry-cap',
     resumePrompt?: string
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  // Feature 092 (T029, US1) — the multi-queue management surface feature 030
+  // removed. Optional for the same reason as the task mutators below: unit
+  // tests supply a partial port, and the handlers answer `unsupported` when a
+  // member is absent.
+  createQueue?(name: string): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  renameQueue?(
+    queueId: string,
+    name: string
+  ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  queueDeletionImpact?(queueId: string): QueueDeletionImpact;
+  deleteQueue?(queueId: string): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  setQueueSchedule?(
+    queueId: string,
+    expression: string | null
+  ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  saveQueueSettings?(params: {
+    globalConcurrencyCap: number;
+    defaultQueueId: string;
+  }): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
+  moveTask?(
+    taskId: string,
+    targetQueueId: string,
+    position?: number | null
+  ): Promise<{ ok: boolean; reason?: string; queueId?: string; taskId?: string }>;
   modifyTask?(
     taskId: string,
     description: string

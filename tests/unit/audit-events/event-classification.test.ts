@@ -142,7 +142,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // belongs to no run. It exists because a package lands in two layers that can
   // succeed independently, so the catalog alone no longer says what happened
   // (FR-061).
-  'process-exchange-import-committed': 'system'
+  'process-exchange-import-committed': 'system',
+  // Feature 092 — a concurrency overlap is a workspace-level fact, not a
+  // property of any one Run.
+  'runs-overlapped': 'system'
 };
 
 function assertExhaustive(value: never): never {
@@ -296,7 +299,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'metrics-view-opened':
         case 'process-exchange-export':
         case 'process-exchange-import-refused':
-        case 'process-exchange-import-committed': {
+        case 'process-exchange-import-committed':
+        case 'runs-overlapped': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

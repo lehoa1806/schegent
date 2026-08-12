@@ -32,6 +32,7 @@ import { WorkspaceStateStore } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { GuardedRunService } from '../../src/services/guarded-run-service';
 import { WorkspaceLockManager } from '../../src/state/lock';
+import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
 import { ScheduledStartCoordinator } from '../../src/services/scheduled-start-coordinator';
 import {
@@ -66,7 +67,7 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
   const autoDrain = new AutoDrainCoordinator({
     store,
     queue,
-    lock,
+    executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
     controller: controller as unknown as SchegentWorkflowController
   });
   const coordinator = new ScheduledStartCoordinator({

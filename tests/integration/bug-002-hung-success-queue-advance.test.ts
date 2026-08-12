@@ -112,11 +112,11 @@ describe('Feature 030 BUG-002 — hung-but-successful task does not stall the qu
     const t1 = await queue.enqueue('hung-but-complete task');
     const t2 = await queue.enqueue('next task');
     await queue.markInFlight(t1.id, 'run-1');
-    expect(queue.hasCapacity()).toBe(false);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
 
     await queue.finish(t1.id, 'completed'); // driven by outcome 'clean'
     expect(queue.findById(t1.id)?.status).toBe('completed');
-    expect(queue.hasCapacity()).toBe(true);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(true);
 
     // The queue switches to the next task instead of stalling.
     expect(queue.peekNextPending()?.id).toBe(t2.id);

@@ -12,6 +12,7 @@ import type { QueueState, FeatureRequest } from '../../../../src/queue/feature-r
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { DEFAULT_QUEUE_ID, setQueuePaused } from '../../../../src/queue/queue-registry';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
+import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -108,6 +109,22 @@ function sampleLock(ownerId = 'this-window'): WorkspaceLock {
   return { ownerId, acquiredAt: 1, heartbeatAt: Date.now() };
 }
 
+/**
+ * Feature 092 (T096) — a Run is published under the queue that holds its Task,
+ * so a test reading a run-scoped value has to put that Task on the queue.
+ * Merges into whatever queue state the test already set rather than replacing
+ * it, so the queue-projection fixtures below keep their own rows.
+ */
+async function ownRun(featureId = 'feat-1'): Promise<void> {
+  const current = store.getQueue();
+  await store.setQueue({
+    ...current,
+    requests: [...current.requests, inFlightRequest(featureId, 'owning task')],
+    inFlightId: featureId,
+    queueLifecycle: 'running'
+  });
+}
+
 function sampleRun(): WorkflowRun {
   return {
     id: 'run-1',
@@ -167,24 +184,28 @@ describe('StateProjector.getCurrentSnapshot', () => {
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.status).toBe('idle');
-    expect(snap.activeFeature).toBeNull();
+    // Feature 092 (T096) — the default queue is still published (the registry
+    // has it) but owns no Run, so every run-scoped reading is absent together
+    // rather than each carrying an idle default (FR-053).
+    expect(statusOf(snap)).toBe('idle');
+    expect(runOf(snap)).toBeNull();
+    expect(runtimeOf(snap).phases).toEqual([]);
     expect(snap.queue.inFlight).toBeNull();
     expect(snap.queue.pending).toEqual([]);
     expect(snap.auditTail).toEqual([]);
-    expect(snap.phases).toHaveLength(7);
     p.dispose();
   });
 
   it('reflects run state into status, activeFeature, and active phase tile', async () => {
     await store.setRun(sampleRun());
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.status).toBe('running');
-    expect(snap.activeFeature).not.toBeNull();
-    expect(snap.activeFeature!.id).toBe('feat-1');
-    const planTile = snap.phases.find((t) => t.name === 'speckit-plan');
+    expect(statusOf(snap)).toBe('running');
+    expect(runOf(snap)?.feature).not.toBeNull();
+    expect(runOf(snap)?.feature?.id).toBe('feat-1');
+    const planTile = runtimeOf(snap).phases.find((t) => t.name === 'speckit-plan');
     expect(planTile?.state).toBe('active');
     p.dispose();
   });
@@ -270,19 +291,25 @@ describe('StateProjector.getCurrentSnapshot', () => {
       manualPauseAt: 1_700_000_000_001,
       manualPauseCause: 'operator-paused'
     });
+    await ownRun();
 
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.phaseOverrides).toEqual([{ phaseId: 'speckit-plan', action: 'disabled' }]);
-    expect(snap.manualPauseAt).toBe(new Date(1_700_000_000_001).toISOString());
-    expect(snap.manualPauseCause).toBe('operator-paused');
+    expect(runtimeOf(snap).phaseOverrides).toEqual([
+      { phaseId: 'speckit-plan', action: 'disabled' }
+    ]);
+    // The pair moves together in v4 — a cause without a timestamp is no longer
+    // representable, so both are read off the one `manualPause` record.
+    expect(runtimeOf(snap).manualPause?.at).toBe(new Date(1_700_000_000_001).toISOString());
+    expect(runtimeOf(snap).manualPause?.cause).toBe('operator-paused');
     p.dispose();
   });
 
   it('projects phase-message metadata without message values', async () => {
     vi.useFakeTimers();
     await store.setRun(sampleRun());
+    await ownRun();
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     const received: WorkflowSnapshot[] = [];
@@ -305,7 +332,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
 
     await vi.advanceTimersByTimeAsync(120);
     const last = received[received.length - 1];
-    const plan = last.phases.find((tile) => tile.name === 'speckit-plan');
+    const plan = runtimeOf(last).phases.find((tile) => tile.name === 'speckit-plan');
     expect(plan?.phaseMessage).toEqual({
       fromPhaseId: 'speckit-plan',
       entryCount: 2,
@@ -460,7 +487,7 @@ describe('StateProjector.subscribe', () => {
     const received: WorkflowSnapshot[] = [];
     const sub = p.subscribe((s) => received.push(s));
     expect(received).toHaveLength(1);
-    expect(received[0].status).toBe('idle');
+    expect(statusOf(received[0])).toBe('idle');
     sub.dispose();
     p.dispose();
   });
@@ -528,11 +555,12 @@ describe('StateProjector.subscribe', () => {
     });
     await vi.advanceTimersByTimeAsync(50);
     await store.setRun(sampleRun());
+    await ownRun();
     await vi.advanceTimersByTimeAsync(110);
 
     expect(received.length).toBeGreaterThanOrEqual(1);
     const last = received[received.length - 1];
-    expect(last.status).toBe('running');
+    expect(statusOf(last)).toBe('running');
     p.dispose();
   });
 
@@ -1079,11 +1107,12 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.phases).toHaveLength(12);
-    expect(snap.phases.map((t) => t.name)).toEqual(phaseIds);
+    expect(runtimeOf(snap).phases).toHaveLength(12);
+    expect(runtimeOf(snap).phases.map((t) => t.name)).toEqual(phaseIds);
     p.dispose();
   });
 
@@ -1097,12 +1126,13 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.activePipeline).toBeDefined();
-    expect(snap.activePipeline!.id).toBe('security');
-    expect(snap.activePipeline!.name).toBe('Security Audit');
+    expect(runOf(snap)?.pipeline).toBeDefined();
+    expect(runOf(snap)?.pipeline!.id).toBe('security');
+    expect(runOf(snap)?.pipeline!.name).toBe('Security Audit');
     p.dispose();
   });
 
@@ -1125,15 +1155,17 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    // For the built-in pipeline, activePipeline may be undefined or carry id 'standard';
-    // accept either, but never surface a custom name.
-    if (snap.activePipeline) {
-      expect(snap.activePipeline.id).toBe('speckit-new-feature');
+    // For the built-in pipeline, the run's pipeline may be undefined or carry id
+    // 'standard'; accept either, but never surface a custom name.
+    const pipeline = runOf(snap)?.pipeline;
+    if (pipeline) {
+      expect(pipeline.id).toBe('speckit-new-feature');
     }
-    expect(snap.phases).toHaveLength(7);
+    expect(runtimeOf(snap).phases).toHaveLength(7);
     p.dispose();
   });
 
@@ -1154,10 +1186,11 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    const byName = new Map(snap.phases.map((t) => [t.name, t]));
+    const byName = new Map(runtimeOf(snap).phases.map((t) => [t.name, t]));
     expect(byName.get('speckit-clarify')).toBeDefined();
     expect(byName.get('speckit-analyze')).toBeDefined();
     expect(byName.get('speckit-specify')).toBeDefined();
@@ -1168,11 +1201,12 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
     const legacyRun: WorkflowRun = sampleRun();
     expect(legacyRun.pipeline).toBeUndefined();
     await store.setRun(legacyRun);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.phases).toHaveLength(7);
-    expect(snap.phases.map((t) => t.name)).toEqual([
+    expect(runtimeOf(snap).phases).toHaveLength(7);
+    expect(runtimeOf(snap).phases.map((t) => t.name)).toEqual([
       'speckit-specify',
       'speckit-clarify',
       'speckit-plan',
@@ -1195,10 +1229,11 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    const activeTile = snap.phases.find((t) => t.name === 'security-audit');
+    const activeTile = runtimeOf(snap).phases.find((t) => t.name === 'security-audit');
     expect(activeTile?.state).toBe('active');
     p.dispose();
   });
@@ -1228,10 +1263,11 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
       }
     };
     await store.setRun(run);
+    await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    const specifyTile = snap.phases.find((t) => t.name === 'speckit-specify');
+    const specifyTile = runtimeOf(snap).phases.find((t) => t.name === 'speckit-specify');
     expect(specifyTile?.state).toBe('completed');
     p.dispose();
   });

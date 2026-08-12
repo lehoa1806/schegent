@@ -1,30 +1,39 @@
 /**
  * Feature 017 — Queue Registry (pure functions, no I/O).
  *
- * Feature 030 — single-queue mode. The registry collapses to exactly one
- * entry with the reserved id `'default'`. Multi-queue scaffolding (UUIDv4
- * ids, name uniqueness, contiguous position ordering, schedule fields) is
- * retained as types-only shape compatibility for the v5 → v6 migrator and
- * for forward-readability of historical audit log entries. No active code
- * path creates, renames, deletes, or attaches a schedule to a queue after
- * the v6 cutover.
+ * Feature 092 — multi-queue mode, restored. Feature 030 collapsed this
+ * registry to exactly one entry and left the multi-queue machinery (UUIDv4
+ * ids, name uniqueness, contiguous position ordering, schedules) in place as
+ * shape compatibility. That machinery is live again: v10 supplies the state
+ * migration and the per-queue scheduler design the collapse was waiting on.
  *
- * Invariants (enforced by `validateQueueRegistry`, v6):
- *   - Exactly one entry.
- *   - `entries[0].id === DEFAULT_QUEUE_ID` ('default').
- *   - `entries[0].position === 0`.
- *   - `entries[0].schedule === null`.
- *   - Pause-source invariant retained from v5:
+ * The three v6 assertions are gone, and one of them mattered for a reason
+ * that is not obvious. `entries[0].id === DEFAULT_QUEUE_ID` was not only a
+ * position check — it was also, incidentally, the check that the reserved
+ * queue existed at all. Removing it without saying so would have let a
+ * reorder or a delete quietly remove the queue that every un-addressed
+ * enqueue falls back to, so the membership assertion below is explicit.
+ *
+ * Invariants (enforced by `validateQueueRegistry`, v10):
+ *   - At least one entry, at most `MAX_QUEUES` (20).
+ *   - An entry with `id === DEFAULT_QUEUE_ID` exists somewhere in the list,
+ *     at any position.
+ *   - Ids are unique and each is `'default'` or a UUIDv4.
+ *   - Names are unique after trim, case-insensitively, and each is non-empty
+ *     after trim and ≤ `MAX_QUEUE_NAME_LENGTH` (64).
+ *   - Positions are unique and contiguous from 0.
+ *   - Pause-source invariant retained from v5, applied to every entry:
  *     `pauseSource === null` iff `state !== 'manually-paused'`.
- *   - `name` is non-empty after trim and ≤ `MAX_QUEUE_NAME_LENGTH` (64).
+ *   - Any entry may carry a schedule.
  *
  * Down-migration is unsupported. Schedule semantics live in
  * `src/lib/schedule-parser.ts`; this module only stores the parsed shape.
  */
 
 export const DEFAULT_QUEUE_ID = 'default' as const;
-// Feature 030 — single-queue mode (was 20 in v5; reduced to 1 in v6).
-export const MAX_QUEUES = 1;
+// Feature 092 — restored to the v5 cap. Feature 030 reduced it to 1 for the
+// single-queue collapse; the bound itself never changed meaning.
+export const MAX_QUEUES = 20;
 export const MAX_QUEUE_NAME_LENGTH = 64;
 export const MIN_QUEUE_NAME_LENGTH = 1;
 
@@ -130,10 +139,7 @@ export type QueueRegistryError =
   | 'cannot-delete-default-queue'
   | 'invalid-queue-position'
   | 'invalid-queue-state'
-  | 'invalid-registry-state'
-  // Feature 030 — single-queue invariants.
-  | 'expected-single-entry'
-  | 'schedule-not-supported';
+  | 'invalid-registry-state';
 
 export class QueueRegistryViolation extends Error {
   public readonly code: QueueRegistryError;
@@ -155,38 +161,22 @@ export function validateQueueRegistry(registry: QueueRegistry): void {
       'QueueRegistry must contain at least one entry (the default queue)'
     );
   }
-  // Feature 030 — v6 single-queue invariant: exactly one entry.
-  if (registry.entries.length !== 1) {
-    throw new QueueRegistryViolation(
-      'expected-single-entry',
-      `QueueRegistry must contain exactly one entry in v6 (got ${registry.entries.length})`
-    );
-  }
   if (registry.entries.length > MAX_QUEUES) {
     throw new QueueRegistryViolation(
       'queue-cap-reached',
       `QueueRegistry exceeds cap (${MAX_QUEUES} entries)`
     );
   }
+  // Feature 092 — membership, not position. This assertion replaces the v6
+  // `entries[0].id === DEFAULT_QUEUE_ID` check, which enforced *both* that the
+  // reserved queue existed and that it sat first. Only the first half is a real
+  // invariant; the reserved queue may be reordered like any other, and the
+  // fallback target for an un-addressed enqueue must still be findable.
   const defaultEntry = registry.entries.find((e) => e.id === DEFAULT_QUEUE_ID);
   if (!defaultEntry) {
     throw new QueueRegistryViolation(
       'invalid-registry-state',
       'QueueRegistry is missing the reserved default queue'
-    );
-  }
-  // Feature 030 — v6 invariant: the single entry MUST be the default-id sentinel.
-  if (registry.entries[0].id !== DEFAULT_QUEUE_ID) {
-    throw new QueueRegistryViolation(
-      'invalid-queue-id',
-      `QueueRegistry single entry must have id '${DEFAULT_QUEUE_ID}' (got '${registry.entries[0].id}')`
-    );
-  }
-  // Feature 030 — v6 invariant: schedule MUST be null.
-  if (registry.entries[0].schedule !== null) {
-    throw new QueueRegistryViolation(
-      'schedule-not-supported',
-      `QueueRegistry single entry must have schedule === null in v6`
     );
   }
   const ids = new Set<string>();
@@ -271,9 +261,6 @@ export function validateQueueRegistry(registry: QueueRegistry): void {
  * Create a new queue entry. Caller supplies the freshly minted UUIDv4 id
  * (so this module remains pure / clock-injectable). Throws on cap or
  * duplicate-name; returns the new registry on success.
- *
- * @deprecated v6 single-queue mode keeps this helper only for historical
- * shape readability. No active runtime path may create non-default queues.
  */
 export function createQueue(
   registry: QueueRegistry,
@@ -323,9 +310,6 @@ export function createQueue(
 /**
  * Rename a queue. Names must remain unique. The reserved `'default'` id can
  * be renamed (the display name is purely cosmetic) but the id stays fixed.
- *
- * @deprecated v6 single-queue mode keeps this helper only for historical
- * shape readability. No active runtime path may rename queues.
  */
 export function renameQueue(
   registry: QueueRegistry,
@@ -362,9 +346,6 @@ export function renameQueue(
  * Delete a queue. The reserved `'default'` queue can never be deleted.
  * Caller is responsible for relocating or canceling that queue's pending
  * `FeatureRequest`s before invoking this — see `quickstart.md`.
- *
- * @deprecated v6 single-queue mode keeps this helper only for historical
- * shape readability. No active runtime path may delete queues.
  */
 export function deleteQueue(
   registry: QueueRegistry,
@@ -443,8 +424,9 @@ export function setQueuePaused(
 }
 
 /**
- * @deprecated v6 single-queue mode clears schedules and rejects scheduled
- * queues. This helper remains for legacy shape readability only.
+ * Attach or clear a queue's one-shot schedule. Any entry may carry one — the
+ * v6 rule that singled out `entries[0]` described a registry with only one
+ * entry to single out.
  */
 export function setQueueSchedule(
   registry: QueueRegistry,

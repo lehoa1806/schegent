@@ -115,7 +115,8 @@
           "metrics-view-opened",
           "process-exchange-export",
           "process-exchange-import-refused",
-          "process-exchange-import-committed"
+          "process-exchange-import-committed",
+          "runs-overlapped"
         ]
       },
       "uniqueItems": true

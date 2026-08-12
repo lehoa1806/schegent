@@ -34,7 +34,7 @@ import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-
 import type { PipelineCatalog } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
-import { appendAttempt } from '../../state/connected-workflow-run';
+import { appendAttempt, resolveBoundQueueId } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
 import { createConnectedRunSnapshot } from './connected-run-factory';
 import type { NodeRunStartDeps, NodeRunStartResult } from './node-run-starter';
@@ -130,6 +130,15 @@ export interface LaunchWorkflowInput {
   readonly workspaceRoot: string | null;
   readonly startedAt: number;
   readonly defaultRunnerKind?: BackendRunnerKind;
+  /**
+   * Feature 092 (T080, FR-041, FR-042) — the queue this run binds to.
+   *
+   * Named once, here, at the only moment a binding may be chosen. It goes two
+   * places from this one value: onto the aggregate, where it is fixed for the
+   * run's life, and onto this first child's enqueue. Every later child reads it
+   * back off the aggregate, so the two cannot diverge.
+   */
+  readonly queueId?: string;
 }
 
 export interface ContinueWorkflowInput {
@@ -251,7 +260,8 @@ export async function launchWorkflow(
     workflow: input.workflow,
     catalog: input.catalog,
     startedAt: input.startedAt,
-    ...(input.defaultRunnerKind ? { defaultRunnerKind: input.defaultRunnerKind } : {})
+    ...(input.defaultRunnerKind ? { defaultRunnerKind: input.defaultRunnerKind } : {}),
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
   });
   if (snapshot.outcome === 'rejected') {
     // A residual: gate 2's graph validation resolves every node's Pipeline
@@ -267,7 +277,11 @@ export async function launchWorkflow(
     request: input.request,
     workspaceRoot: input.workspaceRoot,
     frozenPipeline: snapshot.run.pipelines[node.pipelineId],
-    description: node.label ?? input.workflow.name
+    description: node.label ?? input.workflow.name,
+    // FR-042. Read back off the aggregate rather than from `input`, so the
+    // child's queue and the run's binding are the same value by construction
+    // and not by two call sites agreeing.
+    queueId: resolveBoundQueueId(snapshot.run)
   });
   if (started.outcome !== 'enqueued') return refusalOf(started);
 
@@ -350,7 +364,13 @@ export async function continueWorkflow(
     request: input.request,
     workspaceRoot: input.workspaceRoot,
     frozenPipeline: run.pipelines[node.pipelineId],
-    description: node.label ?? run.graph.name
+    description: node.label ?? run.graph.name,
+    // FR-042, FR-043. The bound queue, taken from the run — a continuation has
+    // no say in it. That is also what makes the paused-queue refusal (FR-043)
+    // land on the right queue: `scheduleOrEnqueue` checks the queue named here,
+    // so a paused bound queue stops this run advancing while every other queue
+    // carries on.
+    queueId: resolveBoundQueueId(run)
   });
   if (started.outcome !== 'enqueued') return refusalOf(started);
 

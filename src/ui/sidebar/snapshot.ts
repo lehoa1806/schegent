@@ -27,7 +27,7 @@ export type { DebugLogEntry };
 export type { EvidenceHealthSnapshot };
 export { IDLE_EVIDENCE_HEALTH };
 
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 4 as const;
 
 export const BUILT_IN_PHASE_NAMES = [
   'speckit-specify',
@@ -350,6 +350,7 @@ export interface QueueProjection {
 }
 
 import type { QueueLifecycle, ScheduledStartSource } from '../../queue/feature-request';
+export type { QueueLifecycle, ScheduledStartSource };
 
 import type { AuditScope } from '../../contracts/audit-events';
 
@@ -443,56 +444,131 @@ export interface DelayedRetryState {
   readonly delayedRetryCount: number;
 }
 
-export interface WorkflowSnapshot {
-  readonly schemaVersion: 3;
-  readonly isPrimary: boolean;
+/**
+ * Feature 092 (T090, US4) — the per-queue Run projection, and the whole of what
+ * v3 published at the root about "the" Run.
+ *
+ * A queue owns at most one Run (`PER_QUEUE_CAPACITY = 1`), so nesting the
+ * run-scoped readings here rather than beside the queue-scoped ones makes the
+ * cardinality structural: there is no way to hold a phase list for a queue that
+ * has no Run, and no way to read a status without having said which Run's.
+ *
+ * `null` on `QueueRuntime.inFlightRun` is the empty projection FR-053 requires.
+ */
+export interface InFlightRunProjection {
+  /**
+   * Feature 028 — id of the `WorkflowRun` (distinct from `feature.id`, which is
+   * the queue/task id). The webview needs it to target the two breakpoint IPC
+   * commands `CMD_SET_PHASE_BREAKPOINT` and `CMD_CLEAR_PHASE_BREAKPOINT` at the
+   * controller, and feature 092 uses it as the attribution key that scopes
+   * output and audit lines to the Run that wrote them (FR-051).
+   */
+  readonly runId: string;
   readonly status: WorkflowStatus;
-  readonly activeFeature: ActiveFeatureSummary | null;
+  readonly feature: ActiveFeatureSummary | null;
+  /** Null on the built-in `standard` pipeline, matching the v3 `activePipeline` omission. */
+  readonly pipeline: ActivePipelineSummary | null;
+  readonly elapsedMs: number | null;
+  readonly liveActivity: LiveActivity;
+  /**
+   * Feature 011 — delayed-retry state. Always present; fields are null/0 when
+   * no retry is pending. The webview reads `pendingRetryAt !== null` to gate
+   * the "Retry Phase Now" affordance.
+   */
+  readonly delayedRetry: DelayedRetryState;
+  /**
+   * Feature 028 — id of the phase that fired the breakpoint, non-null iff
+   * `QueueRuntime.manualPause.cause === 'breakpoint-paused'`.
+   */
+  readonly resumeTargetPhaseId: string | null;
+  /**
+   * Feature 087 (T064, FR-043) — the named outputs the Run recorded at
+   * completion, each a **location, never content** (FR-040a). Empty on every
+   * Run that recorded none, which is every Run started outside the composer and
+   * every composed Run before it completes. An entry whose status is
+   * `unresolved` carries no reference and is shown alongside the rest (FR-042).
+   */
+  readonly outputs: readonly RunOutputRecord[];
+}
+
+/**
+ * Feature 092 (T090, FR-048, FR-050) — one queue's published state.
+ *
+ * Exactly the ten fields of `data-model.md` §1.4: three from the registry
+ * entry, six that v3 published as top-level singulars, and one derived. What
+ * is deliberately *not* here is a copy of the audit tail: a line carries the
+ * `runId` that wrote it, and `inFlightRun.runId` joins it to a queue, so
+ * scoping is a read-side join over one feed rather than N partitioned copies
+ * to keep consistent (FR-051).
+ */
+export interface QueueRuntime {
+  readonly queueId: string;
+  readonly name: string;
+  readonly position: number;
+  readonly lifecycle: QueueLifecycle;
+  /** `null` when this queue owns no Run — the empty projection of FR-053. */
+  readonly inFlightRun: InFlightRunProjection | null;
   readonly phases: readonly PhaseTile[];
-  readonly queue: QueueProjection;
   readonly phaseOverrides: readonly {
     readonly phaseId: string;
     readonly action: 'skipped' | 'disabled' | 'removed';
   }[];
-  readonly manualPauseAt: string | null;
-  // Feature 028 — extends with `'breakpoint-paused'` for future-phase
-  // breakpoint fires. UI uses this to distinguish active-pause from
-  // breakpoint-paused styling on the active phase tile.
-  readonly manualPauseCause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused' | null;
+  /**
+   * Feature 028 — one nullable pair rather than two loose fields, so a cause
+   * without a timestamp is unrepresentable. `'breakpoint-paused'` distinguishes
+   * a future-phase breakpoint fire from an active pause on the phase tile.
+   */
+  readonly manualPause: {
+    readonly at: string;
+    readonly cause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused';
+  } | null;
   /**
    * Feature 028 — per-run future-phase breakpoints projected for the UI.
-   * Sorted by `setAt` ascending for deterministic ordering. Empty when
-   * the active run has no breakpoints; the field is always present so
-   * the webview can read it without an existence guard.
+   * Sorted by `setAt` ascending for deterministic ordering. Empty when the
+   * queue's Run has no breakpoints, and when it has no Run; the field is always
+   * present so the webview can read it without an existence guard.
    */
   readonly phaseBreakpoints: readonly {
     readonly phaseId: string;
     readonly setAt: string;
     readonly actor: 'operator' | 'system';
   }[];
+  /** Pending Tasks on this queue, derived from its own rows — never a total. */
+  readonly pendingCount: number;
   /**
-   * Feature 028 — id of the phase that fired the breakpoint, non-null
-   * iff `manualPauseCause === 'breakpoint-paused'`.
+   * Feature 092 (T108, FR-057) — this queue's own Task rows in position order,
+   * active and historical alike, which is what the Queue Detail tier lists.
+   *
+   * Not served by `QueueProjection.orderedItems`: that list is the **default**
+   * queue's rows, and its indices are the global address space the reorder
+   * handler translates (`handler-helpers.ts` `fromGlobalPosition`), so widening
+   * it would silently retarget every move. A queue's rows therefore hang off the
+   * queue, and `pendingCount` above is the same rows counted.
    */
-  readonly resumeTargetPhaseId: string | null;
+  readonly tasks: readonly QueueItem[];
+}
+
+export interface WorkflowSnapshot {
+  readonly schemaVersion: 4;
   /**
-   * Feature 028 — id of the active `WorkflowRun` (distinct from
-   * `activeFeature.id`, which is the queue/task id). Non-null when a
-   * run is in flight; the webview needs this to target the two
-   * breakpoint IPC commands `CMD_SET_PHASE_BREAKPOINT` and
-   * `CMD_CLEAR_PHASE_BREAKPOINT` at the controller.
+   * Window primacy, which stays at the root deliberately: it is a property of
+   * this window against the workspace, not of any one queue (plan.md D6).
    */
-  readonly activeRunId: string | null;
+  readonly isPrimary: boolean;
   /**
-   * Feature 087 (T064, FR-043) — the named outputs the Run recorded at
-   * completion, each a **location, never content** (FR-040a). Absent on every
-   * Run that recorded none, which is every Run started outside the composer and
-   * every composed Run before it completes. An entry whose status is
-   * `unresolved` carries no reference and is shown alongside the rest (FR-042).
+   * Feature 092 (FR-048) — one entry per registry entry, in position order.
+   * Replaces the top-level per-run singulars v3 published; those were deleted
+   * rather than deprecated so the compiler locates every consumer (FR-049).
    */
-  readonly runOutputs?: readonly RunOutputRecord[];
+  readonly queues: readonly QueueRuntime[];
+  readonly queue: QueueProjection;
   /** Backend inherited by phases whose run snapshot predates runner pinning. */
   readonly defaultRunnerKind: BackendRunnerKind;
+  /**
+   * The workspace audit feed, not partitioned per queue: a line with no Run —
+   * a state migration, a queue mutation — belongs to no queue and must not be
+   * dropped. Per-queue scoping is the `runId` join described on `QueueRuntime`.
+   */
   readonly auditTail: readonly AuditTailEntry[];
   /**
    * Debug log tail — recent SanitizedLogger output projected for the
@@ -500,24 +576,20 @@ export interface WorkflowSnapshot {
    * present; empty array when no logs have been captured.
    */
   readonly debugLogTail: readonly DebugLogEntry[];
-  readonly liveActivity: LiveActivity;
-  readonly workflowElapsedMs: number | null;
+  /**
+   * Host-level CLI subprocess telemetry. Stays at the root with `telemetry`
+   * below: both have exactly one source in the host, and a per-queue copy would
+   * be a second source of truth for a reading neither the queue nor the Run
+   * owns. `CliMonitorState` carries its own `runId` for attribution.
+   */
   readonly monitor: CliMonitorState | null;
   readonly history: readonly HistoryEntry[];
   readonly producedAt: string;
-  readonly activePipeline?: ActivePipelineSummary;
   readonly availablePipelines: readonly PipelineDef[];
   readonly availablePhases: readonly PhaseDef[];
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPingState: BackendPingState;
-  /**
-   * Feature 011 — delayed-retry state on the active run. Always present
-   * (even when there is no active run); fields are null/0 when no retry
-   * is pending. Webview reads `pendingRetryAt !== null` to gate the
-   * "Retry Phase Now" affordance.
-   */
-  readonly delayedRetry: DelayedRetryState;
   /**
    * Feature 011 — scalar `schegent.*` settings projected for the
    * Settings surface. Always present (defaults populated when the
@@ -686,6 +758,26 @@ export function buildEmptyPhases(): readonly PhaseTile[] {
   }));
 }
 
+/**
+ * Feature 092 (T096, FR-054) — the read-side join, spelled once for the host.
+ *
+ * v3 let any consumer read "the" Run off the root; v4 requires it to say which
+ * queue it means. This is that question and nothing more — no fallback to the
+ * first queue, no synthesised runtime, because a consumer that names a queue
+ * the registry does not have is asking about something that does not exist and
+ * should see `null` rather than another queue's Run.
+ *
+ * The webview has the same join in `snapshot-store.svelte.ts`; the two do not
+ * share code because the webview holds its own copy of the wire types, but they
+ * are the same rule and neither is entitled to a different answer.
+ */
+export function findQueueRuntime(
+  snapshot: Pick<WorkflowSnapshot, 'queues'>,
+  queueId: string
+): QueueRuntime | null {
+  return snapshot.queues.find((runtime) => runtime.queueId === queueId) ?? null;
+}
+
 export function buildIdleSnapshot(opts: {
   isPrimary: boolean;
   producedAt?: string;
@@ -693,9 +785,11 @@ export function buildIdleSnapshot(opts: {
   return Object.freeze({
     schemaVersion: SCHEMA_VERSION,
     isPrimary: opts.isPrimary,
-    status: 'idle' as const,
-    activeFeature: null,
-    phases: Object.freeze(buildEmptyPhases().map((p) => Object.freeze(p))),
+    // Feature 092 (T091) — no registry has been read yet on an idle snapshot,
+    // so there is no queue to publish a runtime for. Empty, never a fabricated
+    // default entry: the registry is the only thing entitled to say a queue
+    // exists.
+    queues: Object.freeze([]) as readonly QueueRuntime[],
     queue: Object.freeze({
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
@@ -708,17 +802,9 @@ export function buildIdleSnapshot(opts: {
       scheduledStartAt: null,
       scheduledStartSource: null
     }),
-    phaseOverrides: Object.freeze([]),
-    manualPauseAt: null,
-    manualPauseCause: null,
-    phaseBreakpoints: Object.freeze([]),
-    resumeTargetPhaseId: null,
-    activeRunId: null,
     defaultRunnerKind: 'claude',
     auditTail: Object.freeze([]) as readonly AuditTailEntry[],
     debugLogTail: Object.freeze([]) as readonly DebugLogEntry[],
-    liveActivity: IDLE_LIVE_ACTIVITY,
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]) as readonly HistoryEntry[],
     producedAt: opts.producedAt ?? new Date().toISOString(),
@@ -727,7 +813,6 @@ export function buildIdleSnapshot(opts: {
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
     backendPingState: Object.freeze({ status: 'idle' as const }),
-    delayedRetry: IDLE_DELAYED_RETRY,
     generalSettings: IDLE_GENERAL_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,
     evidenceHealth: IDLE_EVIDENCE_HEALTH,

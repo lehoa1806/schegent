@@ -33,6 +33,7 @@ import type {
   WorkflowSnapshot,
   QueueProjection
 } from '../../lib/snapshot-types';
+import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
 vi.mock('../../lib/reorder-task', () => ({
   postReorderTask: vi.fn()
@@ -61,11 +62,16 @@ function makeQueue(partial: Partial<QueueProjection>): QueueProjection {
 
 function makeSnapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: [],
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'idle',
+      activeFeature: null,
+      phases: []
+    }),
     queue: makeQueue(queue)
   } as unknown as unknown as WorkflowSnapshot;
 }

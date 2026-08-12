@@ -5,6 +5,7 @@ import {
   type QueueItem,
   type WorkflowSnapshot
 } from './snapshot-types';
+import { defaultQueueRuntime } from './queue-runtime-view';
 
 export type OperatorHealthLevel = 'ok' | 'attention' | 'blocked';
 
@@ -23,7 +24,10 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
     };
   }
 
-  const delayedRetry = (snapshot.delayedRetry ?? IDLE_DELAYED_RETRY) as DelayedRetryState;
+  // Feature 092 — health is reported for the default queue's Run; a second
+  // queue's stall belongs to that queue's own row, not to this banner.
+  const runtime = defaultQueueRuntime(snapshot);
+  const delayedRetry = (runtime?.inFlightRun?.delayedRetry ?? IDLE_DELAYED_RETRY) as DelayedRetryState;
   const items = queueItems(snapshot);
   const failed = items.filter((item) => item.status === 'failed').length;
   const retryTotal = items.reduce((sum, item) => sum + Math.max(0, item.retryCount ?? 0), 0);
@@ -48,7 +52,7 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
     };
   }
 
-  if (snapshot.liveActivity?.freshness === 'stalled') {
+  if (runtime?.inFlightRun?.liveActivity?.freshness === 'stalled') {
     return {
       level: 'blocked',
       label: 'activity stalled',

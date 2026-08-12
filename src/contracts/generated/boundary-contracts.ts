@@ -35,6 +35,13 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_DISABLE_PHASE",
   "CMD_ENABLE_PHASE",
   "CMD_REMOVE_TASK_PHASE",
+  "CMD_CREATE_QUEUE",
+  "CMD_RENAME_QUEUE",
+  "CMD_DELETE_QUEUE",
+  "CMD_SET_QUEUE_SCHEDULE",
+  "CMD_CLEAR_QUEUE_SCHEDULE",
+  "CMD_SAVE_QUEUE_SETTINGS",
+  "CMD_MOVE_TASK",
   "CMD_MODIFY_TASK",
   "CMD_REORDER_TASK",
   "CMD_RESTART_CANCELED_TASK",
@@ -155,7 +162,8 @@ export const AUDIT_EVENT_TYPES = [
   "metrics-view-opened",
   "process-exchange-export",
   "process-exchange-import-refused",
-  "process-exchange-import-committed"
+  "process-exchange-import-committed",
+  "runs-overlapped"
 ] as const;
 
 export const SETTINGS_KEYS = [

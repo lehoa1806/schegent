@@ -74,13 +74,17 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
         promotedTasks.push(req.id);
       }
     };
-    const fakeLock = {
-      tryAcquire: async () => ({ acquired: true as const, ownerId: 'w-test' })
+    // Feature 092 (T051) — the drain's exclusion step is the per-queue
+    // execution lease, not the workspace lock. Always granted here; this test
+    // is about the pause/resume dual-write, not about contention.
+    const fakeLease = {
+      tryAcquire: async () => ({ acquired: true as const, ownerId: 'w-test' }),
+      release: async () => undefined
     };
     coordinator = new AutoDrainCoordinator({
       store,
       queue,
-      lock: fakeLock as never,
+      executionLease: fakeLease as never,
       controller: fakeController as never
     });
   });

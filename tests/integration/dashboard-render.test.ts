@@ -153,7 +153,22 @@ describe('Dashboard render integration (T062)', () => {
       console.warn(`[T062] skipping bundle check: ${bundlePath} not found (run npm run build:webview)`);
       return;
     }
-    const bundleSource = fs.readFileSync(bundlePath, 'utf8');
+    // The claim is that the zones ship, not which chunk they land in. Feature 092
+    // moved the drill-down tiers behind dynamic imports, so `Dashboard.svelte` and
+    // its zones now emit into `chunks/QueueDetailTier.js` rather than the entry —
+    // a chunking decision the bundler owns and this assertion should not pin.
+    const chunkDir = path.join(repoRoot, 'dist', 'webview', 'chunks');
+    const bundleSource = [
+      bundlePath,
+      ...(fs.existsSync(chunkDir)
+        ? fs
+            .readdirSync(chunkDir)
+            .filter((name) => name.endsWith('.js'))
+            .map((name) => path.join(chunkDir, name))
+        : [])
+    ]
+      .map((file) => fs.readFileSync(file, 'utf8'))
+      .join('\n');
     expect(bundleSource).toContain('dashboard-queue-input');
     expect(bundleSource).toContain('dashboard-queue-management');
     expect(bundleSource).toContain('dashboard-queue-list');
@@ -172,6 +187,9 @@ describe('Dashboard render integration (T062)', () => {
     const html = mocks.state.panels[0].webview.html;
     expect(html).toMatch(/<meta\s+http-equiv=["']Content-Security-Policy["']/i);
     expect(html).toMatch(/script-src 'nonce-[A-Za-z0-9_-]+'/);
+    const cspNonce = html.match(/script-src 'nonce-([A-Za-z0-9_-]+)'/)?.[1];
+    expect(cspNonce).toBeTruthy();
+    expect(html).toContain(`<meta property="csp-nonce" nonce="${cspNonce}"/>`);
   });
 
   it('(e) dashboard panel HTML rebases the Vite-emitted asset graph (BUG-001)', () => {
@@ -221,6 +239,31 @@ describe('Dashboard render integration (T062)', () => {
         // toLocalUri intentionally omitted
       } as unknown as Parameters<typeof mod.renderDashboardHtml>[0])
     ).toThrow(/toLocalUri/);
+  });
+
+  it('(g) lazy route assets resolve relative to the dashboard module (BUG-002)', () => {
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const bundlePath = path.join(repoRoot, 'dist', 'webview', 'dashboard.js');
+    if (!fs.existsSync(bundlePath)) {
+      console.warn(
+        `[BUG-002] skipping lazy-asset check: ${bundlePath} not found (run npm run build:webview)`
+      );
+      return;
+    }
+
+    const bundleSource = fs.readFileSync(bundlePath, 'utf8');
+    const cssDependencies = [...bundleSource.matchAll(/["']([^"']+\.css)["']/g)].map(
+      (match) => match[1]
+    );
+
+    expect(cssDependencies.length).toBeGreaterThan(0);
+    expect(
+      cssDependencies.every((dependency) => dependency.startsWith('./')),
+      `lazy CSS must be module-relative for VS Code webviews: ${cssDependencies.join(', ')}`
+    ).toBe(true);
+    expect(bundleSource).toContain('import.meta.url');
+    expect(bundleSource).toContain('meta[property=csp-nonce]');
+    expect(bundleSource).toMatch(/new URL\([^)]*,[^)]*\)\.href/);
   });
 
   it('(d) dashboard subscription is independent from sidebar — emit posts once per subscriber', async () => {

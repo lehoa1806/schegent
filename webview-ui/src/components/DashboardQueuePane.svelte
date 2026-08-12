@@ -14,6 +14,11 @@
     collapsed: boolean;
     availablePipelines: readonly PipelineDefinition[];
     defaultPipelineId: string;
+    /**
+     * Feature 092 (T108, FR-057) — the queue new work is enqueued onto. Absent on
+     * the unscoped reading, where the host defaults to the default queue.
+     */
+    queueId?: string;
     pendingCount: number;
     queueTab: 'queue' | 'history';
     isPrimary: boolean;
@@ -37,6 +42,7 @@
     collapsed,
     availablePipelines,
     defaultPipelineId,
+    queueId,
     pendingCount,
     queueTab,
     isPrimary,
@@ -80,8 +86,20 @@
 </script>
 
 <div class="left-panel" class:collapsed data-testid="dashboard-left-panel">
+  <header class="explorer-header">
+    <span class="explorer-title">
+      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 5h16"></path><path d="M4 12h16"></path><path d="M4 19h16"></path>
+        <circle cx="8" cy="5" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="11" cy="19" r="1"></circle>
+      </svg>
+      Task explorer
+    </span>
+    <span class="explorer-count" aria-label={`${orderedItems.length} tasks`}>{orderedItems.length}</span>
+  </header>
   <div class="left-panel-scroll">
-    <QueueInputForm {availablePipelines} {defaultPipelineId} {pendingCount} />
+    <div class="queue-composer">
+      <QueueInputForm {availablePipelines} {defaultPipelineId} {queueId} {pendingCount} />
+    </div>
 
     <section
       class="zone queue-management glass-card queue-list-section"
@@ -159,18 +177,21 @@
         </div>
       {/if}
     </section>
+
   </div>
 </div>
 
 <style>
   .left-panel {
-    width: 390px;
-    min-width: 320px;
-    max-width: 46%;
+    width: 336px;
+    min-width: 280px;
+    max-width: 42%;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    border-right: 1px solid var(--schegent-divider);
+    background: var(--schegent-shell-bg);
     transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .left-panel.collapsed {
@@ -179,33 +200,70 @@
     opacity: 0;
     pointer-events: none;
     overflow: hidden;
+    border-right-color: transparent;
+  }
+  .explorer-header {
+    display: flex;
+    min-height: 42px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--schegent-space-2);
+    padding: 0 var(--schegent-space-3);
+    border-bottom: 1px solid var(--schegent-divider);
+    color: var(--schegent-muted-fg);
+  }
+  .explorer-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--schegent-fg);
+    font-size: var(--schegent-text-caption);
+    font-weight: 650;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
+  }
+  .explorer-count {
+    display: inline-flex;
+    min-width: 20px;
+    height: 20px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--schegent-surface-raised);
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
+    font-variant-numeric: tabular-nums;
   }
   .left-panel-scroll {
     display: flex;
     flex-direction: column;
-    gap: var(--schegent-pad);
+    gap: 0;
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
   }
-  .queue-management { flex-shrink: 0; }
-  .queue-list-section {
+  .queue-management {
+    order: 1;
     flex: 1 1 auto;
+  }
+  .queue-composer { order: 2; }
+  .queue-list-section {
     min-height: 60px;
     overflow: hidden;
-    padding: 12px;
+    padding: 0;
   }
   .queue-tabs {
     display: flex;
     gap: 0;
-    margin: -4px -4px var(--schegent-gap);
+    margin: 0;
     border-bottom: 1px solid var(--schegent-divider, var(--sch-glass-border));
   }
   .queue-tab {
     flex: 1;
     min-height: 36px;
     padding: 7px 12px;
-    font-size: 0.9em;
+    font-size: var(--schegent-text-secondary);
     font-weight: 600;
     color: var(--schegent-muted-fg);
     background: transparent;
@@ -217,22 +275,32 @@
   }
   .queue-tab:hover { color: var(--schegent-fg); }
   .queue-tab.active {
-    color: var(--schegent-fg);
+    color: var(--schegent-color-active);
     border-bottom-color: var(--schegent-color-active);
+    background: var(--schegent-surface-active);
   }
   .queue-tab-panel {
     display: flex;
     flex: 1;
     min-height: 0;
     flex-direction: column;
+    padding: var(--schegent-space-2);
   }
   .glass-card {
-    background: var(--schegent-surface);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
     box-shadow: none;
     display: flex;
     flex-direction: column;
+  }
+  .queue-composer {
+    flex: 0 0 auto;
+    max-height: 42%;
+    overflow-y: auto;
+    padding: var(--schegent-space-3);
+    border-top: 1px solid var(--schegent-divider);
+    background: var(--schegent-shell-bg);
   }
 
   @media (max-width: 900px) {
@@ -244,6 +312,8 @@
       opacity: 1;
       pointer-events: auto;
       overflow: visible;
+      border-right: 0;
+      border-bottom: 1px solid var(--schegent-divider);
     }
     .left-panel-scroll {
       overflow: visible;
@@ -251,6 +321,9 @@
     .queue-list-section {
       min-height: 240px;
       max-height: 460px;
+    }
+    .queue-composer {
+      max-height: none;
     }
   }
 </style>

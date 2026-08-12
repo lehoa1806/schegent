@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Component } from 'svelte';
-  import Dashboard from '../components/Dashboard.svelte';
+  // Feature 092 (T112, FR-061) — the `operations` route now mounts the
+  // drill-down's location owner rather than `Dashboard` directly. `Dashboard`
+  // is still what tier 2 embeds, scoped to one queue; it is simply no longer
+  // the route's own top-level view.
+  import OperationsSurface from '../components/OperationsSurface.svelte';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import {
@@ -82,6 +86,7 @@
 
 <div class="dashboard-root" data-testid="dashboard-app-root">
   {#if ready && snapshot}
+    <a class="skip-link" href="#dashboard-content">Skip to dashboard content</a>
     <header class="dashboard-topbar">
       <div class="brand-lockup" aria-label="Schegent dashboard">
         <span class="brand-mark" aria-hidden="true">
@@ -126,14 +131,14 @@
           </button>
         {/each}
       </nav>
-      <div class:read-only={!snapshot.isPrimary} class="workspace-state">
+      <div class:read-only={!snapshot.isPrimary} class="workspace-state" aria-live="polite">
         <span class="workspace-dot" aria-hidden="true"></span>
         <span>{snapshot.isPrimary ? 'Workspace Connected' : 'Read-only Window'}</span>
       </div>
     </header>
-    <div class="dashboard-route" data-testid="dashboard-route">
+    <div id="dashboard-content" class="dashboard-route" data-testid="dashboard-route">
       {#if route === 'operations'}
-        <Dashboard {snapshot} />
+        <OperationsSurface {snapshot} />
       {:else if ActiveRouteComponent}
         {#if route === 'metrics'}
           <ActiveRouteComponent active={true} />
@@ -177,6 +182,22 @@
     color: var(--schegent-fg);
     background: var(--schegent-bg);
   }
+  .skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: var(--schegent-z-tooltip);
+    padding: 7px 10px;
+    border: 1px solid var(--schegent-focus-border);
+    border-radius: var(--schegent-radius-sm);
+    background: var(--schegent-surface-raised);
+    color: var(--schegent-fg);
+    transform: translateY(-150%);
+    transition: transform var(--schegent-duration-fast) var(--schegent-ease-out);
+  }
+  .skip-link:focus {
+    transform: translateY(0);
+  }
   .route-status {
     display: grid;
     flex: 1;
@@ -201,31 +222,33 @@
     position: relative;
     z-index: var(--schegent-z-sticky);
     display: flex;
-    min-height: 48px;
+    min-height: 52px;
     align-items: stretch;
-    gap: 18px;
-    padding: 0 24px;
+    gap: 0;
+    padding: 0 16px 0 0;
     border-bottom: 1px solid var(--schegent-border);
     background: var(--schegent-shell-bg);
   }
   .brand-lockup {
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex: 0 0 auto;
+    width: 190px;
+    gap: 9px;
+    flex: 0 0 190px;
+    padding: 0 16px;
+    border-right: 1px solid var(--schegent-divider);
   }
   .brand-mark {
     display: inline-flex;
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
     align-items: center;
     justify-content: center;
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
+    color: var(--schegent-color-active);
   }
   .brand-name {
     color: var(--schegent-fg);
-    font-size: 0.9rem;
+    font-size: 0.82rem;
     font-weight: 700;
     letter-spacing: 0.07em;
     text-transform: uppercase;
@@ -235,7 +258,8 @@
     min-width: 0;
     flex: 1 1 auto;
     align-items: stretch;
-    gap: 0;
+    gap: 2px;
+    padding-left: 6px;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -244,7 +268,7 @@
   }
   .nav-btn {
     position: relative;
-    min-height: 47px;
+    min-height: 51px;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
@@ -252,26 +276,27 @@
     background: transparent;
     border: none;
     color: var(--schegent-muted-fg);
-    padding: 0 11px;
+    padding: 0 12px;
     cursor: pointer;
     font-weight: 500;
-    font-size: 0.8rem;
+    font-size: var(--schegent-text-secondary);
   }
   .nav-btn::after {
     position: absolute;
-    right: 11px;
+    right: 12px;
     bottom: -1px;
-    left: 11px;
+    left: 12px;
     height: 2px;
     background: transparent;
     content: '';
   }
   .nav-btn:hover {
     color: var(--schegent-fg);
-    background: var(--schegent-surface-subtle);
+    background: var(--schegent-surface-hover);
   }
   .nav-btn.active {
-    color: var(--schegent-fg);
+    color: var(--schegent-color-active);
+    background: var(--schegent-surface-active);
   }
   .nav-btn.active::after {
     background: var(--schegent-color-active);
@@ -285,15 +310,15 @@
     gap: 7px;
     flex: 0 0 auto;
     color: var(--schegent-color-completed);
-    font-size: 0.74rem;
+    font-size: var(--schegent-text-caption);
     white-space: nowrap;
   }
   .workspace-state.read-only {
     color: var(--schegent-color-warning);
   }
   .workspace-dot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: currentColor;
   }
@@ -341,7 +366,11 @@
 
   @media (max-width: 860px) {
     .dashboard-topbar {
-      gap: 10px;
+      padding-right: 10px;
+    }
+    .brand-lockup {
+      width: auto;
+      flex-basis: auto;
       padding: 0 12px;
     }
     .nav-btn {
@@ -362,7 +391,7 @@
       display: none;
     }
     .dashboard-topbar {
-      padding: 0 10px;
+      padding-right: 8px;
     }
     .brand-lockup {
       gap: 0;

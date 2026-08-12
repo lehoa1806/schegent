@@ -32,6 +32,7 @@ import type {
   QueueItem,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 
 vi.mock('../../lib/workflow-run-ipc', () => ({
   continueWorkflow: vi.fn()
@@ -98,13 +99,21 @@ const QUEUE_ITEM: QueueItem = {
   position: 0
 };
 
-function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, activeFeature, phases, liveActivity, workflowElapsedMs, ...rest } = overrides;
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: [],
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: status ?? 'idle',
+      activeFeature: activeFeature ?? null,
+      phases: phases ?? [],
+      liveActivity: liveActivity ?? null,
+      workflowElapsedMs: workflowElapsedMs ?? 0
+    }),
     queue: {
       orderedItems: [QUEUE_ITEM],
       inFlight: QUEUE_ITEM,
@@ -113,8 +122,6 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
       paused: false
     },
     auditTail: [],
-    liveActivity: null,
-    workflowElapsedMs: 0,
     monitor: null,
     history: [],
     producedAt: '2026-08-01T00:00:00.000Z',
@@ -122,7 +129,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     availablePhases: [],
     availableModels: { claude: [], codex: [], agy: [] },
     availableBackends: ['claude'],
-    ...overrides
+    ...rest
   } as unknown as WorkflowSnapshot;
 }
 

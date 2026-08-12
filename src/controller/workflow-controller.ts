@@ -8,10 +8,13 @@ import type { WorkspaceLockManager } from '../state/lock';
 import { IsContinueGate } from './is-continue-gate';
 import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
 import type { FeatureRequest } from '../queue/feature-request';
+import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
+import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import { ExecutionLeaseManager } from '../state/execution-lease';
 import {
   BUILT_IN_CATALOG,
   BUILT_IN_PIPELINE_ID,
@@ -83,6 +86,14 @@ export interface WorkflowControllerDeps {
   terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
   requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
   checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
+  /**
+   * Feature 092 (T051) — the per-queue execution lease the auto-drain claims at
+   * step 6. Optional so the many tests that build a controller without one keep
+   * working; absent, the controller mints a manager over the same store under
+   * the same owner id as the workspace lock, which is exactly what
+   * `extension.ts` passes in production.
+   */
+  executionLease?: ExecutionLeasePort;
 }
 
 export interface StartNewOptions {
@@ -155,8 +166,14 @@ export class SchegentWorkflowController {
     this.autoDrainCoordinator = new AutoDrainCoordinator({
       store,
       queue,
-      lock,
+      executionLease: deps.executionLease ?? new ExecutionLeaseManager(store, lock.id),
       controller: this,
+      // Same adapter shape `extension.ts` uses for the queue's lifecycle hook:
+      // the writer's entry type is stricter than the port's, so the widening
+      // happens once, here, at the seam.
+      auditWriter: auditWriter
+        ? { append: (entry) => auditWriter.append(entry as never) }
+        : null,
       logger
     });
     this.retryCoordinator = new RetryCoordinator({
@@ -259,8 +276,13 @@ export class SchegentWorkflowController {
     return Math.max(1, Math.min(DELAYED_RETRY_CAP, Math.trunc(configured)));
   }
 
-  public async drainQueuedWork(): Promise<void> {
-    await this.autoDrainCoordinator.drainIfIdle();
+  /**
+   * Feature 092 (T051) — addressed. An operator restart names the queue it
+   * restarted; the default keeps every pre-092 caller pointing at the default
+   * queue, which is the only queue those callers ever had.
+   */
+  public async drainQueuedWork(queueId: string = DEFAULT_QUEUE_ID): Promise<void> {
+    await this.autoDrainCoordinator.drainIfIdle(queueId);
   }
 
   public setRateLimitHandler(handler: RateLimitHandler): void {
@@ -397,8 +419,14 @@ export class SchegentWorkflowController {
     return this.logger.sanitize(raw.length > 0 ? raw : 'unknown workflow error');
   }
 
+  /**
+   * Feature 092 (T052) — a terminating Run frees a slot under the workspace
+   * ceiling, and that slot belongs to whichever queue the round-robin cursor
+   * reaches next, not to the queue that just finished. So the post-terminal
+   * drain sweeps the registry rather than re-draining one queue.
+   */
   private scheduleAutoDrain(): void {
-    void this.autoDrainCoordinator.drainIfIdle().catch((err) =>
+    void this.autoDrainCoordinator.drainAll().catch((err) =>
       this.logger.warn(`auto-drain failed: ${(err as Error).message}`)
     );
   }

@@ -49,6 +49,12 @@ export interface ConnectedRunFactoryInput {
   readonly startedAt: number;
   /** The backend a Phase inherits when it names none, pinned for the run's life. */
   readonly defaultRunnerKind?: BackendRunnerKind;
+  /**
+   * Feature 092 (T080, FR-041) — the queue the run binds to, pinned for its
+   * life alongside the two snapshots. Absent means the default queue; the
+   * default is applied on read, not written here (FR-046).
+   */
+  readonly queueId?: string;
 }
 
 /**
@@ -109,7 +115,8 @@ export function createConnectedRunSnapshot(
       workflowId: input.workflow.workflowId,
       graph: input.workflow,
       pipelines,
-      startedAt: input.startedAt
+      startedAt: input.startedAt,
+      ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
     })
   };
 }

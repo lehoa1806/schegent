@@ -229,14 +229,18 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Maximum delayed-retry attempts per run'
   },
+  // Feature 092 (T054, FR-026/FR-027) — the cap is no longer pinned. Feature
+  // 056 held it at exactly 1 because a single workspace lock made concurrency
+  // unrepresentable; the lock split of US2 removed that constraint, so the
+  // knob now means what it says.
   'schegent.queue.globalConcurrencyCap': {
     key: 'schegent.queue.globalConcurrencyCap',
     type: 'integer',
-    default: 1,
+    default: 3,
     min: 1,
-    max: 1,
+    max: 20,
     scope: 'resource',
-    docLabel: 'Global queue concurrency cap (pinned at 1)'
+    docLabel: 'Global queue concurrency cap'
   },
   'schegent.logging.verbose': {
     key: 'schegent.logging.verbose',

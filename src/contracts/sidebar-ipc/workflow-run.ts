@@ -109,6 +109,16 @@ export interface LaunchWorkflowPayload {
   readonly startNodeId: string;
   /** The starting node's Pipeline contract, composed by the operator. */
   readonly request: RunRequest;
+  /**
+   * Feature 092 (T080, FR-041) — which queue the run binds to, for its whole
+   * life. Additive and optional: absent means the default queue, which is what
+   * every pre-092 launch meant.
+   *
+   * Only the launch carries it. There is no counterpart on
+   * `ContinueWorkflowPayload`, because the binding is fixed at start and a
+   * continuation that could name a queue would be a rebind.
+   */
+  readonly queueId?: string;
 }
 
 export interface LaunchWorkflowCommand extends CommandBase<typeof CMD_LAUNCH_WORKFLOW> {
@@ -244,6 +254,7 @@ export function isLaunchWorkflowPayload(payload: unknown): payload is LaunchWork
   return (
     isNonEmptyString(value.workflowId) &&
     isNonEmptyString(value.startNodeId) &&
+    (value.queueId === undefined || isNonEmptyString(value.queueId)) &&
     isRunRequestShape(value.request)
   );
 }

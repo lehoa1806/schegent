@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 4 as const;
 
 export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
 export type BackendPingFailureCause =
@@ -909,72 +909,83 @@ export interface TelemetrySnapshot {
   readonly sampledAt: string;
 }
 
-export interface WorkflowSnapshot {
-  readonly schemaVersion: 3;
-  readonly isPrimary: boolean;
+/**
+ * Feature 092 (FR-048, FR-049) — the Run one queue owns, folded under that
+ * queue. Every field here was a top-level singular in v3; the fold is what
+ * makes "whose Run is this" unambiguous once more than one can be in flight.
+ */
+export interface InFlightRunProjection {
+  readonly runId: string;
   readonly status: WorkflowStatus;
-  readonly activeFeature: ActiveFeatureSummary | null;
+  readonly feature: ActiveFeatureSummary | null;
+  /** Null on the built-in `standard` pipeline, matching the v3 `activePipeline` omission. */
+  readonly pipeline: ActivePipelineSummary | null;
+  readonly elapsedMs: number | null;
+  readonly liveActivity: LiveActivity;
+  readonly delayedRetry: DelayedRetryState;
+  readonly resumeTargetPhaseId: string | null;
+  readonly outputs: readonly RunOutputRecord[];
+}
+
+/**
+ * Feature 092 (FR-048, FR-053) — one entry per registered queue, in position
+ * order. A queue that owns no Run publishes `inFlightRun: null` with every
+ * run-derived list empty; it never borrows another queue's Run.
+ */
+export interface QueueRuntime {
+  readonly queueId: string;
+  readonly name: string;
+  readonly position: number;
+  readonly lifecycle: QueueLifecycle;
+  readonly inFlightRun: InFlightRunProjection | null;
   readonly phases: readonly PhaseTile[];
-  readonly queue: QueueProjection;
-  readonly phaseOverrides?: readonly {
+  readonly phaseOverrides: readonly {
     readonly phaseId: string;
     readonly action: 'skipped' | 'disabled' | 'removed';
   }[];
-  readonly manualPauseAt?: string | null;
-  readonly manualPauseCause?:
-    | 'operator-paused'
-    | 'queue-paused-mid-run'
-    | 'breakpoint-paused'
-    | null;
-  /**
-   * Feature 028 — per-run future-phase breakpoints projected for the UI.
-   * Optional for legacy-tolerance: older host bundles do not include it.
-   * Defaults to an empty array when absent.
-   */
-  readonly phaseBreakpoints?: readonly {
+  readonly manualPause: {
+    readonly at: string;
+    readonly cause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused';
+  } | null;
+  readonly phaseBreakpoints: readonly {
     readonly phaseId: string;
     readonly setAt: string;
     readonly actor: 'operator' | 'system';
   }[];
+  /** Pending Tasks on this queue, derived from its own rows — never a total. */
+  readonly pendingCount: number;
   /**
-   * Feature 028 — id of the phase that fired the breakpoint, non-null
-   * iff `manualPauseCause === 'breakpoint-paused'`. Optional for
-   * legacy-tolerance.
+   * Feature 092 (T108, FR-057) — this queue's own Task rows in position order,
+   * active and historical alike; the Queue Detail tier lists them. Distinct from
+   * `QueueProjection.orderedItems`, which is the default queue's rows and whose
+   * indices are the global address space the reorder handler translates.
    */
-  readonly resumeTargetPhaseId?: string | null;
+  readonly tasks: readonly QueueItem[];
+}
+
+export interface WorkflowSnapshot {
+  readonly schemaVersion: 4;
+  readonly isPrimary: boolean;
   /**
-   * Feature 028 — id of the active `WorkflowRun` (distinct from
-   * `activeFeature.id`, which is the queue/task id). Optional for
-   * legacy-tolerance; required for breakpoint IPC targeting.
+   * Feature 092 (FR-048) — one runtime per registered queue. Replaces every
+   * per-run singular the root carried in v3; those were deleted rather than
+   * deprecated so a stale read fails to compile instead of silently reading
+   * one queue's Run as the workspace's.
    */
-  readonly activeRunId?: string | null;
-  /**
-   * Feature 087 (T064, FR-043) — the named outputs the Run recorded at
-   * completion. Absent on every Run that recorded none, so Run details shows
-   * the section only when there is something to show.
-   */
-  readonly runOutputs?: readonly RunOutputRecord[];
+  readonly queues: readonly QueueRuntime[];
+  readonly queue: QueueProjection;
   /** Effective host default; absent only when paired with a legacy host. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];
   readonly debugLogTail?: readonly DebugLogEntry[];
-  readonly liveActivity: LiveActivity;
-  readonly workflowElapsedMs: number | null;
   readonly monitor: CliMonitorState | null;
   readonly history: readonly HistoryEntry[];
   readonly producedAt: string;
-  readonly activePipeline?: ActivePipelineSummary;
   readonly availablePipelines: readonly PipelineDefinition[];
   readonly availablePhases: readonly PhaseDefinition[];
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPingState?: BackendPingState;
-  /**
-   * Feature 011 — delayed-retry state on the active run. Optional for
-   * legacy-tolerance: an older host bundle may not include it; the
-   * webview must default to `IDLE_DELAYED_RETRY` in that case.
-   */
-  readonly delayedRetry?: DelayedRetryState;
   /**
    * Feature 011 — typed read of every scalar `schegent.*` setting,
    * with the effective scope for each field. Optional for
