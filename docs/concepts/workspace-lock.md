@@ -1,21 +1,37 @@
 # The Workspace Lock
 
-The workspace lock is the smallest, most important piece of state in Schegent. It guarantees that **at most one run is executing in a workspace at any moment**, even if multiple VS Code windows are open or the extension is reloading. Most of the time you do not need to think about it; this page explains it so you know what to do when something looks stuck.
+The workspace lock is the smallest, most important piece of state in Schegent. Most of the time you do not need to think about it; this page explains it so you know what to do when something looks stuck.
 
-## What the lock protects
+Since multiple queues arrived, there are **two** leases, not one. They answer different questions and they are independent of each other:
 
-The lock guards the workspace as a single, shared resource. While the lock is held, the workspace is "owned" by exactly one logical session of Schegent. The owner can:
+| | Window-primacy lease | Execution lease |
+|---|---|---|
+| Question it answers | Which VS Code window may mutate this workspace? | Which window is draining *this queue*? |
+| Scope | One per workspace | One per queue |
+| Concurrent holders | Exactly one | One per queue, several across queues |
+| What you see when you lose it | The sidebar goes read-only | Nothing; that queue is drained elsewhere |
+| Heartbeat / staleness | 5 s / 15 s | 5 s / 15 s |
+
+Losing primacy does not release an execution lease, and holding an execution lease does not make a window primary. That separation is the whole point: draining a queue must never be a route to becoming the window that owns the workspace.
+
+## What the leases protect
+
+The **window-primacy lease** guards the workspace as a single, shared resource. While a window holds it, that window is the only one that may:
 
 - Spawn the Claude CLI subprocess.
 - Write to `.schegent/audit.log`.
 - Write to the per-run session tree under `.schegent/sessions/<runId>/`.
-- Mutate `WorkflowRun` state.
+- Mutate `WorkflowRun` state, the queue registry, or settings.
 
-While the lock is held, **a second run cannot start in the same workspace**. The queue drainer sees the lock as held and waits.
+The **execution lease** guards one queue's turn. A queue with a live lease held by another window is not drained here — the drainer treats it as "someone else has this one" and moves on to the next queue.
 
-## When the lock is acquired and released
+Neither lease is what stops two runs from executing at once today. That is the run engine: it drives one `WorkflowRun` at a time, and the drainer checks it before promoting anything. See [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
 
-The lock is acquired exactly once per run, at the moment a task transitions from `pending` to `in-flight`. It is released:
+## When the leases are acquired and released
+
+The **execution lease** for a queue is claimed by the drainer at the moment that queue promotes a task to in-flight, and it is released when the window shuts down or, if the window dies, when its heartbeat goes stale 15 seconds later. It is intentionally sticky: a window that has been running a queue keeps its claim on that queue.
+
+The **window-primacy lease** is claimed on activation and re-claimed around each run. It is released:
 
 - when the run terminates successfully (reaches `done` and emits `feature-request-completed`), or
 - when the run terminates with failure (a fatal signature, a watchdog timeout, an unrecoverable error), or
@@ -25,39 +41,41 @@ A `finally`-guarded wrapper around every entry point ensures the release runs ev
 
 ## What happens when you pause a run
 
-Pausing is the interesting case. A paused run is *not running* — no subprocess is alive — but it *intends to resume*. If the lock released on every pause, a second task could slip in and start a competing run; when the operator clicks Resume on the paused task, it would race the second task for the lock.
+Pausing is the interesting case. A paused run is *not running* — no subprocess is alive — but it *intends to resume*. If primacy were dropped on every pause, another window could claim the workspace while your run sat paused, and clicking Resume would fail.
 
-To prevent that, paused runs **retain** the lock. The implementation looks like this conceptually:
+To prevent that, paused runs **retain** the primacy lease. The implementation looks like this conceptually:
 
 1. The operator clicks Pause.
 2. The host writes the pause state to `WorkflowRun` (`manualPauseAt`, `manualPauseCause`).
 3. The host kills the active subprocess.
-4. The host *calls `session.retain()`* — explicit intent to hold the lock past the current scope.
-5. The lock-wrapper's `finally` block sees the retain and **does not release**.
+4. The host *calls `session.retain()`* — explicit intent to hold the lease past the current scope.
+5. The lease-wrapper's `finally` block sees the retain and **does not release**.
 
-When the operator clicks Resume, the new dispatch claims ownership of the already-held lock (idempotent for the same owner). When the resumed run finally terminates, the lock is released normally.
+When the operator clicks Resume, the new dispatch claims ownership of the already-held lease (idempotent for the same owner). When the resumed run finally terminates, the lease is released normally.
 
-This is why **a paused task is not a free queue slot**. The queue can drain *other* pending tasks past a paused one only when the lock is genuinely free — which it is for tasks paused via the queue-paused projection, but not for tasks paused via `manually-paused-task` or `breakpoint-paused`.
+A paused run does not, on its own, hold the run engine — the engine is free the moment the subprocess dies. What a paused *task* holds is its own queue's turn, and only when the pause preserves the in-flight pointer. Other queues are unaffected either way.
 
 ## What happens during a crash or reload
 
-If VS Code crashes, the extension host dies, or you reload the window while a run is mid-flight, the in-memory lock state vanishes. On the next activation the extension:
+If VS Code crashes, the extension host dies, or you reload the window while a run is mid-flight, the in-memory lease state vanishes. On the next activation the extension:
 
 1. Re-reads the persisted `WorkflowRun` state from `workspaceState`.
 2. If a run is recorded as `in-flight` but has no live subprocess (which is always the case after a reload), the run is recovered into a paused or failed terminal state, depending on its last-known phase outcome.
-3. The lock is conceptually free; the drainer can pick up the next pending task or surface the recovered task for operator decision.
+3. Primacy is reclaimed by the activating window, and any execution lease the dead window left behind goes stale 15 seconds after its last heartbeat and is reclaimable from then on. A crash cannot strand a queue permanently.
 
 You do not have to clear anything by hand after a reload. The recovery path is deterministic.
 
 ## What happens with multiple VS Code windows
 
-Schegent's lock is *per workspace*, not per host. If you open the same workspace folder in two VS Code windows:
+Primacy is *per workspace*, not per host. If you open the same workspace folder in two VS Code windows:
 
-- Only the **primary host** can mutate state. The other window is read-only for all mutating IPC commands.
-- The lock is owned by the primary host. The secondary host's drainer is a no-op.
+- Only the **primary host** can mutate state. The other window is read-only for all mutating IPC commands, no matter how many queues or runs exist.
+- The primacy lease is owned by the primary host. The secondary host's drainer is a no-op.
 - You can switch primary host by reloading the windows in order — the first window to activate against an unowned workspace becomes the primary.
 
 Trying to enqueue a task or click Resume in a secondary window surfaces a "not primary host" rejection in the audit log. The UI reflects the read-only state.
+
+One caveat worth knowing if you habitually keep two windows open on the same workspace: the primacy lease is released at the end of each run, so a second window that activates in that gap becomes primary and puts the first window into read-only mode. The first window keeps the execution leases on every queue it has drained until it closes, so the new primary will not drain those queues while the old window is still open. Close the window you are no longer using rather than leaving both open.
 
 ## Multi-root workspaces
 
@@ -112,15 +130,15 @@ In the worst case — for example, after a hard crash that left state in a genui
 
 - It does *not* delete `.schegent/audit.log` or the per-run session tree.
 - It *does* clear the queue, all `WorkflowRun` records, all pause/breakpoint state, and any pending-retry schedule.
-- It re-runs the v2 → v6 migration sequence against the cleared state.
+- It re-runs the forward-only migration sequence (currently up to v10) against the cleared state.
 
 Use it only when reload-window has not helped. The audit log preserves every event up to the reset; you can always reconstruct what was in the queue if you need to.
 
 ## The retain-vs-release matrix
 
-For internal reference and to set your expectations, here is the matrix of when the lock retains versus releases:
+For internal reference and to set your expectations, here is the matrix of when the **primacy lease** retains versus releases. Execution leases are not in this table: they are released on window shutdown or by staleness, never per run.
 
-| Run terminal event | Lock behavior |
+| Run terminal event | Primacy-lease behavior |
 |---|---|
 | Run reaches `done` cleanly | release |
 | Run fails (fatal signature, watchdog, unrecoverable error) | release |
@@ -132,6 +150,14 @@ For internal reference and to set your expectations, here is the matrix of when 
 | Rate-limit delayed retry scheduled | retain |
 | Extension deactivation while run is in-flight | release (with crash-recovery on next activation) |
 
-If you ever see a release where this matrix predicts a retain, the run will lose its claim to the lock and another task might run before the operator clicks Resume. Report it — that is a bug.
+If you ever see a release where this matrix predicts a retain, the run loses its claim to primacy and another window can take the workspace out from under it. Report it — that is a bug.
+
+## When the lock looks stuck: which one is it?
+
+The two leases fail differently, so the symptom tells you which one to look at:
+
+- **The sidebar is read-only and says another window is primary.** That is the primacy lease. Close the other window, or reload this one after the other releases.
+- **One queue never promotes while other queues do.** That is that queue's execution lease, held by another window. It clears when that window closes, or 15 seconds after it dies.
+- **Every queue waits and one run is running.** That is neither lease — that is the run engine, working as currently designed.
 
 The next page, [Sessions, Logs, and Audit Evidence](sessions-and-logs.md), explains the on-disk records that survive across runs and across the lock lifecycle.

@@ -32,6 +32,7 @@ import {
   ScheduledStartCoordinator
 } from '../../src/services/scheduled-start-coordinator';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
+import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import type { AuditEntry } from '../../src/audit/audit-entry';
 import type { PipelineCatalog, PipelineDef } from '../../src/config/pipeline-config';
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
@@ -237,7 +238,7 @@ export async function makeHarness(opts: {
   const autoDrain = new AutoDrainCoordinator({
     store,
     queue,
-    lock,
+    executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
     controller: controller as unknown as SchegentWorkflowController
   });
 

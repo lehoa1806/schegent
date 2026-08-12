@@ -39,12 +39,17 @@ export const CMD_SKIP_PHASE = 'CMD_SKIP_PHASE' as const;
 export const CMD_DISABLE_PHASE = 'CMD_DISABLE_PHASE' as const;
 export const CMD_ENABLE_PHASE = 'CMD_ENABLE_PHASE' as const;
 export const CMD_REMOVE_TASK_PHASE = 'CMD_REMOVE_TASK_PHASE' as const;
-// Feature 030 — single-queue mode removed multi-queue mutation commands:
-//   CMD_CREATE_QUEUE, CMD_RENAME_QUEUE, CMD_DELETE_QUEUE,
-//   CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE,
-//   CMD_SAVE_QUEUE_SETTINGS, CMD_MOVE_TASK.
-// The unified queue is reorder-only; `CMD_REORDER_TASK` drives both the
-// drag-and-drop drop event and the up/down arrow buttons.
+// Feature 092 (US1, FR-019/FR-020) — the seven multi-queue mutation commands
+// feature 030 removed for the single-queue collapse. `CMD_REORDER_TASK` still
+// drives both the drag-and-drop drop event and the up/down arrow buttons
+// *within* a queue; `CMD_MOVE_TASK` is the across-queues move.
+export const CMD_CREATE_QUEUE = 'CMD_CREATE_QUEUE' as const;
+export const CMD_RENAME_QUEUE = 'CMD_RENAME_QUEUE' as const;
+export const CMD_DELETE_QUEUE = 'CMD_DELETE_QUEUE' as const;
+export const CMD_SET_QUEUE_SCHEDULE = 'CMD_SET_QUEUE_SCHEDULE' as const;
+export const CMD_CLEAR_QUEUE_SCHEDULE = 'CMD_CLEAR_QUEUE_SCHEDULE' as const;
+export const CMD_SAVE_QUEUE_SETTINGS = 'CMD_SAVE_QUEUE_SETTINGS' as const;
+export const CMD_MOVE_TASK = 'CMD_MOVE_TASK' as const;
 export const CMD_MODIFY_TASK = 'CMD_MODIFY_TASK' as const;
 export const CMD_REORDER_TASK = 'CMD_REORDER_TASK' as const;
 // Feature 017 — BUG-001. Transition a `canceled` `FeatureRequest` back
@@ -161,6 +166,13 @@ export const COMMAND_TYPES = [
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
   CMD_REMOVE_TASK_PHASE,
+  CMD_CREATE_QUEUE,
+  CMD_RENAME_QUEUE,
+  CMD_DELETE_QUEUE,
+  CMD_SET_QUEUE_SCHEDULE,
+  CMD_CLEAR_QUEUE_SCHEDULE,
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_MOVE_TASK,
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
   CMD_RESTART_CANCELED_TASK,
@@ -233,6 +245,17 @@ export type {
   ContinueWorkflowOutcome, ContinueWorkflowPayload, ContinueWorkflowResult,
   LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload,
   LaunchWorkflowResult, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
+// Feature 092 (US1, FR-019/FR-020) — the seven reinstated queue commands. Their
+// wire shapes live in sidebar-ipc/queue.ts, as every family since 084 does; what
+// stays here is the registration the drift test requires be exhaustive — the
+// literal, the SIDEBAR_COMMAND_TYPES entry, this re-export, the SidebarCommand
+// member, and the COMMAND_GUARDS entry.
+import type {
+  ClearQueueScheduleCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand, SetQueueScheduleCommand } from './sidebar-ipc/queue';
+export type {
+  ClearQueueScheduleCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand, SetQueueScheduleCommand } from './sidebar-ipc/queue';
 
 export type {
   ReadPhaseLogRequest,
@@ -460,9 +483,6 @@ export interface RemoveTaskPhaseCommand extends CommandBase<typeof CMD_REMOVE_TA
   readonly payload: { readonly taskId: string; readonly phaseId: string; readonly confirmed: true };
 }
 
-// Feature 030 — removed: CreateQueueCommand, RenameQueueCommand,
-// DeleteQueueCommand, SetQueueScheduleCommand, ClearQueueScheduleCommand,
-// MoveTaskCommand, SaveQueueSettingsCommand (no multi-queue surface).
 export interface ModifyTaskCommand extends CommandBase<typeof CMD_MODIFY_TASK> {
   readonly payload: { readonly taskId: string; readonly description: string };
 }
@@ -507,8 +527,16 @@ export interface ClearPhaseBreakpointCommand
 // Feature 065 — optional `startIntent` payload (additive). Carries
 // `startMode` for now/scheduled/cancel-schedule and the `'operator-restart'`
 // source literal. Omission preserves the legacy "no-op promote" semantics.
+//
+// Feature 092 (T061, FR-034) — optional `queueId` (additive). It names which
+// queue the start addresses; omission means the default queue, which is what
+// every pre-092 sender meant when there was only one. Sending it is how the
+// webview addresses a specific queue now that several may exist.
 export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
-  readonly payload?: { readonly startIntent?: StartQueueIntent } | Record<string, never>;
+  readonly payload?: {
+    readonly queueId?: string;
+    readonly startIntent?: StartQueueIntent;
+  } | Record<string, never>;
 }
 
 export type SidebarCommand =
@@ -543,9 +571,13 @@ export type SidebarCommand =
   | DisablePhaseCommand
   | EnablePhaseCommand
   | RemoveTaskPhaseCommand
-  // Feature 030 — single-queue mode dropped CreateQueueCommand,
-  // RenameQueueCommand, DeleteQueueCommand, SetQueueScheduleCommand,
-  // ClearQueueScheduleCommand, MoveTaskCommand, SaveQueueSettingsCommand.
+  | CreateQueueCommand
+  | RenameQueueCommand
+  | DeleteQueueCommand
+  | SetQueueScheduleCommand
+  | ClearQueueScheduleCommand
+  | SaveQueueSettingsCommand
+  | MoveTaskCommand
   | ModifyTaskCommand
   | ReorderTaskCommand
   | RestartCanceledTaskCommand
@@ -685,9 +717,27 @@ export function isCmdEnablePhase(value: unknown): value is EnablePhaseCommand {
 export function isCmdRemoveTaskPhase(value: unknown): value is RemoveTaskPhaseCommand {
   return isObjectWithType(value, CMD_REMOVE_TASK_PHASE);
 }
-// Feature 030 — removed type guards for CMD_CREATE_QUEUE, CMD_RENAME_QUEUE,
-// CMD_DELETE_QUEUE, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE,
-// CMD_MOVE_TASK, CMD_SAVE_QUEUE_SETTINGS (no multi-queue surface).
+export function isCmdCreateQueue(value: unknown): value is CreateQueueCommand {
+  return isObjectWithType(value, CMD_CREATE_QUEUE);
+}
+export function isCmdRenameQueue(value: unknown): value is RenameQueueCommand {
+  return isObjectWithType(value, CMD_RENAME_QUEUE);
+}
+export function isCmdDeleteQueue(value: unknown): value is DeleteQueueCommand {
+  return isObjectWithType(value, CMD_DELETE_QUEUE);
+}
+export function isCmdSetQueueSchedule(value: unknown): value is SetQueueScheduleCommand {
+  return isObjectWithType(value, CMD_SET_QUEUE_SCHEDULE);
+}
+export function isCmdClearQueueSchedule(value: unknown): value is ClearQueueScheduleCommand {
+  return isObjectWithType(value, CMD_CLEAR_QUEUE_SCHEDULE);
+}
+export function isCmdSaveQueueSettings(value: unknown): value is SaveQueueSettingsCommand {
+  return isObjectWithType(value, CMD_SAVE_QUEUE_SETTINGS);
+}
+export function isCmdMoveTask(value: unknown): value is MoveTaskCommand {
+  return isObjectWithType(value, CMD_MOVE_TASK);
+}
 export function isCmdModifyTask(value: unknown): value is ModifyTaskCommand {
   return isObjectWithType(value, CMD_MODIFY_TASK);
 }
@@ -720,18 +770,28 @@ export function isCmdClearPhaseBreakpoint(value: unknown): value is ClearPhaseBr
 // BUG-002 (FR-012a) — start-queue guard.
 // Feature 065 — also accepts `payload.startIntent` (additive) per
 // sidebar-ipc.diff.md. Empty-object payload remains valid for back-compat.
+// Feature 092 (T061, FR-034) — also accepts `payload.queueId` (additive).
+// The key set stays closed: an unknown key is still a rejection, so a
+// misspelled `queueID` fails at the boundary rather than silently
+// addressing the default queue. This predicate checks shape only, as every
+// predicate in this file does — the `QUEUE_ID_MAX` length bound is
+// `validateStartQueue`'s, the ingress gate this must stay in lockstep with,
+// and membership of the id in the registry is the host's business.
 export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
   if (!isObjectWithType(value, CMD_START_QUEUE)) return false;
   const payload = (value as { payload?: unknown }).payload;
   if (payload === undefined) return true;
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const keys = Object.keys(payload);
-  if (keys.length === 0) return true;
-  if (keys.length === 1 && keys[0] === 'startIntent') {
-    const intent = (payload as { startIntent?: unknown }).startIntent;
-    return intent === undefined || isValidStartQueueIntent(intent);
+  if (keys.some((key) => key !== 'queueId' && key !== 'startIntent')) return false;
+  const { queueId, startIntent } = payload as {
+    queueId?: unknown;
+    startIntent?: unknown;
+  };
+  if (queueId !== undefined && (typeof queueId !== 'string' || queueId.length === 0)) {
+    return false;
   }
-  return false;
+  return startIntent === undefined || isValidStartQueueIntent(startIntent);
 }
 // Feature 063 — Clean All guard. Accepts `payload` absent or as an empty
 // object; rejects arrays and non-empty payloads.
@@ -886,9 +946,13 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_DISABLE_PHASE]: isCmdDisablePhase,
   [CMD_ENABLE_PHASE]: isCmdEnablePhase,
   [CMD_REMOVE_TASK_PHASE]: isCmdRemoveTaskPhase,
-  // Feature 030 — removed CMD_CREATE_QUEUE, CMD_RENAME_QUEUE,
-  // CMD_DELETE_QUEUE, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE,
-  // CMD_MOVE_TASK, CMD_SAVE_QUEUE_SETTINGS (single-queue mode).
+  [CMD_CREATE_QUEUE]: isCmdCreateQueue,
+  [CMD_RENAME_QUEUE]: isCmdRenameQueue,
+  [CMD_DELETE_QUEUE]: isCmdDeleteQueue,
+  [CMD_SET_QUEUE_SCHEDULE]: isCmdSetQueueSchedule,
+  [CMD_CLEAR_QUEUE_SCHEDULE]: isCmdClearQueueSchedule,
+  [CMD_SAVE_QUEUE_SETTINGS]: isCmdSaveQueueSettings,
+  [CMD_MOVE_TASK]: isCmdMoveTask,
   [CMD_MODIFY_TASK]: isCmdModifyTask,
   [CMD_REORDER_TASK]: isCmdReorderTask,
   [CMD_RESTART_CANCELED_TASK]: isCmdRestartCanceledTask,

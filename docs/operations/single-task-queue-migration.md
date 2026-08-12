@@ -1,5 +1,7 @@
 # Single Task Queue Migration (v5 → v6)
 
+> **Historical note.** This page documents the v5 → v6 step, which collapsed the queue model to one queue. The v9 → v10 migration reopened it: `MAX_QUEUES` is 20 again and the seven queue commands listed below are back. Read this for what happened to a v5 workspace; read [Multiple queues and concurrency](multi-queue-concurrency.md) for how queues work now. The collapse was lossy, so v10 does **not** reconstruct the queues v6 merged.
+
 Feature 030 collapses Schegent's multi-queue task model into a single, unified, sequentially-executed queue. This operations note covers what happens on activation, what to expect in the audit log, how to verify the unified queue, and the (un)supported recovery paths.
 
 ## What v6 changes

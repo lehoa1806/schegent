@@ -29,6 +29,12 @@ export interface StartQueueIntent {
 }
 
 export interface StartQueueCommandArg {
+  // Feature 092 (T061, FR-034) — which queue the start addresses. Absent
+  // means the default queue, resolved by the two seams below rather than
+  // here: `applyStartQueueIntent` and `drainQueuedWork` each already
+  // default an omitted id, and duplicating that default in this file
+  // would make three places that decide it.
+  readonly queueId?: string;
   readonly startIntent?: StartQueueIntent;
 }
 
@@ -37,15 +43,16 @@ export async function runStartQueueCommand(
   deps: StartQueueCommandDeps
 ): Promise<void> {
   try {
+    const queueId = arg?.queueId;
     const startIntent = arg?.startIntent;
     if (startIntent) {
-      const result = await deps.guardedRunService.applyStartQueueIntent(startIntent);
+      const result = await deps.guardedRunService.applyStartQueueIntent(startIntent, { queueId });
       if (result.outcome === 'applied' && result.lifecycleAfter === 'running') {
-        await deps.controller.drainQueuedWork();
+        await deps.controller.drainQueuedWork(queueId);
       }
       return;
     }
-    await deps.controller.drainQueuedWork();
+    await deps.controller.drainQueuedWork(queueId);
   } catch (err) {
     deps.logger.warn(`startQueue: ${(err as Error).message}`);
   }

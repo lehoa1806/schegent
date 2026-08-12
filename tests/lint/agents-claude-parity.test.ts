@@ -51,13 +51,23 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'fork the redaction set',
   'cache the `schegent.logging.runtimelog',
   're-stringify or re-sanitize',
-  'reintroduce a multi-queue registry',
+  // Feature 092 re-pointed this anchor rather than dropping it. The rule it
+  // names was rewritten, not deleted: "never reintroduce a multi-queue
+  // registry without a migration and a scheduler design" became "never raise
+  // `MAX_QUEUES` without" the same two halves, because 092 supplied both and
+  // the registry is multi-entry today. Anchoring on the retired wording would
+  // fail the build for a rule that is still there, under its new name.
+  'raise `max_queues`',
   'cap the dynamic rate-limit backoff',
   'persist a `workflowrun`',
   "append `-c`",
   'awaiting `useconfirm',
   // Feature 065 — new hard-rule anchors.
   'auto-promote a queue in `idle-pending`',
+  // Feature 092 — the idle-pending gate is now parameterised by queue rather
+  // than copied per queue, so the "one enforcement site" half earned a rule of
+  // its own and an anchor of its own.
+  'add a second idle-pending enforcement site',
   'persist `scheduledstartat` without also persisting',
   'emit a schedule-related audit event',
   'emit the literal `\'running\'` as a `queuelifecycle`',

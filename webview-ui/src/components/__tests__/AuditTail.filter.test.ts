@@ -25,6 +25,7 @@ import type {
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
@@ -96,25 +97,30 @@ function buildSnapshot(opts: {
     (opts.historyRunIds ?? []).map((rid) => buildHistory(rid))
   );
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze([]),
-    queue,
-    auditTail: opts.auditTail,
-    liveActivity: Object.freeze({
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'idle',
+      activeFeature: null,
+      phases: Object.freeze([]),
+      liveActivity: Object.freeze({
       summary: null,
       category: null,
       lastEventAt: null,
       freshness: 'idle',
       staleSeconds: null
+      }),
+      workflowElapsedMs: null,
+      activeRunId: opts.activeRunId ?? null
     }),
-    workflowElapsedMs: null,
+    queue,
+    auditTail: opts.auditTail,
     monitor: null,
     history,
     producedAt: '2026-05-22T12:00:01.000Z',
-    activeRunId: opts.activeRunId ?? null,
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'node:path';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { WorkspaceLockManager } from './state/lock';
+import { ExecutionLeaseManager } from './state/execution-lease';
 import {
   getCanonicalWorkspaceRoot,
   disposeWorkspaceFolderPicker
@@ -295,6 +296,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   let activePipelineCatalog = initialLoad.pipelineCatalog;
   let activeWorkflowCatalog = initialLoad.workflowCatalog;
   const lock = new WorkspaceLockManager(store, ownerId);
+  // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
+  // owner id as the workspace lock so a crash strands both together, but a
+  // separate manager over a separate key: holding a queue's execution lease
+  // must never make this window primary.
+  const executionLeases = new ExecutionLeaseManager(store, ownerId);
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   disposables.push(statusBarItem);
   const statusBar = new SchegentStatusBar(statusBarItem);
@@ -528,6 +534,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       catalog: activeCatalog,
       auditWriter,
       backendCapabilities,
+      // Feature 092 (T051) — the same manager the deactivate path releases,
+      // so one window holds one set of leases regardless of which seam
+      // claimed them.
+      executionLease: executionLeases,
       ...runSafety,
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
@@ -1164,6 +1174,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         // ignore disposal errors
       }
     }
+    // Feature 092 (T049) — drop every queue lease this window holds before the
+    // workspace lock, so a window that is shutting down never leaves a queue
+    // claimed while advertising itself as no longer primary.
+    await executionLeases.releaseAll();
     await lock.release();
   };
 

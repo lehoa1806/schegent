@@ -19,17 +19,27 @@
 //     (cascade is overridden by an explicit operator pause; cascadedResume
 //      is a strict no-op when the entry's `pauseSource !== 'cascade'`.)
 import { randomUUID } from 'crypto';
-import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
+import {
+  MAX_GLOBAL_CONCURRENCY_CAP,
+  QueueMutationRejected,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
+import { resolveBoundQueueId } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
+import { parseSchedule } from '../lib/schedule-parser';
 import {
+  createQueue,
+  deleteQueue,
   DEFAULT_QUEUE_ID,
   findQueue,
+  renameQueue,
   setQueuePaused,
   setQueueSchedule,
   QueueRegistryViolation,
-  type QueuePauseSource
+  type QueuePauseSource,
+  type QueueSchedule
 } from './queue-registry';
 import {
   type FeatureRequest,
@@ -85,6 +95,13 @@ export interface QueueMutationDetail extends MutationResult {
   priorStatus?: FeatureRequestStatus;
   runId?: string | null;
   taskCount?: number;
+  /**
+   * Feature 092 (T083, FR-016a) — how many connected-run aggregates a queue
+   * deletion terminated. Separate from `taskCount` because they count different
+   * things: a queue may hold pending Tasks and no aggregate, or an aggregate
+   * sitting between nodes and no Tasks at all.
+   */
+  connectedRunCount?: number;
   disposition?: 'move' | 'cancel';
   fromName?: string;
   toName?: string;
@@ -102,20 +119,53 @@ export interface QueueMutationDetail extends MutationResult {
   sessionCleaned?: boolean;
 }
 
-// Feature 030 — single-queue mode removed the multi-queue `deleteNamedQueue`
-// surface. The `QueueDeleteDisposition` discriminant is no longer needed.
+/**
+ * Feature 092 (T031, US1) — what `CMD_DELETE_QUEUE` needs to know before it
+ * either refuses or asks the operator to confirm.
+ *
+ * A discriminated union rather than a result with optional fields: a refusal
+ * has no impact to report, and a deletable queue has no reason.
+ */
+export type QueueDeletionImpact =
+  | { readonly outcome: 'refused'; readonly reason: string }
+  | {
+      readonly outcome: 'deletable';
+      readonly queueId: string;
+      readonly pendingTaskCount: number;
+      readonly boundConnectedRunIds: readonly string[];
+    };
 
 // BUG-001 (FR-022): idempotent rejection reasons → DEBUG, not WARN.
 const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set(['not-paused', 'already-paused']);
+
+/**
+ * Feature 092 (T050, FR-025) — how many Tasks one queue may run at once.
+ *
+ * Deliberately not operator-configurable and deliberately not the workspace
+ * ceiling. `markInFlight`'s `inFlightId` refusal already encodes this number
+ * structurally (one slot, one id); the constant names it so the drain's step 3
+ * and that refusal are visibly the same bound rather than two agreeing
+ * accidents.
+ */
+const PER_QUEUE_CAPACITY = 1;
 
 /**
  * Feature 065 — minimal hook that the QueueManager's pause/resume paths
  * use to cancel an outstanding scheduled-start timer when the queue
  * leaves `idle-pending` via an operator pause (FR-019). Kept structural
  * so unit tests can satisfy it without importing the coordinator.
+ *
+ * Feature 092 (T059, FR-030) — widened from the single `'pause-cancel'`
+ * literal to the two reasons this file actually passes: a pause still
+ * cancels with `'pause-cancel'`, and a deletion disarms with
+ * `'operator-cancel'`. The reason vocabulary is owned by
+ * `SchedulerCancelReason` in `../services/scheduled-start-coordinator`;
+ * this is a deliberate narrowing of it, not a fork, so the hook stays
+ * structural and a coordinator that accepts the full vocabulary remains
+ * assignable to it.
  */
 export interface ScheduledStartCancelHook {
-  cancel(queueId: string, reason: 'pause-cancel'): Promise<void> | void;
+  cancel(queueId: string, reason: 'pause-cancel' | 'operator-cancel'): Promise<void> | void;
 }
 
 /**
@@ -161,23 +211,46 @@ export class QueueManager {
     this.lifecycleAuditHook = hook;
   }
 
-  public list(): FeatureRequest[] {
-    return this.store.getQueue().requests.slice();
+  /**
+   * Feature 092 (T027, FR-007) — one queue's Tasks, addressed by id.
+   *
+   * The default keeps every pre-feature call site meaning what it meant: the
+   * reserved queue is where an un-addressed enqueue lands, so it is also where
+   * an un-addressed read looks. `listAll()` is the deliberate opposite and the
+   * only way to see across queues.
+   */
+  public list(queueId: string = DEFAULT_QUEUE_ID): FeatureRequest[] {
+    return this.store.getQueue(queueId).requests.slice();
   }
 
-  public peekNextPending(): FeatureRequest | null {
-    // Feature 030 — single-queue mode. The registry has exactly one
-    // entry (id === DEFAULT_QUEUE_ID) by v6 invariant. If that entry is
-    // manually-paused (operator OR cascade), peek returns null. Otherwise
-    // pick the oldest pending request on the default queue by position.
-    const registry = this.store.getQueueRegistry();
-    const entry = registry.entries[0];
+  /** Every queue's Tasks, in queue order then position order. */
+  public listAll(): FeatureRequest[] {
+    return Object.values(this.store.getQueueStates()).flatMap((queue) =>
+      queue.requests.slice().sort((a, b) => a.position - b.position)
+    );
+  }
+
+  /**
+   * Feature 092 (T027, FR-007) — the next pending Task on one queue.
+   *
+   * Was `registry.entries[0]` under the v6 single-entry invariant. The entry is
+   * now looked up by id, because position 0 is no longer a synonym for the
+   * reserved queue: FR-002 dropped the positional assertions and `'default'`
+   * may legally sit anywhere in the list.
+   *
+   * The old `r.queueId !== DEFAULT_QUEUE_ID` filter is gone rather than
+   * parameterised. Under v10 the map key partitions the Tasks, so a row read
+   * out of `getQueue(queueId)` is by construction that queue's; re-filtering on
+   * the row's own field would make the projection depend on two authorities
+   * that a write is not free to disagree on.
+   */
+  public peekNextPending(queueId: string = DEFAULT_QUEUE_ID): FeatureRequest | null {
+    const entry = findQueue(this.store.getQueueRegistry(), queueId);
     if (!entry || entry.state !== 'active') return null;
-    const requests = this.store.getQueue().requests;
+    const requests = this.store.getQueue(queueId).requests;
     let best: FeatureRequest | null = null;
     for (const r of requests) {
       if (r.status !== 'pending') continue;
-      if ((r.queueId ?? DEFAULT_QUEUE_ID) !== DEFAULT_QUEUE_ID) continue;
       if (best === null || r.position < best.position) {
         best = r;
       }
@@ -185,15 +258,52 @@ export class QueueManager {
     return best;
   }
 
-  public hasInFlight(): boolean {
-    return this.inFlightCount() > 0;
+  /**
+   * Feature 092 (T027) — in-flight count, per queue or workspace-wide.
+   *
+   * An omitted `queueId` means *the workspace*, not the reserved queue: this
+   * feeds `hasWorkspaceCapacity()`, which compares against a workspace-wide
+   * ceiling, and before v10 the single `QueueState` made the two readings
+   * identical. Reading only `'default'` here would silently turn a workspace
+   * ceiling into a per-queue one the moment a second queue ran.
+   */
+  public hasInFlight(queueId?: string): boolean {
+    return this.inFlightCount(queueId) > 0;
   }
 
-  public inFlightCount(): number {
-    return this.store.getQueue().requests.filter((r) => r.status === 'in-flight').length;
+  public inFlightCount(queueId?: string): number {
+    const queues =
+      queueId === undefined
+        ? Object.values(this.store.getQueueStates())
+        : [this.store.getQueue(queueId)];
+    return queues.reduce(
+      (total, queue) => total + queue.requests.filter((r) => r.status === 'in-flight').length,
+      0
+    );
   }
 
-  public hasCapacity(): boolean {
+  /**
+   * Feature 092 (T050, FR-025) — *this queue* can take a Task right now.
+   *
+   * Per-queue capacity stays exactly 1 in-flight Task: this feature makes
+   * queues concurrent with each other, not internally parallel. A `false` here
+   * means **busy** — the queue is already running something, and no amount of
+   * workspace headroom changes that.
+   */
+  public hasQueueCapacity(queueId: string = DEFAULT_QUEUE_ID): boolean {
+    return this.inFlightCount(queueId) < PER_QUEUE_CAPACITY;
+  }
+
+  /**
+   * Feature 092 (T050, FR-026) — *the workspace* can take another Run.
+   *
+   * The body is the pre-092 `hasCapacity()` unchanged; only the name narrows to
+   * say which of the two capacities it answers. A `false` here means
+   * **waiting** — a ready queue lost a race for the last slot and will promote
+   * on the next sweep, which is not a refusal and not an error (contract §1
+   * step 4).
+   */
+  public hasWorkspaceCapacity(): boolean {
     return this.inFlightCount() < this.store.getGlobalConcurrencyCap();
   }
 
@@ -243,13 +353,14 @@ export class QueueManager {
     this.logger?.debug('queue-manager.enqueue', {
       taskId: inserted.id,
       queueId: inserted.queueId,
-      sizeAfter: this.store.getQueue().requests.length
+      sizeAfter: this.store.getQueue(inserted.queueId ?? DEFAULT_QUEUE_ID).requests.length
     });
     return inserted;
   }
 
   public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
     const now = Date.now();
+    const ownerQueueId = this.queueIdForTask(featureId);
     const movedRequest = await this.store.updateQueue((queue) => {
       if (queue.inFlightId !== null && queue.inFlightId !== featureId) {
         throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
@@ -269,11 +380,11 @@ export class QueueManager {
         queue: { ...queue, requests, inFlightId: featureId },
         result: requests.find((request) => request.id === featureId)
       };
-    });
+    }, ownerQueueId);
     // Feature 019 — DEBUG instrumentation. `markInFlight` is the
     // effective "dequeue" — a pending task transitions to in-flight.
     // `sizeAfter` reflects the pending count after the transition.
-    const updatedQueue = this.store.getQueue();
+    const updatedQueue = this.store.getQueue(ownerQueueId);
     const pendingAfter = updatedQueue.requests.filter((r) => r.status === 'pending').length;
     this.logger?.debug('queue-manager.dequeue', {
       taskId: featureId,
@@ -295,7 +406,13 @@ export class QueueManager {
           payload: {
             taskId: featureId,
             runId,
-            queueId: movedRequest?.queueId ?? '',
+            // Feature 092 (T064, FR-039) — the fallback is the queue this
+            // transition addressed, not the empty string. A Task whose own
+            // `queueId` is unset is a pre-v10 row, and the queue it is in is
+            // still known here; emitting `''` would leave the one event that
+            // says a Run started unable to say where, which is exactly the
+            // fixed value FR-039 replaces.
+            queueId: movedRequest?.queueId ?? ownerQueueId,
             pipelineId,
             isResume
           }
@@ -312,24 +429,27 @@ export class QueueManager {
     lastError: FeatureRequestFailure | string | null = null
   ): Promise<void> {
     const now = Date.now();
-    await this.store.updateQueue((queue) => ({
-      queue: {
-        ...queue,
-        requests: queue.requests.map((r) =>
-          r.id === featureId
-            ? {
-                ...r,
-                status,
-                completedAt: now,
-                updatedAt: now,
-                lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError
-              }
-            : r
-        ),
-        inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
-      },
-      result: undefined
-    }));
+    await this.store.updateQueue(
+      (queue) => ({
+        queue: {
+          ...queue,
+          requests: queue.requests.map((r) =>
+            r.id === featureId
+              ? {
+                  ...r,
+                  status,
+                  completedAt: now,
+                  updatedAt: now,
+                  lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError
+                }
+              : r
+          ),
+          inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
+        },
+        result: undefined
+      }),
+      this.queueIdForTask(featureId)
+    );
   }
 
   /**
@@ -365,7 +485,7 @@ export class QueueManager {
           ? null
           : queue.inFlightId;
       return { queue: { ...queue, requests, inFlightId }, result: true };
-    });
+    }, this.queueIdForTask(featureId));
   }
 
   public async cancel(featureId: string): Promise<boolean> {
@@ -381,7 +501,7 @@ export class QueueManager {
           : r
       );
       return { queue: { ...queue, requests }, result: true };
-    });
+    }, this.queueIdForTask(featureId));
   }
 
   public async remove(featureId: string): Promise<boolean> {
@@ -428,15 +548,23 @@ export class QueueManager {
           // BUG-001 self-heal: registry already active but legacy boolean
           // stale (set by a pre-fix writer). Heal so operator Resume visibly
           // recovers the queue instead of being a confusing noop.
-          if (resolvedQueueId === DEFAULT_QUEUE_ID) {
-            const queue = this.store.getQueue();
-            if (queue.paused === true) {
-              await this.store.updateQueue((current) => ({
+          //
+          // Feature 092 (T027, FR-007) — the former
+          // `resolvedQueueId === DEFAULT_QUEUE_ID` guard is gone. It was not a
+          // policy; it was the shape: before v10 only the reserved queue had a
+          // `QueueState` to heal, so any other id had nothing to address. Every
+          // queue now owns one, and leaving the guard would make the self-heal
+          // silently unavailable on exactly the queues an operator created.
+          const queue = this.store.getQueue(resolvedQueueId);
+          if (queue.paused === true) {
+            await this.store.updateQueue(
+              (current) => ({
                 queue: { ...current, paused: false, pausedReason: null },
                 result: undefined
-              }));
-              return { ok: true, queueId: resolvedQueueId };
-            }
+              }),
+              resolvedQueueId
+            );
+            return { ok: true, queueId: resolvedQueueId };
           }
           return { ok: false, reason: 'not-paused' };
         }
@@ -450,27 +578,35 @@ export class QueueManager {
             now
           })
         );
-        if (resolvedQueueId === DEFAULT_QUEUE_ID) {
-          const queue = this.store.getQueue();
-          // Feature 065 (T036/T037) — lifecycle transition + scheduled-start
-          // cancellation rules. On pause: if entering from idle-pending with
-          // an armed schedule, cancel the in-process timer and clear the
-          // persisted scheduledStartAt/Source atomically with the lifecycle
-          // change. On resume: derive the new lifecycle from inFlightId and
-          // pending.length per FR-019.
-          if (paused) {
-            const wasIdlePending = queue.queueLifecycle === 'idle-pending';
-            const hadSchedule = queue.scheduledStartAt !== null;
-            if (wasIdlePending && hadSchedule && this.scheduledStartCancelHook) {
-              try {
-                await this.scheduledStartCancelHook.cancel(resolvedQueueId, 'pause-cancel');
-              } catch (err) {
-                this.logger?.warn(
-                  `scheduled-start cancel on pause failed: ${(err as Error).message}`
-                );
-              }
+        // Feature 092 (T027, FR-007) — the lifecycle half now runs for whichever
+        // queue was addressed. It was fenced behind
+        // `resolvedQueueId === DEFAULT_QUEUE_ID` for the same reason as the
+        // self-heal above: under v6..v9 there was one `QueueState`, so a pause
+        // on any other id had no lifecycle to write. Fencing it now would leave
+        // an operator-created queue's registry entry `manually-paused` while its
+        // own `queueLifecycle` still read `running` — the exact divergence
+        // `reconcileQueuePauseStateIfDivergent` exists to repair.
+        const queue = this.store.getQueue(resolvedQueueId);
+        // Feature 065 (T036/T037) — lifecycle transition + scheduled-start
+        // cancellation rules. On pause: if entering from idle-pending with
+        // an armed schedule, cancel the in-process timer and clear the
+        // persisted scheduledStartAt/Source atomically with the lifecycle
+        // change. On resume: derive the new lifecycle from inFlightId and
+        // pending.length per FR-019.
+        if (paused) {
+          const wasIdlePending = queue.queueLifecycle === 'idle-pending';
+          const hadSchedule = queue.scheduledStartAt !== null;
+          if (wasIdlePending && hadSchedule && this.scheduledStartCancelHook) {
+            try {
+              await this.scheduledStartCancelHook.cancel(resolvedQueueId, 'pause-cancel');
+            } catch (err) {
+              this.logger?.warn(
+                `scheduled-start cancel on pause failed: ${(err as Error).message}`
+              );
             }
-            await this.store.updateQueue((current) => ({
+          }
+          await this.store.updateQueue(
+            (current) => ({
               queue: {
                 ...current,
                 paused,
@@ -480,28 +616,31 @@ export class QueueManager {
                 scheduledStartSource: null
               },
               result: undefined
-            }));
-            // Note: `scheduled-start-canceled` is emitted by the coordinator's
-            // own `cancel()` method (above), not duplicated here. We only emit
-            // `idle-pending-exited` AFTER the cancel to preserve the ordering
-            // invariant required by FR-019.
-            if (wasIdlePending && this.lifecycleAuditHook) {
-              await this.appendLifecycleAudit('idle-pending-exited', {
-                queueId: resolvedQueueId,
-                exitReason: 'pause',
-                transitionReason: 'pause'
-              });
-            }
-          } else {
-            // Resume: derive next lifecycle from queue contents.
-            const hasInFlight = queue.inFlightId !== null;
-            const hasPending = queue.requests.some((r) => r.status === 'pending');
-            const nextLifecycle = hasInFlight
-              ? 'running'
-              : hasPending
-                ? 'idle-pending'
-                : 'active-empty';
-            await this.store.updateQueue((current) => ({
+            }),
+            resolvedQueueId
+          );
+          // Note: `scheduled-start-canceled` is emitted by the coordinator's
+          // own `cancel()` method (above), not duplicated here. We only emit
+          // `idle-pending-exited` AFTER the cancel to preserve the ordering
+          // invariant required by FR-019.
+          if (wasIdlePending && this.lifecycleAuditHook) {
+            await this.appendLifecycleAudit('idle-pending-exited', {
+              queueId: resolvedQueueId,
+              exitReason: 'pause',
+              transitionReason: 'pause'
+            });
+          }
+        } else {
+          // Resume: derive next lifecycle from queue contents.
+          const hasInFlight = queue.inFlightId !== null;
+          const hasPending = queue.requests.some((r) => r.status === 'pending');
+          const nextLifecycle = hasInFlight
+            ? 'running'
+            : hasPending
+              ? 'idle-pending'
+              : 'active-empty';
+          await this.store.updateQueue(
+            (current) => ({
               queue: {
                 ...current,
                 paused,
@@ -511,18 +650,19 @@ export class QueueManager {
                 scheduledStartSource: null
               },
               result: undefined
-            }));
-            if (
-              nextLifecycle === 'idle-pending' &&
-              this.lifecycleAuditHook
-            ) {
-              await this.appendLifecycleAudit('idle-pending-entered', {
-                queueId: resolvedQueueId,
-                scheduledStartAt: null,
-                scheduledStartSource: null,
-                transitionReason: 'resume-from-pause'
-              });
-            }
+            }),
+            resolvedQueueId
+          );
+          if (
+            nextLifecycle === 'idle-pending' &&
+            this.lifecycleAuditHook
+          ) {
+            await this.appendLifecycleAudit('idle-pending-entered', {
+              queueId: resolvedQueueId,
+              scheduledStartAt: null,
+              scheduledStartSource: null,
+              transitionReason: 'resume-from-pause'
+            });
           }
         }
         if (paused) {
@@ -567,12 +707,16 @@ export class QueueManager {
             now
           })
         );
-        if (queueId === DEFAULT_QUEUE_ID) {
-          await this.store.updateQueue((queue) => ({
+        // Feature 092 (T027) — per queue, for the reason given in
+        // `setQueuePausedState`: the legacy `paused` mirror lives on the
+        // addressed queue's own state now, not on a workspace singleton.
+        await this.store.updateQueue(
+          (queue) => ({
             queue: { ...queue, paused: true, pausedReason: null },
             result: undefined
-          }));
-        }
+          }),
+          queueId
+        );
         return { ok: true, queueId };
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err) };
@@ -599,15 +743,228 @@ export class QueueManager {
         await this.store.setQueueRegistry(
           setQueuePaused(registry, { id: queueId, paused: false, now })
         );
-        if (queueId === DEFAULT_QUEUE_ID) {
-          await this.store.updateQueue((queue) => ({
+        await this.store.updateQueue(
+          (queue) => ({
             queue: { ...queue, paused: false, pausedReason: null },
             result: undefined
-          }));
-        }
+          }),
+          queueId
+        );
         return { ok: true, queueId };
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err) };
+      }
+    });
+  }
+
+  /**
+   * Feature 092 (T029, US1, FR-012) — create a queue.
+   *
+   * The registry helper owns the cap, the UUIDv4 id shape and the trimmed
+   * case-insensitive name uniqueness rule; the manager only supplies the id
+   * and surfaces the refusal code.
+   */
+  public async createQueue(name: string): Promise<QueueMutationDetail> {
+    const queueId = randomUUID();
+    return this.logMutation('queue-manager.create-queue', { queueId }, async () => {
+      try {
+        await this.store.setQueueRegistry(
+          createQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
+        );
+        await this.armConcurrencyNotice();
+        return { ok: true, queueId };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err) };
+      }
+    });
+  }
+
+  /**
+   * Feature 092 (T065, FR-037) — arm the shared-working-tree notice the first
+   * time this workspace stops being single-queue.
+   *
+   * Placed here rather than in `cmd-create-queue.ts` for the same reason the
+   * scheduled-start disarm sits in `deleteQueue`: this method is the single
+   * site every creation entrance passes through, so a webview-only arm would
+   * miss a queue created by any other caller. The task named the webview file;
+   * the mechanism it names — a persisted one-time answer — is what moved.
+   *
+   * The two conditions are not redundant. `entries.length >= 2` is the trigger
+   * (a workspace that stopped being single-queue), and `=== null` is what makes
+   * it fire ONCE PER WORKSPACE rather than once per crossing: delete back down
+   * to one queue and grow again and the persisted answer, whatever it was, is
+   * already there. Arming after the registry write is deliberate — a notice for
+   * a second queue that failed to be created would be a warning about a
+   * concurrency the operator does not have.
+   */
+  private async armConcurrencyNotice(): Promise<void> {
+    if (this.store.getQueueRegistry().entries.length < 2) return;
+    if (this.store.getConcurrencyNotice() !== null) return;
+    await this.store.setConcurrencyNotice('pending');
+  }
+
+  /**
+   * Feature 092 (T065, FR-037) — the operator answered the notice.
+   *
+   * A no-op unless the notice is actually pending. Writing `'dismissed'` over
+   * `null` would answer a question this workspace was never asked, and would
+   * suppress the notice permanently for the first second queue it later
+   * creates; writing it over `'dismissed'` is the idempotent repeat this guard
+   * also absorbs.
+   */
+  public async dismissConcurrencyNotice(): Promise<void> {
+    if (this.store.getConcurrencyNotice() !== 'pending') return;
+    await this.store.setConcurrencyNotice('dismissed');
+  }
+
+  /** Feature 092 (T029, US1, FR-013) — rename a queue in place. */
+  public async renameQueue(queueId: string, name: string): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.rename-queue', { queueId }, async () => {
+      const existing = findQueue(this.store.getQueueRegistry(), queueId);
+      try {
+        await this.store.setQueueRegistry(
+          renameQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
+        );
+        // Names are operator-authored, so they stay out of the audit payload
+        // (FR-023a); the handler reports the id and the caller-visible result.
+        return { ok: true, queueId, fromName: existing?.name, toName: name.trim() };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err) };
+      }
+    });
+  }
+
+  /**
+   * Feature 092 (T031, US1) — the impact a deletion would have, or the reason
+   * it is refused outright.
+   *
+   * The order is the contract of contracts/queue-registry-and-migration.md §1,
+   * not an implementation detail, and the first match wins: the default queue
+   * (FR-004) before an in-flight Task (FR-015) before the confirmation gate
+   * (FR-014). A bound connected run that is mid-node holds an in-flight Task,
+   * so it is refused at step 2 and never reaches the terminate branch — step 3
+   * is only ever reached by an aggregate sitting between nodes.
+   */
+  public queueDeletionImpact(queueId: string): QueueDeletionImpact {
+    if (queueId === DEFAULT_QUEUE_ID) {
+      return { outcome: 'refused', reason: 'default-queue-undeletable' };
+    }
+    if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+      return { outcome: 'refused', reason: 'unknown-queue-id' };
+    }
+    const requests = this.store.getRequestsForQueue(queueId);
+    if (requests.some((request) => request.status === 'in-flight')) {
+      return { outcome: 'refused', reason: 'queue-has-in-flight-task' };
+    }
+    // Feature 092 (T083, FR-041/FR-016a) — the aggregates are scanned by their
+    // own `queueId`, not derived from the Tasks this queue happens to hold.
+    //
+    // The two are different questions and only one of them is "is this run
+    // bound here". `connectedRunOwning(taskId)` answers the move refusal's
+    // question — does some aggregate own this specific Task — and stays the
+    // oracle there. Deriving the binding from it instead would name only the
+    // aggregates with a child Task still on the queue, which is precisely the
+    // set the comment above says never reaches this step: a run sitting between
+    // nodes has no live child, so a Task-scan reports it as unaffected and the
+    // operator would delete its queue without being told.
+    const boundConnectedRunIds = Object.values(this.store.getConnectedRuns())
+      .filter((run) => resolveBoundQueueId(run) === queueId)
+      .map((run) => run.connectedRunId)
+      .sort();
+    return {
+      outcome: 'deletable',
+      queueId,
+      pendingTaskCount: requests.filter((request) => request.status === 'pending').length,
+      boundConnectedRunIds
+    };
+  }
+
+  /**
+   * Feature 092 (T029/T031, US1, FR-014 – FR-016) — delete a queue.
+   *
+   * Re-checks the ordered refusals rather than trusting the caller's earlier
+   * impact read: the confirmation is a round trip, and a Task may have gone
+   * in-flight in between.
+   */
+  public async deleteQueue(queueId: string): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.delete-queue', { queueId }, async () => {
+      const impact = this.queueDeletionImpact(queueId);
+      if (impact.outcome === 'refused') return { ok: false, reason: impact.reason, queueId };
+      try {
+        // Registry first: it owns the position compaction (FR-016) and is the
+        // authority on the queue's existence. The execution state is dropped
+        // second so a failure between the two leaves an orphan record rather
+        // than a registry entry pointing at nothing.
+        await this.store.setQueueRegistry(
+          deleteQueue(this.store.getQueueRegistry(), { id: queueId, now: Date.now() })
+        );
+        await this.store.deleteQueueState(queueId);
+        // Feature 092 (T083, FR-016a) — terminate every aggregate bound here,
+        // and terminate rather than rebind. Rebinding would move a run the
+        // operator confirmed the deletion of onto a queue they did not choose,
+        // and picking that queue is a decision nothing in this method is
+        // entitled to make; the alternative, leaving the record, is the one
+        // outcome FR-016a names outright — no aggregate pointing at a queue
+        // that no longer exists.
+        //
+        // The ids come from the impact that was just re-checked, so exactly the
+        // set the operator was shown is the set that is removed.
+        const terminated = await this.store.deleteConnectedRuns(impact.boundConnectedRunIds);
+        // Feature 092 (T059, FR-030) — disarm this queue's scheduled start,
+        // and only this queue's. The disarm lives here rather than in
+        // `cmd-delete-queue.ts` because this method is the single site every
+        // deletion entrance passes through; a webview-only disarm would leave
+        // an orphan timer behind any other caller. It runs after the deletion
+        // succeeds: disarming first would strand a live queue's start if the
+        // registry write then failed.
+        if (this.scheduledStartCancelHook) {
+          try {
+            await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+          } catch (err) {
+            // The queue is already gone; a failed disarm must not turn a
+            // completed deletion into a refusal. A stray fire finds no
+            // `idle-pending` state and supersedes itself.
+            this.logger?.warn(
+              `queue-manager.delete-queue: scheduled-start disarm failed: ${(err as Error).message}`
+            );
+          }
+        }
+        return {
+          ok: true,
+          queueId,
+          taskCount: impact.pendingTaskCount,
+          connectedRunCount: terminated
+        };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err), queueId };
+      }
+    });
+  }
+
+  /**
+   * Feature 092 (T029, US1, FR-018) — arm or disarm a queue's scheduled start.
+   *
+   * `expression` is the operator's raw text; `parseSchedule` owns the grammar
+   * and never throws, so an unparseable expression is a refusal, not an error.
+   */
+  public async setQueueSchedule(
+    queueId: string,
+    expression: string | null
+  ): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.set-queue-schedule', { queueId }, async () => {
+      let schedule: QueueSchedule | null = null;
+      if (expression !== null) {
+        const parsed = parseSchedule(expression);
+        if (!parsed.ok) return { ok: false, reason: parsed.code, queueId };
+        schedule = parsed.schedule;
+      }
+      try {
+        await this.store.setQueueRegistry(
+          setQueueSchedule(this.store.getQueueRegistry(), { id: queueId, schedule, now: Date.now() })
+        );
+        return { ok: true, queueId };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err), queueId };
       }
     });
   }
@@ -616,15 +973,19 @@ export class QueueManager {
     globalConcurrencyCap: number;
     defaultQueueId: string;
   }): Promise<QueueMutationDetail> {
-    // Feature 056 Track 4 (FR-018..FR-022) — v1 ships exactly one
-    // active run. The package contribution, host validator
-    // (`KEY_SPECS['queue.globalConcurrencyCap'].max`), and this
-    // QueueManager validator all pin the cap at 1; relaxing this
-    // requires re-validating multi-active-run lock semantics.
+    // Feature 092 (T057, FR-026/FR-027) — the cap ranges over
+    // `[1, MAX_GLOBAL_CONCURRENCY_CAP]`. Feature 056 Track 4 (FR-018..FR-022)
+    // pinned it at 1 and said relaxing it required re-validating
+    // multi-active-run lock semantics; US2 did exactly that — the workspace
+    // lock now carries window primacy only, and mutual exclusion between Runs
+    // moved to the per-queue execution lease — so the precondition is met.
+    // The package contribution, `SETTINGS_SCHEMA`, the host validator
+    // (`KEY_SPECS['queue.globalConcurrencyCap']`), `setGlobalConcurrencyCap`
+    // and this validator all share the bound.
     if (
       !Number.isInteger(params.globalConcurrencyCap) ||
       params.globalConcurrencyCap < 1 ||
-      params.globalConcurrencyCap > 1
+      params.globalConcurrencyCap > MAX_GLOBAL_CONCURRENCY_CAP
     ) {
       return { ok: false, reason: 'invalid-concurrency-cap' };
     }
@@ -735,7 +1096,12 @@ export class QueueManager {
     fromGlobalPosition: number;
     newOrder: readonly string[];
   }> {
-    const queue = this.store.getQueue();
+    // Feature 092 (T027, FR-007) — "unified" now means "the queue that owns
+    // this Task". Every index below is an index into that one queue's rows, so
+    // the global/pending translation is unchanged; what changed is that the
+    // coordinate system is per queue rather than per workspace.
+    const ownerQueueId = this.queueIdForTask(taskId);
+    const queue = this.store.getQueue(ownerQueueId);
     const sortedAll = queue.requests.slice().sort((a, b) => a.position - b.position);
     const queueOrder = sortedAll.map((r) => r.id);
     const fromGlobalPosition = queueOrder.indexOf(taskId);
@@ -819,7 +1185,7 @@ export class QueueManager {
     try {
       await this.store.reorderPendingRequest(taskId, translatedPendingIdx);
       const afterAll = this.store
-        .getQueue()
+        .getQueue(ownerQueueId)
         .requests.slice()
         .sort((a, b) => a.position - b.position)
         .map((r) => r.id);
@@ -847,10 +1213,67 @@ export class QueueManager {
     }
   }
 
-  // Feature 030 — single-queue mode removed the cross-queue `moveTask`,
-  // `setSchedule`, and `clearSchedule` mutators. Tasks always live on
-  // 'default'; the registry never carries a schedule (v6 invariant in
-  // `validateQueueRegistry`).
+  /**
+   * Feature 092 (T028, FR-017) — move one pending Task to another queue.
+   *
+   * The Task's own fields are not this method's business: `movePendingRequest`
+   * rewrites `queueId`, `position` and `updatedAt` and carries every other
+   * field — description, `runPlan`, `pipelineId`, `rerun`, `retryCount` —
+   * through the spread untouched. Preservation is therefore a property of the
+   * store's single write, not something re-asserted here.
+   *
+   * The one refusal this layer owns is FR-017's: a Task that is a child of a
+   * connected Workflow run cannot be moved individually, because its queue is
+   * fixed by its aggregate's binding (FR-042). Moving it would put a child of a
+   * queue-bound aggregate on a queue the aggregate is not bound to, which is
+   * FR-042 violated by an operator gesture rather than by a scheduler bug. The
+   * check is here rather than in the store because the connected-run aggregate
+   * is a peer key, and the store's queue writer has no business reading it.
+   */
+  public async moveTask(
+    taskId: string,
+    targetQueueId: string,
+    position?: number | null
+  ): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.move-task', { taskId, queueId: targetQueueId }, async () => {
+      if (this.connectedRunOwning(taskId) !== null) {
+        return { ok: false, reason: 'task-bound-to-connected-run', taskId };
+      }
+      try {
+        const moved = await this.store.movePendingRequest(taskId, {
+          targetQueueId,
+          position: position ?? null
+        });
+        return {
+          ok: true,
+          taskId: moved.id,
+          queueId: moved.queueId ?? targetQueueId,
+          priorStatus: moved.status
+        };
+      } catch (err) {
+        return { ok: false, reason: this.taskErrorReason(err), taskId };
+      }
+    });
+  }
+
+  /**
+   * The connected run that enqueued `taskId` as a child, or `null`.
+   *
+   * A child Run is recorded as a `ChildRunRef.queueItemId` on the node record
+   * of the attempt that started it, so membership is a scan of every
+   * aggregate's node attempts. Returns the identifier only — the caller refuses
+   * on presence and never on the aggregate's contents.
+   */
+  private connectedRunOwning(taskId: string): string | null {
+    for (const run of Object.values(this.store.getConnectedRuns())) {
+      for (const node of Object.values(run.nodes)) {
+        if (node.attempts.some((attempt) => attempt.queueItemId === taskId)) {
+          return run.connectedRunId;
+        }
+      }
+    }
+    return null;
+  }
 
   public async fireDueSchedules(now: number = Date.now()): Promise<readonly string[]> {
     const registry = this.store.getQueueRegistry();
@@ -907,7 +1330,7 @@ export class QueueManager {
         queue: { ...queue, requests: reordered.map((r, i) => ({ ...r, position: i })) },
         result: { ok: true }
       };
-    });
+    }, this.queueIdForTask(featureId));
   }
 
   public async moveUp(featureId: string): Promise<MutationResult> {
@@ -918,12 +1341,12 @@ export class QueueManager {
     return this.move(featureId, 1);
   }
 
-  public async clearCompleted(): Promise<ClearResult> {
-    return this.clearByStatus('completed');
+  public async clearCompleted(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
+    return this.clearByStatus('completed', queueId);
   }
 
-  public async clearFailed(): Promise<ClearResult> {
-    return this.clearByStatus('failed');
+  public async clearFailed(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
+    return this.clearByStatus('failed', queueId);
   }
 
   // Feature 063 — atomic queue + run + pause + watchdog reset (FR-005).
@@ -944,8 +1367,16 @@ export class QueueManager {
   // `KEYS.run`, and `KEYS.watchdog` — and nothing else. The suppression
   // memento, settings, history, audit log, and features list are not
   // touched.
+  //
+  // Feature 092 (T027, FR-006) — "all" now means every queue. The counts, the
+  // in-flight probe and the clear itself iterate the whole map, because a reset
+  // that emptied only `'default'` would leave an operator-created queue holding
+  // work while reporting the workspace clean. The result shape is unchanged and
+  // stays workspace-scoped; the one field that cannot be pluralised without
+  // changing the contract is `pauseSource`, which is documented below.
   public async clearAll(probe?: CleanAllRunnerAckProbe | null): Promise<CleanAllResult> {
-    const queueBefore = this.store.getQueue();
+    const queuesBefore = this.store.getQueueStates();
+    const queueIdsBefore = Object.keys(queuesBefore);
     const runBefore = this.store.getRun();
     const watchdogBefore = this.store.getWatchdog();
 
@@ -955,26 +1386,39 @@ export class QueueManager {
       failed: 0,
       canceled: 0
     };
-    for (const r of queueBefore.requests) {
-      if (r.status === 'pending') removed.pending++;
-      else if (r.status === 'completed') removed.completed++;
-      else if (r.status === 'failed') removed.failed++;
-      else if (r.status === 'canceled') removed.canceled++;
+    for (const queue of Object.values(queuesBefore)) {
+      for (const r of queue.requests) {
+        if (r.status === 'pending') removed.pending++;
+        else if (r.status === 'completed') removed.completed++;
+        else if (r.status === 'failed') removed.failed++;
+        else if (r.status === 'canceled') removed.canceled++;
+      }
     }
 
-    const inflightBefore =
-      queueBefore.inFlightId !== null ||
-      queueBefore.requests.some((r) => r.status === 'in-flight');
-    const pauseBefore = queueBefore.paused;
+    const inflightBefore = Object.values(queuesBefore).some(
+      (queue) =>
+        queue.inFlightId !== null || queue.requests.some((r) => r.status === 'in-flight')
+    );
+    const pausedQueueIdsBefore = queueIdsBefore.filter((id) => queuesBefore[id].paused);
+    const pauseBefore = pausedQueueIdsBefore.length > 0;
     // Read pauseSource from the canonical registry entry (single source
     // of truth — the legacy `queue.paused` boolean only mirrors it).
+    //
+    // Feature 092 — `CleanAllResult.pauseSource` is one nullable field and N
+    // queues may each carry their own, so it reports the reserved queue's
+    // source when that queue was paused and otherwise the first paused entry's.
+    // On a single-queue workspace — every workspace before this feature — the
+    // two branches coincide and the reported value is byte-identical to what
+    // the pre-feature reader produced.
     const registryBefore = this.store.getQueueRegistry();
-    const defaultEntryBefore = registryBefore.entries.find(
-      (e) => e.id === DEFAULT_QUEUE_ID
-    );
+    const pauseSourceEntry =
+      (pausedQueueIdsBefore.includes(DEFAULT_QUEUE_ID)
+        ? registryBefore.entries.find((e) => e.id === DEFAULT_QUEUE_ID)
+        : undefined) ??
+      registryBefore.entries.find((e) => pausedQueueIdsBefore.includes(e.id));
     const pauseSourceBefore: CleanAllResult['pauseSource'] =
-      defaultEntryBefore && defaultEntryBefore.pauseSource
-        ? (defaultEntryBefore.pauseSource as CleanAllResult['pauseSource'])
+      pauseSourceEntry && pauseSourceEntry.pauseSource
+        ? (pauseSourceEntry.pauseSource as CleanAllResult['pauseSource'])
         : null;
     const activeRunBefore = runBefore !== null;
     const watchdogActiveBefore =
@@ -984,7 +1428,7 @@ export class QueueManager {
       watchdogBefore.cause !== null;
 
     const wasNoop =
-      queueBefore.requests.length === 0 &&
+      Object.values(queuesBefore).every((queue) => queue.requests.length === 0) &&
       !inflightBefore &&
       !pauseBefore &&
       !activeRunBefore &&
@@ -1003,24 +1447,29 @@ export class QueueManager {
       };
     }
 
-    // 1. Clear queue items (also drops `inFlightId`).
-    await this.store.updateQueue((queue) => ({
-      queue: {
-        ...queue,
-        requests: [],
-        inFlightId: null,
-        paused: false,
-        pausedReason: null,
-        updatedAt: Date.now()
-      },
-      result: undefined
-    }));
+    // 1. Clear queue items (also drops `inFlightId`), on every queue.
+    for (const queueId of queueIdsBefore) {
+      await this.store.updateQueue(
+        (queue) => ({
+          queue: {
+            ...queue,
+            requests: [],
+            inFlightId: null,
+            paused: false,
+            pausedReason: null,
+            updatedAt: Date.now()
+          },
+          result: undefined
+        }),
+        queueId
+      );
+    }
 
     // 2. Clear pause state via the canonical single-writer so the
     //    registry's `pauseSource` is cleared in lock-step with the
     //    legacy boolean (BUG-001 invariant retained).
-    if (pauseBefore) {
-      await this.setQueuePausedState(false, DEFAULT_QUEUE_ID, null, 'operator');
+    for (const queueId of pausedQueueIdsBefore) {
+      await this.setQueuePausedState(false, queueId, null, 'operator');
     }
 
     // 3. Clear the active run snapshot.
@@ -1078,8 +1527,29 @@ export class QueueManager {
     };
   }
 
+  /**
+   * Feature 092 (T027) — Task ids are workspace-unique, so a lookup by id names
+   * a Task and not a queue. `store.getRequest` resolves the owner across every
+   * queue; scanning only `'default'` would make a Task on an operator-created
+   * queue read as non-existent to every caller of this — including
+   * `matchingRunForQueue`, which would then decline to pause its own run.
+   */
   public findById(id: string): FeatureRequest | null {
-    return this.store.getQueue().requests.find((r) => r.id === id) ?? null;
+    return this.store.getRequest(id);
+  }
+
+  /**
+   * Feature 092 (T027, FR-006) — the queue that owns `taskId`.
+   *
+   * The row's own `queueId` is the answer rather than a scan of the map,
+   * because the store writes the two in lockstep: `insertPendingRequest` files
+   * the row under the queue it stamps on it, and `movePendingRequest` rewrites
+   * both in one write. A Task that has since been removed resolves to the
+   * reserved queue, which is where the pre-feature code would have looked and
+   * where the ensuing mutation will correctly find nothing.
+   */
+  private queueIdForTask(taskId: string): string {
+    return this.store.getRequest(taskId)?.queueId ?? DEFAULT_QUEUE_ID;
   }
 
   // Feature 065 BUG-009 T078 (FR-030) — arrow-driven move operates in the
@@ -1088,7 +1558,7 @@ export class QueueManager {
   // index translation as the drag path. The source-status guard (only
   // pending rows can be moved) is enforced inside the helper.
   private async move(featureId: string, direction: -1 | 1): Promise<MutationResult> {
-    const queue = this.store.getQueue();
+    const queue = this.store.getQueue(this.queueIdForTask(featureId));
     const sortedAll = queue.requests.slice().sort((a, b) => a.position - b.position);
     const fromGlobalIdx = sortedAll.findIndex((r) => r.id === featureId);
     if (fromGlobalIdx === -1) return { ok: false, reason: 'not-found' };
@@ -1111,7 +1581,10 @@ export class QueueManager {
     return { ok: false, reason: decision.cause ?? 'illegal-state' };
   }
 
-  private async clearByStatus(status: FeatureRequestStatus): Promise<ClearResult> {
+  private async clearByStatus(
+    status: FeatureRequestStatus,
+    queueId: string = DEFAULT_QUEUE_ID
+  ): Promise<ClearResult> {
     const removed = await this.store.updateQueue((queue) => {
       const before = queue.requests.length;
       const filtered = queue.requests.filter(
@@ -1123,15 +1596,20 @@ export class QueueManager {
           : { ...queue, requests: filtered.map((r, i) => ({ ...r, position: i })) },
         result: before - filtered.length
       };
-    });
+    }, queueId);
     if (removed === 0) return { removed: 0 };
     // BUG-001 escape hatch: when the operator clears completed/failed items
     // and no in-flight task remains, also release any lingering pause so a
     // stale `retry-cap-exhausted` pause whose originating run is gone does
     // not strand future tasks. Skipped while a task is in flight to avoid
     // disturbing an active phase's pause state.
-    if (!this.hasInFlight() && this.store.getQueue().paused) {
-      await this.setQueuePausedState(false, undefined, null, 'operator');
+    //
+    // Feature 092 (T027) — scoped to the cleared queue. The escape hatch
+    // releases *this* queue's pause because *this* queue's work was cleared;
+    // a sibling's in-flight Task is not a reason to keep it stranded, and a
+    // sibling's pause is not this call's to release.
+    if (!this.hasInFlight(queueId) && this.store.getQueue(queueId).paused) {
+      await this.setQueuePausedState(false, queueId, null, 'operator');
     }
     return { removed };
   }

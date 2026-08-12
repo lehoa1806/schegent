@@ -23,7 +23,8 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 | [T11](#t11--retrycondition-dsl-escape) | The operator-authored `retryCondition` DSL expression escaping the sandboxed evaluator. | Evaluator at `src/lib/retry-condition.ts` is the sole entry point: no arbitrary code, no function calls, no member access, no I/O. | [The hard rules](#the-hard-rules) |
 | [T12](#t12--fatal-signature-floor-weakening) | Operator workspace settings weakening or re-ordering the code-resident fatal-signature floor. | `FATAL_SIGNATURES` in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) is immutable at runtime; operator-additive surface extends but never removes built-ins; built-ins-first scan order preserved. | [The hard rules](#the-hard-rules) |
 | [T13](#t13--state-schema-invariant-violation) | Persisting a `WorkflowRun` with a one-sided pair (`pendingRetryAt`/`pendingRetryCause` or `manualPauseAt`/`manualPauseCause`) that leaves the scheduler in an unresumable state. | `WorkspaceStateStore.setRun()` rejects mismatched pairs; forward-only migrators backfill legacy records. | [The hard rules](#the-hard-rules) |
-| [T14](#t14--multi-queue-reintroduction) | Re-introducing the multi-queue registry shape (removed in v6) and bypassing the single-queue invariants. | `MAX_QUEUES === 1` in `src/queue/queue-registry.ts`; lint regression `tests/lint/no-multi-queue-commands.test.ts`; v5→v6 forward-only migrator. | [The hard rules](#the-hard-rules) |
+| [T14](#t14--multi-queue-registry-races) | Racing on the reopened multi-queue registry: two windows promoting one queue, a queue promoted past its own in-flight slot, a claim stranded by a crash. | Per-queue execution lease with 15 s staleness reclaim; `hasQueueCapacity` / `hasWorkspaceCapacity` as distinct predicates; one idle-pending enforcement site; forward-only v9→v10 migrator with the per-entry lockstep assertion. | [The hard rules](#the-hard-rules) |
+| [T14a](#t14a--concurrent-runs-against-one-working-tree) | Runs from different queues editing the same files in one shared checkout. | Risk reduction only: per-queue audit attribution and per-run session trees make authorship recoverable; the engine drives one Run at a time. Conflict resolution is the operator's. | [Multiple queues and concurrency](../operations/multi-queue-concurrency.md) |
 | [T15](#t15--phase-message-env-injection) | A `phase-message.env` value reaching the UI or audit projection without passing through the sanitizer used at prompt composition time. | Phase-message values pass through `SanitizedLogger.sanitize` before downstream consumption; audit + UI surface metadata only, never raw env values. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T16](#t16--operator-additive-fatal-signatures-stale-cache) | A cached `schegent.fatalSignatures` value masking an operator update mid-run. | `FatalSignaturesAccessor` is read at the top of every `PhaseRunner.run()`; never cached on the runner. | [The hard rules](#the-hard-rules) |
 | [T17](#t17--wake-up-runner-workspace-contamination) | **Retired.** The OS-scheduled wake-up runner spawning the CLI inside a workspace root, or with workspace-specific environment variables leaking through. | Retired with the capability: no code installs, schedules, or spawns an out-of-host runner. The id is retained so existing citations still resolve. | [T17 anchor](#t17--wake-up-runner-workspace-contamination) |
@@ -221,7 +222,9 @@ resolution examples.
 
 When the same workspace is open in multiple VS Code windows, only the **primary host** can mutate state. Secondary hosts receive `not-primary-host` rejections on every mutating IPC command.
 
-This prevents two windows from racing on the same workspace. The primary host owns the workspace lock; the secondary host is read-only.
+This prevents two windows from racing on the same workspace. The primary host owns the window-primacy lease; the secondary host is read-only.
+
+The lock split matters here. `WorkspaceLockManager` arbitrates **primacy only** and its semantics are unchanged — one holder per workspace, same staleness reclaim, and it is still what `WorkflowSnapshot.isPrimary` and therefore every mutating IPC gate reads. Execution exclusion moved to the per-queue lease in `src/state/execution-lease.ts`, which permits one holder per queue and several across queues. The separation is the control: if one lease did both jobs, a window would become primary — and so gain every mutating command — merely by draining a queue.
 
 ## The mutating-commands registry
 
@@ -334,6 +337,8 @@ Opening the same workspace in two VS Code windows would otherwise race on shared
 
 A code path that acquires the workspace lock and never releases it would deadlock subsequent runs (fail-deadly). Mitigated by `WorkspaceLockManager.withLock` — the wrapper acquires (idempotent for the same owner), runs the body, and releases the lock in `finally` on both normal and exceptional exit. Pause paths that intentionally retain the lock past the scope call `session.retain()`; a forgotten `retain` is fail-safe (the lock releases) rather than fail-deadly (the lock leaks).
 
+The per-queue execution lease is fail-safe on the same principle by a different route: it is released on window shutdown, and any lease left behind by a window that died goes stale after `STALENESS_THRESHOLD_MS` and is reclaimable by the next window to ask. A leaked lease costs one queue 15 seconds, not a deadlock.
+
 ### T7 — Untrusted workspace executing extension capabilities
 
 A workspace the operator has not explicitly trusted must not cause Schegent to spawn the CLI, install OS-scheduler entries, or persist state. Mitigated by Schegent registering as a `workspaceTrust` consumer with `untrusted-restricted` posture; every mutating command rejects until the workspace is trusted. See [Workspace-trust gating](#workspace-trust-gating).
@@ -372,9 +377,27 @@ The code-resident `FATAL_SIGNATURES` floor in [src/lib/fatal-signature-registry.
 
 `WorkflowRun.pendingRetryAt` / `pendingRetryCause` and `WorkflowRun.manualPauseAt` / `manualPauseCause` are both-null-or-both-non-null pairs. A persisted run with a one-sided pair would leave the scheduler in an unresumable state. Mitigated by rejection in `WorkspaceStateStore.setRun()`; forward-only migrators backfill legacy records on activation.
 
-### T14 — Multi-queue reintroduction
+### T14 — Multi-queue registry races
 
-The v6 `QueueRegistry` is constrained to exactly one entry with `id === 'default'`. Re-introducing multi-queue support would reopen the registry race surface and the orphan-task pathways the v5→v6 migration retired. Mitigated by `MAX_QUEUES === 1` in `src/queue/queue-registry.ts`, the lint regression `tests/lint/no-multi-queue-commands.test.ts`, and the forward-only v5→v6 migrator.
+The registry admits up to `MAX_QUEUES === 20` entries again, so the surface the v6 collapse retired is reopened deliberately, with the migration and scheduler design v6 required as the price of reopening it. What remains a threat is the race surface itself: two windows promoting the same queue, a queue promoted past its own in-flight slot, a stranded claim after a crash, and orphaned tasks left addressable by nothing.
+
+Mitigations, each a distinct control:
+
+- **Per-queue execution lease** (`src/state/execution-lease.ts`) — one holder per queue, reclaimable on the same 15 s staleness terms as the workspace lock, so a crashed window cannot strand a queue permanently.
+- **Two capacity predicates** — `hasQueueCapacity(queueId)` bounds a queue to one in-flight task; `hasWorkspaceCapacity()` bounds the workspace to the configured ceiling. Conflating them would let a queue promote past its own slot.
+- **A single idle-pending enforcement site** — `AutoDrainCoordinator.drainIfIdle(queueId)`. A second gate elsewhere is what would let a scheduled queue auto-promote.
+- **Forward-only v9 → v10 migrator** with the per-entry `scheduledStartAt` / `idle-pending` lockstep assertion, refusing any persisted version above 10.
+- **Queue ids, never operator-authored names, in audit payloads** — a queue name is operator-supplied text and does not belong in the structured log.
+
+The `tests/lint/no-multi-queue-commands.test.ts` guard is retired; the seven queue IPC commands it forbade are back and each is a member of `MUTATING_COMMANDS`, so each is primary-host gated.
+
+### T14a — Concurrent Runs against one working tree
+
+Queues are independent for scheduling, pausing, projection and audit attribution. They are **not** isolated on the filesystem: every queue runs against the same checkout, the same branch and the same `.schegent/` directory, and Schegent does not create, switch or merge branches on an operator's behalf.
+
+Two tasks that touch the same files will interleave their edits. This is a risk *reduction* boundary, not a guarantee of isolation: per-queue attribution in the audit log and per-run session trees make it possible to determine after the fact which run wrote what, which is a different property from preventing the write. Operators partitioning work across queues own the conflict resolution; this is stated in [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
+
+The current run engine drives one `WorkflowRun` at a time and the drainer gates on it, so the interleaving window today is between successive runs rather than within a pair of simultaneous ones. That is a property of the engine, not of the queue model, and it narrows the exposure without removing it.
 
 ### T15 — Phase-message env injection
 

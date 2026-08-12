@@ -296,12 +296,16 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     // `defaultQueueId` after creating a second queue. That path is gone
     // (cap=1) but the global concurrency cap setter still validates
     // its bound; pin that branch on the default registry.
-    // Feature 056 Track 4 (FR-018..FR-022) — the cap window pinned to
-    // [1, 1] so the only accepted value is 1; any other integer rejects.
+    // Feature 056 Track 4 (FR-018..FR-022) pinned the cap window to [1, 1];
+    // feature 092 (T056, FR-026/FR-027) reopened it to [1, 20], so 2 is now a
+    // legal value and the rejecting branch moves to one past the upper bound.
     await store.setGlobalConcurrencyCap(1);
     expect(store.getDefaultQueueId()).toBe(DEFAULT_QUEUE_ID);
     expect(store.getGlobalConcurrencyCap()).toBe(1);
-    expect(() => store.setGlobalConcurrencyCap(2)).toThrow(QueueMutationRejected);
+    await store.setGlobalConcurrencyCap(2);
+    expect(store.getGlobalConcurrencyCap()).toBe(2);
+    expect(() => store.setGlobalConcurrencyCap(21)).toThrow(QueueMutationRejected);
+    expect(() => store.setGlobalConcurrencyCap(0)).toThrow(QueueMutationRejected);
   });
 
   it('enforces the manual pause pair invariant at the persistence boundary', async () => {

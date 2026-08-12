@@ -1,3 +1,4 @@
+import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queue-runtime-fixture';
 /**
  * Feature 018 — Settings UI Hover Text coverage (structural test).
  *
@@ -48,13 +49,27 @@ import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 
 // ── Snapshot fixtures ──────────────────────────────────────────────────
 
-function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, activeFeature, phases, liveActivity, workflowElapsedMs, ...rest } = overrides;
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze([]),
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: status ?? 'idle',
+      activeFeature: activeFeature ?? null,
+      phases: phases ?? (Object.freeze([])),
+      liveActivity: liveActivity ?? (Object.freeze({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: null
+      })),
+      workflowElapsedMs: workflowElapsedMs ?? null
+    }),
     queue: Object.freeze({
       orderedItems: [],
       inFlight: null,
@@ -64,21 +79,13 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowS
       queues: Object.freeze([])
     }),
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-05-13T00:00:00.000Z',
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
-    ...overrides
+    ...rest
   }) as unknown as unknown as WorkflowSnapshot;
 }
 

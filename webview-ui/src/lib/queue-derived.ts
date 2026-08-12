@@ -11,6 +11,7 @@
 
 import type { ActionCopyContext } from './action-copy';
 import type { WorkflowSnapshot } from './snapshot-types';
+import { defaultQueueRuntime } from './queue-runtime-view';
 
 export type CleanAllContext = ActionCopyContext['queue.clean-all'];
 
@@ -32,7 +33,9 @@ export function deriveCleanAllContext(snapshot: WorkflowSnapshot): CleanAllConte
     : queue.paused
       ? 'operator'
       : null;
-  const hasActiveRun = (snapshot.activeRunId ?? null) !== null;
+  // Feature 092 — the impact inventory is the default queue's, matching every
+  // other count above it, which all read `snapshot.queue`.
+  const hasActiveRun = (defaultQueueRuntime(snapshot)?.inFlightRun ?? null) !== null;
   return {
     pendingCount,
     completedCount,

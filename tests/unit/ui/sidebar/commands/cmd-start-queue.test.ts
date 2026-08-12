@@ -119,13 +119,44 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
     expect(acks).toHaveLength(1);
   });
 
-  it('does not send a queueId payload (single-queue migration)', async () => {
+  it('sends no payload at all when the command names neither queue nor intent', async () => {
     const { ctx, executeCommandSpy } = buildCtx();
     await startQueueHandler(ctx, makeCmd());
-    // schegent.startQueue is called with no queueId payload — it always
-    // operates on the unified default queue (feature 030). Feature 065
-    // adds an optional `startIntent` second-arg; when absent the value
-    // is `undefined`.
+    // Feature 092 (T061, FR-034) — this pin used to read "does not send a
+    // queueId payload (single-queue migration)" and encoded feature 030's
+    // collapse to one queue. That collapse is what this feature reverses, so
+    // the pin is re-aimed rather than deleted: an unaddressed start still
+    // sends `undefined`, byte for byte the pre-092 wire shape, and the host
+    // command is the single place that decides what that means.
     expect(executeCommandSpy.mock.calls[0]).toEqual(['schegent.startQueue', undefined]);
+  });
+
+  it('forwards the addressed queueId (feature 092, T061, FR-034)', async () => {
+    const { ctx, executeCommandSpy } = buildCtx();
+    await startQueueHandler(ctx, {
+      type: CMD_START_QUEUE,
+      correlationId: 'test-start-queue-1',
+      payload: { queueId: 'queue-b' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    expect(executeCommandSpy.mock.calls[0]).toEqual([
+      'schegent.startQueue',
+      { queueId: 'queue-b' }
+    ]);
+  });
+
+  it('forwards queueId and startIntent together', async () => {
+    const { ctx, executeCommandSpy } = buildCtx();
+    const startIntent = { startMode: 'now', source: 'operator-restart' } as const;
+    await startQueueHandler(ctx, {
+      type: CMD_START_QUEUE,
+      correlationId: 'test-start-queue-1',
+      payload: { queueId: 'queue-b', startIntent }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    expect(executeCommandSpy.mock.calls[0]).toEqual([
+      'schegent.startQueue',
+      { queueId: 'queue-b', startIntent }
+    ]);
   });
 });

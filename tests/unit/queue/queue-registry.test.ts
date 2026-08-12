@@ -19,12 +19,26 @@ import {
 
 const NOW = 1_700_000_000_000;
 const UUID_A = '11111111-2222-4333-8444-555555555555';
-// Feature 030 (US3, T046) — `UUID_B` previously seeded the second
-// queue entry for duplicate-name tests. With MAX_QUEUES=1 those tests
-// are unreachable and have been removed; only the cap-1 violation pins
-// survive.
+// Feature 092 (T033a) — `UUID_B` seeds the second entry again. Feature 030
+// removed the duplicate-name tests below because `MAX_QUEUES = 1` made a
+// second entry unconstructible, not because the rule stopped applying; with
+// the cap back at 20 they are reachable and restored.
+const UUID_B = '22222222-3333-4444-8555-666666666666';
 
-describe('queue-registry (017, T008)', () => {
+/** Deterministic UUIDv4-shaped ids for the cap test. */
+function uuidN(n: number): string {
+  return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+}
+
+const SCHEDULE = {
+  kind: 'relative' as const,
+  expression: 'in 5m',
+  setAt: new Date(NOW).toISOString(),
+  targetAt: new Date(NOW + 5 * 60_000).toISOString(),
+  recurrence: 'one-shot' as const
+};
+
+describe('queue-registry (017 T008; multi-queue restored by 092 T008/T009/T033a)', () => {
   describe('makeDefaultRegistry', () => {
     it('returns a registry with a single default entry', () => {
       const r = makeDefaultRegistry(NOW);
@@ -66,37 +80,60 @@ describe('queue-registry (017, T008)', () => {
   });
 
   describe('createQueue', () => {
-    // Feature 030 (US3, T046) — single-queue migration set MAX_QUEUES=1.
-    // The `createQueue` export survives for forward compatibility but
-    // every call against a fresh default registry now fails with
-    // `queue-cap-reached`. The legacy tests that exercised an actual
-    // append + duplicate-name detection on a second entry are replaced
-    // with cap-violation pins; the validation order (name → id → cap →
-    // duplicate-name) is preserved by `createQueue` so the two
-    // pre-cap rejection paths (default id, invalid name) still fire
-    // their dedicated violations before the cap check.
+    // Feature 092 (T008, T033a) — the append path is live again. The
+    // validation order (name -> id -> cap -> duplicate-name) is unchanged
+    // from feature 017; what changed is that the cap no longer swallows
+    // every call before the duplicate-name check can be reached.
 
-    it('rejects every append against a default registry (cap=1)', () => {
+    it('appends a second entry at the next position', () => {
       const r0 = makeDefaultRegistry(NOW);
-      expect(() => createQueue(r0, { id: UUID_A, name: 'Critical', now: NOW + 1 })).toThrowError(
-        /cap/
-      );
+      const r1 = createQueue(r0, { id: UUID_A, name: 'Critical', now: NOW + 1 });
+      expect(r1.entries).toHaveLength(2);
+      expect(r1.entries[1]).toMatchObject({
+        id: UUID_A,
+        name: 'Critical',
+        position: 1,
+        state: 'active',
+        pauseSource: null,
+        schedule: null
+      });
+      expect(() => validateQueueRegistry(r1)).not.toThrow();
+    });
+
+    it('trims the supplied name', () => {
+      const r1 = createQueue(makeDefaultRegistry(NOW), {
+        id: UUID_A,
+        name: '  Critical  ',
+        now: NOW + 1
+      });
+      expect(findQueue(r1, UUID_A)?.name).toBe('Critical');
+    });
+
+    it('rejects a duplicate name case- and trim-insensitively', () => {
+      const r1 = createQueue(makeDefaultRegistry(NOW), {
+        id: UUID_A,
+        name: 'Critical',
+        now: NOW + 1
+      });
+      expect(() =>
+        createQueue(r1, { id: UUID_B, name: '  cRiTiCaL ', now: NOW + 2 })
+      ).toThrowError(/already in use/);
     });
 
     it('rejects the reserved default id', () => {
       const r0 = makeDefaultRegistry(NOW);
-      // Default-id check fires before cap check.
       expect(() => createQueue(r0, { id: DEFAULT_QUEUE_ID, name: 'X', now: NOW + 1 })).toThrowError(
         QueueRegistryViolation
       );
     });
 
     it('rejects past the cap', () => {
-      // The default registry is already at MAX_QUEUES (1); any
-      // additional create immediately violates the cap.
-      const r = makeDefaultRegistry(NOW);
+      let r = makeDefaultRegistry(NOW);
+      for (let i = 1; i < MAX_QUEUES; i += 1) {
+        r = createQueue(r, { id: uuidN(i), name: `Queue ${i}`, now: NOW + i });
+      }
       expect(r.entries).toHaveLength(MAX_QUEUES);
-      expect(() => createQueue(r, { id: UUID_A, name: 'OneMore', now: NOW + 99 })).toThrowError(
+      expect(() => createQueue(r, { id: uuidN(99), name: 'OneMore', now: NOW + 99 })).toThrowError(
         /cap/
       );
     });
@@ -117,14 +154,29 @@ describe('queue-registry (017, T008)', () => {
       );
     });
 
-    // Feature 030 (US3, T046) — the legacy "rejects duplicate-name
-    // target" test relied on calling `createQueue` to produce a second
-    // entry that would collide with `default queue` on rename. With
-    // MAX_QUEUES=1 we can never get two entries to clash; the
-    // duplicate-name guard in renameQueue is structurally unreachable
-    // on a single-entry registry. The check itself is still in the
-    // source for forward compat (kept intentionally — see
-    // queue-registry.ts) but its run-time exercise is dropped.
+    // Feature 092 (T033a) — restored. Feature 030 dropped this because a
+    // one-entry registry has nothing to collide with, so the guard was
+    // structurally unreachable rather than wrong.
+    it('rejects a rename onto another entry\'s name', () => {
+      const r1 = createQueue(makeDefaultRegistry(NOW), {
+        id: UUID_A,
+        name: 'Critical',
+        now: NOW + 1
+      });
+      expect(() =>
+        renameQueue(r1, { id: UUID_A, name: 'default QUEUE', now: NOW + 2 })
+      ).toThrowError(/already in use/);
+    });
+
+    it('allows an entry to keep its own name', () => {
+      const r1 = createQueue(makeDefaultRegistry(NOW), {
+        id: UUID_A,
+        name: 'Critical',
+        now: NOW + 1
+      });
+      const r2 = renameQueue(r1, { id: UUID_A, name: 'Critical', now: NOW + 2 });
+      expect(findQueue(r2, UUID_A)?.name).toBe('Critical');
+    });
   });
 
   describe('deleteQueue', () => {
@@ -135,12 +187,17 @@ describe('queue-registry (017, T008)', () => {
       );
     });
 
-    // Feature 030 (US3, T046) — the legacy "removes a non-default
-    // queue" path required first creating a second entry via
-    // `createQueue`, which is now blocked by the cap-1 rule. With
-    // MAX_QUEUES=1 the only entry that ever exists is the default,
-    // and the default cannot be deleted (covered above). The unknown-id
-    // rejection still pins the entry-lookup branch below.
+    // Feature 092 (T033a) — restored, together with the position
+    // compaction it is the only test of.
+    it('removes a non-default queue and compacts positions', () => {
+      let r = makeDefaultRegistry(NOW);
+      r = createQueue(r, { id: UUID_A, name: 'Critical', now: NOW + 1 });
+      r = createQueue(r, { id: UUID_B, name: 'Batch', now: NOW + 2 });
+      const after = deleteQueue(r, { id: UUID_A, now: NOW + 3 });
+      expect(after.entries.map((e) => e.id)).toEqual([DEFAULT_QUEUE_ID, UUID_B]);
+      expect(after.entries.map((e) => e.position)).toEqual([0, 1]);
+      expect(() => validateQueueRegistry(after)).not.toThrow();
+    });
 
     it('rejects unknown id', () => {
       const r0 = makeDefaultRegistry(NOW);
@@ -189,6 +246,30 @@ describe('queue-registry (017, T008)', () => {
       expect(findQueue(r1, DEFAULT_QUEUE_ID)?.schedule?.kind).toBe('relative');
       const r2 = setQueueSchedule(r1, { id: DEFAULT_QUEUE_ID, schedule: null, now: NOW + 2 });
       expect(findQueue(r2, DEFAULT_QUEUE_ID)?.schedule).toBeNull();
+    });
+
+    // Feature 092 (T009, FR-018) — every entry may carry a schedule. The v6
+    // rule asserted `entries[0].schedule === null`, which under a one-entry
+    // registry meant "no queue may be scheduled"; under a reordered
+    // multi-entry registry `entries[0]` is not even a stable subject.
+    it('attaches a schedule to a non-default entry', () => {
+      let r = makeDefaultRegistry(NOW);
+      r = createQueue(r, { id: UUID_A, name: 'Nightly', now: NOW + 1 });
+      r = setQueueSchedule(r, { id: UUID_A, schedule: SCHEDULE, now: NOW + 2 });
+      expect(findQueue(r, UUID_A)?.schedule?.expression).toBe('in 5m');
+      expect(findQueue(r, DEFAULT_QUEUE_ID)?.schedule).toBeNull();
+      expect(() => validateQueueRegistry(r)).not.toThrow();
+    });
+
+    it('lets every entry carry a schedule at once', () => {
+      let r = makeDefaultRegistry(NOW);
+      r = createQueue(r, { id: UUID_A, name: 'Nightly', now: NOW + 1 });
+      r = createQueue(r, { id: UUID_B, name: 'Batch', now: NOW + 2 });
+      for (const id of [DEFAULT_QUEUE_ID, UUID_A, UUID_B]) {
+        r = setQueueSchedule(r, { id, schedule: SCHEDULE, now: NOW + 3 });
+      }
+      expect(r.entries.every((e) => e.schedule !== null)).toBe(true);
+      expect(() => validateQueueRegistry(r)).not.toThrow();
     });
   });
 

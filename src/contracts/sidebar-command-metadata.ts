@@ -4,7 +4,10 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
+  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CONTINUE_WORKFLOW,
+  CMD_CREATE_QUEUE,
+  CMD_DELETE_QUEUE,
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
   CMD_LAUNCH_PIPELINE,
@@ -12,10 +15,12 @@ import {
   CMD_MODIFY_TASK,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
+  CMD_MOVE_TASK,
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
+  CMD_RENAME_QUEUE,
   CMD_REORDER_TASK,
   CMD_RERUN_FROM_HISTORY,
   CMD_RESET,
@@ -31,9 +36,11 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
+  CMD_SAVE_QUEUE_SETTINGS,
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_QUEUE_SCHEDULE,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_QUEUE,
@@ -96,7 +103,20 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   // name carries a mutating verb prefix, so the naming-convention lint would
   // not have caught an omission here.
   [CMD_LAUNCH_WORKFLOW]: 'connected run enqueue',
-  [CMD_CONTINUE_WORKFLOW]: 'connected run enqueue'
+  [CMD_CONTINUE_WORKFLOW]: 'connected run enqueue',
+  // Feature 092 (T030, US1, FR-021) — the seven reinstated multi-queue
+  // commands. Only four of the names carry a verb the
+  // `mutating-command-name-gate` lint recognises (`SAVE_`, `SET_`, `CLEAR_`,
+  // `MOVE_`); `CREATE`, `RENAME` and `DELETE` match no pattern, so their
+  // registration here is what a secondary window's read-only mode rests on
+  // and `tests/integration/queue-mutations.test.ts` asserts it behaviourally.
+  [CMD_CREATE_QUEUE]: 'queue registry write',
+  [CMD_RENAME_QUEUE]: 'queue registry write',
+  [CMD_DELETE_QUEUE]: 'queue registry write',
+  [CMD_SET_QUEUE_SCHEDULE]: 'queue schedule write',
+  [CMD_CLEAR_QUEUE_SCHEDULE]: 'queue schedule write',
+  [CMD_SAVE_QUEUE_SETTINGS]: 'queue settings write',
+  [CMD_MOVE_TASK]: 'task move between queues'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

@@ -32,7 +32,14 @@ describe('accepted product-boundary decisions', () => {
     ]) {
       expect(gate).toContain(section);
     }
+    // Feature 092 shipped same-workspace parallel execution for a single local
+    // operator, which supersedes the pinned sentence below. The sentence stays
+    // — it is what this guard exists to stop anyone deleting quietly — and the
+    // status update is now pinned beside it, so the superseded position can
+    // never be read as the current one. Both halves or neither.
     expect(gate).toContain('The concurrency cap remains pinned at one');
+    expect(gate).toContain('Status update — feature 092');
+    expect(gate).toContain('did not go through the implementation RFC');
     expect(read('ARCHITECTURE.md')).toContain('expansion architecture gate');
   });
 });

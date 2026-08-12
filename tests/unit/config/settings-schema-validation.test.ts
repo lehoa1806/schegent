@@ -79,12 +79,13 @@ describe('SETTINGS_SCHEMA validation alignment with writeGeneralSettings', () =>
   it('SETTINGS_SCHEMA covers every key in ALLOWED_KEYS (schema is the superset)', () => {
     // Intentionally-internal keys mirror the allowlist in
     // `tests/parity/settings-defaults-parity.test.ts`:
-    //   - `queue.defaultQueueId`: pinned to `'default'` by the
-    //     single-queue invariant (CLAUDE.md hard rule 030); not
-    //     advertised in `package.json` or `SETTINGS_SCHEMA` because
-    //     exposing it would invite operator drift away from
-    //     `MAX_QUEUES = 1`. Add to this set only with a load-bearing
-    //     reason.
+    //   - `queue.defaultQueueId`: which queue an unaddressed enqueue lands on.
+    //     Still not advertised in `package.json` or `SETTINGS_SCHEMA`, but for a
+    //     different reason since feature 092 raised `MAX_QUEUES` to 20: the
+    //     value is a queue *id*, which the operator does not author and cannot
+    //     usefully type into a settings box. It is set from the queue settings
+    //     UI, where the ids are chosen from the registry rather than spelled.
+    //     Add to this set only with a load-bearing reason.
     const INTENTIONALLY_INTERNAL = new Set<string>(['queue.defaultQueueId']);
     const missingFromSchema: string[] = [];
     for (const allowed of ALLOWED_KEYS) {

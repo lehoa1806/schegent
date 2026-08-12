@@ -5,6 +5,7 @@ import SystemTab from '../SystemTab.svelte';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import type { AuditTailEntry, DebugLogEntry, WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
@@ -17,11 +18,12 @@ function buildSnapshot(overrides: {
   debugLogTail?: readonly DebugLogEntry[];
 } = {}): WorkflowSnapshot {
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze([]),
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. This fixture describes an idle default queue, which is what the
+    // v3 root fields it used to spell described.
+    queues: foldLegacyRun(),
     queue: Object.freeze({
       orderedItems: Object.freeze([]),
       inFlight: null,
@@ -31,18 +33,9 @@ function buildSnapshot(overrides: {
     }),
     auditTail: overrides.auditTail ?? Object.freeze([]),
     debugLogTail: overrides.debugLogTail ?? Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-08-02T00:00:00.000Z',
-    activeRunId: null,
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }),

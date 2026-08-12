@@ -360,12 +360,33 @@ describe('Feature 017 — queue settings validation', () => {
     ]);
   });
 
-  it('rejects queue global concurrency cap outside [1, 1] (Feature 056 Track 4)', async () => {
+  // Feature 092 (T039b, US2, FR-026/FR-027) — the bound widened from `[1, 1]`
+  // to `[1, 20]`, so the value this test used as its out-of-range example is
+  // now a legal one. Widening the bound without moving the example would have
+  // left the guard asserting nothing.
+  it('accepts a queue global concurrency cap inside [1, 20]', async () => {
     const config = makeConfig();
     const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 2 });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe('out-of-range:queue.globalConcurrencyCap');
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts the upper bound 20', async () => {
+    const config = makeConfig();
+    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 20 });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects queue global concurrency cap outside [1, 20] (Feature 092)', async () => {
+    const config = makeConfig();
+    const above = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 21 });
+    expect(above.ok).toBe(false);
+    if (!above.ok) expect(above.reason).toBe('out-of-range:queue.globalConcurrencyCap');
+
+    const below = await writeGeneralSettings(makeConfig(), {
+      'queue.globalConcurrencyCap': 0
+    });
+    expect(below.ok).toBe(false);
+    if (!below.ok) expect(below.reason).toBe('out-of-range:queue.globalConcurrencyCap');
   });
 
   it('accepts queue default id as a string', async () => {
@@ -375,9 +396,14 @@ describe('Feature 017 — queue settings validation', () => {
   });
 
   it('projects malformed queue cap to the default cap', () => {
+    // Feature 092 (T055, FR-026/FR-027) — the default moved from 1 to 3. The
+    // projection behaviour is unchanged: an out-of-range *configuration* read
+    // still falls back to the declared default. (`WorkspaceStateStore`'s
+    // persisted-value reader is the one that stopped saturating; these are
+    // different surfaces with different failure modes.)
     const config = makeConfig({ workspace: { 'queue.globalConcurrencyCap': 100 } });
     const snap = readGeneralSettings(config);
-    expect(snap.queueGlobalConcurrencyCap).toBe(1);
+    expect(snap.queueGlobalConcurrencyCap).toBe(3);
   });
 });
 

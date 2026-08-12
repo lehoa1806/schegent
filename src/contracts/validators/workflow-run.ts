@@ -18,7 +18,7 @@ import {
   type SidebarCommand
 } from '../sidebar-ipc';
 import { validRunRequest } from './launch-pipeline';
-import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
 const ID_MAX = 64;
 /** A connected run identifier is host-minted, so this is a sanity bound, not a contract. */
@@ -41,10 +41,15 @@ export function validateLaunchWorkflow(
   if (payload === null) {
     return fail('missing-payload', { type: CMD_LAUNCH_WORKFLOW, correlationId });
   }
+  // Feature 092 (T080, FR-041) — `queueId` joins the allowlist under the same
+  // `QUEUE_ID_MAX` bound every other queue-addressing command applies, and
+  // stays optional so a launch that names no queue is still shaped correctly.
+  const queueId = payload.queueId;
   if (
-    hasUnexpectedKeys(payload, ['workflowId', 'startNodeId', 'request']) ||
+    hasUnexpectedKeys(payload, ['workflowId', 'startNodeId', 'request', 'queueId']) ||
     !boundedId(payload.workflowId, ID_MAX) ||
     !boundedId(payload.startNodeId, ID_MAX) ||
+    (queueId !== undefined && !boundedId(queueId, QUEUE_ID_MAX)) ||
     !validRunRequest(payload.request)
   ) {
     return fail('invalid-payload', { type: CMD_LAUNCH_WORKFLOW, correlationId });
@@ -55,7 +60,8 @@ export function validateLaunchWorkflow(
     payload: {
       workflowId: payload.workflowId,
       startNodeId: payload.startNodeId,
-      request: payload.request
+      request: payload.request,
+      ...(queueId !== undefined ? { queueId } : {})
     }
   } as SidebarCommand);
 }

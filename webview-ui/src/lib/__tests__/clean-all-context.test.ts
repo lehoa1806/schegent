@@ -13,6 +13,7 @@ import type {
   QueueSummary,
   WorkflowSnapshot
 } from '../snapshot-types';
+import { foldLegacyRun } from './queue-runtime-fixture';
 
 function queueItem(
   overrides: Partial<QueueItem> & { id: string; status: QueueItem['status'] }
@@ -55,22 +56,27 @@ function mkSnapshot(
   activeRunId: string | null = null
 ): WorkflowSnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: [],
-    queue,
-    activeRunId,
-    auditTail: [],
-    liveActivity: {
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'idle',
+      activeFeature: null,
+      phases: [],
+      activeRunId: activeRunId,
+      liveActivity: {
       summary: null,
       category: null,
       lastEventAt: null,
-      freshness: 'stale',
+      freshness: 'idle',
       staleSeconds: null
-    },
-    workflowElapsedMs: null,
+      },
+      workflowElapsedMs: null
+    }),
+    queue,
+    auditTail: [],
     monitor: null,
     history: [],
     producedAt: '2026-05-22T00:00:00.000Z',

@@ -335,6 +335,15 @@ export const PROCESS_EXCHANGE_EVENT_TYPES = [
   'process-exchange-import-committed'
 ] as const;
 
+// Feature 092 (T066, FR-038, FR-038a) — one record per overlap *episode*, not
+// per drain tick: emitted the moment the workspace's in-flight count crosses
+// from one to two, and not again until it has dropped back below two. The
+// payload carries the FR-023a core fields plus `queueIds`, the identifiers of
+// the queues in flight at that instant. Identifiers only — a queue name is
+// operator-authored content and the audit log never learns one; the UI resolves
+// ids to names at display time.
+export const CONCURRENCY_EVENT_TYPES = ['runs-overlapped'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -362,7 +371,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
-  ...PROCESS_EXCHANGE_EVENT_TYPES
+  ...PROCESS_EXCHANGE_EVENT_TYPES,
+  ...CONCURRENCY_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -718,6 +728,10 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'idle-pending-entered',
     'idle-pending-exited',
     'automation-enqueue-no-start-mode',
+    // Feature 092 — a concurrency overlap is a property of the workspace, not
+    // of any one Run, so it belongs in the System tab rather than an Activity
+    // Feed entry that would have to pick a run to hang off.
+    'runs-overlapped',
     // BUG-006 — system-armed scheduled restore after retry-cap-exhausted
     // rate-limit pause (FR-026); fallback when reset is unparseable or
     // outside the 7-day horizon (FR-027).

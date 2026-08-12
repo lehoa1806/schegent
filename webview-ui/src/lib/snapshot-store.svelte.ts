@@ -1,6 +1,7 @@
 import type { CommandAckMessage, HostMessage } from './messages';
 import { CMD_ACK, STATE_SNAPSHOT } from './messages';
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from './snapshot-types';
+import { defaultQueueRuntime, findQueueRuntime } from './queue-runtime-view';
 import type {
   AuditTailEntry,
   CliMonitorState,
@@ -8,9 +9,11 @@ import type {
   DelayedRetryState,
   GeneralSettings,
   HistoryEntry,
+  LiveActivity,
   PhaseName,
   PhaseTile,
   QueueProjection,
+  QueueRuntime,
   QueueSummary,
   QueueItem,
   WorkflowSnapshot,
@@ -47,12 +50,34 @@ class SnapshotStore {
     return this._snapshot?.isPrimary ?? false;
   }
 
+  /**
+   * Feature 092 (FR-048) — every registered queue's runtime, in position order.
+   * The v4 replacement for the root singulars: a surface that wants run state
+   * picks a queue rather than reading "the" run.
+   */
+  get queueRuntimes(): readonly QueueRuntime[] {
+    return this._snapshot?.queues ?? [];
+  }
+
+  runtimeById(queueId: string): QueueRuntime | null {
+    return findQueueRuntime(this._snapshot, queueId);
+  }
+
+  /**
+   * The runtime a surface reads when no queue has been selected. Slice E adds
+   * the operator-facing selection; until then this is the default queue, which
+   * reproduces the v3 reading for a workspace that has only that one.
+   */
+  get defaultRuntime(): QueueRuntime | null {
+    return defaultQueueRuntime(this._snapshot);
+  }
+
   get status(): WorkflowStatus {
-    return this._snapshot?.status ?? 'idle';
+    return this.defaultRuntime?.inFlightRun?.status ?? 'idle';
   }
 
   get phases(): readonly PhaseTile[] {
-    return this._snapshot?.phases ?? [];
+    return this.defaultRuntime?.phases ?? [];
   }
 
   get queue(): QueueProjection {
@@ -93,7 +118,20 @@ class SnapshotStore {
   }
 
   get activeFeatureLabel(): string | null {
-    return this._snapshot?.activeFeature?.label ?? null;
+    return this.defaultRuntime?.inFlightRun?.feature?.label ?? null;
+  }
+
+  /**
+   * Feature 092 — live-activity and elapsed readings for the default queue's
+   * Run. `null` when that queue owns none, which is what the header surfaces
+   * rendered for an idle workspace before the fold.
+   */
+  get liveActivity(): LiveActivity | null {
+    return this.defaultRuntime?.inFlightRun?.liveActivity ?? null;
+  }
+
+  get workflowElapsedMs(): number | null {
+    return this.defaultRuntime?.inFlightRun?.elapsedMs ?? null;
   }
 
   get monitor(): CliMonitorState | null {
@@ -105,12 +143,12 @@ class SnapshotStore {
   }
 
   /**
-   * Feature 011 — delayed-retry projection. Returns the IDLE constant
-   * when the host did not include it (legacy-tolerance per
-   * contracts/general-settings-ipc.md).
+   * Feature 011 — delayed-retry projection, read from the default queue's Run
+   * since feature 092 folded it under the queue that owns it. Returns the IDLE
+   * constant when that queue owns no Run.
    */
   get delayedRetry(): DelayedRetryState {
-    return this._snapshot?.delayedRetry ?? IDLE_DELAYED_RETRY;
+    return this.defaultRuntime?.inFlightRun?.delayedRetry ?? IDLE_DELAYED_RETRY;
   }
 
   /**
@@ -135,7 +173,7 @@ class SnapshotStore {
   }
 
   phaseByName(name: PhaseName): PhaseTile | null {
-    return this._snapshot?.phases.find((p) => p.name === name) ?? null;
+    return this.phases.find((p) => p.name === name) ?? null;
   }
 
   apply(message: HostMessage<WorkflowSnapshot>): void {
@@ -168,16 +206,19 @@ class SnapshotStore {
 
   private applySnapshot(snap: WorkflowSnapshot): void {
     if (!snap || typeof snap !== 'object') return;
-    if (snap.schemaVersion !== 3) {
+    if (snap.schemaVersion !== 4) {
       if (!this._lastSchemaWarning) {
         console.warn('[schegent] dropping snapshot with unknown schemaVersion', snap.schemaVersion);
         this._lastSchemaWarning = true;
       }
       return;
     }
-    if (!Array.isArray(snap.phases)) {
+    // Feature 092 — `queues` replaces the root `phases` array as the structural
+    // field worth sanity-checking: a malformed one would leave every run-scoped
+    // read with no place to resolve against.
+    if (!Array.isArray(snap.queues)) {
       if (!this._lastSchemaWarning) {
-        console.warn('[schegent] dropping snapshot with malformed phases');
+        console.warn('[schegent] dropping snapshot with malformed queues');
         this._lastSchemaWarning = true;
       }
       return;

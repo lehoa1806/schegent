@@ -14,6 +14,7 @@ import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
 import { CMD_SAVE_GENERAL_SETTINGS } from '../../../lib/messages';
 import type { WorkflowSnapshot, GeneralSettings } from '../../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
+import { foldLegacyRun } from '../../../lib/__tests__/queue-runtime-fixture';
 
 const postCommandSpy = vi.fn(
   (_cmd: string, _payload: unknown) => ({ correlationId: 'corr-test' })
@@ -65,11 +66,24 @@ function buildGeneralSettings(
 
 function buildSnapshot(gs: GeneralSettings): WorkflowSnapshot {
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze([]),
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'idle',
+      activeFeature: null,
+      phases: Object.freeze([]),
+      liveActivity: Object.freeze({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: null
+      }),
+      workflowElapsedMs: null
+    }),
     queue: Object.freeze({
       orderedItems: [],
       inFlight: null,
@@ -78,14 +92,6 @@ function buildSnapshot(gs: GeneralSettings): WorkflowSnapshot {
       paused: false
     }),
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-05-13T00:00:00.000Z',

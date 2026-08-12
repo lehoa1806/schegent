@@ -424,11 +424,15 @@ The advertised maximum was reduced from `20` to `5` in feature 056 to match the 
 ### `schegent.queue.globalConcurrencyCap`
 
 - **Type:** `integer`
-- **Default:** `1`
+- **Default:** `3`
 - **Scope:** `resource`
-- **Range:** `1` to `1`
+- **Range:** `1` to `20`
 
-Maximum number of workflow runs that may be in-flight at the same time. v1 supports exactly one active run; this knob is pinned at `1` for forward-compatibility. Values greater than `1` saved by older versions are clamped on read.
+Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many *queues* may be busy at once — set it to `1` to get the pre-092 sequential behaviour back without deleting any queue.
+
+A value outside the range is refused, not clamped: an out-of-range setting is reported and the previous value stays in force, so a typo cannot silently change how much work runs at once.
+
+Feature 092 unpinned this knob. It was fixed at `1` while a single workspace lock made concurrency unrepresentable; the lock split (window primacy vs per-queue execution lease) removed that constraint. Raising it does **not** widen the remote or multi-user boundary — see [the expansion gate](../architecture/remote-multi-user-expansion-gate.md).
 
 ## Logging and diagnostics
 
@@ -561,7 +565,7 @@ For quick lookup, the full list of keys:
 | `schegent.workflows` | resource | `[]` |
 | `schegent.models` | resource | `[]` |
 | `schegent.retry.maxAttempts` | resource | `5` |
-| `schegent.queue.globalConcurrencyCap` | resource | `1` |
+| `schegent.queue.globalConcurrencyCap` | resource | `3` |
 | `schegent.logging.runtimeLogLevel` | resource | `"INFO"` |
 | `schegent.logging.runtimeLogFilePath` | resource | `""` |
 | `schegent.logging.runtimeLogMaxBytes` | resource | `5242880` |

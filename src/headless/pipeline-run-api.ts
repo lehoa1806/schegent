@@ -24,7 +24,12 @@ import {
   type NodeRunStartResult
 } from '../services/workflow-execution/node-run-starter';
 import type { RunRequest } from '../contracts/run-request';
-import { checkRunRequest, checkWorkspaceRoot, type BoundaryRefusal } from './process-api-validators';
+import {
+  checkQueueId,
+  checkRunRequest,
+  checkWorkspaceRoot,
+  type BoundaryRefusal
+} from './process-api-validators';
 
 export interface LaunchPipelineRunInput {
   readonly request: RunRequest;
@@ -32,6 +37,16 @@ export interface LaunchPipelineRunInput {
   readonly workspaceRoot: string | null;
   /** Overrides the queue row label. Absent leaves the service's own labelling. */
   readonly description?: string;
+  /**
+   * Feature 092 (T062, FR-034) — which queue admits the request.
+   *
+   * A **parameter**, never a prompt: this entrance is the non-interactive one
+   * (Constitution Principle I), so an absent id is not a question to ask but a
+   * decision already made — it means the default queue, exactly as every
+   * pre-092 headless caller meant when there was only one. There is no chooser
+   * here and no fallback to one.
+   */
+  readonly queueId?: string;
 }
 
 /**
@@ -52,10 +67,13 @@ export async function launchPipelineRun(
   if (rootRefusal !== null) return rootRefusal;
   const requestRefusal = checkRunRequest(input.request);
   if (requestRefusal !== null) return requestRefusal;
+  const queueRefusal = checkQueueId(input.queueId);
+  if (queueRefusal !== null) return queueRefusal;
 
   return startPipelineRun(deps, {
     request: input.request,
     workspaceRoot: input.workspaceRoot,
-    ...(input.description !== undefined ? { description: input.description } : {})
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
   });
 }

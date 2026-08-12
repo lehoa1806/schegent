@@ -47,9 +47,14 @@ import {
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
   CMD_OPEN_VERBOSE_SETTING,
-  // Feature 030 — single-queue mode dropped CMD_CREATE_QUEUE,
-  // CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS,
-  // CMD_MOVE_TASK, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE.
+  // Feature 092 (T034, US1) — reinstated by FR-019/FR-020.
+  CMD_CREATE_QUEUE,
+  CMD_RENAME_QUEUE,
+  CMD_DELETE_QUEUE,
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_MOVE_TASK,
+  CMD_SET_QUEUE_SCHEDULE,
+  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
   CMD_RESTART_CANCELED_TASK,
@@ -83,6 +88,15 @@ import {
 import { validateLaunchPipeline } from './validators/launch-pipeline';
 import { validateContinueWorkflow, validateLaunchWorkflow } from './validators/workflow-run';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
+import {
+  validateClearQueueSchedule,
+  validateCreateQueue,
+  validateDeleteQueue,
+  validateMoveTask,
+  validateRenameQueue,
+  validateSaveQueueSettings,
+  validateSetQueueSchedule
+} from './validators/queue-management';
 import { validateSavePhases } from './validators/save-phases';
 import { validateSavePipelines } from './validators/save-pipelines';
 import { validateSaveWorkflows } from './validators/save-workflows';
@@ -178,10 +192,24 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateSaveGeneralSettings(obj, correlationId);
     case CMD_RETRY_PHASE_NOW:
       return validateNoPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
-    // Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
-    // CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS,
-    // CMD_MOVE_TASK, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE
-    // removed because the commands no longer exist.
+    // Feature 092 (T034, US1, FR-019) — the seven multi-queue management
+    // validators feature 030 removed with their commands. Bodies live in
+    // ./validators/queue-management.ts; the cases stay here because this
+    // switch is the single inbound gate `MessageRouter` dispatches behind.
+    case CMD_CREATE_QUEUE:
+      return validateCreateQueue(obj, correlationId);
+    case CMD_RENAME_QUEUE:
+      return validateRenameQueue(obj, correlationId);
+    case CMD_DELETE_QUEUE:
+      return validateDeleteQueue(obj, correlationId);
+    case CMD_SET_QUEUE_SCHEDULE:
+      return validateSetQueueSchedule(obj, correlationId);
+    case CMD_CLEAR_QUEUE_SCHEDULE:
+      return validateClearQueueSchedule(obj, correlationId);
+    case CMD_SAVE_QUEUE_SETTINGS:
+      return validateSaveQueueSettings(obj, correlationId);
+    case CMD_MOVE_TASK:
+      return validateMoveTask(obj, correlationId);
     case CMD_MODIFY_TASK:
       return validateModifyTask(obj, correlationId);
     case CMD_REORDER_TASK:

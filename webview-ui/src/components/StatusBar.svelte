@@ -5,7 +5,7 @@
   const status = $derived(snapshotStore.status);
   const featureLabel = $derived(snapshotStore.activeFeatureLabel);
   const isPrimary = $derived(snapshotStore.isPrimary);
-  const elapsedMs = $derived(snapshotStore.snapshot?.workflowElapsedMs ?? null);
+  const elapsedMs = $derived(snapshotStore.workflowElapsedMs);
   const elapsedLabel = $derived(elapsedMs !== null ? formatElapsed(elapsedMs) : null);
 
   function formatElapsed(ms: number): string {
@@ -43,16 +43,16 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 44px;
-    padding: 8px 12px;
+    min-height: 40px;
+    padding: 7px 10px;
     border-bottom: 1px solid var(--sch-glass-border);
     min-width: 0;
     background: var(--schegent-surface);
   }
   .dot {
     flex: 0 0 auto;
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--schegent-color-system);
     transition: box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -65,6 +65,7 @@
   .feature-label {
     flex: 1 1 auto;
     min-width: 0;
+    font-size: var(--schegent-text-secondary);
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
@@ -83,18 +84,19 @@
   .elapsed-pill {
     flex: 0 0 auto;
     margin-left: auto;
-    font-size: 0.8em;
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-color-active);
     background: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-surface));
     font-variant-numeric: tabular-nums;
-    border-radius: 999px;
-    padding: 2px 8px;
+    border-radius: var(--schegent-radius-sm);
+    padding: 2px 5px;
     font-weight: 600;
   }
   .status-word {
     flex: 0 0 auto;
     color: var(--schegent-muted-fg);
-    font-size: 0.7rem;
+    font-size: var(--schegent-text-caption);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
