@@ -236,11 +236,16 @@
     background: transparent;
     color: var(--schegent-muted-fg);
     border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    padding: 0 6px;
+    min-width: 22px;
+    min-height: 22px;
+    border-radius: var(--schegent-radius-sm);
+    padding: 0 4px;
     font: inherit;
     cursor: pointer;
-    transition: transform 0.1s ease, opacity 0.1s ease;
+    transition:
+      background-color var(--schegent-duration-fast) var(--schegent-ease-out),
+      color var(--schegent-duration-fast) var(--schegent-ease-out),
+      opacity var(--schegent-duration-fast) var(--schegent-ease-out);
   }
   button[aria-disabled='true'] {
     opacity: 0.55;
@@ -248,9 +253,9 @@
   }
   button:hover:not([aria-disabled='true']) {
     color: var(--schegent-fg);
+    background: var(--schegent-surface-hover);
   }
   button:active:not([aria-disabled='true']) {
-    transform: scale(0.93);
     opacity: 0.8;
   }
   .inline-form {

@@ -93,7 +93,7 @@
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
-    padding: 20px 24px 24px;
+    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
   }
 
   .system-header {
@@ -103,7 +103,7 @@
 
   .system-header h1 {
     margin: 0;
-    font-size: 1.55rem;
+    font-size: var(--schegent-text-heading);
     font-weight: 650;
     letter-spacing: -0.025em;
   }
@@ -111,7 +111,7 @@
   .system-header p {
     margin: 5px 0 0;
     color: var(--schegent-muted-fg);
-    font-size: 0.84rem;
+    font-size: var(--schegent-text-secondary);
   }
 
   .system-tabs {

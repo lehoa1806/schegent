@@ -49,8 +49,8 @@
   .stats-strip {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
+    gap: 7px;
+    padding: 8px 10px;
     border-bottom: 1px solid var(--schegent-divider);
     min-width: 0;
   }
@@ -58,21 +58,21 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: stretch;
-    gap: 1px;
+    gap: 0;
     font-variant-numeric: tabular-nums;
-    background: var(--schegent-divider);
-    border: 1px solid var(--schegent-divider);
-    border-radius: 5px;
-    overflow: hidden;
   }
   .counter {
     display: flex;
     min-width: 0;
     align-items: center;
     justify-content: center;
-    gap: 5px;
-    padding: 7px 6px;
-    background: var(--schegent-surface);
+    gap: 4px;
+    padding: 3px 6px;
+    border-right: 1px solid var(--schegent-divider);
+    background: transparent;
+  }
+  .counter:last-child {
+    border-right: 0;
   }
   .num {
     font-weight: 600;
@@ -92,7 +92,7 @@
   .active-phase {
     min-width: 0;
     flex: 1 1 auto;
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;
@@ -100,7 +100,7 @@
   }
   .health {
     flex: 0 0 auto;
-    font-size: 0.78em;
+    font-size: var(--schegent-text-caption);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

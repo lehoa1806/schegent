@@ -331,21 +331,23 @@
 
 <style>
   .item {
-    background: var(--schegent-bg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    padding: 12px 16px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--schegent-radius-sm);
+    padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    transition: border-color 160ms ease-out, background 160ms ease-out;
+    gap: 4px;
+    transition:
+      border-color var(--schegent-duration-base) var(--schegent-ease-out),
+      background-color var(--schegent-duration-base) var(--schegent-ease-out);
   }
   .item:hover {
-    background: var(--schegent-surface-subtle);
+    background: var(--schegent-surface-hover);
   }
   .item.activity-selected {
     border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--schegent-bg));
+    background: var(--schegent-surface-active);
   }
   .item-select {
     background: transparent;
@@ -356,7 +358,7 @@
     cursor: pointer;
     font: inherit;
     font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
   }
   .item-select:focus-visible {
@@ -401,12 +403,12 @@
   .row-1-right {
     display: flex;
     align-items: center;
-    gap: var(--schegent-gap);
+    gap: var(--schegent-space-2);
     flex-shrink: 0;
   }
   .id {
     font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;
@@ -414,7 +416,8 @@
   }
   .row-2 {
     display: flex;
-    padding-left: 4px;
+    order: -1;
+    padding-left: 20px;
     min-width: 0;
   }
   .label {
@@ -426,37 +429,37 @@
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--schegent-fg);
-    font-size: 0.95em;
-    line-height: 1.4;
+    font-size: var(--schegent-text-secondary);
+    line-height: 1.35;
+    font-weight: 550;
     min-width: 0;
     flex: 1 1 auto;
   }
   .pill {
-    border: 1px solid var(--schegent-border);
-    border-radius: 999px;
-    padding: 0 8px;
-    font-size: 0.85em;
-    font-weight: 500;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    font-size: var(--schegent-text-caption);
+    font-weight: 550;
   }
   .status-in-flight .pill {
     color: var(--schegent-color-active);
-    border-color: currentColor;
-    background: color-mix(in srgb, var(--schegent-color-active) 10%, transparent);
+    background: transparent;
   }
   .status-completed .pill {
     color: var(--schegent-color-completed);
-    border-color: currentColor;
   }
   .status-failed .pill {
     color: var(--schegent-error-text);
-    border-color: currentColor;
   }
   .status-canceled .pill {
     color: var(--schegent-muted-fg);
   }
-  .time-updated {
-    opacity: 0.85;
+  .status-pending .pill,
+  .status-paused .pill {
+    color: var(--schegent-color-warning);
   }
+  .time-updated { opacity: 0.85; }
   /* Feature 065 BUG-005 (FR-025) — the drag handle is a recognizable
      grabber-icon button (was previously rendered as the punctuation
      glyphs `⋮⋮` inside a <span>, which read as decorative text rather
@@ -469,7 +472,10 @@
     justify-content: center;
     background: transparent;
     border: none;
-    padding: 2px;
+    width: 16px;
+    min-width: 16px;
+    min-height: 20px;
+    padding: 0;
     color: var(--schegent-muted-fg);
     cursor: grab;
     user-select: none;
@@ -483,11 +489,7 @@
     outline-offset: 1px;
     border-radius: 2px;
   }
-  .drag-handle-icon {
-    width: 12px;
-    height: 16px;
-    fill: currentColor;
-  }
+  .drag-handle-icon { width: 12px; height: 16px; fill: currentColor; }
   .item[draggable='true']:active .drag-handle {
     cursor: grabbing;
   }

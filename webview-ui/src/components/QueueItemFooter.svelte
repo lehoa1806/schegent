@@ -58,8 +58,8 @@
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    padding-left: 4px;
+    gap: var(--schegent-space-2);
+    padding-left: 20px;
   }
 
   .row-footer-left {
@@ -82,7 +82,7 @@
 
   .time {
     color: var(--schegent-muted-fg);
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     white-space: nowrap;
   }
 
@@ -95,7 +95,7 @@
     flex-shrink: 0;
     padding: 0 4px;
     border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     background: transparent;
     color: var(--schegent-muted-fg);
     cursor: pointer;
