@@ -66,22 +66,69 @@ The compact sidebar emits **only** `CMD_OPEN_DASHBOARD`. Any other operator-init
 
 ### Top-level routes (spec 012 / spec 064)
 
-The Dashboard exposes four peer top-level routes from
+The Dashboard exposes seven peer top-level routes from
 `dashboard/App.svelte` (the legacy two-tier `Operations / Settings` parent
 with inner tabs is gone; Feature 064 added `System` as a sibling between
-`Pipeline Builder` and `Settings`):
+`Pipeline Builder` and `Settings`, and Feature 091 added `Runs` directly
+after `Operations`). The route ids and their nav labels are declared in
+`dashboard/routes.ts`:
 
-| Route | Component | Purpose |
-|---|---|---|
-| Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, and phase log feed. |
-| Pipeline Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
-| System | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
-| Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
+| Route (id) | Nav label | Component | Purpose |
+|---|---|---|---|
+| `operations` | Queues | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, and phase log feed. |
+| `runs` | Runs | `components/RunsSurface.svelte` | Connected composed runs and the Run composer. See "Connected-run surfaces" below. |
+| `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
+| `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
+| `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
+| `pipeline-builder` | Process Library | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
+| `settings` | Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
+
+`DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
+a new surface earns its place in the nav, not on someone's landing page.
+Every route but the default is lazily loaded through the `routeLoaders`
+dynamic-import map.
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
 (`$derived(snapshotStore.snapshot)`); every route receives the snapshot
 as a `{snapshot}` prop (the System route reads `auditTail` directly
 from the store).
+
+### Connected-run surfaces (spec 091)
+
+`components/RunsSurface.svelte` mounts the two components specs 087 and 088
+shipped complete and that nothing outside their own tests imported:
+
+| Component | Role |
+|---|---|
+| `components/WorkflowRun/WorkflowRun.svelte` | One connected run — identifiers, per-node states with actions, run status, and the continuation composer for a picked node. |
+| `components/RunLauncher/RunLauncher.svelte` | Compose a new run against a Pipeline picked from `availablePipelines`. |
+
+`RunsSurface` adds **no IPC command and no store subscription**. Everything it
+renders was already in the projection — `connectedRuns`, `queue.orderedItems`,
+`availablePipelines` — and the webview simply never read it. Both children read
+zero stores and take everything as props, so the wrapper stays the thinnest
+thing that can mount them: no derived state beyond what the markup branches on,
+and no second opinion about behaviour the children already own.
+
+Two non-decisions are load-bearing. A hydrating run is passed straight through
+rather than filtered — `WorkflowRun` renders the loading state, and pre-filtering
+would show the operator a run vanishing instead of a run loading. And the
+composer stays closed until asked for, with the picker shown only when the
+catalog has something to pick, because a live compose control over an empty
+catalog is a control whose only outcome is a refusal.
+
+**A shipped `.svelte` view with no import path from a panel root now fails a
+test.** `tests/lint/svelte-surface-reachability.test.ts` walks from the two
+panel entry points, `src/main.ts` and `src/dashboard/main.ts`, across four
+specifier shapes — `from
+'…'`, bare `import '…'`, `import('…')`, and extension-less specifiers resolved
+by trying `.ts`, `.svelte.ts`, `.svelte`, `/index.ts` — through `.ts` files as
+well as `.svelte` ones, since two real edges (`lib/use-confirm.ts` →
+`ConfirmDialog.svelte`, `hover-text-anchor-action.ts` → `HoverTextPortal.svelte`)
+pass through TypeScript. `__tests__/` is skipped as both node and edge, so a
+component reachable only from its own test counts as unreachable. Deliberately
+retired components sit in a 10-entry `ALLOWLIST`, each with a recorded reason;
+`WorkflowRun.svelte` and `RunLauncher.svelte` may never be added to it.
 
 ### Settings sub-tabs (spec 012 reduction)
 

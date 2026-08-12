@@ -69,7 +69,21 @@ export async function resolveRunOutputs(
       continue;
     }
 
-    if (!(await context.probe.exists(contained.absolutePath))) {
+    // Feature 091 (T010) — R2/R4. One check that cannot answer is recorded
+    // unresolved and the loop continues. Without this the first probe rejection
+    // would abort every check after it, and FR-006's "recorded rather than
+    // raised" would hold only for the failures the probe chose to report as
+    // `false`. Catching here rather than in the adapter means the guarantee
+    // holds for every probe the resolver is handed, not just the bounded one.
+    let present: boolean;
+    try {
+      present = await context.probe.exists(contained.absolutePath);
+    } catch {
+      records.push(unresolved(output.portId));
+      continue;
+    }
+
+    if (!present) {
       records.push(unresolved(output.portId));
       continue;
     }

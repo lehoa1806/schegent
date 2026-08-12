@@ -19,7 +19,9 @@ describe('RunDriver Probing (Feature 074)', () => {
         auditEntryId: null
       }) },
       store: { setRun: vi.fn(), getRun: vi.fn() },
-      queue: { notifyStatusChange: vi.fn(), finish: vi.fn() },
+      // `findById` is asked for the frozen plan's declared outputs at completion
+      // (Feature 091, T011). No plan here means nothing is recorded.
+      queue: { notifyStatusChange: vi.fn(), finish: vi.fn(), findById: vi.fn(() => null) },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },

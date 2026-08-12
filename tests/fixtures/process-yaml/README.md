@@ -41,6 +41,21 @@ refused/<vintage>/<name>.refusal.json the exact { code, message } it refuses wit
   sharing a level with a sibling key are all still refused, at the token). If a
   fixture in this vintage ever needs a scanner change to pass, the feature was
   mis-planned — see the T001 gate in the runner.
+- **`091`** — a **narrowing**, authorized by FR-034 of
+  [`specs/091-process-platform-wiring/spec.md`](../../../../specs/091-process-platform-wiring/spec.md)
+  and specified in
+  [`contracts/surrogate-escape-grammar.md`](../../../../specs/091-process-platform-wiring/contracts/surrogate-escape-grammar.md).
+  This is the only vintage that takes documents *out* of the language. A `\u`
+  escape naming half of a surrogate pair used to decode to a code unit that is
+  not a character, which the export write then rewrote to U+FFFD — import →
+  export corrupted the document with no error and no warning. The four cases in
+  `refused/091/` are four distinct ways a lookahead can be written wrong, and
+  each of them would pass a corpus holding only the other three.
+  `accepted/091/` is the other side of the narrowing: a **well-formed** pair is
+  still legal and still decodes to the one character it denotes. Note what that
+  fixture cannot show — the runner parses and compares against the captured
+  tree, and never serializes, so byte-identical round-tripping is asserted in
+  `tests/integration/process-yaml/pipeline-package-round-trip.test.ts` instead.
 
 The widening removes exactly one 084 refusal — an outright block sequence — so
 that case is deliberately absent from `refused/084/`. What stands in its place
