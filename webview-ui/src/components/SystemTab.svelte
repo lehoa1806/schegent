@@ -31,7 +31,11 @@
   }
 </script>
 
-<section class="system-shell" aria-label="System logs" data-testid="system-tab">
+<main class="system-shell" aria-label="System logs" data-testid="system-tab">
+  <header class="system-header">
+    <h1>System Log</h1>
+    <p>Inspect runtime diagnostics and the append-only audit trail.</p>
+  </header>
   <div class="system-tabs" role="tablist" aria-label="System log views">
     <button
       id="system-tab-debug"
@@ -80,7 +84,7 @@
       <SystemAuditLog entries={auditEntries} />
     </div>
   {/if}
-</section>
+</main>
 
 <style>
   .system-shell {
@@ -89,6 +93,25 @@
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
+    padding: 20px 24px 24px;
+  }
+
+  .system-header {
+    flex: 0 0 auto;
+    margin-bottom: 18px;
+  }
+
+  .system-header h1 {
+    margin: 0;
+    font-size: 1.55rem;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+  }
+
+  .system-header p {
+    margin: 5px 0 0;
+    color: var(--schegent-muted-fg);
+    font-size: 0.84rem;
   }
 
   .system-tabs {
@@ -123,5 +146,15 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    border: 1px solid var(--schegent-border);
+    border-top: 0;
+    border-radius: 0 0 var(--schegent-radius) var(--schegent-radius);
+    background: var(--schegent-surface);
+  }
+
+  @media (max-width: 780px) {
+    .system-shell {
+      padding: 16px;
+    }
   }
 </style>

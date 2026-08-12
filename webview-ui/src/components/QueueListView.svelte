@@ -226,8 +226,8 @@
   {/if}
   {#if orderedItems.length === 0}
     <div class="empty-state">
-      <span class="empty-icon">☕</span>
-      <p class="empty-text">The queue is waiting for your next big idea.</p>
+      <strong class="empty-title">No tasks in the queue</strong>
+      <p class="empty-text">Add a task above to prepare the next run.</p>
     </div>
   {:else}
     <ol class="items">
@@ -278,11 +278,13 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 32px 0;
+    min-height: 150px;
+    padding: 24px 16px;
     color: var(--schegent-muted-fg);
+    text-align: center;
   }
-  .empty-icon { font-size: 2em; margin-bottom: 8px; opacity: 0.5; }
-  .empty-text { font-style: italic; margin: 0; }
+  .empty-title { color: var(--schegent-fg); font-size: 0.9rem; }
+  .empty-text { max-width: 34ch; margin: 5px 0 0; font-size: 0.82rem; line-height: 1.45; }
   .queue-lifecycle-label {
     display: flex;
     align-items: center;

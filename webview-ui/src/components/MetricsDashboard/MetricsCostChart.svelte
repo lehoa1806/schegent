@@ -13,6 +13,20 @@
   const CHART_W = 640;
   const CHART_H = 180;
   const CHART_PAD = 12;
+  const MAX_RENDERED_POINTS = 120;
+
+  function sampleTimeline(points: readonly CostTimelinePoint[]): readonly CostTimelinePoint[] {
+    if (points.length <= MAX_RENDERED_POINTS) return points;
+    const sampled: CostTimelinePoint[] = [];
+    let previousIndex = -1;
+    for (let slot = 0; slot < MAX_RENDERED_POINTS; slot += 1) {
+      const index = Math.round((slot * (points.length - 1)) / (MAX_RENDERED_POINTS - 1));
+      if (index === previousIndex) continue;
+      sampled.push(points[index]!);
+      previousIndex = index;
+    }
+    return sampled;
+  }
 
   function formatCost(value: number | undefined): string {
     return value === undefined ? 'Not recorded' : `$${value.toFixed(2)}`;
@@ -28,24 +42,70 @@
     return CHART_H - CHART_PAD - (value / safeMax) * (CHART_H - 2 * CHART_PAD);
   }
 
+  const renderedTimeline = $derived(sampleTimeline(timeline));
+  const timelineSampled = $derived(renderedTimeline.length < timeline.length);
   const maxCumulativeCostUsd = $derived(
-    timeline.length > 0 ? timeline[timeline.length - 1]!.cumulativeCostUsd : 0
+    renderedTimeline.length > 0
+      ? renderedTimeline[renderedTimeline.length - 1]!.cumulativeCostUsd
+      : 0
   );
   const linePath = $derived.by(() =>
-    timeline
+    renderedTimeline
       .map((point, index) =>
-        `${index === 0 ? 'M' : 'L'} ${pointX(index, timeline.length)} ${pointY(point.cumulativeCostUsd, maxCumulativeCostUsd)}`
+        `${index === 0 ? 'M' : 'L'} ${pointX(index, renderedTimeline.length)} ${pointY(point.cumulativeCostUsd, maxCumulativeCostUsd)}`
       )
       .join(' ')
   );
   const areaPath = $derived.by(() => {
-    if (timeline.length === 0) return '';
+    if (renderedTimeline.length === 0) return '';
     const baseline = CHART_H - CHART_PAD;
-    return `${linePath} L ${pointX(timeline.length - 1, timeline.length)} ${baseline} L ${pointX(0, timeline.length)} ${baseline} Z`;
+    return `${linePath} L ${pointX(renderedTimeline.length - 1, renderedTimeline.length)} ${baseline} L ${pointX(0, renderedTimeline.length)} ${baseline} Z`;
   });
   const activePoint = $derived(
-    activePointIndex !== null ? (timeline[activePointIndex] ?? null) : null
+    activePointIndex !== null ? (renderedTimeline[activePointIndex] ?? null) : null
   );
+
+  let keyboardPointIndex = $state(0);
+
+  $effect(() => {
+    if (renderedTimeline.length === 0) {
+      keyboardPointIndex = 0;
+    } else if (keyboardPointIndex >= renderedTimeline.length) {
+      keyboardPointIndex = renderedTimeline.length - 1;
+    }
+  });
+
+  function pointId(index: number): string {
+    return `metrics-cost-trend-point-${index}`;
+  }
+
+  function activatePoint(index: number, focus = false): void {
+    keyboardPointIndex = index;
+    onActivePointChange(index);
+    if (focus) {
+      queueMicrotask(() => document.getElementById(pointId(index))?.focus());
+    }
+  }
+
+  function onPointKeydown(event: KeyboardEvent, index: number): void {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = Math.min(index + 1, renderedTimeline.length - 1);
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = Math.max(index - 1, 0);
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = renderedTimeline.length - 1;
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activatePoint(index);
+      return;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    activatePoint(nextIndex, true);
+  }
 </script>
 
 <section class="cost-trend" aria-label="Cost trend" data-testid="metrics-cost-trend">
@@ -62,27 +122,23 @@
     >
       <path class="area" d={areaPath}></path>
       <path class="line" d={linePath}></path>
-      {#each timeline as point, index (point.date)}
+      {#each renderedTimeline as point, index (point.date)}
         <circle
+          id={pointId(index)}
           class="point"
           class:active={activePointIndex === index}
-          cx={pointX(index, timeline.length)}
+          cx={pointX(index, renderedTimeline.length)}
           cy={pointY(point.cumulativeCostUsd, maxCumulativeCostUsd)}
           r={activePointIndex === index ? 4 : 3}
-          tabindex="0"
+          tabindex={keyboardPointIndex === index ? 0 : -1}
           role="button"
           aria-label={`${point.date}: daily ${formatCost(point.dailyCostUsd)}, cumulative ${formatCost(point.cumulativeCostUsd)}`}
           data-testid="metrics-cost-trend-point-{point.date}"
           onmouseenter={() => onActivePointChange(index)}
           onmouseleave={() => onActivePointChange(null)}
-          onfocus={() => onActivePointChange(index)}
+          onfocus={() => activatePoint(index)}
           onblur={() => onActivePointChange(null)}
-          onkeydown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onActivePointChange(index);
-            }
-          }}
+          onkeydown={(event) => onPointKeydown(event, index)}
         ><title>{point.date}: {formatCost(point.dailyCostUsd)} (cumulative {formatCost(point.cumulativeCostUsd)})</title></circle>
       {/each}
     </svg>
@@ -91,6 +147,7 @@
         {activePoint.date}: daily {formatCost(activePoint.dailyCostUsd)}, cumulative {formatCost(activePoint.cumulativeCostUsd)}
       {:else}
         {t('metrics.chart.hint')}
+        {#if timelineSampled} Showing {renderedTimeline.length} evenly sampled dates from {timeline.length}.{/if}
       {/if}
     </p>
   {/if}

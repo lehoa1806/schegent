@@ -394,7 +394,7 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    padding: 8px;
+    padding: 8px 0;
     height: 100%;
   }
   .tab-header h2 {
@@ -410,14 +410,15 @@
   .session-usage {
     margin: 0 0 12px 0;
     padding: 8px 10px;
-    border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground);
+    border: 1px solid var(--vscode-notificationsInfoIcon-foreground);
+    border-radius: var(--schegent-radius);
     background: var(--vscode-textBlockQuote-background);
     color: var(--schegent-muted-fg);
     font-size: 0.85em;
     line-height: 1.45;
   }
   .usage-warning {
-    border-left-color: var(--vscode-notificationsWarningIcon-foreground);
+    border-color: var(--vscode-notificationsWarningIcon-foreground);
     color: var(--vscode-foreground);
   }
   .toolbar {
@@ -442,6 +443,7 @@
   .field-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 0;
+    border-top: 1px solid var(--schegent-divider);
   }
 </style>

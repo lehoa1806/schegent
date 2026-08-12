@@ -144,7 +144,7 @@
     white-space: pre-wrap;
   }
   .tool-result.error {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
   .truncation {
     font-size: 0.7rem;

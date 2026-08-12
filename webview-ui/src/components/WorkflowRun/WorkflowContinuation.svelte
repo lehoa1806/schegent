@@ -262,7 +262,7 @@
       {pending ? 'Starting…' : 'Start node'}
     </button>
     {#if statusMessage}
-      <p class="status-line" data-testid="workflow-continuation-status">{statusMessage}</p>
+      <p class="status-line" data-testid="workflow-continuation-status" role="status">{statusMessage}</p>
     {/if}
   </footer>
 </section>

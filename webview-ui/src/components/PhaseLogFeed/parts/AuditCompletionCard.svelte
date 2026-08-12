@@ -42,20 +42,19 @@
     flex-direction: column;
     gap: 0.25rem;
     border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-left-width: 4px;
-    border-radius: 3px;
+    border-radius: var(--schegent-radius-sm, 4px);
     padding: 0.375rem 0.5rem;
     margin: 0.25rem 0;
     background: var(--vscode-editorWidget-background, transparent);
   }
   .audit-completion-card[data-status='CLEAR'] {
-    border-left-color: var(--vscode-testing-iconPassed, transparent);
+    border-color: color-mix(in srgb, var(--vscode-testing-iconPassed) 55%, var(--schegent-border));
   }
   .audit-completion-card[data-status='FAILED'] {
-    border-left-color: var(--vscode-testing-iconFailed, transparent);
+    border-color: color-mix(in srgb, var(--vscode-testing-iconFailed) 55%, var(--schegent-border));
   }
   .audit-completion-card[data-status='UNKNOWN'] {
-    border-left-color: var(--vscode-testing-iconQueued, transparent);
+    border-color: color-mix(in srgb, var(--vscode-testing-iconQueued) 55%, var(--schegent-border));
   }
   .header {
     display: flex;

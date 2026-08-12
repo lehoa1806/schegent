@@ -27,7 +27,7 @@
 <div class="models-container">
   <div class="toolbar" style="margin-bottom: 24px;">
     <div style="flex: 1;"></div>
-    <button class="btn btn-primary" onclick={onsave}>Save All Models</button>
+    <button type="button" class="btn btn-primary" onclick={onsave}>Save All Models</button>
   </div>
   
   {#if backends.length === 0}
@@ -42,6 +42,7 @@
         <form class="model-form" onsubmit={(event) => { event.preventDefault(); onadd(backend); }}>
           <input
             class="text-input flex-1"
+            aria-label={`New ${backend} model name`}
             value={newModelInput[backend] || ''}
             oninput={(event) => onnewmodelinput(backend, event.currentTarget.value)}
             placeholder={`e.g. ${backend === 'claude' ? 'claude-3-7-sonnet-20250219' : 'model-name'}`}
@@ -57,10 +58,17 @@
           <div class="model-list-item">
             <input
               class="text-input flex-1"
+              aria-label={`${backend} model ${index + 1}`}
               value={model}
               oninput={(event) => onmodelchange(backend, index, event.currentTarget.value)}
             />
-            <button class="btn btn-destructive" style="margin-left: 12px;" onclick={() => onremove(backend, index)}>Remove</button>
+            <button
+              type="button"
+              class="btn btn-destructive"
+              style="margin-left: 12px;"
+              aria-label={`Remove ${backend} model ${model}`}
+              onclick={() => onremove(backend, index)}
+            >Remove</button>
           </div>
         {/each}
       </div>

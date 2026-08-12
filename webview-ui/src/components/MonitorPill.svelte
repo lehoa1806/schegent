@@ -70,10 +70,10 @@
   .status-canceled .dot { background: var(--vscode-errorForeground); }
   .status-paused .dot { background: var(--vscode-descriptionForeground); }
 
-  .status-stalled .label { color: var(--vscode-errorForeground); }
-  .status-failed .label { color: var(--vscode-errorForeground); }
-  .status-timed_out .label { color: var(--vscode-errorForeground); }
-  .status-canceled .label { color: var(--vscode-errorForeground); }
+  .status-stalled .label { color: var(--schegent-error-text); }
+  .status-failed .label { color: var(--schegent-error-text); }
+  .status-timed_out .label { color: var(--schegent-error-text); }
+  .status-canceled .label { color: var(--schegent-error-text); }
 
   .label {
     font-weight: 600;

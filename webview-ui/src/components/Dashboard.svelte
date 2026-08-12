@@ -300,7 +300,8 @@
 
 <main class="dashboard" data-testid="dashboard-root">
   <div class="dashboard-header">
-    <h1 class="dashboard-title">Schegent Orchestrator</h1>
+    <h1 class="dashboard-title">Queues</h1>
+    <p class="dashboard-description">Compose work, monitor phase execution, and intervene without losing run context.</p>
   </div>
 
   <div class="dashboard-split" class:left-collapsed={leftPanelCollapsed}>
@@ -358,7 +359,7 @@
   .dashboard {
     display: flex;
     flex-direction: column;
-    padding: var(--schegent-pad);
+    padding: 20px 24px 24px;
     color: var(--schegent-fg);
     background: transparent;
     flex: 1;
@@ -368,21 +369,30 @@
   }
   .dashboard-header {
     flex-shrink: 0;
-    margin-bottom: var(--schegent-pad);
+    margin-bottom: 18px;
   }
   .dashboard-title {
-    font-size: 1.5em;
-    font-weight: 700;
-    margin: 0 0 8px 0;
+    margin: 0;
     color: var(--schegent-fg);
-    letter-spacing: -0.02em;
+    font-size: 1.55rem;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+  .dashboard-description {
+    max-width: 65ch;
+    margin: 5px 0 0;
+    color: var(--schegent-muted-fg);
+    font-size: 0.84rem;
+    line-height: 1.45;
+    text-wrap: pretty;
   }
 
   .dashboard-split {
     display: flex;
     flex: 1;
     min-height: 0;
-    gap: var(--schegent-pad);
+    gap: 14px;
     overflow: hidden;
     position: relative;
   }
@@ -391,33 +401,51 @@
     position: absolute;
     left: 0;
     top: 8px;
-    z-index: 10;
+    z-index: var(--schegent-z-popover);
     display: flex;
     align-items: center;
     justify-content: center;
     width: 24px;
     height: 40px;
-    border: 1px solid var(--sch-glass-border);
+    border: 1px solid var(--schegent-border);
     border-left: none;
-    border-radius: 0 var(--schegent-radius) var(--schegent-radius) 0;
-    background: var(--sch-glass-bg);
-    backdrop-filter: blur(12px);
+    border-radius: 0 5px 5px 0;
+    background: var(--schegent-surface);
     color: var(--schegent-muted-fg);
     cursor: pointer;
-    transition: background 0.2s, color 0.2s, left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition:
+      background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+      color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .panel-toggle:hover {
     background: var(--vscode-list-hoverBackground);
     color: var(--schegent-fg);
   }
   .dashboard-split:not(.left-collapsed) .panel-toggle {
-    left: 420px;
+    transform: translateX(390px);
   }
   .panel-toggle-icon {
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .panel-toggle-icon.rotated {
     transform: rotate(180deg);
+  }
+
+  @media (max-width: 900px) {
+    .dashboard {
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .dashboard-split {
+      display: grid;
+      flex: none;
+      min-height: auto;
+      overflow: visible;
+    }
+    .panel-toggle {
+      display: none;
+    }
   }
 
 </style>

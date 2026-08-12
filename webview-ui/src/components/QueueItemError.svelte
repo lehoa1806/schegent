@@ -55,7 +55,7 @@
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
     background: transparent;
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.85em;
     white-space: pre-wrap;

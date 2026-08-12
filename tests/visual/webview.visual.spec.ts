@@ -239,6 +239,7 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
   }
 
   if (surface === 'metrics') {
+    await page.getByTestId('dashboard-route-metrics').click();
     const metrics = page.getByTestId('metrics-section');
     await expect(page.getByTestId('metrics-task-table')).toBeVisible();
     return metrics;
@@ -284,3 +285,82 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
     });
   }
 }
+
+test.describe('responsive accessibility hardening', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test('all dashboard routes keep one main landmark, named forms, and coarse-pointer targets', async ({ page }) => {
+    await installDeterministicHost(page);
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await expect(page.getByTestId('dashboard-root')).toBeVisible();
+    await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+
+    const routeTargets = {
+      operations: 'dashboard-root',
+      history: 'history-dashboard',
+      metrics: 'metrics-section',
+      system: 'system-tab',
+      'pipeline-builder': 'pipeline-builder-root',
+      settings: 'settings-surface-root'
+    } as const;
+
+    for (const [route, target] of Object.entries(routeTargets)) {
+      await page.getByTestId(`dashboard-route-${route}`).click();
+      await expect(page.getByTestId(target)).toBeVisible();
+      await expect(page.locator('main')).toHaveCount(1);
+      if (route === 'pipeline-builder') {
+        await page.getByRole('tab', { name: 'Models' }).click();
+      }
+
+      const overflow = await page.evaluate(
+        'Math.max(0, document.documentElement.scrollWidth - window.innerWidth)'
+      );
+      expect(overflow, `${route} introduced page-level horizontal overflow`).toBeLessThanOrEqual(1);
+
+      const undersized = await page.locator('button, input, select, textarea').evaluateAll((controls) =>
+        controls.flatMap((control) => {
+          const element = control;
+          const view = element.ownerDocument.defaultView;
+          const style = view?.getComputedStyle(element);
+          if (!style) return [];
+          if (style.display === 'none' || style.visibility === 'hidden') return [];
+          const rect = element.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return [];
+          const inputType = element.getAttribute('type');
+          if (inputType === 'checkbox' || inputType === 'radio') {
+            const label = element.closest('label');
+            const labelRect = label?.getBoundingClientRect();
+            return labelRect && labelRect.height >= 44
+              ? []
+              : [`${element.outerHTML.slice(0, 140)} (label height ${labelRect?.height ?? 0})`];
+          }
+          const tooShort = rect.height < 44;
+          const tooNarrow = element.tagName === 'BUTTON' && rect.width < 44;
+          return tooShort || tooNarrow
+            ? [`${element.outerHTML.slice(0, 140)} (${rect.width}×${rect.height})`]
+            : [];
+        })
+      );
+      expect(undersized, `${route} has undersized coarse-pointer controls`).toEqual([]);
+
+      const unnamedForms = await page.locator('input, select, textarea').evaluateAll((controls) =>
+        controls.flatMap((control) => {
+          const element = control as typeof control & { labels?: { length: number } };
+          const labelledBy = element.getAttribute('aria-labelledby');
+          const hasLabelledBy = labelledBy
+            ?.split(/\s+/)
+            .some((id: string) => element.ownerDocument.getElementById(id)?.textContent?.trim());
+          const hasName = Boolean(
+            element.getAttribute('aria-label')?.trim() ||
+            hasLabelledBy ||
+            element.labels?.length
+          );
+          return hasName ? [] : [element.outerHTML.slice(0, 180)];
+        })
+      );
+      expect(unnamedForms, `${route} has unnamed form controls`).toEqual([]);
+    }
+  });
+});

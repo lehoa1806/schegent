@@ -109,6 +109,15 @@ describe('Feature 014 — WakeUpTab.svelte', () => {
     expect(time.value).toBe('04:00');
   });
 
+  it('exposes programmatic names for each schedule and model control', () => {
+    const { getByRole } = render(WakeUpTab, { props: { snapshot: buildSnapshot() } });
+
+    expect(getByRole('checkbox', { name: 'Enable Wake up' })).not.toBeNull();
+    expect(getByRole('combobox', { name: 'Scheduler type' })).not.toBeNull();
+    expect(getByRole('textbox', { name: 'Daily time (HH:MM, 24-hour)' })).not.toBeNull();
+    expect(getByRole('combobox', { name: 'Claude model' })).not.toBeNull();
+  });
+
   it('clicking Wake up now calls the shared helper and renders Recorded on accepted ack', async () => {
     wakeNowSpy.mockResolvedValue({
       status: 'accepted',
@@ -252,7 +261,12 @@ describe('Feature 014 — WakeUpTab.svelte', () => {
     await fireEvent.input(time, { target: { value: '25:99' } });
 
     // Inline error visible.
-    expect(queryByTestId('wakeup-error-chronological-time')).toBeTruthy();
+    const error = queryByTestId('wakeup-error-chronological-time');
+    expect(error).toBeTruthy();
+    expect(error?.getAttribute('role')).toBe('alert');
+    expect(time.getAttribute('aria-invalid')).toBe('true');
+    expect(time.getAttribute('aria-describedby')?.split(/\s+/))
+      .toContain('wakeup-error-chronological-time');
 
     // Save button disabled.
     const save = getByTestId('wakeup-save') as HTMLButtonElement;
@@ -388,6 +402,9 @@ describe('Feature 014 — WakeUpTab.svelte', () => {
       await fireEvent.input(periodic, { target: { value: 'soon' } });
 
       expect(queryByTestId('wakeup-error-periodic-interval')).toBeTruthy();
+      expect(periodic.getAttribute('aria-invalid')).toBe('true');
+      expect(periodic.getAttribute('aria-describedby')?.split(/\s+/))
+        .toContain('wakeup-error-periodic-interval');
       // No <5h warning while the input is malformed.
       expect(queryByTestId('wakeup-warning-periodic-below-5h')).toBeNull();
 

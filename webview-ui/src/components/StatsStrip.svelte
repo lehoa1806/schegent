@@ -24,24 +24,24 @@
       <span class="num">{stats.done}</span>
       <span class="lbl">done</span>
     </span>
-    <span class="sep">·</span>
     <span class="counter" data-testid="sidebar-stats-pending">
       <span class="num">{stats.pending}</span>
       <span class="lbl">pending</span>
     </span>
-    <span class="sep">·</span>
     <span class="counter" data-testid="sidebar-stats-failed">
       <span class="num">{stats.failed}</span>
       <span class="lbl">failed</span>
     </span>
   </div>
-  <div class="active-phase" data-testid="sidebar-active-phase" title={activeLine}>{activeLine}</div>
-  <div
-    class={`health health-${health.level}`}
-    data-testid="sidebar-health"
-    title={health.title}
-  >
-    {health.label}
+  <div class="phase-line">
+    <div class="active-phase" data-testid="sidebar-active-phase" title={activeLine}>{activeLine}</div>
+    <div
+      class={`health health-${health.level}`}
+      data-testid="sidebar-health"
+      title={health.title}
+    >
+      {health.label}
+    </div>
   </div>
 </div>
 
@@ -49,25 +49,30 @@
   .stats-strip {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: var(--schegent-pad);
+    gap: 8px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--schegent-divider);
     min-width: 0;
   }
   .counters {
-    display: flex;
-    align-items: baseline;
-    gap: var(--schegent-gap);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 1px;
     font-variant-numeric: tabular-nums;
-    flex-wrap: nowrap;
-    white-space: nowrap;
+    background: var(--schegent-divider);
+    border: 1px solid var(--schegent-divider);
+    border-radius: 5px;
     overflow: hidden;
-    text-overflow: ellipsis;
   }
   .counter {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 4px;
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 7px 6px;
+    background: var(--schegent-surface);
   }
   .num {
     font-weight: 600;
@@ -77,10 +82,16 @@
     color: var(--schegent-muted-fg);
     font-size: 0.85em;
   }
-  .sep {
-    color: var(--schegent-muted-fg);
+  .phase-line {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
   .active-phase {
+    min-width: 0;
+    flex: 1 1 auto;
     font-size: 0.85em;
     color: var(--schegent-muted-fg);
     white-space: nowrap;
@@ -88,12 +99,12 @@
     text-overflow: ellipsis;
   }
   .health {
+    flex: 0 0 auto;
     font-size: 0.78em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-transform: uppercase;
-    letter-spacing: 0;
+    font-weight: 600;
   }
   .health-ok {
     color: var(--schegent-muted-fg);

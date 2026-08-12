@@ -220,7 +220,7 @@
       {pending ? 'Queueing…' : 'Run Pipeline'}
     </button>
     {#if statusMessage}
-      <p class="status-line" data-testid="run-launcher-status">{statusMessage}</p>
+      <p class="status-line" data-testid="run-launcher-status" role="status">{statusMessage}</p>
     {/if}
   </footer>
 </section>

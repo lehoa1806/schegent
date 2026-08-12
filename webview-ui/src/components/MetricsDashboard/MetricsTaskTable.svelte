@@ -19,7 +19,6 @@
     pageCount: number;
     ariaSort: (key: MetricsSortKey) => 'ascending' | 'descending' | 'none';
     onSort: (key: MetricsSortKey) => void;
-    onToggleExpand: (runId: string) => void;
     onExpandToggleClick: (event: MouseEvent, runId: string) => void;
     onPageChange: (page: number) => void;
   }
@@ -31,7 +30,6 @@
     pageCount,
     ariaSort,
     onSort,
-    onToggleExpand,
     onExpandToggleClick,
     onPageChange
   }: Props = $props();
@@ -51,11 +49,6 @@
     }
   }
 
-  function onRowKeydown(event: KeyboardEvent, runId: string): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    onToggleExpand(runId);
-  }
 </script>
 
 <div class="table-scroll">
@@ -93,11 +86,6 @@
           class="task-row"
           class:expanded
           data-testid="metrics-task-row-{task.runId}"
-          role="button"
-          tabindex="0"
-          aria-expanded={expanded}
-          onclick={() => onToggleExpand(task.runId)}
-          onkeydown={(event) => onRowKeydown(event, task.runId)}
         >
           <td class="expand-cell">
             <button
@@ -217,7 +205,7 @@
     padding: 0;
   }
   .expand-toggle { padding: 0 4px; }
-  .task-row { cursor: pointer; }
+  .task-row { cursor: default; }
   .task-row:hover { background: var(--schegent-list-hover); }
   .task-row.expanded { background: var(--schegent-list-active); }
   .description-cell {
@@ -239,7 +227,7 @@
   .status-completed,
   .outcome-completed { color: var(--schegent-color-completed); border-color: currentColor; }
   .status-failed,
-  .outcome-failed { color: var(--schegent-color-error); border-color: currentColor; }
+  .outcome-failed { color: var(--schegent-error-text); border-color: currentColor; }
   .status-canceled,
   .outcome-skipped { color: var(--schegent-muted-fg); border-color: currentColor; }
   .status-running,

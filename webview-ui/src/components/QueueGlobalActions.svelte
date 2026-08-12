@@ -112,6 +112,7 @@
       <input
         type="text"
         class="resume-prompt-input"
+        aria-label="Resume queue prompt"
         placeholder="Custom prompt... (optional)"
         bind:value={resumePromptStr}
         onkeydown={(e) => e.key === 'Enter' && onAction()}
@@ -151,7 +152,6 @@
     type="button"
     data-testid="queue-open-dashboard-button"
     aria-label="Open dashboard"
-    aria-disabled={aria(primaryDisabled)}
     onclick={onOpenDashboard}
   >Open Dashboard</button>
 </div>

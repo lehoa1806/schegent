@@ -863,7 +863,7 @@ describe('Dashboard History to Activity Feed integration (069)', () => {
     });
 
     await fireEvent.click(getByTestId('dashboard-queue-tab-history'));
-    await fireEvent.click(getByTestId('history-entry-run-history-only'));
+    await fireEvent.click(getByTestId('history-item-select-run-history-only'));
     await tick();
 
     await vi.waitFor(() => {
@@ -900,7 +900,7 @@ describe('Dashboard History to Activity Feed integration (069)', () => {
     });
 
     await fireEvent.click(getByTestId('dashboard-queue-tab-history'));
-    await fireEvent.click(getByTestId('history-entry-run-history-only'));
+    await fireEvent.click(getByTestId('history-item-select-run-history-only'));
 
     await vi.waitFor(() => {
       expect(getByTestId('phase-log-empty-no-log').textContent).toContain('No log for this phase yet');

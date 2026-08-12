@@ -118,13 +118,14 @@ describe('QueueGlobalActions', () => {
     expect(getByTestId('queue-open-dashboard-button')).not.toBeNull();
   });
 
-  it('All controls aria-disabled when isPrimary===false', () => {
-    const { container } = render(QueueGlobalActions, {
+  it('disables mutating controls but keeps the read-only dashboard action available on secondary hosts', () => {
+    const { getByTestId } = render(QueueGlobalActions, {
       props: defaultProps({ isPrimary: false, completedCount: 5, failedCount: 5, hasInFlight: true })
     });
-    container.querySelectorAll('button').forEach((b) => {
-      expect(b.getAttribute('aria-disabled')).toBe('true');
-    });
+    expect(getByTestId('queue-action-button').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('queue-clear-completed-button').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('queue-clear-failed-button').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('queue-open-dashboard-button').hasAttribute('aria-disabled')).toBe(false);
   });
 
   it('Clicking Start posts CMD_START_QUEUE', async () => {
@@ -177,6 +178,14 @@ describe('QueueGlobalActions', () => {
 
   it('Clicking Open Dashboard posts CMD_OPEN_DASHBOARD', async () => {
     const { getByTestId } = render(QueueGlobalActions, { props: defaultProps() });
+    await fireEvent.click(getByTestId('queue-open-dashboard-button'));
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_OPEN_DASHBOARD);
+  });
+
+  it('Clicking Open Dashboard from a secondary host still posts the read-only command', async () => {
+    const { getByTestId } = render(QueueGlobalActions, {
+      props: defaultProps({ isPrimary: false })
+    });
     await fireEvent.click(getByTestId('queue-open-dashboard-button'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_OPEN_DASHBOARD);
   });

@@ -114,7 +114,7 @@
     text-align: center;
   }
   .category-error {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
   .category-warning {
     color: var(--schegent-color-warning);

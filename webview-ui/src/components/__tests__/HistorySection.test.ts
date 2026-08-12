@@ -140,14 +140,19 @@ describe('HistorySection', () => {
     expect(src).not.toMatch(/rgba\(/);
   });
 
-  it('clicking an entry calls onTaskSelect with the runId', async () => {
+  it('selects an entry through its explicit, keyboard-native selection button', async () => {
     const e = entry({ runId: 'run-select-1' });
     const selectMock = vi.fn();
     const { getByTestId } = render(HistorySection, {
       props: { history: [e], isPrimary: true, onTaskSelect: selectMock }
     });
 
-    const el = getByTestId('history-entry-run-select-1');
+    const row = getByTestId('history-entry-run-select-1');
+    const el = getByTestId('history-item-select-run-select-1');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.getAttribute('tabindex')).toBeNull();
+    expect(el.tagName).toBe('BUTTON');
+    expect(el.getAttribute('type')).toBe('button');
     await fireEvent.click(el);
 
     expect(selectMock).toHaveBeenCalledTimes(1);

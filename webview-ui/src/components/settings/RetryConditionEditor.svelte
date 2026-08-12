@@ -239,7 +239,7 @@
     color: var(--vscode-charts-green);
   }
   .rc-status[data-state="invalid"] {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
   .rc-pip {
     width: 8px;

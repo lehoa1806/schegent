@@ -288,6 +288,51 @@ describe('T022 — keyboard / screen-reader contract', () => {
   });
 });
 
+describe('aria-describedby composition', () => {
+  it('preserves a validation description across inline help updates and teardown', () => {
+    const node = makeAnchor();
+    node.setAttribute('aria-describedby', 'validation-error');
+    const handle = hoverTextAnchor(node, {
+      controlId: 'composed-inline',
+      description: { body: SHORT }
+    });
+
+    expect(node.getAttribute('aria-describedby')).toBe(
+      'validation-error desc-composed-inline'
+    );
+    handle.update({
+      controlId: 'composed-inline-next',
+      description: { body: 'updated short' }
+    });
+    expect(node.getAttribute('aria-describedby')).toBe(
+      'validation-error desc-composed-inline-next'
+    );
+
+    handle.destroy();
+    expect(node.getAttribute('aria-describedby')).toBe('validation-error');
+  });
+
+  it('removes only the popover token when an anchor already describes an error', async () => {
+    const node = makeAnchor();
+    node.setAttribute('aria-describedby', 'validation-error');
+    const handle = hoverTextAnchor(node, {
+      controlId: 'composed-popover',
+      description: { body: LONG }
+    });
+
+    node.dispatchEvent(new FocusEvent('focus'));
+    expect(node.getAttribute('aria-describedby')).toBe(
+      'validation-error hover-text-composed-popover'
+    );
+    node.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(node.getAttribute('aria-describedby')).toBe('validation-error');
+
+    handle.destroy();
+    expect(node.getAttribute('aria-describedby')).toBe('validation-error');
+  });
+});
+
 describe('FR-015 regression — theme.css contract', () => {
   it('theme.css still constrains .hover-text-popover-body to max-width 320px / min-width 180px', () => {
     const themeCssPath = join(__dirname, '../../../lib/theme.css');

@@ -215,25 +215,10 @@
     dragEnabled = false;
   }
 
-  /**
-   * Card-level click handler — selects this task in the Activity Feed.
-   * Interactive child elements (buttons, drag handles, links) call
-   * `event.stopPropagation()` so their own handlers fire without also
-   * triggering a task-select.
-   */
-  function onCardClick(event: MouseEvent): void {
-    if (!onSelect) return;
-    // Ignore clicks that originated from an interactive element. This
-    // is a safety net in case a child forgets stopPropagation.
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('button, a, input, select, textarea')) return;
-    onSelect();
-  }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <li
-  class="item status-{item.status} {isSelected ? 'activity-selected' : ''} {onSelect ? 'selectable' : ''}"
+  class="item status-{item.status} {isSelected ? 'activity-selected' : ''}"
   data-testid="{testIdPrefix}-{item.id}"
   aria-current={isSelected ? 'true' : undefined}
   data-queue-status={item.status}
@@ -242,9 +227,6 @@
   ondragover={onDragOver}
   ondrop={onDrop}
   ondragend={onDragEnd}
-  onclick={onCardClick}
-  role={onSelect ? 'button' : undefined}
-  tabindex={onSelect ? 0 : undefined}
 >
   <div class="row row-1">
     <div class="row-1-left">
@@ -303,7 +285,19 @@
       attribute reflects the raw value so screen readers and tooltips
       stay accurate even when the visible text falls back.
     -->
-    <span class="label" data-testid="{testIdPrefix}-label-{item.id}" title={item.label}>{item.label.length > 0 ? item.label : '(no prompt)'}</span>
+    {#if onSelect}
+      <button
+        type="button"
+        class="label item-label-select"
+        data-testid="{testIdPrefix}-label-{item.id}"
+        aria-label={`Select task ${item.label.length > 0 ? item.label : item.id}`}
+        aria-pressed={isSelected}
+        title={item.label}
+        onclick={onSelect}
+      >{item.label.length > 0 ? item.label : '(no prompt)'}</button>
+    {:else}
+      <span class="label" data-testid="{testIdPrefix}-label-{item.id}" title={item.label}>{item.label.length > 0 ? item.label : '(no prompt)'}</span>
+    {/if}
   </div>
 
   {#if hasMetaChips}
@@ -337,29 +331,21 @@
 
 <style>
   .item {
-    background: var(--vscode-list-hoverBackground);
+    background: var(--schegent-bg);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
     padding: 12px 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    transition: transform 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s;
-  }
-  .item.selectable {
-    cursor: pointer;
+    transition: border-color 160ms ease-out, background 160ms ease-out;
   }
   .item:hover {
-    transform: translateY(-2px);
-    background: var(--vscode-list-hoverBackground);
-  }
-  .item.selectable:hover {
-    border-color: color-mix(in srgb, var(--schegent-color-active) 40%, var(--sch-glass-border));
+    background: var(--schegent-surface-subtle);
   }
   .item.activity-selected {
     border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--vscode-list-hoverBackground));
-    box-shadow: inset 3px 0 0 var(--schegent-color-active);
+    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--schegent-bg));
   }
   .item-select {
     background: transparent;
@@ -381,6 +367,24 @@
   .item-select:hover {
     color: var(--schegent-fg);
     text-decoration: underline;
+  }
+  .item-label-select {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+  }
+  .item-label-select:hover {
+    text-decoration: underline;
+  }
+  .item-label-select:focus-visible {
+    border-radius: var(--schegent-radius-sm);
+    outline: 1px solid var(--schegent-focus-border);
+    outline-offset: 2px;
   }
   .row-1 {
     display: flex;
@@ -444,7 +448,7 @@
     border-color: currentColor;
   }
   .status-failed .pill {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     border-color: currentColor;
   }
   .status-canceled .pill {

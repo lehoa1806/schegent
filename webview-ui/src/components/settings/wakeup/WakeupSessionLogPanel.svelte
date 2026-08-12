@@ -113,7 +113,7 @@
     font-style: italic;
   }
   .status.error {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
   .body {
     margin: 0;

@@ -178,7 +178,7 @@
 
   .category-error .category-badge,
   .outcome-error .outcome-badge {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
 
   .category-warning .category-badge,

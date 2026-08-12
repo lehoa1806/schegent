@@ -214,7 +214,7 @@
 
 {#if editOpen}
   <form class="inline-form" data-testid="queue-item-edit-form-{item.id}" onsubmit={(event) => { event.preventDefault(); onSaveEdit(event); }}>
-    <input bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" title="Edit task description" />
+    <input bind:value={editDraft} data-testid="queue-item-edit-input-{item.id}" aria-label="Edit task description for {labelHint}" title="Edit task description" />
     <button type="submit" data-testid="queue-item-edit-save-{item.id}" aria-disabled={ariaDisabled} title="Save edits">Save</button>
   </form>
 {/if}
@@ -269,7 +269,7 @@
     font: inherit;
   }
   .remove-error {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     font-size: 0.85em;
     margin-left: 4px;
   }

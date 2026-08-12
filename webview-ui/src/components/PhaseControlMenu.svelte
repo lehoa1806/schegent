@@ -157,6 +157,7 @@
       <input
         type="text"
         class="resume-prompt-input"
+        aria-label="Resume prompt"
         placeholder="Custom prompt... (optional)"
         bind:value={resumePromptStr}
         onkeydown={(e) => e.key === 'Enter' && onResume()}
@@ -281,11 +282,11 @@
 
   button.destructive {
     border-color: var(--vscode-inputValidation-errorBorder);
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 
   button.destructive:hover:not([aria-disabled='true']) {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
     border-color: var(--vscode-inputValidation-errorBorder);
     background: color-mix(in srgb, var(--vscode-inputValidation-errorBorder) 15%, transparent);
   }

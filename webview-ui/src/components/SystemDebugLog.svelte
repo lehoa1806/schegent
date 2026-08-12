@@ -147,6 +147,6 @@
 
   .level-error .level-badge,
   .level-error .message {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
 </style>

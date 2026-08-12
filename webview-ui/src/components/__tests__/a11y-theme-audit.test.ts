@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -127,12 +127,16 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     const rows = container.querySelectorAll('li[data-testid^="dashboard-queue-item-"]');
     expect(rows.length).toBeGreaterThan(0);
     for (const r of Array.from(rows)) {
+      expect(r.getAttribute('role')).toBeNull();
+      expect(r.getAttribute('tabindex')).toBeNull();
       const buttons = r.querySelectorAll('button');
       expect(buttons.length, `row ${r.getAttribute('data-testid')} has no action buttons`).toBeGreaterThan(0);
       for (const b of Array.from(buttons)) {
         expect(b.getAttribute('aria-label')).toBeTruthy();
         expect(b.getAttribute('type')).toBe('button');
       }
+      const label = r.querySelector('[data-testid*="-label-"]');
+      expect(label?.tagName).toBe('BUTTON');
     }
   });
 
@@ -144,23 +148,27 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     expect(pill.getAttribute('aria-label')).toBeTruthy();
   });
 
-  it('HistorySection entries are keyboard-operable rows', () => {
+  it('HistorySection keeps rows structural and exposes explicit selection buttons', () => {
+    const onTaskSelect = vi.fn();
     const { container } = render(HistorySection, {
       props: {
         history: [
           buildHistoryEntry({ terminalStatus: 'completed' }),
           buildHistoryEntry({ runId: 'rh-2', featureId: 'fh-2', terminalStatus: 'failed' })
         ] as readonly HistoryEntry[],
-        isPrimary: true
+        isPrimary: true,
+        onTaskSelect
       }
     });
-    const items = container.querySelectorAll('[data-testid^="history-item-"]');
-    expect(items.length).toBeGreaterThan(0);
-    for (const it of Array.from(items)) {
-      const buttons = it.querySelectorAll('button');
-      for (const b of Array.from(buttons)) {
-        expect(b.getAttribute('aria-label') || b.textContent?.trim()).toBeTruthy();
-      }
+    const rows = container.querySelectorAll('[data-history-row]');
+    expect(rows.length).toBe(2);
+    for (const row of Array.from(rows)) {
+      expect(row.getAttribute('role')).toBeNull();
+      expect(row.getAttribute('tabindex')).toBeNull();
+      const selection = row.querySelector('[data-testid^="history-item-select-"]');
+      expect(selection?.tagName).toBe('BUTTON');
+      expect(selection?.getAttribute('type')).toBe('button');
+      expect(selection?.getAttribute('aria-label')).toBeTruthy();
     }
   });
 

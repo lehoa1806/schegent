@@ -54,6 +54,7 @@ describe('Feature 031 T019 — WakeupModelSelector renders the closed registry',
     });
 
     const select = getByTestId('wakeup-input-model') as HTMLSelectElement;
+    expect(select.getAttribute('aria-labelledby')).toBe('wakeup-label-model');
     // Total options = registry size + 1 (the runner-default sentinel).
     expect(select.options.length).toBe(WAKEUP_SUPPORTED_MODELS.length + 1);
 
@@ -143,6 +144,7 @@ describe('Feature 031 T019 — WakeupModelSelector save flow', () => {
 
     await waitFor(() => {
       expect(getByTestId('wakeup-model-status').textContent).toContain('Saved');
+      expect(getByTestId('wakeup-model-status').getAttribute('role')).toBe('status');
     });
   });
 
@@ -164,6 +166,7 @@ describe('Feature 031 T019 — WakeupModelSelector save flow', () => {
       const status = getByTestId('wakeup-model-status').textContent ?? '';
       expect(status).toContain('Rejected');
       expect(status).toContain('invalid-model');
+      expect(getByTestId('wakeup-model-status').getAttribute('role')).toBe('alert');
     });
   });
 });

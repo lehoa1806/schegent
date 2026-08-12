@@ -360,7 +360,7 @@
   }
   .chooser-error {
     margin: 0;
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
     font-size: 0.85em;
   }
   .secondary-affordances {
