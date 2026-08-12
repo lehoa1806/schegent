@@ -47,3 +47,67 @@ export const DASHBOARD_ROUTE_LABELS: Readonly<Record<DashboardRoute, string>> =
     'pipeline-builder': 'Process Library',
     settings: 'Settings'
   });
+
+// Feature 092 (T106, US5 — FR-061, plan.md D8) — the drill-down's three tiers.
+//
+// Deliberately *not* three more `DashboardRoute` members. Tiers 2 and 3 are
+// sub-locations beneath `operations`, which is already labelled 'Queues' and is
+// therefore already tier 1; promoting them to nav siblings would put a
+// single-queue view and a single-run view next to Settings, and would contradict
+// what this module says about itself two paragraphs up. `DashboardRoute`,
+// `DASHBOARD_ROUTES` and `DEFAULT_DASHBOARD_ROUTE` are unchanged by this
+// feature.
+//
+// A location carries **exactly** the ids its tier displays and nothing else, so
+// a destination is fully described by where it points. Tier 3 keeps the
+// `queueId` alongside the `runId`: a Run is addressed *within* its queue, which
+// makes back-navigation a field read rather than a lookup that can fail.
+
+export interface QueuesLocation {
+  readonly route: 'queues';
+}
+
+export interface QueueDetailLocation {
+  readonly route: 'queue-detail';
+  readonly queueId: string;
+}
+
+export interface RunDetailLocation {
+  readonly route: 'run-detail';
+  readonly queueId: string;
+  readonly runId: string;
+}
+
+export type DashboardLocation = QueuesLocation | QueueDetailLocation | RunDetailLocation;
+
+export const DEFAULT_DASHBOARD_LOCATION: QueuesLocation = Object.freeze({
+  route: 'queues'
+} as const);
+
+// Each constructor returns its own member, not the union: a caller that just
+// built a tier-3 destination should be able to read its `runId` without first
+// narrowing a union it already knows the shape of.
+
+export function queueDetailLocation(queueId: string): QueueDetailLocation {
+  return Object.freeze({ route: 'queue-detail', queueId } as const);
+}
+
+export function runDetailLocation(queueId: string, runId: string): RunDetailLocation {
+  return Object.freeze({ route: 'run-detail', queueId, runId } as const);
+}
+
+/**
+ * The tier a back-navigation lands on (FR-060). Tier 1 is the root and is its
+ * own parent, so a caller can apply this without first checking whether there is
+ * anywhere left to go.
+ */
+export function parentLocation(location: DashboardLocation): DashboardLocation {
+  switch (location.route) {
+    case 'run-detail':
+      return queueDetailLocation(location.queueId);
+    case 'queue-detail':
+      return DEFAULT_DASHBOARD_LOCATION;
+    case 'queues':
+      return DEFAULT_DASHBOARD_LOCATION;
+  }
+}

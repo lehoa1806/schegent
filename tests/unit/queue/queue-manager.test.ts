@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { QueueManager } from '../../../src/queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { createQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 
@@ -536,3 +536,66 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
 // Single-queue behavior is exercised by
 // `tests/unit/queue/queue-manager-single-queue.test.ts` and
 // `tests/unit/queue/queue-registry-single-queue.test.ts`.
+
+// ---------------------------------------------------------------------------
+// Feature 092 (T040, US2, FR-025/FR-026) — two capacity predicates.
+//
+// `hasCapacity()` answered one question because, at a cap of 1 with a single
+// queue, "is this queue free?" and "is the workspace under its ceiling?" had the
+// same answer. With N queues they diverge, and the drain needs both separately:
+// failing the first means *this queue is busy*, failing the second means the
+// queue is *waiting* for workspace room. Collapsing them again would report the
+// wrong reason to the operator even when the promotion decision came out right.
+// ---------------------------------------------------------------------------
+describe('QueueManager capacity predicates (T040)', () => {
+  const QUEUE_B = '11111111-2222-4333-8444-555555555555';
+
+  beforeEach(async () => {
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), { id: QUEUE_B, name: 'Second', now: Date.now() })
+    );
+  });
+
+  it('hasQueueCapacity is per queue: a busy queue is full while its sibling is free', async () => {
+    const a = await queue.enqueue('on default');
+    await queue.enqueue('on b', { queueId: QUEUE_B });
+    await queue.markInFlight(a.id, 'run-1');
+
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
+    expect(queue.hasQueueCapacity(QUEUE_B)).toBe(true);
+  });
+
+  it('hasWorkspaceCapacity counts every queue against the one ceiling', async () => {
+    await store.setGlobalConcurrencyCap(2);
+    const a = await queue.enqueue('on default');
+    const b = await queue.enqueue('on b', { queueId: QUEUE_B });
+
+    expect(queue.hasWorkspaceCapacity()).toBe(true);
+    await queue.markInFlight(a.id, 'run-1');
+    expect(queue.hasWorkspaceCapacity()).toBe(true);
+    await queue.markInFlight(b.id, 'run-2');
+    expect(queue.hasWorkspaceCapacity()).toBe(false);
+  });
+
+  it('the two predicates disagree, and that disagreement is the point', async () => {
+    // Ceiling of 1, one Run in flight on the default queue: queue B is itself
+    // free (nothing in flight on it) but the workspace has no room.
+    await store.setGlobalConcurrencyCap(1);
+    const a = await queue.enqueue('on default');
+    await queue.markInFlight(a.id, 'run-1');
+
+    expect(queue.hasQueueCapacity(QUEUE_B)).toBe(true);
+    expect(queue.hasWorkspaceCapacity()).toBe(false);
+  });
+
+  it('hasWorkspaceCapacity keeps the pre-split body: in-flight count vs the cap', async () => {
+    await store.setGlobalConcurrencyCap(3);
+    expect(queue.hasWorkspaceCapacity()).toBe(true);
+    const a = await queue.enqueue('one');
+    const b = await queue.enqueue('two', { queueId: QUEUE_B });
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.markInFlight(b.id, 'run-2');
+    expect(queue.inFlightCount()).toBe(2);
+    expect(queue.hasWorkspaceCapacity()).toBe(true);
+  });
+});

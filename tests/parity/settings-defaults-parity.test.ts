@@ -15,8 +15,12 @@
  *     contribution and the webview idle snapshot were inconsistent.
  *   - `retry.maxAttempts.maximum` was `20` even though the effective
  *     cap (`DELAYED_RETRY_CAP` in retry-handler) saturates at 5.
- *   - `queue.globalConcurrencyCap.maximum` was `5`; v1 only ships
- *     single-active-run semantics so it must be pinned to `1`.
+ *   - `queue.globalConcurrencyCap.maximum` was `5`; v1 only shipped
+ *     single-active-run semantics so it was pinned to `1`. Feature 092
+ *     (T039a, FR-026/FR-027) supplied the lock split that pin was waiting
+ *     for and re-aimed it at `[1, 20]` with a default of `3`. The guard is
+ *     re-aimed, not deleted: an unpinned range is how the maximum drifted
+ *     to `5` in the first place.
  *
  * This test pins those three values and rejects future drift on the
  * shared schema surface.
@@ -78,14 +82,14 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     expect(contrib.maximum).toBe(5);
   });
 
-  it('package.json queue.globalConcurrencyCap is pinned to [1, 1]', () => {
+  it('package.json queue.globalConcurrencyCap is pinned to [1, 20] with default 3', () => {
     const pkg = readPackageJson();
     const contrib =
       pkg.contributes.configuration.properties['schegent.queue.globalConcurrencyCap'];
     expect(contrib).toBeDefined();
-    expect(contrib.default).toBe(1);
+    expect(contrib.default).toBe(3);
     expect(contrib.minimum).toBe(1);
-    expect(contrib.maximum).toBe(1);
+    expect(contrib.maximum).toBe(20);
   });
 
   it('package.json runtimeLogMaxBytes is present with [64 KiB, 1 GiB] range', () => {
@@ -137,7 +141,9 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
     const settings = mod.readGeneralSettings(fakeConfig);
     expect(settings.defaultPipelineId).toBe('speckit-new-feature');
     expect(settings.retryMaxAttempts).toBe(5);
-    expect(settings.queueGlobalConcurrencyCap).toBe(1);
+    // Feature 092 (T054/T055/T055a, FR-026/FR-027) — the ceiling's default
+    // moved from 1 to 3 when the lock split made concurrency representable.
+    expect(settings.queueGlobalConcurrencyCap).toBe(3);
     expect(settings.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(settings.runtimeLogMaxGenerations).toBe(3);
   });

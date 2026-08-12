@@ -12,36 +12,47 @@ Schegent processes work through a single queue. You add tasks; the queue drains 
 
 A task that never makes it past `pending` has zero runs. A task that you cancel mid-run has one run with a terminal failure. A task you retry from scratch has multiple runs.
 
-## The queue (singular, on purpose)
+## Queues
 
-Earlier versions of Schegent supported multiple queues. The current version supports exactly **one** queue per workspace, with id `default`. There are no commands to create, rename, delete, or schedule additional queues — those are intentionally gone.
+A workspace starts with one queue, id `default`, and you can create up to **20**. Each queue is sequential — it runs at most one Task at a time — and queues are scheduled independently of each other, bounded by `schegent.queue.globalConcurrencyCap` (default `3`). Create, rename, delete and schedule are all available again; see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
 
-The single queue contains:
+Two ceilings, two meanings. A Task that waits because its own queue is busy is **waiting its turn**. A queue that does not start because the workspace ceiling is reached is **blocked** — it will start as soon as a slot frees, without you doing anything.
+
+**Runs still execute one at a time.** Queues are independent for everything except the subprocess itself: the run engine holds one active `WorkflowRun`, so a queue whose turn has come waits until the executing run finishes. You get independent inboxes, schedules, pause switches and history — not parallel Claude processes. See [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
+
+(Versions between feature 030 and feature 092 supported exactly one queue. If you are reading older notes that say the create/rename/delete/schedule commands are "intentionally gone", they described that period.)
+
+Each queue contains:
 
 - **`pending`** — tasks waiting their turn, in order.
-- **`inFlight`** — at most one task at a time (see [The Workspace Lock](workspace-lock.md)).
+- **`inFlight`** — at most one task at a time, per queue (see [The Workspace Lock](workspace-lock.md)).
 - **`paused`** — tasks the operator paused. Paused tasks do not consume the in-flight slot, so the queue can continue draining other pending work past them.
 - **`history`** — terminal-state tasks (completed or failed) kept for review.
 
-You can reorder pending tasks by drag-and-drop or via the up/down arrows in the sidebar. You cannot reorder the in-flight task — it owns the lock.
+You can reorder pending tasks by drag-and-drop or via the up/down arrows in the sidebar. You cannot reorder the in-flight task — it holds its queue's execution lease.
 
 ### The drainer
 
-Every state transition triggers the **drainer**, a host-side routine that asks: "Is there a pending task we should move into in-flight right now?" The answer is yes if:
+Every state transition triggers the **drainer**, a host-side routine that asks, for one queue: "Is there a pending task we should move into in-flight right now?" The answer is yes if:
 
+- the queue is not waiting on a scheduled start (`idle-pending`),
 - the queue is not manually paused,
-- no other task is already in-flight,
-- the workspace lock is free,
+- no other task on *this* queue is already in-flight,
+- the workspace is under its concurrency ceiling,
+- the run engine is not already driving a run,
+- the queue's execution lease is free,
 - the Claude CLI is available.
 
 When the drainer accepts a task, it:
 
 1. Removes it from `pending`.
 2. Constructs a `WorkflowRun` with a snapshot of the active pipeline.
-3. Acquires the workspace lock.
+3. Takes that queue's execution lease.
 4. Spawns the first phase.
 
-The drainer is idempotent. Multiple state changes that all imply "drain now" will not produce multiple concurrent runs. The lock guarantees that.
+Across queues, the drainer walks the registry from a rotating cursor, so a queue that keeps producing work cannot starve the others.
+
+The drainer is idempotent. Multiple state changes that all imply "drain now" will not produce two runs on the same queue — the per-queue lease guarantees that. A queue that clears every gate except the engine one simply waits; the next sweep picks it up, and because the cursor rotates, it is not the same queue that wins every time.
 
 ## A run, anatomy of
 
@@ -152,4 +163,4 @@ If you open the same workspace in two VS Code windows, only one of them is the *
 
 Secondary windows can read the queue and the runs, but their mutating commands are rejected with `reason: 'not-primary-host'`. The primary-only gate is the only thing preventing two windows from corrupting the queue state.
 
-The next page, [The Workspace Lock](workspace-lock.md), explains how Schegent guarantees only one run executes at a time and what happens when the lock gets stuck.
+The next page, [The Workspace Lock](workspace-lock.md), explains the two leases that arbitrate primacy and execution, and what to do when one looks stuck.

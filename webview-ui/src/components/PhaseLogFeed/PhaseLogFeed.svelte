@@ -70,9 +70,17 @@
     // are keyed by WorkflowRun id. Resolve that boundary explicitly for the
     // active run and for historical tasks; falling back to taskId preserves
     // compatibility with older snapshots where both identifiers matched.
+    //
+    // Feature 092 (T094, FR-052) — the run id comes from the queue whose Run is
+    // executing *this* task, not from a workspace-wide "active" run. A Run
+    // starting in another queue changes no runtime but its own, so a tail
+    // already attached here keeps resolving to the Run it attached to.
+    const owningRun =
+      snapshot.queues.find((runtime) => runtime.inFlightRun?.feature?.id === taskId)
+        ?.inFlightRun ?? null;
     const runId =
-      snapshot.queue.inFlight?.id === taskId && snapshot.activeRunId
-        ? snapshot.activeRunId
+      owningRun !== null
+        ? owningRun.runId
         : snapshot.history.find(
             (entry) => entry.featureId === taskId || entry.runId === taskId
           )?.runId ?? taskId;

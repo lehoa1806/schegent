@@ -6,7 +6,11 @@
 // touched `WorkflowRun` would fail here rather than in production.
 
 import { describe, expect, it, vi } from 'vitest';
-import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V9 } from '../../../src/contracts/state-schema';
+import {
+  STATE_SCHEMA_VERSION,
+  STATE_SCHEMA_VERSION_V9,
+  STATE_SCHEMA_VERSION_V10
+} from '../../../src/contracts/state-schema';
 import { migrateConnectedRuns } from '../../../src/state/connected-run-migrator';
 import {
   appendAttempt,
@@ -56,8 +60,14 @@ function memento(seed: Record<string, unknown> = {}): Memento & { store: Map<str
 
 describe('connected-run migration (v8 → v9)', () => {
   it('pins the version bump', () => {
-    expect(STATE_SCHEMA_VERSION).toBe(STATE_SCHEMA_VERSION_V9);
-    expect(STATE_SCHEMA_VERSION).toBe(9);
+    // Feature 088 introduced v9 and, being current at the time, pinned it as
+    // *the* schema version. Feature 092 adds v10, so the two assertions
+    // separate: this feature's step is still 9, and 9 is no longer the head.
+    // Re-pinning the head here rather than deleting the check keeps the
+    // forward-only ratchet asserted somewhere.
+    expect(STATE_SCHEMA_VERSION_V9).toBe(9);
+    expect(STATE_SCHEMA_VERSION).toBe(STATE_SCHEMA_VERSION_V10);
+    expect(STATE_SCHEMA_VERSION).toBeGreaterThan(STATE_SCHEMA_VERSION_V9);
   });
 
   it('reads an absent key as an empty collection', () => {

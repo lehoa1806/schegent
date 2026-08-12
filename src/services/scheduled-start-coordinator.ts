@@ -1,14 +1,28 @@
-// Feature 065 — ScheduledStartCoordinator owns the single in-process
-// `setTimeout` handle that drives `idle-pending → running` transitions
-// when an operator (or programmatic caller) commits a future-dated start.
+// Feature 065 — ScheduledStartCoordinator owns the in-process `setTimeout`
+// handles that drive `idle-pending → running` transitions when an operator (or
+// programmatic caller) commits a future-dated start.
 //
-// The repo enforces a single-queue model (spec 030 + CLAUDE.md hard rule
-// "Never reintroduce a multi-queue registry without a new state
-// migration and scheduler design"), so the coordinator owns a single
-// `NodeJS.Timeout | null`, NOT a `Map<queueId, ...>`. The `queueId`
-// parameter is accepted on the method signatures for forward-compatibility
-// with audit-event payloads but the coordinator asserts at most one
-// outstanding timer at any time.
+// Feature 092 (T058, FR-029/FR-030) made that one handle per queue. Feature 065
+// owned a single `NodeJS.Timeout | null` and said so deliberately, because the
+// repo enforced a single-queue model and one timer was therefore the whole
+// truth; `arm()` cleared whatever was outstanding without asking which queue it
+// belonged to. That is now a `Map<queueId, ActiveTimer>`, and every method is
+// addressed:
+//
+//   - `arm(queueId, ...)` clears only that queue's outstanding handle. Arming
+//     queue B must not silently disarm queue A's start — the operator scheduled
+//     two things and would be told about neither.
+//   - `fire(queueId)` reads *that* queue's `QueueState`. Reading the workspace
+//     singleton would let a sibling's pause classify this queue's timer as
+//     superseded.
+//   - `cancel(queueId, ...)` disarms that queue and only that queue; it is the
+//     disarm the queue-deletion path calls (FR-030).
+//   - `reArm()` sweeps every queue carrying a persisted schedule rather than
+//     hardcoding `'default'`.
+//
+// The CLAUDE.md hard rule that forbade a multi-queue registry "without a new
+// state migration and scheduler design" is satisfied, not bypassed: US1 supplies
+// the v9 → v10 migration and this file is the scheduler design.
 //
 // Persistence of `scheduledStartAt` lives on `QueueState` (feature 065
 // schema v7). The coordinator only schedules in-process timers; it does
@@ -58,7 +72,9 @@ export interface ScheduledStartFiredEvent {
 }
 
 export interface ScheduledStartCoordinatorDeps {
-  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'updateQueue'>;
+  // Feature 092 (T058) — `getQueueStates` is what lets `reArm()` ask which
+  // queues carry persisted execution state instead of assuming `'default'`.
+  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueStates' | 'updateQueue'>;
   readonly auditWriter: Pick<AuditLogWriter, 'append'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly onFire: (queueId: string) => Promise<void> | void;
@@ -81,7 +97,7 @@ export interface ScheduledStartCoordinatorDeps {
   readonly clearTimer?: (handle: NodeJS.Timeout) => void;
 }
 
-interface ActiveTimer {
+export interface ActiveTimer {
   readonly queueId: string;
   readonly scheduledStartAt: number;
   readonly source: ScheduledStartSource;
@@ -98,7 +114,12 @@ export class ScheduledStartCoordinator {
   private readonly nowFn: () => number;
   private readonly setTimerFn: (fn: () => void, ms: number) => NodeJS.Timeout;
   private readonly clearTimerFn: (handle: NodeJS.Timeout) => void;
-  private timer: ActiveTimer | null = null;
+  /**
+   * Feature 092 (T058, FR-029/FR-030) — one entry per queue with an armed
+   * start. Keyed by queue id, so every operation is addressed and no operation
+   * can reach a queue it was not asked about.
+   */
+  private readonly timers = new Map<string, ActiveTimer>();
 
   constructor(deps: ScheduledStartCoordinatorDeps) {
     this.store = deps.store;
@@ -120,15 +141,18 @@ export class ScheduledStartCoordinator {
     if (!Number.isFinite(scheduledStartAt) || scheduledStartAt <= 0) {
       throw new Error('arm: scheduledStartAt must be a finite positive epoch ms');
     }
-    if (this.timer !== null) {
-      this.clearTimerFn(this.timer.handle);
-      this.timer = null;
+    // Feature 092 (T058) — re-arming replaces *this* queue's outstanding
+    // handle. Pre-092 this cleared whatever was armed, whichever queue owned it.
+    const outstanding = this.timers.get(queueId);
+    if (outstanding) {
+      this.clearTimerFn(outstanding.handle);
+      this.timers.delete(queueId);
     }
     const delayMs = Math.max(0, scheduledStartAt - this.nowFn());
     const handle = this.setTimerFn(() => {
       void this.fire(queueId);
     }, delayMs);
-    this.timer = { queueId, scheduledStartAt, source, handle };
+    this.timers.set(queueId, { queueId, scheduledStartAt, source, handle });
     await this.appendAudit('scheduled-start-armed', {
       queueId,
       scheduledStartAt,
@@ -138,11 +162,11 @@ export class ScheduledStartCoordinator {
   }
 
   public async cancel(queueId: string, reason: SchedulerCancelReason): Promise<void> {
-    if (this.timer === null) return;
-    if (this.timer.queueId !== queueId) return;
-    const { scheduledStartAt, source } = this.timer;
-    this.clearTimerFn(this.timer.handle);
-    this.timer = null;
+    const armed = this.timers.get(queueId);
+    if (!armed) return;
+    const { scheduledStartAt, source } = armed;
+    this.clearTimerFn(armed.handle);
+    this.timers.delete(queueId);
     await this.appendAudit('scheduled-start-canceled', {
       queueId,
       scheduledStartAt,
@@ -161,15 +185,17 @@ export class ScheduledStartCoordinator {
   }
 
   public async fire(queueId: string): Promise<void> {
-    const armed = this.timer;
-    if (armed === null || armed.queueId !== queueId) return;
-    const queueState = this.store.getQueue();
+    const armed = this.timers.get(queueId);
+    if (!armed) return;
+    // Feature 092 (T058) — addressed. Reading the workspace singleton here
+    // would let a sibling queue's lifecycle decide this queue's supersession.
+    const queueState = this.store.getQueue(queueId);
     if (
       queueState.queueLifecycle !== 'idle-pending' ||
       queueState.scheduledStartAt !== armed.scheduledStartAt
     ) {
       const superseder = this.classifySuperseder(queueState.queueLifecycle);
-      this.timer = null;
+      this.timers.delete(queueId);
       await this.appendAudit('scheduled-start-superseded', {
         queueId,
         scheduledStartAt: armed.scheduledStartAt,
@@ -187,7 +213,7 @@ export class ScheduledStartCoordinator {
     // (after the foreign lock is released) will retry the promotion
     // under the existing rule. The operator is NOT asked to reschedule.
     if (this.isForeignLockHeldFn?.() === true) {
-      this.timer = null;
+      this.timers.delete(queueId);
       await this.appendAudit('scheduled-start-superseded', {
         queueId,
         scheduledStartAt: armed.scheduledStartAt,
@@ -198,18 +224,21 @@ export class ScheduledStartCoordinator {
       // Clear scheduledStartAt/Source so auto-drain takes over without
       // re-firing the timer. Keep lifecycle as idle-pending — operator
       // intent is preserved.
-      await this.store.updateQueue((current) => ({
-        queue: {
-          ...current,
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          updatedAt: this.nowFn()
-        },
-        result: undefined
-      }));
+      await this.store.updateQueue(
+        (current) => ({
+          queue: {
+            ...current,
+            scheduledStartAt: null,
+            scheduledStartSource: null,
+            updatedAt: this.nowFn()
+          },
+          result: undefined
+        }),
+        queueId
+      );
       return;
     }
-    this.timer = null;
+    this.timers.delete(queueId);
     const firedAt = this.nowFn();
     await this.appendAudit('scheduled-start-fired', {
       queueId,
@@ -233,18 +262,26 @@ export class ScheduledStartCoordinator {
   }
 
   /**
-   * Called once at activation after the v6→v7 migration. Inspects the
-   * persisted queue state and re-arms (or fires-immediately) any pending
-   * scheduled start. Per FR-011, the re-arm is computed against the
-   * persisted original `scheduledStartAt`, not against an in-process tick.
+   * Called once at activation after the state migrations. Inspects every
+   * queue's persisted state and re-arms (or fires-immediately) each pending
+   * scheduled start. Per FR-011, the re-arm is computed against the persisted
+   * original `scheduledStartAt`, not against an in-process tick.
+   *
+   * Feature 092 (T058, FR-029) — this sweeps `getQueueStates()` rather than
+   * assuming `'default'`. A queue whose deadline elapsed while the window was
+   * closed fires now; one still in the future is armed. Each queue is
+   * independent: a failing fire on one must not skip the rest, which is why
+   * the per-queue body is wrapped rather than the loop.
    */
   public async reArm(): Promise<void> {
-    const queueState = this.store.getQueue();
-    if (queueState.queueLifecycle !== 'idle-pending') return;
-    if (queueState.scheduledStartAt === null) return;
-    const source = queueState.scheduledStartSource ?? 'migration-default';
-    const queueId = 'default';
-    if (queueState.scheduledStartAt <= this.nowFn()) {
+    for (const [queueId, queueState] of Object.entries(this.store.getQueueStates())) {
+      if (queueState.queueLifecycle !== 'idle-pending') continue;
+      if (queueState.scheduledStartAt === null) continue;
+      const source = queueState.scheduledStartSource ?? 'migration-default';
+      if (queueState.scheduledStartAt > this.nowFn()) {
+        await this.arm(queueId, queueState.scheduledStartAt, source);
+        continue;
+      }
       const firedAt = this.nowFn();
       await this.appendAudit('scheduled-start-fired', {
         queueId,
@@ -265,20 +302,36 @@ export class ScheduledStartCoordinator {
       } catch (err) {
         this.logger.warn(`scheduled-start re-arm immediate fire failed: ${(err as Error).message}`);
       }
-      return;
     }
-    await this.arm(queueId, queueState.scheduledStartAt, source);
   }
 
-  public hasActiveTimer(): boolean {
-    return this.timer !== null;
+  /**
+   * With a `queueId`, whether *that* queue holds an armed timer. Without one,
+   * whether the workspace holds any — the pre-092 question, kept because the
+   * status-bar indicator asks exactly that.
+   */
+  public hasActiveTimer(queueId?: string): boolean {
+    if (queueId === undefined) return this.timers.size > 0;
+    return this.timers.has(queueId);
+  }
+
+  /** The queue ids currently holding an armed timer. */
+  public armedQueueIds(): string[] {
+    return [...this.timers.keys()];
+  }
+
+  /**
+   * One queue's armed timer, or `undefined`. Exposes the deadline, source and
+   * handle so a caller can tell "still armed, untouched" from "re-armed" — a
+   * bare `hasActiveTimer` cannot.
+   */
+  public armedTimer(queueId: string): ActiveTimer | undefined {
+    return this.timers.get(queueId);
   }
 
   public dispose(): void {
-    if (this.timer !== null) {
-      this.clearTimerFn(this.timer.handle);
-      this.timer = null;
-    }
+    for (const armed of this.timers.values()) this.clearTimerFn(armed.handle);
+    this.timers.clear();
   }
 
   private notifyFiredObserver(event: ScheduledStartFiredEvent): void {

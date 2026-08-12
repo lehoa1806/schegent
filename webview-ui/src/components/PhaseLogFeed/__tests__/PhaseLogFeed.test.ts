@@ -34,6 +34,7 @@ import type {
   PhaseLogTailStartResult,
   PhaseLogTailStopResult
 } from '../../../../../src/services/phase-log/types';
+import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queue-runtime-fixture';
 
 // --- module mocks ------------------------------------------------------
 
@@ -106,8 +107,9 @@ function buildPhase(
   });
 }
 
-function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
-  const phases: readonly PhaseTile[] = Object.freeze([
+function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, activeFeature, phases, liveActivity, workflowElapsedMs, ...rest } = overrides;
+  const defaultPhases: readonly PhaseTile[] = Object.freeze([
     buildPhase('speckit-specify', 1, 'completed'),
     buildPhase('speckit-plan', 2, 'active'),
     buildPhase('speckit-tasks', 3, 'not-started')
@@ -153,21 +155,26 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     }) as PipelineDefinition
   ]);
   const base: WorkflowSnapshot = Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'running',
-    activeFeature: null,
-    phases,
-    queue,
-    auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: status ?? 'running',
+      activeFeature: activeFeature ?? null,
+      phases: phases ?? defaultPhases,
+      liveActivity: liveActivity ?? (Object.freeze({
       summary: null,
       category: null,
       lastEventAt: null,
       freshness: 'idle' as const,
       staleSeconds: 0
+      })),
+      workflowElapsedMs: workflowElapsedMs ?? 0
     }),
-    workflowElapsedMs: 0,
+    queue,
+    auditTail: Object.freeze([]),
     monitor: null,
     history: Object.freeze([]) as readonly HistoryEntry[],
     producedAt: '2026-05-10T12:00:00.000Z',
@@ -180,7 +187,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[]
   } as WorkflowSnapshot);
-  return Object.freeze({ ...base, ...overrides });
+  return Object.freeze({ ...base, ...rest });
 }
 
 function makePushEntry(
@@ -408,7 +415,18 @@ describe('Feature 074 — selected runner attribution', () => {
     } as QueueItem);
     const snapshot = Object.freeze({
       ...base,
-      activeRunId: 'workflow-run-1',
+      // Feature 092 (T094) — attribution resolves the run id through the queue
+      // whose Run owns the selected task, so the fixture states that ownership
+      // instead of a workspace-wide `activeRunId`.
+      queues: foldLegacyRun({
+        status: 'running',
+        activeRunId: 'workflow-run-1',
+        activeFeature: {
+          id: 'task-1',
+          label: 'feature one',
+          startedAt: '2026-05-10T11:30:00.000Z'
+        }
+      }),
       queue: Object.freeze({ ...base.queue, inFlight } as QueueProjection),
       auditTail: Object.freeze([
         Object.freeze({
@@ -455,7 +473,18 @@ describe('Feature 074 — selected runner attribution', () => {
     };
     const snapshot = Object.freeze({
       ...base,
-      activeRunId: 'workflow-run-1',
+      // Feature 092 (T094) — attribution resolves the run id through the queue
+      // whose Run owns the selected task, so the fixture states that ownership
+      // instead of a workspace-wide `activeRunId`.
+      queues: foldLegacyRun({
+        status: 'running',
+        activeRunId: 'workflow-run-1',
+        activeFeature: {
+          id: 'task-1',
+          label: 'feature one',
+          startedAt: '2026-05-10T11:30:00.000Z'
+        }
+      }),
       defaultRunnerKind: 'agy' as const,
       queue: Object.freeze({ ...base.queue, inFlight } as QueueProjection),
       auditTail: Object.freeze([Object.freeze(event)])

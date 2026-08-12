@@ -10,6 +10,12 @@
     availablePipelines: readonly PipelineDefinition[];
     defaultPipelineId: string;
     pendingCount: number;
+    /**
+     * Feature 092 (T108, FR-057) — the queue the Task is enqueued onto. Absent on
+     * the unscoped reading; the host then resolves the default queue exactly as
+     * it did before the Queue Detail tier could name one.
+     */
+    queueId?: string;
   }
 
   // Feature 065 (T028, revised per BUG-001 / 2026-05-23) — enqueue and
@@ -20,7 +26,7 @@
   // start-mode chooser is no longer presented at submit-time; it is
   // reachable exclusively via the queue-level "Start queue" affordance
   // in `QueueListView` (FR-018).
-  const { availablePipelines, defaultPipelineId, pendingCount }: Props = $props();
+  const { availablePipelines, defaultPipelineId, pendingCount, queueId }: Props = $props();
 
   let description = $state('');
   let selectedPipelineId = $state<string | undefined>(undefined);
@@ -74,6 +80,7 @@
     if (draft.pipelineId !== undefined && draft.pipelineId !== 'standard') {
       payload['pipelineId'] = draft.pipelineId;
     }
+    if (queueId !== undefined) payload['queueId'] = queueId;
     const { correlationId } = postCommand(CMD_START, payload as never);
     submitInFlightId = correlationId;
     submitFeedback = null;
@@ -105,7 +112,7 @@
 
 <section class="zone queue-input glass-card" data-testid="dashboard-queue-input" aria-label="Queue input">
   <form class="compose-box" onsubmit={onSubmit}>
-    <label class="compose-label" for="dashboard-queue-input-textarea">New task</label>
+    <label class="compose-label" for="dashboard-queue-input-textarea">Add work to queue</label>
     <textarea
       id="dashboard-queue-input-textarea"
       data-testid="dashboard-queue-input-textarea"
@@ -178,41 +185,46 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--schegent-space-2);
   }
   .compose-box {
     display: flex;
     flex-direction: column;
-    background: var(--vscode-list-hoverBackground);
-    border: 1px solid var(--sch-glass-border);
+    background: transparent;
+    border: 0;
     border-radius: var(--schegent-radius);
-    padding: 12px;
-    gap: 10px;
-    transition: box-shadow 0.2s, border-color 0.2s;
+    padding: 0;
+    gap: var(--schegent-space-2);
   }
   .compose-box:focus-within {
-    border-color: var(--sch-accent-gradient);
-    background: var(--vscode-editor-background);
+    background: transparent;
   }
   .compose-label {
     color: var(--schegent-fg);
-    font-size: 0.82rem;
-    font-weight: 600;
+    font-size: var(--schegent-text-caption);
+    font-weight: 650;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
   }
   .compose-box textarea {
     width: 100%;
-    min-height: 84px;
-    background: transparent;
-    border: none;
+    min-height: 56px;
+    background: var(--schegent-input-bg);
+    border: 1px solid var(--schegent-input-border);
+    border-radius: var(--schegent-radius-sm);
     color: var(--schegent-fg);
     font: inherit;
-    font-size: 0.9rem;
-    line-height: 1.5;
-    padding: 0;
+    font-size: var(--schegent-text-secondary);
+    line-height: 1.45;
+    padding: 8px 9px;
     resize: none;
-    outline: none;
     overflow-y: auto;
     box-sizing: border-box;
+  }
+  .compose-box textarea:focus-visible {
+    border-color: var(--schegent-focus-border);
+    outline: 1px solid var(--schegent-focus-border);
+    outline-offset: 0;
   }
   .compose-toolbar {
     display: flex;
@@ -227,12 +239,14 @@
     gap: 8px;
   }
   .pipeline-select {
-    background: var(--vscode-list-hoverBackground);
+    min-height: var(--schegent-control-height-compact);
+    max-width: 170px;
+    background: var(--schegent-input-bg);
     border: 1px solid var(--sch-glass-border);
     color: var(--schegent-fg);
-    border-radius: var(--schegent-radius);
-    padding: 4px 8px;
-    font-size: 0.85em;
+    border-radius: var(--schegent-radius-sm);
+    padding: 3px 26px 3px 8px;
+    font-size: var(--schegent-text-caption);
     outline: none;
     cursor: pointer;
   }
@@ -248,10 +262,10 @@
     background: var(--sch-accent-gradient);
     color: var(--vscode-button-foreground);
     border: none;
-    border-radius: var(--schegent-radius);
-    min-height: 34px;
-    padding: 0 13px;
-    font-size: 0.82rem;
+    border-radius: var(--schegent-radius-sm);
+    min-height: var(--schegent-control-height-compact);
+    padding: 0 10px;
+    font-size: var(--schegent-text-caption);
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
@@ -266,9 +280,9 @@
     opacity: 0.9;
   }
   .network-notice {
-    margin: 0 2px;
+    margin: 0;
     color: var(--schegent-muted-fg);
-    font-size: 0.78em;
+    font-size: var(--schegent-text-caption);
     line-height: 1.35;
   }
   .submit-feedback {

@@ -7,6 +7,7 @@ import {
 } from '../queue/feature-request';
 import {
   DEFAULT_QUEUE_ID,
+  MAX_QUEUES,
   findQueue,
   makeDefaultRegistry,
   validateQueueRegistry,
@@ -29,8 +30,11 @@ import {
   migrateLegacyQueueState,
   migrateV5ToV6,
   migrateV6ToV7,
+  migrateV9ToV10,
+  type QueueStateMap,
   type StateMigratedV5ToV6AuditEvent,
-  type StateMigratedV6ToV7AuditEvent
+  type StateMigratedV6ToV7AuditEvent,
+  type StateMigratedV9ToV10AuditEvent
 } from './queue-state-migrator';
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
 import type { SanitizedLogger } from '../lib/logger';
@@ -57,6 +61,38 @@ function safeDisplay(value: unknown): string {
     return JSON.stringify(value) ?? `<${typeof value}>`;
   } catch {
     return `<${typeof value}>`;
+  }
+}
+
+/**
+ * Feature 092 (T056, FR-026/FR-027) — the workspace concurrency ceiling's
+ * default and upper bound.
+ *
+ * The upper bound is `MAX_QUEUES` rather than a second literal 20, because a
+ * ceiling above the number of queues is unreachable by construction: each queue
+ * runs at most one Task, so no workspace can exceed `MAX_QUEUES` in flight. The
+ * two numbers agreeing is a fact, not a coincidence to be maintained by hand.
+ */
+export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 3;
+export const MAX_GLOBAL_CONCURRENCY_CAP = MAX_QUEUES;
+
+/**
+ * The single range check both the reader and the setter use. `origin`
+ * distinguishes "the operator just asked for this" from "this is what was on
+ * disk", which is the only part of the two call sites that legitimately
+ * differs.
+ */
+function assertGlobalConcurrencyCap(value: unknown, origin: 'requested' | 'persisted'): asserts value is number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_GLOBAL_CONCURRENCY_CAP
+  ) {
+    throw new QueueMutationRejected(
+      'invalid-global-concurrency-cap',
+      `globalConcurrencyCap must be an integer in [1, ${MAX_GLOBAL_CONCURRENCY_CAP}] (${origin}: ${safeDisplay(value)})`
+    );
   }
 }
 
@@ -140,15 +176,44 @@ export const KEYS = {
   // A separate key from `run`/`queue` on purpose: the connected run is a
   // different aggregate, and keeping it separate is what makes its migration
   // a no-op for every workspace that predates the feature (FR-007).
-  connectedRuns: 'schegent.connectedRuns'
+  connectedRuns: 'schegent.connectedRuns',
+  // Feature 092 (T049, FR-031) — per-queue execution leases, keyed by queueId.
+  // Deliberately NOT `lock`: that key stays the one-per-workspace window-primacy
+  // lease feeding `WorkflowSnapshot.isPrimary`, and merging the two would make a
+  // window primary the moment it drained any queue.
+  executionLeases: 'schegent.executionLeases',
+  // Feature 092 (T065, FR-037) — the once-per-workspace shared-working-tree
+  // notice, armed when the workspace first stops being single-queue.
+  //
+  // Its own key, and not a field on any `QueueState`: FR-037 scopes the notice
+  // to the workspace, so storing it inside a queue record would make it per
+  // queue by construction and deleting that queue would erase the operator's
+  // dismissal. It is also NOT `QueueState.migrationNotice` (feature 065), which
+  // is per queue, fires on a different trigger, and carries different text —
+  // one shared field would make dismissing either dismiss both.
+  concurrencyNotice: 'schegent.ui.concurrencyNotice'
 } as const;
 
 import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
 export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
 import { migrateConnectedRuns } from './connected-run-migrator';
 import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
+// Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
+// so a value import here would close a cycle the type import cannot.
+import type { ExecutionLease } from './execution-lease';
 
 export const HISTORY_CAP = 50;
+
+/**
+ * Feature 092 (T065, FR-037) — the answer to the shared-working-tree notice.
+ *
+ * Shares its two words with `QueueState.migrationNotice` and nothing else: that
+ * one is per queue and records a migration, this one is per workspace and
+ * records that the workspace stopped being single-queue. They are separate
+ * types over separate keys so a future widening of either cannot silently reach
+ * the other.
+ */
+export type ConcurrencyNotice = 'pending' | 'dismissed';
 
 export type StoreChangeKey =
   | typeof KEYS.run
@@ -159,7 +224,9 @@ export type StoreChangeKey =
   | typeof KEYS.lock
   | typeof KEYS.history
   | typeof KEYS.terminalTransitionIntent
-  | typeof KEYS.connectedRuns;
+  | typeof KEYS.connectedRuns
+  | typeof KEYS.executionLeases
+  | typeof KEYS.concurrencyNotice;
 
 export type StoreChangeListener = (key: StoreChangeKey) => void;
 
@@ -333,6 +400,11 @@ export interface InitializeResult {
   // Feature 065 — emitted by the v6 → v7 migrator when it ran. Same
   // forwarding contract as `v6MigrationEvents` above.
   v7MigrationEvents: readonly StateMigratedV6ToV7AuditEvent[];
+  // Feature 092 — emitted by the v9 → v10 migrator when it lifted the singular
+  // `QueueState` into the per-queue map. Same forwarding contract as
+  // `v6MigrationEvents` above; at most one event, and never on a fresh
+  // workspace (there is nothing to lift).
+  v10MigrationEvents: readonly StateMigratedV9ToV10AuditEvent[];
   // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
   runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
@@ -342,14 +414,9 @@ export class WorkspaceStateStore {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
   private readonly logger: SanitizedLogger | null;
-  /**
-   * One-shot guard for the `globalConcurrencyCap` saturation WARN. The
-   * cap reader (`getGlobalConcurrencyCap`) is invoked from many hot
-   * paths (every snapshot publish, every queue mutation); we only want
-   * one WARN per process when a legacy persisted value silently
-   * saturates to 1.
-   */
-  private hasWarnedAboutConcurrencyCapSaturation = false;
+  // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
+  // live here: the reader no longer saturates, so there is no silent coercion
+  // left to warn about.
 
   constructor(memento: Memento, logger?: SanitizedLogger) {
     this.memento = memento;
@@ -407,8 +474,15 @@ export class WorkspaceStateStore {
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
+      const v10Events = await this.migrateV9ToV10IfNeeded();
       await this.reconcileQueuePauseStateIfDivergent();
-      return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
+      return {
+        migrated: true,
+        v6MigrationEvents: v6Events,
+        v7MigrationEvents: v7Events,
+        v10MigrationEvents: v10Events,
+        runRepairEvents
+      };
     }
     if (persistedVersion === SCHEMA_VERSION) {
       if (persistedNumeric !== STATE_SCHEMA_VERSION) {
@@ -421,18 +495,32 @@ export class WorkspaceStateStore {
         await this.migrateQueueRegistryIfNeeded();
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
         const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
+        const v10Events = await this.migrateV9ToV10IfNeeded();
         await this.reconcileQueuePauseStateIfDivergent();
-        return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
+        return {
+          migrated: true,
+          v6MigrationEvents: v6Events,
+          v7MigrationEvents: v7Events,
+          v10MigrationEvents: v10Events,
+          runRepairEvents
+        };
       }
       const runRepairEvents = await this.normalizeRunForInitialize(false);
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
+      const v10Events = await this.migrateV9ToV10IfNeeded();
       const reconciled = await this.reconcileQueuePauseStateIfDivergent();
       return {
-        migrated: v6Events.length > 0 || v7Events.length > 0 || runRepairEvents.length > 0 || reconciled,
+        migrated:
+          v6Events.length > 0
+          || v7Events.length > 0
+          || v10Events.length > 0
+          || runRepairEvents.length > 0
+          || reconciled,
         v6MigrationEvents: v6Events,
         v7MigrationEvents: v7Events,
+        v10MigrationEvents: v10Events,
         runRepairEvents
       };
     }
@@ -447,19 +535,81 @@ export class WorkspaceStateStore {
       await this.migrateQueueRegistryIfNeeded();
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
+      const v10Events = await this.migrateV9ToV10IfNeeded();
       await this.reconcileQueuePauseStateIfDivergent();
-      return { migrated: true, v6MigrationEvents: v6Events, v7MigrationEvents: v7Events, runRepairEvents };
+      return {
+        migrated: true,
+        v6MigrationEvents: v6Events,
+        v7MigrationEvents: v7Events,
+        v10MigrationEvents: v10Events,
+        runRepairEvents
+      };
     }
     throw new Error(
       `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
     );
   }
 
+  /**
+   * Feature 092 — the pre-v10 migration chain, read through one seam.
+   *
+   * Every migrator numbered below v10 was written when `KEYS.queue` held a
+   * single `QueueState`, and each of them concerns exactly that one queue.
+   * After the v10 lift the key holds a map, so those readers would otherwise
+   * be handed a `Record` and try to migrate it as though it were a queue.
+   *
+   * The reserved queue is the right subject in both shapes: no non-default
+   * queue can exist at v9 or earlier, so the entry the lift produced under
+   * `DEFAULT_QUEUE_ID` *is* the record those migrators were written against.
+   * Reading through here keeps them byte-for-byte correct on a genuine v9
+   * record and idempotent on a lifted one.
+   */
+  private readLegacySingularQueue(): QueueState | null {
+    const raw = this.memento.get<unknown>(KEYS.queue);
+    if (raw === undefined || raw === null) return null;
+    if (Array.isArray((raw as QueueState).requests)) return raw as QueueState;
+    if (typeof raw === 'object') {
+      return (raw as QueueStateMap)[DEFAULT_QUEUE_ID] ?? null;
+    }
+    return null;
+  }
+
+  /** The write half of `readLegacySingularQueue()`; preserves the stored shape. */
+  private writeLegacySingularQueue(next: QueueState): Thenable<void> {
+    const raw = this.memento.get<unknown>(KEYS.queue);
+    const isMap =
+      raw !== undefined
+      && raw !== null
+      && typeof raw === 'object'
+      && !Array.isArray((raw as QueueState).requests);
+    if (!isMap) return this.memento.update(KEYS.queue, next);
+    return this.memento.update(KEYS.queue, { ...(raw as QueueStateMap), [DEFAULT_QUEUE_ID]: next });
+  }
+
+  /**
+   * Feature 092 (FR-001, FR-005) — the v9 → v10 forward migration.
+   *
+   * Runs *after* the v5 → v6 and v6 → v7 chains so each of those still sees
+   * the singular record it was written against, and it is the last step that
+   * changes the shape of `KEYS.queue`. Idempotent: a record already in map
+   * shape returns no events and is written back only if a per-entry lockstep
+   * repair was needed.
+   */
+  private async migrateV9ToV10IfNeeded(): Promise<readonly StateMigratedV9ToV10AuditEvent[]> {
+    const raw = this.memento.get<unknown>(KEYS.queue);
+    if (raw === undefined || raw === null) return [];
+    const result = migrateV9ToV10(raw, Date.now());
+    if (Object.keys(result.queueStates).length === 0) return [];
+    await this.memento.update(KEYS.queue, result.queueStates);
+    if (!result.migrated) return [];
+    return result.auditEvents;
+  }
+
   // BUG-001 self-heal: pre-fix persisted v6 state may have a stale legacy
   // `QueueState.paused` diverging from the authoritative
   // `QueueRegistry.entries[0].state`. Reconcile legacy → registry per FR-020.
   private async reconcileQueuePauseStateIfDivergent(): Promise<boolean> {
-    const persistedQueue = this.memento.get<QueueState>(KEYS.queue);
+    const persistedQueue = this.readLegacySingularQueue();
     const persistedRegistry = this.memento.get<QueueRegistry>(KEYS.queueRegistry);
     if (!persistedQueue || !persistedRegistry) return false;
     const defaultEntry = persistedRegistry.entries.find((e) => e.id === DEFAULT_QUEUE_ID);
@@ -478,7 +628,7 @@ export class WorkspaceStateStore {
         : pendingCount > 0
         ? 'idle-pending'
         : 'active-empty';
-    await this.memento.update(KEYS.queue, {
+    await this.writeLegacySingularQueue({
       ...persistedQueue,
       paused: registryPaused,
       pausedReason: correctedReason,
@@ -534,9 +684,9 @@ export class WorkspaceStateStore {
       }
       return;
     }
-    const lifted = migrateLegacyQueueState(this.memento.get<unknown>(KEYS.queue));
+    const lifted = migrateLegacyQueueState(this.readLegacySingularQueue());
     await this.memento.update(KEYS.queueRegistry, lifted.registry);
-    await this.memento.update(KEYS.queue, lifted.queueState);
+    await this.writeLegacySingularQueue(lifted.queueState);
     await this.memento.update(KEYS.queueDefaultId, lifted.defaultQueueId);
     if (lifted.quarantine !== null) {
       await this.memento.update(KEYS.queueMigrationQuarantine, lifted.quarantine);
@@ -550,7 +700,7 @@ export class WorkspaceStateStore {
     persistedNumeric: number | undefined
   ): Promise<readonly StateMigratedV5ToV6AuditEvent[]> {
     const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? null;
-    const queueState = this.memento.get<QueueState>(KEYS.queue) ?? null;
+    const queueState = this.readLegacySingularQueue();
     // Treat missing/legacy numeric version as v5 so the migration runs once
     // on first activation after the schema bump. A persisted numeric >= 6
     // skips (idempotent no-op).
@@ -580,14 +730,14 @@ export class WorkspaceStateStore {
       // Still persist the migrated shape (idempotent on default) but emit
       // no audit event.
       await this.memento.update(KEYS.queueRegistry, result.state.queueRegistry);
-      await this.memento.update(KEYS.queue, result.state.queueState);
+      await this.writeLegacySingularQueue(result.state.queueState);
       await this.memento.update(KEYS.queueDefaultId, DEFAULT_QUEUE_ID);
       return [];
     }
     // Persist the unified registry and queue state. Order matters: write
     // the registry first so concurrent readers see a consistent shape.
     await this.memento.update(KEYS.queueRegistry, result.state.queueRegistry);
-    await this.memento.update(KEYS.queue, result.state.queueState);
+    await this.writeLegacySingularQueue(result.state.queueState);
     await this.memento.update(KEYS.queueDefaultId, DEFAULT_QUEUE_ID);
     // If a WorkflowRun is persisted, ensure its `queueId` is `'default'`.
     // The WorkflowRun shape itself is unchanged; only the queueId field is
@@ -608,7 +758,7 @@ export class WorkspaceStateStore {
   private async migrateV6ToV7IfNeeded(
     persistedNumeric: number | undefined
   ): Promise<readonly StateMigratedV6ToV7AuditEvent[]> {
-    const queueState = this.memento.get<QueueState>(KEYS.queue) ?? null;
+    const queueState = this.readLegacySingularQueue();
     // No persisted queue yet (fresh workspace) — nothing to migrate; the empty
     // QueueState is already born in v7 shape via `getQueue()` and `setQueue()`.
     if (queueState === null) return [];
@@ -628,30 +778,83 @@ export class WorkspaceStateStore {
       result.queueState.requests.length === 0
       && result.queueState.inFlightId === null
       && result.queueState.paused === false;
-    await this.memento.update(KEYS.queue, result.queueState);
+    await this.writeLegacySingularQueue(result.queueState);
     if (isFreshWorkspace) return [];
     return result.auditEvents;
   }
 
-  public getQueue(): QueueState {
-    const persisted = this.memento.get<QueueState>(KEYS.queue);
-    if (!persisted) {
-      return {
-        requests: [],
-        inFlightId: null,
-        paused: false,
-        pausedReason: null,
-        updatedAt: Date.now(),
-        queueLifecycle: 'active-empty',
-        scheduledStartAt: null,
-        scheduledStartSource: null
-      };
+  /**
+   * Feature 092 (FR-006) — the raw v10 record: one `QueueState` per queue,
+   * keyed by queue id.
+   *
+   * A v9 record (a bare `QueueState`) still reads correctly here. That is not
+   * a second migration path: `initialize()` owns the write, and this is the
+   * projection that keeps a read taken before that write — an early snapshot
+   * pass, a test that seeds the memento directly — from seeing a queue with no
+   * tasks in it. It writes nothing.
+   */
+  private readQueueMap(): QueueStateMap {
+    const raw = this.memento.get<unknown>(KEYS.queue);
+    if (raw === undefined || raw === null) return {};
+    if (Array.isArray((raw as QueueState).requests)) {
+      return { [DEFAULT_QUEUE_ID]: raw as QueueState };
     }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as QueueStateMap;
+    }
+    return {};
+  }
+
+  private static bornEmptyQueue(): QueueState {
+    return {
+      requests: [],
+      inFlightId: null,
+      paused: false,
+      pausedReason: null,
+      updatedAt: Date.now(),
+      queueLifecycle: 'active-empty',
+      scheduledStartAt: null,
+      scheduledStartSource: null
+    };
+  }
+
+  /**
+   * One queue's execution state. `queueId` defaults to the reserved queue so
+   * every pre-092 caller keeps its meaning unchanged.
+   *
+   * An unknown id returns a born-empty `QueueState` and persists **nothing**
+   * (FR-007). Reading is not a way to create a queue — the registry is the
+   * only thing that decides which queues exist, and a read that fabricated an
+   * entry would let a typo'd id quietly become a real one.
+   */
+  public getQueue(queueId: string = DEFAULT_QUEUE_ID): QueueState {
+    const persisted = this.readQueueMap()[queueId];
+    if (!persisted) return WorkspaceStateStore.bornEmptyQueue();
     return ensureExtendedQueueShape(persisted);
   }
 
+  /** Every persisted queue's execution state, normalized. */
+  public getQueueStates(): QueueStateMap {
+    const map = this.readQueueMap();
+    const out: QueueStateMap = {};
+    for (const [queueId, state] of Object.entries(map)) {
+      out[queueId] = ensureExtendedQueueShape(state);
+    }
+    return out;
+  }
+
+  /** The ids that have persisted execution state. Not the registry. */
+  public getQueueStateIds(): readonly string[] {
+    return Object.keys(this.readQueueMap());
+  }
+
+  /** Whether `queueId` has persisted execution state, without creating any. */
+  public hasQueueState(queueId: string): boolean {
+    return Object.prototype.hasOwnProperty.call(this.readQueueMap(), queueId);
+  }
+
   /** @internal Full replacement seam for migrations and test setup only. */
-  public setQueue(queue: QueueState): Promise<void> {
+  public setQueue(queue: QueueState, queueId: string = DEFAULT_QUEUE_ID): Promise<void> {
     // Feature 065 — normalize via `ensureExtendedQueueShape` so a partial
     // QueueState (legacy callers / tests using `as never`) is persisted in
     // v7 shape (carries `queueLifecycle` + nullable `scheduledStart*`).
@@ -662,7 +865,20 @@ export class WorkspaceStateStore {
       requests: compactRequestPositions(queue.requests),
       updatedAt: Date.now()
     });
-    return this.serialize(KEYS.queue, () => this.memento.update(KEYS.queue, next)).then(() => {
+    return this.serialize(KEYS.queue, () =>
+      this.memento.update(KEYS.queue, { ...this.readQueueMap(), [queueId]: next })
+    ).then(() => {
+      this.notify(KEYS.queue);
+    });
+  }
+
+  /** @internal Drop one queue's execution state. Used by queue deletion. */
+  public deleteQueueState(queueId: string): Promise<void> {
+    return this.serialize(KEYS.queue, () => {
+      const map = { ...this.readQueueMap() };
+      delete map[queueId];
+      return this.memento.update(KEYS.queue, map);
+    }).then(() => {
       this.notify(KEYS.queue);
     });
   }
@@ -672,13 +888,20 @@ export class WorkspaceStateStore {
    * value is read after this mutation reaches the head of the queue chain,
    * preventing callers from committing a snapshot captured before another
    * queued mutation completed.
+   *
+   * Feature 092 — the mutation is scoped to one queue, but the *serialization*
+   * stays on `KEYS.queue`, because the whole map is one memento key and two
+   * concurrent read/modify/write cycles on different queues would still clobber
+   * each other's sibling entries. Per-queue concurrency is a property of what
+   * runs, not of how the record is written.
    */
   public updateQueue<T>(
-    mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T }
+    mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T },
+    queueId: string = DEFAULT_QUEUE_ID
   ): Promise<T> {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
-      const current = this.getQueue();
+      const current = this.getQueue(queueId);
       const mutation = mutate(current);
       const next = ensureExtendedQueueShape({
         ...mutation.queue,
@@ -686,11 +909,60 @@ export class WorkspaceStateStore {
         updatedAt: Date.now()
       });
       result = mutation.result;
+      await this.memento.update(KEYS.queue, { ...this.readQueueMap(), [queueId]: next });
+    }).then(() => {
+      this.notify(KEYS.queue);
+      return result;
+    });
+  }
+
+  /**
+   * Feature 092 — a read/modify/write over **every** queue's state as one
+   * write. `updateQueue()` above is the right primitive for all but one
+   * operation; moving a Task between queues is that one, because it removes
+   * from one entry and inserts into another and must not be able to half-land.
+   * Serialised on the same `KEYS.queue` chain, so it composes with the
+   * single-queue writer rather than racing it.
+   */
+  private updateQueueMap<T>(
+    mutate: (current: QueueStateMap) => { readonly queueStates: QueueStateMap; readonly result: T }
+  ): Promise<T> {
+    let result!: T;
+    return this.serialize(KEYS.queue, async () => {
+      const current = this.getQueueStates();
+      const mutation = mutate(current);
+      const next: QueueStateMap = {};
+      for (const [queueId, state] of Object.entries(mutation.queueStates)) {
+        next[queueId] = ensureExtendedQueueShape({
+          ...state,
+          requests: compactRequestPositions(state.requests),
+          updatedAt: Date.now()
+        });
+      }
+      result = mutation.result;
       await this.memento.update(KEYS.queue, next);
     }).then(() => {
       this.notify(KEYS.queue);
       return result;
     });
+  }
+
+  /**
+   * Which queue holds `taskId`, if any.
+   *
+   * Task ids are globally unique, so a Task-addressed mutation names a Task
+   * and not a queue. Before feature 092 the owning queue was a field on the
+   * row and the whole array was one record; now the map key is the authority,
+   * so the owner has to be found before the row can be written. Returns the
+   * first match — a Task in two queues at once is not a state the writers can
+   * produce, and scanning for a second one would only hide it if it happened.
+   */
+  private findTaskOwner(taskId: string): { queueId: string; request: FeatureRequest } | null {
+    for (const [queueId, state] of Object.entries(this.readQueueMap())) {
+      const request = state.requests?.find((r) => r.id === taskId);
+      if (request) return { queueId, request };
+    }
+    return null;
   }
 
   public getQueueRegistry(): QueueRegistry {
@@ -725,47 +997,30 @@ export class WorkspaceStateStore {
   }
 
   public getGlobalConcurrencyCap(): number {
-    // Feature 056 Track 4 (FR-018..FR-022) — v1 ships exactly one
-    // active run. `value === 1` (not the previous `>= 1 && <= 1`)
-    // reads as "the only currently-valid value"; legacy persisted
-    // values from when the schema permitted up to 5 saturate to 1.
-    // The companion setter rejects anything other than `1` outright
-    // so forward-written records cannot regress this property.
+    // Feature 092 (T056, FR-027) — the reader refuses an out-of-range value
+    // instead of saturating it to 1.
+    //
+    // Feature 056's saturation was defensible while the schema admitted
+    // exactly one value: every out-of-range record was a legacy artifact of a
+    // wider schema, and 1 was both the clamp and the only truth. Now that the
+    // schema *is* the wider one, silently returning 1 for a persisted 100
+    // would run the workspace at a twentieth of the operator's stated intent
+    // and say so only in a log line nobody reads. A refusal surfaces at the
+    // call site.
     const value = this.memento.get<number>(KEYS.queueGlobalConcurrencyCap);
-    if (typeof value === 'number' && Number.isInteger(value) && value === 1) {
-      return value;
-    }
-    // Any non-`1` persisted value silently saturates to 1. Emit a
-    // one-shot WARN per process so the operator notices and re-saves
-    // the setting rather than puzzling over why the queue runs at
-    // half-speed days later. We treat *every* invalid shape — legacy
-    // >1, 0, negative, NaN, non-number — uniformly so a corrupted
-    // memento entry surfaces with the same diagnostic affordance as
-    // a legacy >1 record. `undefined`/`null` (key never written) is
-    // the normal cold-start case and stays silent.
-    if (
-      value !== undefined &&
-      value !== null &&
-      !this.hasWarnedAboutConcurrencyCapSaturation
-    ) {
-      this.hasWarnedAboutConcurrencyCapSaturation = true;
-      this.logger?.warn(
-        `schegent.queue.globalConcurrencyCap: persisted value ${safeDisplay(value)} is not 1; saturated to 1 — re-save the setting via the queue settings UI to clear this warning.`
-      );
-    }
-    return 1;
+    // The key having never been written is the normal cold-start case, not a
+    // corruption: fall back to the schema default the five pinning sites agree
+    // on.
+    if (value === undefined || value === null) return DEFAULT_GLOBAL_CONCURRENCY_CAP;
+    assertGlobalConcurrencyCap(value, 'persisted');
+    return value;
   }
 
   public setGlobalConcurrencyCap(value: number): Promise<void> {
-    // Feature 056 Track 4 (FR-018..FR-022) — Reject any value outside
-    // [1, 1]; the package contribution, host validator, and
+    // Feature 092 (T056, FR-026/FR-027) — `[1, MAX_QUEUES]`. The package
+    // contribution, `SETTINGS_SCHEMA`, the host validator and
     // `QueueManager.saveQueueSettings` all share this invariant.
-    if (!Number.isInteger(value) || value < 1 || value > 1) {
-      throw new QueueMutationRejected(
-        'invalid-global-concurrency-cap',
-        `globalConcurrencyCap must be an integer in [1, 1] (got ${value})`
-      );
-    }
+    assertGlobalConcurrencyCap(value, 'requested');
     return this.serialize(KEYS.queueGlobalConcurrencyCap, () =>
       this.memento.update(KEYS.queueGlobalConcurrencyCap, value)
     ).then(() => {
@@ -773,12 +1028,44 @@ export class WorkspaceStateStore {
     });
   }
 
+  /**
+   * Feature 092 (T065, FR-037) — the shared-working-tree notice's answer.
+   *
+   * Three states, and the third is not a default: `null` is "the workspace has
+   * never stopped being single-queue, so the question has not been asked",
+   * `'pending'` is "asked, unanswered", `'dismissed'` is "answered". Collapsing
+   * `null` into `'dismissed'` would suppress the notice for every workspace
+   * that has not yet earned it; collapsing it into `'pending'` would show it to
+   * a workspace with one queue, which has no shared working tree to warn about.
+   */
+  public getConcurrencyNotice(): ConcurrencyNotice | null {
+    const value = this.memento.get<unknown>(KEYS.concurrencyNotice);
+    return value === 'pending' || value === 'dismissed' ? value : null;
+  }
+
+  /**
+   * Feature 092 (T065, FR-037) — record the notice's state.
+   *
+   * Deliberately dumb: this writes what it is given, and the once-per-workspace
+   * rule lives at the two call sites in `QueueManager` that own the triggers
+   * (`createQueue` arms only from `null`, `dismissConcurrencyNotice` answers
+   * only from `'pending'`). Putting the rule here as well would give the
+   * invariant two homes and let them disagree.
+   */
+  public setConcurrencyNotice(value: ConcurrencyNotice): Promise<void> {
+    return this.serialize(KEYS.concurrencyNotice, () =>
+      this.memento.update(KEYS.concurrencyNotice, value)
+    ).then(() => {
+      this.notify(KEYS.concurrencyNotice);
+    });
+  }
+
   public getRequestsForQueue(queueId: string): FeatureRequest[] {
     if (!findQueue(this.getQueueRegistry(), queueId)) {
       throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
     }
-    return this.getQueue()
-      .requests.filter((request) => request.queueId === queueId)
+    return this.getQueue(queueId)
+      .requests.slice()
       .sort((a, b) => a.position - b.position);
   }
 
@@ -794,8 +1081,12 @@ export class WorkspaceStateStore {
       // BUG-004 — `insertAt` is the logical index into the pending list, and
       // the position field must mirror that index for the queue projector's
       // `position ascending` sort to honor FIFO order.
+      //
+      // Feature 092 — `queue` is now the target queue's own state, so the cap
+      // this counts against is per queue by construction rather than by
+      // filtering a shared array (FR-005).
       const pendingInTarget = queue.requests
-        .filter((item) => item.queueId === queueId && item.status === 'pending')
+        .filter((item) => item.status === 'pending')
         .sort((a, b) => a.position - b.position);
       if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
         throw new QueueMutationRejected(
@@ -819,12 +1110,9 @@ export class WorkspaceStateStore {
         updatedAt: now
       };
       const denseIndex = new Map<string, number>();
-      const allInTarget = queue.requests
-        .filter((item) => item.queueId === queueId)
-        .sort((a, b) => a.position - b.position);
+      const allInTarget = queue.requests.slice().sort((a, b) => a.position - b.position);
       allInTarget.forEach((item, idx) => denseIndex.set(item.id, idx));
       const shifted = queue.requests.map((item) => {
-        if (item.queueId !== queueId) return item;
         const dense = denseIndex.get(item.id) ?? item.position;
         const repositioned = dense >= insertAt ? dense + 1 : dense;
         if (repositioned === item.position) return item;
@@ -834,10 +1122,14 @@ export class WorkspaceStateStore {
         queue: { ...queue, requests: [...shifted, nextRequest] },
         result: nextRequest
       };
-    });
+    }, queueId);
   }
 
   public async removePendingRequest(taskId: string): Promise<FeatureRequest> {
+    const owner = this.findTaskOwner(taskId);
+    if (!owner) {
+      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+    }
     return this.updateQueue((queue) => {
       const target = queue.requests.find((request) => request.id === taskId);
       if (!target) {
@@ -856,14 +1148,18 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    });
+    }, owner.queueId);
   }
 
   public getRequest(taskId: string): FeatureRequest | null {
-    return this.getQueue().requests.find((request) => request.id === taskId) ?? null;
+    return this.findTaskOwner(taskId)?.request ?? null;
   }
 
   public async removeRequest(taskId: string): Promise<FeatureRequest> {
+    const owner = this.findTaskOwner(taskId);
+    if (!owner) {
+      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+    }
     return this.updateQueue((queue) => {
       const target = queue.requests.find((request) => request.id === taskId);
       if (!target) {
@@ -877,13 +1173,17 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    });
+    }, owner.queueId);
   }
 
   public async modifyPendingRequest(
     taskId: string,
     updates: { description?: string }
   ): Promise<FeatureRequest> {
+    const owner = this.findTaskOwner(taskId);
+    if (!owner) {
+      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+    }
     return this.updateQueue((queue) => {
       const target = queue.requests.find((request) => request.id === taskId);
       if (!target) {
@@ -911,7 +1211,7 @@ export class WorkspaceStateStore {
         },
         result: nextTarget
       };
-    });
+    }, owner.queueId);
   }
 
   // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
@@ -923,6 +1223,10 @@ export class WorkspaceStateStore {
   // translating the operator-emitted global `orderedItems` index into a
   // pending-array index before invoking this writer.
   public async reorderPendingRequest(taskId: string, position: number): Promise<FeatureRequest> {
+    const owner = this.findTaskOwner(taskId);
+    if (!owner) {
+      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
+    }
     return this.updateQueue((queue) => {
       const target = queue.requests.find((request) => request.id === taskId);
       if (!target) {
@@ -934,9 +1238,10 @@ export class WorkspaceStateStore {
           `Task ${taskId} is not pending`
         );
       }
-      const queueId = target.queueId ?? DEFAULT_QUEUE_ID;
+      // Feature 092 — the peers are the addressed queue's own pending rows;
+      // the map key already partitions them.
       const pendingPeers = queue.requests
-        .filter((request) => request.queueId === queueId && request.status === 'pending')
+        .filter((request) => request.status === 'pending')
         .sort((a, b) => a.position - b.position);
       if (!Number.isInteger(position) || position < 0 || position >= pendingPeers.length) {
         throw new QueueMutationRejected(
@@ -962,9 +1267,25 @@ export class WorkspaceStateStore {
         },
         result: byId.get(taskId) ?? target
       };
-    });
+    }, owner.queueId);
   }
 
+  /**
+   * Feature 092 (FR-017) — move a pending Task from the queue that holds it to
+   * another one.
+   *
+   * The Task's own content is carried verbatim: description, `runPlan`,
+   * `pipelineId`, `rerun`, retry count and timestamps all survive, because the
+   * operator is re-filing work, not re-authoring it. Only `queueId`, `position`
+   * and `updatedAt` change.
+   *
+   * A same-queue "move" is a reorder and delegates to the reorder writer, so
+   * there is exactly one implementation of within-queue position arithmetic.
+   * A genuine cross-queue move goes through `updateQueueMap()` as a single
+   * write — removing the row from the source and inserting it into the target
+   * in two writes would leave a window where the Task is in neither queue, or
+   * in both.
+   */
   public async movePendingRequest(
     taskId: string,
     params: { targetQueueId: string; position?: number | null }
@@ -975,21 +1296,21 @@ export class WorkspaceStateStore {
         `Unknown queue id: ${params.targetQueueId}`
       );
     }
-    const queue = this.getQueue();
-    const target = queue.requests.find((request) => request.id === taskId);
-    if (!target) {
+    const owner = this.findTaskOwner(taskId);
+    if (!owner) {
       throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
     }
+    const target = owner.request;
     if (target.status !== 'pending') {
       throw new QueueMutationRejected(
         'task-not-in-pending-state',
         `Task ${taskId} is not pending`
       );
     }
-    const targetPending = queue.requests.filter(
-      (request) => request.queueId === params.targetQueueId && request.status === 'pending'
+    const sameQueue = owner.queueId === params.targetQueueId;
+    const targetPending = this.getQueue(params.targetQueueId).requests.filter(
+      (request) => request.status === 'pending'
     );
-    const sameQueue = (target.queueId ?? DEFAULT_QUEUE_ID) === params.targetQueueId;
     if (!sameQueue && targetPending.length >= MAX_PENDING_TASKS_PER_QUEUE) {
       throw new QueueMutationRejected(
         'task-cap-reached',
@@ -1014,24 +1335,31 @@ export class WorkspaceStateStore {
       position: insertAt,
       updatedAt: now
     };
-    return this.updateQueue((current) => ({
-      queue: {
-        ...current,
-        requests: [
-          ...current.requests
-            .filter((request) => request.id !== taskId)
-            .map((request) =>
-              request.queueId === params.targetQueueId &&
-              request.status === 'pending' &&
-              request.position >= insertAt
-                ? { ...request, position: request.position + 1, updatedAt: now }
-                : request
-            ),
-          moved
-        ]
-      },
-      result: moved
-    }));
+    return this.updateQueueMap((current) => {
+      const source = current[owner.queueId] ?? WorkspaceStateStore.bornEmptyQueue();
+      const destination = current[params.targetQueueId] ?? WorkspaceStateStore.bornEmptyQueue();
+      return {
+        queueStates: {
+          ...current,
+          [owner.queueId]: {
+            ...source,
+            requests: source.requests.filter((request) => request.id !== taskId)
+          },
+          [params.targetQueueId]: {
+            ...destination,
+            requests: [
+              ...destination.requests.map((request) =>
+                request.status === 'pending' && request.position >= insertAt
+                  ? { ...request, position: request.position + 1, updatedAt: now }
+                  : request
+              ),
+              moved
+            ]
+          }
+        },
+        result: moved
+      };
+    });
   }
 
   public getRun(): WorkflowRun | null {
@@ -1070,6 +1398,30 @@ export class WorkspaceStateStore {
   public setLock(lock: WorkspaceLock | null): Promise<void> {
     return this.serialize(KEYS.lock, () => this.memento.update(KEYS.lock, lock)).then(() => {
       this.notify(KEYS.lock);
+    });
+  }
+
+  /**
+   * Feature 092 (T049, FR-031) — every queue's execution lease.
+   *
+   * Returned as a plain record so `ExecutionLeaseManager` owns the staleness
+   * arithmetic in one place; this accessor makes no judgement about whether a
+   * lease is live.
+   */
+  public getExecutionLeases(): Record<string, ExecutionLease> {
+    const raw = this.memento.get<Record<string, ExecutionLease>>(KEYS.executionLeases);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    return raw;
+  }
+
+  public setExecutionLease(queueId: string, lease: ExecutionLease | null): Promise<void> {
+    return this.serialize(KEYS.executionLeases, () => {
+      const next = { ...this.getExecutionLeases() };
+      if (lease === null) delete next[queueId];
+      else next[queueId] = lease;
+      return this.memento.update(KEYS.executionLeases, next);
+    }).then(() => {
+      this.notify(KEYS.executionLeases);
     });
   }
 
@@ -1178,12 +1530,49 @@ export class WorkspaceStateStore {
       }
       // A violation here is a defect in the caller, not an operator-facing
       // outcome, so it throws rather than joining the refusal arm.
-      assertConnectedRunInvariants(next);
+      //
+      // Feature 092 (T078, FR-045) — the registry is supplied here and only
+      // here. This is the single write path, so it is the one place that both
+      // holds the registry and sees every candidate record; the aggregate
+      // module itself must stay registry-free because the migrator loads it
+      // with nothing but a memento.
+      assertConnectedRunInvariants(next, {
+        knownQueueIds: new Set(this.getQueueRegistry().entries.map((entry) => entry.id))
+      });
       await this.memento.update(KEYS.connectedRuns, { ...runs, [next.connectedRunId]: next });
       result = { outcome: 'written', run: next };
     });
     if (result.outcome === 'written') this.notify(KEYS.connectedRuns);
     return result;
+  }
+
+  /**
+   * Feature 092 (T083, FR-016a) — terminate connected runs outright.
+   *
+   * The aggregate stores no lifecycle, so there is no `status` to set to
+   * `terminated`; removing the record IS the termination. No compare-and-set:
+   * the caller is a confirmed queue deletion, and the queue these runs are
+   * bound to no longer exists, so there is no revision at which keeping one
+   * would be correct.
+   *
+   * Serialized on the same key as the write path, so a delete cannot interleave
+   * between a compare-and-set's read and its update.
+   */
+  public async deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> {
+    if (connectedRunIds.length === 0) return 0;
+    let removed = 0;
+    await this.serialize(KEYS.connectedRuns, async () => {
+      const runs = { ...this.getConnectedRuns() };
+      for (const id of connectedRunIds) {
+        if (runs[id] === undefined) continue;
+        delete runs[id];
+        removed += 1;
+      }
+      if (removed === 0) return;
+      await this.memento.update(KEYS.connectedRuns, runs);
+    });
+    if (removed > 0) this.notify(KEYS.connectedRuns);
+    return removed;
   }
 
   public async reset(): Promise<void> {

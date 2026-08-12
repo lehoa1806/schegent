@@ -34,6 +34,7 @@ import {
 import { DEFAULT_QUEUE_ID, makeDefaultRegistry } from '../../src/queue/queue-registry';
 import type { QueueRegistry } from '../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
+import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { AuditEntry } from '../../src/audit/audit-entry';
@@ -147,6 +148,15 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     expect(migrated.scheduledStartAt).toBeNull();
     expect(migrated.scheduledStartSource).toBeNull();
     expect(migrated.inFlightId).toBe('r-in-flight');
+
+    // Feature 092 (T017) — the v6 → v7 chain still runs first, and the result
+    // is then carried on to the shipped version, so what finally lands under
+    // `KEYS.queue` is the v10 map keyed by queue id. Asserted against the raw
+    // memento; `store.getQueue()` resolves the default key under either shape.
+    expect(memento.get<number>(KEYS.schemaVersionNumeric)).toBe(STATE_SCHEMA_VERSION);
+    const persisted = memento.get<Record<string, QueueState>>(KEYS.queue);
+    expect(Object.keys(persisted ?? {})).toEqual([DEFAULT_QUEUE_ID]);
+    expect(persisted?.[DEFAULT_QUEUE_ID].queueLifecycle).toBe('running');
   });
 
   it('(b) paused: true → operator-paused, scheduledStartSource: null', async () => {

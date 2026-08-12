@@ -128,7 +128,10 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
     expect(persistedRegistry?.entries[0].pauseSource).toBe('operator');
     expect(persistedRegistry?.entries[0].schedule).toBeNull();
     // The persisted queue state's requests are all on the unified queue.
-    const persistedQueue = memento.get<QueueState>(KEYS.queue);
+    // Feature 092 — the v5 → v6 coalesce still produces exactly one queue's
+    // worth of state; the v9 → v10 lift then files it under `'default'`, so
+    // the record is read out of the map rather than off the key directly.
+    const persistedQueue = memento.get<Record<string, QueueState>>(KEYS.queue)?.[DEFAULT_QUEUE_ID];
     expect(persistedQueue?.requests.every((r) => r.queueId === DEFAULT_QUEUE_ID)).toBe(true);
     expect(persistedQueue?.requests.map((r) => r.id)).toEqual(['r1', 'r2', 'r3']);
     // Numeric schema version is now 6.

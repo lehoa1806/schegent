@@ -36,6 +36,7 @@ import type {
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 import { renderActionBody, type ActionKey, type ActionCopyContext } from '../../lib/action-copy';
 
 let nextCorrelationId = 0;
@@ -98,25 +99,28 @@ function buildQueue(
   } as unknown as QueueProjection;
 }
 
-function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, phases, activeRunId, activeFeature, ...rest } = overrides;
   const queue = overrides.queue ?? buildQueue();
   return {
-    status: overrides.status ?? 'idle',
+    schemaVersion: 4,
     isPrimary: true,
     queue,
-    phases: (overrides.phases ?? []) as readonly PhaseTile[],
+    // Feature 092 — `hasActiveRun` now reads the default queue's `inFlightRun`
+    // rather than a root `activeRunId`, so the fold is what makes the
+    // `activeRunId: 'run-active'` call sites below keep meaning "a run is up".
+    queues: foldLegacyRun({
+      status: status ?? 'idle',
+      phases: (phases ?? []) as readonly PhaseTile[],
+      activeRunId: activeRunId ?? null,
+      activeFeature: activeFeature ?? null
+    }),
     monitor: null,
-    activeRunId: overrides.activeRunId ?? null,
-    activeFeature: overrides.activeFeature ?? null,
-    activePipeline: null,
     availablePhases: [],
     availablePipelines: (overrides.availablePipelines ?? []) as readonly PipelineDefinition[],
     history: (overrides.history ?? []) as readonly HistoryEntry[],
-    manualPauseAt: null,
-    manualPauseCause: null,
-    phaseOverrides: [],
     generalSettings: IDLE_GENERAL_SETTINGS,
-    ...overrides
+    ...rest
   } as unknown as unknown as WorkflowSnapshot;
 }
 

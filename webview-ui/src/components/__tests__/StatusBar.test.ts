@@ -3,6 +3,7 @@ import { render, cleanup } from '@testing-library/svelte';
 import StatusBar from '../StatusBar.svelte';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import type { WorkflowSnapshot, WorkflowStatus } from '../../lib/snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 
 afterEach(() => cleanup());
 
@@ -16,13 +17,27 @@ const SEVEN_PHASES = [
   { name: 'finalize', order: 7, state: 'not-started', iteration: 0, lastResult: null, elapsedMs: 0, subProgress: null }
 ];
 
-function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, activeFeature, phases, liveActivity, workflowElapsedMs, ...rest } = overrides;
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze(SEVEN_PHASES) as unknown as WorkflowSnapshot['phases'],
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: status ?? 'idle',
+      activeFeature: activeFeature ?? null,
+      phases: phases ?? (Object.freeze(SEVEN_PHASES) as unknown as LegacyRunFields['phases']),
+      liveActivity: liveActivity ?? (Object.freeze({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: null
+      })),
+      workflowElapsedMs: workflowElapsedMs ?? null
+    }),
     queue: Object.freeze({
       orderedItems: [],
       inFlight: null,
@@ -31,18 +46,10 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
       paused: false
     }) as unknown as WorkflowSnapshot['queue'],
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-05-10T00:00:00.000Z',
-    ...overrides
+    ...rest
   } as unknown as WorkflowSnapshot);
 }
 

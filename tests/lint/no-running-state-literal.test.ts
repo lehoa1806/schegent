@@ -48,6 +48,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Feature 065 — coordinator owns the in-process scheduled-start timer and
   // emits 'already-running' as a superseder literal in the audit payload.
   'src/services/scheduled-start-coordinator.ts',
+  // Feature 092 — drain step 4b reads `controller.running`, the boolean
+  // accessor on `WorkflowController` that reports whether the single shared
+  // `RunDriver` is mid-flight. Same reason `src/commands/clear-all.ts` and
+  // `src/services/guarded-run-service.ts` are here: a property name that
+  // happens to share the substring, never the pinned per-task status
+  // discriminator, which this file neither reads nor writes.
+  'src/services/auto-drain-coordinator.ts',
   // Feature 065 — v6→v7 derivation table maps (inFlight, paused, pending)
   // tuples to a `queueLifecycle` value; `'running'` appears as a target.
   'src/state/queue-state-migrator.ts',
@@ -89,7 +96,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
   'webview-ui/src/components/settings/BackendHealthSection.svelte',
   'src/metrics/metrics-service.ts',
-  'src/services/workflow-run-factory.ts'
+  'src/services/workflow-run-factory.ts',
+  // Feature 092 — the webview's label map for `QueueLifecycle`, whose own
+  // discriminator legitimately has a `running` member. That is the deliberately
+  // narrow queue-lifecycle surface governed by
+  // `queue-lifecycle-literal-allowlist.test.ts`, not the pinned per-task status
+  // projection this guard protects; the two are distinct vocabularies and this
+  // file touches only the former.
+  'webview-ui/src/lib/queue-lifecycle-label.ts'
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

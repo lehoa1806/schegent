@@ -17,6 +17,7 @@ import type {
   QueueSummary,
   WorkflowSnapshot
 } from '../snapshot-types';
+import { foldLegacyRun } from './queue-runtime-fixture';
 
 function phase(name: string, order: number, state: PhaseTile['state']): PhaseTile {
   return Object.freeze({
@@ -63,15 +64,29 @@ function queueSummary(id: string): QueueSummary {
 
 function snapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'running',
-    activeFeature: null,
-    phases: Object.freeze([
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'running',
+      activeFeature: null,
+      phases: Object.freeze([
       phase('speckit-specify', 1, 'completed'),
       phase('speckit-plan', 2, 'active'),
       phase('speckit-tasks', 3, 'not-started')
-    ]),
+      ]),
+      liveActivity: Object.freeze({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: 0
+      }),
+      workflowElapsedMs: 0,
+      activePipeline: Object.freeze({ id: 'standard', name: 'Standard' })
+    }),
     queue: Object.freeze({
       inFlight: null,
       pending: Object.freeze([]) as readonly QueueItem[],
@@ -81,18 +96,9 @@ function snapshot(queue: Partial<QueueProjection>): WorkflowSnapshot {
       ...queue
     }),
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: 0
-    }),
-    workflowElapsedMs: 0,
     monitor: null,
     history: Object.freeze([]) as readonly HistoryEntry[],
     producedAt: '2026-05-10T12:00:00.000Z',
-    activePipeline: Object.freeze({ id: 'standard', name: 'Standard' }),
     availablePipelines: Object.freeze([
       Object.freeze({
         id: 'standard',

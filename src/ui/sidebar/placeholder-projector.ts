@@ -3,15 +3,13 @@ import type { Disposable } from '../../state/workspace-state';
 import type { ProjectorHandle, ProjectorListener } from './projector-handle';
 import {
   AUDIT_TAIL_MAX,
-  IDLE_DELAYED_RETRY,
   IDLE_EVIDENCE_HEALTH,
   IDLE_GENERAL_SETTINGS,
-  IDLE_LIVE_ACTIVITY,
   IDLE_SESSION_ARTIFACTS,
   IDLE_TRUST_PROJECTION,
   SCHEMA_VERSION,
-  buildEmptyPhases,
   type AuditTailEntry,
+  type QueueRuntime,
   type WorkflowSnapshot
 } from './snapshot';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
@@ -57,9 +55,9 @@ export class PlaceholderProjector implements ProjectorHandle {
     this.snapshot = Object.freeze({
       schemaVersion: SCHEMA_VERSION,
       isPrimary: true,
-      status: 'idle' as const,
-      activeFeature: null,
-      phases: Object.freeze(buildEmptyPhases().map((p) => Object.freeze(p))),
+      // Feature 092 (T091) — a placeholder window has read no registry, so it
+      // publishes no queue runtimes. The reason banner is the whole content.
+      queues: Object.freeze([]) as readonly QueueRuntime[],
       queue: Object.freeze({
         inFlight: null,
         pending: Object.freeze([]) as readonly never[],
@@ -72,17 +70,9 @@ export class PlaceholderProjector implements ProjectorHandle {
         scheduledStartAt: null,
         scheduledStartSource: null
       }),
-      phaseOverrides: Object.freeze([]),
-      manualPauseAt: null,
-      manualPauseCause: null,
-      phaseBreakpoints: Object.freeze([]),
-      resumeTargetPhaseId: null,
-      activeRunId: null,
       defaultRunnerKind: 'claude',
       auditTail: tail.slice(-AUDIT_TAIL_MAX),
       debugLogTail: Object.freeze([]),
-      liveActivity: IDLE_LIVE_ACTIVITY,
-      workflowElapsedMs: null,
       monitor: null,
       history: Object.freeze([]) as readonly never[],
       producedAt,
@@ -91,7 +81,6 @@ export class PlaceholderProjector implements ProjectorHandle {
       availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
       availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
       backendPingState: Object.freeze({ status: 'idle' as const }),
-      delayedRetry: IDLE_DELAYED_RETRY,
       generalSettings: IDLE_GENERAL_SETTINGS,
       sessionArtifacts: IDLE_SESSION_ARTIFACTS,
       evidenceHealth: IDLE_EVIDENCE_HEALTH,

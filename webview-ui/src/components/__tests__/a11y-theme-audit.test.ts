@@ -8,6 +8,7 @@ import QueueItemActions from '../QueueItemActions.svelte';
 import HistorySection from '../HistorySection.svelte';
 import Dashboard from '../Dashboard.svelte';
 import type { CliMonitorState, HistoryEntry, QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
+import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
 
 afterEach(() => cleanup());
 
@@ -66,11 +67,24 @@ function buildHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry 
 function buildSnapshot(): WorkflowSnapshot {
   const pending = Object.freeze([buildQueueItem()]) as readonly QueueItem[];
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'running',
-    activeFeature: { id: 'feat-1', label: 'specs/001-x', startedAt: '2026-05-10T00:00:00.000Z' },
-    phases: Object.freeze([]),
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'running',
+      activeFeature: { id: 'feat-1', label: 'specs/001-x', startedAt: '2026-05-10T00:00:00.000Z' },
+      phases: Object.freeze([]),
+      liveActivity: Object.freeze({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: null
+      }),
+      workflowElapsedMs: 0
+    }),
     queue: Object.freeze({
       inFlight: null,
       pending,
@@ -79,14 +93,6 @@ function buildSnapshot(): WorkflowSnapshot {
       orderedItems: pending
     }),
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: 0,
     monitor: buildMonitor(),
     history: Object.freeze([buildHistoryEntry()]) as readonly HistoryEntry[],
     producedAt: '2026-05-10T00:00:00.000Z'

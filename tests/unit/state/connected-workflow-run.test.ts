@@ -5,8 +5,11 @@
 // write, and a coordinator test can only ever sample the paths it happens to
 // exercise.
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 import {
   COMPARED_MAX_LENGTH,
@@ -16,6 +19,7 @@ import {
   assertConnectedRunInvariants,
   createConnectedRun,
   renderCompared,
+  resolveBoundQueueId,
   type ConnectedWorkflowRun,
   type RoutingDecision
 } from '../../../src/state/connected-workflow-run';
@@ -330,5 +334,131 @@ describe('connected run — invariant 7: no content', () => {
       expect(value.length).toBeLessThanOrEqual(COMPARED_MAX_LENGTH);
       expect(value.startsWith('/')).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 092 (T071, T072, US3) — the queue binding.
+//
+// One additive optional field, and everything below is a property of its being
+// optional: a record written before this feature carries none, so `undefined`
+// has to mean the default queue at read time rather than "unbound". That is
+// what makes the field additive with no migration entry (FR-046, plan D7) —
+// `KEYS.connectedRuns` is a separate key precisely so pre-feature records
+// resolve rather than fail, and a read-time default follows that precedent.
+// ---------------------------------------------------------------------------
+
+describe('connected run — the queue binding (FR-041, FR-045, FR-046)', () => {
+  const known = new Set([DEFAULT_QUEUE_ID, 'q-release']);
+
+  it('carries the binding as a declared field when one is supplied', () => {
+    const run = createConnectedRun({
+      connectedRunId: 'cr-1',
+      workflowId: 'wf-triage',
+      graph: graph(),
+      pipelines: pipelines(),
+      startedAt: 1_000,
+      queueId: 'q-release'
+    });
+    expect(run.queueId).toBe('q-release');
+    expect(Object.keys(run).sort()).toEqual([
+      'connectedRunId',
+      'decisions',
+      'graph',
+      'nodes',
+      'pipelines',
+      'queueId',
+      'revision',
+      'startedAt',
+      'workflowId'
+    ]);
+  });
+
+  it('is fixed at start: every later mutation carries it forward unchanged', () => {
+    const run = createConnectedRun({
+      connectedRunId: 'cr-1',
+      workflowId: 'wf-triage',
+      graph: graph(),
+      pipelines: pipelines(),
+      startedAt: 1_000,
+      queueId: 'q-release'
+    });
+    const withAttempt = appendAttempt(run, 'n-triage', { queueItemId: 'q-1', startedAt: 1_001 });
+    const withDecision = appendDecision(withAttempt, decision());
+    expect(withAttempt.queueId).toBe('q-release');
+    expect(withDecision.queueId).toBe('q-release');
+    expect(resolveBoundQueueId(withDecision)).toBe('q-release');
+  });
+
+  it('resolves an absent binding to the default queue on read (FR-046)', () => {
+    const run = started();
+    expect(run.queueId).toBeUndefined();
+    expect(resolveBoundQueueId(run)).toBe(DEFAULT_QUEUE_ID);
+    // No migration entry: a record with no binding satisfies the invariants as
+    // it stands, which is what lets it load rather than be lifted.
+    expect(() => assertConnectedRunInvariants(run, { knownQueueIds: known })).not.toThrow();
+  });
+
+  it('refuses a binding that names no registry entry, when the registry is in view', () => {
+    const run = { ...started(), queueId: 'q-deleted' };
+    expect(() => assertConnectedRunInvariants(run, { knownQueueIds: known })).toThrow(
+      ConnectedRunInvariantError
+    );
+    // Without the registry the check is not merely skipped by accident — the
+    // aggregate module holds no registry, and a caller that cannot supply one
+    // (the migrator reading a memento) gets the shape checks and no more.
+    expect(() => assertConnectedRunInvariants(run)).not.toThrow();
+  });
+
+  it('refuses a binding that is not a non-empty string', () => {
+    for (const queueId of ['', 42, null]) {
+      expect(() =>
+        assertConnectedRunInvariants({ ...started(), queueId } as unknown as ConnectedWorkflowRun)
+      ).toThrow(ConnectedRunInvariantError);
+    }
+  });
+});
+
+describe('a Task carries no Workflow graph (T072, FR-040a)', () => {
+  // Decision D1 resolved to Reading B: a Workflow executes as N Tasks
+  // coordinated by one aggregate. The graph and the traversal position live on
+  // the aggregate; a Task stays a single-Pipeline unit of work. This is a
+  // negative property of a persisted shape, so it is pinned by scanning the
+  // declaration — the same way the forbidden-construct scan pins "a Workflow
+  // condition has no string form".
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../../src/queue/feature-request.ts'),
+    'utf8'
+  );
+  const declaration = source.slice(
+    source.indexOf('export interface FeatureRequest {'),
+    source.indexOf('export interface QueueState {')
+  );
+
+  it('declares no graph blueprint and no in-item traversal cursor', () => {
+    expect(declaration.length).toBeGreaterThan(0);
+    for (const forbidden of [
+      /^\s*(readonly\s+)?graph\??\s*:/m,
+      /^\s*(readonly\s+)?workflow(Id|Graph|Definition)?\??\s*:/m,
+      /^\s*(readonly\s+)?(current|cursor|currentNode|nodeCursor|nodeId)\??\s*:/m,
+      /^\s*(readonly\s+)?connectedRunId\??\s*:/m
+    ]) {
+      expect(declaration).not.toMatch(forbidden);
+    }
+  });
+
+  it('leaves the graph on the aggregate, which is where the binding also lives', () => {
+    const run = createConnectedRun({
+      connectedRunId: 'cr-1',
+      workflowId: 'wf-triage',
+      graph: graph(),
+      pipelines: pipelines(),
+      startedAt: 1_000,
+      queueId: 'q-release'
+    });
+    // The aggregate references its children by queue-item id and nothing else,
+    // so membership is readable in one direction only: aggregate → Task.
+    expect(run.graph.nodes).toHaveLength(3);
+    expect(Object.keys(run.nodes)).toEqual([]);
   });
 });

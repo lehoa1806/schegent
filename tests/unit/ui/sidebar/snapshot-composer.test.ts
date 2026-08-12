@@ -344,6 +344,8 @@ describe('pipelineCatalog projection — absent projection is tolerated', () => 
     const snapshot = projector.getCurrentSnapshot();
     projector.dispose();
     expect(snapshot.pipelineCatalog).toBeUndefined();
-    expect(snapshot.schemaVersion).toBe(3);
+    // Feature 092 (T090) — the envelope version this optional field is tolerated
+    // at; the per-queue reshape moved it 3 -> 4.
+    expect(snapshot.schemaVersion).toBe(4);
   });
 });

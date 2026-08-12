@@ -58,7 +58,14 @@ import {
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_EXPORT_PROCESS_YAML,
-  CMD_PREFLIGHT_PROCESS_YAML
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_CREATE_QUEUE,
+  CMD_RENAME_QUEUE,
+  CMD_DELETE_QUEUE,
+  CMD_SET_QUEUE_SCHEDULE,
+  CMD_CLEAR_QUEUE_SCHEDULE,
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_MOVE_TASK
 } from '../../../../src/ui/sidebar/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
@@ -128,7 +135,21 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   // Feature 063 — atomic Clean All, and the confirmation-suppression
   // preference write.
   CMD_CLEAR_ALL,
-  CMD_SET_CONFIRM_SUPPRESSION
+  CMD_SET_CONFIRM_SUPPRESSION,
+  // Feature 092 (FR-019, FR-020) — the seven queue commands Feature 030
+  // retired when the registry collapsed to one queue. Each writes the queue
+  // registry memento: six mutate a registry entry (create, rename, delete,
+  // arm/clear a scheduled start, save a queue's settings) and CMD_MOVE_TASK
+  // moves a Task between two entries, so it writes both. They are gated for
+  // the same reason as every command above — a secondary window must not
+  // reshape the workspace's queues.
+  CMD_CREATE_QUEUE,
+  CMD_RENAME_QUEUE,
+  CMD_DELETE_QUEUE,
+  CMD_SET_QUEUE_SCHEDULE,
+  CMD_CLEAR_QUEUE_SCHEDULE,
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_MOVE_TASK
 ];
 
 // Feature 089 T026 (FR-027) — commands whose own declaration in
@@ -189,20 +210,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 38', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(38);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_SAVE_PHASES, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 38', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(38);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
   });
 });
 

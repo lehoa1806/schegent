@@ -15,6 +15,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Files permitted to reference the QueueLifecycle 'running' literal
 // (feature 065). Other paths fall back to the broader allowlist owned by
 // `no-running-state-literal.test.ts`; this set documents the new entries.
+//
+// Feature 092 (T117, FR-068) amends this set by naming files, not by
+// regenerating it. Every entry below the feature-065 block gained *per-queue*
+// lifecycle handling when a lifecycle stopped being a property of the one queue
+// and became a property of each: they either derive a lifecycle for a named
+// queue or carry one per queue across a boundary. The guard is not skipped,
+// suppressed or widened to a directory — an entry is added only for a file whose
+// per-queue lifecycle handling can be pointed at.
 const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/queue/feature-request.ts',
   'src/services/scheduled-start-coordinator.ts',
@@ -24,7 +32,23 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/state/workspace-state.ts',
   'src/ui/sidebar/snapshot.ts',
   'src/ui/sidebar/state-projector.ts',
-  'src/extension.ts'
+  'src/extension.ts',
+  // Feature 092 — derives the next lifecycle for the *resumed queue* from that
+  // queue's own contents (`hasInFlight ? 'running' : …`). Feature 065 could read
+  // the singleton, so the derivation was not a per-queue one and this file was
+  // covered only by the broader status guard.
+  'src/queue/queue-manager.ts',
+  // Feature 092 — composes one `QueueRuntime` per registry entry, so a queue's
+  // lifecycle crosses to the webview attached to the queue that owns it rather
+  // than as a workspace-wide singular (FR-048, FR-051).
+  'src/ui/sidebar/queue-runtime-composer.ts',
+  // Feature 092 — reads each queue's own `queueLifecycle` through `lifecycleOf`
+  // while composing the v4 snapshot.
+  'src/ui/sidebar/snapshot-composer.ts',
+  // Feature 092 — the webview's `QueueLifecycle` label map, the one place the
+  // discriminator is turned into operator-facing text. Distinct from the pinned
+  // per-task status projection, which spells its live value differently.
+  'webview-ui/src/lib/queue-lifecycle-label.ts'
 ]);
 
 function lifecycleLiteralReferences(): readonly string[] {

@@ -7,7 +7,7 @@
     TelemetrySnapshot
   } from '../lib/snapshot-types';
 
-  const liveActivity = $derived(snapshotStore.snapshot?.liveActivity ?? null);
+  const liveActivity = $derived(snapshotStore.liveActivity);
   const freshness: FreshnessState = $derived(liveActivity?.freshness ?? 'idle');
   const staleSeconds = $derived(liveActivity?.staleSeconds ?? null);
   const summary = $derived(liveActivity?.summary ?? null);
@@ -105,7 +105,7 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 10px 12px 12px;
+    padding: 9px 10px 11px;
     border-bottom: 1px solid var(--schegent-divider);
     min-width: 0;
   }
@@ -115,8 +115,8 @@
     justify-content: space-between;
     gap: 8px;
     color: var(--schegent-fg);
-    font-size: 0.74rem;
-    font-weight: 600;
+    font-size: var(--schegent-text-caption);
+    font-weight: 650;
   }
   .freshness-row {
     display: flex;
@@ -146,7 +146,7 @@
   .freshness-idle .dot { background: var(--schegent-color-system); }
   .freshness-label {
     font-weight: 600;
-    font-size: 0.72rem;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-fg);
     white-space: nowrap;
     overflow: hidden;
@@ -155,7 +155,8 @@
   .freshness-stalled .freshness-label { color: var(--schegent-error-text); }
   .freshness-slowing .freshness-label { color: var(--schegent-color-warning); }
   .activity {
-    font-size: 0.8rem;
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;
@@ -163,7 +164,7 @@
     min-height: 1em;
   }
   .monitor-row {
-    font-size: 0.8em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;
@@ -171,7 +172,7 @@
     font-variant-numeric: tabular-nums;
   }
   .telemetry-row {
-    font-size: 0.8em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;

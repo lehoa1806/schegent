@@ -23,6 +23,7 @@ import {
   type FeatureRequestStatus,
   type QueueState
 } from '../queue/feature-request';
+import { STATE_SCHEMA_VERSION_V10 } from '../contracts/state-schema';
 
 export interface LegacyQueueLiftResult {
   readonly queueState: QueueState;
@@ -573,4 +574,137 @@ export function migrateV6ToV7(
     counts
   };
   return { queueState: migrated, migrated: true, auditEvents: [event] };
+}
+
+// ---------------------------------------------------------------------------
+// Feature 092 — v9 → v10 migration: pluralise `KEYS.queue`. One `QueueState`
+// becomes `Record<queueId, QueueState>`, the shape that lets more than one
+// queue drain at once.
+//
+// This is the deliberate reversal of the v5 → v6 collapse above, and it is
+// written to be honest about what that collapse cost: v6 coalesced the queues
+// that existed then without recording which Task came from which lane, so the
+// information needed to separate them again is not in v9 state. The lift
+// therefore produces exactly one entry and fabricates nothing.
+//
+// Like every migrator in this file it is a pure function over the queue
+// record. It has no store, so `KEYS.run` is not merely left alone — there is
+// nothing here that could reach it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The v10 persisted shape of `KEYS.queue`: one `QueueState` per queue,
+ * keyed by queue id.
+ */
+export type QueueStateMap = Record<string, QueueState>;
+
+/**
+ * Audit payload for the v9 → v10 lift.
+ *
+ * Queue **identifiers** only. A queue's name is operator-authored text, and
+ * the structured audit log is not a place to put arbitrary operator content
+ * (FR-038a) — the id is what an auditor needs to correlate the event with the
+ * registry anyway.
+ */
+export interface StateMigratedV9ToV10AuditEvent {
+  readonly type: 'state-migrated-v9-to-v10';
+  readonly fromVersion: 9;
+  readonly toVersion: 10;
+  readonly occurredAt: number;
+  readonly queueIds: readonly string[];
+  readonly pendingTaskCount: number;
+  readonly inFlightTaskCount: number;
+}
+
+export interface MigrateV9ToV10Result {
+  readonly queueStates: QueueStateMap;
+  readonly migrated: boolean;
+  readonly auditEvents: readonly StateMigratedV9ToV10AuditEvent[];
+}
+
+/**
+ * Forward-only gate. A workspace persisted by a newer release carries a
+ * numeric version this runtime cannot read, and the queues it holds are real
+ * work — refusing to open is the only outcome that does not risk discarding
+ * them. `undefined` is a workspace that predates the numeric version and
+ * migrates normally.
+ */
+export function assertPersistedVersionSupported(persistedNumeric: number | undefined): void {
+  if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION_V10) {
+    throw new Error(
+      `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION_V10}. Update the extension before opening this workspace.`
+    );
+  }
+}
+
+/** A v9 record: a single `QueueState`, recognisable by its `requests` array. */
+function isSingleQueueState(raw: unknown): raw is QueueState {
+  return (
+    typeof raw === 'object'
+    && raw !== null
+    && !Array.isArray(raw)
+    && Array.isArray((raw as QueueState).requests)
+  );
+}
+
+/** A v10 record: a map whose every value is a `QueueState`. */
+function isQueueStateMap(raw: unknown): raw is QueueStateMap {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
+  const values = Object.values(raw as Record<string, unknown>);
+  return values.length > 0 && values.every(isSingleQueueState);
+}
+
+/**
+ * Enforce the `scheduledStartAt` / `idle-pending` lockstep on one entry.
+ *
+ * The implication is one-way: an armed timer requires `idle-pending`, but
+ * `idle-pending` with no timer is an ordinary queue holding pending work. A
+ * one-sided pair is repaired by dropping the orphaned timestamp rather than
+ * by inventing a lifecycle, because the lifecycle is the field the rest of
+ * the system gates on and a fabricated one would auto-promote a queue nobody
+ * scheduled.
+ */
+function enforceLockstep(state: QueueState): QueueState {
+  if (state.queueLifecycle === 'idle-pending') return state;
+  if (state.scheduledStartAt === null && state.scheduledStartSource === null) return state;
+  return { ...state, scheduledStartAt: null, scheduledStartSource: null };
+}
+
+/**
+ * Lift a v9 persisted queue record into the v10 map shape.
+ *
+ * Returns `migrated: false` and an empty map when there is nothing to lift —
+ * a fresh workspace, a record already in v10 shape, or a record whose shape
+ * this migrator does not recognise. In every one of those cases the caller
+ * writes nothing, so an unreadable record cannot be overwritten by a guess.
+ */
+export function migrateV9ToV10(raw: unknown, now: number = Date.now()): MigrateV9ToV10Result {
+  if (isQueueStateMap(raw)) {
+    const checked: QueueStateMap = {};
+    for (const [queueId, state] of Object.entries(raw)) {
+      checked[queueId] = enforceLockstep(state);
+    }
+    return { queueStates: checked, migrated: false, auditEvents: [] };
+  }
+  if (!isSingleQueueState(raw)) {
+    return { queueStates: {}, migrated: false, auditEvents: [] };
+  }
+
+  const lifted = enforceLockstep(raw);
+  const pendingTaskCount = lifted.requests.filter((r) => r.status === 'pending').length;
+  const inFlightTaskCount = lifted.requests.filter((r) => r.status === 'in-flight').length;
+  const event: StateMigratedV9ToV10AuditEvent = {
+    type: 'state-migrated-v9-to-v10',
+    fromVersion: 9,
+    toVersion: 10,
+    occurredAt: now,
+    queueIds: [DEFAULT_QUEUE_ID],
+    pendingTaskCount,
+    inFlightTaskCount
+  };
+  return {
+    queueStates: { [DEFAULT_QUEUE_ID]: lifted },
+    migrated: true,
+    auditEvents: [event]
+  };
 }

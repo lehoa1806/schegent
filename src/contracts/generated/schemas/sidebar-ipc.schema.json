@@ -56,6 +56,13 @@
           "CMD_DISABLE_PHASE",
           "CMD_ENABLE_PHASE",
           "CMD_REMOVE_TASK_PHASE",
+          "CMD_CREATE_QUEUE",
+          "CMD_RENAME_QUEUE",
+          "CMD_DELETE_QUEUE",
+          "CMD_SET_QUEUE_SCHEDULE",
+          "CMD_CLEAR_QUEUE_SCHEDULE",
+          "CMD_SAVE_QUEUE_SETTINGS",
+          "CMD_MOVE_TASK",
           "CMD_MODIFY_TASK",
           "CMD_REORDER_TASK",
           "CMD_RESTART_CANCELED_TASK",
@@ -118,7 +125,7 @@
         {
           "name": "schemaVersion",
           "optional": false,
-          "type": "3"
+          "type": "4"
         },
         {
           "name": "isPrimary",
@@ -126,59 +133,14 @@
           "type": "boolean"
         },
         {
-          "name": "status",
+          "name": "queues",
           "optional": false,
-          "type": "WorkflowStatus"
-        },
-        {
-          "name": "activeFeature",
-          "optional": false,
-          "type": "ActiveFeatureSummary | null"
-        },
-        {
-          "name": "phases",
-          "optional": false,
-          "type": "readonly PhaseTile[]"
+          "type": "readonly QueueRuntime[]"
         },
         {
           "name": "queue",
           "optional": false,
           "type": "QueueProjection"
-        },
-        {
-          "name": "phaseOverrides",
-          "optional": false,
-          "type": "readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed'; }[]"
-        },
-        {
-          "name": "manualPauseAt",
-          "optional": false,
-          "type": "string | null"
-        },
-        {
-          "name": "manualPauseCause",
-          "optional": false,
-          "type": "'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused' | null"
-        },
-        {
-          "name": "phaseBreakpoints",
-          "optional": false,
-          "type": "readonly { readonly phaseId: string; readonly setAt: string; readonly actor: 'operator' | 'system'; }[]"
-        },
-        {
-          "name": "resumeTargetPhaseId",
-          "optional": false,
-          "type": "string | null"
-        },
-        {
-          "name": "activeRunId",
-          "optional": false,
-          "type": "string | null"
-        },
-        {
-          "name": "runOutputs",
-          "optional": true,
-          "type": "readonly RunOutputRecord[]"
         },
         {
           "name": "defaultRunnerKind",
@@ -196,16 +158,6 @@
           "type": "readonly DebugLogEntry[]"
         },
         {
-          "name": "liveActivity",
-          "optional": false,
-          "type": "LiveActivity"
-        },
-        {
-          "name": "workflowElapsedMs",
-          "optional": false,
-          "type": "number | null"
-        },
-        {
           "name": "monitor",
           "optional": false,
           "type": "CliMonitorState | null"
@@ -219,11 +171,6 @@
           "name": "producedAt",
           "optional": false,
           "type": "string"
-        },
-        {
-          "name": "activePipeline",
-          "optional": true,
-          "type": "ActivePipelineSummary"
         },
         {
           "name": "availablePipelines",
@@ -249,11 +196,6 @@
           "name": "backendPingState",
           "optional": false,
           "type": "BackendPingState"
-        },
-        {
-          "name": "delayedRetry",
-          "optional": false,
-          "type": "DelayedRetryState"
         },
         {
           "name": "generalSettings",

@@ -1,23 +1,28 @@
 // Feature 030 — Phase 3 (US1) integration test for sequential single-queue
-// execution semantics (T021).
+// execution semantics (T021), rewritten by feature 092 (T038a, US2).
 //
-// Scenario:
-//   - Enqueue 3 tasks against the unified default queue.
-//   - Task 1 is promoted to in-flight; tasks 2 and 3 remain pending.
-//   - On task 1 terminate, task 2 is promoted; task 3 remains pending.
-//   - On task 2 terminate, task 3 is promoted.
-//   - Assert that at no point are two tasks in-flight simultaneously.
+// The original file asserted "at no point are two tasks in-flight
+// simultaneously" as a WORKSPACE-WIDE property, because at a cap of 1 with one
+// queue the workspace and the queue were the same thing. FR-025 and FR-026 pull
+// those apart, and the two halves land in different places:
 //
-// The test exercises the QueueManager + WorkspaceStateStore pump directly
-// (the AutoDrainCoordinator + WorkflowController graph is unit-tested
-// separately). It samples `inFlightCount()` and `peekNextPending()` at
-// every observable state transition to prove the v6 single-queue invariant
-// of cap-of-1 concurrency end-to-end.
+//   - The sequential invariant SURVIVES, per queue. Three Tasks on one queue
+//     still promote one at a time, in FIFO order, with the same
+//     "Another request is already in flight" refusal. That is this file.
+//   - The cross-queue half becomes its OPPOSITE — two queues each reaching
+//     in-flight at the same time — and moves to
+//     `tests/integration/concurrent-drain.test.ts` (T042).
+//
+// So the sampling here reads `inFlightCount(queueId)`, not `inFlightCount()`.
+// Sampling the workspace would now be measuring the ceiling, which is a
+// different requirement with a different bound.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+
+const QUEUE_B = '11111111-2222-4333-8444-555555555555';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -31,7 +36,7 @@ class FakeMemento implements Memento {
   }
 }
 
-describe('Feature 030 (US1, T021) — sequential single-queue execution', () => {
+describe('feature 092 (T038a) — sequential execution survives per queue', () => {
   let store: WorkspaceStateStore;
   let queue: QueueManager;
   let inFlightSamples: number[];
@@ -43,16 +48,15 @@ describe('Feature 030 (US1, T021) — sequential single-queue execution', () => 
     inFlightSamples = [];
   });
 
-  function sample(): void {
-    inFlightSamples.push(queue.inFlightCount());
+  /** The invariant is now per queue, so the sample is addressed. */
+  function sample(queueId: string = DEFAULT_QUEUE_ID): void {
+    inFlightSamples.push(queue.inFlightCount(queueId));
   }
 
-  it('enqueueing 3 tasks results in strictly sequential in-flight transitions (cap-of-1)', async () => {
-    // Pre-condition: queue starts empty.
+  it('three Tasks on ONE queue still promote strictly one at a time', async () => {
     expect(queue.list()).toHaveLength(0);
-    expect(queue.inFlightCount()).toBe(0);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(0);
 
-    // Enqueue 3 tasks. All route to DEFAULT_QUEUE_ID by default.
     const t1 = await queue.enqueue('task-one');
     sample();
     const t2 = await queue.enqueue('task-two');
@@ -60,114 +64,106 @@ describe('Feature 030 (US1, T021) — sequential single-queue execution', () => 
     const t3 = await queue.enqueue('task-three');
     sample();
 
-    // None in-flight yet; all three pending on the default queue.
     expect(inFlightSamples).toEqual([0, 0, 0]);
-    expect(t1.queueId).toBe(DEFAULT_QUEUE_ID);
-    expect(t2.queueId).toBe(DEFAULT_QUEUE_ID);
-    expect(t3.queueId).toBe(DEFAULT_QUEUE_ID);
+    expect([t1.queueId, t2.queueId, t3.queueId]).toEqual([
+      DEFAULT_QUEUE_ID,
+      DEFAULT_QUEUE_ID,
+      DEFAULT_QUEUE_ID
+    ]);
 
-    // peekNextPending returns the oldest pending (FIFO).
-    expect(queue.peekNextPending()?.id).toBe(t1.id);
+    // peekNextPending returns the oldest pending (FIFO), addressed by queue.
+    expect(queue.peekNextPending(DEFAULT_QUEUE_ID)?.id).toBe(t1.id);
 
-    // Capacity is available; promote task 1 to in-flight.
-    expect(queue.hasCapacity()).toBe(true);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(true);
     await queue.markInFlight(t1.id, 'run-1');
     sample();
-    expect(queue.inFlightCount()).toBe(1);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(1);
     expect(queue.findById(t1.id)?.status).toBe('in-flight');
 
-    // While task 1 is in-flight, capacity is exhausted (cap-of-1).
-    expect(queue.hasCapacity()).toBe(false);
-    // peekNextPending still returns the next pending task (task 2). The
-    // coordinator's capacity-guard is what suppresses promotion — peek
-    // is order-only.
-    expect(queue.peekNextPending()?.id).toBe(t2.id);
-
-    // Tasks 2 and 3 are still pending.
+    // This queue is now busy. `peekNextPending` is order-only; the drain's
+    // step 3 is what suppresses the promotion.
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
+    expect(queue.peekNextPending(DEFAULT_QUEUE_ID)?.id).toBe(t2.id);
     expect(queue.findById(t2.id)?.status).toBe('pending');
     expect(queue.findById(t3.id)?.status).toBe('pending');
 
-    // Task 1 terminates (completed). Inspect intermediate state.
     await queue.finish(t1.id, 'completed');
     sample();
-    expect(queue.inFlightCount()).toBe(0);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(0);
     expect(queue.findById(t1.id)?.status).toBe('completed');
 
-    // peekNextPending now surfaces task 2.
-    expect(queue.peekNextPending()?.id).toBe(t2.id);
-    expect(queue.hasCapacity()).toBe(true);
+    expect(queue.peekNextPending(DEFAULT_QUEUE_ID)?.id).toBe(t2.id);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(true);
 
-    // Promote task 2.
     await queue.markInFlight(t2.id, 'run-2');
     sample();
-    expect(queue.inFlightCount()).toBe(1);
-    expect(queue.findById(t2.id)?.status).toBe('in-flight');
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(1);
     expect(queue.findById(t3.id)?.status).toBe('pending');
-    expect(queue.hasCapacity()).toBe(false);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
 
-    // Task 2 terminates (completed).
     await queue.finish(t2.id, 'completed');
     sample();
-    expect(queue.inFlightCount()).toBe(0);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(0);
 
-    // Task 3 is up next.
-    expect(queue.peekNextPending()?.id).toBe(t3.id);
+    expect(queue.peekNextPending(DEFAULT_QUEUE_ID)?.id).toBe(t3.id);
     await queue.markInFlight(t3.id, 'run-3');
     sample();
-    expect(queue.inFlightCount()).toBe(1);
-    expect(queue.findById(t3.id)?.status).toBe('in-flight');
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(1);
 
-    // Task 3 terminates.
     await queue.finish(t3.id, 'completed');
     sample();
-    expect(queue.inFlightCount()).toBe(0);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(0);
+    expect(queue.peekNextPending(DEFAULT_QUEUE_ID)).toBeNull();
 
-    // No more pending; peek returns null.
-    expect(queue.peekNextPending()).toBeNull();
-
-    // Final invariant: across every observed transition, inFlightCount
-    // was never > 1.
     for (const n of inFlightSamples) {
       expect(n).toBeLessThanOrEqual(1);
     }
-    // And the sequence of in-flight counts is the expected ramp:
-    // 0,0,0 (enqueues) → 1 (markInFlight t1) → 0 (finish t1) →
-    // 1 (markInFlight t2) → 0 (finish t2) → 1 (markInFlight t3) → 0 (finish t3).
     expect(inFlightSamples).toEqual([0, 0, 0, 1, 0, 1, 0, 1, 0]);
   });
 
-  it('hasCapacity() blocks promotion of task 2 while task 1 is in-flight', async () => {
+  it('hasQueueCapacity blocks the second Task on the SAME queue', async () => {
     await queue.enqueue('task-one');
     const t2 = await queue.enqueue('task-two');
-    const t1Picked = queue.peekNextPending();
+    const t1Picked = queue.peekNextPending(DEFAULT_QUEUE_ID);
     expect(t1Picked).not.toBeNull();
     await queue.markInFlight(t1Picked!.id, 'run-1');
 
-    // Capacity exhausted. Attempting to promote task 2 must reject —
-    // QueueManager.markInFlight throws when capacity is unavailable.
-    expect(queue.hasCapacity()).toBe(false);
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
     await expect(queue.markInFlight(t2.id, 'run-2')).rejects.toThrow(
       /Another request is already in flight/
     );
-    // Task 2 stays pending; task 1 is unaffected.
     expect(queue.findById(t2.id)?.status).toBe('pending');
     expect(queue.findById(t1Picked!.id)?.status).toBe('in-flight');
-    // Still only ever 1 in flight.
-    expect(queue.inFlightCount()).toBe(1);
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(1);
   });
 
-  it('all three tasks route to DEFAULT_QUEUE_ID regardless of caller intent (single-queue migration semantic)', async () => {
-    // The single-queue migration guarantees every enqueue lands on the
-    // default queue. Even if the caller passes a stale queueId (a legacy
-    // programmatic caller, say), the registry has only one entry
-    // and peekNextPending iterates that entry alone.
+  it('a busy queue does not gate its sibling — the invariant is per queue, not per workspace', async () => {
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), { id: QUEUE_B, name: 'Second', now: Date.now() })
+    );
+    await store.setGlobalConcurrencyCap(3);
+
+    const onDefault = await queue.enqueue('default work');
+    const onB = await queue.enqueue('b work', { queueId: QUEUE_B });
+
+    await queue.markInFlight(onDefault.id, 'run-1');
+    expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
+    // The sibling is untouched by the default queue's in-flight Task.
+    expect(queue.hasQueueCapacity(QUEUE_B)).toBe(true);
+
+    await expect(queue.markInFlight(onB.id, 'run-2')).resolves.toBeUndefined();
+    expect(queue.inFlightCount(DEFAULT_QUEUE_ID)).toBe(1);
+    expect(queue.inFlightCount(QUEUE_B)).toBe(1);
+    expect(queue.inFlightCount()).toBe(2);
+  });
+
+  it('an enqueue with no explicit queue still lands on the default queue', async () => {
     const t1 = await queue.enqueue('task-one');
     const t2 = await queue.enqueue('task-two');
     const t3 = await queue.enqueue('task-three');
 
     const requests = store.getQueue().requests;
     const ids = new Set(requests.map((r) => r.queueId));
-    // Every persisted request points at the default queue.
     expect(ids.size).toBe(1);
     expect(ids.has(DEFAULT_QUEUE_ID)).toBe(true);
     expect([t1.queueId, t2.queueId, t3.queueId]).toEqual([

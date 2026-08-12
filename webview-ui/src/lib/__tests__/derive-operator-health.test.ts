@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deriveOperatorHealth } from '../derive-operator-health';
 import type { QueueItem, WorkflowSnapshot } from '../snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from './queue-runtime-fixture';
 
 function item(overrides: Partial<QueueItem>): QueueItem {
   return {
@@ -19,13 +20,29 @@ function item(overrides: Partial<QueueItem>): QueueItem {
   };
 }
 
-function snapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+function snapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}): WorkflowSnapshot {
+  const { status, activeFeature, phases, liveActivity, workflowElapsedMs, delayedRetry, ...rest } =
+    overrides;
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: [],
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: status ?? 'idle',
+      activeFeature: activeFeature ?? null,
+      phases: phases ?? [],
+      liveActivity: liveActivity ?? ({
+      summary: null,
+      category: null,
+      lastEventAt: null,
+      freshness: 'idle',
+      staleSeconds: null
+      }),
+      workflowElapsedMs: workflowElapsedMs ?? null,
+      delayedRetry
+    }),
     queue: {
       orderedItems: [],
       inFlight: null,
@@ -34,18 +51,10 @@ function snapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
       paused: false
     },
     auditTail: [],
-    liveActivity: {
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    },
-    workflowElapsedMs: null,
     monitor: null,
     history: [],
     producedAt: '2026-05-10T00:00:00.000Z',
-    ...overrides
+    ...rest
   } as unknown as WorkflowSnapshot;
 }
 

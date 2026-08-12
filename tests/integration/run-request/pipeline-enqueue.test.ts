@@ -120,8 +120,15 @@ async function submit(
 
   const writes: Writes = { keys: [], rowAdding: 0, touchedRun: false };
   const originalUpdate = harness.memento.update.bind(harness.memento);
+  // Feature 092 — `KEYS.queue` holds `Record<queueId, QueueState>`, so a row
+  // count is a count across every queue. The claim under test is "exactly one
+  // durable row was added", which is a statement about the whole store and not
+  // about the queue the row happened to land in.
   const requestCount = (): number =>
-    (harness.memento.get<QueueState>(KEYS.queue)?.requests ?? []).length;
+    Object.values(harness.memento.get<Record<string, QueueState>>(KEYS.queue) ?? {}).reduce(
+      (total, queue) => total + (queue?.requests?.length ?? 0),
+      0
+    );
 
   harness.memento.update = (key: string, value: unknown): Thenable<void> => {
     const rowsBefore = requestCount();
@@ -262,8 +269,10 @@ describe('a submission that passes validation performs exactly one durable write
     try {
       await submit(harness, VALID);
 
-      const stored = harness.memento.get<QueueState>(KEYS.queue);
-      const raw = JSON.parse(JSON.stringify(stored?.requests ?? []));
+      const stored = harness.memento.get<Record<string, QueueState>>(KEYS.queue);
+      const raw = JSON.parse(
+        JSON.stringify(Object.values(stored ?? {}).flatMap((queue) => queue?.requests ?? []))
+      );
       expect(raw[0]?.runPlan?.pipeline?.phases?.[0]?.instruction).toBe('Compose the thing.');
     } finally {
       harness.cleanup();
