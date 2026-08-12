@@ -148,8 +148,7 @@ If you open the same workspace in two VS Code windows, only one of them is the *
 
 - mutate queue state (enqueue, reorder, delete),
 - save settings,
-- pause or resume tasks,
-- trigger `wake-up-now`.
+- pause or resume tasks.
 
 Secondary windows can read the queue and the runs, but their mutating commands are rejected with `reason: 'not-primary-host'`. The primary-only gate is the only thing preventing two windows from corrupting the queue state.
 

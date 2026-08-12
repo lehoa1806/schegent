@@ -22,11 +22,13 @@ Field details:
 - `outcome` — `success` | `failure` | `info`.
 - Per-event payload fields are described per event below.
 
+Logs written by an earlier release may contain event types this reference no longer lists — notably the five `wakeup-daemon-*` types plus `wakeup-workspace-roots-updated` and `wakeup-runner-invocation`, all retired with the Wake-up scheduler. The parser preserves entries whose type it does not recognize (`warn-and-preserve`), so those logs still read; nothing in the current release emits them.
+
 Every v3 payload passes through `projectAuditPayload`: strings are bounded, numbers must be finite, arrays are capped, the full payload is limited to 32 KiB, sensitive execution fields are omitted, and residual paths/endpoints or secrets fail the append.
 
 ## Event categories
 
-The 65 audit event types fall into 17 categories.
+The 58 audit event types fall into 16 categories.
 
 | Category | Count |
 |---|---|
@@ -43,7 +45,6 @@ The 65 audit event types fall into 17 categories.
 | [Phase message](#phase-message) | 3 |
 | [Fatal signature](#fatal-signature) | 1 |
 | [Auto-compact override](#auto-compact-override) | 1 |
-| [Wake-up daemon](#wake-up-daemon) | 7 |
 | [Phase log IPC](#phase-log-ipc) | 3 |
 | [Phase breakpoint](#phase-breakpoint) | 3 |
 | [State migration](#state-migration) | 1 |
@@ -206,7 +207,7 @@ The dot-style `eventType` was chosen deliberately to avoid colliding with the `p
 
 ### `retry-scheduled`
 
-A phase failure was classified as `transient_error` or `rate_limit` and a delayed retry was scheduled. Payload carries the pre-buffer `resetsAtMs` (when known) so the wakeup time is derivable from logs alone.
+A phase failure was classified as `transient_error` or `rate_limit` and a delayed retry was scheduled. Payload carries the pre-buffer `resetsAtMs` (when known) so the retry time is derivable from logs alone.
 
 ### `retry-manual`
 
@@ -388,43 +389,6 @@ Built-in signatures win the attribution when both could match.
 ### `auto-compact-override-applied`
 
 Emitted when `schegent.claude.autoCompactPctOverride` is set to a valid integer and the CLI invocation has the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var merged. Payload: `runId`, `phaseId`, `value`.
-
-## Wake-up daemon
-
-Seven events covering the wake-up scheduler's daemon-lifecycle surface.
-
-### `wakeup-daemon-installed`
-
-The OS-native scheduled entry was installed.
-
-### `wakeup-daemon-updated`
-
-The OS-native scheduled entry was updated to a new fire spec.
-
-### `wakeup-daemon-uninstalled`
-
-The OS-native entry was removed.
-
-### `wakeup-daemon-install-failed`
-
-The install failed. The previous state is rolled back where possible.
-
-### `wakeup-workspace-roots-updated`
-
-The workspace-roots snapshot under `<globalStorageUri>/wakeup/workspace-roots.json` was updated. Payload carries `{ rootCount }` only — no paths.
-
-### `wakeup-daemon-uninstall-failed-on-deactivate`
-
-The deactivate hook tried to uninstall the OS entry and the OS call failed. The failure is swallowed (the host is shutting down) but evidence is recorded.
-
-### `wakeup-runner-invocation`
-
-Emitted by the OS-scheduled runner each time it fires. Payload:
-- `correlationId` — UUIDv4 generated per invocation.
-- `requestedModel` — the operator-selected model id, verbatim.
-- `actualModel` — the model the runner actually used (closed enum; unknowns collapse to the runner default).
-- `outcome` — `'success'` | `'failure'`.
-- `cause` — present on failure; e.g., `'cwd-inside-workspace'`, `'cli-spawn-failed'`.
 
 ## Phase log IPC
 

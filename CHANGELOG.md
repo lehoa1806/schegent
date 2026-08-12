@@ -20,7 +20,32 @@ land here first and graduate into a version section at release time.
 
 ### Removed
 
+- Removed the Wake-up scheduler in full: the `schegent.wakeUp.*` settings, the
+  sidebar Wake-up panel and its "Wake up now" action, the OS-native scheduler
+  drivers (launchd / Task Scheduler / cron / systemd-user), the standalone
+  headless runner and its bundle, the `<globalStorageUri>/wakeup/` session and
+  invocation logs, and the `wakeup-daemon-*` / `wakeup-runner-invocation` audit
+  event types (014, 019, 024, 031).
 - Removed the `desktop-prototype` crate and its workspace registration; this was a non-production validation shell that is no longer needed (070).
+
+### Changed
+
+- `'wake-up-runner'` is no longer a legal `scheduledStartSource`. A queue record
+  persisted by an earlier release is normalized on read to
+  `'programmatic-scheduled'`; the armed schedule itself is preserved.
+- `wakeup-daemon-*` and `wakeup-runner-invocation` rows already in an audit log
+  are left byte-for-byte as written and read back through the parser's
+  warn-and-preserve path for unrecognized event types. Nothing in this release
+  emits them.
+
+### Security
+
+- An OS-native scheduled entry installed by a release that shipped the Wake-up
+  scheduler is **not** removed by upgrading — the code that could remove it is
+  gone with the feature. The entry invokes a runner script that is no longer
+  shipped, so it fails harmlessly, but it keeps firing on its schedule until you
+  delete it by hand. See
+  [Scheduled entries left by earlier releases](docs/reference/file-layout.md#scheduled-entries-left-by-earlier-releases).
 
 ---
 

@@ -134,7 +134,6 @@ For the actual grammar and the available fields, see [Phase Overrides](../featur
 
 A few things look phase-shaped but are not:
 
-- **Wake-up invocations** are not phases. They are operating-system-scheduled priming pings that never read a pipeline definition.
 - **Manual retry-phase-now actions** are not new phases — they re-run the existing phase, optionally with `--continue` to preserve context.
 - **Bugfix loop iterations** (an extension-point in Spec Driven Development workflow) run inside a phase, not as separate phases.
 

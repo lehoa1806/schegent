@@ -7,12 +7,11 @@
 
 # Security-sensitive paths (must follow the catch-all). Sourced from Item 038
 # in `docs/features/round_1/034-architecture-refactoring-and-hardening-plan.md` plus
-# the post-roadmap CLAUDE.md additions (`src/telemetry/`, `src/wakeup/`).
+# the post-roadmap CLAUDE.md addition (`src/telemetry/`).
 src/lib/logger.ts          @lehoa1806
 src/audit/                 @lehoa1806
 src/headless/              @lehoa1806
 src/telemetry/             @lehoa1806
-src/wakeup/                @lehoa1806
 src/runner/claude-cli.ts   @lehoa1806
 docs/security/             @lehoa1806
 CLAUDE.md                  @lehoa1806

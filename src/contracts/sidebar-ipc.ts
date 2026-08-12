@@ -28,12 +28,6 @@ export const CMD_SAVE_WORKFLOWS = 'CMD_SAVE_WORKFLOWS' as const; // Feature 083.
 // Feature 011 — scalar settings save + manual delayed-retry trigger.
 export const CMD_SAVE_GENERAL_SETTINGS = 'CMD_SAVE_GENERAL_SETTINGS' as const;
 export const CMD_RETRY_PHASE_NOW = 'CMD_RETRY_PHASE_NOW' as const;
-// Feature 014 — Wake up settings save (Global-scope; primary-host only).
-// Persists `schegent.wakeUp.*` settings transactionally and drives the
-// per-user OS daemon (launchd / Task Scheduler / cron / systemd-user).
-// See specs/014-wake-up/contracts/wakeup-settings-ipc.md.
-export const CMD_SAVE_WAKEUP_SETTINGS = 'CMD_SAVE_WAKEUP_SETTINGS' as const;
-export const CMD_WAKE_UP_NOW = 'CMD_WAKE_UP_NOW' as const;
 // Feature 017 — phase controls, multi-queue CRUD/scheduling, task CRUD, and
 // queue settings. Existing queue commands above (`CMD_START`,
 // `CMD_REMOVE_QUEUE_ITEM`, `CMD_PAUSE_QUEUE`, `CMD_RESUME_QUEUE`) are
@@ -79,16 +73,6 @@ export const CMD_OPEN_VERBOSE_SETTING = 'CMD_OPEN_VERBOSE_SETTING' as const;
 // See specs/028-advanced-phase-pausing/contracts/ipc.md.
 export const CMD_SET_PHASE_BREAKPOINT = 'CMD_SET_PHASE_BREAKPOINT' as const;
 export const CMD_CLEAR_PHASE_BREAKPOINT = 'CMD_CLEAR_PHASE_BREAKPOINT' as const;
-// Feature 031 — wake-up session-log read + reveal. Both are READ-ONLY;
-// they MUST stay out of `MUTATING_COMMANDS` so a secondary VS Code host
-// can still inspect captured sessions in a multi-window session. The
-// dispatcher still enforces the primary-host gate for the reveal IPC
-// (the host-side `revealFileInOS` side effect MUST originate from a
-// single host so we don't open multiple OS file-manager windows).
-// See specs/031-advanced-wakeup-logs-models/contracts/wakeup-session-log-ipc.md
-// and contracts/wakeup-reveal-session-log-ipc.md.
-export const CMD_READ_WAKEUP_SESSION_LOG = 'CMD_READ_WAKEUP_SESSION_LOG' as const;
-export const CMD_REVEAL_WAKEUP_SESSION_LOG = 'CMD_REVEAL_WAKEUP_SESSION_LOG' as const;
 // BUG-002 (FR-012a) — queue-start trigger. Mutating: promotes the oldest
 // pending task to in-flight via `controller.drainQueuedWork()`. Member of
 // `MUTATING_COMMANDS` and gated by the primary-host check.
@@ -170,8 +154,6 @@ export const COMMAND_TYPES = [
   CMD_SAVE_WORKFLOWS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_WAKE_UP_NOW,
   CMD_PAUSE_PHASE,
   CMD_RESUME_PHASE,
   CMD_RESTART_PHASE,
@@ -188,8 +170,6 @@ export const COMMAND_TYPES = [
   CMD_OPEN_VERBOSE_SETTING,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_READ_WAKEUP_SESSION_LOG,
-  CMD_REVEAL_WAKEUP_SESSION_LOG,
   CMD_START_QUEUE,
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
@@ -234,10 +214,6 @@ import type {
   StartPhaseLogTailCommand,
   StopPhaseLogTailCommand
 } from './sidebar-ipc/phase-log';
-import type {
-  ReadWakeupSessionLogCommand,
-  RevealWakeupSessionLogCommand
-} from './sidebar-ipc/wakeup';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
 import type {
   ExportProcessYamlCommand,
@@ -269,16 +245,6 @@ export type {
   StopPhaseLogTailCommand,
   StopPhaseLogTailResponse
 } from './sidebar-ipc/phase-log';
-export type {
-  ReadWakeupSessionLogCommand,
-  ReadWakeupSessionLogResponseSuccess,
-  ReadWakeupSessionLogResponseRejected,
-  ReadWakeupSessionLogResponse,
-  RevealWakeupSessionLogCommand,
-  RevealWakeupSessionLogResponseSuccess,
-  RevealWakeupSessionLogResponseRejected,
-  RevealWakeupSessionLogResponse
-} from './sidebar-ipc/wakeup';
 export type {
   PhaseRecord,
   TaskRecord,
@@ -468,38 +434,6 @@ export interface SaveGeneralSettingsCommand
 // 'secondary-window-readonly'.
 export interface RetryPhaseNowCommand extends CommandBase<typeof CMD_RETRY_PHASE_NOW> {}
 
-// Feature 014 — Wake up settings save. The payload mirrors the four
-// `schegent.wakeUp.*` keys; the host enforces invariants from
-// data-model.md (HH:MM regex, "Every Nm/h" regex with ≥ 1-minute floor,
-// schedulerType literal) before writing to ConfigurationTarget.Global.
-// Rejection reasons are enumerated in
-// specs/014-wake-up/contracts/wakeup-settings-ipc.md §Reject-reason vocabulary.
-//
-// Feature 031 — extended with the optional `model` field carrying the
-// operator's `WakeUpModelSelection` (the closed registry plus the
-// `'runner-default'` sentinel). The host re-validates membership and
-// rejects with `'invalid-model'` for any string outside that set
-// (see specs/031-advanced-wakeup-logs-models/contracts/wakeup-settings-ipc.diff.md).
-export interface SaveWakeUpSettingsCommand
-  extends CommandBase<typeof CMD_SAVE_WAKEUP_SETTINGS> {
-  readonly payload: {
-    readonly enabled: boolean;
-    readonly schedulerType: 'chronological' | 'periodic';
-    readonly chronologicalTime: string;
-    readonly periodicInterval: string;
-    readonly model?: string;
-  };
-}
-
-export interface WakeUpNowResult {
-  readonly outcome: 'started' | 'succeeded' | 'failed' | 'skipped';
-  readonly message: string;
-  readonly attempt: unknown;
-}
-
-export interface WakeUpNowCommand extends CommandBase<typeof CMD_WAKE_UP_NOW> {
-  readonly payload?: Record<string, never>;
-}
 
 export interface PausePhaseCommand extends CommandBase<typeof CMD_PAUSE_PHASE> {}
 export interface ResumePhaseCommand extends CommandBase<typeof CMD_RESUME_PHASE> {
@@ -602,8 +536,6 @@ export type SidebarCommand =
   | SaveWorkflowsCommand
   | SaveGeneralSettingsCommand
   | RetryPhaseNowCommand
-  | SaveWakeUpSettingsCommand
-  | WakeUpNowCommand
   | PausePhaseCommand
   | ResumePhaseCommand
   | RestartPhaseCommand
@@ -623,8 +555,6 @@ export type SidebarCommand =
   | OpenVerboseSettingCommand
   | SetPhaseBreakpointCommand
   | ClearPhaseBreakpointCommand
-  | ReadWakeupSessionLogCommand
-  | RevealWakeupSessionLogCommand
   | StartQueueCommand
   | ClearAllCommand
   | SetConfirmSuppressionCommand
@@ -734,21 +664,6 @@ export function isCmdSaveGeneralSettings(value: unknown): value is SaveGeneralSe
 export function isCmdRetryPhaseNow(value: unknown): value is RetryPhaseNowCommand {
   return isObjectWithType(value, CMD_RETRY_PHASE_NOW);
 }
-// Feature 014 — Wake up save guard.
-export function isCmdSaveWakeUpSettings(value: unknown): value is SaveWakeUpSettingsCommand {
-  return isObjectWithType(value, CMD_SAVE_WAKEUP_SETTINGS);
-}
-export function isCmdWakeUpNow(value: unknown): value is WakeUpNowCommand {
-  if (!isObjectWithType(value, CMD_WAKE_UP_NOW)) return false;
-  const payload = (value as { payload?: unknown }).payload;
-  return payload === undefined
-    || (
-      payload !== null
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && Object.keys(payload).length === 0
-    );
-}
 export function isCmdPausePhase(value: unknown): value is PausePhaseCommand {
   return isObjectWithType(value, CMD_PAUSE_PHASE);
 }
@@ -801,13 +716,6 @@ export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakp
 }
 export function isCmdClearPhaseBreakpoint(value: unknown): value is ClearPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_CLEAR_PHASE_BREAKPOINT);
-}
-// Feature 031 — wake-up session-log read + reveal guards (read-only).
-export function isCmdReadWakeupSessionLog(value: unknown): value is ReadWakeupSessionLogCommand {
-  return isObjectWithType(value, CMD_READ_WAKEUP_SESSION_LOG);
-}
-export function isCmdRevealWakeupSessionLog(value: unknown): value is RevealWakeupSessionLogCommand {
-  return isObjectWithType(value, CMD_REVEAL_WAKEUP_SESSION_LOG);
 }
 // BUG-002 (FR-012a) — start-queue guard.
 // Feature 065 — also accepts `payload.startIntent` (additive) per
@@ -971,8 +879,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_SAVE_MODELS]: isCmdSaveModels,
   [CMD_SAVE_GENERAL_SETTINGS]: isCmdSaveGeneralSettings,
   [CMD_RETRY_PHASE_NOW]: isCmdRetryPhaseNow,
-  [CMD_SAVE_WAKEUP_SETTINGS]: isCmdSaveWakeUpSettings,
-  [CMD_WAKE_UP_NOW]: isCmdWakeUpNow,
   [CMD_PAUSE_PHASE]: isCmdPausePhase,
   [CMD_RESUME_PHASE]: isCmdResumePhase,
   [CMD_RESTART_PHASE]: isCmdRestartPhase,
@@ -992,8 +898,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
-  [CMD_READ_WAKEUP_SESSION_LOG]: isCmdReadWakeupSessionLog,
-  [CMD_REVEAL_WAKEUP_SESSION_LOG]: isCmdRevealWakeupSessionLog,
   [CMD_START_QUEUE]: isCmdStartQueue,
   [CMD_CLEAR_ALL]: isCmdClearAll,
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,

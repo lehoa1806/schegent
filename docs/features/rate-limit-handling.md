@@ -24,7 +24,7 @@ delay = max(RETRY_FLOOR_MS, (resetsAtMs - Date.now()) + RETRY_BUFFER_MS)
 - `RETRY_BUFFER_MS` is added on top so the retry fires *after* the rate-limit window resets, with margin.
 - The host trusts `resetsAtMs` regardless of how far in the future it is. The `DELAYED_RETRY_CAP` (5 by default) bounds total attempts, not the per-attempt delay.
 
-The pre-buffer `resetsAtMs` (not `resetsAtMs + RETRY_BUFFER_MS`) is recorded in the `retry-scheduled` audit payload so the wakeup time is derivable from logs alone.
+The pre-buffer `resetsAtMs` (not `resetsAtMs + RETRY_BUFFER_MS`) is recorded in the `retry-scheduled` audit payload so the retry time is derivable from logs alone.
 
 ### Fixed-60-minute fallback (when no parseable reset)
 
@@ -74,22 +74,14 @@ While the delay timer is pending:
 
 - The workspace lock is **retained** (paused runs hold the lock).
 - The in-flight subprocess is killed (the rate-limit response terminated it).
-- The sidebar shows the task in a "Waiting for retry" state, with the countdown to the scheduled wakeup.
-- The audit log records the wakeup time.
+- The sidebar shows the task in a "Waiting for retry" state, with the countdown to the scheduled retry.
+- The audit log records the retry time.
 
 You can:
 
 - **Wait** for the timer to fire. The retry runs with `--continue` for context preservation.
 - **Click Retry Active Run** to bypass the timer. The retry runs immediately. (If the rate-limit window has not yet expired, this likely fails again.)
 - **Cancel** the run if you do not want to retry.
-
-## Interaction with the wake-up scheduler
-
-The wake-up scheduler is unrelated to delayed retries. The wake-up scheduler primes the rate-limit window at a fixed clock time; the delayed-retry schedule responds to a specific 429-style response.
-
-That said, if you have wake-up enabled and your retry delay coincides with a wake-up fire, the wake-up's 1-token priming may keep the window warm — sometimes a useful coincidence, sometimes inconsequential.
-
-See [Wake-up Scheduler](wake-up-scheduler.md) for the priming feature.
 
 ## The `--continue` flag
 
@@ -111,7 +103,6 @@ If you regularly hit rate limits, consider:
 
 - Lowering the model used by long phases (`schegent.phases[speckit-implement].model: claude-sonnet-4-6`).
 - Pausing the queue during peak hours (`schegent.pauseQueue` until the rate-limit window resets).
-- Enabling the wake-up scheduler to keep the window warm.
 
 ### React to a cascade pause
 
@@ -124,7 +115,7 @@ When you see `queue-paused` with `pauseSource: 'cascade'` in the audit log:
 
 ### Inspect the timer state
 
-The sidebar shows the next wakeup time for the in-flight delayed retry. The audit log has the structured record. There is no live "decrement-by-second" countdown — the host wakes the timer at the scheduled time and runs the retry; the UI shows a rough remaining estimate based on the same `resetsAtMs`.
+The sidebar shows the next retry time for the in-flight delayed retry. The audit log has the structured record. There is no live "decrement-by-second" countdown — the host wakes the timer at the scheduled time and runs the retry; the UI shows a rough remaining estimate based on the same `resetsAtMs`.
 
 ## What gets reset
 

@@ -31,7 +31,6 @@ Regenerate contracts whenever a release-boundary contract changes:
 - queue or workflow state literals
 - audit event taxonomy or schema version
 - backend runner request/result fields
-- wake-up settings, invocation records, or model literals
 
 Generated schemas are parity artifacts only in this feature. Do not replace the
 existing hand-written validators with generated validators until a later parity

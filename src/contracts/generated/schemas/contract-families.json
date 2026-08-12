@@ -86,20 +86,6 @@
       "reviewPolicy": "Regenerate with every runner request/result boundary change."
     },
     {
-      "family": "wakeup",
-      "status": "generated",
-      "description": "Wake-up settings, model literals, invocation record fields, and trigger/status literals.",
-      "sourceFiles": [
-        "src/wakeup/settings.ts",
-        "src/wakeup/invocation-log.ts"
-      ],
-      "schemaFiles": [
-        "src/contracts/generated/schemas/wakeup.schema.json"
-      ],
-      "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-      "reviewPolicy": "Regenerate with every wake-up settings or invocation-log boundary change."
-    },
-    {
       "family": "raw-transcript-bytes",
       "status": "typescript-only",
       "description": "Unredacted raw transcript sink bytes under .schegent/sessions/raw-<runId>.log.",

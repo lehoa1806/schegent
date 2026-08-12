@@ -37,7 +37,6 @@ export type QueueLifecycle =
 export type ScheduledStartSource =
   | 'operator-chooser'
   | 'operator-restart'
-  | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
   | 'migration-default'

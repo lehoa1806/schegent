@@ -9,9 +9,6 @@ import {
   IDLE_LIVE_ACTIVITY,
   IDLE_SESSION_ARTIFACTS,
   IDLE_TRUST_PROJECTION,
-  IDLE_WAKEUP_LOG,
-  IDLE_WAKEUP_PROJECTION,
-  IDLE_WAKEUP_SETTINGS,
   SCHEMA_VERSION,
   buildEmptyPhases,
   type AuditTailEntry,
@@ -98,9 +95,6 @@ export class PlaceholderProjector implements ProjectorHandle {
       generalSettings: IDLE_GENERAL_SETTINGS,
       sessionArtifacts: IDLE_SESSION_ARTIFACTS,
       evidenceHealth: IDLE_EVIDENCE_HEALTH,
-      wakeUpSettings: IDLE_WAKEUP_SETTINGS,
-      wakeUpLog: IDLE_WAKEUP_LOG,
-      wakeUp: IDLE_WAKEUP_PROJECTION,
       // Feature 033 — telemetry is ephemeral; placeholder is always null.
       telemetry: null,
       // Feature 059 — fail-closed trust projection on placeholder.

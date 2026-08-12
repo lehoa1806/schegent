@@ -8,8 +8,8 @@
 //   2. A wrong-typed value emits `type-mismatch` and warns.
 //   3. An out-of-range integer emits `out-of-range` and warns.
 //   4. An out-of-enum string emits `invalid-enum` and warns.
-//   5. A pattern-violating string (e.g. wakeUp.chronologicalTime
-//      `25:00`) emits `pattern-mismatch` and warns.
+//   5. A pattern-violating string (e.g. defaultPipelineId
+//      `Not A Valid Id`) emits `pattern-mismatch` and warns.
 //   6. An observed key that is NOT in the schema emits `unknown-key`.
 //   7. Multiple layers (workspaceFolder, workspace, global) of the
 //      same key are each inspected independently.
@@ -128,15 +128,15 @@ describe('validateWorkspaceSettings', () => {
     expect(sink.lines.join('\n')).not.toContain('secret');
   });
 
-  it('reports pattern-mismatch for a chronological time outside HH:MM', () => {
+  it('reports pattern-mismatch for a pipeline id outside the id grammar', () => {
     const { logger, sink } = makeLogger();
     const reader = makeReader({
-      'wakeUp.chronologicalTime': { globalValue: '25:00' }
+      defaultPipelineId: { globalValue: 'Not A Valid Id' }
     });
     const drift = validateWorkspaceSettings(reader, logger, new Set());
     expect(drift).toHaveLength(1);
     expect(drift[0]).toMatchObject({
-      key: 'schegent.wakeUp.chronologicalTime',
+      key: 'schegent.defaultPipelineId',
       kind: 'pattern-mismatch',
       layer: 'global'
     });

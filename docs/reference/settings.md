@@ -522,47 +522,6 @@ When set to an integer in `[1, 100]`, the value is exported as `CLAUDE_AUTOCOMPA
 
 See [Auto-compact Override](../features/auto-compact-override.md).
 
-## Wake-up scheduler
-
-### `schegent.wakeUp.enabled`
-
-- **Type:** `boolean`
-- **Default:** `false`
-- **Scope:** `application`
-
-Enable the Wake-up background scheduler. When enabled, a per-user OS-native scheduled task (launchd on macOS, Task Scheduler on Windows, cron/systemd-user units on Linux) periodically invokes a 1-token Claude CLI command in a sandboxed temporary directory to keep the 5-hour rolling allocation window warm.
-
-The OS entry is installed only on the **primary** VS Code host.
-
-### `schegent.wakeUp.schedulerType`
-
-- **Type:** `string`
-- **Default:** `"chronological"`
-- **Scope:** `application`
-- **Enum:** `chronological` | `periodic`
-
-Wake-up trigger style. `chronological` fires once per day at a fixed local time (see `chronologicalTime`). `periodic` fires at a fixed interval (see `periodicInterval`).
-
-### `schegent.wakeUp.chronologicalTime`
-
-- **Type:** `string`
-- **Default:** `"04:00"`
-- **Scope:** `application`
-- **Pattern:** `^([01]\d|2[0-3]):[0-5]\d$` (24-hour `HH:MM`)
-
-Daily fire time for chronological mode in 24-hour `HH:MM` form (local time). Used only when `schedulerType` is `chronological`.
-
-### `schegent.wakeUp.periodicInterval`
-
-- **Type:** `string`
-- **Default:** `"Every 4h"`
-- **Scope:** `application`
-- **Pattern:** `^Every (\d+)(m|h)$`
-
-Periodic fire interval in `Every Nm` or `Every Nh` form. Minimum granularity is 1 minute (`Every 1m`). Intervals below 5 hours surface a non-blocking advisory in the Settings UI (they may waste tokens within an unreset rolling window). Used only when `schedulerType` is `periodic`.
-
-For full Wake-up behavior, see [Wake-up Scheduler](../features/wake-up-scheduler.md).
-
 ## Multi-root workspaces
 
 ### `schegent.multiRoot.suppressWarning`
@@ -612,10 +571,6 @@ For quick lookup, the full list of keys:
 | `schegent.logging.sessionRetentionMaxBytes` | resource | `536870912` |
 | `schegent.fatalSignatures` | resource | `[]` |
 | `schegent.claude.autoCompactPctOverride` | resource | `null` |
-| `schegent.wakeUp.enabled` | application | `false` |
-| `schegent.wakeUp.schedulerType` | application | `"chronological"` |
-| `schegent.wakeUp.chronologicalTime` | application | `"04:00"` |
-| `schegent.wakeUp.periodicInterval` | application | `"Every 4h"` |
 | `schegent.multiRoot.suppressWarning` | window | `false` |
 
 ## Editing settings
@@ -624,14 +579,13 @@ You have three ways to change a setting:
 
 1. **VS Code Settings UI** — `Cmd/Ctrl + ,`, search for `schegent`. The UI surfaces descriptions and validation inline.
 2. **Direct `settings.json` edit** — `Cmd/Ctrl + Shift + P` → "Preferences: Open User Settings (JSON)". Type-safe; the JSON schema validates as you type.
-3. **The Schegent sidebar settings panel** — for the subset of settings exposed there (CLI path, models, phase overrides, logging, retries, fatal signatures, wake-up).
+3. **The Schegent sidebar settings panel** — for the subset of settings exposed there (CLI path, models, phase overrides, logging, retries, fatal signatures).
 
 All three write to the same underlying `settings.json`. Schegent re-reads every relevant setting at the next phase invocation, so changes apply without a reload unless the setting explicitly documents otherwise.
 
 ## What does *not* live here
 
 - **Workspace state** — runs, queue, pause records. Stored in `workspaceState` (VS Code's per-workspace storage), not in `settings.json`. Reset with `schegent.reset`.
-- **OS-native scheduler entries** — written by the host to launchd / Task Scheduler / cron-or-systemd. Managed via the wake-up settings, not edited by hand.
 - **Audit and runtime log files** — local artefacts under `.schegent/`. See [File Layout](file-layout.md).
 
 The next reference page is [Commands](commands.md).

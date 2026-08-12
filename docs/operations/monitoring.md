@@ -145,19 +145,6 @@ If those fields are absent, inspect the raw transcript for the CLI's
 human-readable usage summary. Or, if verbose diagnostics are enabled,
 the `stream.jsonl` has the original structured records per turn.
 
-## "Is the wake-up scheduler doing its job?"
-
-Two windows:
-
-- The audit log records every `wakeup-runner-invocation` event with `outcome` and timing.
-- The wake-up session log at `<globalStorageUri>/wakeup/session.log` shows the priming prompt and response.
-
-To survey wake-up outcomes:
-
-```bash
-jq -c 'select(.eventType == "wakeup-runner-invocation") | {timestamp, outcome, cause}' .schegent/audit.log
-```
-
 ## Long-running supervision
 
 For a multi-hour run:

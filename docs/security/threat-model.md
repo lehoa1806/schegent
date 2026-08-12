@@ -10,13 +10,13 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 
 | Id | Threat | Primary mitigation | Elaborated under |
 |---|---|---|---|
-| [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks (audit log, runtime log, Output channel, phase-log IPC, wake-up session log). | Single `SECRET_PATTERNS` redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) feeds every `SanitizedLogger` sink. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks (audit log, runtime log, Output channel, phase-log IPC). | Single `SECRET_PATTERNS` redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) feeds every `SanitizedLogger` sink. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T2](#t2--untrusted-webview-mutating-host-state) | The untrusted webview (Svelte sidebar) mutating host state via crafted IPC payloads. | Strict CSP + `MUTATING_COMMANDS` primary-host gate + host-side re-validation of every command payload. | [The CSP and webview integrity](#the-csp-and-webview-integrity), [The mutating-commands registry](#the-mutating-commands-registry) |
 | [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit log tampering, truncation, or non-append writes that destroy operator evidence. | `appendAudit` is the single writer; deletion paths never erase `.schegent/audit.log`; rotation preserves history. | [The append-only audit log](#the-append-only-audit-log) |
-| [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Workspace path leakage into the structured audit log (e.g. wake-up session-log path, workspace roots, phase-log file paths). | Paths-free audit discipline — count and selection-tuple fields only, never raw paths. | [The paths-free audit discipline](#the-paths-free-audit-discipline) |
+| [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Workspace path leakage into the structured audit log (e.g. workspace roots, phase-log file paths). | Paths-free audit discipline — count and selection-tuple fields only, never raw paths. | [The paths-free audit discipline](#the-paths-free-audit-discipline) |
 | [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Concurrent state mutation across two VS Code windows opened on the same workspace. | Primary-host gating + `WorkspaceLockManager.withLock` + lock-file stale recovery. | [Primary-host gating (multi-window)](#primary-host-gating-multi-window) |
 | [T6](#t6--workspace-lock-leak-fail-deadly) | Workspace lock leak (fail-deadly): a code path acquires the lock and never releases it, deadlocking subsequent runs. | All entry points wrap the body in `withLock`; pause paths must call `session.retain()`; forgotten retain is fail-safe (lock releases) not fail-deadly. | [The hard rules](#the-hard-rules) |
-| [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI, install OS-scheduler entries, or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
+| [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
 | [T8](#t8--prompt-injection-via-specplantask-content) | Prompt-injection via spec / plan / task / phase-instruction content the operator (or an upstream model) authored. | Out-of-band trust boundary; the host does not analyze prompt content. Operator decides whether to ingest untrusted text. | [A note on prompt-injection](#a-note-on-prompt-injection) |
 | [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A custom-phase (`schegent.phases`) invocation bypassing the audit + redaction + raw-transcript path that built-ins flow through. | `appendAudit` + raw transcript writer is the single, mandatory invocation path. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What requires local-only handling](#what-requires-local-only-handling) |
@@ -26,8 +26,8 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 | [T14](#t14--multi-queue-reintroduction) | Re-introducing the multi-queue registry shape (removed in v6) and bypassing the single-queue invariants. | `MAX_QUEUES === 1` in `src/queue/queue-registry.ts`; lint regression `tests/lint/no-multi-queue-commands.test.ts`; v5→v6 forward-only migrator. | [The hard rules](#the-hard-rules) |
 | [T15](#t15--phase-message-env-injection) | A `phase-message.env` value reaching the UI or audit projection without passing through the sanitizer used at prompt composition time. | Phase-message values pass through `SanitizedLogger.sanitize` before downstream consumption; audit + UI surface metadata only, never raw env values. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T16](#t16--operator-additive-fatal-signatures-stale-cache) | A cached `schegent.fatalSignatures` value masking an operator update mid-run. | `FatalSignaturesAccessor` is read at the top of every `PhaseRunner.run()`; never cached on the runner. | [The hard rules](#the-hard-rules) |
-| [T17](#t17--wake-up-runner-workspace-contamination) | The OS-scheduled wake-up runner spawning the CLI inside a workspace root, or with workspace-specific environment variables leaking through. | Env scrubbing allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR`); `cwdInsideWorkspace` defense against the workspace-roots snapshot; paths-free `wakeup-runner-invocation` audit. | [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk) |
-| [T18](#t18--vs-code-namespace-leakage-into-headless-or-telemetry-code) | A `vscode` import reaching `src/headless/`, `src/wakeup/`, or `src/telemetry/` and either blowing up the spawn or re-enabling a capability surface those trees must not have. | Lint regressions in `tests/lint/no-vscode-import-in-{headless,wakeup,telemetry}.test.ts` fail the build on drift. | [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk) |
+| [T17](#t17--wake-up-runner-workspace-contamination) | **Retired.** The OS-scheduled wake-up runner spawning the CLI inside a workspace root, or with workspace-specific environment variables leaking through. | Retired with the capability: no code installs, schedules, or spawns an out-of-host runner. The id is retained so existing citations still resolve. | [T17 anchor](#t17--wake-up-runner-workspace-contamination) |
+| [T18](#t18--vs-code-namespace-leakage-into-headless-or-telemetry-code) | A `vscode` import reaching `src/headless/` or `src/telemetry/` and either blowing up a host-free caller or re-enabling a capability surface those trees must not have. | Lint regressions in `tests/lint/no-vscode-import-in-{headless,telemetry}.test.ts` fail the build on drift. | [The hard rules](#the-hard-rules) |
 | [T19](#t19--runtime-log-sink-forking-the-redaction-set) | The runtime log sink forking or doubling the redaction set, breaking the "single SECRET_PATTERNS source of truth" guarantee. | Sink at `src/lib/runtime-log/runtime-log-sink.ts` is a `LogSink` registered on `SanitizedLogger`; no second sanitizer; `tests/lint/no-direct-syslog-fs-writes.test.ts` pins the writer allowlist. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T20](#t20--phase-log-ipc-double-or-skipped-sanitization) | The phase-log IPC pipeline (manifest read + live tail) double-sanitizing, skipping sanitization, or routing operator-influenced strings to the webview via `{@html}` interpolation. | Fixed order project → truncate → sanitize at the IPC boundary; one injected `SanitizedLogger.sanitize`; webview never re-sanitizes; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T21](#t21--untrusted-stdout-names-local-files) | A CLI audit-event JSON line names a `phase-message.env` path outside the run's diagnostics tree (attacker-influenced absolute path or `..`-traversal), and the host reads through the steered path. | Canonical-path containment in `src/controller/phase-sidecar-reader.ts`: the host computes the expected path from `(workspaceRoot, runId, pipelineId, phaseId, iterationN)`; audit-reported paths are accepted only when they canonicalize byte-equal, and ignored entirely when the canonical file exists. | [T21 anchor](#t21--untrusted-stdout-names-local-files) |
@@ -43,8 +43,6 @@ Schegent runs as a VS Code extension. When a workspace is trusted, the extension
 - **Read and write files** in the workspace root (via the CLI's tool calls).
 - **Read and write `.schegent/`** for audit, transcripts, runtime log, diagnostics.
 - **Read and write the VS Code `workspaceState`** for queue, run, pause state.
-- **Read and write the VS Code `globalStorageUri`** for wake-up scheduler state.
-- **Install/update/uninstall OS-native scheduled tasks** (launchd / Task Scheduler / cron / systemd-user) for the wake-up scheduler.
 
 The CLI itself, once spawned, has whatever capabilities its argv and the operator's environment grant it. The CLI's tool calls (`Bash`, `Write`, `Edit`, etc.) are not sandboxed beyond what the CLI itself implements. All backend runners (Claude, Codex, Agy) use the identical `shell: false`, monitor sidecar, and output-cap truncation patterns, meaning switching backends introduces no new trust boundaries.
 
@@ -112,7 +110,6 @@ Every operator-controllable string that flows to disk passes through one redacti
 - The runtime log (`.schegent/syslog`).
 - The Output channel.
 - The phase log feed shown in the sidebar.
-- The wake-up session log at capture time.
 
 A central set has two consequences:
 
@@ -123,16 +120,15 @@ The extension's CLAUDE.md hard rules forbid forking the redaction set or introdu
 
 ## What requires local-only handling
 
-Three local diagnostic sinks require special handling:
+Two local diagnostic sinks require special handling:
 
 - The **raw transcript** (`.schegent/sessions/raw-<runId>.log`). Captures CLI
   stdout/stderr verbatim. Always written through mode-`0600`, backpressured
   OS-temporary spools that are removed after finalization; abandoned spools
   are scavenged after their owner process is no longer alive.
 - The **verbose diagnostic files** (`.schegent/sessions/<runId>/diagnostics/...`). Captured only when `schegent.logging.verbose` is true. Opt-in.
-- The **wake-up session log** at `<globalStorageUri>/wakeup/session.log`. Sanitized before write, defense-in-depth re-sanitized on read, and kept outside the workspace in VS Code global storage. The writer itself is a sink and does not carry a second sanitizer.
 
-The raw transcript and verbose diagnostic files exist because the sanitizer is conservative; when debugging a real failure, operators sometimes need the bytes the sanitizer would have masked. The wake-up session log is sanitized, but it still captures local execution context and lives outside workspace-level `.gitignore` coverage. The trade-off is:
+Both exist because the sanitizer is conservative; when debugging a real failure, operators sometimes need the bytes the sanitizer would have masked. The trade-off is:
 
 - These files **never leave the operator's machine through the IPC pipeline.** The webview cannot request them. The audit log never references them by path.
 - They are **gitignored.** Schegent writes a best-effort `.schegent/.gitignore`
@@ -148,20 +144,17 @@ If you cannot tolerate unredacted bytes on disk, the mitigations are:
 - Add `**/.schegent/sessions/raw-*.log` to a global git ignore.
 - Treat `.schegent/` like your shell history — useful, may contain sensitive context.
 
-The wake-up session log lives under VS Code's global storage, not the workspace, so workspace-level `.gitignore` does not affect it.
-
 ## The paths-free audit discipline
 
 The structured audit log **does not contain filesystem paths to sensitive locations**. By design:
 
-- The wake-up session log's path is never in the audit log.
 - The list of workspace roots is never in the audit log — only `rootCount`.
 - The phase log feed's file path is never in the audit log — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
 - The Metrics dashboard's adoption event carries only bounded structural metadata; session and conversation identifiers are omitted from v3 payloads.
 - Executable paths, argv, commands, endpoints, model-output notes/errors, and repository filenames are omitted from v3 payloads.
 - Operator credentials, environment variables, and tokens cause the unsafe payload append to fail closed.
 
-Legacy v1/v2 rows remain readable and are not rewritten. Use the v3 counts-only export path before sharing evidence off-machine. The local diagnostic sinks (raw transcript, verbose diagnostics, wake-up session log) are local-only by design and must not be shipped without review.
+Legacy v1/v2 rows remain readable and are not rewritten. Use the v3 counts-only export path before sharing evidence off-machine. The local diagnostic sinks (raw transcript, verbose diagnostics) are local-only by design and must not be shipped without review.
 
 ## The CSP and webview integrity
 
@@ -179,7 +172,6 @@ Schegent registers as a `workspaceTrust` consumer with **untrusted-restricted** 
 
 - The extension is loaded but every mutating command rejects.
 - The sidebar shows a notice; no run is ever started.
-- The wake-up scheduler does not install OS entries.
 
 You must explicitly trust the workspace before Schegent does anything. This is the same trust gate VS Code applies for "can run code from this workspace".
 
@@ -237,7 +229,7 @@ Every mutating IPC command must be a member of `MUTATING_COMMANDS` in `src/ui/si
 
 This is the single line of defense against accidentally adding a mutating command without primary-host gating. Forgetting to register is a code-review-catchable mistake.
 
-Read-only IPC commands are intentionally excluded from this registry — e.g. `CMD_READ_PHASE_LOG` (020), the wake-up session-log reads (031), and `CMD_READ_METRICS` (073). None of these write workspace state, so the primary-only gate does not apply and secondary VS Code hosts may dispatch them too. `CMD_READ_METRICS` derives its response entirely from the existing (already paths-free, already redacted) audit log and writes nothing new except the one-shot `metrics-view-opened` adoption event described above — no new trust boundary is introduced.
+Read-only IPC commands are intentionally excluded from this registry — e.g. `CMD_READ_PHASE_LOG` (020) and `CMD_READ_METRICS` (073). None of these write workspace state, so the primary-only gate does not apply and secondary VS Code hosts may dispatch them too. `CMD_READ_METRICS` derives its response entirely from the existing (already paths-free, already redacted) audit log and writes nothing new except the one-shot `metrics-view-opened` adoption event described above — no new trust boundary is introduced.
 
 ## The append-only audit log
 
@@ -261,17 +253,6 @@ See [Execution Evidence Health](../operations/evidence-health.md).
 - **A prompt-injection attack via spec/plan/task content.** If the spec file contains injection instructions, the CLI may follow them. The host does not analyze prompt content for adversarial inputs.
 
 These are not Schegent's threat model to mitigate — they are upstream of the extension. But they shape what Schegent does and does not promise.
-
-## The wake-up scheduler's elevated risk
-
-The wake-up scheduler is the riskiest component because it spawns the CLI **outside the extension host**, scheduled by the OS. Mitigations:
-
-- **Env scrubbing.** The OS-scheduled runner passes only an allowlisted env (`PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR`). Workspace-specific vars cannot bleed in.
-- **Workspace-roots check.** Before spawning the CLI, the runner asserts the chosen cwd is **not** inside any workspace root. A true result aborts the spawn. This prevents the priming invocation from silently ingesting workspace content.
-- **Sandbox cwd.** The runner uses a temporary directory as the CLI's cwd; no workspace path is exposed.
-- **Paths-free audit.** The runner's audit event (`wakeup-runner-invocation`) carries `correlationId`, `requestedModel`, `actualModel`, `outcome`, `cause` only — never paths.
-
-If you do not trust the OS-scheduled execution model, **leave `schegent.wakeUp.enabled` off** (the default).
 
 ## A note on prompt-injection
 
@@ -308,7 +289,6 @@ Each rule has a specific failure mode it prevents. Together, they enforce the th
 - **Do you trust the workspace?** If not, leave it untrusted; Schegent will not run.
 - **Do you trust the CLI binary?** Verify `schegent.cli.path` points to a binary you installed.
 - **Do you want unredacted bytes on disk?** Leave `schegent.logging.verbose` off; the raw transcript is still written.
-- **Do you want the wake-up scheduler?** Off by default; on requires OS-level scheduling and per-invocation env-scrubbing.
 - **Do you trust the process document you are importing?** The preflight tells you exactly what a commit would write, resource by resource, and writes nothing itself. A package can carry a lot — a Workflow document may bring several Pipelines and all their Phases — and every one of them is instruction text that will be sent to the CLI if you run it. Read the plan, not just the file name.
 - **How often do you review the audit log?** It is your evidence trail; treat it accordingly.
 
@@ -332,7 +312,7 @@ The headings below are the canonical anchor targets for the [Threat catalog (T1�
 
 ### T1 — Secret leakage to operator-visible sinks
 
-API keys, bearer tokens, JWTs, AWS access key ids, GitHub tokens, Slack tokens, GCP service-account material, and any matching env-style `KEY=VALUE` strings that reach an operator-visible sink. Mitigated by the single `SECRET_PATTERNS` set in [src/lib/logger.ts](../../src/lib/logger.ts); every `SanitizedLogger` sink (audit, runtime log, Output channel, phase-log IPC, wake-up session log) re-uses the same regex set. See [Sanitization is centralized](#sanitization-is-centralized).
+API keys, bearer tokens, JWTs, AWS access key ids, GitHub tokens, Slack tokens, GCP service-account material, and any matching env-style `KEY=VALUE` strings that reach an operator-visible sink. Mitigated by the single `SECRET_PATTERNS` set in [src/lib/logger.ts](../../src/lib/logger.ts); every `SanitizedLogger` sink (audit, runtime log, Output channel, phase-log IPC) re-uses the same regex set. See [Sanitization is centralized](#sanitization-is-centralized).
 
 ### T2 — Untrusted webview mutating host state
 
@@ -406,11 +386,13 @@ Caching the `schegent.fatalSignatures` value on the runner would mask an operato
 
 ### T17 — Wake-up runner workspace contamination
 
-The OS-scheduled wake-up runner is detached from the VS Code host and runs with direct UID access to the operator's filesystem. The risk is that it spawns the CLI inside a workspace root, or with workspace-specific environment variables leaking through. Mitigated by (a) env scrubbing — only `PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR` pass to `child_process.spawn`; (b) the `cwdInsideWorkspace` defense against the workspace-roots snapshot at `<globalStorageUri>/wakeup/workspace-roots.json`, which aborts the spawn if the chosen cwd is a descendant of any root; (c) paths-free `wakeup-runner-invocation` audit payload. See [The wake-up scheduler's elevated risk](#the-wake-up-schedulers-elevated-risk).
+**Retired.** This threat described the OS-scheduled wake-up runner: a process detached from the VS Code host, running with direct UID access to the operator's filesystem, that could spawn the CLI inside a workspace root or carry workspace-specific environment variables through. The Wake-up scheduler and its runner were withdrawn; no code installs an OS-native scheduled entry, and every CLI spawn now happens inside the extension host under the workspace-trust ceiling. There is no out-of-host execution surface left to mitigate.
+
+The id is retained rather than reused so existing citations in source comments, `SECURITY.md`, and CLAUDE.md still resolve, and so the catalog does not renumber under anyone's feet. One operational residue survives the code: a machine that enabled Wake-up under an earlier release keeps whatever OS scheduled entry that release installed, and the current release has no way to remove it. See [Scheduled entries left by earlier releases](../reference/file-layout.md#scheduled-entries-left-by-earlier-releases) for manual removal.
 
 ### T18 — VS Code namespace leakage into headless or telemetry code
 
-Any `vscode` import reaching `src/headless/`, `src/wakeup/`, or `src/telemetry/` would either blow up the spawn at runtime (`Cannot find module 'vscode'`) or re-enable a capability surface those trees must not have. Mitigated by the lint regressions `tests/lint/no-vscode-import-in-{headless,wakeup,telemetry}.test.ts`.
+Any `vscode` import reaching `src/headless/` or `src/telemetry/` would either blow up a host-free caller at runtime (`Cannot find module 'vscode'`) or re-enable a capability surface those trees must not have. Mitigated by the lint regressions `tests/lint/no-vscode-import-in-{headless,telemetry}.test.ts`.
 
 ### T19 — Runtime log sink forking the redaction set
 
@@ -454,10 +436,12 @@ Because "we did not add an evaluator" is invisible to behavioral tests (every on
 
 ### T24 — Legacy persisted state re-entering the runtime
 
-**Source**: VS Code `workspaceState`, the wake-up scheduler's `globalStorageUri` state, and `.schegent/audit.log` rows — all written by an earlier extension version, on a machine the current version has just been installed on.
+**Source**: VS Code `workspaceState` and `.schegent/audit.log` rows — both written by an earlier extension version, on a machine the current version has just been installed on.
 
 **Vector**: persisted state is an input the running code did not write, and its shape is whatever some earlier release persisted — including shapes the invariants in force today forbid. A record predating an invariant does not announce itself. Reading one optimistically means a run resumes into a state the scheduler cannot advance (the one-sided pause/retry pair of [T13](#t13--state-schema-invariant-violation)), or a queue shape removed in v6 reappears behind the single-queue invariants ([T14](#t14--multi-queue-reintroduction)). The mirror-image case is a **downgrade**: state written by a newer version, read best-effort by an older one, which is the same problem with the arrow reversed and no migrator that could possibly exist for it.
 
 **Mitigation**: migration is forward-only and runs at `WorkspaceStateStore.initialize()` before any consumer reads state — the numeric-version chain (v5→v6 queue registry, v6→v7, v7→v8, and feature 088's v8→v9 `migrateConnectedRuns` in [src/state/connected-run-migrator.ts](../../src/state/connected-run-migrator.ts)) plus the legacy `WorkflowRun` normalizer, each gated on the *persisted* version so a step never re-runs against records it already migrated. The downgrade case is refused rather than guessed at: a persisted `schemaVersion` above the runtime's throws at `initialize()` with an "update the extension" message instead of being partially read. `setRun()` re-asserts the pair invariants on every write, so a migrated record that is still one-sided cannot be persisted. For the audit log the discipline is the opposite and deliberate — legacy v1/v2 rows stay readable and are never rewritten in place, and the parser **warns and preserves** an event type it does not recognize rather than dropping it, because the log is evidence and a dropped row is destroyed evidence.
+
+A withdrawn capability leaves both halves of that discipline visible. Retiring the Wake-up scheduler removed `'wake-up-runner'` from the legal `scheduledStartSource` values, so a queue record persisted by an earlier release is normalized on read to `'programmatic-scheduled'` — the thing it always meant — without disarming the schedule it carries. The `wakeup-daemon-*` and `wakeup-runner-invocation` rows already in an audit log are left exactly as written and read back through the warn-and-preserve path, because nothing about withdrawing a feature makes the record of what it did less true.
 
 **Residual risk**: a migrator is code, and a migrator with a bug writes a wrong record once, forward-only, with no rollback. That is why each migration step emits audit events and why the migrators are covered by per-version fixtures rather than by a single end-to-end case.

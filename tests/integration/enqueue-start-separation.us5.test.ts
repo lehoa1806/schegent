@@ -1,4 +1,10 @@
-// Feature 065 (T043) — Story 5 end-to-end: wake-up + programmatic paths.
+// Feature 065 (T043) — Story 5 end-to-end: programmatic caller paths.
+//
+// The story was originally written around the wake-up runner as its example
+// automation caller. That capability was withdrawn; the path it exercised —
+// a non-human caller arming or skipping a scheduled start — is unchanged and
+// is what these cases actually cover, so case (a) now names the generic
+// `programmatic-now` source rather than the retired runner literal.
 //
 // Coverage map per tasks.md T043:
 //   (a) automation + `startMode: 'now'` → immediate promotion (running),
@@ -23,18 +29,18 @@ afterEach(() => {
   h.cleanup();
 });
 
-describe('Feature 065 (T043) — User Story 5: wake-up + programmatic paths', () => {
+describe('Feature 065 (T043) — User Story 5: programmatic caller paths', () => {
   it('(a) automation + startMode=now → immediate promotion to running, no chooser', async () => {
     const result = await h.service.scheduleOrEnqueue({
-      description: 'wake-up task',
+      description: 'programmatic task',
       scheduledAt: h.clock.now(),
       via: 'command-palette',
       startIntent: {
         startMode: 'now',
-        source: 'wake-up-runner'
+        source: 'programmatic-now'
       },
       callerKind: 'automation',
-      callerId: 'wake-up'
+      callerId: 'cli-now'
     });
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');

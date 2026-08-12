@@ -170,8 +170,8 @@ describe('VS Code host services adapter', () => {
     expect(services.state.workspace.get('schegent.run')).toEqual({ id: 'run-1' });
     expect(services.state.global.get('schegent.global')).toBe(true);
     expect(services.storage.globalStorageFsPath).toBe('/tmp/schegent-global');
-    expect(services.storage.joinGlobalStoragePath('wakeup', 'session.log')).toBe(
-      '/tmp/schegent-global/wakeup/session.log'
+    expect(services.storage.joinGlobalStoragePath('sessions', 'session.log')).toBe(
+      '/tmp/schegent-global/sessions/session.log'
     );
   });
 

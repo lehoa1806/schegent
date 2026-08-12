@@ -21,8 +21,7 @@
 // so the operator can fix it without re-deriving the symptom.
 //
 // Intentionally `vscode`-free so it is consumable by tests and by
-// any future host adapter (e.g. the wake-up runner already has a
-// settings-mirror shape this could share with).
+// any future host adapter that carries its own settings-mirror shape.
 
 import {
   SETTINGS_SCHEMA,

@@ -54,10 +54,6 @@ strings the phases together inside an orchestrator that handles:
 - **Observability** — a sanitized, append-only audit log; opt-in
   unredacted diagnostics for deep troubleshooting; a sanitized runtime
   log that mirrors the VS Code Output channel to disk.
-- **Unattended execution** — an OS-native wake-up scheduler
-  (launchd / Task Scheduler / cron / systemd-user) keeps your Claude
-  rolling-allocation warm so unattended pipelines do not pay the
-  cold-start cost.
 
 Schegent does not replace the Spec Driven Development workflow slash commands you already use
 interactively — it drives the same pipeline non-interactively from a
@@ -161,7 +157,6 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 | **Fatal signatures** | A code-resident floor of unrecoverable error patterns plus operator-additive entries through `schegent.fatalSignatures`. |
 | **Context-preserving retries** | Pass `-c` / `--continue` to a retry so Claude resumes the prior context (Claude backend). |
 | **Verbose diagnostics (opt-in)** | Per-phase unredacted `debug.json`, `stream.jsonl`, and `verbose.log` captures for deep troubleshooting. |
-| **Wake-up scheduler** | OS-native, per-user; chronological (`HH:MM`) or periodic (`Every Nm`/`Every Nh`). |
 | **Auto-compact override** | Export `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to control when Claude compacts context, per workspace. |
 | **Multi-window safe** | Secondary VS Code windows are read-only; only the primary host mutates state. |
 | **Backend abstraction** | Pluggable per-phase `BackendRunner` contract; `claude` (default), `codex`, and `agy` ship in-tree. |
@@ -179,7 +174,7 @@ By topic:
 
 - **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md), [local-first versus offline](docs/concepts/local-first-not-offline.md).
 - **Architecture decisions** — [remote, multi-user, and parallel execution expansion gate](docs/architecture/remote-multi-user-expansion-gate.md).
-- **Features** — [phase overrides](docs/features/round_1/phase-overrides.md), [custom phases](docs/features/round_1/custom-phases.md), [phase breakpoints](docs/features/round_1/phase-breakpoints.md), [wake-up scheduler](docs/features/round_1/wake-up-scheduler.md), [verbose diagnostics](docs/features/round_1/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/round_1/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
+- **Features** — [phase overrides](docs/features/round_1/phase-overrides.md), [custom phases](docs/features/round_1/custom-phases.md), [phase breakpoints](docs/features/round_1/phase-breakpoints.md), [verbose diagnostics](docs/features/round_1/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/round_1/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
 - **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
 - **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).
 - **Security** — [operator threat model](docs/security/threat-model.md).
@@ -243,10 +238,6 @@ Frequently used keys:
 | `schegent.defaultPipelineId` | string | `"speckit-new-feature"` | Pipeline used when none is explicitly chosen. |
 | `schegent.fatalSignatures` | string[] | `[]` | Operator-additive fatal-signature substrings. |
 | `schegent.claude.autoCompactPctOverride` | integer\|null | unset | Exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` when set. |
-| `schegent.wakeUp.enabled` | boolean | `false` | Master switch for the OS-native wake-up entry. |
-| `schegent.wakeUp.schedulerType` | enum | `"chronological"` | `chronological` (`HH:MM`) or `periodic`. |
-| `schegent.wakeUp.chronologicalTime` | string | `"04:00"` | 24-hour time string. |
-| `schegent.wakeUp.periodicInterval` | string | `"Every 4h"` | `Every Nm` or `Every Nh`. |
 | `schegent.multiRoot.suppressWarning` | boolean | `false` | Suppress the one-shot multi-root activation toast — see [The Workspace Lock → Multi-root workspaces](docs/concepts/workspace-lock.md#multi-root-workspaces). |
 | `schegent.trust.allowCustomPhases` | boolean\|null | `null` | Per-capability trust scope (feature 059). When `null`, follows Workspace Trust; when `false`, denies non-default phase prompts. See [Trust Scopes](docs/operations/trust-scopes.md). |
 | `schegent.trust.allowCustomRetryConditions` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `retryCondition` DSL expressions. See [Trust Scopes](docs/operations/trust-scopes.md). |
@@ -282,10 +273,6 @@ runtime-directory use, and recommends adding `.schegent/sessions/raw-*.log`
 to your workspace `.gitignore` as well — the raw transcript and verbose
 diagnostics are unredacted by design.
 
-A fifth sink, the wake-up session log, lives under VS Code global
-storage rather than `.schegent/`; see
-[`docs/features/round_1/wake-up-scheduler.md`](docs/features/round_1/wake-up-scheduler.md).
-
 ## Security posture
 
 Schegent assumes a trusted local operator on a trusted workstation.
@@ -296,8 +283,8 @@ The defenses below reduce risk; they are not absolute guarantees.
 - **Primary-host gating** — only the first VS Code window opened
   against a workspace mutates state. Secondary windows are read-only.
 - **Single sanitization surface** — every operator-visible sink
-  (audit log, runtime log, Output channel, phase log feed, wake-up
-  session log) passes through the same redaction set.
+  (audit log, runtime log, Output channel, phase log feed) passes
+  through the same redaction set.
 - **Metadata-only audit by default** — the structured audit log
   records counts, IDs, and selection tuples rather than file paths or
   raw payloads. Paths-free discipline keeps the file safe to attach to

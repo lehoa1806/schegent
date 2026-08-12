@@ -78,7 +78,7 @@ This is deliberate. It means that mid-run you can adjust a phase's model without
 You drive Schegent through three surfaces:
 
 - **The sidebar.** Day-to-day work: enqueue tasks, monitor active runs, pause/resume, set breakpoints, review the phase log feed.
-- **VS Code settings.** Persistent configuration: which Claude CLI binary to use, which models map to which phases, whether verbose diagnostics is on, what the wake-up scheduler should do.
+- **VS Code settings.** Persistent configuration: which Claude CLI binary to use, which models map to which phases, whether verbose diagnostics is on.
 - **The dashboard.** A full-window operator console for long-running supervision: bigger phase logs, queue overview, runtime log tail.
 
 All three surfaces project the same underlying state. Changes you make in one are immediately visible in the others.

@@ -106,9 +106,9 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
  * synthetic outcome, so the caller has exactly one non-committal state to render.
  *
  * Decision (084, autonomous): there is no injected `postMessage` parameter, even
- * though `readWakeupSessionLog` and `saveWorkflows` take one. Those helpers had
- * to hand-roll a UUIDv4 to keep the injected path's envelope id observable, and a
- * third copy of that generator is worse than the seam it buys. Tests observe the
+ * though `saveWorkflows` takes one. That helper had to hand-roll a UUIDv4 to keep
+ * the injected path's envelope id observable, and a second copy of that generator
+ * is worse than the seam it buys. Tests observe the
  * envelope through `setHostTransport`, which is the transport-level injection
  * point built for exactly this, and `postCommand` stays the only poster.
  */

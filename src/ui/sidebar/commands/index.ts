@@ -25,7 +25,6 @@ import {
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
-  CMD_READ_WAKEUP_SESSION_LOG,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
   CMD_REORDER_TASK,
@@ -39,12 +38,10 @@ import {
   CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
-  CMD_REVEAL_WAKEUP_SESSION_LOG,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
-  CMD_SAVE_WAKEUP_SETTINGS,
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
@@ -53,7 +50,6 @@ import {
   CMD_START_PHASE_LOG_TAIL,
   CMD_START_QUEUE,
   CMD_STOP_PHASE_LOG_TAIL,
-  CMD_WAKE_UP_NOW
 } from '../messages';
 import type { CommandHandler } from './handler-contract';
 
@@ -83,7 +79,6 @@ import { handler as pingBackend } from './cmd-ping-backend';
 import { handler as preflightProcessYaml } from './cmd-preflight-process-yaml';
 import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
-import { handler as readWakeupSessionLog } from './cmd-read-wakeup-session-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
 import { handler as removeTaskPhase } from './cmd-remove-task-phase';
 import { handler as reorderTask } from './cmd-reorder-task';
@@ -97,12 +92,10 @@ import { handler as resumeQueue } from './cmd-resume-queue';
 import { handler as retryActiveRun } from './cmd-retry-active-run';
 import { handler as retryPhaseNow } from './cmd-retry-phase-now';
 import { handler as retryQueueItem } from './cmd-retry-queue-item';
-import { handler as revealWakeupSessionLog } from './cmd-reveal-wakeup-session-log';
 import { handler as saveGeneralSettings } from './cmd-save-general-settings';
 import { handler as saveModels } from './cmd-save-models';
 import { handler as savePhases } from './cmd-save-phases';
 import { handler as savePipelines } from './cmd-save-pipelines';
-import { handler as saveWakeupSettings } from './cmd-save-wakeup-settings';
 import { handler as saveWorkflows } from './cmd-save-workflows';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
@@ -111,7 +104,6 @@ import { handler as start } from './cmd-start';
 import { handler as startPhaseLogTail } from './cmd-start-phase-log-tail';
 import { handler as startQueue } from './cmd-start-queue';
 import { handler as stopPhaseLogTail } from './cmd-stop-phase-log-tail';
-import { handler as wakeUpNow } from './cmd-wake-up-now';
 
 // Frozen registry of per-command handlers. The dispatcher in
 // `message-router.ts` looks up handlers by command type literal and invokes
@@ -151,7 +143,6 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_PREFLIGHT_PROCESS_YAML, preflightProcessYaml as CommandHandler],
   [CMD_READ_METRICS, readMetrics as CommandHandler],
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
-  [CMD_READ_WAKEUP_SESSION_LOG, readWakeupSessionLog as CommandHandler],
   [CMD_REMOVE_QUEUE_ITEM, removeQueueItem as CommandHandler],
   [CMD_REMOVE_TASK_PHASE, removeTaskPhase as CommandHandler],
   [CMD_REORDER_TASK, reorderTask as CommandHandler],
@@ -165,12 +156,10 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_RETRY_ACTIVE_RUN, retryActiveRun as CommandHandler],
   [CMD_RETRY_PHASE_NOW, retryPhaseNow as CommandHandler],
   [CMD_RETRY_QUEUE_ITEM, retryQueueItem as CommandHandler],
-  [CMD_REVEAL_WAKEUP_SESSION_LOG, revealWakeupSessionLog as CommandHandler],
   [CMD_SAVE_GENERAL_SETTINGS, saveGeneralSettings as CommandHandler],
   [CMD_SAVE_MODELS, saveModels as CommandHandler],
   [CMD_SAVE_PHASES, savePhases as CommandHandler],
   [CMD_SAVE_PIPELINES, savePipelines as CommandHandler],
-  [CMD_SAVE_WAKEUP_SETTINGS, saveWakeupSettings as CommandHandler],
   [CMD_SAVE_WORKFLOWS, saveWorkflows as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
@@ -179,5 +168,4 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_START_PHASE_LOG_TAIL, startPhaseLogTail as CommandHandler],
   [CMD_START_QUEUE, startQueue as CommandHandler],
   [CMD_STOP_PHASE_LOG_TAIL, stopPhaseLogTail as CommandHandler],
-  [CMD_WAKE_UP_NOW, wakeUpNow as CommandHandler]
 ]);

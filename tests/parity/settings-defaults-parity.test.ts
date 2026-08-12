@@ -183,8 +183,6 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
  * The validator-aware buckets are:
  *   - `KEY_SPECS` (src/config/general-settings.ts): scalar settings
  *     consumed by `writeGeneralSettings`.
- *   - `src/wakeup/settings.ts`: the four `wakeUp.*` keys validated
- *     by the wake-up settings module.
  *   - Complex object/array keys (`models`, `phases`, `pipelines`):
  *     validated by their respective domain modules at load time.
  *   - `backend.runner`: a closed enum consumed by the runner factory.
@@ -203,13 +201,6 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     const generalSettings = await import('../../src/config/general-settings.js');
     const hostValidatedKeys = generalSettings.ALLOWED_KEYS;
 
-    const wakeUpKeys = new Set<string>([
-      'wakeUp.enabled',
-      'wakeUp.schedulerType',
-      'wakeUp.chronologicalTime',
-      'wakeUp.periodicInterval',
-      'wakeUp.model'
-    ]);
     // Catalog layers validated per row by their own resolver rather than by
     // the general-settings IPC handler. Feature 083 adds `workflows`, which
     // `src/config/workflow-catalog.ts` resolves and defect-annotates.
@@ -256,7 +247,6 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     for (const key of allKeys) {
       const covered =
         hostValidatedKeys.has(key) ||
-        wakeUpKeys.has(key) ||
         complexObjectKeys.has(key) ||
         backendRunnerKey.has(key) ||
         cliApplicationKeys.has(key) ||
@@ -272,11 +262,11 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // bucket list above).
     expect(orphans).toEqual([]);
 
-    // Symmetric check: every wake-up bucket entry IS actually present
-    // in package.json. Catches accidental removal of a contribution
-    // that the wake-up module still expects to read.
+    // Symmetric check: every bucket entry IS actually present in
+    // package.json. Catches accidental removal of a contribution that a
+    // domain module still expects to read.
     const allPackageKeys = new Set(allKeys);
-    for (const key of [...wakeUpKeys, ...complexObjectKeys, ...backendRunnerKey]) {
+    for (const key of [...complexObjectKeys, ...backendRunnerKey]) {
       expect(allPackageKeys.has(key)).toBe(true);
     }
   });

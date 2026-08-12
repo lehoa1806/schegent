@@ -28,8 +28,6 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_SAVE_WORKFLOWS",
   "CMD_SAVE_GENERAL_SETTINGS",
   "CMD_RETRY_PHASE_NOW",
-  "CMD_SAVE_WAKEUP_SETTINGS",
-  "CMD_WAKE_UP_NOW",
   "CMD_PAUSE_PHASE",
   "CMD_RESUME_PHASE",
   "CMD_RESTART_PHASE",
@@ -46,8 +44,6 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_OPEN_VERBOSE_SETTING",
   "CMD_SET_PHASE_BREAKPOINT",
   "CMD_CLEAR_PHASE_BREAKPOINT",
-  "CMD_READ_WAKEUP_SESSION_LOG",
-  "CMD_REVEAL_WAKEUP_SESSION_LOG",
   "CMD_START_QUEUE",
   "CMD_CLEAR_ALL",
   "CMD_SET_CONFIRM_SUPPRESSION",
@@ -127,12 +123,6 @@ export const AUDIT_EVENT_TYPES = [
   "phase-message-invalid",
   "fatal-signature-matched",
   "auto-compact-override-applied",
-  "wakeup-daemon-installed",
-  "wakeup-daemon-updated",
-  "wakeup-daemon-uninstalled",
-  "wakeup-daemon-install-failed",
-  "wakeup-workspace-roots-updated",
-  "wakeup-daemon-uninstall-failed-on-deactivate",
   "phase-log-read",
   "phase-log-tail-started",
   "phase-log-tail-stopped",
@@ -203,11 +193,6 @@ export const SETTINGS_KEYS = [
   "schegent.trust.allowPipelineOverrides",
   "schegent.trust.allowWorkflowOverrides",
   "schegent.ui.confirmations.enable",
-  "schegent.wakeUp.chronologicalTime",
-  "schegent.wakeUp.enabled",
-  "schegent.wakeUp.model",
-  "schegent.wakeUp.periodicInterval",
-  "schegent.wakeUp.schedulerType",
   "schegent.watchdog.pollIntervalMinutes",
   "schegent.workflows"
 ] as const;
@@ -236,18 +221,6 @@ export const WORKFLOW_RUN_STATUSES = [
   "completed",
   "canceled"
 ] as const;
-
-export const WAKEUP_SUPPORTED_MODELS = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-fable-5",
-  "claude-opus-4-7",
-  "claude-opus-4-8",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-6"
-] as const;
-
-export const RUNNER_DEFAULT_MODEL = "runner-default" as const;
 
 export const CONTRACT_FAMILIES = [
   {
@@ -332,20 +305,6 @@ export const CONTRACT_FAMILIES = [
     ],
     "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
     "reviewPolicy": "Regenerate with every runner request/result boundary change."
-  },
-  {
-    "family": "wakeup",
-    "status": "generated",
-    "description": "Wake-up settings, model literals, invocation record fields, and trigger/status literals.",
-    "sourceFiles": [
-      "src/wakeup/settings.ts",
-      "src/wakeup/invocation-log.ts"
-    ],
-    "schemaFiles": [
-      "src/contracts/generated/schemas/wakeup.schema.json"
-    ],
-    "typescriptBinding": "src/contracts/generated/boundary-contracts.ts",
-    "reviewPolicy": "Regenerate with every wake-up settings or invocation-log boundary change."
   },
   {
     "family": "raw-transcript-bytes",

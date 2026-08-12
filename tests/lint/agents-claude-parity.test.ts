@@ -43,12 +43,13 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'widen the **code-resident** fatal-signature',
   'cache the operator-additive',
   'cache the `schegent.claude.autocompactpctoverride`',
-  'weaken the env scrubbing allowlist',
+  // The Wake-up withdrawal removed two hard rules and their anchors here:
+  // the detached-runner env scrubbing allowlist and the session-log writer's
+  // no-transform sink discipline. Both guarded surfaces that no longer exist.
   'bypass the',
   'serialize workspace root paths',
   'fork the redaction set',
   'cache the `schegent.logging.runtimelog',
-  'sanitize, truncate, or otherwise transform',
   're-stringify or re-sanitize',
   'reintroduce a multi-queue registry',
   'cap the dynamic rate-limit backoff',

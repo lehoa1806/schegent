@@ -32,29 +32,22 @@ the local concurrency cap must not be raised as a substitute for that design.
 │ │ VS Code Extension Host (Node 20, TypeScript 5.x)             │ │
 │ │   • workspace state, IPC validation, audit, runtime log      │ │
 │ │   • controller, queue, scheduler, backend-runner factory     │ │
-│ └──┬────────────────────────────┬───────────────────┬──────────┘ │
-│    │ host-projected snapshots   │ subprocess        │ scheduler  │
-│    │ + typed IPC commands       │ (shell: false)    │ entry      │
-│    ▼                            ▼                   ▼            │
-│ ┌──────────────┐    ┌────────────────────────┐  ┌────────────┐   │
-│ │ Svelte       │    │ Claude/Codex/Agy CLI │  │ launchd /  │   │
-│ │ Webview      │    │ subprocess             │  │ systemd /  │   │
-│ │ (sidebar +   │    │ • stdin prompt         │  │ Task       │   │
-│ │  dashboard)  │    │ • stream-json stdout   │  │ Scheduler  │   │
-│ └──────────────┘    └────────────────────────┘  └─────┬──────┘   │
-│                                                       │ detached │
-│                                                       ▼ exec     │
-│                                              ┌────────────────┐  │
-│                                              │ wake-up runner │  │
-│                                              │ (headless,     │  │
-│                                              │  no vscode)    │  │
-│                                              └────────────────┘  │
+│ └──┬────────────────────────────┬──────────────────────────────┘ │
+│    │ host-projected snapshots   │ subprocess                     │
+│    │ + typed IPC commands       │ (shell: false)                 │
+│    ▼                            ▼                                │
+│ ┌──────────────┐    ┌────────────────────────┐                   │
+│ │ Svelte       │    │ Claude/Codex/Agy CLI   │                   │
+│ │ Webview      │    │ subprocess             │                   │
+│ │ (sidebar +   │    │ • stdin prompt         │                   │
+│ │  dashboard)  │    │ • stream-json stdout   │                   │
+│ └──────────────┘    └────────────────────────┘                   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **External boundaries:**
 
-- VS Code APIs are usable in extension-host code and forbidden in `src/headless/`, `src/wakeup/`, and `src/telemetry/`. Lint regressions under `tests/lint/` enforce this.
+- VS Code APIs are usable in extension-host code and forbidden in `src/headless/` and `src/telemetry/`. Lint regressions under `tests/lint/` enforce this.
 - CLI backends run as subprocesses with `shell: false`, bounded stdout/stderr
   buffers, timeout/cancellation handling, and one centrally resolved
   environment policy. The compatibility default inherits; hardened `minimal`
@@ -62,7 +55,6 @@ the local concurrency cap must not be raised as a substitute for that design.
   and pre-compaction calls.
 - Workspace files at `<workspaceRoot>/.schegent/` hold per-workspace runtime artifacts: structured audit log, raw transcripts, opt-in verbose diagnostics, runtime log.
 - `vscode.ExtensionContext.workspaceState` (memento) stores serialized run, queue, and history records. Forward-only migrators upgrade old records.
-- `vscode.ExtensionContext.globalStorageUri` stores wake-up scheduler state and session logs.
 
 ## Module Layout
 
@@ -75,7 +67,7 @@ src/
 ├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
 ├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
 ├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
-├── headless/     non-extension-host entrypoints (wake-up runner, process/run APIs) — must not import vscode
+├── headless/     non-extension-host entrypoints (process/run APIs) — must not import vscode
 ├── host-services/ neutral host-service interfaces and VS Code adapter for future desktop host parity
 ├── lib/          shared pure helpers, SanitizedLogger, runtime-log sink, retry-condition DSL
 ├── monitor/      subprocess progress, stall detection, monitor events
@@ -86,7 +78,6 @@ src/
 ├── state/        memento-backed run/queue/history state and forward-only migrators
 ├── telemetry/    local process-resource sampling — must not import vscode
 ├── ui/           VS Code-facing UI surfaces (sidebar provider, dashboard panel, output channel, status bar)
-├── wakeup/       OS scheduler integration (launchd, systemd-user, Task Scheduler, cron)
 └── watchdog/     credit/rate-limit polling for delayed retry recovery
 
 webview-ui/
@@ -113,8 +104,8 @@ webview-ui/
 | `src/services/backend-capability-service.ts` | Bounded host-only CLI availability/model discovery and newest-generation snapshot publication | Constructing invocation runners, persisting capability state, or backend failover policy |
 | `src/services/backend-ping-service.ts` | Memory-only single-flight operator Ping state and paths-free audit evidence | Resolving webview-supplied paths, exposing process output, or persisting health state |
 | `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
-| `src/contracts/validators/` | Shared IPC validation primitives plus phase-log, wake-up, and metrics domain validators | Command dispatch coverage or downstream business invariants |
-| `src/contracts/sidebar-ipc/` | Focused phase-log, wake-up, metrics, trust, and host-message IPC type families | Command literals, runtime guards, or routing behavior |
+| `src/contracts/validators/` | Shared IPC validation primitives plus phase-log and metrics domain validators | Command dispatch coverage or downstream business invariants |
+| `src/contracts/sidebar-ipc/` | Focused phase-log, metrics, trust, and host-message IPC type families | Command literals, runtime guards, or routing behavior |
 | `src/ui/sidebar/activity-timing.ts` | Pure elapsed-time and live-activity calculations | Store subscriptions, audit hydration, or snapshot publication |
 | `src/ui/sidebar/audit-tail-state.ts` | Bounded live audit cache, cold-start dedupe/merge, seeding, and snapshot copies | Store subscriptions, workflow timing, or UI publication |
 | `src/ui/sidebar/state-projector.ts` | Public lifecycle/subscription/telemetry-sanitization facade | Domain projection algorithms or mutable timing state |
@@ -131,7 +122,7 @@ canonical root selection through `src/state/workspace-folder-picker.ts`.
 
 `src/engine/` defines the shared workflow control boundary that both the VS
 Code extension and future desktop release will target. It enumerates queue,
-workflow, phase, settings, log, wake-up, cancellation, event-stream,
+workflow, phase, settings, log, cancellation, event-stream,
 host-dependency, and storage responsibilities, plus parity fixtures for
 cross-host certification. `CurrentExtensionEngineAdapter` wraps current
 TypeScript handlers with typed acknowledgements and rejects unwired commands
@@ -334,7 +325,6 @@ Three distinct sinks with different sanitization postures:
 | Raw transcript | `<workspaceRoot>/.schegent/sessions/raw-<runId>.log` | No (intentional) | Never |
 | Verbose diagnostics | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-N/` | No (intentional, opt-in via `schegent.logging.verbose`) | Never |
 | Runtime log | `<workspaceRoot>/.schegent/syslog` (configurable) | Yes (single point) | No (operator opens file) |
-| Wake-up session log | `<globalStorageUri>/wakeup/sessions/<id>.log` | Sanitized at write AND read | Read-only via dedicated IPC |
 
 Raw transcripts and verbose-diagnostic trees share one retention owner. It
 groups artifacts by run, protects running and paused runs, and prunes only
@@ -607,26 +597,9 @@ phase editors, queue regions, dashboard panes, and activity-feed regions.
 Leaves communicate through props and callbacks; they do not introduce global
 stores or duplicate host-command call sites.
 
-### Wake-Up Scheduler and Headless (`src/wakeup/`, `src/headless/`)
+### Headless Entrypoints (`src/headless/`)
 
-[src/wakeup/](src/wakeup/) manages OS scheduler integration via four
-platform installers under [src/wakeup/platforms/](src/wakeup/platforms/):
-launchd (macOS), systemd-user (Linux), Task Scheduler (Windows), and a
-generic cron fallback. [installer-registry.ts](src/wakeup/platforms/installer-registry.ts)
-dispatches to the correct platform; [platform-detect.ts](src/wakeup/platform-detect.ts)
-chooses it. [node-resolver.ts](src/wakeup/platforms/node-resolver.ts)
-finds the Node binary at install time so detached invocations can
-re-exec without depending on `PATH`.
-
-[src/headless/wakeup-runner.ts](src/headless/wakeup-runner.ts) is the
-non-extension-host entrypoint executed by the OS scheduler. It uses
-allowlist env scrubbing (`PATH`, `HOME`, `LANG`, `LC_*`, `USER`,
-`LOGNAME`, `SHELL`, `TMPDIR`, `TEMP`, `TMP`), a closed `WAKEUP_SUPPORTED_MODELS`
-registry, and a workspace-root contamination check that aborts if its
-temp working directory resolves under any recorded workspace root.
-Audit payloads from this path are paths-free.
-
-`src/headless/` also holds the **process and run entrypoints** — the second
+`src/headless/` holds the **process and run entrypoints** — the second
 primary adapter described under Primary Flow. They are in-process functions
 reachable only by a caller that already holds a reference; feature 089 added no
 command, palette entry, executable, or listener for them.
@@ -656,10 +629,9 @@ serialization, from 473 lines), and `continuation-service.ts` (Workflow
 continuation, from 138 lines). The handlers remain, reduced to adapter
 concerns.
 
-`src/headless/`, `src/wakeup/`, and `src/telemetry/` MUST NOT import `vscode`;
+`src/headless/` and `src/telemetry/` MUST NOT import `vscode`;
 one lint regression per directory enforces it —
-[no-vscode-import-in-headless.test.ts](tests/lint/no-vscode-import-in-headless.test.ts),
-[no-vscode-import-in-wakeup.test.ts](tests/lint/no-vscode-import-in-wakeup.test.ts),
+[no-vscode-import-in-headless.test.ts](tests/lint/no-vscode-import-in-headless.test.ts)
 and [no-vscode-import-in-telemetry.test.ts](tests/lint/no-vscode-import-in-telemetry.test.ts).
 That constraint is what makes the second adapter possible: a headless caller
 supplies host ports explicitly instead of inheriting an extension host.
@@ -717,8 +689,6 @@ supplies host ports explicitly instead of inheriting an extension host.
   comparison operators, and boolean combinators. Arithmetic, function
   calls, member access, and I/O are rejected at parse time.
 - Subprocesses are spawned with `shell: false` and bounded buffers.
-- Wake-up runner subprocesses receive only the allowlisted environment
-  variables enumerated above.
 
 For the full operator threat model see
 [docs/security/threat-model.md](docs/security/threat-model.md).

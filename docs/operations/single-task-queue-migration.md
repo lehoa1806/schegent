@@ -147,7 +147,7 @@ In addition, feature 065 introduces a new family of audit events the System tab 
 
 - `scheduled-start-armed`, `scheduled-start-changed`, `scheduled-start-cancelled`, `scheduled-start-fired`, `scheduled-start-superseded` (lifecycle transitions for the in-process timer)
 - `idle-pending-promoted`, `idle-pending-auto-started` (transitions out of `idle-pending`)
-- `automation-enqueue-no-start-mode` (wake-up / programmatic enqueue without an explicit start mode)
+- `automation-enqueue-no-start-mode` (programmatic enqueue without an explicit start mode)
 
 All payloads carry the consistent core `{ queueId, eventType, occurredAt, transitionReason }` per FR-023a. Task descriptions and operator-authored content are **not** included.
 

@@ -20,7 +20,6 @@ export type StartMode = 'now' | 'scheduled' | 'cancel-schedule';
 export type IpcScheduledStartSource =
   | 'operator-chooser'
   | 'operator-restart'
-  | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
   | 'migration-default'
@@ -62,7 +61,6 @@ export function isValidEnqueueStartIntent(value: unknown): value is EnqueueStart
   return (
     v.source === 'operator-chooser' ||
     v.source === 'operator-restart' ||
-    v.source === 'wake-up-runner' ||
     v.source === 'programmatic-now' ||
     v.source === 'programmatic-scheduled' ||
     v.source === 'migration-default'

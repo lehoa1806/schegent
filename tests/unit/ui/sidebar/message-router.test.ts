@@ -21,8 +21,7 @@ import {
   CMD_RESTART_PHASE,
   CMD_SKIP_PHASE,
   CMD_DISABLE_PHASE,
-  CMD_ENABLE_PHASE,
-  CMD_WAKE_UP_NOW
+  CMD_ENABLE_PHASE
 } from '../../../../src/ui/sidebar/messages';
 
 interface CapturedAck {
@@ -119,8 +118,6 @@ function makeRouter(opts: {
   queueOps?: FakeQueueOps;
   isPrimary?: () => boolean;
   notifyWarning?: (m: string) => void;
-  wakeUpNow?: RouterDeps['wakeUpNow'];
-  onWakeUpNowComplete?: RouterDeps['onWakeUpNowComplete'];
   isTrusted?: () => boolean;
   omitIsTrusted?: boolean;
 } = {}): {
@@ -151,8 +148,6 @@ function makeRouter(opts: {
       ? {}
       : { isTrusted: opts.isTrusted ?? (() => true) }),
     notifyWarning: opts.notifyWarning ?? ((m) => warnings.push(m)),
-    wakeUpNow: opts.wakeUpNow,
-    onWakeUpNowComplete: opts.onWakeUpNowComplete,
     logger: new SanitizedLogger(),
     audit: {
       append: async (entry) => {
@@ -702,39 +697,4 @@ describe('MessageRouter.dispatch', () => {
     });
   });
 
-  describe('Wake up now', () => {
-    it('acks accepted and kicks projection after manual completion', async () => {
-      const wakeUpNow = vi.fn(async () => ({
-        outcome: 'succeeded' as const,
-        message: 'Wake up completed.',
-        attempt: {
-          id: 'attempt-1',
-          timestamp: '2026-05-14T00:00:00.000Z',
-          triggerSource: 'manual' as const,
-          status: 'succeeded' as const,
-          durationMs: 12,
-          rawResponse: 'ok',
-          message: 'Completed',
-          truncated: false
-        }
-      }));
-      const onWakeUpNowComplete = vi.fn();
-      const built = makeRouter({ wakeUpNow, onWakeUpNowComplete });
-      const localAcks: CapturedAck[] = [];
-
-      await dispatch(
-        built.router,
-        { type: CMD_WAKE_UP_NOW, correlationId: 'wake-1' },
-        localAcks
-      );
-
-      expect(wakeUpNow).toHaveBeenCalledTimes(1);
-      expect(localAcks[0].msg.status).toBe('accepted');
-      expect(localAcks[0].msg.result).toMatchObject({
-        outcome: 'succeeded',
-        attempt: { id: 'attempt-1', triggerSource: 'manual', status: 'succeeded' }
-      });
-      expect(onWakeUpNowComplete).toHaveBeenCalledTimes(1);
-    });
-  });
 });

@@ -82,8 +82,8 @@ at `resetsAtMs + RETRY_BUFFER_MS` (clamped by `RETRY_FLOOR_MS` when the
 epoch is already in the past). The fixed 60-minute `RATE_LIMIT_BACKOFF_MS`
 is the fallback when no reset is parseable. The pre-buffer `resetsAtMs`
 is logged in every `retry-scheduled` audit payload (a finite number for
-the dynamic path; `null` for the fallback path) so the wakeup is fully
-reproducible from logs alone — derive the actual scheduled wakeup as
+the dynamic path; `null` for the fallback path) so the retry is fully
+reproducible from logs alone — derive the actual scheduled retry as
 `resetsAtMs + 60_000`.
 
 A future iteration may promote these constants to workspace settings;
@@ -118,7 +118,7 @@ Emitted when the controller arms a delayed-retry timer.
     "resetsAtMs": 1736629140000          // Feature 027 — pre-buffer parsed reset epoch
                                          //   (number for dynamic path, null for fallback,
                                          //   null when cause is transient_error). Derive
-                                         //   actual wakeup as resetsAtMs + 60_000.
+                                         //   actual retry as resetsAtMs + 60_000.
   }
 }
 ```

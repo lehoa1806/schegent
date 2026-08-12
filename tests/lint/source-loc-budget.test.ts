@@ -9,8 +9,8 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // composition and Stage-2 dashboard/command lifecycle now have focused
   // owners under src/activation.
   // Feature 084 (T071) — 1,305 → 1,360 for the two process-YAML host seams.
-  // They are the same shape as the `revealWakeupSessionLog` and metrics
-  // adapters they sit beside: closures over `workspaceRoot`, `logger`, and
+  // They are the same shape as the metrics adapter they sit beside: closures
+  // over `workspaceRoot`, `logger`, and
   // `vscode` that keep every filesystem path out of the IPC boundary. Moving
   // them under src/activation was measured first and lands at ~1,307, so it
   // buys headroom rather than compliance while splitting one adapter family
@@ -31,7 +31,7 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // entry, and persistence.
   { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
-  // command coverage; phase-log, wake-up, and metrics validators own shape rules.
+  // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
   // validators live in validators/workflow-run.ts and neither re-states the
   // nested `RunRequest` shape (it is imported from validators/launch-pipeline.ts,
@@ -108,7 +108,6 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // it. Raised to exactly what the file now measures, per D7.
   { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 302 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
-  { path: 'src/headless/wakeup-runner.ts', maxLines: 725 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.

@@ -15,8 +15,8 @@
 //     (FR-010e).
 //
 // The PipelineBuilder component is the consumer of the Phases /
-// Pipelines tabs (the Settings panel only retains General / Fatal /
-// WakeUp). Per the contract, the four projection fields live on the
+// Pipelines tabs (the Settings panel only retains General / Fatal).
+// Per the contract, the four projection fields live on the
 // `WorkflowSnapshot` envelope as `workspaceTrust` and `resolvedTrust.*`.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';

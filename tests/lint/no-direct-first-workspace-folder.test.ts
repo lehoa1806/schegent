@@ -6,9 +6,8 @@
 // (Option B per docs/plans/workspace-isolation-strategy.md).
 //
 // Permitted reads elsewhere:
-//   - `workspaceFolders` (bare reference, used by wake-up enumeration
-//     and the dashboard command — these need the full list, not the
-//     first folder).
+//   - `workspaceFolders` (bare reference, used by the dashboard command —
+//     it needs the full list, not the first folder).
 //   - `workspaceFolders?.length` / `.length` (used as a "folders open?"
 //     guard).
 //

@@ -27,7 +27,7 @@ npm run ci
 ## Rules
 
 Consult `../CLAUDE.md` before changing host code, IPC contracts, audit
-semantics, redaction, lock handling, state migrations, wake-up execution,
+semantics, redaction, lock handling, state migrations,
 runtime/logging sinks, or the Phase / Pipeline / Workflow definition catalogs
 and their save gates. Keep this file as a short summary so it cannot drift
 into a parallel rule set.

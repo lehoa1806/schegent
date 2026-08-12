@@ -41,7 +41,7 @@ body:
       label: Impact on hard-rule surfaces (optional)
       description: |
         Does this change need to touch any of the high-stakes invariants listed in [CLAUDE.md](../CLAUDE.md)?
-        Common surfaces: `src/lib/logger.ts` (sanitization SoT), `src/headless/`, `src/telemetry/`, `src/wakeup/` (`vscode`-import bans), the audit log writer, `MUTATING_COMMANDS` (primary-host gate), `WorkflowController.driveRun()` (lock-release), or `src/runner/claude-cli.ts` (`-c` single-append-site).
+        Common surfaces: `src/lib/logger.ts` (sanitization SoT), `src/headless/`, `src/telemetry/` (`vscode`-import bans), the audit log writer, `MUTATING_COMMANDS` (primary-host gate), `WorkflowController.driveRun()` (lock-release), or `src/runner/claude-cli.ts` (`-c` single-append-site).
       placeholder: e.g., "Would extend SECRET_PATTERNS in src/lib/logger.ts" or "No hard-rule surfaces affected"
     validations:
       required: false

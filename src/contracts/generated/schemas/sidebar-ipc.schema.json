@@ -49,8 +49,6 @@
           "CMD_SAVE_WORKFLOWS",
           "CMD_SAVE_GENERAL_SETTINGS",
           "CMD_RETRY_PHASE_NOW",
-          "CMD_SAVE_WAKEUP_SETTINGS",
-          "CMD_WAKE_UP_NOW",
           "CMD_PAUSE_PHASE",
           "CMD_RESUME_PHASE",
           "CMD_RESTART_PHASE",
@@ -67,8 +65,6 @@
           "CMD_OPEN_VERBOSE_SETTING",
           "CMD_SET_PHASE_BREAKPOINT",
           "CMD_CLEAR_PHASE_BREAKPOINT",
-          "CMD_READ_WAKEUP_SESSION_LOG",
-          "CMD_REVEAL_WAKEUP_SESSION_LOG",
           "CMD_START_QUEUE",
           "CMD_CLEAR_ALL",
           "CMD_SET_CONFIRM_SUPPRESSION",
@@ -273,21 +269,6 @@
           "name": "evidenceHealth",
           "optional": false,
           "type": "EvidenceHealthSnapshot"
-        },
-        {
-          "name": "wakeUpSettings",
-          "optional": false,
-          "type": "WakeUpSettings"
-        },
-        {
-          "name": "wakeUpLog",
-          "optional": false,
-          "type": "WakeUpLogProjection"
-        },
-        {
-          "name": "wakeUp",
-          "optional": false,
-          "type": "{ readonly model: WakeUpModelSelection; readonly sessionLogPath: string; }"
         },
         {
           "name": "phasePrecedence",

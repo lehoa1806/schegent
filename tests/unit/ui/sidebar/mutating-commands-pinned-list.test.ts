@@ -51,15 +51,11 @@ import {
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
   CMD_RESTART_CANCELED_TASK,
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_WAKE_UP_NOW,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
   CMD_CLEAR_ALL,
   CMD_SET_CONFIRM_SUPPRESSION,
-  CMD_READ_WAKEUP_SESSION_LOG,
-  CMD_REVEAL_WAKEUP_SESSION_LOG,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_EXPORT_PROCESS_YAML,
   CMD_PREFLIGHT_PROCESS_YAML
@@ -104,16 +100,13 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   // precisely why they are pinned by hand.
   CMD_LAUNCH_WORKFLOW,
   CMD_CONTINUE_WORKFLOW,
-  // Feature 089 T026 (FR-026) — the seventeen entries below have been mutating
-  // since as far back as Feature 014 and were never pinned. The snapshot was
-  // taken at Feature 012 and only ever grew when someone remembered; FR-026's
-  // second clause ("the pinned list MUST name every such command the platform
-  // now has") is what closes that gap, and the complement assertion at the foot
+  // Feature 089 T026 (FR-026) — the entries below had been mutating for
+  // several releases and were never pinned. The snapshot was taken at
+  // Feature 012 and only ever grew when someone remembered; FR-026's second
+  // clause ("the pinned list MUST name every such command the platform now
+  // has") is what closes that gap, and the complement assertion at the foot
   // of this file is what keeps it closed.
   //
-  // Feature 014 — wake-up settings write and the manual runner invocation.
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_WAKE_UP_NOW,
   // Feature 017 — phase controls. Each writes an override onto the run.
   CMD_PAUSE_PHASE,
   CMD_RESUME_PHASE,
@@ -142,22 +135,12 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
 // `src/contracts/sidebar-ipc.ts` records a decision NOT to gate them.
 //
 // The scope is deliberate and not "every non-mutating command": most of the
-// IPC surface is plainly read-only and needs no defence. These five are the
-// ones an author could reasonably have expected to be mutating — one reveals a
-// file, one writes a document, one writes a memento — so each was reasoned
-// about and the reasoning was written down. FR-027 asks that the reason exist;
-// this table is where the fixture can check that it still holds.
+// IPC surface is plainly read-only and needs no defence. These three are the
+// ones an author could reasonably have expected to be mutating — one writes a
+// document, one writes a memento — so each was reasoned about and the
+// reasoning was written down. FR-027 asks that the reason exist; this table is
+// where the fixture can check that it still holds.
 const NON_MUTATING_BY_DESIGN: ReadonlyArray<readonly [string, string]> = [
-  [
-    CMD_READ_WAKEUP_SESSION_LOG,
-    'Feature 031 — read-only. Gating it would stop a secondary window from ' +
-      'inspecting captured sessions during a multi-window session.'
-  ],
-  [
-    CMD_REVEAL_WAKEUP_SESSION_LOG,
-    'Feature 031 — read-only. The reveal side effect is still primary-host ' +
-      'gated by the dispatcher, so one OS file-manager window opens, not many.'
-  ],
   [
     CMD_DISMISS_MIGRATION_NOTICE,
     'Feature 065 (FR-020) — writes one UI flag and no workflow, queue, or ' +
@@ -206,20 +189,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 40', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 38', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(40);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(38);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_SAVE_PHASES, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 40', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 38', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(40);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(38);
   });
 });
 
@@ -230,8 +213,9 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
 // from `MUTATING_COMMAND_REASONS` during a refactor. It cannot catch an
 // **omission**, which is the failure that actually happened: a command was
 // registered as mutating and nobody added it here. Before T025/T026 the fixture
-// pinned 19 of the 40 commands the platform gates — 21 unpinned, the oldest
-// since Feature 014 — and every test in this file passed throughout.
+// pinned 19 of the 40 commands the platform gated at the time — 21 unpinned,
+// the oldest for several releases — and every test in this file passed
+// throughout.
 //
 // This block reads the other way — for each command the platform gates, is it
 // named here? — and that is the direction FR-026's second clause states.

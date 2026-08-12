@@ -4,8 +4,7 @@
 // the helper at `webview-ui/src/lib/phase-breakpoint-ipc.ts`.
 //
 // This mirrors the discipline already enforced for save-general,
-// save-queue, save-wakeup, save-phases, phase-control, and phase-log
-// IPC commands.
+// save-queue, save-phases, phase-control, and phase-log IPC commands.
 
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';

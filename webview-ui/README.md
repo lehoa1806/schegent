@@ -76,7 +76,7 @@ with inner tabs is gone; Feature 064 added `System` as a sibling between
 | Operations | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, and phase log feed. |
 | Pipeline Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
 | System | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
-| Settings | `components/SettingsSurface.svelte` | Three sub-tabs: **General**, **Fatal Signatures**, and **Wake up**. |
+| Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
 (`$derived(snapshotStore.snapshot)`); every route receives the snapshot
@@ -89,7 +89,6 @@ from the store).
 |---|---|---|
 | General | `components/settings/GeneralSettingsTab.svelte` | Renders every scalar `schegent.*` key from `snapshot.generalSettings` with adaptive form controls (boolean → checkbox, string → text, number → number, enum → dropdown, optional integer → number-with-clear) and a scope indicator (workspace / user / default). Save goes through the shared `lib/save-general-settings.ts` helper. |
 | Fatal Signatures | `components/settings/FatalSignaturesTab.svelte` | Two sections: the read-only **Built-in registry** (rendered from the parity mirror at `lib/fatal-signature-registry.ts`) and the editable **Operator additions** list (text inputs with + Add / Remove controls). Save goes through the shared helper with the unprefixed key `fatalSignatures`. |
-| Wake up | `components/settings/WakeUpTab.svelte` | Four scheduler controls, Save, a **Wake up now** action, and a latest-5 attempts log. Save goes through `lib/save-wakeup-settings.ts`; manual trigger goes through `lib/wake-up-now.ts`. Validation surfaces inline error testids (`wakeup-error-chronological-time`, `wakeup-error-periodic-interval`) and a non-blocking advisory testid (`wakeup-warning-periodic-below-5h`) when the periodic interval is < 5 h (R-07 advisory). |
 
 Feature 030 (US3) removed the **Queue** sub-tab and its
 `QueueSettingsTab.svelte` / `save-queue-settings.ts` plumbing. With
@@ -104,7 +103,7 @@ it.
 
 ### Settings hover-text primitive (spec 018)
 
-Every focusable control in the three Settings sub-tabs is annotated by
+Every focusable control in the Settings sub-tabs is annotated by
 the shared [`use:hoverTextAnchor`](src/components/hover-text/hover-text-anchor-action.ts)
 Svelte 5 action (the primary call shape). The action picks the surface
 deterministically from `description.body.length`:
@@ -127,9 +126,8 @@ component remains exported from
 as the advanced/secondary form — most call sites should use the action.
 
 Descriptions live in per-tab sibling modules —
-`GeneralSettingsTab.descriptions.ts`,
-`FatalSignaturesTab.descriptions.ts`, `WakeUpTab.descriptions.ts` —
-each frozen with
+`GeneralSettingsTab.descriptions.ts` and
+`FatalSignaturesTab.descriptions.ts` — each frozen with
 `as const satisfies { readonly [K in ControlId]: ControlDescription }`
 so missing or stale keys fail the webview typecheck. Descriptions are
 static webview state: the IPC contract is unchanged, no new host
@@ -159,37 +157,6 @@ A repo-grep regression test at
 [`tests/lint/no-inline-save-general-settings.test.ts`](../tests/lint/no-inline-save-general-settings.test.ts)
 fails the build if any new component references `CMD_SAVE_GENERAL_SETTINGS`
 directly.
-
-### Shared `save-wakeup-settings.ts` helper (spec 014)
-
-[`webview-ui/src/lib/save-wakeup-settings.ts`](src/lib/save-wakeup-settings.ts)
-is the **single call site** for `CMD_SAVE_WAKEUP_SETTINGS` in the
-webview (014, mirrors the 012 pattern). `WakeUpTab.svelte` and any
-future caller MUST call `await saveWakeUpSettings(payload)` rather
-than constructing the envelope inline. The helper:
-
-1. Generates a UUIDv4 correlation id.
-2. Posts the 4-key payload `{ enabled, schedulerType, chronologicalTime, periodicInterval }`.
-3. Awaits the matching `CMD_ACK` (5-second timeout → `{ status: 'rejected', reason: 'timeout' }`).
-4. Returns a typed reject-reason from the fixed vocabulary
-   (`chronological-time-malformed`, `periodic-interval-malformed`,
-   `installer-failed:<platform>:<detail>`, `secondary-window-readonly`,
-   `timeout`).
-
-A repo-grep regression test in
-[`../tests/lint/`](../tests/lint/) fails the build if any new component
-references `CMD_SAVE_WAKEUP_SETTINGS` directly.
-
-### Shared `wake-up-now.ts` helper (spec 024)
-
-[`webview-ui/src/lib/wake-up-now.ts`](src/lib/wake-up-now.ts) is the
-single webview helper for `CMD_WAKE_UP_NOW`. `WakeUpTab.svelte` calls
-`await wakeUpNow()` to request a primary-host-gated, one-shot wake-up
-attempt without mutating saved scheduler settings. The helper uses the
-standard correlation/ACK path with a 65-second timeout so the host can
-return after the bounded wake-up runner completes. The latest attempts
-UI reads only `snapshot.wakeUpLog`, whose rows are sanitized and capped
-by the host before webview rendering.
 
 ### Feature 017 queue and phase-task IPC
 
@@ -242,9 +209,9 @@ same primary-only gate. Secondary windows now receive `status:
 'rejected'`, `reason: 'secondary-window-readonly'` for every catalog
 save attempt; the regression coverage lives at
 [`../tests/unit/ui/sidebar/save-commands-primary-gate.test.ts`](../tests/unit/ui/sidebar/save-commands-primary-gate.test.ts).
-Read-only commands (e.g. the wake-up session-log readers) stay outside
-`MUTATING_COMMANDS` but still apply their own primary-host handler gate
-(`reason: 'not-primary-host'`) — that path is unchanged.
+Read-only commands stay outside `MUTATING_COMMANDS` but still apply
+their own primary-host handler gate (`reason: 'not-primary-host'`) —
+that path is unchanged.
 
 ### Parity-mirror pattern
 
@@ -500,78 +467,6 @@ default selection remains `speckit-new-feature`. The shortcut form in
 include the selector and falls back to the controller's default
 pipeline (research Decision 6).
 
-### IPC additions (spec 031 — Advanced wake-up logs & model selection)
-
-Feature 031 adds two new **read-only** IPC commands that surface the
-wake-up session log (`<globalStorageUri>/wakeup/session.log`) to the
-Settings UI without exposing the file path to the webview. Both are
-NOT members of `MUTATING_COMMANDS` (they do not write workspace
-state); both nonetheless enforce the primary-host gate inside the
-handler so a secondary VS Code window cannot ride either surface.
-
-- `CMD_READ_WAKEUP_SESSION_LOG` — payload `{ correlationId: string }`
-  (UUIDv4 re-validated at the IPC boundary). The host re-validates
-  the id, locates the matching `=== wakeup-block … ===` block in
-  `session.log` by id substring, single-sanitizes the projection
-  (≤32 KB), and returns a typed discriminated-union response. Reject
-  vocabulary: `'not-primary-host' | 'invalid-correlation-id' |
-  'unknown-correlation-id' | 'session-log-unavailable' |
-  'unknown-error'`.
-- `CMD_REVEAL_WAKEUP_SESSION_LOG` — payload `{}` (no operator
-  input). The host re-composes the path internally and dispatches
-  `vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path))`.
-  Reject vocabulary: `'not-primary-host' | 'session-log-unavailable'
-  | 'reveal-failed' | 'unknown-error'`.
-
-Both commands flow through SOLE-call-site helpers — same pattern as
-`save-general-settings.ts`, `save-wakeup-settings.ts`, and
-`save-phases.ts`:
-
-| Command | Helper | Lint regression |
-|---|---|---|
-| `CMD_READ_WAKEUP_SESSION_LOG` | [`webview-ui/src/lib/wakeup-session-log-ipc.ts`](src/lib/wakeup-session-log-ipc.ts) | [`../tests/lint/no-inline-read-wakeup-session-log.test.ts`](../tests/lint/no-inline-read-wakeup-session-log.test.ts) |
-| `CMD_REVEAL_WAKEUP_SESSION_LOG` | [`webview-ui/src/lib/reveal-wakeup-session-log.ts`](src/lib/reveal-wakeup-session-log.ts) | [`../tests/lint/no-inline-reveal-wakeup-session-log.test.ts`](../tests/lint/no-inline-reveal-wakeup-session-log.test.ts) |
-
-Both helpers use the standard `markPending + onceAck + 5 s timeout`
-correlation pattern; the timeout is reified as
-`{ status: 'rejected', reason: 'timeout' }` so call sites can render
-a single failure state. The wake-up settings page (`WakeUpTab.svelte`)
-mounts three new components from
-`webview-ui/src/components/settings/wakeup/`:
-
-- `WakeupModelSelector.svelte` — model dropdown listing
-  `Default (runner-chosen)` + the three registry members
-  (`claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-6`). Save
-  routes through the existing `save-wakeup-settings.ts` helper —
-  no new mutating IPC.
-- `WakeupSessionLogPanel.svelte` — lazy expansion panel inline under
-  each 031-era log row. Renders the projected body as plain
-  `<pre>{text}</pre>` — never `{@html}`. Carries a "truncated"
-  affordance when `bodyTruncated === true`.
-- `WakeupSessionLogPathDisplay.svelte` — "Session log file:" strip
-  + "Reveal in OS file manager" button. The path is read from
-  `snapshot.wakeUp.sessionLogPath` (host-composed); the button
-  invokes the helper above (no operator-supplied path).
-
-Snapshot envelope additions (UI-only, additive, never persisted):
-
-- `WorkflowSnapshot.wakeUp?: { model: WakeUpModelSelection;
-  sessionLogPath: string | null }` — host-projected; `model` mirrors
-  the mirror file, `sessionLogPath` is composed from
-  `globalStorageUri` and surfaced for display + reveal only.
-- `WakeUpLogProjectionEntry.correlationId?: string` — present on
-  031-era rows that wrote a session-log block; absent on legacy
-  014/024 rows and on lock-skipped rows. The UI conditionally
-  renders the "Expand session" affordance on `correlationId !==
-  undefined`.
-
-`AUDIT_SCHEMA_VERSION` bumps 1 → 2 to reflect three additive scalar
-fields on the `wakeup-runner-invocation` payload (`correlationId`,
-`requestedModel`, `actualModel`); the audit parser is
-additive-tolerant per the existing CLAUDE.md hard rule "Never drop
-unknown audit event types from the parser. Warn and preserve." —
-legacy readers continue to function. No `STATE_SCHEMA_VERSION` bump.
-
 ### IPC additions (spec 028 — Advanced phase pausing)
 
 Feature 028 adds two new **mutating** IPC commands for future-phase
@@ -780,7 +675,6 @@ type StartIntent = {
   source:
     | 'operator-restart'
     | 'operator-chooser'
-    | 'wake-up-runner'
     | 'programmatic'
     | 'migration-default';
 };

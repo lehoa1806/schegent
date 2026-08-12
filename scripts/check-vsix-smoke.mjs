@@ -19,7 +19,6 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/assets/logo.png',
   'extension/assets/sidebar-icon.svg',
   'extension/dist/extension.js',
-  'extension/dist/wakeup-runner.js',
   'extension/dist/webview/chunks/theme.js',
   'extension/dist/webview/dashboard.css',
   'extension/dist/webview/dashboard.html',

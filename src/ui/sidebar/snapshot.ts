@@ -415,18 +415,9 @@ export interface ActivePipelineSummary {
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { GeneralSettings } from '../../config/general-settings';
-import type { WakeUpLogProjection } from '../../wakeup/invocation-log';
-import type { WakeUpSettings, WakeUpModelSelection } from '../../wakeup/settings';
 import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 export type { GeneralSettings } from '../../config/general-settings';
-export type { WakeUpLogProjection, WakeUpLogProjectionEntry } from '../../wakeup/invocation-log';
-export type {
-  WakeUpSettings,
-  WakeUpModelSelection,
-  WakeUpModelId,
-  RunnerDefaultModel
-} from '../../wakeup/settings';
 export type {
   PhasePrecedenceLayer,
   PhasePrecedenceProjection
@@ -535,38 +526,6 @@ export interface WorkflowSnapshot {
   readonly generalSettings: GeneralSettings;
   readonly sessionArtifacts: SessionArtifactsProjection;
   readonly evidenceHealth: EvidenceHealthSnapshot;
-  /**
-   * Feature 014 (BUG-001 / BUG-002) — Wake up settings projected for
-   * the Settings surface. Always present (defaults populated when the
-   * user-scope override is absent). The webview's WakeUpTab hydrates
-   * its draft from this field on mount and resyncs via a `$effect`
-   * when the projection changes (FR-025, SC-010).
-   */
-  readonly wakeUpSettings: WakeUpSettings;
-  /**
-   * Feature 024 — latest Wake up attempts projected from the
-   * user-data wakeup invocation log. Strings are sanitized and capped
-   * before they enter the snapshot.
-   */
-  readonly wakeUpLog: WakeUpLogProjection;
-  /**
-   * Feature 031 / data-model §7 — DISPLAY-ONLY wake-up surface. Always
-   * present so the webview can render the model dropdown and the
-   * "View session log" affordance without an existence guard.
-   *
-   * - `model`: the operator's current `WakeUpModelSelection` (closed
-   *   union; defaults to `'runner-default'`).
-   * - `sessionLogPath`: absolute path to the host-composed
-   *   `<globalStorageUri>/wakeup/session.log` (composed host-side from
-   *   the existing `globalStorageUri` resolver — never from operator
-   *   input). The webview NEVER routes this path back to the host; the
-   *   `CMD_READ_WAKEUP_SESSION_LOG` payload carries `correlationId`
-   *   only.
-   */
-  readonly wakeUp: {
-    readonly model: WakeUpModelSelection;
-    readonly sessionLogPath: string;
-  };
   /**
    * Feature 026 — per-phase precedence projection. Flat map keyed by
    * `"<phaseId>::<fieldKey>"` whose value is the layer that provided
@@ -772,9 +731,6 @@ export function buildIdleSnapshot(opts: {
     generalSettings: IDLE_GENERAL_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,
     evidenceHealth: IDLE_EVIDENCE_HEALTH,
-    wakeUpSettings: IDLE_WAKEUP_SETTINGS,
-    wakeUpLog: IDLE_WAKEUP_LOG,
-    wakeUp: IDLE_WAKEUP_PROJECTION,
     // Feature 033 — telemetry is ephemeral and absent on idle snapshots.
     telemetry: null,
     // Feature 059 — idle snapshot uses fail-closed trust defaults until
@@ -850,41 +806,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     rawTranscriptMode: 'default',
     retryMaxAttempts: 'default'
   })
-});
-
-/**
- * Feature 014 (BUG-001 / BUG-002) — safe defaults for the
- * `wakeUpSettings` projection. Mirrors `DEFAULTS` in
- * `src/wakeup/settings.ts` so the webview can render the Wake up
- * Settings tab even before the projector has finished its first
- * `onDidChangeConfiguration` round-trip.
- */
-export const IDLE_WAKEUP_SETTINGS: WakeUpSettings = Object.freeze({
-  enabled: false,
-  schedulerType: 'chronological',
-  chronologicalTime: '04:00',
-  periodicInterval: 'Every 4h',
-  // Feature 031 — sentinel meaning "no `--model` flag passed to the
-  // Claude CLI"; runner picks its own default.
-  model: 'runner-default' as const
-});
-
-export const IDLE_WAKEUP_LOG: WakeUpLogProjection = Object.freeze({
-  entries: Object.freeze([])
-});
-
-/**
- * Feature 031 — DISPLAY-ONLY defaults for the wake-up surface. Always
- * present on the idle snapshot so the webview never gates on existence.
- * `model` matches `IDLE_WAKEUP_SETTINGS.model` and `sessionLogPath` is an
- * empty string until the host wires its `getWakeupSessionLogPath` dep.
- */
-export const IDLE_WAKEUP_PROJECTION: {
-  readonly model: WakeUpModelSelection;
-  readonly sessionLogPath: string;
-} = Object.freeze({
-  model: 'runner-default' as const,
-  sessionLogPath: ''
 });
 
 export function isRecursivePhase(name: PhaseName): boolean {

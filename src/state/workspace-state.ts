@@ -60,6 +60,29 @@ function safeDisplay(value: unknown): string {
   }
 }
 
+/**
+ * Wake-up withdrawal — forward-only coercion of the retired
+ * `'wake-up-runner'` start source.
+ *
+ * The literal was dropped from `ScheduledStartSource` with the capability
+ * that produced it, but it may still sit in a queue record persisted by an
+ * earlier release. It maps to `'programmatic-scheduled'` because that is
+ * what it always meant operationally: a non-human caller armed a scheduled
+ * start. Coercing on read rather than rewriting on upgrade keeps this a
+ * pure projection — the value is normalized every time the record is read,
+ * so there is no migration to miss and no half-migrated state.
+ *
+ * Every persisted `QueueState` reaches this through
+ * `ensureExtendedQueueShape`, which is the single normalization point.
+ */
+const RETIRED_START_SOURCE = 'wake-up-runner';
+
+function coerceRetiredStartSource(
+  source: QueueState['scheduledStartSource']
+): QueueState['scheduledStartSource'] {
+  return (source as string | null) === RETIRED_START_SOURCE ? 'programmatic-scheduled' : source;
+}
+
 function ensureExtendedQueueShape(persisted: QueueState): QueueState {
   const requests = Array.isArray(persisted.requests)
     ? persisted.requests.map((r) => ensureExtendedFeatureRequest(r as FeatureRequest))
@@ -70,7 +93,9 @@ function ensureExtendedQueueShape(persisted: QueueState): QueueState {
   const persistedLifecycle = (persisted as QueueState).queueLifecycle;
   const queueLifecycle = persistedLifecycle ?? deriveLifecycleFromLegacyShape(paused, inFlightId, normalizedRequests.length);
   const scheduledStartAt = (persisted as QueueState).scheduledStartAt ?? null;
-  const scheduledStartSource = (persisted as QueueState).scheduledStartSource ?? null;
+  const scheduledStartSource = coerceRetiredStartSource(
+    (persisted as QueueState).scheduledStartSource ?? null
+  );
   const migrationNotice = (persisted as QueueState).migrationNotice;
   return {
     paused,
@@ -459,7 +484,10 @@ export class WorkspaceStateStore {
       pausedReason: correctedReason,
       queueLifecycle: correctedLifecycle,
       scheduledStartAt: correctedLifecycle === 'idle-pending' ? persistedQueue.scheduledStartAt ?? null : null,
-      scheduledStartSource: correctedLifecycle === 'idle-pending' ? persistedQueue.scheduledStartSource ?? null : null,
+      scheduledStartSource:
+        correctedLifecycle === 'idle-pending'
+          ? coerceRetiredStartSource(persistedQueue.scheduledStartSource ?? null)
+          : null,
       updatedAt: Date.now()
     });
     this.logger?.warn(
