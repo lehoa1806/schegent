@@ -197,6 +197,40 @@ const REPEATED_PHASE: PipelineDefinition = Object.freeze({
   phaseIds: ['specify', 'plan', 'specify']
 });
 
+/**
+ * Feature 091 T024a (US3, FR-033, FR-028a) — a definition holding characters
+ * outside the Basic Multilingual Plane.
+ *
+ * An astral character is a surrogate PAIR in memory: `'\u{1d400}'.length` is 2,
+ * and `charCodeAt(0)` reads 0xD835, which is not a character. Slice C refuses a
+ * `\u` escape that names one half of such a pair, and the risk of a rule stated
+ * that way is that it comes out too wide — the same code units, arriving
+ * legitimately as UTF-8 in the source bytes and paired correctly, must still
+ * pass. FR-028a is exactly that boundary, and this fixture is where the corpus
+ * would notice a decoded-text scan: nothing here is written as an escape, so a
+ * scanner that examined decoded scalars would refuse a document it must accept.
+ *
+ * Put in several fields rather than one so a partial fix — quoting rule right,
+ * plain-scalar path wrong, or vice versa — cannot pass.
+ */
+const ASTRAL_TEXT = 'Ship \u{1d400}\u{1d401} to \u{20bb7}';
+
+const ASTRAL: PipelineDefinition = Object.freeze({
+  ...NOTHING_OPTIONAL,
+  pipelineId: 'astral',
+  name: ASTRAL_TEXT,
+  description: `${ASTRAL_TEXT} — and one at the very end \u{1d7ce}`,
+  inputs: [
+    {
+      portId: 'brief',
+      label: ASTRAL_TEXT,
+      type: 'text' as const,
+      required: true,
+      description: ASTRAL_TEXT
+    }
+  ]
+});
+
 interface Fixture {
   readonly label: string;
   readonly definition: PipelineDefinition;
@@ -208,7 +242,8 @@ const CORPUS: readonly Fixture[] = Object.freeze([
   { label: 'every field, references only', definition: EVERYTHING, include: false },
   { label: 'nothing optional, references only', definition: NOTHING_OPTIONAL, include: false },
   { label: 'nothing optional, dependencies included', definition: NOTHING_OPTIONAL, include: true },
-  { label: 'a repeated phase reference', definition: REPEATED_PHASE, include: true }
+  { label: 'a repeated phase reference', definition: REPEATED_PHASE, include: true },
+  { label: 'characters outside the BMP', definition: ASTRAL, include: false }
 ]);
 
 function documentFor(fixture: Fixture): string {
@@ -484,5 +519,115 @@ describe('Feature 085 T057 — a declared version is stored exactly as declared 
     if (root === undefined || !root.ok || root.resourceKind !== 'pipeline') return;
     expect(root.definition.name).toBe('2');
     expect(root.definition.version).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 091 T024a — characters outside the BMP (FR-033, FR-028a, SC-007)
+// ---------------------------------------------------------------------------
+//
+// This block, and nothing else, discharges the round-trip half of Slice C.
+//
+// The corpus runner in `tests/contract/process-yaml-grammar.test.ts` parses a
+// fixture and compares it against a captured tree. It never serializes, so it
+// cannot observe byte-identity: `accepted/091/surrogate-pair` shows that a
+// well-formed escape pair DECODES, not that a document holding what it decodes
+// to survives being written back out. The two are different claims and the
+// second is the one the defect was about — the corruption happened on the
+// export write, not on the read.
+//
+// The astral fixture in CORPUS above carries the byte-identity and deep-equality
+// loops for the literal form. What is left, and is here:
+//
+//   * the escape-pair source form, which is the only shape that reaches the
+//     amended production at all;
+//   * the UTF-8 encode step itself, which is where a lone surrogate turned into
+//     U+FFFD with no error — a property no in-memory comparison can see, because
+//     both sides of it are the same corrupted string.
+
+describe('Feature 091 T024a — an astral character survives the whole loop (FR-033)', () => {
+  const ASTRAL_DEFINITION: Fixture = {
+    label: 'characters outside the BMP',
+    definition: ASTRAL,
+    include: false
+  };
+
+  /** The one document in this file that spells the character as an escape pair. */
+  const ESCAPED = [
+    'apiVersion: schegent/v1',
+    'kind: Pipeline',
+    'metadata:',
+    '  id: escaped',
+    '  name: "\\ud835\\udc00"',
+    '  version: 1',
+    'spec:',
+    '  phaseIds:',
+    '    - specify',
+    ''
+  ].join('\n');
+
+  it('emits the characters literally, never as an escape', () => {
+    // `quoteDouble` only escapes below 0x20 and 0x7f, so this is a statement
+    // about what the serializer must NOT start doing: emitting an astral
+    // character as a `\uXXXX` pair would produce a document its own reader now
+    // reads one escape at a time, and the amended production is the reason that
+    // has to keep working rather than a reason to start writing it that way.
+    const text = documentFor(ASTRAL_DEFINITION);
+    expect(text).toContain(ASTRAL_TEXT);
+    expect(text).not.toContain('\\u');
+  });
+
+  it('survives the UTF-8 encode the export write performs', () => {
+    // `extension.ts` writes the export with `Buffer.from(text, 'utf8')`. That
+    // call is total: it never fails, it substitutes U+FFFD for any code unit it
+    // cannot encode. A lone surrogate reaching here was therefore silent data
+    // loss, so the round trip is asserted through the encoding rather than
+    // around it.
+    const text = documentFor(ASTRAL_DEFINITION);
+    const written = Buffer.from(text, 'utf8');
+    expect(written.toString('utf8')).toBe(text);
+    expect(written.toString('utf8')).not.toContain('�');
+  });
+
+  it('reads a source document that spells the character as an escape pair', () => {
+    // The only shape in this file that enters the amended production. The pair
+    // is consumed as one unit and yields ONE code point — asserted by code point
+    // rather than by `.length`, which counts the two code units and would pass
+    // just as happily for two lone halves.
+    const read = readPackage(ESCAPED);
+    expect(read.pipeline.name).toBe('\u{1d400}');
+    expect([...read.pipeline.name]).toHaveLength(1);
+    expect(read.pipeline.name.codePointAt(0)).toBe(0x1d400);
+  });
+
+  it('normalizes the escape pair to its literal form once, then is stable', () => {
+    // The second of the two places a hand-authored document does not come back
+    // byte-identical (the first is `required: true` above), and for the same
+    // reason: the stored value is the character, and the serializer writes what
+    // the value is rather than how it was spelled. What has to hold is that the
+    // rewrite happens ONCE — a format whose output is not a fixed point would
+    // churn the operator's file on every export.
+    const once = writePackage(readPackage(ESCAPED), false);
+    expect(once).not.toBe(ESCAPED);
+    expect(once).toContain('  name: \u{1d400}');
+    expect(writePackage(readPackage(once), false)).toBe(once);
+  });
+
+  it('accepts a legitimately encoded astral character with no escape anywhere (FR-028a)', () => {
+    // The FR-028a boundary. Every astral character in this document arrives as
+    // UTF-8 in the source bytes; none is written as an escape. A scanner that
+    // enforced the surrogate rule by sweeping DECODED scalar text — rather than
+    // deciding at the escape site — would refuse this, because after decoding
+    // the two shapes are indistinguishable. That is the whole reason the check
+    // is specified at the escape and not after it.
+    const text = documentFor(ASTRAL_DEFINITION);
+    expect(text).not.toContain('\\u');
+
+    const parsed = parseDocumentText(text);
+    expect(parsed.ok).toBe(true);
+
+    const read = readPackage(text);
+    expect(read.pipeline.name).toBe(ASTRAL_TEXT);
+    expect(read.pipeline.inputs[0]?.label).toBe(ASTRAL_TEXT);
   });
 });

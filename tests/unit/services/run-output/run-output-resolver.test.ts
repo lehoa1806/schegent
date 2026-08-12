@@ -162,6 +162,100 @@ describe('an output that fails to resolve (FR-042)', () => {
   });
 });
 
+// Feature 091 (T002, US1) — the write contract of
+// specs/091-process-platform-wiring/contracts/run-output-recording.md.
+//
+// The 087 cases above already pin most of W1/W2/W4 and containment-before-probe
+// from the resolver's own side. What they do not pin is R2 under a *rejecting*
+// probe: 087's fake can only answer true or false, so a probe that throws has
+// never reached this loop. 091 puts a real filesystem behind it (T009), where a
+// permission error is an ordinary Tuesday, and FR-006/FR-006a require that one
+// such failure be recorded unresolved rather than abort the outputs after it.
+
+describe('one check that fails does not stop the rest (R2, FR-006, FR-006a)', () => {
+  function throwingProbeAt(failingPath: string, existing: readonly string[]) {
+    const present = new Set(existing);
+    const asked: string[] = [];
+    return {
+      asked,
+      probe: {
+        exists: async (absolutePath: string) => {
+          asked.push(absolutePath);
+          if (absolutePath === failingPath) {
+            throw new Error('EACCES: permission denied');
+          }
+          return present.has(absolutePath);
+        }
+      }
+    };
+  }
+
+  const THREE = [
+    declared('report', 'out/report.md'),
+    declared('summary', 'out/summary.txt', 'file'),
+    declared('ticket', 'out/ticket.json', 'external-reference')
+  ];
+
+  it('records the failing check as unresolved and still records those after it', async () => {
+    const { probe } = throwingProbeAt('/workspace/out/summary.txt', [
+      '/workspace/out/report.md',
+      '/workspace/out/ticket.json'
+    ]);
+    const records = await resolveRunOutputs(THREE, { workspaceRoot: WORKSPACE_ROOT, probe });
+    expect(records).toEqual([
+      { name: 'report', status: 'resolved', reference: 'out/report.md' },
+      { name: 'summary', status: 'unresolved' },
+      { name: 'ticket', status: 'resolved', reference: 'out/ticket.json' }
+    ]);
+  });
+
+  it('asks about every declared output even when an earlier one threw', async () => {
+    const { probe, asked } = throwingProbeAt('/workspace/out/report.md', []);
+    await resolveRunOutputs(THREE, { workspaceRoot: WORKSPACE_ROOT, probe });
+    expect(asked).toEqual([
+      '/workspace/out/report.md',
+      '/workspace/out/summary.txt',
+      '/workspace/out/ticket.json'
+    ]);
+  });
+
+  it('does not reject, so the completion transition is never gated on a probe', async () => {
+    // FR-006: a failure to examine is recorded, never raised. If this rejected,
+    // the caller in run-driver would have to guard it, and a guard is something
+    // a later edit can drop.
+    const { probe } = throwingProbeAt('/workspace/out/report.md', []);
+    await expect(
+      resolveRunOutputs([declared('report', 'out/report.md')], {
+        workspaceRoot: WORKSPACE_ROOT,
+        probe
+      })
+    ).resolves.toEqual([{ name: 'report', status: 'unresolved' }]);
+  });
+
+  it('records a failing check with no reference key', async () => {
+    const { probe } = throwingProbeAt('/workspace/out/report.md', []);
+    const records = await resolveRunOutputs([declared('report', 'out/report.md')], {
+      workspaceRoot: WORKSPACE_ROOT,
+      probe
+    });
+    expect(records[0]).not.toHaveProperty('reference');
+  });
+
+  it('records every output as unresolved when every check throws', async () => {
+    const probe = {
+      exists: async () => {
+        throw new Error('EIO');
+      }
+    };
+    const records = await resolveRunOutputs(THREE, { workspaceRoot: WORKSPACE_ROOT, probe });
+    expect(records).toEqual([
+      { name: 'report', status: 'unresolved' },
+      { name: 'summary', status: 'unresolved' },
+      { name: 'ticket', status: 'unresolved' }
+    ]);
+  });
+});
+
 describe('undeclared artifacts (FR-041)', () => {
   it('records nothing for an artifact the plan never declared', async () => {
     const { records } = await resolve(

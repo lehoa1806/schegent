@@ -43,7 +43,11 @@ export class HistoryRecorder {
         completedAt: run.lastTransitionAt,
         lastErrorSummary: run.lastError?.message ?? null,
         logger: this.logger,
-        pipelineId: run.pipeline?.id ?? null
+        pipelineId: run.pipeline?.id ?? null,
+        // Feature 091 (T013, FR-010) — the recorder is the only writer of a
+        // history entry, so it is the only route by which what a Run recorded
+        // outlives the Run itself.
+        runOutputs: run.runOutputs
       });
       await this.historyStore.append(entry);
     } catch (err) {

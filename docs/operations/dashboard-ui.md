@@ -247,6 +247,50 @@ session, the host appends one `metrics-view-opened` audit event
 (`sessionId` only) to `.schegent/audit.log` — see
 [Inspect Audit Logs](inspect-audit-logs.md).
 
+### 8. Runs tab (spec 091)
+
+The Dashboard's **Runs** tab is where composed Pipeline and Workflow runs are
+watched and started. The two surfaces beneath it shipped with specs 087 and 088
+but were reachable from no panel route; 091 mounts them at
+[webview-ui/src/components/RunsSurface.svelte](../../webview-ui/src/components/RunsSurface.svelte).
+
+**Layout:**
+
+- **Connected runs** — one panel per run the host is currently projecting,
+  showing the workflow and run identifiers, the per-node states with their
+  available actions, and the run's status line. Picking a node opens the
+  continuation composer for it; a node whose Pipeline has since left the catalog
+  says so instead of offering a compose form. A run that is still hydrating
+  shows its own loading state rather than being hidden — a run disappearing and
+  a run loading look different to an operator, and only one of them is true.
+- **Compose** — a Pipeline picker plus a **Compose** button. The picker appears
+  only when the catalog has something to pick, and the composer stays closed
+  until asked for. Choosing a Pipeline and composing opens the run launcher for
+  it, where inputs, supplemental references, and output targets are filled in
+  before submitting.
+- **Empty state** — with no connected runs, the tab shows the compose control
+  alone. This is the normal state, not an error.
+
+**A Pipeline removed from the catalog while its composer is open closes the
+composer** rather than composing against a definition the host would refuse.
+
+**No new IPC command.** Everything the tab renders was already in the
+projection — `connectedRuns`, `queue.orderedItems`, `availablePipelines`. The
+webview simply never read it. Submission uses the existing
+`CMD_LAUNCH_PIPELINE` / `CMD_LAUNCH_WORKFLOW` commands.
+
+**Declared outputs in Run details (spec 087, populated by 091).** The Run
+details panel lists the outputs a completed run declared. Until 091 the list was
+always empty — the resolver shipped but no host module called it. Outputs are
+now resolved once, at the moment the run completes, from the plan the operator
+approved rather than from the current catalog, so editing a Pipeline
+mid-run does not change what an earlier run is recorded as having produced.
+
+Each entry names a **location, never file content**. A declared output the
+phases never produced is listed as **unresolved** rather than dropped: an
+incomplete run must not read as a complete one. Runs that completed before 091
+show no outputs — the record was never written and is not reconstructed.
+
 ---
 
 **Related Documentation:**

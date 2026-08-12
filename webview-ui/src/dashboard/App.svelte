@@ -27,6 +27,11 @@
   type LazyRouteComponent = Component<LazyRouteProps>;
 
   const routeLoaders: Record<LazyRoute, () => Promise<unknown>> = {
+    // Feature 091 T020 (FR-014, FR-017, FR-022) — the mount for the connected-run
+    // view and the Run composer. Loaded on demand like every other non-default
+    // route, which also makes the reachability walker's dynamic-import support
+    // exercised by production code rather than only by a fixture.
+    runs: () => import('../components/RunsSurface.svelte'),
     history: () => import('../components/HistoryDashboard.svelte'),
     metrics: () => import('../components/MetricsDashboard/MetricsDashboard.svelte'),
     system: () => import('../components/SystemTab.svelte'),
@@ -103,6 +108,8 @@
             <svg class="nav-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               {#if r === 'operations'}
                 <path d="m12 3 8 4-8 4-8-4 8-4Z"></path><path d="m4 11 8 4 8-4"></path><path d="m4 15 8 4 8-4"></path>
+              {:else if r === 'runs'}
+                <path d="M5 3v18"></path><path d="M19 3v18"></path><path d="M5 8h14"></path><path d="M5 16h14"></path>
               {:else if r === 'history'}
                 <path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path><path d="M12 7v5l3 2"></path>
               {:else if r === 'metrics'}
@@ -132,7 +139,7 @@
           <ActiveRouteComponent active={true} />
         {:else if route === 'history'}
           <ActiveRouteComponent history={snapshot.history} isPrimary={snapshot.isPrimary} />
-        {:else if route === 'pipeline-builder' || route === 'settings'}
+        {:else if route === 'pipeline-builder' || route === 'settings' || route === 'runs'}
           <ActiveRouteComponent {snapshot} />
         {:else}
           <ActiveRouteComponent />
