@@ -17,6 +17,7 @@ import type {
   ScheduledStartSource
 } from '../../queue/feature-request';
 import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../queue/queue-registry';
+import { projectQueues } from './queue-summary-projector';
 import {
   RECENT_QUEUE_MAX,
   type PhaseName,
@@ -67,6 +68,14 @@ export interface QueueProjectionContext {
    */
   readonly scheduledStartSource?: ScheduledStartSource | null;
   readonly scheduledStartAt?: number | null;
+  /**
+   * Feature 092 (T092, FR-022) — the rows of an arbitrary queue, so the summary
+   * list can carry a per-queue `taskCount` instead of repeating the queue this
+   * projection was invoked for. Absent on a host with no multi-queue wiring, in
+   * which case the caller's own rows answer for the default queue and every
+   * other entry counts zero rather than guessing.
+   */
+  readonly requestsOf?: (queueId: string) => readonly FeatureRequest[];
 }
 
 export interface QueueProjectionResult {
@@ -114,8 +123,27 @@ export function projectQueue(
     pending: pendingSrc.map((r) => toQueueItem(r, ctx)),
     recent: recentSrc.map((r) => toQueueItem(r, ctx)),
     orderedItems: requests.slice().sort((a, b) => a.position - b.position).map((r) => toQueueItem(r, ctx)),
-    queues: projectQueues(ctx.registry, requests)
+    queues: projectQueues(ctx.registry, requests, ctx.requestsOf)
   };
+}
+
+/**
+ * Feature 092 (T108, FR-057) — one queue's rows in position order, projected
+ * with the same mapping the default queue's `orderedItems` gets.
+ *
+ * Exported so `composeQueueRuntimes` can publish a queue's own rows without
+ * owning a second copy of `toQueueItem`. The caller passes the *owning* queue's
+ * `inFlightId` and scheduled-start context, so a row's phase, pause cause and
+ * auto-resume countdown are read against the queue it actually belongs to.
+ */
+export function projectQueueRows(
+  requests: readonly FeatureRequest[],
+  ctx: QueueProjectionContext
+): readonly QueueItem[] {
+  return requests
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((request) => toQueueItem(request, ctx));
 }
 
 function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueItem {
@@ -194,43 +222,6 @@ function derivePausedField(
     };
   }
   return { pauseSource: 'operator-paused' };
-}
-
-function projectQueues(
-  registry: QueueRegistry | undefined,
-  requests: readonly FeatureRequest[]
-): QueueSummary[] {
-  // Feature 030 — single-queue mode. The registry has exactly one entry
-  // by v6 invariant (id === DEFAULT_QUEUE_ID, position === 0,
-  // schedule === null). The summary is retained as a one-element array so
-  // existing webview consumers (QueueGlobalActions cascade badge, paused
-  // indicator) read the same shape unchanged; the flat ordered task list
-  // surfaces on `QueueProjection.pending` / `recent` / `inFlight`. This
-  // projection is UI-only and never persisted.
-  if (!registry) return [];
-  const entry = registry.entries[0];
-  if (!entry) return [];
-  return [
-    {
-      id: entry.id,
-      name: entry.name,
-      position: entry.position,
-      state: entry.state,
-      // Feature 028 — surface the queue's pause source so the dashboard
-      // can render a "cascaded" badge alongside the manually-paused
-      // indicator. Read directly from the registry.
-      pauseSource: entry.pauseSource,
-      // Feature 030 — schedule is always null under single-queue mode.
-      schedule: null,
-      // Feature 030 — single-queue: count every active task on the
-      // default queue without filtering by per-entry queueId match
-      // (legacy multi-queue rows have already been coalesced under the
-      // v6 migration).
-      taskCount: requests.filter(
-        (request) => request.status === 'pending' || request.status === 'in-flight'
-      ).length
-    }
-  ];
 }
 
 function derivePauseCause(

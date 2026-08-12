@@ -4,9 +4,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { StateProjector } from '../../../../src/ui/sidebar/state-projector';
 import { WorkspaceStateStore, type Memento } from '../../../../src/state/workspace-state';
+import { QueueManager } from '../../../../src/queue/queue-manager';
 import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
+import type { LiveActivity, PhaseTile, WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
+import { runOf, runtimeOf } from './queue-runtime-read.helpers';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -22,9 +25,35 @@ class FakeMemento implements Memento {
 
 let memento: FakeMemento;
 let store: WorkspaceStateStore;
+let queue: QueueManager;
 let audit: AuditLogWriter;
 let tmpRoot: string;
 let monoClock: { value: number };
+// Feature 092 (T096) — the Task row every Run in this suite belongs to. A Run is
+// projected under the queue that holds its Task, so without this row the default
+// queue would own nothing and publish the empty projection of FR-053.
+let ownedTaskId: string;
+
+// The v4 readings this suite used to take off the snapshot root. Each throws
+// rather than returning a default when no Run is up: a projector test that reads
+// a live-activity or elapsed value from an idle queue is asking the wrong
+// question, and a silent default would hide that.
+function liveOf(snapshot: WorkflowSnapshot): LiveActivity {
+  const run = runOf(snapshot);
+  if (run === null) throw new Error('expected the default queue to own a Run');
+  return run.liveActivity;
+}
+
+function elapsedOf(snapshot: WorkflowSnapshot): number | null {
+  const run = runOf(snapshot);
+  if (run === null) throw new Error('expected the default queue to own a Run');
+  return run.elapsedMs;
+}
+
+/** The phase strip, which belongs to the queue rather than to its Run. */
+function tilesOf(snapshot: WorkflowSnapshot): readonly PhaseTile[] {
+  return runtimeOf(snapshot).phases;
+}
 
 function tickMonotonic(deltaMs: number): void {
   monoClock.value += deltaMs;
@@ -44,7 +73,7 @@ function makeProjector(opts: { ownerId?: string; debounceMs?: number; tickInterv
 function runningRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
     id: 'run-1',
-    featureId: 'feat-1',
+    featureId: ownedTaskId,
     featureDir: 'specs/001-x',
     status: 'running',
     currentPhase: 'speckit-plan',
@@ -69,6 +98,8 @@ beforeEach(async () => {
   memento = new FakeMemento();
   store = new WorkspaceStateStore(memento);
   await store.initialize();
+  queue = new QueueManager(store);
+  ownedTaskId = (await queue.enqueue('projector v2 task')).id;
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-projector-v2-'));
   audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
   monoClock = { value: 0 };
@@ -80,15 +111,15 @@ afterEach(async () => {
 });
 
 describe('StateProjector v2 — live activity', () => {
-  it('idle workflows expose IDLE_LIVE_ACTIVITY defaults', () => {
+  // Feature 092 (T096) — live activity is a reading of a Run, and an idle queue
+  // owns none, so there is no longer an idle live-activity value to inspect: the
+  // whole in-flight projection is absent together (FR-053). The frozen
+  // `IDLE_LIVE_ACTIVITY` defaults themselves stay pinned in `snapshot.test.ts`.
+  it('idle workflows publish no in-flight run to carry live activity', () => {
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.liveActivity.summary).toBeNull();
-    expect(snap.liveActivity.category).toBeNull();
-    expect(snap.liveActivity.lastEventAt).toBeNull();
-    expect(snap.liveActivity.freshness).toBe('idle');
-    expect(snap.liveActivity.staleSeconds).toBeNull();
+    expect(runOf(snap)).toBeNull();
     p.dispose();
   });
 
@@ -98,8 +129,8 @@ describe('StateProjector v2 — live activity', () => {
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(snap.liveActivity.freshness).toBe('live');
-    expect(snap.liveActivity.summary).toBeNull();
+    expect(liveOf(snap).freshness).toBe('live');
+    expect(liveOf(snap).summary).toBeNull();
     p.dispose();
   });
 
@@ -121,10 +152,10 @@ describe('StateProjector v2 — live activity', () => {
 
     await vi.advanceTimersByTimeAsync(120);
     const snap = p.getCurrentSnapshot();
-    expect(snap.liveActivity.summary).toBe(snap.auditTail[snap.auditTail.length - 1].summary);
-    expect(snap.liveActivity.category).toBe('cli-invocation');
-    expect(snap.liveActivity.lastEventAt).toBe(snap.auditTail[snap.auditTail.length - 1].timestamp);
-    expect(snap.liveActivity.freshness).toBe('live');
+    expect(liveOf(snap).summary).toBe(snap.auditTail[snap.auditTail.length - 1].summary);
+    expect(liveOf(snap).category).toBe('cli-invocation');
+    expect(liveOf(snap).lastEventAt).toBe(snap.auditTail[snap.auditTail.length - 1].timestamp);
+    expect(liveOf(snap).freshness).toBe('live');
     p.dispose();
   });
 
@@ -144,7 +175,7 @@ describe('StateProjector v2 — live activity', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    const firstSummary = p.getCurrentSnapshot().liveActivity.summary;
+    const firstSummary = liveOf(p.getCurrentSnapshot()).summary;
     expect(firstSummary).not.toBeNull();
 
     tickMonotonic(5_000);
@@ -159,7 +190,7 @@ describe('StateProjector v2 — live activity', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     const snap = p.getCurrentSnapshot();
-    expect(snap.liveActivity.summary).toBe(firstSummary);
+    expect(liveOf(snap).summary).toBe(firstSummary);
     p.dispose();
   });
 
@@ -179,15 +210,15 @@ describe('StateProjector v2 — live activity', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('live');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('live');
 
     tickMonotonic(30_000);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('slowing');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('slowing');
 
     tickMonotonic(60_000);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('stalled');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('stalled');
     p.dispose();
   });
 
@@ -212,8 +243,8 @@ describe('StateProjector v2 — live activity', () => {
     await vi.advanceTimersByTimeAsync(1_100);
 
     const snap = p.getCurrentSnapshot();
-    expect(snap.liveActivity.staleSeconds).toBe(45);
-    expect(snap.liveActivity.freshness).toBe('slowing');
+    expect(liveOf(snap).staleSeconds).toBe(45);
+    expect(liveOf(snap).freshness).toBe('slowing');
     p.dispose();
   });
 
@@ -236,7 +267,7 @@ describe('StateProjector v2 — live activity', () => {
 
     tickMonotonic(120_000);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('stalled');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('stalled');
 
     await audit.append({
       runId: 'run-1',
@@ -247,7 +278,7 @@ describe('StateProjector v2 — live activity', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('live');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('live');
     p.dispose();
   });
 
@@ -256,16 +287,19 @@ describe('StateProjector v2 — live activity', () => {
     await store.setRun(runningRun({ status: 'paused' }));
     const p = makeProjector();
     p.start();
-    expect(p.getCurrentSnapshot().liveActivity.freshness).toBe('paused');
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('paused');
     p.dispose();
   });
 });
 
 describe('StateProjector v2 — workflow elapsed time', () => {
-  it('idle workflow has workflowElapsedMs === null', () => {
+  // Feature 092 (T096) — the same fold as live activity: elapsed time is a
+  // reading of a Run, so an idle queue has no in-flight projection to read it
+  // from rather than an in-flight projection reading null.
+  it('idle workflow publishes no in-flight run to carry elapsed time', () => {
     const p = makeProjector();
     p.start();
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBeNull();
+    expect(runOf(p.getCurrentSnapshot())).toBeNull();
     p.dispose();
   });
 
@@ -276,15 +310,15 @@ describe('StateProjector v2 — workflow elapsed time', () => {
     p.start();
     p.subscribe(() => {});
 
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBe(0);
+    expect(elapsedOf(p.getCurrentSnapshot())).toBe(0);
 
     tickMonotonic(2_500);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBe(2_500);
+    expect(elapsedOf(p.getCurrentSnapshot())).toBe(2_500);
 
     tickMonotonic(3_000);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBe(5_500);
+    expect(elapsedOf(p.getCurrentSnapshot())).toBe(5_500);
     p.dispose();
   });
 
@@ -298,27 +332,36 @@ describe('StateProjector v2 — workflow elapsed time', () => {
     tickMonotonic(5_000);
     await store.setRun(runningRun({ status: 'paused' }));
     await vi.advanceTimersByTimeAsync(120);
-    const pausedAt = p.getCurrentSnapshot().workflowElapsedMs;
+    const pausedAt = elapsedOf(p.getCurrentSnapshot());
     expect(pausedAt).toBe(5_000);
 
     tickMonotonic(10_000);
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBe(5_000);
+    expect(elapsedOf(p.getCurrentSnapshot())).toBe(5_000);
 
     await store.setRun(runningRun({ status: 'running' }));
     await vi.advanceTimersByTimeAsync(120);
     tickMonotonic(2_000);
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(p.getCurrentSnapshot().workflowElapsedMs).toBe(7_000);
+    expect(elapsedOf(p.getCurrentSnapshot())).toBe(7_000);
     p.dispose();
   });
 });
 
 describe('StateProjector v2 — phase elapsed time', () => {
-  it('not-started phases have elapsedMs === 0', () => {
+  // Feature 092 (T096) — the strip belongs to the queue that owns the Run, so a
+  // Run has to be up for there to be a strip at all; an idle queue publishes an
+  // empty phase list and the loop below would assert nothing. The `length` check
+  // is what keeps that from passing vacuously.
+  it('not-started phases have elapsedMs === 0', async () => {
+    await store.setRun(runningRun({ currentPhase: 'speckit-plan' }));
     const p = makeProjector();
     p.start();
-    for (const tile of p.getCurrentSnapshot().phases) {
+    const notStarted = tilesOf(p.getCurrentSnapshot()).filter(
+      (tile) => tile.state === 'not-started'
+    );
+    expect(notStarted.length).toBeGreaterThan(0);
+    for (const tile of notStarted) {
       expect(tile.elapsedMs).toBe(0);
     }
     p.dispose();
@@ -334,7 +377,7 @@ describe('StateProjector v2 — phase elapsed time', () => {
     tickMonotonic(3_000);
     await vi.advanceTimersByTimeAsync(1_100);
     let snap = p.getCurrentSnapshot();
-    let planTile = snap.phases.find((t) => t.name === 'speckit-plan')!;
+    let planTile = tilesOf(snap).find((t) => t.name === 'speckit-plan')!;
     expect(planTile.state).toBe('active');
     expect(planTile.elapsedMs).toBe(3_000);
 
@@ -362,8 +405,8 @@ describe('StateProjector v2 — phase elapsed time', () => {
     tickMonotonic(2_000);
     await vi.advanceTimersByTimeAsync(1_100);
     snap = p.getCurrentSnapshot();
-    planTile = snap.phases.find((t) => t.name === 'speckit-plan')!;
-    const tasksTile = snap.phases.find((t) => t.name === 'speckit-tasks')!;
+    planTile = tilesOf(snap).find((t) => t.name === 'speckit-plan')!;
+    const tasksTile = tilesOf(snap).find((t) => t.name === 'speckit-tasks')!;
     expect(planTile.state).toBe('completed');
     expect(planTile.elapsedMs).toBe(3_000);
     expect(tasksTile.state).toBe('active');
@@ -382,7 +425,7 @@ describe('StateProjector v2 — phase elapsed time', () => {
     for (let i = 0; i < 5; i++) {
       tickMonotonic(1_000);
       await vi.advanceTimersByTimeAsync(1_100);
-      const planTile = p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-plan')!;
+      const planTile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-plan')!;
       expect(planTile.elapsedMs).toBeGreaterThanOrEqual(prev);
       prev = planTile.elapsedMs;
     }
@@ -391,10 +434,15 @@ describe('StateProjector v2 — phase elapsed time', () => {
 });
 
 describe('StateProjector v2 — sub-progress', () => {
-  it('null sub-progress for non-active phases', () => {
+  it('null sub-progress for non-active phases', async () => {
+    // Same reason as the elapsed case above: the strip only exists under a queue
+    // that owns a Run, so one is seeded and the non-active tiles are the subject.
+    await store.setRun(runningRun({ currentPhase: 'speckit-plan' }));
     const p = makeProjector();
     p.start();
-    for (const tile of p.getCurrentSnapshot().phases) {
+    const inactive = tilesOf(p.getCurrentSnapshot()).filter((tile) => tile.state !== 'active');
+    expect(inactive.length).toBeGreaterThan(0);
+    for (const tile of inactive) {
       expect(tile.subProgress).toBeNull();
     }
     p.dispose();
@@ -405,7 +453,7 @@ describe('StateProjector v2 — sub-progress', () => {
     await store.setRun(runningRun({ currentPhase: 'speckit-clarify', currentIteration: 3 }));
     const p = makeProjector();
     p.start();
-    const tile = p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-clarify')!;
+    const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-clarify')!;
     expect(tile.subProgress).not.toBeNull();
     expect(tile.subProgress!.current).toBe(3);
     expect(tile.subProgress!.total).toBe(10);
@@ -418,7 +466,7 @@ describe('StateProjector v2 — sub-progress', () => {
     await store.setRun(runningRun({ currentPhase: 'speckit-analyze', currentIteration: 7 }));
     const p = makeProjector();
     p.start();
-    const tile = p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-analyze')!;
+    const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-analyze')!;
     expect(tile.subProgress).not.toBeNull();
     expect(tile.subProgress!.current).toBe(7);
     expect(tile.subProgress!.label).toBe('iteration');
@@ -430,7 +478,7 @@ describe('StateProjector v2 — sub-progress', () => {
     await store.setRun(runningRun({ currentPhase: 'speckit-clarify', currentIteration: 0 }));
     const p = makeProjector();
     p.start();
-    const tile = p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-clarify')!;
+    const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-clarify')!;
     expect(tile.subProgress).toBeNull();
     p.dispose();
   });
@@ -452,7 +500,7 @@ describe('StateProjector v2 — sub-progress', () => {
     });
     await vi.advanceTimersByTimeAsync(120);
 
-    const tile = p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-implement')!;
+    const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-implement')!;
     expect(tile.subProgress).not.toBeNull();
     expect(tile.subProgress!.current).toBe(3);
     expect(tile.subProgress!.total).toBe(12);
@@ -476,7 +524,7 @@ describe('StateProjector v2 — sub-progress', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(5);
+    expect(tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(5);
 
     // A regression payload (current=2) should NOT lower the value.
     await audit.append({
@@ -488,7 +536,7 @@ describe('StateProjector v2 — sub-progress', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(5);
+    expect(tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(5);
 
     await audit.append({
       runId: 'run-1',
@@ -499,7 +547,7 @@ describe('StateProjector v2 — sub-progress', () => {
       outcome: 'success'
     });
     await vi.advanceTimersByTimeAsync(120);
-    expect(p.getCurrentSnapshot().phases.find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(8);
+    expect(tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-implement')!.subProgress!.current).toBe(8);
     p.dispose();
   });
 
@@ -542,8 +590,8 @@ describe('StateProjector v2 — sub-progress', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     const snap = p.getCurrentSnapshot();
-    const implementTile = snap.phases.find((t) => t.name === 'speckit-implement')!;
-    const finalizeTile = snap.phases.find((t) => t.name === 'finalize')!;
+    const implementTile = tilesOf(snap).find((t) => t.name === 'speckit-implement')!;
+    const finalizeTile = tilesOf(snap).find((t) => t.name === 'finalize')!;
     expect(implementTile.state).toBe('completed');
     expect(implementTile.subProgress).toBeNull();
     expect(finalizeTile.subProgress).toBeNull();
@@ -557,7 +605,7 @@ describe('StateProjector v2 — 1Hz tick', () => {
     const p = makeProjector({ tickIntervalMs: 1000 });
     p.start();
     const snapshots: number[] = [];
-    p.subscribe((s) => snapshots.push(s.workflowElapsedMs ?? -1));
+    p.subscribe((s) => snapshots.push(runOf(s)?.elapsedMs ?? -1));
     snapshots.length = 0;
 
     await vi.advanceTimersByTimeAsync(5_500);
@@ -571,7 +619,7 @@ describe('StateProjector v2 — 1Hz tick', () => {
     const p = makeProjector({ tickIntervalMs: 1000, debounceMs: 100 });
     p.start();
     const snapshots: number[] = [];
-    p.subscribe((s) => snapshots.push(s.workflowElapsedMs ?? -1));
+    p.subscribe((s) => snapshots.push(runOf(s)?.elapsedMs ?? -1));
     snapshots.length = 0;
 
     for (let i = 0; i < 3; i++) {
@@ -595,7 +643,7 @@ describe('StateProjector v2 — 1Hz tick', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     const tickCountAfterComplete: number[] = [];
-    p.subscribe((s) => tickCountAfterComplete.push(s.workflowElapsedMs ?? -1));
+    p.subscribe((s) => tickCountAfterComplete.push(runOf(s)?.elapsedMs ?? -1));
     tickCountAfterComplete.length = 0;
 
     await vi.advanceTimersByTimeAsync(5_000);

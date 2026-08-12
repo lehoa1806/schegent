@@ -8,13 +8,20 @@
   const entries = $derived(snapshotStore.auditTail);
   // Feature 064 — reference set of run ids reachable in the current
   // snapshot. Queue items expose `id` (which IS the run id because the
-  // controller sets `WorkflowSnapshot.activeRunId = run.id`); history
+  // controller stamps the run id onto the in-flight projection); history
   // entries expose `runId`. See data-model.md §Snapshot run reference set.
+  //
+  // Feature 092 — the audit tail is the workspace feed, so the reference set is
+  // the union over every queue's Run, not the default queue's alone: a line
+  // written by a second queue's Run is still reachable and must not be filtered
+  // out as unknown.
   const knownRunIds = $derived.by(() => {
     const ids = new Set<string>();
     const snap = snapshotStore.snapshot;
     if (!snap) return ids;
-    if (snap.activeRunId) ids.add(snap.activeRunId);
+    for (const runtime of snap.queues) {
+      if (runtime.inFlightRun) ids.add(runtime.inFlightRun.runId);
+    }
     if (snap.queue.inFlight?.id) ids.add(snap.queue.inFlight.id);
     for (const item of snap.queue.pending) {
       if (item.id) ids.add(item.id);

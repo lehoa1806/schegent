@@ -152,3 +152,41 @@ true:
 
 Until all seven are evidenced, F-025 remains an accepted expansion boundary:
 local releases may proceed, but remote/multi-user/parallel execution may not.
+
+## Status update — feature 092 (2026-08-12)
+
+Feature 092 (FR-R2-011, multi-queue concurrent execution) ships
+same-workspace parallel execution for a **single local operator**:
+`MAX_QUEUES` is 20, `schegent.queue.globalConcurrencyCap` defaults to 3 with
+range `[1, 20]`, and up to N queues drain concurrently in one canonical
+workspace, each holding its own per-queue execution lease.
+
+That directly narrows one clause of this gate — "parallel workers or agents
+targeting the same canonical workspace" — and it invalidates the sentence
+"The concurrency cap remains pinned at one." above, which is retained as the
+record of the position before this change rather than edited in place.
+
+**This narrowing did not go through the implementation RFC and exit criteria
+in this document.** It was decided by the FR-R2-011 specification and plan
+([specs/092-multi-queue-concurrency/](../../../specs/092-multi-queue-concurrency/)),
+which neither cite nor reconcile this record. Ratifying or reversing that is
+an open decision for the architecture owner; this note exists so the gap is
+visible rather than implied by silence.
+
+Everything else in this gate remains fully in force and untouched by feature
+092:
+
+- no command or state access from outside the local VS Code host;
+- one mutating operator identity — the window-primacy lease is unchanged, and
+  a second VS Code window on the same workspace stays read-only however many
+  queues are running;
+- no shared or networked scheduler, evidence store, secret store, or control
+  plane;
+- no cross-tenant storage, dashboards, logs, metrics, or administration.
+
+The parallelism added is N local queues under one operator, one host process,
+and one filesystem owner. It supplies none of the identity, isolation,
+brokering, or distributed-consistency machinery this document requires for
+remote or multi-user operation, and MUST NOT be cited as precedent for them.
+Concurrent runs share one working tree; see
+[docs/operations/](../operations/) for what that means for the operator.

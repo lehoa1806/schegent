@@ -34,6 +34,7 @@ import {
   type QueueRegistryEntry
 } from '../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
+import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { AuditEntry } from '../../src/audit/audit-entry';
@@ -184,6 +185,18 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
 
     // All requests are routed to the default queue post-migration.
     expect(queueState.requests.every((r) => r.queueId === DEFAULT_QUEUE_ID)).toBe(true);
+
+    // Feature 092 (T017) — the chain does not stop at v6. A v5 workspace is
+    // carried all the way to the shipped version, and what lands under
+    // `KEYS.queue` is the v10 map keyed by queue id, not the v6 singleton.
+    // Asserted against the raw memento because `store.getQueue()` resolves
+    // the default key either way and would hide the shape.
+    expect(memento.get<number>(KEYS.schemaVersionNumeric)).toBe(STATE_SCHEMA_VERSION);
+    const persisted = memento.get<Record<string, QueueState>>(KEYS.queue);
+    expect(Object.keys(persisted ?? {})).toEqual([DEFAULT_QUEUE_ID]);
+    expect(persisted?.[DEFAULT_QUEUE_ID].requests.map((r) => r.id)).toEqual(
+      queueState.requests.map((r) => r.id)
+    );
 
     // Now exercise the activation-time audit emit path the way
     // extension.ts does: forward each v6MigrationEvent through

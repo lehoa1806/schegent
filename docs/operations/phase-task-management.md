@@ -53,8 +53,10 @@ rejected and no tasks move.
 
 Queue settings live under:
 
-- `schegent.queue.globalConcurrencyCap` — integer pinned to `1..1`
-  (Feature 056 Track 4). v1 supports exactly one active workflow run.
+- `schegent.queue.globalConcurrencyCap` — integer in `1..20`, default `3`
+  (feature 092; formerly pinned to `1..1` by feature 056 Track 4). It bounds
+  how many queues may be busy at once; each queue still runs one Task at a
+  time.
 - `schegent.queue.defaultQueueId` — id of an existing queue.
 
 The host validates both settings transactionally. The webview helper
@@ -261,9 +263,11 @@ transitionReason }` per FR-023a:
 
 The chooser, countdown, indicator, and System tab filter chips are
 operator-visible surfaces and do not require feature flags. The chooser
-respects `schegent.queue.globalConcurrencyCap = 1`: a second
-`Start now` while another queue is running surfaces a non-modal
-"queue state changed elsewhere" notice and falls back to silent append.
+respects `schegent.queue.globalConcurrencyCap`: a `Start now` that would
+exceed the workspace ceiling surfaces a non-modal "queue state changed
+elsewhere" notice and falls back to silent append. Under feature 092 that
+happens when the *ceiling* is reached, not on the second queue — with the
+default of `3`, two other queues can be running and the third still starts.
 
 ## Phase Messages
 

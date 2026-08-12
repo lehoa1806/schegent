@@ -15,6 +15,7 @@
 // migrator, and the sidebar projector alike.
 
 import type { WorkflowDefinition } from '../contracts/workflow-definitions';
+import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { WorkflowRunPipeline } from './workflow-run';
 
 /**
@@ -92,6 +93,21 @@ export interface ConnectedWorkflowRun {
   /** Monotonic; the compare-and-set token (FR-046). */
   readonly revision: number;
   readonly startedAt: number;
+  /**
+   * Feature 092 (T078, FR-041) — the queue every child of this run enqueues
+   * into. Fixed when the run opens and never rewritten, which is why it sits on
+   * the aggregate rather than on each attempt: a per-attempt copy could
+   * disagree with itself mid-graph.
+   *
+   * This is a reference, not lifecycle, so it does not breach the organizing
+   * rule above. Whether the queue is paused, draining or empty is read from the
+   * queue; this field only says which one to read.
+   *
+   * Optional because a record written before this feature has none, and absence
+   * is not a defect: it resolves to the default queue on read (FR-046) via
+   * `resolveBoundQueueId()`, which is why no migration entry lifts it.
+   */
+  readonly queueId?: string;
 }
 
 export class ConnectedRunInvariantError extends Error {
@@ -107,6 +123,7 @@ const AGGREGATE_KEYS: readonly string[] = [
   'graph',
   'nodes',
   'pipelines',
+  'queueId',
   'revision',
   'startedAt',
   'workflowId'
@@ -222,16 +239,55 @@ function assertDecision(decision: RoutingDecision, run: ConnectedWorkflowRun): v
 }
 
 /**
+ * Feature 092 (T079, FR-046) — the queue this run's children enqueue into.
+ *
+ * The default is applied HERE, on read, and nowhere else. A migration entry
+ * would have to write a queue id into every pre-092 record, and the id it wrote
+ * would be a guess: the reserved default is where those runs' children already
+ * are, so reading it back is exact where writing it would be an assumption
+ * persisted as fact (plan D7).
+ */
+export function resolveBoundQueueId(run: ConnectedWorkflowRun): string {
+  return run.queueId ?? DEFAULT_QUEUE_ID;
+}
+
+/**
+ * What a caller can tell the invariants that the record cannot tell them.
+ *
+ * The queue registry is the one such thing, and it is optional on purpose. The
+ * aggregate module holds no registry and must not import one — it is loaded by
+ * the migrator, which reads a memento and has no registry to hand. So a caller
+ * that HAS the registry gets the containment check, and one that does not gets
+ * the shape checks and nothing weaker for either.
+ */
+export interface ConnectedRunInvariantOptions {
+  readonly knownQueueIds?: ReadonlySet<string>;
+}
+
+/**
  * Every invariant that can be checked from the record alone, at every write.
  *
  * Invariant 3 — at most one non-terminal child — is deliberately absent: it is
  * checked against the child runs' live statuses by the launcher gate, because
  * the aggregate stores no status to check it against.
  */
-export function assertConnectedRunInvariants(run: ConnectedWorkflowRun): void {
+export function assertConnectedRunInvariants(
+  run: ConnectedWorkflowRun,
+  options: ConnectedRunInvariantOptions = {}
+): void {
   assertKeys(run, AGGREGATE_KEYS, 'connected run');
   if (!Number.isInteger(run.revision) || run.revision < 1) {
     fail(`revision must be a positive integer, not ${String(run.revision)}`);
+  }
+  if (run.queueId !== undefined) {
+    if (typeof run.queueId !== 'string' || run.queueId.length === 0) {
+      fail(`queueId must be a non-empty string, not ${String(run.queueId)}`);
+    }
+    // FR-045. Present means bound, and a binding that names nothing is not a
+    // weaker binding — it is a run whose children have nowhere to go.
+    if (options.knownQueueIds !== undefined && !options.knownQueueIds.has(run.queueId)) {
+      fail(`queueId names no queue in the registry: ${run.queueId}`);
+    }
   }
   if (!Object.isFrozen(run.graph) || !Object.isFrozen(run.pipelines)) {
     fail('the graph and Pipeline snapshots must be frozen');
@@ -253,6 +309,13 @@ export interface CreateConnectedRunInput {
   readonly graph: WorkflowDefinition;
   readonly pipelines: Readonly<Record<string, WorkflowRunPipeline>>;
   readonly startedAt: number;
+  /**
+   * Feature 092 (T078, FR-041) — supplied at start or not at all. There is no
+   * rebind: the only constructor that sets it is this one, and every subsequent
+   * update spreads the existing record, so the binding a run opens with is the
+   * binding it keeps.
+   */
+  readonly queueId?: string;
 }
 
 /** Freeze the snapshot and open the aggregate at revision 1. */
@@ -265,7 +328,8 @@ export function createConnectedRun(input: CreateConnectedRunInput): ConnectedWor
     nodes: Object.freeze({}),
     decisions: Object.freeze([]),
     revision: 1,
-    startedAt: input.startedAt
+    startedAt: input.startedAt,
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
   };
   assertConnectedRunInvariants(run);
   return Object.freeze(run);

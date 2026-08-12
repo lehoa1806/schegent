@@ -106,6 +106,13 @@ export interface NodeRunStartInput {
   /** Overrides the queue row label; the Workflow path names its node here. */
   readonly description?: string;
   /**
+   * Feature 092 (T062, FR-034) — which queue admits the enqueue. Carried to
+   * `scheduleOrEnqueue` verbatim and defaulted there, not here: this seam has
+   * no opinion about which queue is the default one, and inventing that opinion
+   * would make a second site deciding it.
+   */
+  readonly queueId?: string;
+  /**
    * The connected run's own frozen Pipeline, when the caller has one (FR-005).
    *
    * This is the one gate that legitimately differs between the two callers. A
@@ -260,6 +267,7 @@ export async function startPipelineRun(
       scheduledAt: Date.now(),
       via: 'webview',
       pipelineId: plan.pipeline.id,
+      ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
       runPlan: plan
     });
   } catch (err) {

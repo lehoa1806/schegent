@@ -7,6 +7,7 @@ import type {
   WorkflowSnapshot
 } from './snapshot-types';
 import type { PhaseLogSelectionDraft } from './phase-log-store.svelte';
+import { defaultQueueId, findQueueRuntime } from './queue-runtime-view';
 
 export type ActivityFeedFollowMode = 'live' | 'manual';
 export type ActivityFeedManualLevel = 'queue' | 'task' | 'phase' | null;
@@ -92,7 +93,7 @@ export function getTaskOptions(
     id: item.id,
     label: item.label,
     queueId: queueIdForItem(item),
-    pipelineId: item.currentPipelineId ?? fallbackPipelineId(snapshot),
+    pipelineId: item.currentPipelineId ?? fallbackPipelineId(snapshot, queueIdForItem(item)),
     currentPhase: item.currentPhase,
     status: item.status,
     updatedAt: item.completedAt ?? item.updatedAt ?? item.startedAt ?? item.enqueuedAt
@@ -111,7 +112,7 @@ export function getTaskOptions(
         id: entry.runId,
         label: entry.descriptionPreview,
         queueId: 'default',
-        pipelineId: fallbackPipelineId(snapshot),
+        pipelineId: fallbackPipelineId(snapshot, 'default'),
         currentPhase: null,
         status: entry.terminalStatus,
         updatedAt: entry.completedAt ?? entry.startedAt
@@ -127,7 +128,11 @@ export function getPhaseOptions(
   task: ActivityFeedTaskOption | null
 ): readonly ActivityFeedPhaseOption[] {
   const available = snapshot.availablePhases ?? [];
-  const tilesByName = new Map(snapshot.phases.map((phase) => [phase.name, phase]));
+  // Feature 092 — tiles come from the queue that owns the selected task, so a
+  // second queue's live run cannot colour this task's phase strip.
+  const tiles =
+    findQueueRuntime(snapshot, task?.queueId ?? defaultQueueId(snapshot))?.phases ?? [];
+  const tilesByName = new Map(tiles.map((phase) => [phase.name, phase]));
   if (available.length > 0) {
     return available.map((phase, index) => {
       const tile = tilesByName.get(phase.id);
@@ -140,7 +145,7 @@ export function getPhaseOptions(
       };
     });
   }
-  return snapshot.phases.map((phase) => ({
+  return tiles.map((phase) => ({
     id: phase.name,
     name: phase.name,
     order: phase.order,
@@ -193,7 +198,7 @@ export function resolveLiveSelection(snapshot: WorkflowSnapshot): ActivityFeedSe
   return {
     queueId,
     taskId: inFlight.id,
-    pipelineId: task?.pipelineId ?? inFlight.currentPipelineId ?? fallbackPipelineId(snapshot),
+    pipelineId: task?.pipelineId ?? inFlight.currentPipelineId ?? fallbackPipelineId(snapshot, queueId),
     phaseId: inFlight.currentPhase,
     iterationN: null,
     followMode: 'live',
@@ -372,8 +377,12 @@ function findTask(
   return null;
 }
 
-function fallbackPipelineId(snapshot: WorkflowSnapshot): string | null {
-  return snapshot.activePipeline?.id ?? snapshot.availablePipelines?.[0]?.id ?? null;
+// Feature 092 — the pipeline a task falls back to is the one in flight on *its
+// own* queue, not a workspace-wide "active" pipeline: with concurrent runs there
+// is no such thing, and borrowing a neighbour queue's would mislabel the task.
+function fallbackPipelineId(snapshot: WorkflowSnapshot, queueId: string): string | null {
+  const runtime = findQueueRuntime(snapshot, queueId);
+  return runtime?.inFlightRun?.pipeline?.id ?? snapshot.availablePipelines?.[0]?.id ?? null;
 }
 
 function timeValue(value: string | null): number {

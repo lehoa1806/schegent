@@ -32,6 +32,8 @@
   import DashboardActivityPane from './DashboardActivityPane.svelte';
   import { useConfirm } from '../lib/use-confirm';
   import { deriveCleanAllContext } from '../lib/queue-derived';
+  import { defaultQueueRuntime, findQueueRuntime } from '../lib/queue-runtime-view';
+  import { scopeQueueProjection } from '../lib/scope-queue-projection';
 
   let leftPanelCollapsed = $state(false);
   let queueTab = $state<'queue' | 'history'>('queue');
@@ -42,12 +44,28 @@
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /**
+     * Feature 092 (T108) — the queue this pane is showing. Absent on the Queues
+     * tier's own reading, where every surface means the default queue exactly as
+     * it did before the drill-down existed; present on the Queue Detail tier,
+     * where the operator named a queue. The `undefined` branch below is
+     * deliberately the untouched pre-feature expression, so the unscoped path
+     * cannot drift as the scoped one grows.
+     */
+    queueId?: string;
   }
 
-  const { snapshot }: Props = $props();
+  const { snapshot, queueId }: Props = $props();
 
-  const queue = $derived(snapshot.queue);
-  const phases = $derived(snapshot.phases);
+  const queue = $derived(
+    queueId === undefined ? snapshot.queue : scopeQueueProjection(snapshot, queueId)
+  );
+  // Feature 092 — the phase strip belongs to a queue; with no explicit
+  // selection that is the default queue.
+  const queueRuntime = $derived(
+    queueId === undefined ? defaultQueueRuntime(snapshot) : findQueueRuntime(snapshot, queueId)
+  );
+  const phases = $derived(queueRuntime?.phases ?? []);
   const isPrimary = $derived(snapshot.isPrimary);
   const availablePipelines = $derived(snapshot.availablePipelines ?? []);
   const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
@@ -130,7 +148,7 @@
   const queuePaused = $derived(queue.paused);
   const pendingCount = $derived(queue.pending.length);
   const hasInFlight = $derived(queue.inFlight !== null);
-  const hasActiveRun = $derived((snapshot.activeRunId ?? null) !== null);
+  const hasActiveRun = $derived((queueRuntime?.inFlightRun ?? null) !== null);
   const clearDoneDisabled = $derived(completedCount === 0);
   // Feature 063 (T023) — Clean All gate: enabled iff ANY of the five reset
   // surfaces is non-empty. The four queue/run surfaces are visible from
@@ -203,8 +221,11 @@
     }
   });
 
-  function onActivityFeedQueueSelect(queueId: string | null): void {
-    if (queueId === null) {
+  // Named `selectedQueueId` rather than `queueId`: the prop of that name is the
+  // queue this whole pane is scoped to, and shadowing it here would read as if
+  // the feed selection could retarget the pane.
+  function onActivityFeedQueueSelect(selectedQueueId: string | null): void {
+    if (selectedQueueId === null) {
       applyActivityFeedSelection({
         ...EMPTY_ACTIVITY_FEED_SELECTION,
         followMode: 'manual',
@@ -212,7 +233,7 @@
       });
       return;
     }
-    applyActivityFeedSelection(selectActivityFeedQueue(snapshot, queueId));
+    applyActivityFeedSelection(selectActivityFeedQueue(snapshot, selectedQueueId));
   }
 
   function onActivityFeedTaskSelect(taskId: string | null): void {
@@ -250,6 +271,21 @@
     applyActivityFeedSelection(next);
   }
 
+  /**
+   * Feature 092 (T108, FR-057) — address the queue the tier is showing. The
+   * unscoped reading posts the command with **no** second argument at all, not
+   * with an `undefined` one: that is the call the host has always received and
+   * always defaulted to the default queue, and keeping it argument-identical is
+   * what lets the pre-feature assertions stand unedited.
+   */
+  function postQueueCommand(command: typeof CMD_PAUSE_QUEUE | typeof CMD_RESUME_QUEUE): void {
+    if (queueId === undefined) {
+      postCommand(command);
+      return;
+    }
+    postCommand(command, { queueId });
+  }
+
   async function onPause(event: MouseEvent): Promise<void> {
     // Feature 063 (T035) — gate Pause behind the universal confirmation.
     const ok = await useConfirm('queue.pause', {
@@ -257,7 +293,7 @@
       context: {}
     });
     if (!ok) return;
-    postCommand(CMD_PAUSE_QUEUE);
+    postQueueCommand(CMD_PAUSE_QUEUE);
   }
 
   async function onResume(event: MouseEvent): Promise<void> {
@@ -267,7 +303,7 @@
       context: {}
     });
     if (!ok) return;
-    postCommand(CMD_RESUME_QUEUE);
+    postQueueCommand(CMD_RESUME_QUEUE);
   }
 
   async function onClearDone(event: MouseEvent): Promise<void> {
@@ -298,12 +334,7 @@
   }
 </script>
 
-<main class="dashboard" data-testid="dashboard-root">
-  <div class="dashboard-header">
-    <h1 class="dashboard-title">Queues</h1>
-    <p class="dashboard-description">Compose work, monitor phase execution, and intervene without losing run context.</p>
-  </div>
-
+<main class="dashboard" data-testid="dashboard-root" aria-label="Operations">
   <div class="dashboard-split" class:left-collapsed={leftPanelCollapsed}>
     <button
       type="button"
@@ -322,6 +353,7 @@
       collapsed={leftPanelCollapsed}
       {availablePipelines}
       {defaultPipelineId}
+      {queueId}
       {pendingCount}
       {queueTab}
       {isPrimary}
@@ -359,40 +391,19 @@
   .dashboard {
     display: flex;
     flex-direction: column;
-    padding: 20px 24px 24px;
     color: var(--schegent-fg);
-    background: transparent;
+    background: var(--schegent-pane-bg);
     flex: 1;
     min-height: 0;
     box-sizing: border-box;
     overflow: hidden;
-  }
-  .dashboard-header {
-    flex-shrink: 0;
-    margin-bottom: 18px;
-  }
-  .dashboard-title {
-    margin: 0;
-    color: var(--schegent-fg);
-    font-size: 1.55rem;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-    text-wrap: balance;
-  }
-  .dashboard-description {
-    max-width: 65ch;
-    margin: 5px 0 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.84rem;
-    line-height: 1.45;
-    text-wrap: pretty;
   }
 
   .dashboard-split {
     display: flex;
     flex: 1;
     min-height: 0;
-    gap: 14px;
+    gap: 0;
     overflow: hidden;
     position: relative;
   }
@@ -400,17 +411,17 @@
   .panel-toggle {
     position: absolute;
     left: 0;
-    top: 8px;
+    top: 10px;
     z-index: var(--schegent-z-popover);
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 40px;
+    width: 22px;
+    height: 32px;
     border: 1px solid var(--schegent-border);
     border-left: none;
     border-radius: 0 5px 5px 0;
-    background: var(--schegent-surface);
+    background: var(--schegent-shell-bg);
     color: var(--schegent-muted-fg);
     cursor: pointer;
     transition:
@@ -423,7 +434,7 @@
     color: var(--schegent-fg);
   }
   .dashboard-split:not(.left-collapsed) .panel-toggle {
-    transform: translateX(390px);
+    transform: translateX(336px);
   }
   .panel-toggle-icon {
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -435,7 +446,6 @@
   @media (max-width: 900px) {
     .dashboard {
       overflow-y: auto;
-      padding: 16px;
     }
     .dashboard-split {
       display: grid;

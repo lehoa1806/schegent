@@ -9,8 +9,8 @@ import {
 } from '../../../../src/ui/sidebar/snapshot';
 
 describe('snapshot builders', () => {
-  it('exports SCHEMA_VERSION === 3', () => {
-    expect(SCHEMA_VERSION).toBe(3);
+  it('exports SCHEMA_VERSION === 4', () => {
+    expect(SCHEMA_VERSION).toBe(4);
   });
 
   it('builds 7 phase tiles in canonical order with v2 fields', () => {
@@ -27,24 +27,25 @@ describe('snapshot builders', () => {
     });
   });
 
-  it('idle snapshot is fully frozen and includes v3 fields', () => {
+  // Feature 092 (T091/T096) — the per-run singulars (`status`, `phases`,
+  // `activeFeature`, `workflowElapsedMs`, `liveActivity`) no longer sit at the
+  // snapshot root; they fold under the queue that owns the Run. An idle
+  // snapshot has read no registry yet, so it publishes *no* queue rather than a
+  // fabricated default one — which is why there is nothing left here to read a
+  // singular off of, and why `queues: []` is the assertion that replaces them.
+  it('idle snapshot is fully frozen and includes v4 fields', () => {
     const snap = buildIdleSnapshot({ isPrimary: true });
     expect(Object.isFrozen(snap)).toBe(true);
-    expect(Object.isFrozen(snap.phases)).toBe(true);
-    expect(snap.status).toBe('idle');
-    expect(snap.activeFeature).toBeNull();
+    expect(Object.isFrozen(snap.queues)).toBe(true);
+    expect(snap.queues).toEqual([]);
     expect(snap.queue.inFlight).toBeNull();
     expect(snap.queue.pending).toEqual([]);
     expect(snap.queue.recent).toEqual([]);
     expect(snap.queue.paused).toBe(false);
     expect(snap.auditTail).toEqual([]);
-    expect(snap.schemaVersion).toBe(3);
-    expect(snap.workflowElapsedMs).toBeNull();
+    expect(snap.schemaVersion).toBe(4);
     expect(snap.monitor).toBeNull();
     expect(snap.history).toEqual([]);
-    expect(snap.liveActivity).toEqual(IDLE_LIVE_ACTIVITY);
-    expect(snap.liveActivity.freshness).toBe('idle');
-    expect(snap.liveActivity.staleSeconds).toBeNull();
     expect(typeof snap.producedAt).toBe('string');
   });
 
@@ -68,11 +69,11 @@ describe('snapshot builders', () => {
 
   // Feature 082 (US1, T020) — `pipelineCatalog` is additive and optional, so a
   // snapshot built before the host resolves a catalog still validates at
-  // SCHEMA_VERSION 3. The C1-C10 projection guarantees live in
+  // SCHEMA_VERSION 4. The C1-C10 projection guarantees live in
   // `snapshot-composer.test.ts`; this pins only the envelope tolerance.
   it('idle snapshot omits pipelineCatalog without changing SCHEMA_VERSION', () => {
     const snap = buildIdleSnapshot({ isPrimary: true });
-    expect(snap.schemaVersion).toBe(3);
+    expect(snap.schemaVersion).toBe(4);
     expect('pipelineCatalog' in snap).toBe(false);
     expect(snap.pipelineCatalog).toBeUndefined();
     expect(snap.availablePipelines).toEqual([]);

@@ -21,6 +21,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import type { ExecutionLeasePort } from '../../src/services/auto-drain-coordinator';
 import { findQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
@@ -67,6 +68,27 @@ function makeLock(): WorkspaceLockManager {
     },
     id: 'this-window'
   } as unknown as WorkspaceLockManager;
+}
+
+/**
+ * Feature 092 (T070) — the drain gate this test leans on, re-aimed.
+ *
+ * This test has always needed the auto-drain to refuse, so that task B staying
+ * pending means "the cascade held" rather than "the scheduler happened not to
+ * run yet". It got that from `makeLock().tryAcquire` returning `acquired:false`,
+ * because the workspace lock WAS the drain's last gate.
+ *
+ * Feature 092 split that lock: window primacy stayed on it, and the drain's
+ * claim moved to a per-queue execution lease. So the refusal moves too. Nothing
+ * about the walkthrough changed — the same gate is being closed, under the name
+ * it now has. Left on the lock, this test would assert the cascade while the
+ * drain was in fact free to dispatch, which is the opposite of what it checks.
+ */
+function makeRefusingLease(): ExecutionLeasePort {
+  return {
+    tryAcquire: vi.fn(async () => ({ acquired: false, ownerId: 'other-window' })),
+    release: vi.fn(async () => {})
+  };
 }
 
 let tmpRoot: string;
@@ -128,7 +150,8 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
+      { executionLease: makeRefusingLease() }
     );
 
     // Enqueue two tasks: A (will run) and B (must stay pending).

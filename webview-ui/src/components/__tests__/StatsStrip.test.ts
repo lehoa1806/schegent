@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 import StatsStrip from '../StatsStrip.svelte';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import type { PhaseTile, QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 
 afterEach(() => cleanup());
 
@@ -33,14 +34,28 @@ function buildSnapshot(
   phases: readonly PhaseTile[] = SEVEN_NOT_STARTED,
   pending: readonly QueueItem[] = [],
   recent: readonly QueueItem[] = [],
-  overrides: Partial<WorkflowSnapshot> = {}
+  overrides: Partial<WorkflowSnapshot> & LegacyRunFields = {}
 ): WorkflowSnapshot {
+  const { liveActivity, ...rest } = overrides;
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     isPrimary: true,
-    status: 'idle',
-    activeFeature: null,
-    phases: Object.freeze(phases) as unknown as WorkflowSnapshot['phases'],
+    // Feature 092 — the v3 root run singulars now hang off the queue that owns
+    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
+    // their v3 wording.
+    queues: foldLegacyRun({
+      status: 'idle',
+      activeFeature: null,
+      phases: Object.freeze(phases) as unknown as LegacyRunFields['phases'],
+      liveActivity: liveActivity ?? Object.freeze({
+        summary: null,
+        category: null,
+        lastEventAt: null,
+        freshness: 'idle',
+        staleSeconds: null
+      }),
+      workflowElapsedMs: null
+    }),
     queue: Object.freeze({
       orderedItems: [],
       inFlight: null,
@@ -49,18 +64,10 @@ function buildSnapshot(
       paused: false
     }) as unknown as WorkflowSnapshot['queue'],
     auditTail: Object.freeze([]),
-    liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-    }),
-    workflowElapsedMs: null,
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-05-10T00:00:00.000Z',
-    ...overrides
+    ...rest
   } as unknown as WorkflowSnapshot);
 }
 

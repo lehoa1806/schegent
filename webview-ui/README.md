@@ -7,7 +7,7 @@ Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashb
 | Surface | Entry | Purpose |
 |---|---|---|
 | Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
-| Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: single-queue management, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
+| Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: queue management across up to twenty queues, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
 
 Both webviews subscribe to the same host `WorkflowSnapshot` projected by `src/ui/sidebar/state-projector.ts`. The dashboard renders the full operator surface; the sidebar projects a strict subset of the same `WorkflowSnapshot` (see `contracts/sidebar-view-contract.md` in the active spec for the testid contract).
 
@@ -23,10 +23,13 @@ webview-ui/
 │   │                       CurrentTask, DashboardLink, plus dashboard-only:
 │   │                       PhaseTracker, ControlPanel, QueueList,
 │   │                       HistorySection, ConfirmDeleteDialog, MonitorPill,
-│   │                       etc. — Feature 030 removed the multi-queue
+│   │                       etc. Feature 030 removed the multi-queue
 │   │                       QueueManagementPanel and QueueDeleteModal
-│   │                       surfaces; the unified queue's pause/resume/clear
-│   │                       affordances render inline on the Dashboard.)
+│   │                       surfaces; Feature 092 reinstated multi-queue
+│   │                       operation as OperationsSurface + drilldown/,
+│   │                       not by restoring either removed component.)
+│   │   └── drilldown/    — QueuesTier / QueueDetailTier / RunDetailTier,
+│   │                       the three tiers OperationsSurface routes between
 │   └── lib/
 │       ├── derive-stats.ts — pure helper: deriveSidebarStats / deriveActivePhase
 │       ├── deletion-confirmation.ts — status-aware destructive confirmation copy
@@ -60,6 +63,60 @@ The phase-tracking IPC shape was widened to support operator-defined pipelines:
 
 All four fields fall back to the prior built-in defaults when omitted, so existing snapshots continue to render unchanged.
 
+### Per-queue snapshot, `schemaVersion` 4 (spec 092)
+
+`WorkflowSnapshot.schemaVersion` advanced `3 → 4`. A queue is no longer a
+singleton, so "the" Run is no longer a thing the root can publish:
+
+- **`queues: readonly QueueRuntime[]`** — one entry per registry entry, in
+  position order. Each carries its own `lifecycle`, `phases`,
+  `phaseOverrides`, `manualPause`, `phaseBreakpoints`, `pendingCount`,
+  `tasks`, and an `inFlightRun: InFlightRunProjection | null` holding the
+  run-scoped readings (`runId`, `status`, `feature`, `pipeline`,
+  `elapsedMs`, `liveActivity`, `delayedRetry`, `resumeTargetPhaseId`,
+  `outputs`).
+- **The v3 top-level per-run singulars were deleted, not deprecated.** There
+  is no compatibility shim and no fallback: a webview reading `snapshot.status`
+  or `snapshot.phases` fails to compile, which is the point — the compiler
+  locates every consumer that still assumes one Run.
+- **`isPrimary` stays at the root.** It is a property of this window against
+  the workspace, not of any queue.
+- **`auditTail` and `debugLogTail` stay at the root too, unpartitioned.** A
+  line with no Run — a state migration, a queue mutation — belongs to no
+  queue and must not be dropped. Per-queue scoping is a read-side join on
+  `inFlightRun.runId`, not N partitioned copies.
+- **A queue with no Run publishes `inFlightRun: null`** — the empty
+  projection, never a borrowed neighbour's.
+
+Read seams for that shape live in `webview-ui/src/lib/`:
+`queue-runtime-view.ts` (`findQueueRuntime` — a caller must still name which
+queue's Run it means), `scope-queue-projection.ts` (rebuilds a
+`QueueProjection` from a named queue's own rows; `queueId === undefined`
+keeps reading `snapshot.queue` verbatim), `queue-run-rows.ts` (folds a
+connected run into one row per FR-047), and `queue-lifecycle-label.ts`.
+
+Seven queue mutation commands feature 030 removed are reinstated in
+`src/contracts/sidebar-ipc.ts` — `CMD_CREATE_QUEUE`, `CMD_RENAME_QUEUE`,
+`CMD_DELETE_QUEUE`, `CMD_SET_QUEUE_SCHEDULE`, `CMD_CLEAR_QUEUE_SCHEDULE`,
+`CMD_SAVE_QUEUE_SETTINGS`, `CMD_MOVE_TASK`. Every one is a member of
+`MUTATING_COMMAND_TYPES` (`src/contracts/sidebar-command-metadata.ts`), so
+every one is primary-host gated, and every one has a host handler under
+`src/ui/sidebar/commands/`. `CMD_REORDER_TASK` still drives both drag-and-drop
+and the up/down arrows *within* a queue; `CMD_MOVE_TASK` is the across-queues
+move.
+
+Two of the seven have webview call sites so far — `CMD_CREATE_QUEUE`
+(`drilldown/QueuesTier.svelte`) and `CMD_RENAME_QUEUE`
+(`drilldown/QueueDetailTier.svelte`). `CMD_DELETE_QUEUE`,
+`CMD_SET_QUEUE_SCHEDULE`, `CMD_CLEAR_QUEUE_SCHEDULE`,
+`CMD_SAVE_QUEUE_SETTINGS` and `CMD_MOVE_TASK` are reinstated on the wire and
+handled by the host, but no tier renders a control for them yet. Per-queue
+**pause and resume** are not part of the seven: `CMD_PAUSE_QUEUE` /
+`CMD_RESUME_QUEUE` gained an optional `queueId`, and `Dashboard.svelte`
+posts them with **no** second argument when unscoped — argument-identical to
+the pre-feature call, which is what lets the earlier assertions stand
+unedited.
+
 ### Sidebar outbound surface
 
 The compact sidebar emits **only** `CMD_OPEN_DASHBOARD`. Any other operator-initiated mutation (cancel, resume, queue actions, history rerun, retry-active-run) is sent from the Dashboard webview or the VS Code Command Palette. This narrow surface is enforced by `tests/integration/sidebar-activation.host.test.ts`, which scans the sidebar bundle and asserts the four allowed `data-testid` containers (`sidebar-status-row`, `sidebar-stats-strip`, `sidebar-current-task`, `sidebar-open-dashboard-button`) plus `app-root` and rejects any reappearance of removed sidebar testids.
@@ -75,7 +132,7 @@ after `Operations`). The route ids and their nav labels are declared in
 
 | Route (id) | Nav label | Component | Purpose |
 |---|---|---|---|
-| `operations` | Queues | `components/Dashboard.svelte` | Live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, and phase log feed. |
+| `operations` | Queues | `components/OperationsSurface.svelte` | The three drill-down tiers (spec 092). `components/Dashboard.svelte` — live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, phase log feed — is what the Queue Detail tier renders. |
 | `runs` | Runs | `components/RunsSurface.svelte` | Connected composed runs and the Run composer. See "Connected-run surfaces" below. |
 | `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
@@ -86,12 +143,55 @@ after `Operations`). The route ids and their nav labels are declared in
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
 a new surface earns its place in the nav, not on someone's landing page.
 Every route but the default is lazily loaded through the `routeLoaders`
-dynamic-import map.
+dynamic-import map. `operations` is the exception because it is where the
+dashboard lands, so `OperationsSurface` makes the same bargain one level down:
+tier 1 is synchronous, and tiers 2 and 3 — which between them pull in
+`Dashboard.svelte` and the `WorkflowRun` topology view — are imported on
+descent. An operator who never drills in never loads them.
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
 (`$derived(snapshotStore.snapshot)`); every route receives the snapshot
 as a `{snapshot}` prop (the System route reads `auditTail` directly
 from the store).
+
+### Drill-down locations under `operations` (spec 092)
+
+The three tiers are **sub-locations beneath one route**, not nav peers.
+`DashboardRoute`, `DASHBOARD_ROUTES` and `DEFAULT_DASHBOARD_ROUTE` are
+unchanged by feature 092 — promoting a single-queue view and a single-run view
+to siblings of Settings would put tier-2 and tier-3 surfaces in tier-1's nav.
+`dashboard/routes.ts` gains a second, independent union:
+
+| Location | Fields | Tier |
+|---|---|---|
+| `QueuesLocation` | `route: 'queues'` | 1 — every queue |
+| `QueueDetailLocation` | `route: 'queue-detail'`, `queueId` | 2 — one queue |
+| `RunDetailLocation` | `route: 'run-detail'`, `queueId`, `runId` | 3 — one Run |
+
+`DashboardLocation` is their union; `DEFAULT_DASHBOARD_LOCATION` is tier 1.
+Constructors (`queueDetailLocation`, `runDetailLocation`) return their own
+member rather than the union, and `parentLocation` gives the tier a back
+navigation lands on — tier 1 is its own parent, so callers need no
+"anywhere left to go" check. A location carries exactly the ids its tier
+displays: tier 3 keeps `queueId` alongside `runId` so back-navigation is a
+field read rather than a lookup that can fail.
+
+`components/OperationsSurface.svelte` is the only holder of a
+`DashboardLocation`, and owns two things nothing else does:
+
+- **Resolution.** A location is operator state and the snapshot is host
+  state, so a destination can stop existing between snapshots. The rendered
+  tier is *derived* from both — `resolveLocation` walks up to the nearest
+  surviving tier — rather than the location being mutated, so there is no
+  write-during-update and a destination that reappears resolves again on its
+  own.
+- **Position.** One scroll container for all three tiers with the offset
+  remembered per location key, so walking back lands where the operator was.
+  Selection is passed back down the same way; the tiers store none of it.
+
+Each tier receives `isPrimary` from the snapshot root and offers no mutating
+control without it. Travel between tiers stays available in a non-primary
+window — reading is not a mutation.
 
 ### Connected-run surfaces (spec 091)
 
@@ -138,10 +238,13 @@ retired components sit in a 10-entry `ALLOWLIST`, each with a recorded reason;
 | Fatal Signatures | `components/settings/FatalSignaturesTab.svelte` | Two sections: the read-only **Built-in registry** (rendered from the parity mirror at `lib/fatal-signature-registry.ts`) and the editable **Operator additions** list (text inputs with + Add / Remove controls). Save goes through the shared helper with the unprefixed key `fatalSignatures`. |
 
 Feature 030 (US3) removed the **Queue** sub-tab and its
-`QueueSettingsTab.svelte` / `save-queue-settings.ts` plumbing. With
-`MAX_QUEUES = 1` the per-queue concurrency cap and default-queue
-selector are no longer meaningful; the global concurrency cap moved
-to **General** alongside the other scalar `schegent.*` keys.
+`QueueSettingsTab.svelte` / `save-queue-settings.ts` plumbing, on the
+grounds that `MAX_QUEUES = 1` made a per-queue cap and a default-queue
+selector meaningless. Feature 092 raised `MAX_QUEUES` back to 20 but did
+**not** restore the sub-tab: per-queue configuration is reachable from the
+Queue Detail tier (FR-064), and `schegent.queue.globalConcurrencyCap` — now
+ranged `1..20`, default `3` — stays in **General** alongside the other
+scalar `schegent.*` keys.
 
 The Phases, Pipelines, and Models editors are not in `SettingsSurface` —
 they live in Pipeline Builder (Phases, Pipelines) and Operations
@@ -216,8 +319,9 @@ Feature 030 (US3) removed the multi-queue mutators
 (`CMD_CREATE_QUEUE`, `CMD_RENAME_QUEUE`, `CMD_DELETE_QUEUE`,
 `CMD_MOVE_TASK`, `CMD_SAVE_QUEUE_SETTINGS`, `CMD_SET_QUEUE_SCHEDULE`,
 `CMD_CLEAR_QUEUE_SCHEDULE`) along with the per-queue schedule
-surface; the unified queue's pause/resume operate without a
-`queueId` payload.
+surface. Feature 092 reinstated all seven (see "Per-queue snapshot" above)
+and gave `CMD_PAUSE_QUEUE` / `CMD_RESUME_QUEUE` an optional `queueId`; the
+unscoped call still carries no payload at all.
 
 Feature 022 widens deletion commands:
 

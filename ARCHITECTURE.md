@@ -17,10 +17,13 @@ is the single source of truth.
 "Local-first" describes storage and control-plane placement; it is not an
 offline AI-execution guarantee. See
 [`docs/concepts/local-first-not-offline.md`](docs/concepts/local-first-not-offline.md).
-Remote, multi-user, and same-workspace parallel execution are blocked by the
-accepted
+Remote control and multi-user operation are blocked by the accepted
 [`expansion architecture gate`](docs/architecture/remote-multi-user-expansion-gate.md);
-the local concurrency cap must not be raised as a substitute for that design.
+raising the local concurrency cap is not a substitute for that design. Feature
+092 narrows one clause of that gate — same-workspace parallel execution for a
+single local operator, N queues draining concurrently — without supplying any
+of the identity, isolation or brokering the remote/multi-user clauses require;
+see the status update at the end of the gate record.
 
 ## System Boundaries
 
@@ -386,18 +389,23 @@ size/generation policy (`schegent.logging.runtimeLogMaxBytes`,
 ### State (`src/state/`)
 
 [workspace-state.ts](src/state/workspace-state.ts) is the memento-backed
-serialization layer. The numeric schema version `STATE_SCHEMA_VERSION = 6`
+serialization layer. The numeric schema version `STATE_SCHEMA_VERSION = 10`
 lives in [src/contracts/state-schema.ts](src/contracts/state-schema.ts);
 forward-only migrators handle 1→2 (feature 011), 2→3
 ([queue-state-migrator.ts](src/state/queue-state-migrator.ts)),
-and 5→6 (feature 030). `setRun()` enforces paired invariants for manual
-pause and retry state so the scheduler cannot persist one-sided
-resumption data.
+5→6 (feature 030) and 9→10 (feature 092, `migrateV9ToV10`, which lifts the
+singleton queue record into `Record<queueId, QueueState>`). `setRun()` enforces
+paired invariants for manual pause and retry state so the scheduler cannot
+persist one-sided resumption data.
 
 [history-store.ts](src/state/history-store.ts) and
 [history-entry.ts](src/state/history-entry.ts) own the rolling history
 window; [lock.ts](src/state/lock.ts) provides the workspace lock
-acquisition wrapper.
+acquisition wrapper, which since feature 092 arbitrates **window primacy**
+only. Per-queue **execution** leases live in
+[execution-lease.ts](src/state/execution-lease.ts) — at most one holder per
+queue, N concurrently per workspace, reusing the lock module's 5 s heartbeat
+and 15 s staleness threshold.
 
 [workspace-folder-picker.ts](src/state/workspace-folder-picker.ts) is the
 single source of truth for the canonical workspace folder in multi-root
@@ -432,13 +440,16 @@ closed enums + workspace basename).
 
 ### Queue (`src/queue/`)
 
-Single active run for v1 (feature 029 + 030). The public registry in
-[queue-registry.ts](src/queue/queue-registry.ts) stays compatible with
-historical records, but the active scheduler in
-[queue-manager.ts](src/queue/queue-manager.ts) uses one queue and one
-in-flight run. `MAX_QUEUES = 1`. Legacy multi-queue helpers are
-deprecated; reintroducing multi-queue requires a new state migration and
-controller redesign (CLAUDE.md hard rule).
+Feature 030 pinned this to one queue and one in-flight run; feature 092 supplies
+the state migration and scheduler design that hard rule required and reopens it.
+The public registry in [queue-registry.ts](src/queue/queue-registry.ts) holds up
+to `MAX_QUEUES = 20` entries with its id, uniqueness and position-compaction
+rules intact, and [queue-manager.ts](src/queue/queue-manager.ts) splits capacity
+into `hasQueueCapacity(queueId)` (one in-flight run per queue — a queue is still
+sequential) and `hasWorkspaceCapacity()` (`schegent.queue.globalConcurrencyCap`,
+default 3, range `[1, 20]`). The formerly deprecated CRUD helpers are
+un-deprecated. Widening further still requires both halves — a migration and a
+scheduler that answers for the new entries (CLAUDE.md hard rule).
 
 ### Config (`src/config/`)
 
@@ -697,7 +708,7 @@ For the full operator threat model see
 
 | Schema | Constant | Current | Migrators |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` ([state-schema.ts](src/contracts/state-schema.ts)) | `9` | 1→2 (011), 2→3 ([queue-state-migrator](src/state/queue-state-migrator.ts)), 3→4, 4→5, 5→6 (030), 6→7 (065, `migrateV6ToV7`), 7→8 (transcript retention + terminal-transition journal), 8→9 (088, [`migrateConnectedRuns`](src/state/connected-run-migrator.ts)) |
+| Workspace state | `STATE_SCHEMA_VERSION` ([state-schema.ts](src/contracts/state-schema.ts)) | `10` | 1→2 (011), 2→3 ([queue-state-migrator](src/state/queue-state-migrator.ts)), 3→4, 4→5, 5→6 (030), 6→7 (065, `migrateV6ToV7`), 7→8 (transcript retention + terminal-transition journal), 8→9 (088, [`migrateConnectedRuns`](src/state/connected-run-migrator.ts)), 9→10 (092, `migrateV9ToV10` — `KEYS.queue` becomes `Record<queueId, QueueState>`, lockstep asserted per entry, `KEYS.run` untouched) |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` ([audit-events.ts](src/contracts/audit-events.ts)) | `3` | Additive event types and additive payload fields do not bump the version (per the comment policy) |
 
 State migrators are forward-only and tolerate old records. Versions

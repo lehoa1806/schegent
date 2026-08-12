@@ -143,7 +143,11 @@ export const handler: CommandHandler<LaunchWorkflowCommand> = async (ctx, comman
       request: command.payload.request,
       workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
       startedAt: Date.now(),
-      ...(ctx.deps.defaultRunnerKind ? { defaultRunnerKind: ctx.deps.defaultRunnerKind } : {})
+      ...(ctx.deps.defaultRunnerKind ? { defaultRunnerKind: ctx.deps.defaultRunnerKind } : {}),
+      // Feature 092 (T080, FR-041) — forwarded, not resolved. Which queue is
+      // the default one is the enqueue seam's answer to give, and giving it
+      // here would make a second site deciding it.
+      ...(command.payload.queueId !== undefined ? { queueId: command.payload.queueId } : {})
     }
   );
 

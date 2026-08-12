@@ -186,7 +186,9 @@ export class GuardedRunService {
       return { outcome: 'rejected-foreign-lock', reason: foreign };
     }
 
-    if (this.deps.store.getQueue().paused) {
+    // Feature 092 (T060, FR-034) — addressed. A paused sibling queue must not
+    // reject a schedule aimed at a different one.
+    if (this.deps.store.getQueue(req.queueId ?? 'default').paused) {
       const reason = 'queue-paused';
       await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
       return { outcome: 'rejected-paused', reason };
@@ -262,18 +264,21 @@ export class GuardedRunService {
   }): Promise<void> {
     const queueId = args.queueId ?? 'default';
     const now = this.clock();
-    const current = this.deps.store.getQueue();
+    const current = this.deps.store.getQueue(queueId);
     const wasIdlePending = current.queueLifecycle === 'idle-pending';
-    await this.deps.store.updateQueue((queue) => ({
-      queue: {
-        ...queue,
-        queueLifecycle: 'idle-pending',
-        scheduledStartAt: args.scheduledStartAt,
-        scheduledStartSource: args.scheduledStartSource,
-        updatedAt: now
-      },
-      result: undefined
-    }));
+    await this.deps.store.updateQueue(
+      (queue) => ({
+        queue: {
+          ...queue,
+          queueLifecycle: 'idle-pending',
+          scheduledStartAt: args.scheduledStartAt,
+          scheduledStartSource: args.scheduledStartSource,
+          updatedAt: now
+        },
+        result: undefined
+      }),
+      queueId
+    );
     if (this.deps.scheduledStartCoordinator) {
       await this.deps.scheduledStartCoordinator.arm(
         queueId,
@@ -327,7 +332,7 @@ export class GuardedRunService {
     opts: { queueId?: string } = {}
   ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
     const queueId = opts.queueId ?? 'default';
-    const current = this.deps.store.getQueue();
+    const current = this.deps.store.getQueue(queueId);
     const now = this.clock();
     const coordinator = this.deps.scheduledStartCoordinator;
 
@@ -348,7 +353,7 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }));
+      }), queueId);
       return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
     }
 
@@ -381,7 +386,7 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }));
+      }), queueId);
       if (coordinator) {
         if (current.scheduledStartAt !== null) {
           await coordinator.change(queueId, requested, source);
@@ -406,7 +411,7 @@ export class GuardedRunService {
         updatedAt: now
       },
       result: undefined
-    }));
+    }), queueId);
     if (wasIdlePending) {
       await this.appendScheduleAudit('idle-pending-exited', {
         queueId,
@@ -439,7 +444,7 @@ export class GuardedRunService {
     // (chooser surfaces should not be presented in this state, but
     // defense-in-depth here too). No scheduled-start-* events are
     // emitted on this path and lifecycle is preserved.
-    const currentLifecycle = this.deps.store.getQueue().queueLifecycle;
+    const currentLifecycle = this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle;
     if (currentLifecycle === 'running') {
       return { kind: 'append-tail-no-chooser' };
     }
@@ -496,8 +501,8 @@ export class GuardedRunService {
       return 'active-empty';
     }
     const now = this.clock();
-    const current = this.deps.store.getQueue();
     const queueId = req.queueId ?? 'default';
+    const current = this.deps.store.getQueue(queueId);
     if (policy.kind === 'append-tail-no-chooser') {
       // Feature 065 (FR-006) — `running` queue silent enqueue. Lifecycle
       // is preserved; no scheduledStartAt fields are touched; no
@@ -531,7 +536,7 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }));
+      }), queueId);
       if (wasIdlePending) {
         await this.appendScheduleAudit('idle-pending-exited', {
           queueId,
@@ -557,7 +562,7 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }));
+      }), queueId);
       if (this.deps.scheduledStartCoordinator) {
         await this.deps.scheduledStartCoordinator.arm(
           queueId,
@@ -587,7 +592,7 @@ export class GuardedRunService {
             updatedAt: now
           },
           result: undefined
-        }));
+        }), queueId);
         await this.appendScheduleAudit('idle-pending-entered', {
           queueId,
           scheduledStartAt: null,
@@ -609,7 +614,7 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }));
+      }), queueId);
       await this.appendScheduleAudit('idle-pending-entered', {
         queueId,
         scheduledStartAt: null,

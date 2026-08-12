@@ -24,6 +24,7 @@ import type { FeatureRequest } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 
@@ -123,9 +124,11 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
 
     await store.setQueue(store.getQueue());
 
-    const stored = memento.get<{ requests: readonly FeatureRequest[] }>(KEYS.queue);
+    // Feature 092 — `KEYS.queue` holds `Record<queueId, QueueState>`; the
+    // fixture seeds the pre-v10 singular shape, which `initialize()` lifts.
+    const stored = memento.get<Record<string, { requests: readonly FeatureRequest[] }>>(KEYS.queue);
     const persisted = fixture[KEYS.queue] as { requests: readonly unknown[] };
-    expect(stored?.requests).toEqual(persisted.requests);
+    expect(stored?.[DEFAULT_QUEUE_ID].requests).toEqual(persisted.requests);
   });
 });
 
@@ -148,7 +151,8 @@ describe('a Run and a queue item built without the new fields serialize without 
 
     const queue = store.getQueue();
     await store.setQueue(queue);
-    const storedQueue = memento.get<{ requests: readonly FeatureRequest[] }>(KEYS.queue);
+    const storedMap = memento.get<Record<string, { requests: readonly FeatureRequest[] }>>(KEYS.queue);
+    const storedQueue = storedMap?.[DEFAULT_QUEUE_ID];
     if (storedQueue === undefined) throw new Error('setQueue must persist');
     for (const request of storedQueue.requests) {
       expect(Object.keys(request)).not.toContain(QUEUE_ITEM_KEY);

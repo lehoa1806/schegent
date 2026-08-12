@@ -46,11 +46,12 @@ import type {
   WorkflowDefinition
 } from '../../src/contracts/workflow-definitions';
 import { QueueManager } from '../../src/queue/queue-manager';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { handler as saveWorkflowsHandler } from '../../src/ui/sidebar/commands/cmd-save-workflows';
 import { CMD_SAVE_WORKFLOWS } from '../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SaveWorkflowsCommand } from '../../src/ui/sidebar/messages';
-import type { WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
+import { findQueueRuntime, type WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
 import { collectWorkflowDefinitionPipelineRefs } from '../../src/ui/sidebar/workflow-definition-pipeline-refs';
 import { collectWorkflowPipelineRefs } from '../../src/ui/sidebar/workflow-pipeline-refs';
@@ -957,7 +958,10 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     // Running one node's Pipeline directly is not running the Workflow: the
     // request stands alone, with no Workflow identity attached to it.
     expect(referencing.queue.list()).toHaveLength(1);
-    expect(referencing.snapshot().activeRunId).toBeNull();
+    // Feature 092 — "no Run started" is now read per queue: no runtime owns one.
+    expect(
+      referencing.snapshot().queues.every((runtime) => runtime.inFlightRun === null)
+    ).toBe(true);
   });
 
   // ── FR-038 / SC-007 — no Workflow operation starts work ────────────────────
@@ -1059,8 +1063,9 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     expect(observer.store.getRun()).toBeNull();
     expect(observer.queue.list()).toEqual([]);
     const snapshot = observer.snapshot();
-    expect(snapshot.activeRunId).toBeNull();
-    expect(snapshot.status).toBe('idle');
+    // Feature 092 — the run singulars moved under the queue that owns the Run,
+    // so an untouched default queue is the shape "nothing started" now takes.
+    expect(findQueueRuntime(snapshot, DEFAULT_QUEUE_ID)?.inFlightRun ?? null).toBeNull();
     expect(snapshot.queue.inFlight).toBeNull();
     expect(snapshot.queue.pending).toEqual([]);
     // A CLI session id is only ever recorded on a run, and every memento key the

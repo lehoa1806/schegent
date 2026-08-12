@@ -39,6 +39,7 @@ export function renderDashboardHtml(opts: RenderDashboardOptions): string {
   html = html.replaceAll('__CSP__', csp);
   html = html.replaceAll('__NONCE__', opts.nonce);
   html = ensureCspMetaPresent(html, csp);
+  html = ensureVitePreloadNonceMeta(html, opts.nonce);
   html = rewriteAssetRefs(html, opts.webview, bundleDir, opts.toLocalUri);
   html = injectNonceIntoTags(html, opts.nonce);
   html = stripIncompatibleAttrs(html);
@@ -68,6 +69,13 @@ function ensureCspMetaPresent(html: string, csp: string): string {
     /<head[^>]*>/i,
     (match) => `${match}\n<meta http-equiv="Content-Security-Policy" content="${csp}"/>`
   );
+}
+
+function ensureVitePreloadNonceMeta(html: string, nonce: string): string {
+  const marker = /<meta\b[^>]*\bproperty=["']csp-nonce["'][^>]*>/i;
+  const meta = `<meta property="csp-nonce" nonce="${nonce}"/>`;
+  if (marker.test(html)) return html.replace(marker, meta);
+  return html.replace(/<head[^>]*>/i, (match) => `${match}\n${meta}`);
 }
 
 function rewriteAssetRefs(

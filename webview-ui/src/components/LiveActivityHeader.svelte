@@ -2,8 +2,8 @@
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { formatDuration } from '../lib/format-duration';
 
-  const liveActivity = $derived(snapshotStore.snapshot?.liveActivity ?? null);
-  const workflowElapsedMs = $derived(snapshotStore.snapshot?.workflowElapsedMs ?? null);
+  const liveActivity = $derived(snapshotStore.liveActivity);
+  const workflowElapsedMs = $derived(snapshotStore.workflowElapsedMs);
   const freshness = $derived(liveActivity?.freshness ?? 'idle');
   const summary = $derived(liveActivity?.summary ?? null);
   const staleSeconds = $derived(liveActivity?.staleSeconds ?? null);

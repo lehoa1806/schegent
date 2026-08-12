@@ -27,6 +27,7 @@ describe('Dashboard webview CSP', () => {
     expect(html).toMatch(/<meta\s+http-equiv=["']Content-Security-Policy["']/i);
     expect(html).toContain(`'nonce-${nonce}'`);
     expect(html).toContain(`default-src 'none'`);
+    expect(html).toContain(`<meta property="csp-nonce" nonce="${nonce}"/>`);
     for (const token of FORBIDDEN_TOKENS) {
       expect(html, `forbidden token "${token}" present in dashboard HTML`).not.toContain(token);
     }

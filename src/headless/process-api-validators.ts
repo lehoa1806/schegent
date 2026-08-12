@@ -18,6 +18,7 @@
 
 import { validRunRequest } from '../contracts/validators/launch-pipeline';
 import { validateExportProcessYaml } from '../contracts/validators/process-yaml';
+import { QUEUE_ID_MAX } from '../contracts/validators/shared';
 import { validateContinueWorkflow } from '../contracts/validators/workflow-run';
 
 /**
@@ -126,4 +127,22 @@ export function checkContinuationArgs(payload: unknown): BoundaryRefusal | null 
 export function checkWorkspaceRoot(workspaceRoot: unknown): BoundaryRefusal | null {
   if (workspaceRoot === null || typeof workspaceRoot === 'string') return null;
   return refuse('workspaceRoot', 'wrong-type');
+}
+
+/**
+ * Feature 092 (T062, FR-034) — §3's queue id, held to the wire's own bound.
+ *
+ * `QUEUE_ID_MAX` is imported rather than restated, per this module's rule: the
+ * bound belongs to the validators that already own it, and a headless caller
+ * must not be held to a different one than a webview caller sending the same
+ * id. Absence is valid and means the default queue — the entrance takes a
+ * parameter and asks nothing.
+ */
+export function checkQueueId(queueId: unknown): BoundaryRefusal | null {
+  if (queueId === undefined) return null;
+  if (typeof queueId !== 'string') return refuse('queueId', 'wrong-type');
+  if (queueId.length === 0 || queueId.length > QUEUE_ID_MAX) {
+    return { outcome: 'rejected-argument', field: 'queueId', code: 'unsupported-value', limit: QUEUE_ID_MAX };
+  }
+  return null;
 }

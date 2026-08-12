@@ -34,6 +34,7 @@ import type {
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
 
 let nextCorrelationId = 0;
 const postCommandSpy = vi.fn(
@@ -86,22 +87,26 @@ function buildQueue(
   } as unknown as QueueProjection;
 }
 
-function buildIdleSnapshot(): WorkflowSnapshot {
+// Feature 092 — the idle projection is now a queue that owns no Run, so the
+// post-Clean-All shape this test pins is `queues: [<default queue, no Run>]`
+// rather than a set of nulled root singulars. `run` lets the two call sites that
+// need the *active* contrast state it in the same v3 vocabulary.
+function buildIdleSnapshot(run: LegacyRunFields = {}): WorkflowSnapshot {
   return {
-    status: 'idle',
+    schemaVersion: 4,
     isPrimary: true,
     queue: buildQueue(),
-    phases: Object.freeze([]) as readonly PhaseTile[],
+    queues: foldLegacyRun({
+      status: 'idle',
+      phases: Object.freeze([]) as readonly PhaseTile[],
+      activeRunId: null,
+      activeFeature: null,
+      ...run
+    }),
     monitor: null,
-    activeRunId: null,
-    activeFeature: null,
-    activePipeline: null,
     availablePhases: [],
     availablePipelines: Object.freeze([]) as readonly PipelineDefinition[],
     history: Object.freeze([]) as readonly HistoryEntry[],
-    manualPauseAt: null,
-    manualPauseCause: null,
-    phaseOverrides: [],
     generalSettings: IDLE_GENERAL_SETTINGS
   } as unknown as unknown as WorkflowSnapshot;
 }
@@ -144,7 +149,7 @@ describe('Dashboard idle projection after Clean All (T026 / BUG-002)', () => {
       { name: 'speckit-analyze', state: 'not-started' } as PhaseTile,
       { name: 'speckit-implement', state: 'not-started' } as PhaseTile
     ]);
-    const snap = { ...buildIdleSnapshot(), phases } as unknown as unknown as WorkflowSnapshot;
+    const snap = buildIdleSnapshot({ phases });
     const { getByTestId } = render(Dashboard, { props: { snapshot: snap } });
     const list = getByTestId('phase-progression-list');
     const tiles = Array.from(
@@ -204,12 +209,14 @@ describe('Dashboard idle projection after Clean All (T026 / BUG-002)', () => {
       currentPhase: 'speckit-implement'
     } as unknown as QueueItem;
     const active = {
-      ...buildIdleSnapshot(),
-      queue: buildQueue({ inFlight }),
-      activeRunId: inFlightId,
-      phases: Object.freeze([
-        { name: 'speckit-implement', state: 'active' } as PhaseTile
-      ])
+      ...buildIdleSnapshot({
+        status: 'running',
+        activeRunId: inFlightId,
+        phases: Object.freeze([
+          { name: 'speckit-implement', state: 'active' } as PhaseTile
+        ])
+      }),
+      queue: buildQueue({ inFlight })
     } as unknown as unknown as WorkflowSnapshot;
     const { getByTestId, unmount } = render(Dashboard, { props: { snapshot: active } });
     const activeHeader = getByTestId('dashboard-phase-progression-header');

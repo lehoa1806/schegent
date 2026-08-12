@@ -456,11 +456,11 @@
         {
           "key": "schegent.queue.globalConcurrencyCap",
           "type": "integer",
-          "default": 1,
+          "default": 3,
           "scope": "resource",
           "enum": null,
           "minimum": 1,
-          "maximum": 1,
+          "maximum": 20,
           "pattern": null,
           "itemType": null,
           "itemPattern": null
