@@ -156,13 +156,14 @@
   <div class="field-list">
     <div class="field-row" data-testid="wakeup-field-enabled">
       <div class="field-label">
-        <span class="field-name">Enable Wake up</span>
+        <span class="field-name" id="wakeup-label-enabled">Enable Wake up</span>
       </div>
       <div class="field-input">
         <label class="checkbox-label">
           <input
             type="checkbox"
             data-testid="wakeup-input-enabled"
+            aria-labelledby="wakeup-label-enabled"
             bind:checked={draft.enabled}
             use:hoverTextAnchor={{
               controlId: 'wakeup-enabled',
@@ -176,12 +177,13 @@
 
     <div class="field-row" data-testid="wakeup-field-scheduler-type">
       <div class="field-label">
-        <span class="field-name">Scheduler type</span>
+        <span class="field-name" id="wakeup-label-scheduler-type">Scheduler type</span>
       </div>
       <div class="field-input">
         <select
           class="select-input"
           data-testid="wakeup-input-scheduler-type"
+          aria-labelledby="wakeup-label-scheduler-type"
           bind:value={draft.schedulerType}
           disabled={!draft.enabled}
           use:hoverTextAnchor={{
@@ -198,7 +200,7 @@
     {#if draft.schedulerType === 'chronological'}
       <div class="field-row" data-testid="wakeup-field-chronological-time">
         <div class="field-label">
-          <span class="field-name">Daily time (HH:MM, 24-hour)</span>
+          <span class="field-name" id="wakeup-label-chronological-time">Daily time (HH:MM, 24-hour)</span>
         </div>
         <div class="field-input">
           <input
@@ -206,6 +208,9 @@
             class="text-input"
             placeholder="04:00"
             data-testid="wakeup-input-chronological-time"
+            aria-labelledby="wakeup-label-chronological-time"
+            aria-invalid={draft.enabled && !chronologicalTimeValid ? 'true' : undefined}
+            aria-describedby={draft.enabled && !chronologicalTimeValid ? 'wakeup-error-chronological-time' : undefined}
             bind:value={draft.chronologicalTime}
             disabled={!draft.enabled}
             use:hoverTextAnchor={{
@@ -214,7 +219,12 @@
             }}
           />
           {#if draft.enabled && !chronologicalTimeValid}
-            <span class="inline-error" data-testid="wakeup-error-chronological-time">
+            <span
+              class="inline-error"
+              id="wakeup-error-chronological-time"
+              data-testid="wakeup-error-chronological-time"
+              role="alert"
+            >
               Must be HH:MM in 24-hour format (e.g. 04:00).
             </span>
           {/if}
@@ -223,7 +233,7 @@
     {:else}
       <div class="field-row" data-testid="wakeup-field-periodic-interval">
         <div class="field-label">
-          <span class="field-name">Periodic interval</span>
+          <span class="field-name" id="wakeup-label-periodic-interval">Periodic interval</span>
         </div>
         <div class="field-input">
           <input
@@ -231,6 +241,13 @@
             class="text-input"
             placeholder="Every 1h"
             data-testid="wakeup-input-periodic-interval"
+            aria-labelledby="wakeup-label-periodic-interval"
+            aria-invalid={draft.enabled && !periodicValid ? 'true' : undefined}
+            aria-describedby={draft.enabled && !periodicValid
+              ? 'wakeup-error-periodic-interval'
+              : draft.enabled && periodicBelowFiveHours
+                ? 'wakeup-warning-periodic-below-5h'
+                : undefined}
             bind:value={draft.periodicInterval}
             disabled={!draft.enabled}
             use:hoverTextAnchor={{
@@ -239,13 +256,23 @@
             }}
           />
           {#if draft.enabled && !periodicValid}
-            <span class="inline-error" data-testid="wakeup-error-periodic-interval">
+            <span
+              class="inline-error"
+              id="wakeup-error-periodic-interval"
+              data-testid="wakeup-error-periodic-interval"
+              role="alert"
+            >
               Must match <code>Every Nm</code> or <code>Every Nh</code>
               (e.g. <code>Every 15m</code>, <code>Every 4h</code>).
             </span>
           {/if}
           {#if draft.enabled && periodicValid && periodicBelowFiveHours}
-            <span class="inline-warning" data-testid="wakeup-warning-periodic-below-5h">
+            <span
+              class="inline-warning"
+              id="wakeup-warning-periodic-below-5h"
+              data-testid="wakeup-warning-periodic-below-5h"
+              role="status"
+            >
               Heads up: this interval is shorter than Claude's 5-hour
               rolling window. Some fires may waste tokens. Save still
               works — this is advisory only.
@@ -296,11 +323,11 @@
       }}
     >Save</button>
     {#if status.kind === 'pending'}
-      <span class="status-text status-pending" data-testid="wakeup-status">Saving…</span>
+      <span class="status-text status-pending" data-testid="wakeup-status" role="status">Saving…</span>
     {:else if status.kind === 'accepted'}
-      <span class="status-text status-accepted" data-testid="wakeup-status">Saved</span>
+      <span class="status-text status-accepted" data-testid="wakeup-status" role="status">Saved</span>
     {:else if status.kind === 'rejected'}
-      <span class="status-text status-rejected" data-testid="wakeup-status">
+      <span class="status-text status-rejected" data-testid="wakeup-status" role="alert">
         Rejected: {status.reason}
       </span>
     {/if}
@@ -324,11 +351,11 @@
         }}
       >Wake up now</button>
       {#if wakeNowStatus.kind === 'pending'}
-        <span class="status-text status-pending" data-testid="wakeup-now-status">Running…</span>
+        <span class="status-text status-pending" data-testid="wakeup-now-status" role="status">Running…</span>
       {:else if wakeNowStatus.kind === 'accepted'}
-        <span class="status-text status-accepted" data-testid="wakeup-now-status">Recorded</span>
+        <span class="status-text status-accepted" data-testid="wakeup-now-status" role="status">Recorded</span>
       {:else if wakeNowStatus.kind === 'rejected'}
-        <span class="status-text status-rejected" data-testid="wakeup-now-status">
+        <span class="status-text status-rejected" data-testid="wakeup-now-status" role="alert">
           Rejected: {wakeNowStatus.reason}
         </span>
       {/if}
@@ -355,7 +382,7 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    padding: 8px;
+    padding: 8px 0;
     height: 100%;
   }
   .tab-header h2 {
@@ -371,17 +398,18 @@
   .field-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 0;
+    border-top: 1px solid var(--schegent-divider);
   }
   .field-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
     grid-template-areas: "label input";
     gap: 4px 12px;
-    padding: 12px;
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    background: var(--sch-glass-bg);
+    padding: 14px 0;
+    border: 0;
+    border-bottom: 1px solid var(--schegent-divider);
+    background: transparent;
     align-items: center;
   }
   .field-label {
@@ -421,7 +449,7 @@
     cursor: pointer;
   }
   .inline-error {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     font-size: 0.85em;
   }
   .inline-warning {
@@ -468,7 +496,7 @@
   }
   .status-pending { color: var(--schegent-muted-fg); }
   .status-accepted { color: var(--vscode-charts-green); }
-  .status-rejected { color: var(--schegent-color-error); }
+  .status-rejected { color: var(--schegent-error-text); }
   .manual-section {
     display: flex;
     flex-direction: column;

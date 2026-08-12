@@ -1,9 +1,8 @@
-// Feature 064 T013 — top-level four-route flat nav (was three-route under
-// Feature 012 T030; extended to include a peer System tab between
-// Pipeline Builder and Settings).
+// Feature 064 T013 — top-level flat nav, extended into the six-surface
+// operator flow used by the redesigned dashboard shell.
 //
 // Covers:
-//   - Five nav buttons render in order: Metrics, Operations, Pipeline Builder, System, Settings.
+//   - Six nav buttons render in the operator flow used by the dashboard shell.
 //   - Each carries the stable data-testid from the navigation contract.
 //   - Clicking each route switches the rendered content surface.
 //   - No `dashboard-tabs` (legacy two-tier) markup remains anywhere.
@@ -57,8 +56,8 @@ function buildSnapshot(): WorkflowSnapshot {
 
 afterEach(() => cleanup());
 
-describe('Feature 064 T013 — flat four-route top-level nav', () => {
-  it('renders four nav buttons in order with stable data-testids', () => {
+describe('Feature 064 T013 — flat six-route top-level nav', () => {
+  it('renders six nav buttons in order with stable data-testids', () => {
     // Push a ready snapshot so the nav (and routes) render.
     snapshotStore.apply({
       type: 'STATE_SNAPSHOT',
@@ -66,12 +65,13 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
     const buttons = container.querySelectorAll('[data-testid^="dashboard-route-"]');
-    expect(buttons.length).toBe(5);
-    expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-metrics');
-    expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-operations');
-    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
+    expect(buttons.length).toBe(6);
+    expect(buttons[0].getAttribute('data-testid')).toBe('dashboard-route-operations');
+    expect(buttons[1].getAttribute('data-testid')).toBe('dashboard-route-history');
+    expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-metrics');
     expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-system');
-    expect(buttons[4].getAttribute('data-testid')).toBe('dashboard-route-settings');
+    expect(buttons[4].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
+    expect(buttons[5].getAttribute('data-testid')).toBe('dashboard-route-settings');
   });
 
   it('switches the visible surface when each route is clicked', async () => {
@@ -86,6 +86,9 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     ) as HTMLButtonElement;
     const opBtn = container.querySelector(
       '[data-testid="dashboard-route-operations"]'
+    ) as HTMLButtonElement;
+    const historyBtn = container.querySelector(
+      '[data-testid="dashboard-route-history"]'
     ) as HTMLButtonElement;
     const pbBtn = container.querySelector(
       '[data-testid="dashboard-route-pipeline-builder"]'
@@ -105,6 +108,8 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     expect(container.querySelector('[data-testid="dashboard-route-settings"].active')).not.toBeNull();
     await fireEvent.click(opBtn);
     expect(container.querySelector('[data-testid="dashboard-route-operations"].active')).not.toBeNull();
+    await fireEvent.click(historyBtn);
+    expect(container.querySelector('[data-testid="dashboard-route-history"].active')).not.toBeNull();
     await fireEvent.click(metBtn);
     expect(container.querySelector('[data-testid="dashboard-route-metrics"].active')).not.toBeNull();
   });
@@ -116,5 +121,21 @@ describe('Feature 064 T013 — flat four-route top-level nav', () => {
     } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container } = render(App);
     expect(container.querySelector('.dashboard-tabs')).toBeNull();
+  });
+
+  it('keeps the shell structural and exposes exactly one main landmark per route', async () => {
+    snapshotStore.apply({
+      type: 'STATE_SNAPSHOT',
+      payload: buildSnapshot()
+    } as unknown as Parameters<typeof snapshotStore.apply>[0]);
+    const { container, getByTestId } = render(App);
+    expect(getByTestId('dashboard-app-root').tagName).toBe('DIV');
+    expect(container.querySelectorAll('main')).toHaveLength(1);
+
+    await fireEvent.click(getByTestId('dashboard-route-history'));
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="history-dashboard"]')).not.toBeNull();
+    });
+    expect(container.querySelectorAll('main')).toHaveLength(1);
   });
 });

@@ -149,6 +149,6 @@
   .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
   .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
   .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-  .btn-destructive { background: transparent; color: var(--schegent-color-error); border-color: var(--schegent-color-error); }
+  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
   .btn-destructive:hover:not(:disabled) { background: var(--schegent-color-error); color: var(--vscode-button-foreground); }
 </style>

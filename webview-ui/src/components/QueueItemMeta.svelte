@@ -101,7 +101,7 @@
   .paused-badge[data-pause-source='system-paused'],
   .retry-badge {
     border-color: currentColor;
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
 
   .paused-badge[data-pause-source='system-paused'],

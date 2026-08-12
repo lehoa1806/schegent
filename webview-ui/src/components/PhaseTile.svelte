@@ -139,7 +139,7 @@
   .tile.state-active {
     color: var(--schegent-fg);
     background: var(--schegent-list-active);
-    box-shadow: inset 2px 0 0 var(--schegent-color-active);
+    box-shadow: inset 0 0 0 1px var(--schegent-color-active);
   }
   .tile.state-completed {
     color: var(--schegent-fg);
@@ -190,7 +190,7 @@
   }
   .badge.result-failed,
   .badge.result-timed-out {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
   .badge.missing-keys {
     color: var(--schegent-color-warning);

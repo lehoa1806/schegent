@@ -256,7 +256,7 @@
       {@const index = selectedIndex}
       <div class="editor-card full-height" data-testid="phases-editor-{phase.id}">
         <div class="card-header-complex">
-          <input class="title-input" data-testid="phases-name-{phase.id}" value={phase.name} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { name: event.currentTarget.value })} placeholder="Phase Name" />
+          <input class="title-input" data-testid="phases-name-{phase.id}" aria-label="Phase name" value={phase.name} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { name: event.currentTarget.value })} placeholder="Phase Name" />
           <div class="header-actions">
             {#if !selectedReadOnly}
               <button class="btn btn-ghost" data-testid="phases-raw-json-toggle" disabled={selectedReadOnly} onclick={() => ontoggleraw(phase.sourceKey)}>

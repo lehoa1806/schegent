@@ -36,7 +36,6 @@ type Mode = 'inline' | 'popover';
 interface InlineState {
   readonly mode: 'inline';
   readonly inlineEl: HTMLParagraphElement;
-  readonly hadAriaDescribedBy: boolean;
 }
 
 interface PopoverState {
@@ -47,6 +46,7 @@ interface PopoverState {
   openTimer: ReturnType<typeof setTimeout> | null;
   leaveTimer: ReturnType<typeof setTimeout> | null;
   blurTicket: number;
+  describedById: string | null;
   readonly listeners: {
     mouseenter: (ev: MouseEvent) => void;
     mouseleave: (ev: MouseEvent) => void;
@@ -60,6 +60,30 @@ type AttachedState = InlineState | PopoverState | null;
 
 function modeFor(description: ControlDescription): Mode {
   return description.body.length <= INLINE_BODY_MAX_CHARS ? 'inline' : 'popover';
+}
+
+function describedByTokens(node: HTMLElement): Set<string> {
+  return new Set(
+    (node.getAttribute('aria-describedby') ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+  );
+}
+
+function addDescribedBy(node: HTMLElement, id: string): void {
+  const tokens = describedByTokens(node);
+  tokens.add(id);
+  node.setAttribute('aria-describedby', [...tokens].join(' '));
+}
+
+function removeDescribedBy(node: HTMLElement, id: string): void {
+  const tokens = describedByTokens(node);
+  tokens.delete(id);
+  if (tokens.size === 0) {
+    node.removeAttribute('aria-describedby');
+    return;
+  }
+  node.setAttribute('aria-describedby', [...tokens].join(' '));
 }
 
 // BUG-001 (2026-05-13): Svelte 5 `use:action={{…}}` creates a fresh object
@@ -85,8 +109,7 @@ function setupInline(node: HTMLElement, params: HoverTextAnchorParams): InlineSt
   inlineEl.className = 'hover-text-inline-help';
   inlineEl.textContent = params.description.body;
 
-  const hadAriaDescribedBy = node.hasAttribute('aria-describedby');
-  node.setAttribute('aria-describedby', `desc-${params.controlId}`);
+  addDescribedBy(node, inlineEl.id);
 
   if (node.parentNode) {
     node.parentNode.insertBefore(inlineEl, node.nextSibling);
@@ -94,16 +117,13 @@ function setupInline(node: HTMLElement, params: HoverTextAnchorParams): InlineSt
 
   return {
     mode: 'inline',
-    inlineEl,
-    hadAriaDescribedBy
+    inlineEl
   };
 }
 
 function teardownInline(node: HTMLElement, state: InlineState): void {
+  removeDescribedBy(node, state.inlineEl.id);
   state.inlineEl.remove();
-  if (!state.hadAriaDescribedBy) {
-    node.removeAttribute('aria-describedby');
-  }
 }
 
 function setupPopover(node: HTMLElement, params: HoverTextAnchorParams): PopoverState {
@@ -118,6 +138,7 @@ function setupPopover(node: HTMLElement, params: HoverTextAnchorParams): Popover
     openTimer: null,
     leaveTimer: null,
     blurTicket: 0,
+    describedById: null,
     listeners: {
       mouseenter: () => {},
       mouseleave: () => {},
@@ -147,7 +168,8 @@ function setupPopover(node: HTMLElement, params: HoverTextAnchorParams): Popover
   function openPopover(): void {
     if (state.open) return;
     state.open = true;
-    node.setAttribute('aria-describedby', `hover-text-${currentParams.controlId}`);
+    state.describedById = `hover-text-${currentParams.controlId}`;
+    addDescribedBy(node, state.describedById);
 
     const host = document.createElement('div');
     host.className = 'hover-text-portal-host';
@@ -182,7 +204,10 @@ function setupPopover(node: HTMLElement, params: HoverTextAnchorParams): Popover
     state.open = false;
     clearOpenTimer();
     clearLeaveTimer();
-    node.removeAttribute('aria-describedby');
+    if (state.describedById) {
+      removeDescribedBy(node, state.describedById);
+      state.describedById = null;
+    }
     if (state.popoverComponent) {
       void unmount(state.popoverComponent);
       state.popoverComponent = null;
@@ -277,7 +302,10 @@ function teardownPopover(node: HTMLElement, state: PopoverState): void {
   node.removeEventListener('keydown', state.listeners.keydown);
   node.removeAttribute('data-hover-text-anchored');
   node.removeAttribute('data-hover-text-controlid');
-  node.removeAttribute('aria-describedby');
+  if (state.describedById) {
+    removeDescribedBy(node, state.describedById);
+    state.describedById = null;
+  }
 }
 
 export const hoverTextAnchor: HoverTextAnchorAction = (node, params) => {
@@ -312,9 +340,11 @@ export const hoverTextAnchor: HoverTextAnchorAction = (node, params) => {
       }
 
       if (state?.mode === 'inline') {
+        const previousId = state.inlineEl.id;
         state.inlineEl.textContent = next.description.body;
         state.inlineEl.id = `desc-${next.controlId}`;
-        node.setAttribute('aria-describedby', `desc-${next.controlId}`);
+        removeDescribedBy(node, previousId);
+        addDescribedBy(node, state.inlineEl.id);
       } else if (state?.mode === 'popover') {
         const extended = state as PopoverState & {
           __setParams: (p: HoverTextAnchorParams) => void;

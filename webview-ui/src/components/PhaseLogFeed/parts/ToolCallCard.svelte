@@ -218,8 +218,9 @@
     min-width: 0;
   }
   .nested-list {
-    padding-left: 0.5rem;
-    border-left: 2px solid var(--schegent-border, var(--vscode-panel-border, transparent));
+    padding: 0.375rem 0.5rem;
+    border-radius: var(--schegent-radius-sm, 4px);
+    background: var(--schegent-surface-subtle, var(--vscode-list-hoverBackground, transparent));
     margin-top: 0.125rem;
   }
   .array-list {

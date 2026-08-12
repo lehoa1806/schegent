@@ -103,20 +103,30 @@
     overflow: hidden;
   }
   .glass-card {
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    padding: 0;
+    background: var(--schegent-surface);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    padding: 14px;
     box-shadow: none;
     display: flex;
     flex-direction: column;
   }
   .zone-title {
-    font-size: 0.9em;
+    font-size: 0.78rem;
     font-weight: 600;
-    color: var(--schegent-muted-fg);
+    color: var(--schegent-fg);
     margin: 0 0 var(--schegent-gap) 0;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.02em;
   }
   .activity-audit { min-height: 0; overflow: hidden; }
+
+  @media (max-width: 900px) {
+    .right-panel {
+      min-height: 720px;
+      overflow: visible;
+    }
+    .activity-feed-card {
+      min-height: 440px;
+    }
+  }
 </style>

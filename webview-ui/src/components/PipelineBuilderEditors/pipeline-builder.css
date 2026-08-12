@@ -1,9 +1,10 @@
-.pb { display: flex; flex-direction: column; flex: 1; min-height: 0; box-sizing: border-box; padding: 24px; gap: 16px; color: var(--schegent-fg); }
-.pb .header h2 { margin: 0 0 8px 0; background: var(--sch-accent-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-.pb .header p { margin: 0 0 16px 0; color: var(--schegent-muted-fg); }
-.pb .builder-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--schegent-divider); padding-bottom: 8px; }
-.pb .tab-btn { background: transparent; border: none; color: var(--schegent-muted-fg); padding: 6px 16px; border-radius: var(--schegent-radius); cursor: pointer; font-weight: 500; }
-.pb .tab-btn.active { color: var(--schegent-fg); background: var(--vscode-list-activeSelectionBackground); }
+.pb { display: flex; flex-direction: column; flex: 1; min-height: 0; box-sizing: border-box; padding: 20px 24px 24px; gap: 16px; color: var(--schegent-fg); }
+.pb .header h2 { margin: 0; color: var(--schegent-fg); font-size: 1.55rem; font-weight: 650; letter-spacing: -0.025em; }
+.pb .header p { margin: 5px 0 16px; color: var(--schegent-muted-fg); font-size: 0.84rem; }
+.pb .builder-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--schegent-divider); }
+.pb .tab-btn { position: relative; min-height: 38px; background: transparent; border: none; color: var(--schegent-muted-fg); padding: 7px 14px; border-radius: 0; cursor: pointer; font-weight: 500; }
+.pb .tab-btn:hover { color: var(--schegent-fg); background: var(--schegent-surface-subtle); }
+.pb .tab-btn.active { color: var(--schegent-fg); box-shadow: inset 0 -2px 0 var(--schegent-color-active); }
 .pb .builder-canvas { flex: 1; overflow-y: hidden; display: flex; flex-direction: column; gap: 16px; }
 .pb .toolbar { display: flex; gap: 8px; }
 .pb .split-pane { display: flex; gap: 16px; flex: 1; overflow: hidden; }
@@ -37,7 +38,7 @@
 .pb .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
 .pb .btn-secondary { background: transparent; border: 1px solid var(--vscode-button-background); color: var(--vscode-button-background); }
 .pb .btn-secondary:hover { background: var(--vscode-list-hoverBackground); }
-.pb .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+.pb .btn-destructive { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--schegent-error-text); }
 .pb .btn-destructive:hover { background: var(--vscode-inputValidation-errorBackground); }
 .pb .btn-ghost { background: transparent; border: 1px solid var(--schegent-divider); color: var(--schegent-fg); }
 .pb .btn-ghost:hover { background: var(--schegent-hover-bg); }
@@ -53,7 +54,7 @@
 .pb .sequence-list { display: flex; flex-direction: column; gap: 8px; background: var(--schegent-list-bg); padding: 12px; border-radius: 8px; flex: 1; overflow-y: auto; }
 .pb .sequence-item { display: flex; align-items: center; gap: 8px; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px; border-radius: 4px; position: relative; }
 .pb .sequence-item:hover .custom-tooltip { opacity: 1; visibility: visible; }
-.pb .custom-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--vscode-editorHoverWidget-background); border: 1px solid var(--vscode-editorHoverWidget-border); color: var(--vscode-editorHoverWidget-foreground); padding: 8px 12px; border-radius: 6px; font-size: 0.9em; width: 300px; z-index: 100; opacity: 0; visibility: hidden; pointer-events: none; box-shadow: 0 4px 6px transparent; white-space: pre-wrap; margin-bottom: 8px; }
+.pb .custom-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--vscode-editorHoverWidget-background); border: 1px solid var(--vscode-editorHoverWidget-border); color: var(--vscode-editorHoverWidget-foreground); padding: 8px 12px; border-radius: 6px; font-size: 0.9em; width: 300px; z-index: var(--schegent-z-tooltip); opacity: 0; visibility: hidden; pointer-events: none; white-space: pre-wrap; margin-bottom: 8px; }
 .pb .sequence-item:first-child .custom-tooltip { bottom: auto; top: 100%; margin-bottom: 0; margin-top: 8px; }
 .pb .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
 .pb .sequence-select { flex: 1; }
@@ -61,7 +62,7 @@
 .pb .icon-btn { background: transparent; border: 1px solid var(--schegent-divider); border-radius: 4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--schegent-fg); }
 .pb .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
 .pb .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-.pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+.pb .destructive-icon:hover { background: var(--vscode-inputValidation-errorBackground); color: var(--schegent-error-text); border-color: var(--vscode-errorForeground); }
 .pb .graph-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
 .pb .graph-editor .sequence-item { flex-wrap: wrap; }
 .pb .condition-value { display: flex; align-items: center; gap: 4px; }
@@ -77,7 +78,7 @@
    not `aria-invalid`, which ARIA does not support on a `listitem`; the AT
    association is carried by `aria-describedby` and the visible cue. */
 .pb .sequence-item[data-invalid='true'] { border-color: var(--vscode-errorForeground); }
-.pb .row-defects { display: flex; align-items: flex-start; gap: 6px; width: 100%; font-size: 0.85em; color: var(--vscode-errorForeground); }
+.pb .row-defects { display: flex; align-items: flex-start; gap: 6px; width: 100%; font-size: 0.85em; color: var(--schegent-error-text); }
 .pb .row-defect-cue { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-weight: 600; text-transform: uppercase; font-size: 0.85em; }
 .pb .row-defect-list { margin: 0; padding-left: 16px; }
 .pb .row-ports { display: flex; flex-wrap: wrap; gap: 4px; font-size: 0.85em; color: var(--schegent-muted-fg); }
@@ -87,18 +88,21 @@
 .pb .model-form { display: flex; gap: 8px; flex: 1; }
 .pb .models-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
 .pb .model-list-item { display: flex; align-items: center; background: var(--sch-glass-bg); border: 1px solid var(--sch-glass-border); padding: 8px 12px; border-radius: var(--schegent-radius); }
-.pb .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--vscode-errorForeground); font-size: 0.9em; }
+.pb .save-error-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-errorForeground); border-radius: var(--schegent-radius); color: var(--schegent-error-text); font-size: 0.9em; }
 .pb .save-error-icon { font-size: 1.1em; flex-shrink: 0; }
 .pb .save-error-text { flex: 1; word-break: break-word; }
-.pb .save-error-dismiss { background: transparent; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
+.pb .save-error-dismiss { background: transparent; border: none; color: var(--schegent-error-text); cursor: pointer; padding: 2px 6px; font-size: 1em; border-radius: 4px; }
 .pb .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }
-.pb .catalog-error, .pb .field-errors, .pb .status-invalid { color: var(--vscode-errorForeground); }
+.pb .catalog-error, .pb .field-errors, .pb .status-invalid { color: var(--schegent-error-text); }
 .pb .phase-badges { display: flex; gap: 4px; }
 .pb .scope-badge, .pb .status-badge { font-size: 0.72em; }
 .pb .status-effective { color: var(--vscode-testing-iconPassed); }
 .pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }
 
 @media (max-width: 760px) {
+  .pb { padding: 16px; overflow-y: auto; }
+  .pb .builder-tabs { overflow-x: auto; }
+  .pb .tab-btn { flex: 0 0 auto; }
   .pb .split-pane { flex-direction: column; overflow-y: auto; }
   .pb .pane-left { width: auto; max-height: 240px; border-right: 0; }
   .pb .form-grid { grid-template-columns: 1fr; }

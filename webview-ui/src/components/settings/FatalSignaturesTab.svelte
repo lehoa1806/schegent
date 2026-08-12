@@ -189,6 +189,7 @@
               type="text"
               class="text-input"
               data-testid="fatal-operator-input-{i}"
+              aria-label="Fatal signature {i + 1}"
               value={entry}
               oninput={(e) => updateEntry(i, (e.target as HTMLInputElement).value)}
               placeholder="verbatim substring"
@@ -215,29 +216,29 @@
     {/if}
 
     {#if hasEmpty}
-      <div class="warning" data-testid="fatal-operator-warning-empty">
+      <div class="warning" data-testid="fatal-operator-warning-empty" role="status">
         At least one entry is empty. Fill or remove it before saving.
       </div>
     {/if}
     {#if intraOperatorDupes.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-dupes">
+      <div class="warning" data-testid="fatal-operator-warning-dupes" role="status">
         Duplicate entries: {intraOperatorDupes.join(', ')} — the host
         will dedupe them on save.
       </div>
     {/if}
     {#if builtInOverlaps.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-builtin-overlap">
+      <div class="warning" data-testid="fatal-operator-warning-builtin-overlap" role="status">
         Already in the built-in registry: {builtInOverlaps.join(', ')}
         — these entries are redundant and will keep the
         <code>built-in</code> attribution.
       </div>
     {/if}
     {#if status.status === 'pending'}
-      <div class="status pending" data-testid="fatal-status">Saving...</div>
+      <div class="status pending" data-testid="fatal-status" role="status">Saving...</div>
     {:else if status.status === 'accepted'}
-      <div class="status accepted" data-testid="fatal-status">Saved.</div>
+      <div class="status accepted" data-testid="fatal-status" role="status">Saved.</div>
     {:else if status.status === 'rejected'}
-      <div class="status rejected" data-testid="fatal-status">
+      <div class="status rejected" data-testid="fatal-status" role="alert">
         Save rejected: <code>{status.reason ?? 'unknown'}</code>
       </div>
     {/if}
@@ -361,7 +362,7 @@
   }
   .status.pending { color: var(--schegent-muted-fg); }
   .status.accepted { color: var(--vscode-charts-green); }
-  .status.rejected { color: var(--schegent-color-error); }
+  .status.rejected { color: var(--schegent-error-text); }
   .btn {
     padding: 4px 12px;
     border-radius: var(--schegent-radius);
@@ -376,7 +377,7 @@
   .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
   .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
   .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-  .btn-destructive { background: transparent; color: var(--schegent-color-error); border-color: var(--schegent-color-error); }
+  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
   code {
     background: var(--vscode-textCodeBlock-background);
     padding: 1px 4px;

@@ -472,6 +472,24 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(tabs).toEqual(['Pipelines', 'Phases', 'Workflows', 'Models']);
   });
 
+  it('implements the catalog switcher as keyboard-operable tabs', async () => {
+    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
+    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('.builder-tabs .tab-btn'));
+    expect(container.querySelector('.builder-tabs')?.getAttribute('role')).toBe('tablist');
+    expect(tabs[0]?.getAttribute('role')).toBe('tab');
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(tabs[0]?.getAttribute('tabindex')).toBe('0');
+    expect(tabs[1]?.getAttribute('tabindex')).toBe('-1');
+
+    await fireEvent.keyDown(tabs[0]!, { key: 'ArrowRight' });
+    await tick();
+    await Promise.resolve();
+    expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[1]);
+    expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
+      .toBe('builder-tab-phases');
+  });
+
   it('Phases tab: phase list renders after switching tabs', async () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'p-1',

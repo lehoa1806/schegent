@@ -310,7 +310,10 @@
     background: var(--schegent-bg);
     border: 2px solid var(--schegent-border);
     position: relative;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition:
+      background-color 180ms ease-out,
+      border-color 180ms ease-out,
+      color 180ms ease-out;
   }
   
   .state-completed .step-indicator {
@@ -325,13 +328,7 @@
   
   .state-active .step-indicator {
     border-color: var(--schegent-color-active);
-    box-shadow:
-      0 0 0 3px color-mix(in srgb, var(--schegent-color-active) 20%, transparent),
-      0 0 14px color-mix(in srgb, var(--schegent-color-active) 35%, transparent),
-      0 0 28px color-mix(in srgb, var(--schegent-color-active) 12%, transparent);
-  }
-  .state-active .phase-name {
-    text-shadow: 0 0 8px color-mix(in srgb, var(--schegent-color-active) 30%, transparent);
+    background: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-bg));
   }
   .pulse-ring {
     position: absolute;
@@ -423,7 +420,6 @@
     border-color: var(--schegent-color-active);
     background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
     color: var(--schegent-color-active);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--schegent-color-active) 35%, transparent);
   }
   .icon-breakpoint-fired {
     width: 14px;
@@ -443,7 +439,6 @@
 
   .step.is-waiting-retry .step-indicator {
     border-color: var(--schegent-color-warning);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--schegent-color-warning) 30%, transparent);
   }
   .step.is-waiting-retry .pulse-ring {
     border-color: var(--schegent-color-warning);
@@ -476,7 +471,7 @@
   .step-connector {
     flex: 1;
     height: 2px;
-    background: linear-gradient(90deg, var(--vscode-list-hoverBackground), color-mix(in srgb, var(--schegent-border) 40%, transparent), var(--vscode-list-hoverBackground));
+    background: var(--schegent-divider);
     margin-top: 16px;
     min-width: 20px;
     border-radius: 1px;

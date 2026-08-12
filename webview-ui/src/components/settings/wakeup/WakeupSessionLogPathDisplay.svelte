@@ -146,6 +146,6 @@
   }
   .reveal-error {
     font-size: 0.85em;
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
 </style>

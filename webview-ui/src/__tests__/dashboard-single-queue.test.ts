@@ -1,6 +1,6 @@
 // Feature 030 (US3, T037) — assert that Dashboard.svelte under the
 // single-queue mode renders:
-//   - NO element with role 'tab' (no "Queue" tab-bar navigation)
+//   - one accessible Queue / History tablist (not a multi-queue tab bar)
 //   - NO element with role 'button' labelled "Rename queue", "Delete queue",
 //     or "New queue" / "Add queue"
 //   - the unified queue list IS rendered inline (data-testid
@@ -14,7 +14,8 @@
 // The Dashboard.test.ts pattern (postCommand mock + phase-log mock) is
 // reused so the mount succeeds without a real VS Code bridge.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import Dashboard from '../components/Dashboard.svelte';
 import type {
   CliMonitorState,
@@ -197,7 +198,7 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnaps
 }
 
 describe('Feature 030 (US3, T037) — Dashboard single-queue UI', () => {
-  it('renders only the history/queue toggle tabs, no multi-queue tab-bar', () => {
+  it('renders one keyboard-operable history/queue tablist, no multi-queue tab-bar', async () => {
     const snap = buildSnapshot();
     const { container } = render(Dashboard, { props: { snapshot: snap } });
     const tabs = container.querySelectorAll('[role="tab"]');
@@ -209,8 +210,25 @@ describe('Feature 030 (US3, T037) — Dashboard single-queue UI', () => {
     const tablist = container.querySelectorAll('[role="tablist"]');
     expect(
       tablist.length,
-      `Expected zero role="tablist" elements, found ${tablist.length}`
-    ).toBe(0);
+      `Expected one Queue/History tablist, found ${tablist.length}`
+    ).toBe(1);
+    expect(tablist[0]?.getAttribute('aria-label')).toBe('Queue views');
+
+    const queueTab = container.querySelector<HTMLButtonElement>('#dashboard-queue-tab-queue')!;
+    const historyTab = container.querySelector<HTMLButtonElement>('#dashboard-queue-tab-history')!;
+    expect(queueTab.getAttribute('aria-selected')).toBe('true');
+    expect(queueTab.getAttribute('tabindex')).toBe('0');
+    expect(historyTab.getAttribute('tabindex')).toBe('-1');
+    expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
+      .toBe('dashboard-queue-tab-queue');
+
+    queueTab.focus();
+    await fireEvent.keyDown(queueTab, { key: 'ArrowRight' });
+    await tick();
+    expect(historyTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(historyTab);
+    expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
+      .toBe('dashboard-queue-tab-history');
   });
 
   it('renders no button labelled "Rename queue"', () => {

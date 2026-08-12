@@ -117,6 +117,6 @@
   .field-error {
     margin: 0;
     font-size: 0.85em;
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 </style>

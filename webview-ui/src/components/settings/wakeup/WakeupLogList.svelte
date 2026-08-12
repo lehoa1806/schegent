@@ -131,10 +131,10 @@
   }
   .status-succeeded { color: var(--vscode-charts-green); }
   .status-failed,
-  .status-timed-out { color: var(--schegent-color-error); }
+  .status-timed-out { color: var(--schegent-error-text); }
   .status-skipped { color: var(--vscode-editorWarning-foreground, var(--schegent-muted-fg)); }
   .status-text { font-size: 0.9em; }
-  .status-rejected { color: var(--schegent-color-error); }
+  .status-rejected { color: var(--schegent-error-text); }
   .raw-response {
     margin: 8px 0 0 0;
     max-height: 120px;

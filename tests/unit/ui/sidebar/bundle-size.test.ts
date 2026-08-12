@@ -8,8 +8,8 @@
 // still works, not so the gate can opt itself out.
 
 import { describe, it, expect } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const WEBVIEW_DIST = resolve(REPO_ROOT, 'dist/webview');
@@ -17,7 +17,6 @@ const JS_BUNDLE = resolve(WEBVIEW_DIST, 'index.js');
 const CSS_BUNDLE = resolve(WEBVIEW_DIST, 'index.css');
 const DASHBOARD_JS_BUNDLE = resolve(WEBVIEW_DIST, 'dashboard.js');
 const DASHBOARD_CSS_BUNDLE = resolve(WEBVIEW_DIST, 'dashboard.css');
-const CHUNKS_DIR = resolve(WEBVIEW_DIST, 'chunks');
 const BASELINE_PATH = resolve(__dirname, 'bundle-size-baseline.json');
 
 const MAX_JS_BYTES = 200 * 1024;
@@ -59,18 +58,18 @@ const MAX_CSS_BYTES = 50 * 1024;
 // import/export plan and results tables, the run composer, and the connected-run
 // views — 18 new operator-visible components. Actual post-build size is 86,679
 // bytes (~84.6 KB).
-const MAX_DASHBOARD_CSS_BYTES = 90 * 1024;
-
-// Feature 089 (T048 / 2026-08-12) lifted the dashboard JS cap 250 KB → 350 KB,
-// the first lift since feature 004 set it. Actual post-build size is 337,732
-// bytes (~330 KB), grown by the same 18 components — 13,828 added lines of
-// first-party `webview-ui/src` across features 083-088.
 //
-// Verified before lifting that the guard's stated purpose still holds: the
-// growth is first-party component code, not a dependency. `webview-ui` declares
-// no runtime `dependencies` at all, and Svelte compiles away, so no icon set or
-// charting library can be hiding in the delta.
-const MAX_DASHBOARD_JS_BYTES = 350 * 1024;
+// The Impeccable hardening pass (2026-08-12) route-split the five non-default
+// surfaces. The startup stylesheet is now 51,200 bytes; 64 KB leaves deliberate
+// headroom while preventing route CSS from drifting back into the initial load.
+const MAX_DASHBOARD_CSS_BYTES = 64 * 1024;
+
+// The same route split reduced the dashboard entry from 344,565 bytes to
+// 123,563 bytes. Keep both the entry and its synchronously imported runtime
+// bounded; lazy History/Metrics/System/Builder/Settings chunks are fetched only
+// after navigation intent.
+const MAX_DASHBOARD_JS_BYTES = 160 * 1024;
+const MAX_DASHBOARD_INITIAL_JS_BYTES = 180 * 1024;
 const SIDEBAR_GROWTH_BUDGET_BYTES = 8 * 1024;
 
 /** Keeps every cap's test name reading the number that name is asserted against. */
@@ -78,11 +77,25 @@ function kb(bytes: number): string {
   return `${bytes / 1024} KB`;
 }
 
-function totalChunkBytes(): number {
-  if (!existsSync(CHUNKS_DIR)) return 0;
-  return readdirSync(CHUNKS_DIR)
-    .filter((f) => f.endsWith('.js'))
-    .reduce((sum, f) => sum + statSync(join(CHUNKS_DIR, f)).size, 0);
+function synchronousBundleBytes(entryPath: string): number {
+  const seen = new Set<string>();
+  const visit = (filePath: string): number => {
+    if (seen.has(filePath) || !existsSync(filePath)) return 0;
+    seen.add(filePath);
+    const source = readFileSync(filePath, 'utf8');
+    const staticImport = /\b(?:from|import)\s*["']([^"']+\.js)["']/g;
+    let total = statSync(filePath).size;
+    for (const match of source.matchAll(staticImport)) {
+      const specifier = match[1];
+      if (!specifier?.startsWith('.')) continue;
+      const dependency = resolve(dirname(filePath), specifier);
+      if (dependency === WEBVIEW_DIST || dependency.startsWith(`${WEBVIEW_DIST}/`)) {
+        total += visit(dependency);
+      }
+    }
+    return total;
+  };
+  return visit(entryPath);
 }
 
 interface BundleBaseline {
@@ -133,6 +146,17 @@ describe('webview bundle size (SC-010)', () => {
     }
   );
 
+  it.runIf(existsSync(DASHBOARD_JS_BUNDLE))(
+    `dashboard startup JS stays at or below ${kb(MAX_DASHBOARD_INITIAL_JS_BYTES)} including synchronous chunks`,
+    () => {
+      const size = synchronousBundleBytes(DASHBOARD_JS_BUNDLE);
+      expect(
+        size,
+        `dashboard synchronous graph was ${size} bytes (limit ${MAX_DASHBOARD_INITIAL_JS_BYTES})`
+      ).toBeLessThanOrEqual(MAX_DASHBOARD_INITIAL_JS_BYTES);
+    }
+  );
+
   it.runIf(existsSync(DASHBOARD_CSS_BUNDLE))(
     `dashboard.css stays at or below ${kb(MAX_DASHBOARD_CSS_BYTES)}`,
     () => {
@@ -145,19 +169,19 @@ describe('webview bundle size (SC-010)', () => {
   );
 
   // T067 (004-operator-ui): post-Vite-split, the sidebar entry can shrink while
-  // shared code lives in dist/webview/chunks/. We measure entry+chunks together
-  // so a regression that re-inlines theme/snapshot code is still caught against
-  // the baseline (plus a small forward growth budget for additive features).
+  // shared code lives in dist/webview/chunks/. Follow only static imports from
+  // the sidebar entry: dashboard route chunks are async-only and must not be
+  // charged to sidebar startup merely because both entries share an output dir.
   it.runIf(existsSync(JS_BUNDLE) && existsSync(BASELINE_PATH))(
     'sidebar entry + shared chunks stay within 8 KB delta of the locked baseline',
     () => {
       const baseline = readBaseline();
       expect(baseline, 'bundle-size-baseline.json missing or unreadable').not.toBeNull();
-      const total = statSync(JS_BUNDLE).size + totalChunkBytes();
+      const total = synchronousBundleBytes(JS_BUNDLE);
       const cap = baseline!.indexJsBytes + SIDEBAR_GROWTH_BUDGET_BYTES;
       expect(
         total,
-        `sidebar entry+chunks were ${total} bytes; baseline ${baseline!.indexJsBytes} + growth budget ${SIDEBAR_GROWTH_BUDGET_BYTES} = ${cap} bytes (captured at ${baseline!.capturedAt})`
+        `sidebar synchronous graph was ${total} bytes; baseline ${baseline!.indexJsBytes} + growth budget ${SIDEBAR_GROWTH_BUDGET_BYTES} = ${cap} bytes (captured at ${baseline!.capturedAt})`
       ).toBeLessThanOrEqual(cap);
     }
   );

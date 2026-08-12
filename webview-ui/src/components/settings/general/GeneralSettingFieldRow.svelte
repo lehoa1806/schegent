@@ -25,6 +25,8 @@
     | 'sessionRetentionMaxBytes'
     | 'rawTranscriptMode';
 
+  type StringKey = 'cliPath' | 'codexPath' | 'agyPath' | 'runtimeLogFilePath';
+
   type FieldKind =
     | 'string'
     | 'boolean'
@@ -99,6 +101,13 @@
   function resetId(key: ScalarKey): GeneralSettingsControlId {
     return `${key}-reset`;
   }
+  function fieldLabelId(key: ScalarKey): string {
+    return `general-settings-label-${key}`;
+  }
+
+  function onStringInput(event: Event): void {
+    draft[spec.key as StringKey] = (event.currentTarget as HTMLInputElement).value;
+  }
 </script>
 
 <div
@@ -108,7 +117,7 @@
   data-status={status?.status ?? 'idle'}
 >
   <div class="field-label">
-    <span class="field-name">{spec.label}</span>
+    <span class="field-name" id={fieldLabelId(spec.key)}>{spec.label}</span>
     <span class="field-scope" data-testid="general-settings-scope-{spec.key}">
       Scope: {scopeLabel}
     </span>
@@ -118,6 +127,7 @@
       <label class="checkbox-label">
         <input
           type="checkbox"
+          aria-labelledby={fieldLabelId(spec.key)}
           bind:checked={draft[spec.key as 'loggingVerbose']}
           data-testid="general-settings-input-{spec.key}"
           use:hoverTextAnchor={{
@@ -130,6 +140,7 @@
     {:else if spec.kind === 'number'}
       <input
         type="number"
+        aria-labelledby={fieldLabelId(spec.key)}
         class="text-input"
         min={spec.min}
         max={spec.max}
@@ -152,6 +163,7 @@
     {:else if spec.kind === 'pipeline-select'}
       <select
         class="select-input"
+        aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.defaultPipelineId}
         use:hoverTextAnchor={{
@@ -169,6 +181,7 @@
     {:else if spec.kind === 'number-optional'}
       <input
         type="number"
+        aria-labelledby={fieldLabelId(spec.key)}
         class="text-input"
         min={spec.min}
         max={spec.max}
@@ -185,6 +198,7 @@
     {:else if spec.kind === 'level-select'}
       <select
         class="select-input"
+        aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.runtimeLogLevel}
         use:hoverTextAnchor={{
@@ -200,6 +214,7 @@
     {:else if spec.kind === 'raw-transcript-select'}
       <select
         class="select-input"
+        aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
         bind:value={draft.rawTranscriptMode}
         use:hoverTextAnchor={{
@@ -214,10 +229,12 @@
     {:else}
       <input
         type="text"
+        aria-labelledby={fieldLabelId(spec.key)}
         class="text-input"
         placeholder={spec.placeholder ?? ''}
         data-testid="general-settings-input-{spec.key}"
-        bind:value={draft[spec.key as 'cliPath' | 'codexPath' | 'agyPath' | 'runtimeLogFilePath']}
+        value={draft[spec.key as StringKey]}
+        oninput={onStringInput}
         use:hoverTextAnchor={{
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
@@ -254,6 +271,7 @@
     <div
       class="field-status status-{status.status}"
       data-testid="general-settings-status-{spec.key}"
+      role={status.status === 'rejected' ? 'alert' : 'status'}
     >
       {#if status.status === 'pending'}
         <span class="status-text">Saving…</span>
@@ -269,20 +287,21 @@
 <style>
   .field-row {
     display: grid;
-    grid-template-columns: 1fr 1fr auto;
+    grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
     grid-template-rows: auto auto;
     grid-template-areas:
       "label input actions"
       "status status status";
     gap: 4px 12px;
     padding: 12px;
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    background: var(--sch-glass-bg);
+    border: 0;
+    border-bottom: 1px solid var(--schegent-divider);
+    background: transparent;
     align-items: center;
   }
   .field-row[data-changed="true"] {
-    border-color: var(--schegent-focus-border);
+    background: var(--schegent-surface-selected);
+    box-shadow: inset 0 0 0 1px var(--schegent-focus-border);
   }
   .field-label {
     grid-area: label;
@@ -294,8 +313,7 @@
   .field-scope {
     font-size: 0.75em;
     color: var(--schegent-muted-fg);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.02em;
   }
   .field-input { grid-area: input; }
   .field-actions {
@@ -309,13 +327,13 @@
   }
   .field-status.status-pending { color: var(--schegent-muted-fg); }
   .field-status.status-accepted { color: var(--vscode-charts-green); }
-  .field-status.status-rejected { color: var(--schegent-color-error); }
+  .field-status.status-rejected { color: var(--schegent-error-text); }
   .text-input, .select-input {
     background: var(--vscode-input-background);
     border: 1px solid var(--sch-glass-border);
     color: var(--schegent-fg);
     padding: 4px 8px;
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     width: 100%;
     box-sizing: border-box;
   }

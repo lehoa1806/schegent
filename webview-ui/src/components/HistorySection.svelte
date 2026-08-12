@@ -15,9 +15,16 @@
     isPrimary: boolean;
     selectedTaskId?: string | null;
     onTaskSelect?: (taskId: string) => void;
+    variant?: 'compact' | 'ledger';
   }
 
-  const { history, isPrimary, selectedTaskId = null, onTaskSelect }: Props = $props();
+  const {
+    history,
+    isPrimary,
+    selectedTaskId = null,
+    onTaskSelect,
+    variant = 'compact'
+  }: Props = $props();
 
   const empty = $derived(history.length === 0);
   const rerunDisabled = $derived(!isPrimary);
@@ -46,24 +53,50 @@
   }
 </script>
 
-<section class="history" aria-label="Run history" data-testid="history-section">
+<section
+  class="history"
+  class:ledger={variant === 'ledger'}
+  aria-label="Run history"
+  data-testid="history-section"
+>
   {#if empty}
-    <p class="empty" data-testid="history-empty">No completed runs yet.</p>
+    <div class="empty" data-testid="history-empty">
+      <strong>No completed runs yet</strong>
+      <span>Finished, failed, and canceled runs will appear here.</span>
+    </div>
   {:else}
+    {#if variant === 'ledger'}
+      <div class="ledger-columns" aria-hidden="true">
+        <span>Run / feature</span>
+        <span>Outcome</span>
+        <span>Duration</span>
+        <span>Completed</span>
+        <span>Actions</span>
+      </div>
+    {/if}
     <ul>
       {#each history as entry (entry.runId)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <li
           class="entry status-{entry.terminalStatus}"
           class:selected={selectedTaskId === entry.runId}
           data-testid="history-entry-{entry.runId}"
           data-history-row="{entry.runId}"
-          onclick={() => onTaskSelect?.(entry.runId)}
         >
-          <span class="label" title={entry.descriptionPreview}>
-            {entry.descriptionPreview}
-          </span>
+          {#if onTaskSelect}
+            <button
+              type="button"
+              class="label entry-select"
+              aria-label={`Select run '${entry.descriptionPreview}'`}
+              aria-pressed={selectedTaskId === entry.runId}
+              data-testid="history-item-select-{entry.runId}"
+              title={entry.descriptionPreview}
+              onclick={() => onTaskSelect(entry.runId)}
+            >{entry.descriptionPreview}</button>
+          {:else}
+            <span class="label" title={entry.descriptionPreview}>
+              {entry.descriptionPreview}
+            </span>
+          {/if}
           <span class="meta">
             <span
               class="badge status-badge"
@@ -71,12 +104,12 @@
               aria-label={`Status: ${entry.terminalStatus}`}
             >{entry.terminalStatus}</span>
             <span
-              class="time"
+              class="time duration"
               data-testid="history-item-{entry.runId}-duration"
               title="Duration"
             >{formatDuration(entry.durationMs)}</span>
             <span
-              class="time"
+              class="time completed-at"
               data-testid="history-item-{entry.runId}-completed-at"
               title="Completed"
             >{formatRelativeTime(entry.completedAt)}</span>
@@ -118,9 +151,25 @@
     padding: 0;
   }
   .empty {
+    display: flex;
+    min-height: 160px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 5px;
     color: var(--schegent-muted-fg);
-    font-style: italic;
     margin: 0;
+    padding: 20px;
+    text-align: center;
+  }
+  .empty strong {
+    color: var(--schegent-fg);
+    font-size: 0.9rem;
+  }
+  .empty span {
+    max-width: 38ch;
+    font-size: 0.82rem;
+    line-height: 1.45;
   }
   ul {
     margin: 0;
@@ -172,6 +221,24 @@
     line-height: 1.35;
     word-break: break-word;
   }
+  .entry-select {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+  }
+  .entry-select:hover {
+    text-decoration: underline;
+  }
+  .entry-select:focus-visible {
+    border-radius: var(--schegent-radius-sm);
+    outline: 1px solid var(--schegent-focus-border);
+    outline-offset: 2px;
+  }
   .meta {
     grid-column: 1;
     grid-row: 2;
@@ -192,7 +259,7 @@
     border-color: currentColor;
   }
   .status-failed .status-badge {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     border-color: currentColor;
   }
   .status-canceled .status-badge {
@@ -221,5 +288,102 @@
   }
   .action:hover:not([aria-disabled='true']) {
     color: var(--schegent-fg);
+  }
+
+  .ledger-columns {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) 110px 100px 120px 190px;
+    gap: 12px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--schegent-divider);
+    color: var(--schegent-muted-fg);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .ledger ul {
+    gap: 0;
+  }
+  .ledger .entry {
+    grid-template-columns: minmax(240px, 1fr) 110px 100px 120px 190px;
+    grid-template-rows: auto;
+    gap: 12px;
+    min-height: 54px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--schegent-divider);
+    border-radius: 0;
+  }
+  .ledger .entry:last-child {
+    border-bottom: 0;
+  }
+  .ledger .label {
+    grid-column: 1;
+    grid-row: 1;
+    line-clamp: 1;
+    -webkit-line-clamp: 1;
+  }
+  .ledger .meta {
+    display: contents;
+  }
+  .ledger .status-badge {
+    grid-column: 2;
+    align-self: center;
+    justify-self: start;
+  }
+  .ledger .time {
+    align-self: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .ledger .duration {
+    grid-column: 3;
+  }
+  .ledger .completed-at {
+    grid-column: 4;
+  }
+  .ledger .actions {
+    grid-column: 5;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .ledger .action {
+    min-height: 28px;
+    padding: 0 8px;
+  }
+
+  @media (max-width: 900px) {
+    .ledger-columns {
+      display: none;
+    }
+    .ledger .entry {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+    }
+    .ledger .label {
+      grid-column: 1;
+      grid-row: 1;
+      line-clamp: 2;
+      -webkit-line-clamp: 2;
+    }
+    .ledger .meta {
+      grid-column: 1;
+      grid-row: 2;
+      display: flex;
+    }
+    .ledger .actions {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .ledger .entry {
+      grid-template-columns: 1fr;
+    }
+    .ledger .actions {
+      grid-column: 1;
+      grid-row: 3;
+      justify-self: start;
+    }
   }
 </style>

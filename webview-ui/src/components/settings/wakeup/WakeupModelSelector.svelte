@@ -111,12 +111,13 @@
 <div class="model-selector" data-testid="wakeup-model-selector">
   <div class="field-row" data-testid="wakeup-field-model">
     <div class="field-label">
-      <span class="field-name">Claude model</span>
+      <span class="field-name" id="wakeup-label-model">Claude model</span>
     </div>
     <div class="field-input">
       <select
         class="select-input"
         data-testid="wakeup-input-model"
+        aria-labelledby="wakeup-label-model"
         bind:value={draft}
         use:hoverTextAnchor={{
           controlId: 'wakeup-model',
@@ -144,11 +145,11 @@
       }}
     >Save model</button>
     {#if status.kind === 'pending'}
-      <span class="status-text status-pending" data-testid="wakeup-model-status">{'Saving…'}</span>
+      <span class="status-text status-pending" data-testid="wakeup-model-status" role="status">{'Saving…'}</span>
     {:else if status.kind === 'accepted'}
-      <span class="status-text status-accepted" data-testid="wakeup-model-status">{'Saved'}</span>
+      <span class="status-text status-accepted" data-testid="wakeup-model-status" role="status">{'Saved'}</span>
     {:else if status.kind === 'rejected'}
-      <span class="status-text status-rejected" data-testid="wakeup-model-status">
+      <span class="status-text status-rejected" data-testid="wakeup-model-status" role="alert">
         {`Rejected: ${status.reason}`}
       </span>
     {/if}
@@ -224,7 +225,7 @@
   }
   .status-pending { color: var(--schegent-muted-fg); }
   .status-accepted { color: var(--vscode-charts-green); }
-  .status-rejected { color: var(--schegent-color-error); }
+  .status-rejected { color: var(--schegent-error-text); }
   @media (max-width: 720px) {
     .field-row {
       grid-template-columns: 1fr;

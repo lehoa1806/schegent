@@ -221,12 +221,16 @@
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
-    transition: all 0.2s ease, transform 0.1s ease;
+    transition:
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease,
+      opacity 0.2s ease,
+      transform 0.1s ease;
   }
 
   .jump-btn:hover:not(.is-aria-disabled) {
     background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
-    box-shadow: 0 0 10px color-mix(in srgb, var(--schegent-color-active) 30%, transparent);
   }
 
   .jump-btn:active:not(.is-aria-disabled) {
@@ -288,7 +292,12 @@
     color: var(--schegent-muted-fg);
     cursor: pointer;
     flex-shrink: 0;
-    transition: all 0.15s ease, transform 0.1s ease;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease,
+      opacity 0.15s ease,
+      transform 0.1s ease;
   }
 
   .copy-btn:hover {

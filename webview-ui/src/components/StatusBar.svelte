@@ -25,6 +25,7 @@
   {:else}
     <em class="feature-empty">no active feature</em>
   {/if}
+  <span class="status-word">{status}</span>
   {#if featureLabel && elapsedLabel !== null}
     <span class="elapsed-pill" data-testid="sidebar-elapsed-pill">{elapsedLabel}</span>
   {/if}
@@ -41,11 +42,12 @@
   .status-row {
     display: flex;
     align-items: center;
-    gap: var(--schegent-gap);
-    padding: var(--schegent-pad);
+    gap: 8px;
+    min-height: 44px;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--sch-glass-border);
     min-width: 0;
-    background: var(--vscode-list-hoverBackground);
+    background: var(--schegent-surface);
   }
   .dot {
     flex: 0 0 auto;
@@ -53,7 +55,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--schegent-color-system);
-    transition: box-shadow 0.3s;
+    transition: box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .status-running .dot { background: var(--schegent-color-active); box-shadow: var(--sch-glow-active); }
   .status-paused .dot { background: var(--schegent-color-warning); }
@@ -82,12 +84,20 @@
     flex: 0 0 auto;
     margin-left: auto;
     font-size: 0.8em;
-    color: var(--vscode-charts-blue);
-    background: color-mix(in srgb, var(--vscode-charts-blue) 15%, transparent);
+    color: var(--schegent-color-active);
+    background: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-surface));
     font-variant-numeric: tabular-nums;
     border-radius: 999px;
     padding: 2px 8px;
     font-weight: 600;
+  }
+  .status-word {
+    flex: 0 0 auto;
+    color: var(--schegent-muted-fg);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
   .secondary-badge {
     flex: 0 0 auto;
@@ -96,6 +106,6 @@
     border: 1px solid currentColor;
     border-radius: 999px;
     padding: 2px 8px;
-    background: var(--vscode-charts-yellow);
+    background: color-mix(in srgb, var(--schegent-color-warning) 12%, transparent);
   }
 </style>

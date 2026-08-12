@@ -22,49 +22,83 @@
   const { snapshot }: Props = $props();
 
   type SettingsSubTab = 'general' | 'fatal-signatures' | 'wakeup';
+  const SETTINGS_TABS = Object.freeze([
+    { id: 'general', label: 'General' },
+    { id: 'fatal-signatures', label: 'Fatal Signatures' },
+    { id: 'wakeup', label: 'Wake up' }
+  ] satisfies ReadonlyArray<{ id: SettingsSubTab; label: string }>);
   let activeTab = $state<SettingsSubTab>('general');
+
+  function activate(tab: SettingsSubTab, focus = false): void {
+    activeTab = tab;
+    if (!focus) return;
+    queueMicrotask(() => document.getElementById(`settings-tab-${tab}`)?.focus());
+  }
+
+  function onTabKeydown(event: KeyboardEvent): void {
+    const current = SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
+    let next = current;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      next = (current - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      next = (current + 1) % SETTINGS_TABS.length;
+    } else if (event.key === 'Home') {
+      next = 0;
+    } else if (event.key === 'End') {
+      next = SETTINGS_TABS.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    activate(SETTINGS_TABS[next].id, true);
+  }
 </script>
 
 <main class="settings-surface" data-testid="settings-surface-root">
   <header class="settings-header">
-    <h1 class="settings-title">Schegent Settings</h1>
-    <nav class="settings-tabs" aria-label="Settings sections">
-      <button
-        type="button"
-        class="tab-btn {activeTab === 'general' ? 'active' : ''}"
-        data-testid="settings-tab-general"
-        onclick={() => (activeTab = 'general')}
-      >General</button>
-      <button
-        type="button"
-        class="tab-btn {activeTab === 'fatal-signatures' ? 'active' : ''}"
-        data-testid="settings-tab-fatal-signatures"
-        onclick={() => (activeTab = 'fatal-signatures')}
-      >Fatal Signatures</button>
+    <h1 class="settings-title">Settings</h1>
+    <p class="settings-description">Configure runners, safety controls, retention, and background wake-up.</p>
+  </header>
+  <div class="settings-layout">
+    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
       <!--
         Feature 030 (US3) — Queue sub-tab removed. Multi-queue settings
         (cap, default queue) are no longer configurable; the unified
         single queue is hard-coded at id='default', position=0,
         schedule=null.
       -->
-      <button
-        type="button"
-        class="tab-btn {activeTab === 'wakeup' ? 'active' : ''}"
-        data-testid="settings-tab-wakeup"
-        onclick={() => (activeTab = 'wakeup')}
-      >Wake up</button>
-    </nav>
-  </header>
+      {#each SETTINGS_TABS as tab (tab.id)}
+        <button
+          id="settings-tab-{tab.id}"
+          type="button"
+          class="tab-btn {activeTab === tab.id ? 'active' : ''}"
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          aria-controls="settings-panel-{tab.id}"
+          tabindex={activeTab === tab.id ? 0 : -1}
+          data-testid="settings-tab-{tab.id}"
+          onclick={() => activate(tab.id)}
+          onkeydown={onTabKeydown}
+        >{tab.label}</button>
+      {/each}
+    </div>
 
-  <section class="settings-body" data-testid="settings-body">
-    {#if activeTab === 'general'}
-      <GeneralSettingsTab {snapshot} />
-    {:else if activeTab === 'fatal-signatures'}
-      <FatalSignaturesTab {snapshot} />
-    {:else if activeTab === 'wakeup'}
-      <WakeUpTab {snapshot} />
-    {/if}
-  </section>
+    <div
+      id="settings-panel-{activeTab}"
+      class="settings-body"
+      role="tabpanel"
+      aria-labelledby="settings-tab-{activeTab}"
+      data-testid="settings-body"
+    >
+      {#if activeTab === 'general'}
+        <GeneralSettingsTab {snapshot} />
+      {:else if activeTab === 'fatal-signatures'}
+        <FatalSignaturesTab {snapshot} />
+      {:else if activeTab === 'wakeup'}
+        <WakeUpTab {snapshot} />
+      {/if}
+    </div>
+  </div>
 </main>
 
 <style>
@@ -74,51 +108,86 @@
     flex: 1;
     min-height: 0;
     box-sizing: border-box;
-    padding: var(--schegent-pad);
+    padding: 20px 24px 24px;
     color: var(--schegent-fg);
     background: transparent;
     overflow: hidden;
   }
   .settings-header {
-    margin-bottom: var(--schegent-pad);
+    margin-bottom: 20px;
   }
   .settings-title {
-    font-size: 1.5em;
-    font-weight: 600;
-    margin: 0 0 16px 0;
-    background: var(--sch-accent-gradient);
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    color: transparent;
+    margin: 0;
+    color: var(--schegent-fg);
+    font-size: 1.55rem;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+  }
+  .settings-description {
+    margin: 5px 0 0;
+    color: var(--schegent-muted-fg);
+    font-size: 0.84rem;
+    line-height: 1.45;
+  }
+  .settings-layout {
+    display: grid;
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 28px;
+    flex: 1;
+    min-height: 0;
   }
   .settings-tabs {
     display: flex;
+    align-self: start;
+    flex-direction: column;
     gap: 8px;
-    border-bottom: 1px solid var(--schegent-divider);
-    padding-bottom: 8px;
-    flex-wrap: wrap;
   }
   .tab-btn {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
+    min-height: 38px;
+    background: var(--schegent-bg);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
     color: var(--schegent-muted-fg);
-    padding: 6px 16px;
+    padding: 8px 12px;
     cursor: pointer;
     font-weight: 500;
-    transition: border-bottom-color 0.2s, color 0.2s;
+    text-align: left;
   }
   .tab-btn:hover {
     color: var(--schegent-fg);
+    background: var(--schegent-surface-subtle);
   }
   .tab-btn.active {
     color: var(--schegent-fg);
-    border-bottom: 2px solid var(--vscode-charts-blue);
+    border-color: var(--schegent-color-active);
+    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--schegent-bg));
   }
   .settings-body {
     flex: 1;
     min-height: 0;
     overflow: auto;
+  }
+
+  @media (max-width: 780px) {
+    .settings-surface {
+      padding: 16px;
+      overflow-y: auto;
+    }
+    .settings-layout {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .settings-tabs {
+      width: 100%;
+      flex-direction: row;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      flex: 0 0 auto;
+    }
+    .settings-body {
+      overflow: visible;
+    }
   }
 </style>

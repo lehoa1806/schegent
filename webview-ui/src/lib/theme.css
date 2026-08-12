@@ -1,54 +1,85 @@
 :root {
-  /* Base VS Code tokens */
-  --schegent-fg: var(--vscode-foreground);
-  --schegent-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
-  --schegent-muted-fg: var(--vscode-descriptionForeground, var(--vscode-disabledForeground));
-  --schegent-disabled-fg: var(--vscode-disabledForeground);
-  --schegent-border: var(--vscode-editorWidget-border, var(--vscode-panel-border));
-  --schegent-divider: var(--vscode-sideBarSectionHeader-border, var(--vscode-editorWidget-border));
+  color-scheme: light dark;
 
-  --schegent-button-bg: var(--vscode-button-background);
-  --schegent-button-fg: var(--vscode-button-foreground);
-  --schegent-button-hover: var(--vscode-button-hoverBackground);
-  --schegent-button-secondary-bg: var(--vscode-button-secondaryBackground);
-  --schegent-button-secondary-fg: var(--vscode-button-secondaryForeground);
+  /* VS Code is the theme source. Fallbacks make local preview truthful. */
+  --schegent-fg: var(--vscode-foreground, #cccccc);
+  --schegent-bg: var(--vscode-editor-background, #1e1e1e);
+  --schegent-shell-bg: var(--vscode-sideBar-background, #181818);
+  --schegent-surface: var(--vscode-editorWidget-background, #252526);
+  --schegent-surface-subtle: var(--vscode-list-hoverBackground, #2a2d2e);
+  --schegent-surface-raised: var(--vscode-sideBarSectionHeader-background, #2d2d2d);
+  --schegent-surface-sunken: color-mix(in srgb, var(--schegent-bg) 84%, var(--schegent-shell-bg));
+  --schegent-surface-selected: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-surface));
+  --schegent-muted-fg: var(--vscode-descriptionForeground, #9d9d9d);
+  --schegent-disabled-fg: var(--vscode-disabledForeground, #858585);
+  --schegent-border: var(--vscode-widget-border, var(--vscode-panel-border, #474747));
+  --schegent-divider: var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, #3f3f46));
 
-  --schegent-input-bg: var(--vscode-input-background);
-  --schegent-input-fg: var(--vscode-input-foreground);
-  --schegent-input-border: var(--vscode-input-border, var(--vscode-editorWidget-border));
+  --schegent-button-bg: var(--vscode-button-background, #0e639c);
+  --schegent-button-fg: var(--vscode-button-foreground, #ffffff);
+  --schegent-button-hover: var(--vscode-button-hoverBackground, #1177bb);
+  --schegent-button-hover-bg: var(--vscode-button-hoverBackground, #1177bb);
+  --schegent-button-border: var(--vscode-button-border, transparent);
+  --schegent-button-secondary-bg: var(--vscode-button-secondaryBackground, #3a3d41);
+  --schegent-button-secondary-fg: var(--vscode-button-secondaryForeground, #f0f0f0);
 
-  --schegent-list-hover: var(--vscode-list-hoverBackground);
-  --schegent-list-active: var(--vscode-list-activeSelectionBackground);
+  --schegent-input-bg: var(--vscode-input-background, #252526);
+  --schegent-input-fg: var(--vscode-input-foreground, #cccccc);
+  --schegent-input-border: var(--vscode-input-border, #5a5a5a);
+  --schegent-list-bg: var(--vscode-editor-background, #1e1e1e);
+  --schegent-list-hover: var(--vscode-list-hoverBackground, #2a2d2e);
+  --schegent-list-active: var(--vscode-list-activeSelectionBackground, #094771);
+  --schegent-hover-bg: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, #2a2d2e));
 
-  --schegent-focus-border: var(--vscode-focusBorder);
-
-  --schegent-color-active: var(--vscode-charts-blue, var(--vscode-button-background));
-  --schegent-color-completed: var(--vscode-charts-green, #2ea043);
-  --schegent-color-warning: var(--vscode-charts-yellow, #d29922);
-  --schegent-color-error: var(--vscode-charts-red, #f85149);
-  --schegent-color-system: var(--vscode-disabledForeground);
+  --schegent-focus-border: var(--vscode-focusBorder, #3794ff);
+  --schegent-color-active: var(--vscode-charts-blue, #3794ff);
+  --schegent-color-completed: var(--vscode-charts-green, #89d185);
+  --schegent-color-warning: var(--vscode-charts-yellow, #cca700);
+  --schegent-color-error: var(--vscode-charts-red, #f14c4c);
+  --schegent-color-system: var(--vscode-disabledForeground, #858585);
   --schegent-color-disabled: var(--vscode-charts-purple, #b180d7);
+  --schegent-warning-fg: var(--vscode-editorWarning-foreground, #cca700);
+  /* Error borders may use the saturated theme red, but small text needs a
+   * contrast-safe foreground in both the VS Code host and local previews. */
+  --schegent-error-text: var(
+    --vscode-inputValidation-errorForeground,
+    color-mix(
+      in srgb,
+      var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c)) 55%,
+      var(--schegent-fg)
+    )
+  );
+  --schegent-error-fg: var(--schegent-error-text);
 
-  /* Premium Design Tokens */
-  --sch-font-primary: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --sch-glass-bg: color-mix(in srgb, var(--vscode-editor-background) 95%, transparent);
-  --sch-glass-border: color-mix(in srgb, var(--vscode-editorWidget-border) 10%, transparent);
-  --sch-glow-active: 0 0 0 1px var(--vscode-charts-blue);
-  --sch-glow-success: 0 0 0 1px var(--vscode-charts-green);
-  --sch-accent-gradient: var(--vscode-charts-blue);
-  --sch-card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --sch-font-primary: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  --schegent-mono-font: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Consolas, monospace);
 
-  --schegent-radius: 8px; /* Increased for premium feel */
+  /* Legacy names retained for component compatibility. These are solid surfaces. */
+  --sch-glass-bg: var(--schegent-surface);
+  --sch-glass-border: var(--schegent-border);
+  --sch-glow-active: 0 0 0 1px var(--schegent-color-active);
+  --sch-glow-success: 0 0 0 1px var(--schegent-color-completed);
+  --sch-accent-gradient: var(--schegent-button-bg);
+  --sch-card-shadow: none;
+
+  --schegent-radius: 6px;
+  --schegent-radius-sm: 4px;
   --schegent-gap: 12px;
   --schegent-pad: 16px;
 
+  --schegent-z-sticky: 10;
+  --schegent-z-popover: 30;
+  --schegent-z-modal-backdrop: 40;
+  --schegent-z-modal: 50;
+  --schegent-z-tooltip: 60;
+
   /* Hover-text primitive (Feature 018) — matches VS Code editor hover widget. */
-  --hover-text-bg: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background));
-  --hover-text-fg: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
-  --hover-text-border: var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, var(--schegent-border)));
-  --hover-text-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.16));
+  --hover-text-bg: var(--vscode-editorHoverWidget-background, var(--schegent-surface));
+  --hover-text-fg: var(--vscode-editorHoverWidget-foreground, var(--schegent-fg));
+  --hover-text-border: var(--vscode-editorHoverWidget-border, var(--schegent-border));
+  --hover-text-shadow: 0 4px 8px var(--vscode-widget-shadow, rgb(0 0 0 / 0.24));
   --hover-text-radius: 4px;
-  --hover-text-z: 2000;
+  --hover-text-z: var(--schegent-z-tooltip);
 }
 
 /* Feature 018 — Hover-text primitives.
@@ -115,6 +146,34 @@
   }
 }
 
+/* Preserve the compact desktop density while giving touch and pen users a
+ * reliable 44px target. Inputs keep their natural width; icon-only buttons
+ * receive the matching minimum width so the hit area is not a thin strip. */
+@media (pointer: coarse) {
+  button,
+  [role='button'] {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    min-height: 44px !important;
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 22px !important;
+    height: 22px !important;
+  }
+
+  label:has(> input[type='checkbox']),
+  label:has(> input[type='radio']) {
+    min-height: 44px !important;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -127,15 +186,56 @@ body,
   padding: 0;
   height: 100%;
   font-family: var(--sch-font-primary);
-  font-size: var(--vscode-font-size);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.45;
   color: var(--schegent-fg);
-  background: transparent;
+  background: var(--schegent-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
 }
 
 button {
-  font: inherit;
-  color: inherit;
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.15);
+  transition:
+    background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+input,
+textarea,
+select {
+  background: var(--schegent-input-bg);
+  color: var(--schegent-input-fg);
+  accent-color: var(--schegent-color-active);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--schegent-muted-fg);
+  opacity: 1;
 }
 
 button:focus-visible,
@@ -146,6 +246,33 @@ select:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--schegent-focus-border);
   outline-offset: 2px;
+}
+
+::selection {
+  color: var(--vscode-editor-selectionForeground, var(--schegent-fg));
+  background: var(--vscode-editor-selectionBackground, #264f78);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background: var(--vscode-scrollbarSlider-background, #79797966);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground, #646464b3);
+  background-clip: padding-box;
 }
 
 @media (prefers-reduced-motion: reduce) {

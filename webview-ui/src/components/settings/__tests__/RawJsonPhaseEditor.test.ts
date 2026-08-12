@@ -36,6 +36,7 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       '[data-testid="raw-json-input"]'
     ) as HTMLTextAreaElement;
     expect(textarea).not.toBeNull();
+    expect(textarea.getAttribute('aria-labelledby')).toBe('raw-json-label');
     // The pretty-printed form must contain a 2-space indent for the
     // first inner field. JSON.stringify(..., null, 2) always emits
     // "\n  \"id\"" for the first key.
@@ -62,6 +63,9 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
     expect(save.disabled).toBe(true);
     const error = container.querySelector('[data-testid="raw-json-error"]');
     expect(error).not.toBeNull();
+    expect(error?.getAttribute('role')).toBe('alert');
+    expect(textarea.getAttribute('aria-invalid')).toBe('true');
+    expect(textarea.getAttribute('aria-describedby')).toBe('raw-json-error');
   });
 
   it('re-enables Save once JSON parses cleanly again', async () => {

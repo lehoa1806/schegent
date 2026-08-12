@@ -105,6 +105,7 @@
 
 <section class="zone queue-input glass-card" data-testid="dashboard-queue-input" aria-label="Queue input">
   <form class="compose-box" onsubmit={onSubmit}>
+    <label class="compose-label" for="dashboard-queue-input-textarea">New task</label>
     <textarea
       id="dashboard-queue-input-textarea"
       data-testid="dashboard-queue-input-textarea"
@@ -112,18 +113,19 @@
       bind:value={description}
       maxlength="4096"
       rows="1"
-      placeholder="What would you like to build?"
+      placeholder="Describe the work to enqueue"
       title="Enter a feature description to enqueue"
     ></textarea>
     <div class="compose-toolbar">
       <div class="compose-selectors">
         <div class="pipeline-selector">
           {#if availablePipelines.length === 0}
-            <select class="pipeline-select" title="Select Pipeline" disabled>
+            <select class="pipeline-select" aria-label="Pipeline" title="Select Pipeline" disabled>
               <option value="" disabled selected>N/A</option>
             </select>
           {:else}
             <select
+              aria-label="Pipeline"
               bind:value={selectedPipelineId}
               onchange={onPipelineChange}
               class="pipeline-select"
@@ -141,9 +143,9 @@
         class="submit-button"
         data-testid="dashboard-queue-input-submit"
         disabled={submitDisabled}
-        title="Enqueue Feature"
+        title="Add task to queue"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+        Add task
       </button>
     </div>
     {#if submitFeedback}
@@ -184,23 +186,29 @@
     background: var(--vscode-list-hoverBackground);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
-    padding: 8px;
-    gap: 8px;
+    padding: 12px;
+    gap: 10px;
     transition: box-shadow 0.2s, border-color 0.2s;
   }
   .compose-box:focus-within {
     border-color: var(--sch-accent-gradient);
     background: var(--vscode-editor-background);
   }
+  .compose-label {
+    color: var(--schegent-fg);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
   .compose-box textarea {
     width: 100%;
-    min-height: 100px;
+    min-height: 84px;
     background: transparent;
     border: none;
     color: var(--schegent-fg);
     font: inherit;
-    font-size: 1.05rem;
-    padding: 8px;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    padding: 0;
     resize: none;
     outline: none;
     overflow-y: auto;
@@ -241,8 +249,11 @@
     color: var(--vscode-button-foreground);
     border: none;
     border-radius: var(--schegent-radius);
-    width: 32px;
-    height: 32px;
+    min-height: 34px;
+    padding: 0 13px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    white-space: nowrap;
     cursor: pointer;
   }
   .submit-button:disabled {
@@ -251,13 +262,19 @@
     cursor: not-allowed;
   }
   .submit-button:active:not(:disabled) {
-    transform: translateY(2px) scale(0.96);
+    transform: translateY(1px);
     opacity: 0.9;
   }
   .network-notice {
-    margin: 0 8px;
+    margin: 0 2px;
     color: var(--schegent-muted-fg);
     font-size: 0.78em;
     line-height: 1.35;
   }
+  .submit-feedback {
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+  .submit-feedback-accepted { color: var(--schegent-color-completed); }
+  .submit-feedback-rejected { color: var(--schegent-error-text); }
 </style>

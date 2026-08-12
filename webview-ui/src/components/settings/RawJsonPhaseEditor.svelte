@@ -169,7 +169,7 @@
 
 <div class="raw-json-phase-editor" data-testid="raw-json-phase-editor">
   <div class="rj-header">
-    <span class="rj-title">Raw JSON</span>
+    <span class="rj-title" id="raw-json-label">Raw JSON</span>
     <span class="rj-hint">Edit the underlying PhaseDefinition document directly.</span>
   </div>
   <textarea
@@ -177,11 +177,14 @@
     data-testid="raw-json-input"
     rows="16"
     spellcheck="false"
+    aria-labelledby="raw-json-label"
+    aria-invalid={!verdict.ok ? 'true' : undefined}
+    aria-describedby={!verdict.ok ? 'raw-json-error' : undefined}
     value={raw}
     oninput={onInput}
   ></textarea>
   {#if !verdict.ok}
-    <div class="rj-error" data-testid="raw-json-error" role="alert">
+    <div class="rj-error" id="raw-json-error" data-testid="raw-json-error" role="alert">
       <strong>Invalid JSON:</strong> {verdict.error}
     </div>
   {/if}
@@ -237,7 +240,7 @@
     border-color: var(--schegent-focus-border);
   }
   .rj-error {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
     background: color-mix(in srgb, var(--schegent-color-error) 8%, transparent);
     border: 1px solid color-mix(in srgb, var(--schegent-color-error) 30%, transparent);
     border-radius: var(--schegent-radius);

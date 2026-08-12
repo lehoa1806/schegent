@@ -108,20 +108,19 @@
   .backend-health {
     display: grid;
     gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--vscode-widget-border);
-    border-radius: var(--schegent-radius);
-    background: var(--vscode-editor-inactiveSelectionBackground);
+    padding: 14px 0 0;
+    border-top: 1px solid var(--schegent-divider);
+    background: transparent;
   }
   h3 { margin: 0; font-size: 1em; }
   p { margin: 3px 0 0; color: var(--schegent-muted-fg); font-size: 0.85em; }
-  .backend-list { display: grid; gap: 16px; margin-top: 10px; }
+  .backend-list { display: grid; gap: 0; margin-top: 4px; }
   .backend-row-wrapper {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
   }
-  .identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+  .identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding-top: 10px; }
   .identity span { color: var(--vscode-notificationsWarningIcon-foreground); font-size: 0.8em; }
   .identity span.available { color: var(--vscode-testing-iconPassed); }
   small { flex-basis: 100%; color: var(--schegent-muted-fg); }

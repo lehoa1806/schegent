@@ -86,7 +86,7 @@
     font-size: 0.9em;
   }
   .freshness-stalled .freshness-label {
-    color: var(--schegent-color-error);
+    color: var(--schegent-error-text);
   }
   .freshness-slowing .freshness-label {
     color: var(--schegent-color-warning);

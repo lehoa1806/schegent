@@ -27,6 +27,13 @@
     initialTab?: 'pipelines' | 'phases' | 'workflows' | 'models';
   }
   const { snapshot, initialTab }: Props = $props();
+  type BuilderTab = 'pipelines' | 'phases' | 'workflows' | 'models';
+  const BUILDER_TABS = Object.freeze([
+    { id: 'pipelines', label: 'Pipelines' },
+    { id: 'phases', label: 'Phases' },
+    { id: 'workflows', label: 'Workflows' },
+    { id: 'models', label: 'Models' }
+  ] satisfies ReadonlyArray<{ id: BuilderTab; label: string }>);
   const workspaceTrust = $derived(snapshot.workspaceTrust === true);
   const trustPhases = $derived(
     workspaceTrust && snapshot.resolvedTrust?.phases === true
@@ -55,7 +62,7 @@
     !showWorkspaceTrustBanner && !trustWorkflowOverrides
   );
   // svelte-ignore state_referenced_locally
-  let activeTab = $state<'pipelines' | 'phases' | 'workflows' | 'models'>(initialTab ?? 'pipelines');
+  let activeTab = $state<BuilderTab>(initialTab ?? 'pipelines');
   let phases = $state<MutablePhase[]>([]);
   let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
@@ -333,19 +340,55 @@
       models[backend][index] = value;
     }
   }
+  function activateTab(tab: BuilderTab, focus = false): void {
+    activeTab = tab;
+    if (!focus) return;
+    queueMicrotask(() => document.getElementById(`builder-tab-${tab}`)?.focus());
+  }
+  function onBuilderTabKeydown(event: KeyboardEvent): void {
+    const current = BUILDER_TABS.findIndex((tab) => tab.id === activeTab);
+    let next = current;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      next = (current - 1 + BUILDER_TABS.length) % BUILDER_TABS.length;
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      next = (current + 1) % BUILDER_TABS.length;
+    } else if (event.key === 'Home') {
+      next = 0;
+    } else if (event.key === 'End') {
+      next = BUILDER_TABS.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    activateTab(BUILDER_TABS[next].id, true);
+  }
 </script>
-<div class="pb" data-testid="pipeline-builder-root">
+<main class="pb" data-testid="pipeline-builder-root">
   <div class="header">
-    <h2>Builder</h2>
-    <p>Configure custom phases, pipelines, workflows, and models.</p>
-    <div class="builder-tabs">
-      <button class="tab-btn {activeTab === 'pipelines' ? 'active' : ''}" onclick={() => activeTab = 'pipelines'}>Pipelines</button>
-      <button class="tab-btn {activeTab === 'phases' ? 'active' : ''}" onclick={() => activeTab = 'phases'}>Phases</button>
-      <button class="tab-btn {activeTab === 'workflows' ? 'active' : ''}" onclick={() => activeTab = 'workflows'}>Workflows</button>
-      <button class="tab-btn {activeTab === 'models' ? 'active' : ''}" onclick={() => activeTab = 'models'}>Models</button>
+    <h2>Process Library</h2>
+    <p>Author and manage reusable phases, pipelines, workflows, and models.</p>
+    <div class="builder-tabs" role="tablist" aria-label="Process library catalogs">
+      {#each BUILDER_TABS as tab (tab.id)}
+        <button
+          id="builder-tab-{tab.id}"
+          type="button"
+          class="tab-btn {activeTab === tab.id ? 'active' : ''}"
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          aria-controls="builder-panel-{tab.id}"
+          tabindex={activeTab === tab.id ? 0 : -1}
+          onclick={() => activateTab(tab.id)}
+          onkeydown={onBuilderTabKeydown}
+        >{tab.label}</button>
+      {/each}
     </div>
   </div>
-  <div class="builder-canvas">
+  <div
+    id="builder-panel-{activeTab}"
+    class="builder-canvas"
+    role="tabpanel"
+    aria-labelledby="builder-tab-{activeTab}"
+  >
     {#if showWorkspaceTrustBanner}
       <TrustBanner variant="workspace-trust" />
     {/if}
@@ -444,4 +487,4 @@
       />
     {/if}
   </div>
-</div>
+</main>

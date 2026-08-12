@@ -109,53 +109,84 @@
   }
 </script>
 
-<section class="metrics" aria-label="Metrics" data-testid="metrics-section">
-  <div class="metrics-toolbar" data-testid="metrics-toolbar">
-    <button type="button" class="metrics-action" data-testid="metrics-refresh"
-      disabled={loading} onclick={() => void fetchMetrics()}>
-      {loading ? 'Scanning…' : 'Refresh'}
-    </button>
-    <label class="metrics-archived-toggle">
-      <input type="checkbox" data-testid="metrics-include-archived"
-        checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
-      Include archived history
-    </label>
-    {#if oldestIncludedTimestamp}
-      <span class="coverage-window" data-testid="metrics-coverage-window">
-        Since {formatAbsoluteTime(oldestIncludedTimestamp)}
-      </span>
-    {/if}
-  </div>
+<main class="metrics" aria-label="Metrics" data-testid="metrics-section">
+  <header class="metrics-header">
+    <div>
+      <h1>Metrics Dashboard</h1>
+      <p>Actionable throughput, cost, and phase performance from the append-only audit log.</p>
+    </div>
+    <div class="metrics-toolbar" data-testid="metrics-toolbar">
+      <button type="button" class="metrics-action" data-testid="metrics-refresh"
+        disabled={loading} onclick={() => void fetchMetrics()}>
+        {loading ? 'Scanning…' : 'Refresh'}
+      </button>
+      <label class="metrics-archived-toggle">
+        <input type="checkbox" data-testid="metrics-include-archived"
+          checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
+        Include archived history
+      </label>
+      {#if oldestIncludedTimestamp}
+        <span class="coverage-window" data-testid="metrics-coverage-window">
+          Since {formatAbsoluteTime(oldestIncludedTimestamp)}
+        </span>
+      {/if}
+    </div>
+  </header>
 
   {#if !loaded}
-    <p class="status-line" data-testid="metrics-loading">Scanning audit history…</p>
+    <div class="metrics-loading" data-testid="metrics-loading" role="status">
+      <span class="status-line">Scanning audit history…</span>
+      <div class="metrics-skeleton" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
+    </div>
   {:else if tasks.length === 0}
     <p class="empty" data-testid="metrics-empty">
-      No workflow runs recorded yet. Metrics populate automatically once a Schegent task runs — start one from the Active Queue tab to see data here.
+      No workflow runs recorded yet. Start a task from Queues to populate this view.
     </p>
   {:else}
     <MetricsSummary tasksCompleted={totalTasksCompleted} elapsedMs={totalElapsedMs}
       {totalCostUsd} backendInvocations={totalBackendInvocations} />
     <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
-      {ariaSort} onSort={toggleSort} onToggleExpand={toggleExpand}
+      {ariaSort} onSort={toggleSort}
       {onExpandToggleClick} onPageChange={goToPage} />
     <MetricsPhaseAnalytics aggregates={phaseTypeAggregates} />
     <MetricsCostChart timeline={costTimeline} {activePointIndex}
       onActivePointChange={(index) => { activePointIndex = index; }} />
   {/if}
-</section>
+</main>
 
 <style>
   .metrics {
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: var(--schegent-gap);
+    gap: 16px;
+    width: min(100%, 1060px);
+    margin: 0 auto;
     box-sizing: border-box;
-    padding: var(--schegent-pad);
+    padding: 20px 24px 24px;
     overflow-y: auto;
   }
-  .status-line { margin: 0; color: var(--schegent-muted-fg); font-style: italic; }
+  .metrics-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: 4px;
+  }
+  .metrics-header h1 {
+    margin: 0;
+    font-size: 1.55rem;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+  }
+  .metrics-header p {
+    margin: 5px 0 0;
+    color: var(--schegent-muted-fg);
+    font-size: 0.84rem;
+  }
+  .status-line { margin: 0; color: var(--schegent-muted-fg); }
   .metrics-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-gap); }
   .metrics-action {
     padding: 4px 10px;
@@ -173,5 +204,45 @@
     color: var(--schegent-muted-fg);
     font-size: 0.9em;
   }
-  .coverage-window { margin-left: auto; color: var(--schegent-muted-fg); font-size: 0.85em; }
+  .coverage-window { color: var(--schegent-muted-fg); font-size: 0.85em; }
+  .metrics-loading {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    background: var(--schegent-surface);
+  }
+  .metrics-skeleton {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--schegent-gap);
+  }
+  .metrics-skeleton span {
+    height: 72px;
+    border-radius: var(--schegent-radius);
+    background: var(--schegent-surface-subtle);
+  }
+  .metrics > .empty {
+    max-width: 54ch;
+    padding: 28px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    background: var(--schegent-surface);
+    font-style: normal;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 780px) {
+    .metrics {
+      padding: 16px;
+    }
+    .metrics-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .metrics-skeleton {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
 </style>

@@ -38,12 +38,11 @@
 
   let suppress = $state(false);
 
-  // Stable ids so multiple stacked dialogs do not collide. The dialog
-  // is gated by the single-modal flag (FR-019) so collisions are
-  // unlikely in practice; suffixing with the action key keeps DevTools
-  // readable. `$derived` keeps Svelte's reactive analysis happy: the
-  // `request` prop is effectively immutable per mount, so these ids
-  // never actually change after first compute.
+  // Stable ids keep the shared confirmation primitive easy to inspect.
+  // The single-modal flag (FR-019) prevents concurrent dialogs; suffixing
+  // with the action key also keeps DevTools readable. `$derived` keeps
+  // Svelte's reactive analysis happy because each request is immutable
+  // for the life of its mount.
   const titleId = $derived(`confirm-dialog-title-${request.actionKey}`);
   const bodyId = $derived(`confirm-dialog-body-${request.actionKey}`);
 
@@ -148,7 +147,7 @@
   .confirm-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 30;
+    z-index: var(--schegent-z-modal-backdrop);
     display: grid;
     place-items: center;
     padding: 16px;
@@ -156,12 +155,13 @@
   }
 
   .confirm-dialog {
+    position: relative;
+    z-index: var(--schegent-z-modal);
     width: min(480px, 100%);
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
     background: var(--vscode-editor-background);
     color: var(--schegent-fg);
-    box-shadow: 0 12px 32px color-mix(in srgb, var(--vscode-widget-shadow) 35%, transparent);
     padding: 16px;
   }
 
@@ -228,7 +228,7 @@
 
   .btn-destructive {
     border-color: var(--vscode-inputValidation-errorBorder);
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
   }
 
   .suppression-row {

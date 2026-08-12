@@ -15,53 +15,66 @@
   }
 </script>
 
-<div class="summary-cards" data-testid="metrics-summary-cards">
-  <div class="summary-card">
-    <span class="summary-label">Tasks Completed</span>
-    <span class="summary-value" data-testid="metrics-summary-tasks-completed">{tasksCompleted}</span>
+<dl class="summary-strip" data-testid="metrics-summary-cards" aria-label="Workflow totals">
+  <div class="summary-item">
+    <dt class="summary-label">Tasks Completed</dt>
+    <dd class="summary-value" data-testid="metrics-summary-tasks-completed">{tasksCompleted}</dd>
   </div>
-  <div class="summary-card">
-    <span class="summary-label">Total Elapsed</span>
-    <span class="summary-value" data-testid="metrics-summary-elapsed">{formatDuration(elapsedMs)}</span>
+  <div class="summary-item">
+    <dt class="summary-label">Total Elapsed</dt>
+    <dd class="summary-value" data-testid="metrics-summary-elapsed">{formatDuration(elapsedMs)}</dd>
   </div>
-  <div class="summary-card">
-    <span class="summary-label">Total Cost</span>
-    <span
+  <div class="summary-item">
+    <dt class="summary-label">Total Cost</dt>
+    <dd
       class="summary-value"
       class:cost-not-recorded={totalCostUsd === undefined}
       data-testid="metrics-summary-cost"
-    >{formatCost(totalCostUsd)}</span>
+    >{formatCost(totalCostUsd)}</dd>
   </div>
-  <div class="summary-card">
-    <span class="summary-label">Backend Calls</span>
-    <span class="summary-value" data-testid="metrics-summary-invocations">{backendInvocations}</span>
+  <div class="summary-item">
+    <dt class="summary-label">Backend Calls</dt>
+    <dd class="summary-value" data-testid="metrics-summary-invocations">{backendInvocations}</dd>
   </div>
-</div>
+</dl>
 
 <style>
-  .summary-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: var(--schegent-gap);
+  .summary-strip {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0;
+    padding: 8px 0;
+    border-block: 1px solid var(--schegent-divider);
   }
-  .summary-card {
+  .summary-item {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: var(--schegent-pad);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    background: var(--sch-glass-bg);
-    box-shadow: var(--sch-card-shadow);
+    flex: 1 1 140px;
+    min-width: 0;
+    padding: 4px var(--schegent-pad);
+  }
+  .summary-item + .summary-item {
+    border-inline-start: 1px solid var(--schegent-divider);
   }
   .summary-label {
+    order: 2;
     color: var(--schegent-muted-fg);
     font-size: 0.8em;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
   .summary-value {
+    order: 1;
+    margin: 0;
     font-size: 1.3em;
     font-weight: 600;
+  }
+
+  @media (max-width: 560px) {
+    .summary-item {
+      flex-basis: 50%;
+    }
+    .summary-item:nth-child(3) {
+      border-inline-start: 0;
+    }
   }
 </style>

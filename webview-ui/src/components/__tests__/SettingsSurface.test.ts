@@ -9,7 +9,7 @@
 //   - No PhasesTab / PipelinesTab / ModelsTab mount inside SettingsSurface.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import SettingsSurface from '../SettingsSurface.svelte';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
@@ -74,6 +74,42 @@ describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
     expect(buttons[0].getAttribute('data-testid')).toBe('settings-tab-general');
     expect(buttons[1].getAttribute('data-testid')).toBe('settings-tab-fatal-signatures');
     expect(buttons[2].getAttribute('data-testid')).toBe('settings-tab-wakeup');
+  });
+
+  it('implements named tabs with roving focus and arrow-key navigation', async () => {
+    const { getByTestId, container } = render(SettingsSurface, {
+      props: { snapshot: buildSnapshot() }
+    });
+    const tablist = container.querySelector('[role="tablist"]');
+    const general = getByTestId('settings-tab-general');
+    const fatal = getByTestId('settings-tab-fatal-signatures');
+    expect(tablist?.getAttribute('aria-label')).toBe('Settings sections');
+    expect(general.getAttribute('role')).toBe('tab');
+    expect(general.getAttribute('aria-selected')).toBe('true');
+    expect(general.getAttribute('tabindex')).toBe('0');
+    expect(fatal.getAttribute('tabindex')).toBe('-1');
+
+    await fireEvent.keyDown(general, { key: 'ArrowDown' });
+    await Promise.resolve();
+    expect(fatal.getAttribute('aria-selected')).toBe('true');
+    expect(fatal.getAttribute('tabindex')).toBe('0');
+    expect(document.activeElement).toBe(fatal);
+    expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
+      .toBe('settings-tab-fatal-signatures');
+  });
+
+  it('associates every general setting control with its visible field name', () => {
+    const { container } = render(SettingsSurface, {
+      props: { snapshot: buildSnapshot() }
+    });
+    const controls = container.querySelectorAll('[data-testid^="general-settings-input-"]');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of Array.from(controls)) {
+      const labelledBy = control.getAttribute('aria-labelledby');
+      expect(labelledBy, control.outerHTML).toBeTruthy();
+      expect(container.querySelector(`#${labelledBy}`)?.textContent?.trim(), control.outerHTML)
+        .toBeTruthy();
+    }
   });
 
   it('does NOT render the Phases sub-tab button', () => {

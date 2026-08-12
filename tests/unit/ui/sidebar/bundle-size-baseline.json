@@ -3,5 +3,5 @@
   "capturedAt": "004-operator-ui",
   "deltaBudgetBytes": 3072,
   "absoluteCapBytes": 204800,
-  "note": "Locked at the end of feature 004-operator-ui. Post-Vite-split, indexJsBytes represents the sidebar entry (dist/webview/index.js) PLUS shared chunks under dist/webview/chunks/, since Vite hoists shared modules. The growth budget for the next feature should be measured against (entry + chunks) total. Update only when a feature intentionally lifts the regression floor; document the new size in the PR description."
+  "note": "Locked at the end of feature 004-operator-ui. Post-Vite-split, indexJsBytes represents the sidebar entry (dist/webview/index.js) plus its synchronously imported shared chunks. Async dashboard route chunks share the output directory but are excluded from sidebar startup. Update only when a feature intentionally lifts the regression floor; document the new size in the PR description."
 }

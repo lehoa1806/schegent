@@ -26,10 +26,10 @@
     if (state === 'paused') return 'paused';
     if (state === 'idle') return 'idle';
     if (state === 'slowing') {
-      return secs !== null && Number.isFinite(secs) ? `slowing — ${secs}s` : 'slowing';
+      return secs !== null && Number.isFinite(secs) ? `slowing, ${secs}s` : 'slowing';
     }
     if (state === 'stalled') {
-      return secs !== null && Number.isFinite(secs) ? `stalled — ${secs}s` : 'stalled';
+      return secs !== null && Number.isFinite(secs) ? `stalled, ${secs}s` : 'stalled';
     }
     return state;
   }
@@ -37,12 +37,12 @@
   function formatMonitorLine(status: MonitorStatus, ms: number | null): string {
     const label = status.replace('_', ' ');
     if (ms === null || !Number.isFinite(ms)) return label;
-    return `${label} · stdout ${formatDuration(ms)}`;
+    return `${label} / stdout ${formatDuration(ms)}`;
   }
 
   function formatTelemetryLine(snap: TelemetrySnapshot): string {
     if (snap.status === 'unavailable') {
-      return `PID ${snap.pid} · telemetry unavailable`;
+      return `PID ${snap.pid} / telemetry unavailable`;
     }
     const cpu = snap.cpuPercent;
     const rss = snap.memoryRssBytes;
@@ -59,7 +59,7 @@
     const parts = [`PID ${snap.pid}`, cpuLabel, memLabel, upLabel].filter(
       (p): p is string => typeof p === 'string'
     );
-    return parts.join(' · ');
+    return parts.join(' / ');
   }
 
   function formatCpu(p: number): string {
@@ -84,11 +84,14 @@
 </script>
 
 <div class="current-task" data-testid="sidebar-current-task">
-  <div class="freshness-row freshness-{freshness}" data-testid="sidebar-freshness" aria-label={`Freshness: ${freshness}`}>
-    <span class="dot" aria-hidden="true"></span>
-    <span class="freshness-label">{freshnessLabel}</span>
+  <div class="task-heading">
+    <span>Current activity</span>
+    <div class="freshness-row freshness-{freshness}" data-testid="sidebar-freshness" aria-label={`Freshness: ${freshness}`}>
+      <span class="dot" aria-hidden="true"></span>
+      <span class="freshness-label">{freshnessLabel}</span>
+    </div>
   </div>
-  <div class="activity" title={summary ?? ''}>{summary ?? ''}</div>
+  <div class="activity" title={summary ?? ''}>{summary ?? 'Waiting for the next run event.'}</div>
   {#if monitor !== null && monitorLine !== null}
     <div class="monitor-row" data-testid="sidebar-monitor-row">{monitorLine}</div>
   {/if}
@@ -101,15 +104,24 @@
   .current-task {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: var(--schegent-pad);
+    gap: 5px;
+    padding: 10px 12px 12px;
     border-bottom: 1px solid var(--schegent-divider);
     min-width: 0;
+  }
+  .task-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--schegent-fg);
+    font-size: 0.74rem;
+    font-weight: 600;
   }
   .freshness-row {
     display: flex;
     align-items: center;
-    gap: var(--schegent-gap);
+    gap: 5px;
     min-width: 0;
   }
   .dot {
@@ -134,16 +146,16 @@
   .freshness-idle .dot { background: var(--schegent-color-system); }
   .freshness-label {
     font-weight: 600;
-    font-size: 0.9em;
+    font-size: 0.72rem;
     color: var(--schegent-fg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .freshness-stalled .freshness-label { color: var(--schegent-color-error); }
+  .freshness-stalled .freshness-label { color: var(--schegent-error-text); }
   .freshness-slowing .freshness-label { color: var(--schegent-color-warning); }
   .activity {
-    font-size: 0.85em;
+    font-size: 0.8rem;
     color: var(--schegent-muted-fg);
     white-space: nowrap;
     overflow: hidden;

@@ -159,6 +159,10 @@ describe('MetricsDashboard', () => {
     await tick();
     await tick();
 
+    const summary = getByTestId('metrics-summary-cards');
+    expect(summary.tagName).toBe('DL');
+    expect(summary.getAttribute('aria-label')).toBe('Workflow totals');
+    expect(summary.querySelectorAll('.summary-card')).toHaveLength(0);
     expect(getByTestId('metrics-summary-tasks-completed').textContent).toBe('1');
     expect(getByTestId('metrics-summary-invocations').textContent).toBe('5');
     expect(getByTestId('metrics-summary-cost').textContent).toBe('$0.75');
@@ -200,7 +204,7 @@ describe('MetricsDashboard', () => {
     expect(rowOrder()).toEqual(['metrics-task-row-run-a', 'metrics-task-row-run-b']);
   });
 
-  it('expands phase detail on row click and collapses on the expand-toggle button', async () => {
+  it('expands and collapses phase detail from the explicit expand button', async () => {
     readMetricsSpy.mockResolvedValue(successResult({ tasks: [task({ runId: 'run-1' })] }));
     const { getByTestId, queryByTestId } = render(MetricsDashboard, { props: { active: true } });
     await tick();
@@ -208,7 +212,10 @@ describe('MetricsDashboard', () => {
 
     expect(queryByTestId('metrics-phase-table-run-1')).toBeNull();
 
-    await fireEvent.click(getByTestId('metrics-task-row-run-1'));
+    const row = getByTestId('metrics-task-row-run-1');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.getAttribute('tabindex')).toBeNull();
+    await fireEvent.click(getByTestId('metrics-task-expand-run-1'));
     await tick();
     expect(getByTestId('metrics-phase-table-run-1')).not.toBeNull();
 
@@ -240,7 +247,7 @@ describe('MetricsDashboard', () => {
     await tick();
     await tick();
 
-    await fireEvent.click(getByTestId('metrics-task-row-run-1'));
+    await fireEvent.click(getByTestId('metrics-task-expand-run-1'));
     await tick();
 
     const rows = container.querySelectorAll('[data-testid^="metrics-phase-row-run-1-"]');
