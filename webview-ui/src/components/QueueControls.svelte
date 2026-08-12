@@ -127,25 +127,32 @@
   .queue-controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: var(--schegent-gap);
+    gap: 4px;
+    margin: 0 calc(var(--schegent-space-2) * -1) var(--schegent-space-2);
+    padding: 0 var(--schegent-space-2) var(--schegent-space-2);
+    border-bottom: 1px solid var(--schegent-divider);
   }
 
   .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
-    font-size: 0.9em;
+    min-height: var(--schegent-control-height-compact);
+    padding: 3px 8px;
+    border-radius: var(--schegent-radius-sm);
+    font-size: var(--schegent-text-caption);
     font-weight: 500;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: transform 0.1s ease, opacity 0.1s ease;
+    transition:
+      background-color var(--schegent-duration-fast) var(--schegent-ease-out),
+      border-color var(--schegent-duration-fast) var(--schegent-ease-out),
+      color var(--schegent-duration-fast) var(--schegent-ease-out),
+      opacity var(--schegent-duration-fast) var(--schegent-ease-out);
   }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn:active:not(:disabled) { transform: scale(0.93); opacity: 0.8; }
+  .btn:active:not(:disabled) { opacity: 0.8; }
   .btn-start { background: var(--schegent-color-completed); color: var(--vscode-button-foreground); }
-  .btn-start:hover:not(:disabled) { box-shadow: var(--sch-glow-success); }
+  .btn-start:hover:not(:disabled) { background: color-mix(in srgb, var(--schegent-color-completed) 86%, black); }
   .btn-primary { background: var(--schegent-color-active); color: var(--vscode-button-foreground); }
-  .btn-primary:hover:not(:disabled) { box-shadow: var(--sch-glow-active); }
+  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
   .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
   .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
   .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }

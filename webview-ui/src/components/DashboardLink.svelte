@@ -31,7 +31,7 @@
     background: var(--schegent-button-bg);
     color: var(--schegent-button-fg);
     border: 1px solid transparent;
-    border-radius: 5px;
+    border-radius: var(--schegent-radius-sm);
     padding: 0 var(--schegent-pad);
     font: inherit;
     cursor: pointer;

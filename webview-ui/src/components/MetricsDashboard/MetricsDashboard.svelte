@@ -162,10 +162,11 @@
     flex: 1;
     flex-direction: column;
     gap: 16px;
-    width: min(100%, 1060px);
-    margin: 0 auto;
+    width: 100%;
+    max-width: 1440px;
+    margin: 0;
     box-sizing: border-box;
-    padding: 20px 24px 24px;
+    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
     overflow-y: auto;
   }
   .metrics-header {
@@ -177,14 +178,14 @@
   }
   .metrics-header h1 {
     margin: 0;
-    font-size: 1.55rem;
+    font-size: var(--schegent-text-heading);
     font-weight: 650;
     letter-spacing: -0.025em;
   }
   .metrics-header p {
     margin: 5px 0 0;
     color: var(--schegent-muted-fg);
-    font-size: 0.84rem;
+    font-size: var(--schegent-text-secondary);
   }
   .status-line { margin: 0; color: var(--schegent-muted-fg); }
   .metrics-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-gap); }

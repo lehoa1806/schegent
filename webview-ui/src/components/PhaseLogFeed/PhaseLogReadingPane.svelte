@@ -209,7 +209,7 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
-    font-size: 0.75rem;
+    font-size: var(--schegent-text-caption);
     min-height: 1rem;
   }
   .live-indicator {
@@ -233,7 +233,8 @@
     flex: 1;
     min-height: 0;
     border: 1px solid var(--schegent-border, transparent);
-    border-radius: 4px;
+    border-radius: var(--schegent-radius-sm);
+    background: var(--schegent-surface-sunken);
   }
   .loading {
     opacity: 0.7;
@@ -249,7 +250,7 @@
     background: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
     border: 1px solid var(--vscode-button-border, transparent);
-    border-radius: 999px;
+    border-radius: var(--schegent-radius-sm);
     cursor: pointer;
     transition: transform 0.1s ease;
   }
