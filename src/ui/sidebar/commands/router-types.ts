@@ -20,8 +20,6 @@ import type {
   ReadMetricsResponse,
   ReadPhaseLogRequest,
   ReadPhaseLogResponse,
-  ReadWakeupSessionLogResponse,
-  RevealWakeupSessionLogResponse,
   StartPhaseLogTailRequest,
   StartPhaseLogTailResponse,
   StopPhaseLogTailRequest,
@@ -306,16 +304,6 @@ export interface RouterDeps {
    * the wiring.
    */
   readonly dismissMigrationNotice?: () => Promise<void>;
-  readonly saveWakeUpSettings?: (
-    payload: Readonly<{
-      enabled: boolean;
-      schedulerType: 'chronological' | 'periodic';
-      chronologicalTime: string;
-      periodicInterval: string;
-    }>
-  ) => Promise<{ ok: true } | { ok: false; reason: string }>;
-  readonly wakeUpNow?: () => Promise<import('../messages').WakeUpNowResult>;
-  readonly onWakeUpNowComplete?: () => void;
   readonly phaseLogService?: {
     read(req: ReadPhaseLogRequest): Promise<ReadPhaseLogResponse>;
   };
@@ -323,15 +311,10 @@ export interface RouterDeps {
     start(req: StartPhaseLogTailRequest): Promise<StartPhaseLogTailResponse>;
     stop(req: StopPhaseLogTailRequest): Promise<StopPhaseLogTailResponse>;
   };
-  readonly wakeupSessionLogService?: {
-    read(req: { correlationId: string }): Promise<ReadWakeupSessionLogResponse>;
-  };
-  readonly revealWakeupSessionLog?: () => Promise<RevealWakeupSessionLogResponse>;
   /**
    * Feature 084 (FR-018, FR-019, research R3) — hands a serialized document to
    * the host's own save flow. This directory is vscode-free, so the dialog and
-   * the write live in an adapter wired in `src/extension.ts`, matching
-   * `revealWakeupSessionLog` above.
+   * the write live in an adapter wired in `src/extension.ts`.
    *
    * `suggestedFileName` is a bare name the dialog seeds its field with, never a
    * location; the adapter decides where to anchor it and never reports back

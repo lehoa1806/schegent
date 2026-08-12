@@ -101,10 +101,6 @@ The rows are grouped:
 - **Max retry attempts** — bound to `schegent.retry.maxAttempts`.
 - **Auto-compact override** — bound to `schegent.claude.autoCompactPctOverride`.
 
-### Wake-up
-
-A dedicated sub-panel for the wake-up scheduler. See [Wake-up Scheduler](../features/wake-up-scheduler.md) for the full reference.
-
 Every save in this panel is transactional and validates against the same schema VS Code's Settings UI uses. Invalid values surface inline rejection messages.
 
 ## The audit / log links

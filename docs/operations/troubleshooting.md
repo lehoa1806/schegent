@@ -191,24 +191,6 @@ The setting save can be triggered from the sidebar settings panel.
 
 **Fix:** Set verbose before the phase you want to capture. Verify with the next phase boundary.
 
-## Wake-up scheduler did not fire
-
-**Symptom:** No `wakeup-runner-invocation` events in the audit log over the expected timeframe.
-
-**Diagnose:**
-
-- Is the OS-native entry installed? Check the audit log for `wakeup-daemon-installed`.
-- Is the OS-native entry **for this user**? The wake-up scheduler is per-user; another user on the same machine has its own entries.
-- Did `schegent.wakeUp.enabled` get set to `false` somewhere?
-
-**Fix:**
-
-- Toggle wake-up off and back on to reinstall the OS entry.
-- For platform-specific verification:
-  - macOS: `launchctl list | grep schegent`.
-  - Linux: `crontab -l` or `systemctl --user list-timers`.
-  - Windows: Open Task Scheduler and look under `\Schegent\Wakeup`.
-
 ## Configuration changes do not take effect
 
 **Symptom:** You changed `schegent.phases` (or any other setting) but the next phase ran with the old value.

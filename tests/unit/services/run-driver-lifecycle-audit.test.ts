@@ -117,8 +117,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     phaseRunnerMock.run.mockResolvedValueOnce({
@@ -175,8 +174,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     phaseRunnerMock.run.mockResolvedValue({
@@ -243,8 +241,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         manualPauseCause: null,
         phaseBreakpoints: [],
         phaseOverrides: [],
-        resumeTargetPhaseId: null,
-        isWakeup: false
+        resumeTargetPhaseId: null
       } as any);
       phaseRunnerMock.run.mockResolvedValueOnce({
         result: { kind: 'malformed', warnings: [outcome], auditEntry: null },
@@ -320,8 +317,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         manualPauseCause: null,
         phaseBreakpoints: [],
         phaseOverrides: [],
-        resumeTargetPhaseId: null,
-        isWakeup: false
+        resumeTargetPhaseId: null
       } as any);
       (deps.retryCoordinator.isRetryCapExhaustedOnNextFailure as any)
         .mockReturnValue(true);
@@ -379,8 +375,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     phaseRunnerMock.run.mockResolvedValue({
@@ -420,8 +415,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     await expect(driver.drive(store.getRun()!, 'retention failure')).resolves.toBeUndefined();
@@ -452,8 +446,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
     phaseRunnerMock.run.mockRejectedValueOnce(
       new RequiredEvidenceUnavailableError('phase-start')

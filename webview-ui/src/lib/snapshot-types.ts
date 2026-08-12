@@ -198,7 +198,6 @@ export type QueueLifecycle =
 export type ScheduledStartSource =
   | 'operator-chooser'
   | 'operator-restart'
-  | 'wake-up-runner'
   | 'programmatic-now'
   | 'programmatic-scheduled'
   | 'migration-default'
@@ -886,99 +885,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   })
 });
 
-/**
- * Feature 014 (BUG-001 / BUG-002) — webview mirror of `WakeUpSettings`
- * in src/wakeup/settings.ts. Settings live at Global (user) scope and
- * are projected onto the snapshot so the Wake up Settings tab can
- * hydrate its draft on mount and resync on projection changes
- * (FR-025 / SC-010), paralleling `GeneralSettings`.
- */
-export type WakeUpSchedulerType = 'chronological' | 'periodic';
-
-/**
- * Feature 031 — webview mirror of the closed Claude-model registry in
- * `src/wakeup/settings.ts`. Kept as a local constant on the webview
- * side because the bundle cannot import host source.
- */
-export const RUNNER_DEFAULT_MODEL = 'runner-default' as const;
-
-export const WAKEUP_SUPPORTED_MODELS = [
-  'claude-sonnet-5',
-  'claude-opus-5',
-  'claude-fable-5',
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-6'
-] as const;
-
-export type WakeUpModelId = (typeof WAKEUP_SUPPORTED_MODELS)[number];
-
-export type WakeUpModelSelection = typeof RUNNER_DEFAULT_MODEL | WakeUpModelId;
-
-export interface WakeUpSettings {
-  readonly enabled: boolean;
-  readonly schedulerType: WakeUpSchedulerType;
-  readonly chronologicalTime: string;
-  readonly periodicInterval: string;
-  /**
-   * Feature 031 — operator's Claude model selection for OS-scheduled
-   * Wake-up fires. Optional on the webview mirror for legacy-tolerance;
-   * absent values default to the `'runner-default'` sentinel.
-   */
-  readonly model?: WakeUpModelSelection;
-}
-
-export type WakeUpAttemptStatus = 'succeeded' | 'failed' | 'timed-out' | 'skipped';
-export type WakeUpTriggerSource = 'scheduled' | 'manual';
-
-export interface WakeUpLogProjectionEntry {
-  readonly id: string;
-  readonly timestamp: string;
-  readonly triggerSource: WakeUpTriggerSource;
-  readonly status: WakeUpAttemptStatus;
-  readonly durationMs: number | null;
-  readonly rawResponse: string;
-  readonly message: string;
-  readonly truncated: boolean;
-  /**
-   * Feature 031 — operator's verbatim selection from the persisted
-   * mirror at fire time. Absent on legacy 014/024 records; the UI
-   * falls back to `'runner-default'` semantics.
-   */
-  readonly requestedModel?: string;
-  /**
-   * Feature 031 — model the runner actually invoked. Equals
-   * `requestedModel` for known models; equals `'runner-default'` when
-   * the requested id was unknown to the runner (the legacy-tolerant
-   * fallback).
-   */
-  readonly actualModel?: string;
-  /**
-   * Feature 031 T040 — invocation correlation id used as the key for
-   * the wake-up session-log IPC when the operator expands the row.
-   * Absent on legacy 014/024 records; the UI hides the expansion
-   * affordance for rows without an id.
-   */
-  readonly correlationId?: string;
-}
-
-export interface WakeUpLogProjection {
-  readonly entries: readonly WakeUpLogProjectionEntry[];
-  readonly readError?: string;
-}
-
-export const IDLE_WAKEUP_SETTINGS: WakeUpSettings = Object.freeze({
-  enabled: false,
-  schedulerType: 'chronological',
-  chronologicalTime: '04:00',
-  periodicInterval: 'Every 4h',
-  model: RUNNER_DEFAULT_MODEL
-});
-
-export const IDLE_WAKEUP_LOG: WakeUpLogProjection = Object.freeze({
-  entries: Object.freeze([]) as readonly WakeUpLogProjectionEntry[]
-});
 
 /**
  * Feature 033 — webview mirror of `TelemetryStatus` /
@@ -1078,28 +984,6 @@ export interface WorkflowSnapshot {
   readonly generalSettings?: GeneralSettings;
   readonly sessionArtifacts?: SessionArtifactsProjection;
   readonly evidenceHealth?: EvidenceHealthProjection;
-  /**
-   * Feature 014 (BUG-001 / BUG-002) — typed read of the four
-   * `schegent.wakeUp.*` settings projected from Global scope. Optional
-   * for legacy-tolerance: an older host bundle may not include it; the
-   * webview must default to `IDLE_WAKEUP_SETTINGS` in that case.
-   */
-  readonly wakeUpSettings?: WakeUpSettings;
-  /**
-   * Feature 024 — latest sanitized Wake up attempt rows for the
-   * Settings Wake up tab. Optional for legacy-tolerance.
-   */
-  readonly wakeUpLog?: WakeUpLogProjection;
-  /**
-   * Feature 031 / data-model §7 — DISPLAY-ONLY wake-up surface. The
-   * webview NEVER routes `sessionLogPath` back to the host; the
-   * session-log read IPC carries `correlationId` only. Optional for
-   * legacy-tolerance — an older host bundle may not include it.
-   */
-  readonly wakeUp?: {
-    readonly model: WakeUpModelSelection;
-    readonly sessionLogPath: string;
-  };
   /**
    * Feature 026 — per-phase precedence projection. Flat map keyed by
    * `"<phaseId>::<fieldKey>"` whose value is the layer that provided

@@ -980,52 +980,6 @@
           "default": null,
           "scope": "window",
           "markdownDescription": "Per-capability trust scope (feature 083) gating non-default entries in the workflow catalog (`schegent.workflows`). A distinct capability from `schegent.trust.allowPipelineOverrides`: permitting pipeline-catalog edits does not thereby permit workflow-graph edits. When `null` (default), follows Workspace Trust. When `false`, saving a non-default workflow catalog is denied at the IPC layer. Reset-to-defaults is always allowed. The Workspace Trust ceiling is never widened. See `repo/docs/operations/trust-scopes.md`."
-        },
-        "schegent.wakeUp.enabled": {
-          "type": "boolean",
-          "default": false,
-          "scope": "application",
-          "markdownDescription": "Enable the Wake up background scheduler. When enabled, a per-user OS-native scheduled task (launchd on macOS, Task Scheduler on Windows, cron/systemd user units on Linux) periodically invokes a 1-token Claude CLI command in a sandboxed temporary directory to keep the 5-hour rolling allocation window warm. The OS entry is installed only on the **primary** VS Code host."
-        },
-        "schegent.wakeUp.schedulerType": {
-          "type": "string",
-          "default": "chronological",
-          "enum": [
-            "chronological",
-            "periodic"
-          ],
-          "scope": "application",
-          "markdownDescription": "Wake up scheduler trigger style. `chronological` fires once per day at a fixed local time (see `schegent.wakeUp.chronologicalTime`). `periodic` fires at a fixed interval (see `schegent.wakeUp.periodicInterval`)."
-        },
-        "schegent.wakeUp.chronologicalTime": {
-          "type": "string",
-          "default": "04:00",
-          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
-          "scope": "application",
-          "markdownDescription": "Daily fire time for Wake up in 24-hour `HH:MM` form (local time). Used only when `schegent.wakeUp.schedulerType` is `chronological`. Defaults to `04:00`."
-        },
-        "schegent.wakeUp.periodicInterval": {
-          "type": "string",
-          "default": "Every 4h",
-          "pattern": "^Every (\\d+)(m|h)$",
-          "scope": "application",
-          "markdownDescription": "Periodic fire interval for Wake up in `Every Nm` or `Every Nh` form. Minimum granularity is 1 minute (`Every 1m`). Intervals below 5 hours are accepted but surface a non-blocking advisory in the Settings UI because they may waste tokens within an unreset rolling window. Used only when `schegent.wakeUp.schedulerType` is `periodic`."
-        },
-        "schegent.wakeUp.model": {
-          "type": "string",
-          "default": "runner-default",
-          "enum": [
-            "runner-default",
-            "claude-sonnet-5",
-            "claude-opus-5",
-            "claude-fable-5",
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-6"
-          ],
-          "scope": "application",
-          "markdownDescription": "Claude model used for Wake up invocations. `runner-default` defers to whatever the Claude CLI chooses. See `schegent.wakeUp.enabled`."
         }
       }
     }
@@ -1048,7 +1002,6 @@
     "lint:webview": "npm --prefix webview-ui run lint --if-present",
     "test": "vitest run && npm --prefix webview-ui run test",
     "test:host": "vitest run",
-    "test:wakeup:lifecycle": "vitest run tests/integration/wakeup/release-native-lifecycle.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:webview": "npm --prefix webview-ui run test",
     "test:webview:coverage": "npm --prefix webview-ui run test:coverage",

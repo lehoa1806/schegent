@@ -166,7 +166,7 @@ The mutating set (subject to the primary-host gate) includes every command that 
 - `schegent.auto`, `schegent.schedule`, `schegent.resume`, `schegent.cancel`, `schegent.retryActiveRun`, `schegent.reset`
 - `schegent.pauseQueue`, `schegent.resumeQueue`, `schegent.retryQueuedItem`, `schegent.moveQueuedItemUp`, `schegent.moveQueuedItemDown`
 - `schegent.clearCompleted`, `schegent.clearFailed`, `schegent.rerunFromHistory`
-- (Internal IPC commands behind the sidebar settings panel — e.g., save phases, save general settings, save wake-up settings, set/clear breakpoint — are also gated.)
+- (Internal IPC commands behind the sidebar settings panel — e.g., save phases, save general settings, set/clear breakpoint — are also gated.)
 
 The read-only commands (`showAuditLog`, `showActiveRun`, `openDashboard`, `redetectClaudeTransport`) work in every window.
 

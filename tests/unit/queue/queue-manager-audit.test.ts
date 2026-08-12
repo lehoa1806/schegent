@@ -52,8 +52,7 @@ describe('QueueManager Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     await queue.markInFlight(task.id, runId, false);

@@ -29,7 +29,6 @@ providers."
 | Enqueue or edit pending work | Persists locally. Leave the queue `idle-pending` or operator-paused to prevent an execution attempt. |
 | Start or resume a phase | Not guaranteed. The configured backend may fail authentication, reachability, or provider requests. |
 | Automatic retry or rate-limit recovery | Remains stateful locally, but the next backend attempt still needs whatever connectivity that backend requires. |
-| Wake-up scheduler invocation | Not offline-capable for the current Claude-backed implementation. |
 
 There is no automatic "offline mode" and no network reachability detector.
 Queue-only/no-execution behavior is explicit operator intent: keep an

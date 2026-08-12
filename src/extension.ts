@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import * as path from 'node:path';
-import { promises as fsPromises } from 'node:fs';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { WorkspaceLockManager } from './state/lock';
 import {
@@ -80,26 +79,12 @@ import type {
   StopPhaseLogTailRequest,
   StopPhaseLogTailResponse
 } from './contracts/sidebar-ipc';
-import { DaemonManager, defaultCommandRunner } from './wakeup/daemon-manager';
-import { installerFactory } from './wakeup/platforms/installer-registry';
-import { InvocationLog } from './wakeup/invocation-log';
-import { createSaveWakeUpSettingsHandler } from './wakeup/save-handler';
-import { createManualWakeUpTrigger } from './wakeup/manual-trigger';
-import { activateWakeUp, deactivateWakeUp, type ActivationDeps as WakeUpActivationDeps } from './wakeup/activation';
-import { readSettings as readWakeUpSettings, type WakeUpConfig } from './wakeup/settings';
-import { readSessionBlock } from './wakeup/session-log-reader';
-import type { ReadWakeupSessionLogResponse } from './contracts/sidebar-ipc';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
   dispose(): Promise<void>;
 }
 
-// Feature 014 — tracked at module scope so the top-level `deactivate()`
-// hook can invoke `deactivateWakeUp(...)` without re-resolving deps. The
-// per-extension-instance reference is replaced on each Stage 2 wire and
-// cleared on tear-down.
-let activeWakeUpDeps: WakeUpActivationDeps | null = null;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const logger = new SanitizedLogger();
@@ -685,37 +670,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     await watchdog.pauseAndPoll(cause);
   });
 
-  // Feature 014/024 — Wake up wiring. The same user-data wakeup
-  // directory backs scheduler settings, runner mirrors, manual
-  // invocations, and the newest-attempts snapshot projection.
-  const wakeUpHomeDir = vscode.Uri.joinPath(context.globalStorageUri, 'wakeup').fsPath;
-  const wakeUpRunnerPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'wakeup-runner.js').fsPath;
-  const wakeUpInvocationLog = new InvocationLog(wakeUpHomeDir);
-  const wakeUpDaemonManager = new DaemonManager({
-    installerFactory,
-    commandRunner: defaultCommandRunner()
-  });
-  const readWakeUpConfig = (): WakeUpConfig =>
-    vscode.workspace.getConfiguration('schegent') as unknown as WakeUpConfig;
-  const getWorkspaceRoots = (): readonly string[] =>
-    (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
-  const saveWakeUpHandler = createSaveWakeUpSettingsHandler({
-    readConfig: readWakeUpConfig,
-    daemonManager: wakeUpDaemonManager,
-    workspaceRoots: getWorkspaceRoots,
-    sourceRunnerPath: wakeUpRunnerPath,
-    homeDir: wakeUpHomeDir,
-    audit: auditWriter as unknown as Parameters<typeof createSaveWakeUpSettingsHandler>[0]['audit'],
-    sanitize: (msg) => logger.sanitize(msg)
-  });
-  const wakeUpNow = createManualWakeUpTrigger({
-    readConfig: readWakeUpConfig,
-    workspaceRoots: getWorkspaceRoots,
-    sourceRunnerPath: wakeUpRunnerPath,
-    homeDir: wakeUpHomeDir,
-    sanitize: (msg) => logger.sanitize(msg)
-  });
-
   const connectedRuns = createConnectedRunService(store, historyStore);
   const projector = new StateProjector({
     store,
@@ -733,18 +687,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       ),
     getSessionArtifacts: () => sessionRetention.getUsage(),
     getEvidenceHealth: () => evidenceHealth.getSnapshot(),
-    // Wake-up settings are global and re-read on every projection.
-    getWakeUpSettings: () =>
-      readWakeUpSettings(
-        vscode.workspace.getConfiguration('schegent') as unknown as WakeUpConfig
-      ),
-    getWakeUpLog: () => wakeUpInvocationLog.projectRecent((msg) => logger.sanitize(msg), 5),
-    // The session-log path is display-only; read IPC carries identifiers.
-    getWakeupModel: () =>
-      readWakeUpSettings(
-        vscode.workspace.getConfiguration('schegent') as unknown as WakeUpConfig
-      ).model,
-    getWakeupSessionLogPath: () => path.join(wakeUpHomeDir, 'session.log'),
     // Feature 026 — UI-only per-phase precedence projection. Re-read on
     // every snapshot so a catalog reload triggered by
     // `onDidChangeConfiguration('schegent.phases')` reaches the webview
@@ -1069,10 +1011,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       if (!changed) return;
       projector.kick();
     },
-    // Feature 014 — Wake up save protocol (primary-only; transactional).
-    saveWakeUpSettings: async (payload) => saveWakeUpHandler(payload),
-    wakeUpNow,
-    onWakeUpNowComplete: () => projector.kick(),
     // Feature 020 — phase-log read adapter. Resolves the selection
     // tuple against the projector snapshot, threads sanitize +
     // verbose-setting reader, returns the typed wire-format response.
@@ -1098,66 +1036,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // selection against the current snapshot (`not-in-flight` if the
     // task or phase has moved on) before delegating to the registry.
     phaseLogTailService,
-    // Feature 031 T036 — wake-up session-log read adapter. The
-    // session-log path is host-owned (composed from
-    // `<globalStorageUri>/wakeup/session.log`); operators NEVER supply
-    // a path on the IPC wire. The adapter delegates to the pure reader
-    // in `src/wakeup/session-log-reader.ts` with the host's
-    // `SanitizedLogger.sanitize` callback so `SECRET_PATTERNS` remains
-    // the SINGLE redaction source at the IPC boundary.
-    wakeupSessionLogService: {
-      read: async (req): Promise<ReadWakeupSessionLogResponse> => {
-        const sessionLogPath = path.join(wakeUpHomeDir, 'session.log');
-        const result = await readSessionBlock(
-          req.correlationId,
-          sessionLogPath,
-          (s) => logger.sanitize(s)
-        );
-        if (result.outcome === 'success') {
-          return {
-            status: 'success',
-            correlationId: req.correlationId,
-            capturedAtMs: result.header.capturedAtMs,
-            trigger: result.header.trigger,
-            model: result.header.model,
-            outcome: result.header.outcome,
-            body: result.body,
-            bodyTruncated: result.bodyTruncated,
-            fullBlockBytesOnDisk: result.fullBlockBytesOnDisk
-          };
-        }
-        return { status: 'rejected', reason: result.outcome };
-      }
-    },
-    // Feature 031 T050 — wake-up session-log reveal adapter. Path
-    // composition mirrors `wakeupSessionLogService.read` (single source
-    // of truth — same `<globalStorageUri>/wakeup/session.log`
-    // convention). Webview supplies NO path. The handler stat-checks
-    // the file (absent → 'session-log-unavailable') then delegates to
-    // VS Code's `revealFileInOS` command. All other failures collapse
-    // to `'reveal-failed'`.
-    revealWakeupSessionLog: async () => {
-      const sessionLogPath = path.join(wakeUpHomeDir, 'session.log');
-      try {
-        await fsPromises.stat(sessionLogPath);
-      } catch {
-        return { status: 'rejected' as const, reason: 'session-log-unavailable' as const };
-      }
-      try {
-        await vscode.commands.executeCommand(
-          'revealFileInOS',
-          vscode.Uri.file(sessionLogPath)
-        );
-        return { status: 'success' as const };
-      } catch (err) {
-        logger.warn(
-          `extension: wakeup session-log reveal failed: ${logger.sanitize(
-            (err as Error).message ?? 'unknown error'
-          )}`
-        );
-        return { status: 'rejected' as const, reason: 'reveal-failed' as const };
-      }
-    },
     // Feature 084 — Phase export adapter (FR-018, FR-019, research R3).
     // Mirrors `src/commands/export-audit.ts`: the host owns the dialog and the
     // write, so no location crosses the IPC boundary in either direction. The
@@ -1225,23 +1103,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     backendPingService: backendPing
   });
 
-  // Feature 014 — fire-and-forget reconcile + workspace-roots mirror on
-  // activation. Errors are swallowed inside `activateWakeUp`; the
-  // failure path emits a sanitized log line but does NOT block the
-  // rest of Stage 2 (FR-024). The deps reference is hoisted to module
-  // scope so the top-level `deactivate()` can call `deactivateWakeUp`.
-  const wakeUpActivationDeps: WakeUpActivationDeps = {
-    readConfig: readWakeUpConfig,
-    daemonManager: wakeUpDaemonManager,
-    workspaceRoots: getWorkspaceRoots,
-    homeDir: wakeUpHomeDir,
-    sourceRunnerPath: wakeUpRunnerPath,
-    audit: auditWriter as unknown as WakeUpActivationDeps['audit'],
-    logger
-  };
-  activeWakeUpDeps = wakeUpActivationDeps;
-  void activateWakeUp(wakeUpActivationDeps);
-
   const uiWiring = registerStage2Ui({
     extensionRoot: context.extensionUri.fsPath,
     workspaceRoot,
@@ -1294,9 +1155,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       }
     }
     await lock.release();
-    if (activeWakeUpDeps === wakeUpActivationDeps) {
-      activeWakeUpDeps = null;
-    }
   };
 
   return {
@@ -1344,16 +1202,6 @@ function createCatalogReader(workspaceRoot: string): CatalogConfigReader {
 
 export function deactivate(): void {
   // disposables registered to context.subscriptions will run automatically.
-  // Feature 014 — FR-023: attempt to uninstall the OS daemon and swallow
-  // failures with a single audit event. `deactivateWakeUp` is a no-op
-  // when the user-scope `schegent.wakeUp.enabled` is false; when true,
-  // it dispatches `daemon-manager.uninstall()` and records the result.
-  // Errors here MUST NOT prevent VS Code from shutting down.
-  if (activeWakeUpDeps) {
-    const deps = activeWakeUpDeps;
-    activeWakeUpDeps = null;
-    void deactivateWakeUp(deps);
-  }
   // Feature 058 — release the workspace-folder-picker subscription and clear
   // its memoized canonical folder so a fresh activation rebuilds from a clean
   // state. Idempotent and never throws.

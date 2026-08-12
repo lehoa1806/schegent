@@ -17,7 +17,7 @@ The pages are organized by *what you are trying to do*, not by the order the ext
 - If you have never used Schegent before → **Getting Started**.
 - If you want to understand what a "run", a "phase", or "the queue" actually is → **Concepts**.
 - If you want to look up a setting, a command, or an audit event → **Reference**.
-- If you want to use a specific feature (wake-up, breakpoints, custom phases, etc.) → **Features**.
+- If you want to use a specific feature (breakpoints, custom phases, etc.) → **Features**.
 - If a pipeline is misbehaving and you need to intervene → **Operations**.
 - If you are deciding whether to run Schegent in a sensitive environment → **Security**.
 
@@ -66,7 +66,6 @@ Each page follows the same structure: what it does, why you'd use it, how it wor
 
 ### Productivity
 
-- [Wake-up Scheduler](features/wake-up-scheduler.md) — keep your Claude 5-hour rolling allocation warm so unattended pipelines never pay the cold-start cost.
 - [Auto-Compact Override](features/auto-compact-override.md) — control when Claude compacts its context window, per workspace.
 
 ## Reference
@@ -106,7 +105,7 @@ This manual is versioned alongside the extension. Each major user-visible change
 
 ## Conventions used in this manual
 
-- Settings are written as their full key: `schegent.wakeUp.enabled`.
+- Settings are written as their full key: `schegent.logging.verbose`.
 - Commands are written with their VS Code command palette title in **bold** and the raw command id in `code`.
 - File paths are written relative to either the **workspace root** (your project) or **`<globalStorage>`** (per-VS-Code-profile).
 - "Webview" means the Svelte UI that renders inside the VS Code sidebar or dashboard. "Host" means the extension's main process. "Runner" means the spawned Claude CLI subprocess.

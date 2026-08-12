@@ -38,7 +38,6 @@ const ALLOWED_SYSLOG_REFERENCES: ReadonlySet<string> = new Set([
  *   - audit-log-writer.ts  → `.schegent/audit.log`.
  *   - raw-transcript-writer.ts → `.schegent/sessions/.../transcript-*.log`.
  *   - verbose-diagnostic-writer.ts → `.schegent/sessions/.../diagnostics/...`.
- *   - invocation-log.ts (wake-up) → wake-up invocation log.
  *
  * None of these target a path containing `syslog`. The test below
  * verifies that claim by also scanning for `appendFile.*syslog`.
@@ -47,13 +46,7 @@ const ALLOWED_APPENDFILE_FILES: ReadonlySet<string> = new Set([
   'src/lib/runtime-log/runtime-log-sink.ts',
   'src/audit/audit-log-writer.ts',
   'src/audit/raw-transcript-writer.ts',
-  'src/audit/verbose-diagnostic-writer.ts',
-  'src/wakeup/invocation-log.ts',
-  // Feature 031 T047 — wake-up session-log writer. Distinct sink at
-  // `<globalStorageUri>/wakeup/session.log` (not a syslog path); the
-  // writer is a caller-sanitized SINK that NEVER carries its own
-  // sanitizer. See `src/wakeup/session-log-writer.ts`.
-  'src/wakeup/session-log-writer.ts'
+  'src/audit/verbose-diagnostic-writer.ts'
 ]);
 
 function execGrep(pattern: string, extraFlags: string = ''): readonly string[] {

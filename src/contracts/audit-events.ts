@@ -2,19 +2,14 @@ import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { TerminationReason } from '../state/workflow-run';
 import type { PhaseDefinitionScope } from './process-definitions';
 
-// Feature 031 — bumped 1 → 2 to reflect the three additive scalar fields on
-// the `wakeup-runner-invocation` audit payload: `correlationId` (UUIDv4),
-// `requestedModel` (operator selection literal), `actualModel` (closed enum
-// reflecting what the runner actually invoked). All three fields are
-// additive and OPTIONAL on read: a v1 reader encountering a v2 event
-// ignores them; a v2 reader encountering a v1 event treats them as
-// absent. No payload field was removed or repurposed; no audit event
-// type was renamed. The migration story is "additive-tolerant readers,
-// no breaking change" — the audit-log parser at
-// `src/parser/audit-log-parser.ts` already preserves entries with
-// unknown `schemaVersion` values (warning + preserve, per the existing
+// Wake-up withdrawal — the `wakeup-runner-invocation` and
+// `wakeup-daemon-*` event types were removed with the capability that
+// emitted them. Historical entries in existing audit logs are NOT
+// rewritten: the parser at `src/parser/audit-log-parser.ts` preserves
+// entries whose type it does not recognize (warning + preserve, per the
 // CLAUDE.md hard rule "Never drop unknown audit event types from the
-// parser"). No on-disk migration is required.
+// parser"), so a log written by an earlier release still reads. Nothing
+// in this release emits them, and no on-disk migration is required.
 //
 // Feature 034 — additive boolean `sessionCleaned: boolean` on the
 // `task-removed` payload. Reflects the best-effort on-disk cleanup
@@ -180,20 +175,6 @@ export const FATAL_SIGNATURE_EVENT_TYPES = ['fatal-signature-matched'] as const;
 // CLI invocation env. Payload: { runId, phaseId, value }.
 export const AUTO_COMPACT_OVERRIDE_EVENT_TYPES = ['auto-compact-override-applied'] as const;
 
-// Feature 014 — wake-up daemon lifecycle. Emitted by the save-handler
-// after a successful settings write + daemon driver call, by the
-// install-failure rollback path, by the workspace-roots mirror writer
-// (US2 traceability), and by the deactivate hook on a swallowed
-// uninstall failure (US4 FR-023). Payloads are sanitized; see
-// specs/014-wake-up/contracts/wakeup-settings-ipc.md §Audit event payloads.
-export const WAKEUP_DAEMON_EVENT_TYPES = [
-  'wakeup-daemon-installed',
-  'wakeup-daemon-updated',
-  'wakeup-daemon-uninstalled',
-  'wakeup-daemon-install-failed',
-  'wakeup-workspace-roots-updated',
-  'wakeup-daemon-uninstall-failed-on-deactivate'
-] as const;
 
 // Feature 020 — phase log IPC events. Emitted by the sidebar message
 // router after each `CMD_READ_PHASE_LOG` / `CMD_START_PHASE_LOG_TAIL` /
@@ -369,7 +350,6 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_MESSAGE_EVENT_TYPES,
   ...FATAL_SIGNATURE_EVENT_TYPES,
   ...AUTO_COMPACT_OVERRIDE_EVENT_TYPES,
-  ...WAKEUP_DAEMON_EVENT_TYPES,
   ...PHASE_LOG_EVENT_TYPES,
   ...PHASE_BREAKPOINT_EVENT_TYPES,
   ...STATE_MIGRATION_EVENT_TYPES,
@@ -399,7 +379,6 @@ export type QueueControlEventType = (typeof QUEUE_CONTROL_EVENT_TYPES)[number];
 export type PhaseMessageEventType = (typeof PHASE_MESSAGE_EVENT_TYPES)[number];
 export type FatalSignatureEventType = (typeof FATAL_SIGNATURE_EVENT_TYPES)[number];
 export type AutoCompactOverrideEventType = (typeof AUTO_COMPACT_OVERRIDE_EVENT_TYPES)[number];
-export type WakeUpDaemonEventType = (typeof WAKEUP_DAEMON_EVENT_TYPES)[number];
 export type PhaseLogEventType = (typeof PHASE_LOG_EVENT_TYPES)[number];
 export type PhaseBreakpointEventType = (typeof PHASE_BREAKPOINT_EVENT_TYPES)[number];
 export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[number];
@@ -744,13 +723,6 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     // outside the 7-day horizon (FR-027).
     'system-pause-scheduled-restore',
     'system-pause-restore-unavailable',
-    // Wake-up daemon lifecycle
-    'wakeup-daemon-installed',
-    'wakeup-daemon-updated',
-    'wakeup-daemon-uninstalled',
-    'wakeup-daemon-install-failed',
-    'wakeup-workspace-roots-updated',
-    'wakeup-daemon-uninstall-failed-on-deactivate',
     // Workspace / trust gates
     'multi-root.warning-shown',
     'trust.capability-denied',

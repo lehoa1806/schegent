@@ -39,8 +39,6 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
-  CMD_SAVE_WAKEUP_SETTINGS,
-  CMD_WAKE_UP_NOW,
   CMD_PAUSE_PHASE,
   CMD_PING_BACKEND,
   CMD_RESUME_PHASE,
@@ -56,8 +54,6 @@ import {
   CMD_REORDER_TASK,
   CMD_RESTART_CANCELED_TASK,
   CMD_READ_PHASE_LOG,
-  CMD_READ_WAKEUP_SESSION_LOG,
-  CMD_REVEAL_WAKEUP_SESSION_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_SET_PHASE_BREAKPOINT,
@@ -90,11 +86,6 @@ import { validateSetConfirmSuppression, validateStartQueue } from './validators/
 import { validateSavePhases } from './validators/save-phases';
 import { validateSavePipelines } from './validators/save-pipelines';
 import { validateSaveWorkflows } from './validators/save-workflows';
-import {
-  validateReadWakeupSessionLog,
-  validateRevealWakeupSessionLog,
-  validateSaveWakeUpSettings
-} from './validators/wakeup';
 import {
   CORRELATION_ID_MAX,
   QUEUE_ID_MAX,
@@ -187,10 +178,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateSaveGeneralSettings(obj, correlationId);
     case CMD_RETRY_PHASE_NOW:
       return validateNoPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
-    case CMD_SAVE_WAKEUP_SETTINGS:
-      return validateSaveWakeUpSettings(obj, correlationId);
-    case CMD_WAKE_UP_NOW:
-      return validateWakeUpNow(obj, correlationId);
     // Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
     // CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS,
     // CMD_MOVE_TASK, CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE
@@ -217,10 +204,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateRemoveTaskPhase(obj, correlationId);
     case CMD_READ_PHASE_LOG:
       return validateReadPhaseLog(obj, correlationId);
-    case CMD_READ_WAKEUP_SESSION_LOG:
-      return validateReadWakeupSessionLog(obj, correlationId);
-    case CMD_REVEAL_WAKEUP_SESSION_LOG:
-      return validateRevealWakeupSessionLog(obj, correlationId);
     case CMD_START_PHASE_LOG_TAIL:
       return validateStartPhaseLogTail(obj, correlationId);
     case CMD_STOP_PHASE_LOG_TAIL:
@@ -561,25 +544,6 @@ function validateNoPayload(
   return ok({ type, correlationId } as SidebarCommand);
 }
 
-// Feature 014 — CMD_WAKE_UP_NOW accepts either no payload or an empty
-// object `{}` (the webview sends `payload: {}`). Rejects any non-empty
-// payload.
-function validateWakeUpNow(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type: CMD_WAKE_UP_NOW, correlationId } as SidebarCommand);
-  }
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('invalid-payload', { type: CMD_WAKE_UP_NOW, correlationId });
-  }
-  if (Object.keys(payload as object).length !== 0) {
-    return fail('unexpected-payload-fields', { type: CMD_WAKE_UP_NOW, correlationId });
-  }
-  return ok({ type: CMD_WAKE_UP_NOW, correlationId, payload: {} } as SidebarCommand);
-}
 
 // Feature 017 — phase-control commands that carry a single `phaseId` string.
 type PhaseIdCommandType =
@@ -755,8 +719,7 @@ function validateReorderTask(
 // BUG-002 (FR-012a) — generic validator for commands that accept either
 // no payload at all or an empty object `{}`. Shared by feature 020's
 // legacy CMD_START_QUEUE consumers (no longer routed through this fn,
-// kept for CMD_CLEAR_ALL) and structurally identical to the inline
-// pattern in validateWakeUpNow.
+// kept for CMD_CLEAR_ALL).
 function validateOptionalEmptyPayload(
   type: string,
   obj: Record<string, unknown>,

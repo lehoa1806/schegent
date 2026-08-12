@@ -1,6 +1,6 @@
 # File Layout
 
-Schegent writes to two distinct locations on disk: the workspace `.schegent/` directory (per-workspace, local-only evidence) and VS Code's global storage (per-user, cross-workspace state for the wake-up scheduler).
+Schegent writes to one location on disk: the workspace `.schegent/` directory (per-workspace, local-only evidence).
 
 This page maps every file Schegent creates and what it is for.
 
@@ -94,57 +94,36 @@ Three files per invocation:
 
 See [Verbose Diagnostics](../features/verbose-diagnostics.md).
 
-## VS Code global storage (wake-up scheduler)
+## VS Code global storage
 
-The wake-up scheduler stores per-user state under VS Code's `globalStorageUri`:
+Schegent writes nothing to VS Code's `globalStorageUri`. The directory is
+referenced only as an allowed root: a `schegent.logging.runtimeLogFilePath`
+pointed there is accepted, alongside the workspace root, the OS temp directory,
+and your home directory.
 
-```text
-<globalStorageUri>/wakeup/
-├── workspace-roots.json     # Snapshot of operator's workspace roots
-├── session.log              # Wake-up runner session log (sanitized at capture)
-└── invocations.log          # Per-invocation byte counters (paths-free; JSONL)
-```
+Releases up to and including the Wake-up scheduler's withdrawal wrote a
+`wakeup/` subdirectory there (`workspace-roots.json`, `session.log`,
+`invocations.log`). Nothing reads or writes it now; delete it if you want the
+space back.
 
-The exact path of `<globalStorageUri>` depends on your OS and VS Code variant:
+## Scheduled entries left by earlier releases
 
-| Platform | Default path |
-|---|---|
-| macOS | `~/Library/Application Support/Code/User/globalStorage/<publisher>.<name>/` |
-| Linux | `~/.config/Code/User/globalStorage/<publisher>.<name>/` |
-| Windows | `%APPDATA%\Code\User\globalStorage\<publisher>.<name>\` |
+Releases that shipped the Wake-up scheduler installed an OS-native scheduled
+entry when `schegent.wakeUp.enabled` was `true`. The setting and the code that
+installed, updated, and removed those entries are gone, so an entry installed by
+an earlier release stays registered with your OS until you remove it by hand:
 
-The exact `<publisher>.<name>` directory name is `schegent.schegent` (or your installation's marketplace id).
+| Platform | Path / location | Removal |
+|---|---|---|
+| macOS | `~/Library/LaunchAgents/com.schegent.wakeup.plist` | `launchctl bootout gui/$UID/com.schegent.wakeup` then delete the plist |
+| Windows | A Scheduled Task under `\Schegent\Wakeup` | Task Scheduler, or `schtasks /Delete /TN "\Schegent\Wakeup" /F` |
+| Linux (cron) | `~/.config/cron.d/schegent-wakeup` or a per-user crontab entry | Delete the file, or `crontab -e` and drop the line |
+| Linux (systemd-user) | `~/.config/systemd/user/schegent-wakeup.timer` and `.service` | `systemctl --user disable --now schegent-wakeup.timer` then delete both units |
 
-### `wakeup/workspace-roots.json`
-
-A snapshot of the operator's open workspace roots. Used by the OS-scheduled wake-up runner for its `cwdInsideWorkspace` safety check before spawning the priming CLI.
-
-The audit log records updates to this snapshot via `wakeup-workspace-roots-updated` — with `rootCount` only, never paths.
-
-### `wakeup/session.log`
-
-The wake-up runner's session log. Captures the prompt, the CLI invocation, and the response. Sanitized at capture time by the same central redaction set; defense-in-depth re-sanitized on read at the IPC projection boundary.
-
-Bounded — the file is trimmed to keep a rolling window; trims are recorded in `invocations.log`.
-
-### `wakeup/invocations.log`
-
-JSONL file recording per-invocation byte counters and outcomes for the wake-up runner.
-
-Fields per record include `correlationId`, `outcome`, `sessionLogBytesAppended`, `sessionLogTrimmed`. **The structured audit log does not mirror byte counters** — the audit log stays enum/intent-only with `correlationId`, `requestedModel`, `actualModel`.
-
-## OS-native scheduler entries (wake-up)
-
-When `schegent.wakeUp.enabled` is `true`, the host writes an OS-native scheduled entry. The exact path depends on platform:
-
-| Platform | Path |
-|---|---|
-| macOS | `~/Library/LaunchAgents/com.schegent.wakeup.plist` |
-| Windows | A Scheduled Task under `\Schegent\Wakeup` |
-| Linux (cron) | `~/.config/cron.d/schegent-wakeup` (or per-user crontab entry) |
-| Linux (systemd-user) | `~/.config/systemd/user/schegent-wakeup.timer` and `.service` |
-
-These are installed/updated/uninstalled via the host's daemon-driver. The audit log records `wakeup-daemon-installed`, `wakeup-daemon-updated`, `wakeup-daemon-uninstalled`, and `wakeup-daemon-install-failed` events for traceability.
+To check whether you have one: `launchctl list | grep schegent` (macOS),
+`crontab -l` / `systemctl --user list-timers` (Linux), or Task Scheduler
+(Windows). A leftover entry invokes a runner script that is no longer shipped,
+so it fails harmlessly — but it keeps firing on its schedule until removed.
 
 ## VS Code workspace state (not on disk)
 
@@ -159,7 +138,6 @@ To inspect or reset workspace state, use the **Reset Workspace State** command (
 - **Operator credentials** — never written to disk by Schegent. The Claude CLI manages its own auth tokens under its own paths.
 - **The workspace roots themselves in audit events** — only `rootCount` is recorded.
 - **Phase-log paths in audit events** — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
-- **Wake-up session-log paths in audit events** — never.
 
 This paths-free discipline keeps the audit log safe to ship off-machine.
 
@@ -192,7 +170,7 @@ These would protect against accidental commits if you ever check `.schegent/` pa
 | All runtime state (queue, pause, retries) | `schegent.reset` command |
 | Old audit archives | Manual; the host's retention policy already prunes |
 | Diagnostic files only | Manual `rm -rf .schegent/sessions/*/diagnostics/` |
-| Wake-up scheduler entries | Toggle `schegent.wakeUp.enabled` off |
-| Everything Schegent ever wrote | `rm -rf .schegent/`; also toggle wake-up off |
+| A scheduled entry left by an earlier release | See [Scheduled entries left by earlier releases](#scheduled-entries-left-by-earlier-releases) |
+| Everything Schegent ever wrote | `rm -rf .schegent/`, plus any leftover scheduled entry |
 
 The next page is [File Layout](file-layout.md) — wait, you are reading it. Continue to the [Features](../README.md#features) section.

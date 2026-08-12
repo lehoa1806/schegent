@@ -9,10 +9,8 @@ export const SECONDARY_REJECT = 'secondary-window-readonly';
  */
 export const UNTRUSTED_REJECT = 'untrusted-workspace';
 
-// Feature 031 T036 — canonical RFC 4122 UUIDv4 — 36 chars, lowercase
-// hex, version=4, variant in 8-b. Pinned client-side and host-side as
-// defense in depth; mirrors the same shape regex in the webview helper
-// at `webview-ui/src/lib/wakeup-session-log-ipc.ts`.
+// Canonical RFC 4122 UUIDv4 — 36 chars, lowercase hex, version=4,
+// variant in 8-b. Pinned client-side and host-side as defense in depth.
 export const UUIDV4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export const ILLEGAL_STATE_MESSAGES: Record<string, string> = {

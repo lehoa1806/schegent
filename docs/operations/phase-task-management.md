@@ -252,8 +252,8 @@ transitionReason }` per FR-023a:
 - `idle-pending-promoted` — emitted when an `idle-pending` queue
   transitions to `running` via operator action (convert-to-now or
   explicit Start).
-- `automation-enqueue-no-start-mode` — emitted when a programmatic /
-  wake-up enqueue path supplies no `startIntent`; feature-030 sequential
+- `automation-enqueue-no-start-mode` — emitted when a programmatic
+  enqueue path supplies no `startIntent`; feature-030 sequential
   semantics apply and the task lands in `pending` without a schedule.
 - `migration-default-applied` — emitted once per queue on the v6 → v7
   upgrade boundary, attributing the lifecycle default with

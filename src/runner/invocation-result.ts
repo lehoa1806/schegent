@@ -75,10 +75,9 @@ export interface InvocationRequest {
    * `-c` (nor its long-form alias `--continue`).
    *
    * The field is OPTIONAL on the interface to preserve backwards-compat
-   * with all existing `InvocationRequest` construction sites (wake-up
-   * runner, headless reactor, contract test harnesses). The gate
-   * condition is strict `=== true`; truthy non-boolean values do not
-   * trigger the append.
+   * with all existing `InvocationRequest` construction sites (headless
+   * reactor, contract test harnesses). The gate condition is strict
+   * `=== true`; truthy non-boolean values do not trigger the append.
    *
    * The hint is NOT persisted on `WorkflowRun`; it is derived
    * per-dispatch by the controller from existing persisted state. It
@@ -136,8 +135,8 @@ export interface InvocationRequest {
    * own. A CLI that emits its terminal result but fails to exit therefore
    * no longer hangs the run until the idle-timeout fires. The phase layer
    * supplies the SCHEGENT AUDIT LOG close marker (`=== END AUDIT LOG ===`).
-   * Omitted by non-phase callers (wake-up runner, contract harnesses),
-   * which keep the exit-only completion path unchanged.
+   * Omitted by non-phase callers (contract harnesses), which keep the
+   * exit-only completion path unchanged.
    */
   completionMarker?: string;
 }

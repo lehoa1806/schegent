@@ -11,8 +11,8 @@
 // show that. So every port on `RouterDeps` through which a handler could reach
 // durable state is wired to a recorder here: the VS Code command bridge, the
 // queue and phase operations, the configuration writer, the guarded-run queue,
-// the connected-run store, general and wake-up settings, the confirmation
-// memento, the audit writer, and the export adapter. A refusal leaves the
+// the connected-run store, general settings, the confirmation memento, the
+// audit writer, and the export adapter. A refusal leaves the
 // recorder empty. A write of any kind, through any of them, does not.
 //
 // A recorder that is silently unwired would also leave it empty, which is why
@@ -133,14 +133,6 @@ export function makeGateProbe(gates: GateSettings): GateProbe {
     dismissMigrationNotice: async (): Promise<void> => {
       record('dismissMigrationNotice', undefined);
     },
-    saveWakeUpSettings: async () =>
-      record('saveWakeUpSettings', { ok: false as const, reason: 'probe' }),
-    wakeUpNow: async () =>
-      record('wakeUpNow', {
-        outcome: 'skipped' as const,
-        message: 'probe',
-        attempt: null
-      }),
     audit: {
       append: async () => record('audit.append', undefined)
     },

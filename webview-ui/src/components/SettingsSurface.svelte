@@ -1,31 +1,27 @@
 <script lang="ts">
   /**
    * Feature 012 T047 — Settings surface reduced to two sub-tabs.
-   * Feature 014 T029 — Added the Wake up sub-tab alongside General /
-   * Fatal Signatures.
    * Feature 030 (US3) — Removed the Queue sub-tab. Multi-queue settings
    * (global concurrency cap, default queue) are no longer configurable;
    * the unified single queue is hard-coded at cap=1 with id='default'.
    *
    * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
    * Dashboard.svelte's Model Catalog section. Sub-tabs: General,
-   * Fatal Signatures, Wake up.
+   * Fatal Signatures.
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';
   import FatalSignaturesTab from './settings/FatalSignaturesTab.svelte';
-  import WakeUpTab from './settings/WakeUpTab.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
   }
   const { snapshot }: Props = $props();
 
-  type SettingsSubTab = 'general' | 'fatal-signatures' | 'wakeup';
+  type SettingsSubTab = 'general' | 'fatal-signatures';
   const SETTINGS_TABS = Object.freeze([
     { id: 'general', label: 'General' },
-    { id: 'fatal-signatures', label: 'Fatal Signatures' },
-    { id: 'wakeup', label: 'Wake up' }
+    { id: 'fatal-signatures', label: 'Fatal Signatures' }
   ] satisfies ReadonlyArray<{ id: SettingsSubTab; label: string }>);
   let activeTab = $state<SettingsSubTab>('general');
 
@@ -57,7 +53,7 @@
 <main class="settings-surface" data-testid="settings-surface-root">
   <header class="settings-header">
     <h1 class="settings-title">Settings</h1>
-    <p class="settings-description">Configure runners, safety controls, retention, and background wake-up.</p>
+    <p class="settings-description">Configure runners, safety controls, and retention.</p>
   </header>
   <div class="settings-layout">
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
@@ -94,8 +90,6 @@
         <GeneralSettingsTab {snapshot} />
       {:else if activeTab === 'fatal-signatures'}
         <FatalSignaturesTab {snapshot} />
-      {:else if activeTab === 'wakeup'}
-        <WakeUpTab {snapshot} />
       {/if}
     </div>
   </div>

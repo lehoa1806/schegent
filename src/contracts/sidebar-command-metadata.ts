@@ -31,14 +31,12 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
-  CMD_SAVE_WAKEUP_SETTINGS,
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_QUEUE,
-  CMD_WAKE_UP_NOW,
   type CommandType
 } from './sidebar-ipc';
 
@@ -67,8 +65,6 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_REMOVE_TASK_PHASE]: 'phase override',
   [CMD_MODIFY_TASK]: 'task mutation',
   [CMD_REORDER_TASK]: 'task reorder',
-  [CMD_SAVE_WAKEUP_SETTINGS]: 'wake-up settings write',
-  [CMD_WAKE_UP_NOW]: 'wake-up runner invocation',
   [CMD_SAVE_GENERAL_SETTINGS]: 'general settings write',
   [CMD_SAVE_MODELS]: 'catalog settings write',
   [CMD_SAVE_PHASES]: 'catalog settings write',

@@ -25,8 +25,8 @@
 // `CMD_SAVE_GENERAL_SETTINGS` (CLAUDE.md hard rule 011 T039 / T071).
 // `KEY_SPECS` covers the subset of settings that flow through the
 // general-settings IPC; this schema is the superset that includes
-// wake-up, phases, pipelines, models, and backend-runner keys whose
-// IPC paths live elsewhere.
+// phases, pipelines, models, and backend-runner keys whose IPC paths
+// live elsewhere.
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
 export type SettingsSchemaType =
@@ -367,45 +367,6 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     nullable: true,
     scope: 'window',
     docLabel: 'Trust scope: allow saving non-default workflow catalog entries'
-  },
-  'schegent.wakeUp.enabled': {
-    key: 'schegent.wakeUp.enabled',
-    type: 'boolean',
-    default: false,
-    scope: 'application',
-    docLabel: 'Wake up background scheduler enabled'
-  },
-  'schegent.wakeUp.schedulerType': {
-    key: 'schegent.wakeUp.schedulerType',
-    type: 'enum',
-    default: 'chronological',
-    enum: ['chronological', 'periodic'],
-    scope: 'application',
-    docLabel: 'Wake up scheduler trigger style'
-  },
-  'schegent.wakeUp.chronologicalTime': {
-    key: 'schegent.wakeUp.chronologicalTime',
-    type: 'string',
-    default: '04:00',
-    pattern: '^([01]\\d|2[0-3]):[0-5]\\d$',
-    scope: 'application',
-    docLabel: 'Wake up daily fire time (HH:MM)'
-  },
-  'schegent.wakeUp.periodicInterval': {
-    key: 'schegent.wakeUp.periodicInterval',
-    type: 'string',
-    default: 'Every 4h',
-    pattern: '^Every (\\d+)(m|h)$',
-    scope: 'application',
-    docLabel: 'Wake up periodic interval (Every Nm | Every Nh)'
-  },
-  'schegent.wakeUp.model': {
-    key: 'schegent.wakeUp.model',
-    type: 'enum',
-    default: 'runner-default',
-    enum: ['runner-default', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
-    scope: 'application',
-    docLabel: 'Wake up Claude model selection'
   }
 });
 

@@ -126,10 +126,9 @@ Three write/transmit destinations exist.
 **1. Claude CLI invocation.** Schegent spawns the CLI per phase with
 argv (model, effort, optional `--continue` flag, system prompt argv),
 stdin (the composed phase prompt), and an environment derived from VS
-Code's environment plus the operator-configured settings. The OS-scheduled
-wake-up runner restricts the environment to an allowlist
-(`PATH`, `HOME`, `LANG`, `LC_*`, `TMPDIR`) so workspace-specific
-variables cannot bleed into invocations made outside the extension host.
+Code's environment plus the operator-configured settings. Every
+invocation happens inside the extension host, under the workspace-trust
+ceiling; there is no out-of-host execution path.
 The `-c` flag is appended only when `request.isContinue === true` is set
 by the runner gate (CLAUDE.md hard rule).
 
@@ -195,30 +194,36 @@ as an `untrusted-restricted` consumer. In an untrusted workspace:
 
 - Every mutating IPC command rejects with `untrusted-workspace`.
 - The sidebar shows a banner; no run is ever started.
-- The wake-up scheduler does not install OS-scheduler entries.
 
 Until the operator trusts the workspace, Schegent's capability surface
 is zero. See [`threat-model.md` § Workspace-trust
 gating](./threat-model.md#workspace-trust-gating).
 
-### (b) The `MUTATING_COMMANDS` primary-host gate — 36 commands
+### (b) The `MUTATING_COMMANDS` primary-host gate — 38 commands
 
 Every mutating IPC command (queue mutation, run control, phase control,
-save commands, breakpoints, wake-up actions) must be a member of the
+save commands, composed-run launches, breakpoints) must be a member of the
 `MUTATING_COMMAND_REASONS` registry in
 [`src/contracts/sidebar-command-metadata.ts:41`](../../src/contracts/sidebar-command-metadata.ts#L41),
 which is re-exported as the `MUTATING_COMMANDS` set in
 [`src/ui/sidebar/message-router.ts:16`](../../src/ui/sidebar/message-router.ts#L16)
 and enforced by `MessageRouter.dispatch()`. The set currently has
-**36 entries**:
+**38 entries**, pinned name-by-name (with a complement assertion that
+fails on an unpinned mutating command) by
+`tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts`:
 
-- 24 queue + run-control + phase-control commands (incl.
-  `CMD_START_QUEUE` per BUG-002 and `CMD_CLEAR_ALL` per spec 063).
-- 2 task-mutation commands (`CMD_MODIFY_TASK`, `CMD_REORDER_TASK`).
-- 2 wake-up commands (`CMD_SAVE_WAKEUP_SETTINGS`, `CMD_WAKE_UP_NOW`).
-- 4 catalog / save commands (`CMD_SAVE_GENERAL_SETTINGS`,
-  `CMD_SAVE_MODELS`, `CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`).
-- 1 restart-canceled-task command (`CMD_RESTART_CANCELED_TASK`).
+- 17 queue + run-control commands (incl. `CMD_START_QUEUE` per BUG-002
+  and `CMD_CLEAR_ALL` per spec 063).
+- 7 phase-control commands (`CMD_PAUSE_PHASE`, `CMD_RESUME_PHASE`,
+  `CMD_RESTART_PHASE`, `CMD_SKIP_PHASE`, `CMD_DISABLE_PHASE`,
+  `CMD_ENABLE_PHASE`, `CMD_REMOVE_TASK_PHASE`).
+- 5 catalog / save commands (`CMD_SAVE_GENERAL_SETTINGS`,
+  `CMD_SAVE_MODELS`, `CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`,
+  `CMD_SAVE_WORKFLOWS`).
+- 3 composed-run launch commands (`CMD_LAUNCH_PIPELINE`,
+  `CMD_LAUNCH_WORKFLOW`, `CMD_CONTINUE_WORKFLOW`).
+- 3 task-mutation commands (`CMD_MODIFY_TASK`, `CMD_REORDER_TASK`,
+  `CMD_RESTART_CANCELED_TASK`).
 - 2 phase-breakpoint commands (`CMD_SET_PHASE_BREAKPOINT`,
   `CMD_CLEAR_PHASE_BREAKPOINT`).
 - 1 confirmation-suppression preference command
@@ -411,8 +416,8 @@ for the rotation layout and inspection workflow.
 **What happens.** An operator pastes an API key, bearer token, or
 password into a setting value (e.g., into a custom phase prompt, a
 retry-condition DSL expression, or `schegent.cli.args`). The secret
-reaches a sink (audit log, runtime log, phase log feed, wake-up session
-log) through normal phase execution.
+reaches a sink (audit log, runtime log, phase log feed) through normal
+phase execution.
 
 **What mitigates it.** `SECRET_PATTERNS` is the single redaction
 source-of-truth. Every operator-influenced string passes through a
@@ -429,8 +434,8 @@ noticed must be cleaned manually via the rotation procedure (see
 
 **What the operator sees.** `[REDACTED]` markers wherever the redaction
 set fires on subsequent writes. The audit log, runtime log, Output
-channel, phase log feed, and wake-up session log all show `[REDACTED]`
-rather than the raw secret on subsequent writes. Historical entries are
+channel, and phase log feed all show `[REDACTED]` rather than the raw
+secret on subsequent writes. Historical entries are
 unaffected; the operator must rotate the credential at the issuing
 service and delete the historical entries manually.
 
@@ -491,8 +496,7 @@ Five operator actions, each with one concrete next-step.
 
 **What.** Leave the workspace untrusted. VS Code's Workspace Trust is
 the binary platform gate; in an untrusted workspace, every mutating IPC
-command rejects, no run starts, and the wake-up scheduler does not
-install OS entries.
+command rejects and no run starts.
 
 **How.** Open VS Code's command palette → `Workspaces: Manage Workspace
 Trust` → mark the workspace as untrusted (or never trust it in the
@@ -536,8 +540,6 @@ historical entries on disk:
   `audit.log.2`, …).
 - `.schegent/sessions/raw-<runId>.log` for every affected run.
 - `.schegent/sessions/<runId>/diagnostics/...` if verbose was on.
-- The wake-up session log at `<globalStorageUri>/wakeup/session.log` if
-  wake-up was used.
 
 Then rotate the leaked credential at the issuing service — the
 redaction set is a containment mechanism, not credential rotation. For

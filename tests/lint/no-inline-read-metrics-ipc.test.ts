@@ -8,7 +8,6 @@
 // the allowlist; any drift fails the build.
 //
 // Mirrors the established pattern at
-// `tests/lint/no-inline-read-wakeup-session-log.test.ts` and
 // `tests/lint/no-inline-phase-log-ipc.test.ts`
 // (contracts/cmd-read-metrics.md's "Invariants (test-enforced)" section).
 

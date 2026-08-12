@@ -158,8 +158,8 @@ describe('Feature 030 (US1, T021) — sequential single-queue execution', () => 
 
   it('all three tasks route to DEFAULT_QUEUE_ID regardless of caller intent (single-queue migration semantic)', async () => {
     // The single-queue migration guarantees every enqueue lands on the
-    // default queue. Even if the caller passes a stale queueId (legacy
-    // wake-up runner / programmatic), the registry has only one entry
+    // default queue. Even if the caller passes a stale queueId (a legacy
+    // programmatic caller, say), the registry has only one entry
     // and peekNextPending iterates that entry alone.
     const t1 = await queue.enqueue('task-one');
     const t2 = await queue.enqueue('task-two');

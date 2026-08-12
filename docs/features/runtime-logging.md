@@ -9,7 +9,7 @@ The Output channel ("Schegent" in VS Code's Output panel) emits log records duri
 - Lifecycle events (extension activated, deactivated).
 - IPC traffic between the webview and the host (which commands fired, what they returned).
 - State migrations on activation.
-- Background process events (drainer, watchdog, wake-up scheduler).
+- Background process events (drainer, watchdog).
 - Warnings and errors from the host's day-to-day operation.
 
 The runtime log file is a **disk mirror** of the same records, filtered by severity, rotated by size, and sanitized.
@@ -159,4 +159,4 @@ You use the runtime log when you want to know what the *host* was doing. You use
 
 The runtime log is the next thing you reach for when the audit log is not granular enough but you do not want the unredacted depth of the raw transcript.
 
-The next feature page is [Wake-up Scheduler](wake-up-scheduler.md) — already written separately.
+The next feature page is [Auto-Compact Override](auto-compact-override.md).

@@ -7,9 +7,8 @@
 // `ps` / `powershell.exe` only. No file under this tree has any reason
 // to reach for the VS Code extension API — keeping the tree
 // `vscode`-free preserves the same posture as `src/headless/` and
-// `src/wakeup/` and prevents the platform adapters from accidentally
-// pulling in workspace state during what should be a process-only
-// probe.
+// prevents the platform adapters from accidentally pulling in workspace
+// state during what should be a process-only probe.
 //
 // This regression fails the build if any `import … from 'vscode'`,
 // `require('vscode')`, or side-effect `import 'vscode'` appears under

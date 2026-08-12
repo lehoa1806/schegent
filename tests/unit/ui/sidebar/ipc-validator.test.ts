@@ -171,22 +171,6 @@ describe('validateInboundMessage', () => {
     expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(true);
   });
 
-  it('accepts wake-up session-log read and reveal commands at the runtime ingress gate', () => {
-    const read = validateInboundMessage({
-      type: 'CMD_READ_WAKEUP_SESSION_LOG',
-      correlationId: 'c',
-      payload: { correlationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }
-    });
-    expect(read.ok).toBe(true);
-
-    const reveal = validateInboundMessage({
-      type: 'CMD_REVEAL_WAKEUP_SESSION_LOG',
-      correlationId: 'c',
-      payload: {}
-    });
-    expect(reveal.ok).toBe(true);
-  });
-
   // Feature 082 (US1, T019) — CMD_SAVE_PIPELINES carries the same scoped,
   // revisioned envelope as CMD_SAVE_PHASES. The ingress gate is the only place
   // the pre-082 unscoped `{ pipelines }` payload can be turned away, so the
@@ -310,30 +294,6 @@ describe('validateInboundMessage', () => {
       validateInboundMessage({
         ...scopedWorkflowSave,
         payload: { ...scopedWorkflowSave.payload, pipelines: [] }
-      }).ok
-    ).toBe(false);
-  });
-
-  it('rejects unsafe wake-up session-log payload shapes before router dispatch', () => {
-    expect(
-      validateInboundMessage({
-        type: 'CMD_READ_WAKEUP_SESSION_LOG',
-        correlationId: 'c',
-        payload: {}
-      }).ok
-    ).toBe(false);
-    expect(
-      validateInboundMessage({
-        type: 'CMD_READ_WAKEUP_SESSION_LOG',
-        correlationId: 'c',
-        payload: { correlationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', path: '/tmp/session.log' }
-      }).ok
-    ).toBe(false);
-    expect(
-      validateInboundMessage({
-        type: 'CMD_REVEAL_WAKEUP_SESSION_LOG',
-        correlationId: 'c',
-        payload: { path: '/tmp/session.log' }
       }).ok
     ).toBe(false);
   });

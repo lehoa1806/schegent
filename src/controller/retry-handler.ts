@@ -16,7 +16,7 @@
  *     (both-null or both-non-null) is maintained at every write.
  *   - The `retry-scheduled` audit payload carries the **pre-buffer**
  *     parsed `resetsAtMs` (NOT `resetsAtMs + RETRY_BUFFER_MS`) so the
- *     buffered wakeup is derivable from the audit log alone.
+ *     buffered retry is derivable from the audit log alone.
  *   - The dynamic backoff trusts the parsed `resetsAtMs` regardless of
  *     distance from now; `DELAYED_RETRY_CAP` bounds total attempts.
  */
@@ -147,7 +147,7 @@ export class RetryHandler {
     this.deps.statusBar.update({ kind: 'paused', phase: persisted.currentPhase });
     // Feature 027 FR-012/FR-013 — `resetsAtMs` is the pre-buffer parsed
     // epoch (NOT `+ RETRY_BUFFER_MS`); operators reading the audit log
-    // can derive the buffered wakeup as `resetsAtMs + 60_000`. Null when
+    // can derive the buffered retry as `resetsAtMs + 60_000`. Null when
     // the parser found no reset (fixed-fallback path) or when the cause
     // is `transient_error`.
     await this.appendAudit('retry-scheduled', {

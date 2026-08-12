@@ -13,9 +13,9 @@ export interface EnqueueCommandArgs {
   pipelineId?: string;
   /**
    * Feature 030: legacy field — accepted for backward compatibility with
-   * the wake-up runner and programmatic callers that may still pass a
-   * stale queueId. The single-queue migration routes every enqueue to
-   * `DEFAULT_QUEUE_ID` regardless of this value.
+   * programmatic callers that may still pass a stale queueId. The
+   * single-queue migration routes every enqueue to `DEFAULT_QUEUE_ID`
+   * regardless of this value.
    */
   queueId?: string;
   position?: number;
@@ -30,8 +30,8 @@ export interface EnqueueCommandArgs {
   startIntent?: EnqueueStartIntent;
   /**
    * Feature 065 — whether the enqueue originated from a human-facing UI
-   * (`'human'`) or from automation (wake-up runner, programmatic IPC,
-   * hooks — `'automation'`). Required for the host's safe-default audit
+   * (`'human'`) or from automation (programmatic IPC, hooks —
+   * `'automation'`). Required for the host's safe-default audit
    * trail when `startIntent` is absent.
    */
   callerKind?: 'human' | 'automation';
@@ -85,8 +85,8 @@ export async function runEnqueue(
 
   // Feature 030: single-queue migration. The queue registry has exactly
   // one entry (id === DEFAULT_QUEUE_ID); any caller-supplied queueId
-  // (legacy wake-up runner, programmatic, sidebar) is intentionally
-  // ignored and the enqueue is hard-coded to the default queue.
+  // (legacy programmatic, sidebar) is intentionally ignored and the
+  // enqueue is hard-coded to the default queue.
   const result = await ctx.guardedRunService.scheduleOrEnqueue({
     description: finalDescription,
     scheduledAt: Date.now(),

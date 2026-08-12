@@ -55,8 +55,8 @@ if the report warrants them.
 A useful report contains:
 
 1. **Affected component** — extension host, webview, sidebar UI,
-   wake-up runner, backend runner, IPC contract, audit pipeline, or
-   another subsystem. If unsure, describe what you observed and we
+   backend runner, IPC contract, audit pipeline, or another
+   subsystem. If unsure, describe what you observed and we
    will route it.
 2. **Affected versions** — the Schegent version that exhibits the
    issue, plus Claude CLI / Codex CLI versions if relevant.
@@ -131,8 +131,6 @@ In scope:
 
 - The Schegent extension host and webview UI shipped from this
   repository.
-- The wake-up runner shipped from this repository, including the
-  OS-native scheduler entries it installs.
 - The IPC contract between host and webview.
 - The audit-log pipeline, runtime-log writer, and the central
   sanitization surface.
@@ -170,8 +168,8 @@ catalogs the threats and the mitigations for each one.
   against a workspace mutates state. Secondary windows are
   read-only; mutation attempts are rejected as `not-primary-host`.
 - **Single sanitization surface** — every operator-visible sink
-  (audit log, runtime log, Output channel, phase log feed, wake-up
-  session log) routes through a single redaction set defined once
+  (audit log, runtime log, Output channel, phase log feed) routes
+  through a single redaction set defined once
   in the codebase. A secret stripped from one sink is stripped
   from all of them.
 - **Metadata-only audit by default** — the structured audit log
@@ -190,11 +188,6 @@ catalogs the threats and the mitigations for each one.
   identifiers, signed numerics, comparison operators, and boolean
   combinators. Arithmetic, function calls, member access, and I/O
   are rejected at parse time.
-- **Wake-up environment scrubbing** — the wake-up runner subprocess
-  receives only an allowlisted environment (`PATH`, `HOME`,
-  `LANG`, `LC_*`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `TEMP`,
-  `TMP`) and aborts if its temp working directory resolves under
-  any recorded workspace root.
 - **Local transactional sync** — operations that span multiple
   files use compensating rollback so a partial failure restores
   the prior state.
@@ -204,19 +197,13 @@ catalogs the threats and the mitigations for each one.
 
 ### Local diagnostic sinks — design and trade-offs
 
-Schegent intentionally writes two unredacted local sinks and one
-sanitized global-storage session log:
+Schegent intentionally writes two unredacted local sinks:
 
 1. The **raw transcript** (always written, local-only, gitignored).
 2. The **verbose diagnostic files** (opt-in via
    `schegent.logging.verbose`, local-only, gitignored).
-3. The **wake-up session log** (under VS Code global storage,
-   sanitized before write and again at the read-side IPC boundary).
 
-The raw transcript and verbose diagnostic files are unredacted by
-design. The wake-up session log is sanitized before write but still
-lives outside the workspace in VS Code global storage and may contain
-operator-sensitive context that the redaction patterns did not catch.
+Both are unredacted by design.
 Architectural mitigations — never serializing local artifact paths
 into audit events and gitignoring workspace-local sinks — keep these
 artifacts from accidentally leaving the operator's machine.
@@ -272,9 +259,6 @@ Schegent:
   design. Reports that they "contain sensitive content" should be
   treated as a reminder to gitignore them and not share them
   publicly, not as a vulnerability.
-- The wake-up scheduler is per-user. Cross-user concerns on a
-  multi-user workstation are out of scope for the extension and
-  should be addressed at the OS level.
 
 When in doubt, open a private advisory. We will route it
 appropriately.

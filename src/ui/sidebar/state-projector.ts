@@ -11,7 +11,6 @@ import type { BackendPingState } from '../../services/backend-ping-service';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
-import type { WakeUpModelSelection } from '../../wakeup/settings';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 import type { WorkflowPipelineReference } from './commands/router-types';
@@ -21,8 +20,6 @@ import type {
   DebugLogEntry,
   GeneralSettings,
   SessionArtifactsProjection,
-  WakeUpLogProjection,
-  WakeUpSettings,
   
   WorkflowSnapshot
 } from './snapshot';
@@ -64,10 +61,6 @@ export interface StateProjectorDeps {
   readonly getGeneralSettings?: () => GeneralSettings;
   readonly getSessionArtifacts?: () => SessionArtifactsProjection;
   readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
-  readonly getWakeUpSettings?: () => WakeUpSettings;
-  readonly getWakeUpLog?: () => WakeUpLogProjection;
-  readonly getWakeupModel?: () => WakeUpModelSelection;
-  readonly getWakeupSessionLogPath?: () => string;
   readonly getPhasePrecedence?: () => PhasePrecedenceProjection | undefined;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
   /** Feature 082 — resolved Pipeline catalog; throwing projects `state: 'error'`. */

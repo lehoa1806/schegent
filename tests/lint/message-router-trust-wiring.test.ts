@@ -15,8 +15,7 @@ const EXTENSION_PATH = resolve(REPO_ROOT, 'src', 'extension.ts');
 const TEST_ROOT = resolve(REPO_ROOT, 'tests');
 
 const READ_ONLY_ROUTER_TEST_ALLOWLIST: ReadonlySet<string> = new Set([
-  'tests/unit/ui/sidebar/message-router-phase-log.test.ts',
-  'tests/unit/ui/sidebar/message-router-read-wakeup-session-log.test.ts'
+  'tests/unit/ui/sidebar/message-router-phase-log.test.ts'
 ]);
 
 function rel(abs: string): string {

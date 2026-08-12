@@ -11,8 +11,6 @@ Schegent writes to disk in four distinct places, each with a different purpose, 
 | Verbose diagnostic files | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/...` | **no** (opt-in) | no | Per-invocation unredacted debug payloads |
 | Runtime debug log | `<workspaceRoot>/.schegent/syslog` (default) | yes | yes | Sanitized mirror of the Output channel |
 
-A fifth sink, the wake-up session log, lives under VS Code global storage rather than `.schegent/` — see [Wake-up Scheduler](../features/wake-up-scheduler.md).
-
 ## 1. The structured audit log
 
 `.schegent/audit.log` is the **single canonical record** of what Schegent did. It is the file you read when you want to know "what happened during run X". It is also the file CI systems and operators can grep for cross-run trends.
@@ -29,7 +27,7 @@ JSONL — one event per line. Every event has at least:
 
 ### Sanitization
 
-Every string written to `audit.log` passes through the host's central sanitization function. There is **one** redaction set in the codebase; every sink that touches operator-controllable text uses it. The same patterns that scrub secrets from the audit log also scrub them from the runtime log, the Output channel, the phase log feed in the sidebar, and the wake-up session log.
+Every string written to `audit.log` passes through the host's central sanitization function. There is **one** redaction set in the codebase; every sink that touches operator-controllable text uses it. The same patterns that scrub secrets from the audit log also scrub them from the runtime log, the Output channel, and the phase log feed in the sidebar.
 
 If a value in `audit.log` is replaced with `[REDACTED]`, that is the redaction set at work.
 
@@ -46,7 +44,6 @@ Rotated archives are pruned per retention policy (a 7-day archive-age floor, plu
 
 Audit schema v3 is a bounded, metadata-only projection. You will *never* see in new v3 records:
 
-- The path of `wakeup/session.log` or any wake-up session-log path.
 - The list of workspace roots (only `rootCount` appears).
 - The path of the phase log feed file (only the selection tuple — queueId, taskId, pipelineId, phaseId, iterationN).
 - Executable paths, argv, commands, endpoints, session/conversation ids, model-output notes/errors, or repository-relative filenames.
@@ -157,15 +154,14 @@ Kept session trees still participate in the normal automatic retention policy.
 
 In **either case**, the structured `audit.log` is **never** modified by task deletion. The audit log is append-only evidence: deleting a task records a `task-removed` event with the optional `sessionCleaned` flag; it does not erase the events that came before.
 
-## Why three different local-only sinks?
+## Why two different local-only sinks?
 
-You may have noticed that Schegent has three local-only diagnostic sinks with stricter handling rules:
+You may have noticed that Schegent has two local-only diagnostic sinks with stricter handling rules:
 
 1. The raw transcript (always written, local-only, gitignored).
 2. The verbose diagnostic files (opt-in, local-only, gitignored).
-3. The wake-up session log (under global storage, sanitized at capture, defense-in-depth re-sanitized on read).
 
-The raw transcript and verbose diagnostics trade strictly-local unredacted bytes for the operator's ability to deeply debug a real failure. The wake-up session log is sanitized, but still records local execution context outside workspace-level `.gitignore` coverage. The architectural mitigations — never serializing sensitive local artifact paths to audit events, keeping workspace-local diagnostic sinks gitignored, and re-sanitizing wake-up session-log reads — keep them from accidentally leaving the operator's machine.
+Both trade strictly-local unredacted bytes for the operator's ability to deeply debug a real failure. The architectural mitigations — never serializing sensitive local artifact paths to audit events and keeping workspace-local diagnostic sinks gitignored — keep them from accidentally leaving the operator's machine.
 
 If you cannot tolerate unredacted bytes on disk, you can:
 

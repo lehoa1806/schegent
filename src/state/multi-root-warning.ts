@@ -27,8 +27,7 @@ import type { Notifier } from '../ui/notifications';
 import type { MultiRootWarningShownPayload } from '../contracts/audit-events';
 
 // Synthetic envelope identifiers — activation-time events are not bound to
-// a workflow run or pipeline phase. Mirrors the wake-up activation pattern
-// (see `repo/src/wakeup/activation.ts`).
+// a workflow run or pipeline phase.
 const SYNTHETIC_RUN_ID = 'workspace-activation';
 const SYNTHETIC_PHASE = 'activation';
 

@@ -7,7 +7,6 @@ import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
-import { RUNNER_DEFAULT_MODEL, type WakeUpModelSelection } from '../../wakeup/settings';
 import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
 import { buildPhasesFromRun } from './phase-projector';
@@ -28,8 +27,6 @@ import {
   IDLE_GENERAL_SETTINGS,
   IDLE_SESSION_ARTIFACTS,
   IDLE_TRUST_PROJECTION,
-  IDLE_WAKEUP_LOG,
-  IDLE_WAKEUP_SETTINGS,
   SCHEMA_VERSION,
   type AuditTailEntry,
   type HistoryEntry,
@@ -205,11 +202,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     onError: (message) => ctx.logger?.warn(message)
   });
   const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.warn(m));
-  const wakeUp = Object.freeze({
-    model: (deps.getWakeupModel?.() ?? RUNNER_DEFAULT_MODEL) as WakeUpModelSelection,
-    sessionLogPath: deps.getWakeupSessionLogPath?.() ?? ''
-  });
-
   let workspaceTrust = IDLE_TRUST_PROJECTION.workspaceTrust;
   let resolvedTrust = IDLE_TRUST_PROJECTION.resolvedTrust;
   try {
@@ -280,9 +272,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
     sessionArtifacts: deps.getSessionArtifacts?.() ?? IDLE_SESSION_ARTIFACTS,
     evidenceHealth: deps.getEvidenceHealth?.() ?? IDLE_EVIDENCE_HEALTH,
-    wakeUpSettings: deps.getWakeUpSettings?.() ?? IDLE_WAKEUP_SETTINGS,
-    wakeUpLog: deps.getWakeUpLog?.() ?? IDLE_WAKEUP_LOG,
-    wakeUp,
     telemetry: ctx.telemetry,
     workspaceTrust,
     resolvedTrust,

@@ -32,8 +32,7 @@ const MAX_CSS_BYTES = 50 * 1024;
 // CSS cap from 56 KB → 60 KB to absorb the new operator-visible queue
 // surfaces (`QueueControls.svelte`, `QueueInputForm.svelte`,
 // `QueueListView.svelte`) and the settings field-row extractions
-// (`settings/general/GeneralSettingFieldRow.svelte`,
-// `settings/wakeup/WakeupLogList.svelte`) that emerged from splitting the
+// (`settings/general/GeneralSettingFieldRow.svelte`) that emerged from splitting the
 // 1047-LOC `Dashboard.svelte` and the 600+-LOC settings tabs into cohesive
 // sub-components. Lift again only when a feature intentionally adds
 // operator-visible UI.

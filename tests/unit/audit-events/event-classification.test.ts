@@ -91,13 +91,6 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'fatal-signature-matched': 'task',
   // Auto-compact override (task)
   'auto-compact-override-applied': 'task',
-  // Wake-up daemon (system)
-  'wakeup-daemon-installed': 'system',
-  'wakeup-daemon-updated': 'system',
-  'wakeup-daemon-uninstalled': 'system',
-  'wakeup-daemon-install-failed': 'system',
-  'wakeup-workspace-roots-updated': 'system',
-  'wakeup-daemon-uninstall-failed-on-deactivate': 'system',
   // Phase log IPC (task)
   'phase-log-read': 'task',
   'phase-log-tail-started': 'task',
@@ -270,12 +263,6 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-message-invalid':
         case 'fatal-signature-matched':
         case 'auto-compact-override-applied':
-        case 'wakeup-daemon-installed':
-        case 'wakeup-daemon-updated':
-        case 'wakeup-daemon-uninstalled':
-        case 'wakeup-daemon-install-failed':
-        case 'wakeup-workspace-roots-updated':
-        case 'wakeup-daemon-uninstall-failed-on-deactivate':
         case 'phase-log-read':
         case 'phase-log-tail-started':
         case 'phase-log-tail-stopped':

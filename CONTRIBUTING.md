@@ -206,7 +206,7 @@ produces `schegent-<version>.vsix` at the repo root.
 
 Branch from the project's default branch. Use short, descriptive
 names (`fix/cli-detection-windows`, `feat/codex-continue-flag`,
-`docs/wakeup-troubleshooting`).
+`docs/retry-troubleshooting`).
 
 ### Commits
 
@@ -296,7 +296,7 @@ User-facing changes land with a doc update in the same PR. Conventions:
 - File paths use the project-relative form,
   e.g. `<workspaceRoot>/.schegent/audit.log`.
 - Settings are written as their full key
-  (e.g. `schegent.wakeUp.enabled`).
+  (e.g. `schegent.logging.verbose`).
 - Commands are written with the palette title in **bold** and the
   raw id in `code` (e.g. **Schegent: Open Dashboard** /
   `schegent.openDashboard`).

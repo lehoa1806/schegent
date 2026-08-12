@@ -73,8 +73,7 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     const result = await controller.pauseActivePhase();
@@ -117,8 +116,7 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       phaseOverrides: [],
-      resumeTargetPhaseId: null,
-      isWakeup: false
+      resumeTargetPhaseId: null
     } as any);
 
     await expect(controller.pauseActivePhase()).resolves.toMatchObject({ ok: true });

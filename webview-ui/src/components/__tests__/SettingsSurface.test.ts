@@ -1,10 +1,9 @@
 // Feature 012 T040 — Settings sub-tab list reduced to {General, Fatal Signatures}.
-// Feature 014 — Wake up sub-tab appended to the surface.
 // Feature 017 — Queue sub-tab appended to the surface.
 //
 // Covers:
 //   - Four sub-tab buttons render with stable data-testids.
-//   - Order: General → Fatal Signatures → Queue → Wake Up.
+//   - Order: General → Fatal Signatures.
 //   - The legacy Phases / Pipelines / Models sub-tab buttons are gone.
 //   - No PhasesTab / PipelinesTab / ModelsTab mount inside SettingsSurface.
 
@@ -60,20 +59,19 @@ function buildSnapshot(): WorkflowSnapshot {
 }
 
 describe('Feature 012 T040 — SettingsSurface sub-tab list', () => {
-  it('renders three sub-tab buttons in order: general, fatal-signatures, wake-up', () => {
+  it('renders two sub-tab buttons in order: general, fatal-signatures', () => {
     // Feature 030 (US3, T045) — the Queue sub-tab (`settings-tab-queue`)
     // was removed alongside QueueSettingsTab.svelte. The single unified
     // queue has no per-queue settings to render; concurrency and queue
-    // defaults moved to General. Order is now general → fatal-signatures
-    // → wake-up.
+    // defaults moved to General. The Wake up sub-tab was removed with
+    // the Wake-up capability. Order is now general → fatal-signatures.
     const { container } = render(SettingsSurface, {
       props: { snapshot: buildSnapshot() }
     });
     const buttons = container.querySelectorAll('[data-testid^="settings-tab-"]');
-    expect(buttons.length).toBe(3);
+    expect(buttons.length).toBe(2);
     expect(buttons[0].getAttribute('data-testid')).toBe('settings-tab-general');
     expect(buttons[1].getAttribute('data-testid')).toBe('settings-tab-fatal-signatures');
-    expect(buttons[2].getAttribute('data-testid')).toBe('settings-tab-wakeup');
   });
 
   it('implements named tabs with roving focus and arrow-key navigation', async () => {

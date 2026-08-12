@@ -36,18 +36,15 @@ import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
 // Feature 030 (US3) — QueueSettingsTab.svelte + descriptions were
 // deleted alongside the multi-queue surfaces. Multi-queue settings
 // (concurrency cap, default queue) are no longer configurable.
-import WakeUpTab from '../WakeUpTab.svelte';
 
 import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 import { FATAL_SIGNATURES_DESCRIPTIONS } from '../FatalSignaturesTab.descriptions';
-import { WAKEUP_DESCRIPTIONS } from '../WakeUpTab.descriptions';
 
 import type {
   GeneralSettings,
-  WakeUpSettings,
   WorkflowSnapshot
 } from '../../../lib/snapshot-types';
-import { IDLE_GENERAL_SETTINGS, IDLE_WAKEUP_SETTINGS } from '../../../lib/snapshot-types';
+import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 
 // ── Snapshot fixtures ──────────────────────────────────────────────────
 
@@ -99,16 +96,6 @@ function snapshotWithGeneralSettings(): WorkflowSnapshot {
 // QueueSettingsTab.svelte. The queue-related hover-text fixtures are no
 // longer needed.
 
-function snapshotWithWakeUp(
-  schedulerType: WakeUpSettings['schedulerType'] = 'chronological'
-): WorkflowSnapshot {
-  const wakeUpSettings: WakeUpSettings = {
-    ...IDLE_WAKEUP_SETTINGS,
-    enabled: true,
-    schedulerType
-  };
-  return buildBaseSnapshot({ wakeUpSettings });
-}
 
 // ── Per-tab table (T036 parameterization) ──────────────────────────────
 
@@ -118,9 +105,8 @@ interface TabSpec {
   readonly buildProps: () => Record<string, unknown>;
   /**
    * Additional prop builders used by the orphan-coverage assertion only.
-   * Tabs with mutually-exclusive surfaces (e.g. WakeUpTab's chronological
-   * XOR periodic mode) declare each variant here so the union of mounts
-   * covers every description-map entry.
+   * Tabs with mutually-exclusive surfaces declare each variant here so
+   * the union of mounts covers every description-map entry.
    */
   readonly alternateProps?: ReadonlyArray<() => Record<string, unknown>>;
   /**
@@ -169,27 +155,11 @@ const TAB_SPECS: readonly TabSpec[] = [
       if (/^fatal-operator-remove-\d+$/.test(id)) return 'operator-remove';
       return null;
     }
-  },
-  // Feature 030 (US3) — QueueSettingsTab entry removed alongside the
-  // deleted component. The 4-tab parameterized table is now a 3-tab
-  // table (General, FatalSignatures, WakeUp).
-  {
-    name: 'WakeUpTab',
-    component: WakeUpTab as unknown as ComponentType,
-    buildProps: () => ({ snapshot: snapshotWithWakeUp('chronological') }),
-    // WakeUpTab renders chronological-time XOR periodic-interval per
-    // `schedulerType`. The orphan check unions both renders so neither
-    // branch's hover-text-map entry can be silently removed.
-    alternateProps: [() => ({ snapshot: snapshotWithWakeUp('periodic') })],
-    headerOnlyKeys: ['tab-header'],
-    descriptionKeys: Object.keys(WAKEUP_DESCRIPTIONS),
-    controlIdToKey: (id) => {
-      // WakeUpTab prefixes every controlId with `wakeup-`.
-      if (!id.startsWith('wakeup-')) return null;
-      const key = id.slice('wakeup-'.length);
-      return key in WAKEUP_DESCRIPTIONS ? key : null;
-    }
   }
+  // Feature 030 (US3) — QueueSettingsTab entry removed alongside the
+  // deleted component. The WakeUpTab entry was removed with the Wake-up
+  // capability. The 4-tab parameterized table is now a 2-tab table
+  // (General, FatalSignatures).
 ] as const;
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -242,7 +212,7 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
   it('every description-map entry (excluding header-only keys) is rendered at least once', () => {
     // Union the seen-keys set across the primary fixture plus any
     // alternate fixtures the spec declares. Mutually-exclusive surfaces
-    // (WakeUpTab's chronological XOR periodic mode) require this.
+    // require this.
     const seenControlIds = new Set<string>();
     const builders = [spec.buildProps, ...(spec.alternateProps ?? [])];
     for (const buildProps of builders) {

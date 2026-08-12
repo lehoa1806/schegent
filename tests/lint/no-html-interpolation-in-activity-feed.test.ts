@@ -8,12 +8,6 @@
 // HTML — they are sanitized for secret patterns, not for HTML
 // tokenisation.
 //
-// Feature 031 T032 — scan extended to cover
-// `webview-ui/src/components/settings/wakeup/`. The wake-up session-
-// log panel renders captured stdout/stderr (operator-influenced bytes
-// via the autonomous CLI), so the same prohibition applies. The body
-// MUST be rendered through `{text}` bindings only.
-//
 // Detection: a recursive grep for the Svelte template token form
 // `{@html <expression>}` (at least one whitespace between `@html` and
 // the expression) across each scanned directory. The comment form
@@ -37,11 +31,7 @@ const SCAN_ROOTS: readonly string[] = [
   // Activity feed (feature 029): assistant text, tool args, tool
   // results, system text. All host-sanitized for secrets but not for
   // HTML.
-  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'PhaseLogFeed'),
-  // Wake-up settings panel (feature 031): the session-log expansion
-  // panel renders captured stdout/stderr of the OS-scheduled wake-up
-  // invocation. Same prohibition as the activity feed.
-  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'settings', 'wakeup')
+  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'PhaseLogFeed')
 ];
 
 // Empty allowlist — every existing scanned component renders text via

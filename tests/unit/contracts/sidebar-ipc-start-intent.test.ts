@@ -9,7 +9,7 @@
 //   - `StartQueueIntent.startMode` accepts 'now' | 'scheduled' | 'cancel-schedule'.
 //   - `'cancel-schedule'` is REJECTED on `CMD_START` and ACCEPTED on `CMD_START_QUEUE`.
 //   - `StartQueueIntent.source` MUST be the literal 'operator-restart'; every
-//     other source ('operator-chooser', 'wake-up-runner', etc.) is rejected.
+//     other source ('operator-chooser', 'programmatic-now', etc.) is rejected.
 //   - `'now'` + `scheduledStartAt` is rejected.
 //   - Non-finite / non-positive `scheduledStartAt` is rejected on 'scheduled'.
 
@@ -82,7 +82,6 @@ describe('Feature 065 — CMD_START runtime validator', () => {
     const sources = [
       'operator-chooser',
       'operator-restart',
-      'wake-up-runner',
       'programmatic-now',
       'programmatic-scheduled',
       'migration-default'
@@ -200,7 +199,6 @@ describe('Feature 065 — CMD_START_QUEUE runtime validator', () => {
   it('rejects every source other than operator-restart on CMD_START_QUEUE', () => {
     const disallowed = [
       'operator-chooser',
-      'wake-up-runner',
       'programmatic-now',
       'programmatic-scheduled',
       'migration-default'
@@ -286,8 +284,7 @@ describe('Feature 065 / BUG-002 — validator lockstep (predicate vs parser)', (
       const sources = [
         'operator-chooser',
         'operator-restart',
-        'wake-up-runner',
-        'programmatic-now',
+          'programmatic-now',
         'programmatic-scheduled',
         'migration-default'
       ];
@@ -424,8 +421,7 @@ describe('Feature 065 / BUG-002 — validator lockstep (predicate vs parser)', (
     it('parser rejects every source other than operator-restart', () => {
       const disallowed = [
         'operator-chooser',
-        'wake-up-runner',
-        'programmatic-now',
+          'programmatic-now',
         'programmatic-scheduled',
         'migration-default'
       ];

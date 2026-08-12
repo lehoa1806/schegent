@@ -1,17 +1,16 @@
 // Feature 014 T005 — repo-grep regression test enforcing the headless-runner
 // isolation invariant.
 //
-// `src/headless/` hosts the standalone Wake up runner that ships bundled to
-// `<globalStorageUri>/wakeup/runner.js`. The bundle is spawned by the OS
-// scheduler (launchd / Task Scheduler / cron / systemd-user) as a plain
-// `node <runner.js>` subprocess — there is NO VS Code host, no extension
-// API, and no `vscode` module to resolve. Any `import … from 'vscode'`
-// or `require('vscode')` from this tree would either (a) crash the
-// runner at startup with `Cannot find module 'vscode'`, or (b) silently
-// pull in unwanted host context via the bundler.
+// `src/headless/` hosts the headless parity APIs — the process-definition,
+// process-YAML, pipeline-run and workflow-run entry points that a caller drives
+// without a VS Code host. There is NO extension API and no `vscode` module to
+// resolve in that setting. Any `import … from 'vscode'` or `require('vscode')`
+// from this tree would either (a) crash the caller at startup with
+// `Cannot find module 'vscode'`, or (b) silently pull in unwanted host context
+// via the bundler.
 //
 // This regression test fails the build if either pattern appears under
-// `src/headless/`. The runner MUST be self-contained.
+// `src/headless/`. The tree MUST be self-contained.
 //
 // Feature 089 T015 — the scan root already covers every module added to this
 // tree, because `grep -r` is recursive and takes the directory rather than a

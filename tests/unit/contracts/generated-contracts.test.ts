@@ -46,7 +46,6 @@ describe('generated shared contract artifacts', () => {
         'workflow-state',
         'audit-events',
         'backend-runner',
-        'wakeup',
         'raw-transcript-bytes'
       ])
     );
