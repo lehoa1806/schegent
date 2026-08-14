@@ -80,6 +80,21 @@ function safeDisplay(value: unknown): string {
  * ceiling above the number of queues is unreachable by construction: each queue
  * runs at most one Task, so no workspace can exceed `MAX_QUEUES` in flight. The
  * two numbers agreeing is a fact, not a coincidence to be maintained by hand.
+ *
+ * Feature 094 — the *authority* for a cap above one, as distinct from the
+ * mechanism above that makes one representable, is
+ * `docs/architecture/local-queue-parallelism-ratification.md`. It narrows one
+ * clause of the remote/multi-user expansion gate for the local single-operator
+ * shape only, dispositions the gate's seven exit criteria individually, and
+ * enumerates the premises whose change reopens the question. Raising this
+ * bound past `MAX_QUEUES`, or widening `MAX_QUEUES` itself, is outside what
+ * that record authorises.
+ *
+ * This is one of six sites that define the cap's value or its bounds: three
+ * enforce (here, `queue/queue-manager.ts`, `contracts/validators/
+ * queue-management.ts`) and three advertise (`config/settings-schema.ts`,
+ * `config/general-settings.ts`, `package.json`). The enforcing three derive
+ * their ceiling; only the advertising three restate the numbers.
  */
 export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 3;
 export const MAX_GLOBAL_CONCURRENCY_CAP = MAX_QUEUES;
@@ -1177,8 +1192,11 @@ export class WorkspaceStateStore {
     // call site.
     const value = this.memento.get<number>(KEYS.queueGlobalConcurrencyCap);
     // The key having never been written is the normal cold-start case, not a
-    // corruption: fall back to the schema default the five pinning sites agree
-    // on.
+    // corruption: fall back to the schema default the six defining sites agree
+    // on. Six, not five — feature 094 enumerated them by inspection and found
+    // this comment's count and `config/general-settings.ts`'s count disagreed
+    // with each other and both with the truth. See the header on
+    // `DEFAULT_GLOBAL_CONCURRENCY_CAP` for the enumeration and the authority.
     if (value === undefined || value === null) return DEFAULT_GLOBAL_CONCURRENCY_CAP;
     assertGlobalConcurrencyCap(value, 'persisted');
     return value;

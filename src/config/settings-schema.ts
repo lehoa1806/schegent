@@ -233,6 +233,20 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   // 056 held it at exactly 1 because a single workspace lock made concurrency
   // unrepresentable; the lock split of US2 removed that constraint, so the
   // knob now means what it says.
+  //
+  // Feature 094 — the note above is the mechanism, not the permission. The
+  // authority to ship a default above one is
+  // `docs/architecture/local-queue-parallelism-ratification.md`, which narrows
+  // one clause of the remote/multi-user expansion gate for the local
+  // single-operator shape only, dispositions the gate's seven exit criteria
+  // individually, and refuses precedent for anything wider. This is one of
+  // three sites that *advertise* the range to the operator; three others
+  // enforce it, and unlike those three this one restates the numbers rather
+  // than deriving them, so it is a place drift can be recorded.
+  //
+  // Six sites in total. Do not take that count from any other comment: before
+  // feature 094 the codebase carried two counts, four and five, which
+  // disagreed with each other and with the truth.
   'schegent.queue.globalConcurrencyCap': {
     key: 'schegent.queue.globalConcurrencyCap',
     type: 'integer',
