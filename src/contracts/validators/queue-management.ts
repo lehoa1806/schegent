@@ -176,6 +176,15 @@ export function validateClearQueueSchedule(
  * The cap's authoritative validator lives in `QueueManager.saveQueueSettings`
  * alongside the settings-schema contribution; `MAX_QUEUES` is used here as the
  * structural upper bound because no workspace can run more queues than exist.
+ *
+ * Feature 094 — the authority for the cap admitting any value above one is
+ * `docs/architecture/local-queue-parallelism-ratification.md`, which narrows
+ * one clause of the remote/multi-user expansion gate for the local
+ * single-operator shape only and enumerates the premises whose change reopens
+ * it. This is the IPC-boundary member of the three sites that enforce the
+ * bound; three further sites advertise it to the operator. Before feature 094
+ * this site named where the bound came from but not what permitted it to be
+ * wider than one.
  */
 export function validateSaveQueueSettings(
   obj: Record<string, unknown>,

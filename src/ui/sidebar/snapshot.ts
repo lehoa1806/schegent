@@ -843,6 +843,14 @@ export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze(
  * Mirrors the `package.json` defaults so the webview can render the
  * Settings surface even before the projector has finished its first
  * `onDidChangeConfiguration` round-trip.
+ *
+ * "Mirrors `package.json`" is the whole contract of this object: every value
+ * here must equal the `default` its setting contributes in the manifest, and
+ * `tests/parity/settings-defaults-parity.test.ts` derives its expectations
+ * from that manifest rather than restating them. Feature 094 corrected
+ * `queueGlobalConcurrencyCap`, which stayed at the pre-092 value of 1 for
+ * three days after the manifest moved to 3, and was displayed to operators
+ * for the width of the first configuration round-trip.
  */
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
@@ -857,7 +865,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
-  queueGlobalConcurrencyCap: 1,
+  queueGlobalConcurrencyCap: 3,
   queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',

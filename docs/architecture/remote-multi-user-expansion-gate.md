@@ -8,6 +8,14 @@ in one workspace by increasing `schegent.queue.globalConcurrencyCap`, adding a
 network endpoint, or weakening the workspace lock. Such work is blocked until
 a separate implementation RFC satisfies every exit criterion in this record.
 
+One carve-out, taken 2026-08-15: the `schegent.queue.globalConcurrencyCap`
+half of that prohibition is narrowed for local queue parallelism under one
+local operator, one host process, and one filesystem owner, per
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).
+The network-endpoint and workspace-lock halves are untouched, and every
+expansion beyond that narrow shape still requires the RFC and all seven exit
+criteria.
+
 This is an expansion blocker, not a defect in the supported local product.
 
 ## Scope that triggers this gate
@@ -16,7 +24,12 @@ The gate applies if a proposal introduces any of the following:
 
 - commands or state access from outside the local VS Code host;
 - more than one mutating operator or service identity;
-- parallel workers or agents targeting the same canonical workspace;
+- parallel workers or agents targeting the same canonical workspace
+  — [narrowed 2026-08-15 for one shape only: N local queues under one operator,
+  one host process, one filesystem owner, no network surface, per
+  [local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).
+  Any other parallelism, including a worker that outlives the host process,
+  still triggers the gate];
 - a shared scheduler, queue, evidence store, secret store, or control plane;
 - cross-tenant storage, dashboards, logs, metrics, or administration.
 
@@ -35,8 +48,13 @@ domains.
 | Local audit and retention policy have one operator and one filesystem owner. | Shared evidence requires tenant-scoped policy, access control, integrity, and deletion semantics. |
 | Prompt content is trusted at the local operator boundary. | Shared ingestion creates cross-user prompt-injection and confused-deputy paths. |
 
-The concurrency cap remains pinned at one. A cap change is not an architecture
-for coordination, identity, isolation, or recovery.
+The concurrency cap remains pinned at one. [Superseded 2026-08-15 for the
+local single-operator shape only: the cap's range is `[1, 20]` with a default
+of 3. This sentence is retained unedited as the record of the position before
+that change; the current position is in
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).]
+A cap change is not an architecture for coordination, identity, isolation, or
+recovery.
 
 ## Required implementation RFC
 
@@ -152,6 +170,12 @@ true:
 
 Until all seven are evidenced, F-025 remains an accepted expansion boundary:
 local releases may proceed, but remote/multi-user/parallel execution may not.
+One exception, and only one: the narrow local-parallelism shape — N queues
+under one operator, one host process, and one filesystem owner, with no network
+surface — is separately dispositioned against all seven criteria in
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md)
+and was ratified on 2026-08-15. Everything outside that shape, including every
+remote and multi-user case, still requires all seven.
 
 ## Status update — feature 092 (2026-08-12)
 
@@ -171,7 +195,12 @@ in this document.** It was decided by the FR-R2-011 specification and plan
 ([specs/092-multi-queue-concurrency/](../../../specs/092-multi-queue-concurrency/)),
 which neither cite nor reconcile this record. Ratifying or reversing that is
 an open decision for the architecture owner; this note exists so the gap is
-visible rather than implied by silence.
+visible rather than implied by silence. [Decided 2026-08-15: ratified, for the
+local single-operator shape only, in
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md),
+which dispositions all seven exit criteria individually and records criterion 1
+as `not-satisfied`. This sentence is retained unedited; the decision it
+describes as open is no longer open.]
 
 Everything else in this gate remains fully in force and untouched by feature
 092:
@@ -190,3 +219,40 @@ brokering, or distributed-consistency machinery this document requires for
 remote or multi-user operation, and MUST NOT be cited as precedent for them.
 Concurrent runs share one working tree; see
 [docs/operations/](../operations/) for what that means for the operator.
+
+## Status update — feature 093 (2026-08-15)
+
+This section supersedes one claim in the 092 note above and records the
+decision that note left open. The 092 note is retained unedited; nothing below
+replaces it in place.
+
+**Correction to attribution.** The 092 note states that feature 092 "ships
+same-workspace parallel execution". It did not. Feature 092 made every layer
+*above* the Run engine per-queue — persistence, drain, scheduler, execution
+lease, snapshot, and UI — and introduced
+`schegent.queue.globalConcurrencyCap` with a default of 3 and a range of
+`[1, 20]`. The Run engine itself was unchanged: one controller per window owned
+one driver and a single record held one `WorkflowRun`, so two queues could
+*drain* concurrently but two Runs could not *execute* concurrently. The drain
+refused the second start rather than corrupting the first, so the cap
+advertised a concurrency the engine could not honour.
+
+**Feature 093 delivered the execution.** It replaced the single Run record with
+a per-queue record under a forward-only v10 → v11 state-schema migration, gave
+the controller a session per queue, made the cap bound concurrently executing
+Runs rather than accounted slots, and removed the drain step that refused the
+second start.
+
+**The open decision is taken.** The 092 note recorded that ratifying or
+reversing the narrowing was an open decision for the architecture owner. It was
+ratified on 2026-08-15 in
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md),
+which dispositions each of the seven exit criteria individually rather than
+waiving them as a set, records criterion 1 (reviewer approval of an
+implementation RFC) as `not-satisfied`, bounds the authorised shape, refuses
+precedent beyond it, and enumerates the premises whose change would return the
+question here.
+
+What is ratified is the capability as it exists after 093 — not the
+092 description of it, and not anything wider. Every clause of this gate other
+than the concurrency-cap carve-out remains fully in force.

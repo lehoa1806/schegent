@@ -149,12 +149,40 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
   });
 });
 
+/**
+ * Feature 094 (T030, FR-017, SC-012) — derive the expected cap, do not restate
+ * it.
+ *
+ * Until 2026-08-15 the two expectations below read `toBe(1)`, eleven lines
+ * under an expectation in this same file asserting the host reader was `3`.
+ * This file's own header says the manifest, the host validator and the idle
+ * projections must agree, and names this very setting as one of the drifts it
+ * was written to fix — yet it recorded the drift instead of failing on it,
+ * because every expected value in it was a hand-copied literal. A restated
+ * number is a place a wrong value can be written down and look deliberate; it
+ * makes the guard agree with whatever it was last edited to agree with.
+ *
+ * The idle projections exist to mirror what an operator would see before any
+ * configuration is read, so the manifest's contributed `default` is the thing
+ * they must equal. Reading it here means the next raise of the cap needs one
+ * edit, in `package.json`, and this test follows.
+ */
+function manifestDefaultFor(settingKey: string): number {
+  const pkg = readPackageJson();
+  const contrib = pkg.contributes.configuration.properties[settingKey];
+  expect(contrib).toBeDefined();
+  expect(typeof contrib.default).toBe('number');
+  return contrib.default as number;
+}
+
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
   it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../src/ui/sidebar/snapshot.js');
     expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
-    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(1);
+    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
+      manifestDefaultFor('schegent.queue.globalConcurrencyCap')
+    );
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
   });
@@ -163,7 +191,9 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
     expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
-    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(1);
+    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
+      manifestDefaultFor('schegent.queue.globalConcurrencyCap')
+    );
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
   });
