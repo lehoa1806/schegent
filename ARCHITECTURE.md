@@ -150,7 +150,7 @@ operator action / IPC      ┌────────────────�
                                         ▼
                           ┌──────────────────────────────────┐
                           │ src/controller/workflow-controller│
-                          │   acquires workspace lock         │
+                          │   one RunSession per queue        │
                           │   drives phases via phase-runner  │
                           └─────────────┬────────────────────┘
                                         │ per-phase invocation
@@ -389,12 +389,16 @@ size/generation policy (`schegent.logging.runtimeLogMaxBytes`,
 ### State (`src/state/`)
 
 [workspace-state.ts](src/state/workspace-state.ts) is the memento-backed
-serialization layer. The numeric schema version `STATE_SCHEMA_VERSION = 10`
+serialization layer. The numeric schema version `STATE_SCHEMA_VERSION = 11`
 lives in [src/contracts/state-schema.ts](src/contracts/state-schema.ts);
 forward-only migrators handle 1→2 (feature 011), 2→3
 ([queue-state-migrator.ts](src/state/queue-state-migrator.ts)),
-5→6 (feature 030) and 9→10 (feature 092, `migrateV9ToV10`, which lifts the
-singleton queue record into `Record<queueId, QueueState>`). `setRun()` enforces
+5→6 (feature 030), 9→10 (feature 092, `migrateV9ToV10`, which lifts the
+singleton queue record into `Record<queueId, QueueState>`) and 10→11
+([run-state-migrator.ts](src/state/run-state-migrator.ts), feature 093,
+`migrateV10ToV11`, which does the same to the run record so two queues can hold
+two live Runs). A persisted version *above*
+`STATE_SCHEMA_VERSION` is refused, not rolled back. `setRun()` enforces
 paired invariants for manual pause and retry state so the scheduler cannot
 persist one-sided resumption data.
 

@@ -1394,10 +1394,11 @@ export class QueueManager {
 
   // Feature 063 — atomic queue + run + pause + watchdog reset (FR-005).
   //
-  // Callers (the `clear-all-handler`) acquire the workspace lock OUTSIDE
-  // this call (via `WorkspaceLockManager.withLock`) and pass a runner-ack
-  // probe that wraps `controller.cancelActive()` + a 2s ack race. The
-  // method:
+  // Callers (the `clear-all-handler`) pass a runner-ack probe that wraps
+  // `controller.cancelActive()` + a 2s ack race. They no longer take the
+  // workspace lock around this call: 092's T136 and 093's T068b retired the
+  // run-scoped primacy acquire/release, and primacy is now the window's for
+  // its whole lifetime. The method:
   //   1. Snapshots pre-clear state for the result/audit payload.
   //   2. Fast-paths an empty workspace as a no-op (no writes, no audit).
   //   3. Performs the writes via the canonical single-writers

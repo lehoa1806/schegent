@@ -297,7 +297,7 @@ export class RunDriver {
               
             await this.deps.emitRunEndedBreakpointAudit(run);
             await this.deps.historyRecorder.record(run, description, 'failed');
-            return; // break out of withLock completely
+            return; // abandon the phase loop; this run is terminal
           }
         }
       }
