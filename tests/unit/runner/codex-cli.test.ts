@@ -323,3 +323,70 @@ describe('CodexCliRunner.invoke', () => {
     expect(runner.hasActiveProcess).toBe(false);
   });
 });
+
+/**
+ * Feature 093 (T046a) — the shared `ProcessLifecycleRunner` behind the codex
+ * and agy backends tracks every live subprocess, not just the newest.
+ *
+ * Exercised through `CodexCliRunner` because the lifecycle runner has no
+ * public construction site of its own; `AgyCliRunner` delegates to the same
+ * instance shape. Each assertion fails against the pre-feature single
+ * `active: ChildProcess | null` slot, where the second spawn overwrote the
+ * first's handle and the first exit cleared the slot for both.
+ */
+describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
+  function overlappingSpawn(children: FakeChild[]): SpawnFn {
+    let index = 0;
+    return (() => children[index++] as unknown as ChildProcess) as SpawnFn;
+  }
+
+  const request = (prompt: string) => ({
+    phase: 'speckit-specify' as const,
+    iteration: 1,
+    prompt,
+    timeoutMs: 60_000,
+    cliPath: 'codex',
+    cwd: '/repo'
+  });
+
+  it('cancelActive terminates every in-flight child, not just the newest', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    const runner = new CodexCliRunner(overlappingSpawn([first, second]));
+
+    const firstDone = runner.invoke(request('a'));
+    const secondDone = runner.invoke(request('b'));
+
+    expect(runner.hasActiveProcess).toBe(true);
+    expect(runner.cancelActive()).toBe(true);
+    expect(first.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(second.kill).toHaveBeenCalledWith('SIGTERM');
+
+    first.emit('exit', null, 'SIGTERM');
+    second.emit('exit', null, 'SIGTERM');
+    await Promise.all([firstDone, secondDone]);
+    expect(runner.hasActiveProcess).toBe(false);
+  });
+
+  it('keeps reporting an active process after one of two children exits', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    const runner = new CodexCliRunner(overlappingSpawn([first, second]));
+
+    const firstDone = runner.invoke(request('a'));
+    const secondDone = runner.invoke(request('b'));
+
+    first.exitCode = 0;
+    first.emit('exit', 0, null);
+    await firstDone;
+
+    expect(runner.hasActiveProcess).toBe(true);
+    expect(runner.cancelActive()).toBe(true);
+    expect(first.kill).not.toHaveBeenCalled();
+    expect(second.kill).toHaveBeenCalledWith('SIGTERM');
+
+    second.emit('exit', null, 'SIGTERM');
+    await secondDone;
+    expect(runner.hasActiveProcess).toBe(false);
+  });
+});

@@ -4,7 +4,8 @@ import type { SanitizedLogger } from '../../lib/logger';
 import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
-import type { FeatureRequest } from '../../queue/feature-request';
+import type { RunStateMap } from '../../state/run-state-migrator';
+import type { FeatureRequest, QueueState } from '../../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../queue/queue-registry';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
@@ -19,7 +20,7 @@ import {
   projectDelayedRetry,
   projectRunOutputs
 } from './run-projector';
-import { ProjectorBookkeeping } from './projector-bookkeeping';
+import type { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
@@ -36,11 +37,14 @@ import {
   type WorkflowSnapshot,
   type WorkflowStatus
 } from './snapshot';
-import { composeQueueRuntimes } from './queue-runtime-composer';
+import {
+  composeQueueRuntimes,
+  type QueueRunProjection
+} from './queue-runtime-composer';
 
 type ProjectorStore = Pick<
   WorkspaceStateStore,
-  'getRun' | 'getQueue' | 'getLock' | 'subscribe'
+  'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
 > & Partial<Pick<
   WorkspaceStateStore,
   'getQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
@@ -49,7 +53,13 @@ type ProjectorStore = Pick<
 export interface SnapshotComposerContext {
   readonly deps: StateProjectorDeps;
   readonly store: ProjectorStore;
-  readonly run: WorkflowRun | null;
+  /**
+   * Feature 093 (T051) — every queue's Run, keyed by queue. Replaces the single
+   * `run` this took: a window with N executing Runs has no one Run to hand a
+   * composer, and picking one would publish that queue's phases beside every
+   * other queue's rows.
+   */
+  readonly runs: Readonly<RunStateMap>;
   readonly ownerId: string;
   readonly forcedIsPrimary: boolean | null;
   readonly now: () => Date;
@@ -59,14 +69,13 @@ export interface SnapshotComposerContext {
   readonly history: Pick<HistoryStore, 'list'> | null;
   readonly defaultRunnerKind: BackendRunnerKind;
   readonly auditTail: readonly AuditTailEntry[];
-  readonly bookkeeping: ProjectorBookkeeping;
+  readonly bookkeepers: ProjectorBookkeepingRegistry;
   readonly telemetry: TelemetrySnapshot | null;
 }
 
 /** Composes the immutable wire snapshot from focused domain projections. */
 export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowSnapshot {
   const { deps, store } = ctx;
-  const run = ctx.run;
   const queue = store.getQueue();
   const registry = store.getQueueRegistry?.();
   const lock = store.getLock();
@@ -75,42 +84,72 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   const isPrimary = ctx.forcedIsPrimary !== null
     ? ctx.forcedIsPrimary
     : computeIsPrimary(ctx.ownerId, lock, ctx.now().getTime());
-  const status: WorkflowStatus = run ? mapRunStatus(run) : 'idle';
-  const phases = buildPhasesFromRun(run);
-  ctx.bookkeeping.decoratePhases(phases, run);
   const sanitize = (value: string): string => ctx.logger
     ? ctx.logger.sanitize(value)
     : ctx.externalSanitize
       ? ctx.externalSanitize(value)
       : value;
-  const inFlightPhase = run && run.currentPhase !== 'done' ? run.currentPhase : null;
-  // Feature 092 (T108) — one row-projection context, reused per queue with that
-  // queue's own in-flight and scheduled-start readings substituted in. The rest
-  // (sanitizer, registry, active-run attribution) is workspace-wide and shared.
-  const rowContext = {
-    sanitize,
-    inFlightPhase,
-    inFlightId: queue.inFlightId,
-    registry,
-    inFlightManualPauseCause: run?.manualPauseCause ?? null,
-    scheduledStartSource: queue.scheduledStartSource ?? null,
-    scheduledStartAt: queue.scheduledStartAt ?? null,
-    activeRunTaskId: run?.featureId ?? null,
-    activeRunPhase: run?.currentPhase ?? null
+  const buildRunProjection = (run: WorkflowRun): QueueRunProjection => {
+    const bookkeeping = ctx.bookkeepers.for(run.id);
+    const status: WorkflowStatus = mapRunStatus(run);
+    const phases = buildPhasesFromRun(run);
+    bookkeeping.decoratePhases(phases, run);
+    return {
+      run,
+      status,
+      phases,
+      activePipeline: run.pipeline && run.pipeline.id !== 'standard'
+        ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
+        : null,
+      liveActivity: bookkeeping.liveActivity(status),
+      elapsedMs: bookkeeping.workflowElapsedMs(status),
+      delayedRetry: projectDelayedRetry(run),
+      outputs: projectRunOutputs(run, sanitize).runOutputs ?? [],
+      activeFeature: buildActiveFeature(run)
+    };
+  };
+  // Memoized because two callers ask the same queue: the per-queue runtime list
+  // and the row projections below. `decoratePhases` mutates the tiles it is
+  // handed, so a second build would hand out a second set of tile objects that
+  // must not be allowed to disagree.
+  const runProjections = new Map<string, QueueRunProjection | null>();
+  const runOf = (queueId: string): QueueRunProjection | null => {
+    const memo = runProjections.get(queueId);
+    if (memo !== undefined) return memo;
+    const run = ctx.runs[queueId];
+    const built = run ? buildRunProjection(run) : null;
+    runProjections.set(queueId, built);
+    return built;
+  };
+  // Feature 093 (T051) — the row-projection context is per queue, run-scoped
+  // readings included. Feature 092 substituted only each queue's `inFlightId`
+  // and scheduled-start into one shared context, so every queue's in-flight row
+  // inherited the window Run's phase and pause cause. With one Run per queue
+  // that is a visible cross-queue leak, not a harmless shared default.
+  const rowContextFor = (queueId: string, state: QueueState) => {
+    const run = runOf(queueId)?.run ?? null;
+    return {
+      sanitize,
+      registry,
+      inFlightPhase: run && run.currentPhase !== 'done' ? run.currentPhase : null,
+      inFlightId: state.inFlightId,
+      inFlightManualPauseCause: run?.manualPauseCause ?? null,
+      scheduledStartSource: state.scheduledStartSource ?? null,
+      scheduledStartAt: state.scheduledStartAt ?? null,
+      activeRunTaskId: run?.featureId ?? null,
+      activeRunPhase: run?.currentPhase ?? null
+    };
   };
   const requestsOf = (queueId: string): readonly FeatureRequest[] =>
     store.getRequestsForQueue?.(queueId) ??
     (queueId === DEFAULT_QUEUE_ID ? queue.requests ?? [] : []);
   const queueProjection = projectQueue(queue, {
-    ...rowContext,
+    ...rowContextFor(DEFAULT_QUEUE_ID, queue),
     ...(store.getRequestsForQueue !== undefined
       ? { requestsOf: (queueId: string) => store.getRequestsForQueue!(queueId) }
       : {})
   });
   const catalog = deps.getCatalog?.() ?? { phases: [], pipelines: [], models: [] };
-  const activePipeline = run?.pipeline && run.pipeline.id !== 'standard'
-    ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
-    : undefined;
   const phasePrecedence = deps.getPhasePrecedence?.();
   const phaseCatalog = deps.getPhaseCatalog?.();
   const availableModels = deps.getAvailableModels?.() ?? {
@@ -139,28 +178,21 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // `getRequestsForQueue` the per-queue rows. The run-scoped readings attach to
   // the one queue that owns the Run and to no other, so an idle queue publishes
   // an empty runtime instead of borrowing its neighbour's.
+  //
+  // Feature 093 (T051, FR-030) — that attribution is now a keyed lookup per
+  // queue rather than one Run offered to every queue in turn, which is what
+  // makes each queue's Run separately visible. Reading the whole record to
+  // build the list is the aggregate SC-012 exempts: the projection names every
+  // queue it publishes, so no Run is reached without one.
   const queues: readonly QueueRuntime[] = composeQueueRuntimes({
     summaries: queueProjection.queues,
-    run,
-    status,
-    phases,
-    activePipeline: activePipeline ?? null,
-    liveActivity: ctx.bookkeeping.liveActivity(status),
-    elapsedMs: ctx.bookkeeping.workflowElapsedMs(status),
-    delayedRetry: projectDelayedRetry(run),
-    outputs: projectRunOutputs(run, sanitize).runOutputs ?? [],
-    activeFeature: run ? buildActiveFeature(run) : null,
+    runOf,
     lifecycleOf: (queueId) => store.getQueue(queueId).queueLifecycle,
     requestsOf,
-    rowsOf: (queueId) => {
-      const state = store.getQueue(queueId);
-      return projectQueueRows(requestsOf(queueId), {
-        ...rowContext,
-        inFlightId: state.inFlightId,
-        scheduledStartSource: state.scheduledStartSource ?? null,
-        scheduledStartAt: state.scheduledStartAt ?? null
-      });
-    }
+    rowsOf: (queueId) => projectQueueRows(
+      requestsOf(queueId),
+      rowContextFor(queueId, store.getQueue(queueId))
+    )
   });
 
   let workspaceTrust = IDLE_TRUST_PROJECTION.workspaceTrust;

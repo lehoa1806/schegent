@@ -22,6 +22,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -185,7 +186,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(feature.pipelineId).toBe('security');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.pipeline?.id).toBe('security');
     expect(run.pipeline?.name).toBe('Security Audit Pipeline');
@@ -259,7 +260,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const feature = await queue.enqueue('Some feature', { pipelineId: 'nonexistent' });
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline?.id).toBe('speckit-new-feature');
     expect(invocations.length).toBeGreaterThan(0);
   });

@@ -69,9 +69,18 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     promotedTasks = [];
     // Stand in for the controller; record which feature gets promoted to
     // assert the auto-drain coordinator unblocks after Resume.
+    // Feature 093 (T049a) — the drain awaits admission, not completion; the
+    // double records the promotion and hands back an already-resolved drive.
     const fakeController = {
-      startNew: async (req: { id: string }) => {
+      admitNew: async (req: { id: string }) => {
         promotedTasks.push(req.id);
+        return { completed: Promise.resolve() };
+      },
+      // Feature 093 (T082) — the execution-capacity gate reads the sessions the
+      // window owns. Nothing here ever reaches a terminal transition, so every
+      // promotion is still live and the count is the promotion count.
+      get liveRunCount(): number {
+        return promotedTasks.length;
       }
     };
     // Feature 092 (T051) — the drain's exclusion step is the per-queue

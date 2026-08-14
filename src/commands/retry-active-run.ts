@@ -5,13 +5,14 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import { resolveSoleRun } from '../controller/sole-run-resolver';
 import type { GuardedRunService } from '../services/guarded-run-service';
 
 export interface RetryActiveRunCtx {
   // `store` and `controller` are optional so test fixtures that exercise
   // only the history-fallback path can omit them. In production the
   // extension always wires both.
-  readonly store?: Pick<WorkspaceStateStore, 'getRun'>;
+  readonly store?: Pick<WorkspaceStateStore, 'getRunMap'>;
   readonly controller?: Pick<SchegentWorkflowController, 'resumeExisting'>;
   readonly queue: Pick<QueueManager, 'hasInFlight' | 'list' | 'retry'>;
   readonly history: Pick<HistoryStore, 'list'>;
@@ -31,10 +32,19 @@ export async function runRetryActiveRun(
   }
 
   // If there's an active run that is paused or failed, retry by resuming it.
-  const currentRun = ctx.store?.getRun() ?? null;
-  if (currentRun && (currentRun.status === 'paused' || currentRun.status === 'failed') && ctx.controller) {
+  //
+  // Feature 093 (T038) — resolved to one Run or not at all. A refusal here is
+  // not a dead end: control falls through to the queue/history retry path
+  // below, which is what this command did whenever no active run was resumable.
+  const target = ctx.store
+    ? resolveSoleRun(
+        ctx.store.getRunMap(),
+        (run) => run.status === 'paused' || run.status === 'failed'
+      )
+    : null;
+  if (target?.ok && ctx.controller) {
     try {
-      const resumed = await ctx.controller.resumeExisting();
+      const resumed = await ctx.controller.resumeExisting(target.queueId);
       if (resumed) {
         ctx.notifier.info('Schegent: retrying active run.');
         return;

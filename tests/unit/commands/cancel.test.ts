@@ -6,8 +6,8 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 import type { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { Notifier } from '../../../src/ui/notifications';
-import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -39,24 +39,13 @@ function makeNotifier(): Notifier {
   } as unknown as Notifier;
 }
 
-function makeLock(): WorkspaceLockManager & { release: ReturnType<typeof vi.fn> } {
-  return {
-    release: vi.fn(async () => {}),
-    tryAcquire: vi.fn(),
-    heartbeat: vi.fn(),
-    isHeld: vi.fn(),
-    ownerOfRecord: vi.fn(),
-    withLock: async function (this: { release(): Promise<void> }, _scope: string, fn: (session: { retain(): void }) => Promise<unknown>) {
-      let retain = false;
-      try {
-        return await fn({ retain: () => { retain = true; } });
-      } finally {
-        if (!retain) await this.release().catch(() => undefined);
-      }
-    },
-    id: 'this-window'
-  } as unknown as WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
-}
+// Feature 093 (T068b, FR-028) — `makeLock()` is gone with the dependency it
+// stood in for. `runCancel` no longer takes a `WorkspaceLockManager`, so there
+// is no longer a release to assert did not happen: the seam refuses to hand the
+// command a lock at all, which is a stronger statement than a spy reading zero.
+// The behavioral claim — a cancel leaves the window primary while a sibling Run
+// is still executing — is asserted where two Runs actually exist, in
+// tests/integration/concurrent-run-execution.test.ts (T068c).
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -88,7 +77,6 @@ let queue: QueueManager;
 let controller: SchegentWorkflowController;
 let audit: AuditLogWriter & { append: ReturnType<typeof vi.fn> };
 let notifier: Notifier;
-let lock: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let logger: SanitizedLogger;
 
 beforeEach(async () => {
@@ -99,41 +87,49 @@ beforeEach(async () => {
   controller = makeController();
   audit = makeAudit();
   notifier = makeNotifier();
-  lock = makeLock();
   logger = new SanitizedLogger();
 });
 
-describe('runCancel — palette path (no taskId) — lock release (BUG-005)', () => {
-  it('releases the workspace lock after canceling an in-flight run', async () => {
+// Feature 093 (T068b) — this block was `lock release (BUG-005)` and asserted
+// the opposite of what it now asserts. BUG-005 was filed when a Run's drive
+// held window primacy through a `withLock` wrapper: a cancel that skipped the
+// release left the workspace locked with nothing running, so "cancel releases
+// the lock" was the fix. 092's T136 removed that wrapper and made primacy the
+// window's for its whole lifetime, which inverted the sign — the release these
+// tests pinned is now the defect, because `WorkspaceLockManager.release()`
+// keeps no reference count and every Run in a window shares one owner id.
+// The tests are kept for the cancel outcomes they always also asserted; only
+// the lock clauses are gone, along with the lock itself.
+describe('runCancel — palette path (no taskId)', () => {
+  it('cancels the in-flight run and routes through the controller', async () => {
     const feature = await queue.enqueue('feature description');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(makeRun({ featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ featureId: feature.id }));
 
-    const result = await runCancel({ controller, store, queue, audit, lock, notifier, logger });
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
     expect(result.ok).toBe(true);
     expect(controller.cancelActive).toHaveBeenCalledOnce();
-    expect(store.getRun()!.status).toBe('canceled');
-    expect(lock.release).toHaveBeenCalledOnce();
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
   });
 
-  it('does not release the lock when there is no run', async () => {
-    const result = await runCancel({ controller, store, queue, audit, lock, notifier, logger });
+  it('refuses when there is no run', async () => {
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('no-active-run');
-    expect(lock.release).not.toHaveBeenCalled();
+    expect(controller.cancelActive).not.toHaveBeenCalled();
     expect(notifier.info).toHaveBeenCalledWith(expect.stringContaining('no in-flight run'));
   });
 
-  it('does not release the lock when the persisted run is not running', async () => {
-    await store.setRun(makeRun({ status: 'completed' }));
+  it('refuses when the persisted run is not running', async () => {
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ status: 'completed' }));
 
-    const result = await runCancel({ controller, store, queue, audit, lock, notifier, logger });
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('no-active-run');
-    expect(lock.release).not.toHaveBeenCalled();
+    expect(controller.cancelActive).not.toHaveBeenCalled();
     expect(notifier.info).toHaveBeenCalledWith(expect.stringContaining('no in-flight run'));
   });
 });
@@ -145,7 +141,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: 'does-not-exist'
@@ -154,7 +149,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('not-found');
     expect(controller.cancelActive).not.toHaveBeenCalled();
-    expect(lock.release).not.toHaveBeenCalled();
   });
 
   it('rejects when the target FeatureRequest is terminal (canceled)', async () => {
@@ -166,7 +160,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: feature.id
@@ -177,7 +170,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     expect(controller.cancelActive).not.toHaveBeenCalled();
   });
 
-  it('cancels a pending task without signaling the controller or releasing the lock', async () => {
+  it('cancels a pending task without signaling the controller', async () => {
     const feature = await queue.enqueue('pending task');
 
     const result = await runCancel({
@@ -185,7 +178,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: feature.id
@@ -194,7 +186,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     expect(result.ok).toBe(true);
     expect(queue.findById(feature.id)?.status).toBe('canceled');
     expect(controller.cancelActive).not.toHaveBeenCalled();
-    expect(lock.release).not.toHaveBeenCalled();
     expect(audit.append).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'task-canceled',
@@ -209,14 +200,13 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
   it('cancels the matching in-flight task and routes through the controller', async () => {
     const feature = await queue.enqueue('in-flight task');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(makeRun({ id: 'run-1', featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-1', featureId: feature.id }));
 
     const result = await runCancel({
       controller,
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: feature.id
@@ -224,8 +214,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
 
     expect(result.ok).toBe(true);
     expect(controller.cancelActive).toHaveBeenCalledOnce();
-    expect(store.getRun()!.status).toBe('canceled');
-    expect(lock.release).toHaveBeenCalledOnce();
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
     expect(audit.append).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'task-canceled',
@@ -245,7 +234,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     // the row identity instead.
     const featureA = await queue.enqueue('queue-A task');
     await queue.markInFlight(featureA.id, 'run-A');
-    await store.setRun(makeRun({ id: 'run-A', featureId: featureA.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-A', featureId: featureA.id }));
 
     const featureB = await queue.enqueue('queue-B task');
     // Simulate a second in-flight FeatureRequest (cap=2). Bypass capacity
@@ -264,7 +253,6 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: featureB.id
@@ -275,12 +263,11 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     expect(queue.findById(featureB.id)?.status).toBe('canceled');
     expect(queue.findById(featureA.id)?.status).toBe('in-flight');
     // The singular tracked run (run-A → featureA) is untouched.
-    expect(store.getRun()?.status).toBe('running');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('running');
     // The controller is NOT signaled — featureB is not the singular
     // active run, so the controller-side abort path is skipped to
     // protect featureA's run.
     expect(controller.cancelActive).not.toHaveBeenCalled();
-    expect(lock.release).not.toHaveBeenCalled();
     expect(audit.append).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'task-canceled',
@@ -299,14 +286,13 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     const featureSwapped = await queue.enqueue('swapped task');
     await queue.markInFlight(featureSwapped.id, 'run-old');
     // Singular run projection still references the prior (now-completed) run.
-    await store.setRun(makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }));
 
     const result = await runCancel({
       controller,
       store,
       queue,
       audit,
-      lock,
       notifier,
       logger,
       taskId: featureSwapped.id
@@ -316,7 +302,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     expect(queue.findById(featureSwapped.id)?.status).toBe('canceled');
     // The singular run projection is untouched because it does not
     // reference featureSwapped.
-    expect(store.getRun()?.status).toBe('completed');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('completed');
     expect(controller.cancelActive).not.toHaveBeenCalled();
     expect(audit.append).toHaveBeenCalledWith(
       expect.objectContaining({

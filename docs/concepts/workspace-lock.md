@@ -25,7 +25,7 @@ The **window-primacy lease** guards the workspace as a single, shared resource. 
 
 The **execution lease** guards one queue's turn. A queue with a live lease held by another window is not drained here — the drainer treats it as "someone else has this one" and moves on to the next queue.
 
-Neither lease is what stops two runs from executing at once today. That is the run engine: it drives one `WorkflowRun` at a time, and the drainer checks it before promoting anything. See [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
+Two runs *do* execute at once, and neither lease is what bounds how many. The execution lease decides **which window** drives a given queue, not how many queues one window may drive; the ceiling on simultaneous runs is `schegent.queue.globalConcurrencyCap`, checked by the drainer before it claims a lease. Feature 093 removed the engine-level refusal that used to hold the workspace to one run regardless of the cap. See [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
 
 ## When the leases are acquired and released
 
@@ -158,6 +158,6 @@ The two leases fail differently, so the symptom tells you which one to look at:
 
 - **The sidebar is read-only and says another window is primary.** That is the primacy lease. Close the other window, or reload this one after the other releases.
 - **One queue never promotes while other queues do.** That is that queue's execution lease, held by another window. It clears when that window closes, or 15 seconds after it dies.
-- **Every queue waits and one run is running.** That is neither lease — that is the run engine, working as currently designed.
+- **Every remaining queue waits while `cap` runs are executing.** That is neither lease — that is `schegent.queue.globalConcurrencyCap`, working as configured. Raise it, or wait for a slot. Remember a paused run still holds its slot.
 
 The next page, [Sessions, Logs, and Audit Evidence](sessions-and-logs.md), explains the on-disk records that survive across runs and across the lock lifecycle.

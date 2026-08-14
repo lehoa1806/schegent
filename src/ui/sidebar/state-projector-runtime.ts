@@ -5,11 +5,11 @@ import type { Disposable, StoreChangeListener } from '../../state/workspace-stat
 import type { StateProjectorDeps, ProjectorListener, ProjectorTimer } from './state-projector';
 import { buildIdleSnapshot, type AuditTailEntry, type WorkflowSnapshot } from './snapshot';
 import { AuditTailState } from './audit-tail-state';
-import { ProjectorBookkeeping } from './projector-bookkeeping';
+import { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
 import { composeWorkflowSnapshot } from './snapshot-composer';
 
 const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
-  getRun: () => null,
+  getRunMap: () => ({}),
   getQueue: () => ({
     requests: [], inFlightId: null, paused: false, pausedReason: null,
     updatedAt: 0, queueLifecycle: 'active-empty' as const,
@@ -37,7 +37,7 @@ export class StateProjectorRuntime {
   private readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
   private readonly listeners = new Set<ProjectorListener>();
   private readonly auditTailState = new AuditTailState();
-  private readonly bookkeeping: ProjectorBookkeeping;
+  private readonly bookkeepers: ProjectorBookkeepingRegistry;
   private storeSub: Disposable | null = null;
   private auditSub: AuditDisposable | null = null;
   private monitorSub: Disposable | null = null;
@@ -69,7 +69,7 @@ export class StateProjectorRuntime {
       return perf ? perf.now() : Date.now();
     });
     this.logger = deps.logger ?? null;
-    this.bookkeeping = new ProjectorBookkeeping(monotonicNow);
+    this.bookkeepers = new ProjectorBookkeepingRegistry(monotonicNow);
     try {
       this.currentSnapshot = this.project();
     } catch {
@@ -85,7 +85,7 @@ export class StateProjectorRuntime {
     const onStore: StoreChangeListener = () => this.scheduleProjection();
     const onAudit: AuditAppendListener = (entry) => {
       const projected = this.auditTailState.append(entry);
-      this.bookkeeping.recordAudit(entry, projected);
+      this.bookkeepers.recordAudit(entry, projected);
       this.scheduleProjection();
     };
     this.storeSub = this.store.subscribe(onStore);
@@ -134,16 +134,25 @@ export class StateProjectorRuntime {
   }
 
   public project(): WorkflowSnapshot {
-    const run = this.store.getRun();
-    this.bookkeeping.updateRun(
-      run,
-      this.deps.monitor ?? null,
-      () => this.cancelTick()
-    );
+    // Feature 093 (T025) — pattern D. A projection legitimately wants every
+    // Run, so it reads the whole record rather than naming one queue; this is
+    // the aggregate case SC-012 exempts, not a Run reached without a queue.
+    //
+    // Feature 093 (T051) — the whole record now reaches the composer. The
+    // collapse to `[0]` this replaces was accurate only while drain step 4b
+    // held the record to one entry, and it decided *which* queue the sidebar
+    // showed by insertion order.
+    const runs = this.store.getRunMap();
+    this.bookkeepers.reconcile(runs, this.deps.monitor ?? null);
+    // The 1 Hz tick is the window's, so only the window can retire it: a single
+    // Run reaching a terminal status must not stop the refresh its siblings are
+    // still using. `ProjectorBookkeeping` used to cancel from inside its own
+    // update for want of anywhere else to ask.
+    if (!this.bookkeepers.anyRunning) this.cancelTick();
     return composeWorkflowSnapshot({
       deps: this.deps,
       store: this.store,
-      run,
+      runs,
       ownerId: this.ownerId,
       forcedIsPrimary: this.forcedIsPrimary,
       now: this.now,
@@ -153,7 +162,7 @@ export class StateProjectorRuntime {
       history: this.deps.history ?? null,
       defaultRunnerKind: this.deps.defaultRunnerKind ?? 'claude',
       auditTail: this.auditTailState.snapshot(),
-      bookkeeping: this.bookkeeping,
+      bookkeepers: this.bookkeepers,
       telemetry: this.stagedTelemetry
     });
   }
@@ -201,7 +210,7 @@ export class StateProjectorRuntime {
 
   private rearmTick(): void {
     if (this.disposed || this.tickHandle !== null) return;
-    if (this.bookkeeping.observedStatus !== 'running') return;
+    if (!this.bookkeepers.anyRunning) return;
     this.tickHandle = this.timer.setTimeout(() => {
       this.tickHandle = null;
       this.scheduleProjection();

@@ -11,6 +11,8 @@
     activePipeline?: ActivePipelineSummary | null;
     activeTaskId?: string | null;
     activeRunId?: string | null;
+    /** Feature 093 (FR-018 / T080) — the queue whose Run these phases belong to. */
+    queueId: string;
     isPrimary?: boolean;
     manualPauseAt?: string | null;
     manualPauseCause?:
@@ -35,6 +37,7 @@
     activePipeline = null,
     activeTaskId = null,
     activeRunId = null,
+    queueId,
     isPrimary = true,
     manualPauseAt = null,
     manualPauseCause = null,
@@ -136,6 +139,7 @@
       {isPrimary}
       {activeTaskId}
       {activeRunId}
+      {queueId}
       {manualPauseAt}
       {phaseOverrides}
       {phaseBreakpoints}

@@ -36,12 +36,26 @@ import type {
 
 export type { InvocationRequest, RawInvocationOutput };
 
+/**
+ * Feature 093 (T046) — every sidecar event names the Run whose subprocess
+ * produced it.
+ *
+ * The hook is one window-level function shared by every runner, and before this
+ * the events were anonymous: the monitor attached each chunk to whichever Run
+ * had most recently called `onStart`. That was unambiguous while a window could
+ * only execute one Run and silently wrong the moment it can execute several —
+ * Run B's stdout would extend Run A's stall deadline and land in A's audit
+ * stream. `runId` is `null` only when the invocation carried none (fakes and
+ * older callers); the monitor treats that as "no attributable Run" and ignores
+ * the event rather than guessing.
+ */
 export type MonitorSidecarEvent =
-  | { readonly kind: 'started'; readonly pid: number | null }
-  | { readonly kind: 'stdout-chunk'; readonly chunk: string }
-  | { readonly kind: 'stderr-chunk'; readonly chunk: string }
+  | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }
+  | { readonly kind: 'stdout-chunk'; readonly runId: string | null; readonly chunk: string }
+  | { readonly kind: 'stderr-chunk'; readonly runId: string | null; readonly chunk: string }
   | {
       readonly kind: 'exited';
+      readonly runId: string | null;
       readonly exitCode: number | null;
       readonly signal: string | null;
       readonly killed: boolean;

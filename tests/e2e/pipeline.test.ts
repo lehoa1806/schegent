@@ -13,6 +13,7 @@ import { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 // Feature 034 Item 055 — deterministic Speckit pipeline E2E test.
 //
@@ -136,7 +137,7 @@ describe('Feature 034 Item 055 — deterministic Speckit pipeline E2E', () => {
     const feature = await queue.enqueue('e2e happy path');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
     expect(run.pipeline?.id).toBe('speckit-new-feature');
@@ -178,7 +179,7 @@ describe('Feature 034 Item 055 — deterministic Speckit pipeline E2E', () => {
     expect(phaseSequence.filter((p) => p === 'speckit-analyze').length).toBe(2);
     expect(phaseSequence.filter((p) => p === 'speckit-implement').length).toBe(1);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
   }, 60_000);
 
@@ -188,7 +189,7 @@ describe('Feature 034 Item 055 — deterministic Speckit pipeline E2E', () => {
     const feature = await queue.enqueue('e2e fatal');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('failed');
     expect(run.currentPhase).toBe('speckit-implement');
   }, 60_000);

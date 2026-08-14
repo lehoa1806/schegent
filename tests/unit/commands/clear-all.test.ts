@@ -197,12 +197,19 @@ describe('runClearAll — failure-mode translation (T020)', () => {
     // Probe budget is 2s; allow some slack on slow CI but assert it actually
     // waited at least 1.5s (the probe polls until the deadline).
     expect(elapsed).toBeGreaterThanOrEqual(1_500);
-    // Runner did NOT ack, so the lock is NOT released by runClearAll —
-    // the runner's own finally block will release it on its eventual exit.
+    // Feature 093 (T068b, FR-028) — no ack, no release. Still true, for a
+    // different reason: `runClearAll` releases primacy on no path at all now.
     expect(ctx.lock.release).not.toHaveBeenCalled();
   });
 
-  it('runner acks: releases the lock and does not emit the runner-pending toast', async () => {
+  // Feature 093 (T068b, FR-028) — this asserted `release` was called exactly
+  // once. Window primacy is acquired at activation and released at disposal;
+  // Clean All is neither. The old release stopped the heartbeat and nulled the
+  // record, and only `tryAcquire()` restores either, so one Clean All left the
+  // window non-primary for the rest of the session — including for its own
+  // `isHeld()` guard on the next Clean All. The ack still matters, and is still
+  // asserted: it decides the toast and the audited `runnerState`.
+  it('runner acks: keeps primacy and does not emit the runner-pending toast', async () => {
     // Controller flips `running` to false promptly — the probe resolves true.
     const flipping = (() => {
       let running = true;
@@ -222,7 +229,7 @@ describe('runClearAll — failure-mode translation (T020)', () => {
 
     expect(result).toEqual({ ok: true });
     expect(ctx.notifier.warn).not.toHaveBeenCalled();
-    expect(ctx.lock.release).toHaveBeenCalledTimes(1);
+    expect(ctx.lock.release).not.toHaveBeenCalled();
     const auditCall = ctx.audit.append.mock.calls[0][0];
     expect(auditCall.payload.runnerState).toBe('acked');
   });

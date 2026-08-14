@@ -44,6 +44,14 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
     raw = await inputs.runner.invoke({
       phase: inputs.phase,
       iteration: inputs.iteration,
+      // Feature 093 (T046 census gap) — compaction spawns a real CLI subprocess
+      // on this Run's behalf, so its monitor sidecar events need the same
+      // attribution the phase invocation gets. Left unstamped, they carry
+      // `runId: null` and the monitor drops them, which is only harmless while
+      // one Run exists per window: with two live subprocesses a stalling
+      // compaction is invisible to the Run it is stalling. Stamping affects
+      // nothing but those events — never argv, env, or any spawn decision.
+      runId: inputs.runId,
       prompt: COMPACTION_PROMPT,
       timeoutMs: 60_000,
       cliPath: inputs.cliPath,

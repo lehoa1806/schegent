@@ -8,6 +8,14 @@
 // the tenure it was missing: released on every terminal status, before the next
 // drain is scheduled.
 //
+// Feature 093 (T049a) — every case below now pairs `drainQueuedWork` with
+// `drainedRunsSettled()`. The drain returns at admission rather than at the
+// Run's terminal transition, so the first call means "the queue was offered
+// work" and the second means "that work is over". These tests assert on the
+// *second* — the release happens at the terminal transition — so they have to
+// name it. The lease's tenure is unchanged; only the place a test can observe
+// its end moved, which is the header note above restated after the split.
+//
 // EVERY assertion here runs with the fake clock NOT advanced. That is the whole
 // test. Advancing past `STALENESS_THRESHOLD_MS` lets the reclaim path answer
 // instead of the release path, and the file would pass against the leak while
@@ -23,6 +31,12 @@
 // neither is reachable by strengthening them. The clock stays frozen for these
 // two as well, and for the sharper reason: past the staleness threshold the
 // reclaim hands the queue over no matter which guard is present.
+//
+// Feature 093 (T027) — every `getRun` here reads `QUEUE_A`, the queue the work
+// was enqueued on, because the run store is now keyed by queue. Reading the
+// default queue would answer `null` for all six and turn the status assertions
+// into vacuous ones, which is the same reason `QUEUE_A` is not `'default'` to
+// begin with.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
@@ -232,9 +246,10 @@ describe('feature 092 (T130, BUG-001, FR-033a, SC-012) — a completed Run retur
     await w.queue.enqueue('task on A', { queueId: QUEUE_A });
 
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
     // The drain reached step 7 and the Run ran to a terminal state.
-    expect(w.store.getRun()?.status).toBe('completed');
+    expect(w.store.getRun(QUEUE_A)?.status).toBe('completed');
 
     // The queue is free the instant the Run ends — not 15 s later.
     expect(w.executionLease.isHeld(QUEUE_A)).toBe(false);
@@ -249,8 +264,9 @@ describe('feature 092 (T131, BUG-001, FR-033a) — every terminal status returns
     await w.queue.enqueue('task on A', { queueId: QUEUE_A });
 
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
-    expect(w.store.getRun()?.status).toBe('failed');
+    expect(w.store.getRun(QUEUE_A)?.status).toBe('failed');
     expect(w.executionLease.isHeld(QUEUE_A)).toBe(false);
     const rival = await rivalWindow(w.memento);
     await expect(rival.tryAcquire(QUEUE_A)).resolves.toMatchObject({ acquired: true });
@@ -261,8 +277,9 @@ describe('feature 092 (T131, BUG-001, FR-033a) — every terminal status returns
     await w.queue.enqueue('task on A', { queueId: QUEUE_A });
 
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
-    expect(w.store.getRun()?.status).toBe('canceled');
+    expect(w.store.getRun(QUEUE_A)?.status).toBe('canceled');
     expect(w.executionLease.isHeld(QUEUE_A)).toBe(false);
     const rival = await rivalWindow(w.memento);
     await expect(rival.tryAcquire(QUEUE_A)).resolves.toMatchObject({ acquired: true });
@@ -276,12 +293,13 @@ describe('feature 092 (T131, BUG-001, FR-033a) — every terminal status returns
     const w = await makeWorkspace(tmpRoot, 'completed');
     await w.queue.enqueue('task on A', { queueId: QUEUE_A });
 
-    vi.spyOn(w.controller, 'startNew').mockRejectedValueOnce(new Error('start refused'));
+    vi.spyOn(w.controller, 'admitNew').mockRejectedValueOnce(new Error('start refused'));
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
     // No Run exists, so no terminal transition can have released anything —
     // the lease came back through step 7 alone.
-    expect(w.store.getRun()).toBeNull();
+    expect(w.store.getRun(QUEUE_A)).toBeNull();
     expect(w.released).toEqual([QUEUE_A]);
     expect(w.executionLease.isHeld(QUEUE_A)).toBe(false);
   });
@@ -304,8 +322,9 @@ describe('feature 092 (T138, BUG-003, FR-033a, SC-014) — a paused Run keeps it
       await expect(w.controller.pauseActivePhase()).resolves.toMatchObject({ ok: true });
     };
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
-    expect(w.store.getRun()?.status).toBe('paused');
+    expect(w.store.getRun(QUEUE_A)?.status).toBe('paused');
 
     // A paused Run still owns its queue, and the resume continues on this lease.
     expect(w.released).toEqual([]);
@@ -343,11 +362,12 @@ describe('feature 092 (T139, BUG-003, FR-033a, SC-014) — a Run with no Task ro
       await expect(w.controller.deleteTask(task.id)).resolves.toMatchObject({ ok: true });
     };
     await w.controller.drainQueuedWork(QUEUE_A);
+    await w.controller.drainedRunsSettled();
 
     // The row is gone and the Run ended, so the funnel ran with an unresolvable
     // queue.
     expect(w.queue.findById(task.id)).toBeNull();
-    expect(w.store.getRun()?.status).toBe('canceled');
+    expect(w.store.getRun(QUEUE_A)?.status).toBe('canceled');
 
     // The sibling's lease survives. Assert the lease, not the warning: the warn
     // is observable with the guard deleted too, since the mutant logs nothing.

@@ -163,7 +163,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     await controller.startNew(taskA, 'specs/001-existing');
 
     // Phase 1: confirm the run halted mid-phase + the queue cascaded.
-    const runPaused = store.getRun()!;
+    const runPaused = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(runPaused.status).toBe('paused');
     expect(runPaused.manualPauseCause).toBe('operator-paused');
     expect(pausedDuringPhase).toBe('speckit-clarify');
@@ -186,7 +186,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // analyze → implement → finalize → done).
     await controller.resumeActivePhase();
     for (let i = 0; i < 200; i++) {
-      const r = store.getRun();
+      const r = store.getRun(DEFAULT_QUEUE_ID);
       if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
         break;
       }
@@ -200,7 +200,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     expect(regAfterResume?.state).toBe('active');
     expect(regAfterResume?.pauseSource).toBeNull();
 
-    const runResumed = store.getRun()!;
+    const runResumed = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(runResumed.manualPauseAt).toBeNull();
     expect(runResumed.manualPauseCause).toBeNull();
     expect(runResumed.status).toBe('completed');

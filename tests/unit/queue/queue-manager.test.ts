@@ -599,3 +599,59 @@ describe('QueueManager capacity predicates (T040)', () => {
     expect(queue.hasWorkspaceCapacity()).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 093 (T072, FR-014, RS-1) — the third predicate: the cap read as a
+// counting semaphore over the Runs a window is actually driving.
+//
+// FR-014 is explicit that the cap must bound Runs *concurrently executing*,
+// "not merely the number of accounted slots". `hasWorkspaceCapacity` counts
+// persisted in-flight Task rows, which is the workspace-wide reading; this one
+// is handed the live-Run count and compares it to the same setting. It takes
+// the count rather than reading it, because the sessions live in the controller
+// and the queue model holds no handle to it.
+// ---------------------------------------------------------------------------
+describe('QueueManager.hasExecutionCapacity (T072)', () => {
+  it('admits below the cap and refuses at it', async () => {
+    await store.setGlobalConcurrencyCap(3);
+    expect(queue.hasExecutionCapacity(0)).toBe(true);
+    expect(queue.hasExecutionCapacity(2)).toBe(true);
+    expect(queue.hasExecutionCapacity(3)).toBe(false);
+  });
+
+  it('refuses above the cap, which is how a lowered cap stops admitting', async () => {
+    // FR-016: lowering the cap terminates nothing, so a window can legitimately
+    // hold more live Runs than the new setting. The predicate must refuse rather
+    // than wrap or throw, and admission stays closed until enough Runs end.
+    await store.setGlobalConcurrencyCap(1);
+    expect(queue.hasExecutionCapacity(3)).toBe(false);
+    expect(queue.hasExecutionCapacity(1)).toBe(false);
+    expect(queue.hasExecutionCapacity(0)).toBe(true);
+  });
+
+  it('reads the setting live, so a raised cap opens admission with no restart', async () => {
+    await store.setGlobalConcurrencyCap(1);
+    expect(queue.hasExecutionCapacity(1)).toBe(false);
+    await store.setGlobalConcurrencyCap(2);
+    expect(queue.hasExecutionCapacity(1)).toBe(true);
+  });
+
+  it('answers independently of the in-flight row count the other predicate reads', async () => {
+    // Two in-flight rows and a cap of 2: the workspace reading is full while the
+    // execution reading — a window driving nothing — is open. Neither subsumes
+    // the other, which is why the drain gate needs both. The rows sit on two
+    // queues because one queue admits one in-flight Task.
+    const second = '11111111-2222-4333-8444-666666666666';
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), { id: second, name: 'Second', now: Date.now() })
+    );
+    await store.setGlobalConcurrencyCap(2);
+    const a = await queue.enqueue('one');
+    const b = await queue.enqueue('two', { queueId: second });
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.markInFlight(b.id, 'run-2');
+
+    expect(queue.hasWorkspaceCapacity()).toBe(false);
+    expect(queue.hasExecutionCapacity(0)).toBe(true);
+  });
+});

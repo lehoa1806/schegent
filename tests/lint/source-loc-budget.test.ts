@@ -41,7 +41,91 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // must address the same lease manager, which is what turned one inline
   // constructor argument into a named const. The remainder is one import, one
   // bound field, four constructor lines, and two call sites.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 750 },
+  // Feature 093 (T027) — 750 → 833 for the per-queue run record, against a
+  // ceiling that had one line to give. Every `getRun`/`setRun` in this file now
+  // names the queue it addresses, and the eight phase controls each gained a
+  // queue to resolve. Extraction was measured first and buys 25 lines
+  // (858 → 833): the resolution rule itself moved out, to
+  // `resolveControlTarget` in src/controller/sole-run-resolver.ts, where it sits
+  // beside the sole-Run rule it delegates to, and the resolve-or-refuse preamble
+  // the eight controls repeated verbatim folded into one private `control`
+  // helper. What could not move is the threading, and it is in this file by
+  // definition: `startNew`, `deleteTask`, `retryPhaseNow`, `resumeExisting`,
+  // `resumeExistingFromActivation`, and `persistTransition` are the sites that
+  // read and write the record, and each needed the queue plus a recorded note on
+  // whether its Run-id comparison survives the reshape (T040 sweeps the ones
+  // that do not). Moving any of them out would relocate a pre-existing
+  // responsibility to buy budget, which is the drive-by refactor the ratchet
+  // exists to make unnecessary rather than to force.
+  // Feature 093 (T042) — 833 → 902 for the per-queue driving context, against a
+  // ceiling that had zero to give (the file measured exactly 833). Extraction
+  // was measured first and is the larger half of the change: `RunSession`, the
+  // `Map<queueId, RunSession>` that holds them, and the whole RS-3/RS-4/RS-5
+  // disposal rule moved out, to src/controller/run-session.ts, which is also
+  // where the cap's `sessions.size` will read from (T072) rather than from a
+  // counter beside it. What could not move is the wiring, and it is in this file
+  // by definition: the `RunDriver` construction closes over twenty-five deps
+  // built in this constructor, so the driver factory is a closure here and
+  // nowhere else; `startNew`, `resumeExisting`, `deleteTask`, and
+  // `retryPhaseNow` are the four entry points that drive or address a session;
+  // and `PhaseControlService`'s three formerly-window-scoped deps
+  // (`isDriving`, `noteActivePhaseOverrideAbort`, `armIsContinue`) become
+  // queue-addressed seams at their one construction site, which is here. About
+  // four fifths of the delta is the recorded reasoning on each — why disposal
+  // sits after `drive()` returns rather than in `persistTransition`, why
+  // `cancelActive()` keeps an unaddressed form, why a refused resume must still
+  // dispose. Raised to exactly what the file measures, per the convention above.
+  // Feature 093 (T045-T047) — 902 → 919 as the rest of Phase D's collaborators
+  // became queue-addressed. Extraction was measured first and, unlike T042's,
+  // nothing came out: the two candidates are `handleUnexpectedStartFailure`
+  // (103 lines, twelve collaborators) and `deleteTask` (66 lines, eight), and
+  // each is a terminal path carrying an FR-033a `releaseExecutionLeaseForRun`
+  // site — `handleUnexpectedStartFailure` carries the `lock.release()` too.
+  // Moving either behind a deps object puts hard-rule-bearing code behind an
+  // indirection during the very migration that is changing it, which costs more
+  // review than the seventeen lines it buys. The delta itself is not a new
+  // responsibility: 109 of the 235 added lines are the recorded reasoning the
+  // hard rules require at each addressing site, and the code half is +56 net
+  // across the whole file — parameter threading and queue-addressed reads, with
+  // no cohesive unit hiding inside it. Later phases will move this again;
+  // re-measure rather than pre-allocating slack.
+  // Feature 093 (T049a) — 919 → 994 for the admission seam: `startNew` and
+  // `resumeExisting` each split into a delegating wrapper plus an `admit*` half
+  // that returns the drive instead of awaiting it. Extraction was measured and
+  // this time something did come out: the four declarations the seam introduces
+  // (`RunAdmission`, `ResumeAdmission`, and the two nothing-to-do constants) are
+  // a contract between this file and `auto-drain-coordinator.ts` rather than an
+  // internal of either, so they now live in `src/controller/run-admission.ts`
+  // and are re-exported here for the existing import sites. That is the whole of
+  // what is extractable: the remaining delta is four method bodies that must
+  // stay on the class because each touches `runFactory`, `store`, `queue` and
+  // `sessions` in one transaction, and about two thirds of it is the recorded
+  // reasoning on why the seam sits at `markInFlight` — the point after which the
+  // rest of a sweep can see the new Run in its capacity counts, and the point
+  // CLAUDE.md's lease rule uses to separate the drain's step-7 release from
+  // `releaseExecutionLeaseForRun()`, plus the `drainedRunsSettled()` delegation
+  // the split makes necessary: `drainQueuedWork` used to answer "that work is
+  // over" by accident, and the two moments now need two names. Raised to
+  // exactly what the file measures.
+  // Feature 093 (T035/T036) — 994 → 1008 for the queue-addressed phase
+  // controls. What landed is eight widened public signatures and the private
+  // `control()` fold they share. The fold IS the extraction: without it each
+  // facade repeats the same resolve-or-refuse preamble, which is eight places
+  // for the refusal rule to drift instead of one, and the rule itself already
+  // lives off-class in `sole-run-resolver.ts`. The eight facades cannot follow
+  // it — they are the controller's public surface, named by `ui-wiring.ts`,
+  // `retry-phase-now.ts`, and the sidebar router — so moving them would buy a
+  // smaller file with a delegation layer in front of every call site. Raised to
+  // exactly what the file measures.
+  // Feature 093 (T068b, FR-028) — 1008 → 1023, and the code half is *negative*:
+  // two `this.lock.release()` statements deleted and the `lock` parameter
+  // property demoted to a plain parameter. The whole delta is recorded
+  // reasoning, and it is the kind the hard rules require — CLAUDE.md's lock rule
+  // is the one rule in the file that governs two different leases, so a bare
+  // deletion at either site reads as "never skip lock release" being violated.
+  // Nothing was extracted because nothing was added; re-measuring is the only
+  // honest response to a file that shrank in code and grew in explanation.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1023 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both

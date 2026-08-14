@@ -307,6 +307,29 @@ export class QueueManager {
     return this.inFlightCount() < this.store.getGlobalConcurrencyCap();
   }
 
+  /**
+   * Feature 093 (T072, FR-014, RS-1) — the cap as a counting semaphore over
+   * **live Runs**, which is what the operator set it to bound.
+   *
+   * `hasWorkspaceCapacity()` above counts in-flight *Task rows*; FR-014 names
+   * that reading and rejects it as the cap's oracle ("not merely the number of
+   * accounted slots"). The two agreed while one Run could execute per window
+   * and nothing forced them to keep agreeing. The count passed here is
+   * `RunSessionRegistry.size` — a session exists from the moment its Run is
+   * admitted until the Run reaches a terminal state, so a **paused** Run keeps
+   * its slot (FR-014a) with no second rule to state it, and a Run that ended
+   * releases its slot without an operator doing anything (FR-016).
+   *
+   * Takes the count rather than reading it, because the sessions live in the
+   * controller and the queue model has no business holding a handle to it.
+   * Acquisition only: nothing here revokes a slot, so lowering the cap below
+   * the number of live Runs refuses the next start and terminates none of the
+   * current ones (FR-017).
+   */
+  public hasExecutionCapacity(liveRunCount: number): boolean {
+    return liveRunCount < this.store.getGlobalConcurrencyCap();
+  }
+
   public async enqueue(
     description: string,
     options: {
@@ -395,7 +418,11 @@ export class QueueManager {
     // Feature 072 — emit task-execution-started after markInFlight succeeds
     if (this.lifecycleAuditHook) {
       try {
-        const currentRun = this.store.getRun();
+        // Feature 093 (T022) — the queue is already resolved above as the one
+        // this transition addressed, so the Run is read from it rather than
+        // ambiently. The `id === runId` guard stays: the queue answers *which*
+        // Run, and the id answers whether it is the one this call started.
+        const currentRun = this.store.getRun(ownerQueueId);
         const pipelineId = (currentRun?.id === runId ? currentRun?.pipeline?.id : '') ?? '';
         await this.lifecycleAuditHook.append({
           runId,
@@ -1016,10 +1043,14 @@ export class QueueManager {
   public async removeTask(taskId: string): Promise<QueueMutationDetail> {
     try {
       const removed = await this.store.removeRequest(taskId);
-      const run = this.store.getRun();
-      if (removed.status === 'in-flight' && run?.featureId === removed.id) {
-        await this.store.setRun({
-          ...run,
+      // Feature 093 (T022) — pattern B: the Task id is what is held, so the
+      // store resolves the Run *and* its queue together. The old form compared
+      // `featureId` against the one ambient Run, which in a window running
+      // several would have cancelled whichever happened to be there.
+      const active = this.store.findRunByTask(removed.id);
+      if (removed.status === 'in-flight' && active !== null) {
+        await this.store.setRun(active.queueId, {
+          ...active.run,
           status: 'canceled',
           lastTransitionAt: Date.now()
         });
@@ -1297,7 +1328,10 @@ export class QueueManager {
     // run. If so, preserve runId and startedAt so the auto-drain
     // coordinator can resume the failed phase instead of restarting the
     // entire pipeline from scratch.
-    const activeRun = this.store.getRun();
+    // Feature 093 (T022) — pattern B. `retry` already names the Task, so the
+    // Run it compares against is the one executing that Task, not whichever
+    // Run the workspace happened to hold.
+    const activeRun = this.store.findRunByTask(featureId)?.run ?? null;
     return this.store.updateQueue<MutationResult>((queue) => {
       const idx = queue.requests.findIndex((r) => r.id === featureId);
       if (idx === -1) return { queue, result: { ok: false, reason: 'not-found' } };
@@ -1377,7 +1411,10 @@ export class QueueManager {
   public async clearAll(probe?: CleanAllRunnerAckProbe | null): Promise<CleanAllResult> {
     const queuesBefore = this.store.getQueueStates();
     const queueIdsBefore = Object.keys(queuesBefore);
-    const runBefore = this.store.getRun();
+    // Feature 093 (T022) — pattern D. `clearAll` is workspace-scoped, so "the
+    // active run" is every queue's, and the ids are captured before the clear
+    // because step 3 below has to name each queue it clears.
+    const runQueueIdsBefore = Object.keys(this.store.getRunMap());
     const watchdogBefore = this.store.getWatchdog();
 
     const removed = {
@@ -1420,7 +1457,7 @@ export class QueueManager {
       pauseSourceEntry && pauseSourceEntry.pauseSource
         ? (pauseSourceEntry.pauseSource as CleanAllResult['pauseSource'])
         : null;
-    const activeRunBefore = runBefore !== null;
+    const activeRunBefore = runQueueIdsBefore.length > 0;
     const watchdogActiveBefore =
       watchdogBefore.paused === true ||
       watchdogBefore.pausedSince !== null ||
@@ -1472,9 +1509,9 @@ export class QueueManager {
       await this.setQueuePausedState(false, queueId, null, 'operator');
     }
 
-    // 3. Clear the active run snapshot.
-    if (activeRunBefore) {
-      await this.store.setRun(null);
+    // 3. Clear the active run snapshot — one per queue that held one.
+    for (const queueId of runQueueIdsBefore) {
+      await this.store.setRun(queueId, null);
     }
 
     // 4. Reset watchdog backoff fields. Preserve `pollIntervalMs` (config)
@@ -1511,8 +1548,14 @@ export class QueueManager {
     //    cleared run as still-active. Re-clear after the probe completes to
     //    reassert FR-005's "active workflow-run snapshot cleared" invariant.
     //    Idempotent; safe when no run was present.
-    if (activeRunBefore) {
-      await this.store.setRun(null);
+    //
+    //    Feature 093 (T022) — the same queue ids as step 3, not a re-read of the
+    //    map: a queue whose Run the probe re-persisted is one that held a Run
+    //    before the clear, and re-reading would additionally clear a Run started
+    //    on some *other* queue while the probe was awaited — work `clearAll`
+    //    never saw and has no mandate over.
+    for (const queueId of runQueueIdsBefore) {
+      await this.store.setRun(queueId, null);
     }
 
     return {
@@ -1652,11 +1695,14 @@ export class QueueManager {
   }
 
   private async pauseMatchingRunForQueue(queueId: string, now: number): Promise<void> {
-    const run = this.store.getRun();
+    // Feature 093 (T022) — pattern A. The queue is a parameter, so the Run is
+    // read from it directly instead of reading the one workspace Run and asking
+    // afterwards whether it belonged here.
+    const run = this.store.getRun(queueId);
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching) return;
     if (matching.manualPauseAt !== null) return;
-    await this.store.setRun({
+    await this.store.setRun(queueId, {
       ...matching,
       manualPauseAt: now,
       manualPauseCause: 'queue-paused-mid-run'
@@ -1664,10 +1710,10 @@ export class QueueManager {
   }
 
   private async resumeMatchingRunForQueue(queueId: string, now: number, resumePrompt?: string): Promise<void> {
-    const run = this.store.getRun();
+    const run = this.store.getRun(queueId);
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching || matching.manualPauseCause !== 'queue-paused-mid-run') return;
-    await this.store.setRun({
+    await this.store.setRun(queueId, {
       ...matching,
       status: matching.status === 'paused' ? 'running' : matching.status,
       manualPauseAt: null,

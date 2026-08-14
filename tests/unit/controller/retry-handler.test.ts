@@ -79,8 +79,22 @@ function makePhaseResult(overrides: Partial<PhaseResult> = {}): PhaseResult {
 
 interface TestDeps {
   retryCap: number;
+  /** Feature 093 (T045) — the queue the fake `queueIdForTask` reports. */
+  queueId: string;
   watchdog: DelayedRetryWatchdog | null;
-  watchdogCalls: Array<{ cause: string; durationOverrideMs?: number; skipStatusCheck?: boolean }>;
+  /**
+   * Feature 093 (T045) — what the handler armed, and for which queue. The
+   * handler no longer touches the watchdog itself; it calls `armDelayedRetry`,
+   * and `RetryCoordinator` is what turns that into a `pauseAndPoll`. The
+   * stand-in below forwards to `tracker.watchdog` so the existing assertions on
+   * cause and duration keep testing the same values at the same seam.
+   */
+  watchdogCalls: Array<{
+    queueId: string;
+    cause: string;
+    durationOverrideMs?: number;
+    skipStatusCheck?: boolean;
+  }>;
   storeCalls: Array<{ prev: WorkflowRun; next: WorkflowRun }>;
   setQueuePausedStateCalls: Array<[boolean, string | undefined, string | null | undefined, string | undefined]>;
   pauseTaskCalls: Array<[string, string]>;
@@ -94,6 +108,7 @@ interface TestDeps {
 function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tracker: TestDeps; deps: RetryHandlerDeps } {
   const tracker: TestDeps = {
     retryCap: opts.retryCap ?? DELAYED_RETRY_CAP,
+    queueId: opts.queueId ?? 'queue-a',
     watchdog: opts.watchdog === undefined ? {
       pauseAndPoll: vi.fn(async () => {}),
       cancelPendingTimer: vi.fn()
@@ -108,13 +123,7 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
     statusBarCalls: [],
     notifierWarnCalls: []
   };
-  if (tracker.watchdog) {
-    const origPause = tracker.watchdog.pauseAndPoll.bind(tracker.watchdog);
-    tracker.watchdog.pauseAndPoll = vi.fn(async (cause, options) => {
-      tracker.watchdogCalls.push({ cause, ...options });
-      return origPause(cause, options);
-    });
-  }
+
   const deps: RetryHandlerDeps = {
     store: {} as RetryHandlerDeps['store'],
     queue: {
@@ -131,7 +140,9 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
       ),
       pause: vi.fn(async (featureId: string, cause: string) => {
         tracker.pauseTaskCalls.push([featureId, cause]);
-      })
+      }),
+      // Feature 093 (T045) — the handler derives the queue from the Run's task.
+      queueIdForTask: vi.fn(() => tracker.queueId)
     } as unknown as RetryHandlerDeps['queue'],
     statusBar: {
       update: vi.fn((arg: unknown) => {
@@ -155,7 +166,22 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
       info: vi.fn(),
       error: vi.fn()
     } as unknown as RetryHandlerDeps['logger'],
-    getWatchdog: () => tracker.watchdog,
+    // Feature 093 (T045) — stands in for `RetryCoordinator.armDelayedRetry`,
+    // reproducing the one behavior the handler depends on: forward to the
+    // watchdog when there is one. The not-wired warning moved with the
+    // forwarding and is covered in tests/unit/services/retry-coordinator.test.ts.
+    armDelayedRetry: async (queueId: string, cause: string, delayMs: number) => {
+      tracker.watchdogCalls.push({
+        queueId,
+        cause,
+        durationOverrideMs: delayMs,
+        skipStatusCheck: true
+      });
+      await tracker.watchdog?.pauseAndPoll(cause, {
+        durationOverrideMs: delayMs,
+        skipStatusCheck: true
+      });
+    },
     auditWriter: {
       append: vi.fn(async (entry: Record<string, unknown>) => {
         tracker.auditAppendCalls.push(entry);
@@ -272,22 +298,33 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       expect(typeof ctx.scheduledAt).toBe('number');
     });
 
-    it('logs a WARN when the watchdog is not yet wired and skips pauseAndPoll', async () => {
+    it('arms the deadline against the queue that owns the Run (Feature 093 FR-024)', async () => {
+      const { handler, tracker } = makeHandler({ queueId: 'queue-b' });
+      const run = makeRun({ delayedRetryCount: 0 });
+      const phaseResult = makePhaseResult();
+
+      await handler.handleDelayedRetry(run, 1, phaseResult, 'transient_error', null, null);
+
+      // The arm names a queue. Unaddressed, N Runs collapse onto one deadline
+      // and the last one to schedule silently owns the window's only timer.
+      expect(tracker.watchdogCalls).toHaveLength(1);
+      expect(tracker.watchdogCalls[0].queueId).toBe('queue-b');
+    });
+
+    it('persists the retry state even when the arm cannot schedule anything', async () => {
+      // The watchdog-not-wired case: the handler's job is the state mutation,
+      // and whether a deadline can physically be armed is the coordinator's
+      // (see tests/unit/services/retry-coordinator.test.ts, which owns the WARN).
       const { handler, tracker } = makeHandler({ watchdog: null });
       const run = makeRun({ delayedRetryCount: 0 });
       const phaseResult = makePhaseResult();
 
       const result = await handler.handleDelayedRetry(run, 1, phaseResult, 'transient_error', null, null);
 
-      // State still persisted.
       expect(result.status).toBe('paused');
       expect(result.delayedRetryCount).toBe(1);
       expect(result.pendingRetryAt).not.toBeNull();
-
-      // No pauseAndPoll attempted.
-      expect(tracker.watchdogCalls).toHaveLength(0);
-      // Warning emitted.
-      expect(tracker.warnCalls.some((m) => m.includes('watchdog not wired'))).toBe(true);
+      expect(tracker.warnCalls.some((m) => m.includes('watchdog not wired'))).toBe(false);
     });
   });
 

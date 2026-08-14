@@ -26,6 +26,7 @@ import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { HistoryEntry } from '../../../src/state/history-entry';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -226,7 +227,7 @@ describe('Audit/history-emit parity post-Wave-7 (T103)', () => {
 
     await expect(controller.startNew(feature, null)).resolves.toBeUndefined();
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
   });
 });

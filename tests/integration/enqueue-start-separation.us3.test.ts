@@ -130,7 +130,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
     // No new idle-pending-entered event (already in idle-pending).
     expect(h.audit.byType('idle-pending-entered').length).toBe(baselineEntered);
     // No promotion (no startNew call).
-    expect(h.controller.startNew).not.toHaveBeenCalled();
+    expect(h.controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('(4) SC-002 — N=10 enqueues into idle-pending: 0 state-shape changes, 0 chooser surfaces', async () => {

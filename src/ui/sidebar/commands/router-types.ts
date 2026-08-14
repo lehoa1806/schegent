@@ -105,10 +105,18 @@ export interface QueueOps {
   }>;
 }
 
+/**
+ * Feature 093 (FR-018 / T080) — `queueId` is required on every control that
+ * addresses a Run. The controller's own signatures keep it optional so the
+ * palette callers of T038 can still resolve a sole Run, but nothing reaching
+ * this interface comes from the palette: it all comes from a webview command
+ * that named a queue, and requiring the parameter here is what stops a handler
+ * from quietly dropping it.
+ */
 export interface PhaseOps {
-  skipPhase(phaseId: string): Promise<{ ok: boolean; reason?: string }>;
-  disablePhase(phaseId: string): Promise<{ ok: boolean; reason?: string }>;
-  enablePhase(phaseId: string): Promise<{ ok: boolean; reason?: string }>;
+  skipPhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
+  disablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
+  enablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
   deleteTask?(
     taskId: string
   ): Promise<{
@@ -126,11 +134,13 @@ export interface PhaseOps {
   ): Promise<{ ok: boolean; reason?: string; priorPhaseState?: string; runId?: string }>;
   setPhaseBreakpoint?(
     runId: string,
-    phaseId: string
+    phaseId: string,
+    queueId: string
   ): Promise<{ ok: boolean; reason?: string }>;
   clearPhaseBreakpoint?(
     runId: string,
-    phaseId: string
+    phaseId: string,
+    queueId: string
   ): Promise<{ ok: boolean; reason?: string }>;
 }
 

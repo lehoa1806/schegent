@@ -1,4 +1,5 @@
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import { resolveSoleRun } from '../controller/sole-run-resolver';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
@@ -18,12 +19,23 @@ export async function runResume(ctx: {
     if (!lockResult.acquired) {
       throw new LockHeldError(lockResult.ownerId);
     }
-    const run = ctx.store.getRun();
-    if (!run || (run.status !== 'paused' && run.status !== 'failed')) {
-      ctx.notifier.info('Schegent: no resumable run found.');
+    // Feature 093 (T038) — the palette command names no queue, so it resumes
+    // the one resumable Run or refuses. Resuming every paused Run would be the
+    // other candidate reading, but `ctx.prompt` is an operator's continuation
+    // message written for one Run; broadcasting it is worse than declining.
+    const target = resolveSoleRun(
+      ctx.store.getRunMap(),
+      (run) => run.status === 'paused' || run.status === 'failed'
+    );
+    if (!target.ok) {
+      ctx.notifier.info(
+        target.reason === 'ambiguous-run-target'
+          ? 'Schegent: several runs are resumable; resume one from the sidebar instead.'
+          : 'Schegent: no resumable run found.'
+      );
       return;
     }
-    const resumed = await ctx.controller.resumeExisting(ctx.prompt);
+    const resumed = await ctx.controller.resumeExisting(target.queueId, ctx.prompt);
     if (!resumed) {
       ctx.notifier.warn('Schegent: could not resume; run details missing.');
     }

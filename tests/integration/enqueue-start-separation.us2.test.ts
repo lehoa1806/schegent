@@ -126,14 +126,15 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
       updatedAt: h.clock.now()
     });
 
-    // Mark the in-flight (legacy controller) as not running.
-    h.controller.running = false;
-
+    // Feature 093 (T082) — the line that stood here set `controller.running`
+    // to false so drain step 4b would let the promotion through. Step 4b is
+    // gone (T081) and the drain no longer reads `running` at all, so the
+    // termination this test simulates is entirely the queue-state write above.
     await h.autoDrain.drainIfIdle();
 
     // The first call to startNew must have been made on the
     // controller stub.
-    expect(h.controller.startNew).toHaveBeenCalled();
+    expect(h.controller.admitNew).toHaveBeenCalled();
   });
 
   it('(4) SC-002 — N=10 enqueues into running: 0 state-shape changes, 0 chooser surfaces', async () => {

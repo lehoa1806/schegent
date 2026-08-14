@@ -57,7 +57,7 @@ describe('MessageRouter — CMD_RETRY_PHASE_NOW gating (FR-010)', () => {
     const cap = makeAckCapture();
 
     await router.dispatch(
-      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-1' },
+      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-1', payload: { queueId: 'default' } },
       cap.post
     );
 
@@ -74,22 +74,24 @@ describe('MessageRouter — CMD_RETRY_PHASE_NOW gating (FR-010)', () => {
     const cap = makeAckCapture();
 
     await router.dispatch(
-      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-2' },
+      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-2', payload: { queueId: 'default' } },
       cap.post
     );
 
-    expect(execSpy).toHaveBeenCalledWith('schegent.retryPhaseNow');
+    expect(execSpy).toHaveBeenCalledWith('schegent.retryPhaseNow', 'default');
     expect(cap.posted).toHaveLength(1);
     expect(cap.posted[0].status).toBe('accepted');
   });
 
-  it('CMD_RETRY_PHASE_NOW is a no-payload command (validator + router agree)', async () => {
+  // Feature 093 (T080) — retry-now carries the addressed queue; the payload
+  // is no longer empty, and the validator refuses it when the queue is absent.
+  it('CMD_RETRY_PHASE_NOW carries the addressed queue (validator + router agree)', async () => {
     const deps = makeDeps();
     const router = new MessageRouter(deps);
     const cap = makeAckCapture();
 
     await router.dispatch(
-      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-3' },
+      { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-3', payload: { queueId: 'default' } },
       cap.post
     );
 
@@ -104,7 +106,7 @@ describe('MessageRouter — CMD_RETRY_PHASE_NOW ack shape', () => {
     const cap = makeAckCapture();
 
     await router.dispatch(
-      { type: CMD_RETRY_PHASE_NOW, correlationId: 'corr-xyz' },
+      { type: CMD_RETRY_PHASE_NOW, correlationId: 'corr-xyz', payload: { queueId: 'default' } },
       cap.post
     );
 

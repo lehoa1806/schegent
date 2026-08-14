@@ -286,11 +286,14 @@ describe('AgyCliRunner.invoke', () => {
     }, outputSink);
 
     expect(result.cliSessionId).toBe('agy-conv-123');
+    // Feature 093 (T046) — every sidecar event names its Run; this request
+    // carries none, so the runner stamps `null` rather than guessing.
     expect(events).toContainEqual({
       kind: 'stdout-chunk',
+      runId: null,
       chunk: '{"type":"result","conversation_id":"agy-conv-123"}\n'
     });
-    expect(events).toContainEqual({ kind: 'stderr-chunk', chunk: 'progress\n' });
+    expect(events).toContainEqual({ kind: 'stderr-chunk', runId: null, chunk: 'progress\n' });
     expect(outputSink.write).toHaveBeenCalledWith(
       'stdout',
       '{"type":"result","conversation_id":"agy-conv-123"}\n'

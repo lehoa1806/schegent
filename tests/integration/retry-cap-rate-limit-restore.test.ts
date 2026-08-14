@@ -110,10 +110,11 @@ function makeRetryHandler(
       error: vi.fn()
     } as unknown as RetryHandlerDeps['notifier'],
     logger: h.logger as unknown as RetryHandlerDeps['logger'],
-    getWatchdog: () => ({
-      pauseAndPoll: vi.fn(async () => {}),
-      cancelPendingTimer: vi.fn()
-    }),
+    // Feature 093 (T045) — the handler arms the deadline through the
+    // coordinator, naming the queue, instead of reaching for the window's one
+    // watchdog. This suite asserts retry-cap and restore behavior, not timer
+    // wiring, so the arm is a no-op here as the watchdog stub was.
+    armDelayedRetry: async () => {},
     auditWriter: {
       append: (entry: never) => h.audit.append(entry)
     } as unknown as RetryHandlerDeps['auditWriter'],

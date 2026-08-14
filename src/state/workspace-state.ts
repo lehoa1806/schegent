@@ -27,6 +27,7 @@ import {
   type WorkflowRunRepairedAuditEvent
 } from './workflow-run-migrator';
 import {
+  assertPersistedVersionSupported,
   migrateLegacyQueueState,
   migrateV5ToV6,
   migrateV6ToV7,
@@ -36,6 +37,13 @@ import {
   type StateMigratedV6ToV7AuditEvent,
   type StateMigratedV9ToV10AuditEvent
 } from './queue-state-migrator';
+import {
+  isRunStateMap,
+  isWorkflowRun,
+  migrateV10ToV11,
+  type RunStateMap,
+  type RunStateMigrationAuditEvent
+} from './run-state-migrator';
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
 import type { SanitizedLogger } from '../lib/logger';
 
@@ -306,6 +314,25 @@ const DELAYED_RETRY_COUNT_PERSISTED_CEILING = 20;
  * Throws a typed error from the controller call site before the memento
  * write so split-state corruption is prevented locally.
  */
+/**
+ * Feature 093 (T048) — the one rule for recognising a persisted terminal
+ * transition intent, used both for a legacy single value and for each entry of
+ * the keyed journal. A second copy would be free to disagree about what counts
+ * as an intent, and the disagreement would surface as a transition that replays
+ * on one path and is silently dropped on the other.
+ */
+function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const intent = raw as Partial<TerminalTransitionIntent>;
+  return intent.schemaVersion === 1
+    && intent.run !== undefined
+    && typeof intent.run === 'object'
+    && typeof (intent.run as WorkflowRun).id === 'string'
+    && typeof intent.createdAt === 'number'
+    ? (intent as TerminalTransitionIntent)
+    : null;
+}
+
 function validateRunInvariants(run: WorkflowRun): void {
   if (
     run.rawTranscriptMode !== undefined &&
@@ -405,6 +432,12 @@ export interface InitializeResult {
   // `v6MigrationEvents` above; at most one event, and never on a fresh
   // workspace (there is nothing to lift).
   v10MigrationEvents: readonly StateMigratedV9ToV10AuditEvent[];
+  // Feature 093 — emitted by the v10 → v11 migrator when it reshaped the
+  // singular `WorkflowRun` record into the per-queue map, plus one event per
+  // repair it had to make on the way. Same forwarding contract as
+  // `v6MigrationEvents` above, and unlike `v10MigrationEvents` it is actually
+  // consumed — see the D2 wiring in `extension.ts`.
+  v11MigrationEvents: readonly RunStateMigrationAuditEvent[];
   // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
   runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
@@ -459,15 +492,15 @@ export class WorkspaceStateStore {
 
   public async initialize(): Promise<InitializeResult> {
     const persistedNumeric = this.memento.get<number>(KEYS.schemaVersionNumeric);
-    if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION) {
-      throw new Error(
-        `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION}. Update the extension before opening this workspace.`
-      );
-    }
+    // Feature 093 (T014, defect D3) — the forward-only refusal of FR-007, which
+    // used to be an inline copy of the check `assertPersistedVersionSupported`
+    // already made. Delegating rather than duplicating is what keeps the two
+    // from drifting: the copy that was called had the right constant and the
+    // copy that had a test had the wrong one, and nothing in the build could
+    // notice, because each was correct on its own terms.
+    assertPersistedVersionSupported(persistedNumeric);
     const persistedVersion = this.memento.get<string>(KEYS.schemaVersion);
     if (!persistedVersion) {
-      await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
-      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
@@ -475,18 +508,20 @@ export class WorkspaceStateStore {
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
+      const v11Events = await this.migrateV10ToV11IfNeeded();
       await this.reconcileQueuePauseStateIfDivergent();
+      await this.stampVersion(true);
       return {
         migrated: true,
         v6MigrationEvents: v6Events,
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
+        v11MigrationEvents: v11Events,
         runRepairEvents
       };
     }
     if (persistedVersion === SCHEMA_VERSION) {
       if (persistedNumeric !== STATE_SCHEMA_VERSION) {
-        await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
         // Numeric schema bump only (additive fields) — apply forward
         // migrator so legacy `WorkflowRun` records gain the new fields.
         const runRepairEvents = await this.normalizeRunForInitialize(
@@ -496,12 +531,15 @@ export class WorkspaceStateStore {
         const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
         const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
         const v10Events = await this.migrateV9ToV10IfNeeded();
+        const v11Events = await this.migrateV10ToV11IfNeeded();
         await this.reconcileQueuePauseStateIfDivergent();
+        await this.stampVersion(false);
         return {
           migrated: true,
           v6MigrationEvents: v6Events,
           v7MigrationEvents: v7Events,
           v10MigrationEvents: v10Events,
+          v11MigrationEvents: v11Events,
           runRepairEvents
         };
       }
@@ -510,25 +548,26 @@ export class WorkspaceStateStore {
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
+      const v11Events = await this.migrateV10ToV11IfNeeded();
       const reconciled = await this.reconcileQueuePauseStateIfDivergent();
       return {
         migrated:
           v6Events.length > 0
           || v7Events.length > 0
           || v10Events.length > 0
+          || v11Events.length > 0
           || runRepairEvents.length > 0
           || reconciled,
         v6MigrationEvents: v6Events,
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
+        v11MigrationEvents: v11Events,
         runRepairEvents
       };
     }
     const [persistedMajor] = persistedVersion.split('.');
     const [runtimeMajor] = SCHEMA_VERSION.split('.');
     if (persistedMajor === runtimeMajor) {
-      await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
-      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
@@ -536,18 +575,44 @@ export class WorkspaceStateStore {
       const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
+      const v11Events = await this.migrateV10ToV11IfNeeded();
       await this.reconcileQueuePauseStateIfDivergent();
+      await this.stampVersion(true);
       return {
         migrated: true,
         v6MigrationEvents: v6Events,
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
+        v11MigrationEvents: v11Events,
         runRepairEvents
       };
     }
     throw new Error(
       `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
     );
+  }
+
+  /**
+   * Record the runtime schema version — **after** the migration chain, never
+   * before it.
+   *
+   * Feature 093 (FR-002a) moved this. The version keys and the records the
+   * migrators reshape are separate memento keys with separate writes, so
+   * stamping first meant a migration that threw left a workspace claiming a
+   * version whose shape it did not have. Stamping last makes the failure
+   * legible instead: the persisted version stays where it was, in the shape it
+   * had, and the next open re-runs the whole chain. Every migrator in that
+   * chain is idempotent, which is what makes re-running it the recovery path —
+   * forward-only leaves no other one.
+   *
+   * The success path is unchanged: the same two keys reach the same two values
+   * in the same order.
+   */
+  private async stampVersion(includeVersionString: boolean): Promise<void> {
+    if (includeVersionString) {
+      await this.memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
+    }
+    await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
   }
 
   /**
@@ -605,6 +670,51 @@ export class WorkspaceStateStore {
     return result.auditEvents;
   }
 
+  /**
+   * Feature 093 (FR-002, FR-002a) — the v10 → v11 forward migration.
+   *
+   * Runs last in the chain, after `migrateV9ToV10IfNeeded()`, so the task →
+   * queue resolver below reads a `KEYS.queue` already in map shape. It owns
+   * **exactly one** `update()` and performs it only when the migrator reports a
+   * change. That is what makes the reshape all-or-nothing: `KEYS.run` is the
+   * only key it touches, so a rejected write leaves valid v10 state behind
+   * rather than a half-populated workspace, and the next open re-attempts.
+   * Forward-only means re-attempt is the whole recovery story — there is no
+   * rollback to a shape the runtime no longer reads.
+   *
+   * The step is keyed on the **shape** of the record and never on the persisted
+   * version number. The two live in separate memento keys with separate writes,
+   * so a workspace whose version key moved but whose record did not must still
+   * be repaired the next time it is opened; a version-gated step would skip it
+   * forever.
+   */
+  private async migrateV10ToV11IfNeeded(): Promise<readonly RunStateMigrationAuditEvent[]> {
+    const result = migrateV10ToV11(
+      this.memento.get<unknown>(KEYS.run),
+      (taskId) => this.queueIdForPersistedTask(taskId),
+      Date.now()
+    );
+    if (!result.changed) return [];
+    await this.memento.update(KEYS.run, result.runs);
+    return result.events;
+  }
+
+  /**
+   * The queue a persisted Task belongs to, or `null` when no queue holds it.
+   *
+   * `QueueManager.queueIdForTask()` answers the same question but falls back to
+   * `DEFAULT_QUEUE_ID`, which is the wrong shape here: the v11 migrator has to
+   * *distinguish* "belongs to the default queue" from "belongs to no queue at
+   * all", because only the second one reassigns and audits. It also runs before
+   * the queue manager exists, so the persisted record is the only thing to ask.
+   */
+  private queueIdForPersistedTask(taskId: string): string | null {
+    for (const [queueId, state] of Object.entries(this.readQueueMap())) {
+      if ((state?.requests ?? []).some((request) => request.id === taskId)) return queueId;
+    }
+    return null;
+  }
+
   // BUG-001 self-heal: pre-fix persisted v6 state may have a stale legacy
   // `QueueState.paused` diverging from the authoritative
   // `QueueRegistry.entries[0].state`. Reconcile legacy → registry per FR-020.
@@ -647,13 +757,65 @@ export class WorkspaceStateStore {
     return true;
   }
 
-  // Feature 011 — STATE_SCHEMA_VERSION 1 → 2: fills the three new
-  // `WorkflowRun` fields on legacy records.
+  /**
+   * Feature 011 — STATE_SCHEMA_VERSION 1 → 2: fills the three new `WorkflowRun`
+   * fields on legacy records.
+   *
+   * Feature 093 (T020) made it shape-aware. It runs **before** the v10 → v11
+   * reshape, so on an unmigrated workspace the record is still a bare Run and
+   * on a migrated one it is the per-queue map; each is normalized and written
+   * back in the shape it arrived in.
+   *
+   * Lifting the bare record onto the default queue here instead would hand the
+   * v11 migrator a record already in v11 shape. It would report `changed:
+   * false`, skip the task → queue resolution that is the only thing able to
+   * place a Run on a non-default queue, and emit no reshape event — a Run
+   * silently moved to `default`, with no audit record saying so. The reverse
+   * order is not available either: this step is what coerces a retired legacy
+   * `status` into one the v11 migrator's shape predicate accepts, and running
+   * it second would have that migrator discard the Run as unreadable.
+   *
+   * On invariant RM-4, T020's task text proposed routing these writes through
+   * `setRun`. That is the wrong instrument here and the rule is closed a
+   * different way. `setRun` validates by **throwing**, and this method is the
+   * one path whose whole purpose is to accept a record the current runtime
+   * would refuse — a throw at initialize does not protect the operator, it
+   * bricks the workspace on exactly the record repair exists to fix. It also
+   * rejects unknown queue ids, which is not yet answerable: the queue registry
+   * has not been migrated at this point in the chain. Both writers of
+   * `KEYS.run` are nonetheless covered: `migrateLegacyRun` normalizes every
+   * invariant `validateRunInvariants` checks (both retry-pair halves, both
+   * manual-pause halves, the cap-implies-paused-or-failed relation, and
+   * `rawTranscriptMode`) by repair rather than refusal, and every write the
+   * running system makes goes through `setRun` and is validated there.
+   */
   private async normalizeRunForInitialize(
     applyLegacyMigration: boolean
   ): Promise<readonly WorkflowRunRepairedAuditEvent[]> {
     const raw = this.memento.get<unknown>(KEYS.run);
     if (raw === undefined || raw === null) return [];
+
+    if (isRunStateMap(raw)) {
+      const events: WorkflowRunRepairedAuditEvent[] = [];
+      const next: RunStateMap = {};
+      let changed = applyLegacyMigration;
+      for (const [queueId, persisted] of Object.entries(raw)) {
+        const migrated = applyLegacyMigration ? migrateLegacyRun(persisted) : persisted;
+        if (migrated === null) {
+          changed = true;
+          continue;
+        }
+        const repair = repairLegacyRunSnapshot(migrated);
+        next[queueId] = repair.run;
+        if (repair.auditEvent !== null) {
+          events.push(repair.auditEvent);
+          changed = true;
+        }
+      }
+      if (changed) await this.memento.update(KEYS.run, next);
+      return events;
+    }
+
     const migrated = applyLegacyMigration ? migrateLegacyRun(raw) : (raw as WorkflowRun);
     if (migrated === null) return [];
     const repair = repairLegacyRunSnapshot(migrated);
@@ -742,11 +904,17 @@ export class WorkspaceStateStore {
     // If a WorkflowRun is persisted, ensure its `queueId` is `'default'`.
     // The WorkflowRun shape itself is unchanged; only the queueId field is
     // rewritten so downstream code can rely on the single-queue invariant.
-    const run = this.memento.get<WorkflowRun>(KEYS.run) ?? null;
-    if (run !== null) {
-      const runRecord = run as unknown as { queueId?: string };
+    //
+    // Feature 093 (T020) — asked rather than cast. A workspace at v5 can only
+    // hold the bare Run this step corrects, but from v11 on the same key holds
+    // the per-queue map, and reading that as a `WorkflowRun` gives the right
+    // answer here for the wrong reason: `queueId` is absent because a map has
+    // no such field, not because the Run was already on the default queue.
+    const raw = this.memento.get<unknown>(KEYS.run);
+    if (isWorkflowRun(raw)) {
+      const runRecord = raw as unknown as { queueId?: string };
       if (runRecord.queueId !== undefined && runRecord.queueId !== DEFAULT_QUEUE_ID) {
-        await this.memento.update(KEYS.run, { ...run, queueId: DEFAULT_QUEUE_ID });
+        await this.memento.update(KEYS.run, { ...raw, queueId: DEFAULT_QUEUE_ID });
       }
     }
     return result.auditEvents;
@@ -1362,33 +1530,139 @@ export class WorkspaceStateStore {
     });
   }
 
-  public getRun(): WorkflowRun | null {
-    return this.memento.get<WorkflowRun>(KEYS.run) ?? null;
+  /**
+   * Feature 093 (T018, FR-008) — the raw v11 record: at most one **active**
+   * `WorkflowRun` per queue, keyed by queue id. The mirror of `readQueueMap()`.
+   *
+   * A v10 record (a bare `WorkflowRun`) still reads correctly here, lifted onto
+   * the default queue. That is not a second migration path — `initialize()`
+   * owns the write, and this is the projection that keeps a read taken *before*
+   * that write from reporting a workspace with nothing executing. It writes
+   * nothing. The "is this a Run?" rule is imported from the migrator rather
+   * than restated, so the pre-write and post-write views cannot disagree about
+   * what a Run looks like.
+   */
+  private readRunMap(): RunStateMap {
+    const raw = this.memento.get<unknown>(KEYS.run);
+    if (raw === undefined || raw === null) return {};
+    if (isWorkflowRun(raw)) return { [DEFAULT_QUEUE_ID]: raw };
+    if (typeof raw === 'object' && !Array.isArray(raw)) return raw as RunStateMap;
+    return {};
   }
 
-  public setRun(run: WorkflowRun | null): Promise<void> {
+  /**
+   * The Run executing on `queueId`, or `null` when that queue has none.
+   *
+   * An unknown id reads as `null` rather than throwing, matching `getQueue()`
+   * above: a read has nothing to corrupt, and making it throw would put a
+   * registry lookup in front of every projection that only wants to know
+   * whether something is running.
+   */
+  public getRun(queueId: string): WorkflowRun | null {
+    return this.readRunMap()[queueId] ?? null;
+  }
+
+  /**
+   * Every queue with a Run executing on it (G-4).
+   *
+   * A copy, not the stored object: the map is handed to snapshot and status-bar
+   * projections, and a caller that mutated the live record would change what is
+   * running without going through the invariant check or the write chain.
+   */
+  public getRunMap(): Readonly<RunStateMap> {
+    return { ...this.readRunMap() };
+  }
+
+  /**
+   * The Run advancing `taskId`, together with the queue it executes on.
+   *
+   * Both halves or neither. A caller holding only the Run cannot release its
+   * execution lease or clear its record without guessing the queue, and a
+   * guessed queue in a window running several Runs clears a sibling's — the
+   * same failure the hard rule on `releaseExecutionLeaseForRun()` exists to
+   * prevent.
+   */
+  public findRunByTask(
+    taskId: string
+  ): { readonly queueId: string; readonly run: WorkflowRun } | null {
+    for (const [queueId, run] of Object.entries(this.readRunMap())) {
+      if (run.featureId === taskId) return { queueId, run };
+    }
+    return null;
+  }
+
+  /**
+   * Write or clear one queue's active Run.
+   *
+   * `null` **removes** the key rather than storing a null under it (G-5), so
+   * `Object.keys(getRunMap())` is exactly the set of queues with something
+   * executing — the count concurrency accounting reads. Clearing an id the
+   * registry no longer knows is allowed and removes nothing: a deleted queue
+   * has its registry entry dropped first, and refusing the cleanup afterwards
+   * would strand its Run record forever. Writing a Run for an unknown id is
+   * refused (G-6), because that is the direction in which a typo'd id would
+   * quietly become a running queue.
+   *
+   * Serialized on `KEYS.run` with the map re-read *inside* the chain, for the
+   * same reason `updateQueue()` does on `KEYS.queue`: the whole map is one
+   * memento key, so two concurrent single-queue writes would otherwise write
+   * back snapshots missing each other's entries. Per-queue concurrency is a
+   * property of what runs, not of how the record is written.
+   */
+  public setRun(queueId: string, run: WorkflowRun | null): Promise<void> {
     if (run !== null) {
       validateRunInvariants(run);
+      if (!findQueue(this.getQueueRegistry(), queueId)) {
+        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
+      }
     }
-    return this.serialize(KEYS.run, () => this.memento.update(KEYS.run, run)).then(() => {
+    return this.serialize(KEYS.run, () => {
+      const next = { ...this.readRunMap() };
+      if (run === null) delete next[queueId];
+      else next[queueId] = run;
+      return this.memento.update(KEYS.run, next);
+    }).then(() => {
       this.notify(KEYS.run);
     });
   }
 
-  public getTerminalTransitionIntent(): TerminalTransitionIntent | null {
+  /**
+   * Feature 093 (T048) — every in-flight terminal transition, keyed by run id.
+   *
+   * The journal used to be one intent for the whole window. Two Runs reaching a
+   * terminal status at once meant the second `begin()` overwrote the first's
+   * intent and the first `complete()` cleared the record for both, so a crash
+   * between the second Run's record write and its queue/history projection had
+   * nothing left to replay — the durability the journal exists for, lost
+   * precisely when two Runs are executing.
+   *
+   * A legacy single-intent value is **lifted**, not dropped: it is the record of
+   * a terminal transition that has not finished projecting, and discarding it on
+   * the upgrade read would strand exactly the crash it was written for.
+   */
+  public getTerminalTransitionIntents(): Readonly<Record<string, TerminalTransitionIntent>> {
     const value = this.memento.get<unknown>(KEYS.terminalTransitionIntent);
-    if (!value || typeof value !== 'object') return null;
-    const intent = value as Partial<TerminalTransitionIntent>;
-    return intent.schemaVersion === 1 && intent.run && typeof intent.createdAt === 'number'
-      ? (intent as TerminalTransitionIntent)
-      : null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const legacy = asTerminalTransitionIntent(value);
+    if (legacy) return { [legacy.run.id]: legacy };
+    const entries: Record<string, TerminalTransitionIntent> = {};
+    for (const [runId, raw] of Object.entries(value as Record<string, unknown>)) {
+      const intent = asTerminalTransitionIntent(raw);
+      if (intent) entries[runId] = intent;
+    }
+    return entries;
   }
 
-  public setTerminalTransitionIntent(intent: TerminalTransitionIntent | null): Promise<void> {
-    return this.serialize(
-      KEYS.terminalTransitionIntent,
-      () => this.memento.update(KEYS.terminalTransitionIntent, intent)
-    ).then(() => this.notify(KEYS.terminalTransitionIntent));
+  public setTerminalTransitionIntent(
+    runId: string,
+    intent: TerminalTransitionIntent | null
+  ): Promise<void> {
+    return this.serialize(KEYS.terminalTransitionIntent, () => {
+      const next = { ...this.getTerminalTransitionIntents() };
+      if (intent === null) delete next[runId];
+      else next[runId] = intent;
+      return this.memento.update(KEYS.terminalTransitionIntent, next);
+    }).then(() => this.notify(KEYS.terminalTransitionIntent));
   }
 
   public getLock(): WorkspaceLock | null {
@@ -1582,6 +1856,10 @@ export class WorkspaceStateStore {
       this.memento.update(KEYS.queueMigrationQuarantine, undefined),
       this.memento.update(KEYS.queueDefaultId, undefined),
       this.memento.update(KEYS.queueGlobalConcurrencyCap, undefined),
+      // Feature 093 (T020) — still `undefined`, not an empty map. Reset clears
+      // keys, and `readRunMap()` reads an absent key as no queue running, so
+      // writing `{}` would only make the cleared state a stored value instead
+      // of an absent one.
       this.memento.update(KEYS.run, undefined),
       this.memento.update(KEYS.lock, undefined),
       this.memento.update(KEYS.watchdog, undefined),

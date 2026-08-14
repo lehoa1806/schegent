@@ -117,6 +117,50 @@ posts them with **no** second argument when unscoped — argument-identical to
 the pre-feature call, which is what lets the earlier assertions stand
 unedited.
 
+### Per-queue Run projection (spec 093)
+
+`schemaVersion` stays at **4**. Feature 092 gave the snapshot a shape with room
+for one Run per queue while the engine still had exactly one Run to put in it;
+093 made the Runs genuinely distinct and the wire shape needed no change. That
+no component was edited to consume N Runs is the evidence 092's shape was the
+right one — the churn is entirely on the host side of the boundary:
+
+- **Attribution is a keyed lookup, not a scan.** `queue-runtime-composer.ts`
+  used to ask each queue "do you hold a row whose id is `run.featureId`?"; it
+  now calls `runOf(queueId)`, because the Run record is itself keyed by queue.
+  With N Runs the old scan would have run N times per queue for an answer the
+  key already holds.
+- **The row-projection context is per queue, run-scoped readings included.**
+  092 substituted only each queue's `inFlightId` and scheduled-start into one
+  shared context, so every queue's in-flight row inherited the window Run's
+  phase and pause cause. Harmless with one Run; a visible cross-queue leak with
+  several. `rowContextFor(queueId, state)` is now built per queue.
+- **`runOf` is memoized per snapshot.** Two callers ask for the same queue — the
+  runtime list and the row projections — and `decoratePhases` mutates the tiles
+  it is handed, so an unmemoized second build would hand out a second set of
+  tile objects free to disagree with the first.
+- **`snapshot.queue` is still the default queue's compat projection**
+  (`projectQueue(queue, rowContextFor(DEFAULT_QUEUE_ID, queue))`). Anything
+  reading it reads `default`, whatever else is executing. That is why
+  `resolveLiveSelection` in `lib/activity-feed-selection.svelte.ts` follows the
+  default queue's Run: follow-live tracks one Run by construction, and the
+  drill-down tiers are the surface for watching a specific one among several.
+- **Every lifecycle control names its queue.** `lib/phase-control.ts` and
+  `lib/phase-breakpoint-ipc.ts` take a required `queueId` — the host refuses an
+  unaddressed control at the IPC boundary, so a component that cannot say which
+  Run it is acting on has no business posting the command. Retry-now stays
+  inline in `PhaseTracker.svelte` under the `useConfirm` gate rather than moving
+  into the lib module.
+
+**The aggregate status bar is a host surface, not this app's `StatusBar`.**
+`src/ui/status-bar.ts` owns the VS Code window status bar item and, since 093,
+summarizes across Runs: a plural count (`schegent: 2 runs`, `3 stalled`) when
+several share a state, `running` outranking `stalled` outranking `paused` when
+they differ, and one tooltip line per live Run with its phase and iteration. It
+names no queue. `components/StatusBar.svelte` is the sidebar's own Status Row
+zone and is unchanged — the two are different surfaces with the same word in
+their names, so check which one a task means before editing.
+
 ### Sidebar outbound surface
 
 The compact sidebar emits **only** `CMD_OPEN_DASHBOARD`. Any other operator-initiated mutation (cancel, resume, queue actions, history rerun, retry-active-run) is sent from the Dashboard webview or the VS Code Command Palette. This narrow surface is enforced by `tests/integration/sidebar-activation.host.test.ts`, which scans the sidebar bundle and asserts the four allowed `data-testid` containers (`sidebar-status-row`, `sidebar-stats-strip`, `sidebar-current-task`, `sidebar-open-dashboard-button`) plus `app-root` and rejects any reappearance of removed sidebar testids.

@@ -14,6 +14,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow-run';
 import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -142,7 +143,7 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(run);
+  await store.setRun(DEFAULT_QUEUE_ID, run);
   return { feature, run };
 }
 
@@ -151,15 +152,32 @@ describe('SchegentWorkflowController.setPhaseBreakpoint', () => {
     await seedRun();
     const result = await controller.setPhaseBreakpoint('run-bp-1', 'speckit-implement');
     expect(result).toEqual({ ok: true });
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.phaseBreakpoints).toHaveLength(1);
     expect(run.phaseBreakpoints[0].phaseId).toBe('speckit-implement');
     expect(run.phaseBreakpoints[0].actor).toBe('operator');
     expect(typeof run.phaseBreakpoints[0].setAt).toBe('number');
   });
 
+  // Feature 093 (T038) — the reason narrowed from `run-not-in-flight` to
+  // `no-run-in-flight`. The old code could not tell "there is no Run" from
+  // "there is a Run, but not the one you named": it read the single slot and
+  // reported one string for both. The sole-run resolver answers the first
+  // question before the service is entered, so the two are now distinct, and
+  // this is the empty case. `no-run-in-flight` is not a new vocabulary word —
+  // it is what every sibling phase control already returns here
+  // (`workflow-controller-skip-phase.test.ts:197`,
+  // `aggressive-pause.test.ts:252`), so this aligns the breakpoint pair with
+  // them. `run-not-in-flight` is still returned, by the service, for a named
+  // Run that is not the one on the queue.
   it('rejects when no run is in-flight', async () => {
     const result = await controller.setPhaseBreakpoint('run-missing', 'speckit-implement');
+    expect(result).toEqual({ ok: false, reason: 'no-run-in-flight' });
+  });
+
+  it('rejects a named run that is not the one on the queue', async () => {
+    await seedRun();
+    const result = await controller.setPhaseBreakpoint('run-someone-else', 'speckit-implement');
     expect(result).toEqual({ ok: false, reason: 'run-not-in-flight' });
   });
 
@@ -206,12 +224,21 @@ describe('SchegentWorkflowController.clearPhaseBreakpoint', () => {
     });
     const result = await controller.clearPhaseBreakpoint('run-bp-1', 'speckit-implement');
     expect(result).toEqual({ ok: true });
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.phaseBreakpoints).toHaveLength(0);
   });
 
+  // Same split as the `setPhaseBreakpoint` pair above — see the note there.
   it('rejects when no run is in-flight', async () => {
     const result = await controller.clearPhaseBreakpoint('run-missing', 'speckit-implement');
+    expect(result).toEqual({ ok: false, reason: 'no-run-in-flight' });
+  });
+
+  it('rejects a named run that is not the one on the queue', async () => {
+    await seedRun({
+      phaseBreakpoints: [{ phaseId: 'speckit-implement', setAt: 1, actor: 'operator' }]
+    });
+    const result = await controller.clearPhaseBreakpoint('run-someone-else', 'speckit-implement');
     expect(result).toEqual({ ok: false, reason: 'run-not-in-flight' });
   });
 
@@ -229,7 +256,7 @@ describe('SchegentWorkflowController.setPhaseOverride auto-clears matching break
     });
     const result = await controller.skipPhase('speckit-implement');
     expect(result).toEqual({ ok: true });
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.phaseBreakpoints).toHaveLength(0);
     expect(run.phaseOverrides).toHaveLength(1);
     expect(run.phaseOverrides[0].action).toBe('skipped');
@@ -241,7 +268,7 @@ describe('SchegentWorkflowController.setPhaseOverride auto-clears matching break
     });
     const result = await controller.disablePhase('speckit-implement');
     expect(result).toEqual({ ok: true });
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.phaseBreakpoints).toHaveLength(0);
     expect(run.phaseOverrides).toHaveLength(1);
     expect(run.phaseOverrides[0].action).toBe('disabled');

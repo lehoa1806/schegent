@@ -33,9 +33,13 @@ export interface ProjectorTimer {
 }
 
 export interface StateProjectorDeps {
+  // Feature 093 (T025) — `getRunMap` replaces `getRun` in the projector's slice
+  // of the store. The projection is the pattern-D aggregate case: it wants every
+  // queue's Run, not one queue's, so it never has a queue id to pass and the
+  // queue-addressed accessor is the wrong shape for it.
   readonly store?: Pick<
     WorkspaceStateStore,
-    'getRun' | 'getQueue' | 'getLock' | 'subscribe'
+    'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
   > & Partial<Pick<WorkspaceStateStore, 'getQueueRegistry' | 'getConfirmSuppression'>>;
   readonly audit?: Pick<AuditLogWriter, 'subscribe' | 'logPath' | 'workspaceRoot'>;
   readonly ownerId?: string;
