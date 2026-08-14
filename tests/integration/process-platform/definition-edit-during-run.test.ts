@@ -155,7 +155,7 @@ function driveToCompletion(start: WorkflowRun): { visited: string[]; final: Work
       iteration: run.currentIteration,
       iterationCap: ITERATION_CAP,
       activePhaseDef: run.pipeline?.phases.find((def) => def.id === run.currentPhase),
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     if (decision.kind !== 'advance-or-loop' || decision.transition.kind === 'halt') break;

@@ -49,6 +49,11 @@
           "type": "number"
         },
         {
+          "name": "runId",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "prompt",
           "optional": false,
           "type": "string"

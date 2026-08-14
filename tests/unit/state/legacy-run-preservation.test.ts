@@ -41,6 +41,7 @@ import {
 } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -279,7 +280,7 @@ describe('a run persisted before this platform survives migration (T020, FR-021,
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
 
-    const run = store.getRun();
+    const run = store.getRun(DEFAULT_QUEUE_ID);
     expect(run).not.toBeNull();
     expect(run!.id).toBe('run-legacy-paused');
     expect(run!.status).toBe('paused');

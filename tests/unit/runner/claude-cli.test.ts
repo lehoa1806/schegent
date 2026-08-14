@@ -418,3 +418,82 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(seen.args).toContain('--verbose');
   });
 });
+
+/**
+ * Feature 093 (T046a) — a shared runner tracks every live subprocess.
+ *
+ * `BackendRunnerRegistry` hands the same `ClaudeCliRunner` to every Run on the
+ * `claude` backend, so once Runs execute concurrently two invocations overlap
+ * inside one instance. Every assertion below fails against the pre-feature
+ * single `active: ChildProcess | null` slot: the second spawn overwrote the
+ * first's handle, so `cancelActive()` reached one child and orphaned the rest,
+ * and the first exit cleared the slot for both, so `hasActiveProcess` reported
+ * `false` while a subprocess was still alive.
+ */
+describe('ClaudeCliRunner concurrent invocations (Feature 093 T046a)', () => {
+  function overlappingSpawn(children: FakeChild[]): SpawnFn {
+    let index = 0;
+    return (() => children[index++] as unknown as ChildProcess) as SpawnFn;
+  }
+
+  const request = (prompt: string) => ({
+    phase: 'speckit-plan' as const,
+    iteration: 1,
+    prompt,
+    timeoutMs: 60_000,
+    cliPath: 'claude',
+    cwd: '/repo'
+  });
+
+  it('cancelActive terminates every in-flight child, not just the newest', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    const runner = new ClaudeCliRunner(overlappingSpawn([first, second]));
+
+    const firstDone = runner.invoke(request('a'));
+    const secondDone = runner.invoke(request('b'));
+
+    expect(runner.hasActiveProcess).toBe(true);
+    expect(runner.cancelActive()).toBe(true);
+    expect(first.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(second.kill).toHaveBeenCalledWith('SIGTERM');
+
+    first.emit('exit', null, 'SIGTERM');
+    second.emit('exit', null, 'SIGTERM');
+    await Promise.all([firstDone, secondDone]);
+    expect(runner.hasActiveProcess).toBe(false);
+  });
+
+  it('keeps reporting an active process after one of two children exits', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    const runner = new ClaudeCliRunner(overlappingSpawn([first, second]));
+
+    const firstDone = runner.invoke(request('a'));
+    const secondDone = runner.invoke(request('b'));
+
+    first.exitCode = 0;
+    first.emit('exit', 0, null);
+    await firstDone;
+
+    expect(runner.hasActiveProcess).toBe(true);
+    expect(runner.cancelActive()).toBe(true);
+    // The already-exited child is gone from the map, so it is not re-killed.
+    expect(first.kill).not.toHaveBeenCalled();
+    expect(second.kill).toHaveBeenCalledWith('SIGTERM');
+
+    second.emit('exit', null, 'SIGTERM');
+    await secondDone;
+    expect(runner.hasActiveProcess).toBe(false);
+  });
+
+  it('retires an invocation entry even when the spawned child never appears', async () => {
+    const runner = new ClaudeCliRunner((() => {
+      throw new Error('spawn failed');
+    }) as unknown as SpawnFn);
+
+    await expect(runner.invoke(request('a'))).rejects.toThrow();
+    expect(runner.hasActiveProcess).toBe(false);
+    expect(runner.cancelActive()).toBe(false);
+  });
+});

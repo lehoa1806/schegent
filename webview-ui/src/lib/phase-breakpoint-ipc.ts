@@ -16,6 +16,10 @@
 //   5. On 5-second timeout, resolve { status: 'rejected',
 //      reason: 'timeout' } so the UI can surface a recovery affordance.
 //   6. Concurrent calls never cross-resolve — correlation by id.
+//
+// Feature 093 (FR-018 / T080) — both commands carry the `queueId` of the Run
+// the breakpoint belongs to. `runId` alone no longer identifies a Run to the
+// host, because the Run record is keyed by queue.
 
 import { CMD_SET_PHASE_BREAKPOINT, CMD_CLEAR_PHASE_BREAKPOINT } from './messages';
 import { postCommand } from './vscode-api';
@@ -34,10 +38,11 @@ export type BreakpointResult =
  */
 export function setPhaseBreakpoint(
   runId: string,
-  phaseId: string
+  phaseId: string,
+  queueId: string
 ): Promise<BreakpointResult> {
   return correlatedRequest(() =>
-    postCommand(CMD_SET_PHASE_BREAKPOINT, { runId, phaseId }).correlationId
+    postCommand(CMD_SET_PHASE_BREAKPOINT, { queueId, runId, phaseId }).correlationId
   );
 }
 
@@ -47,10 +52,11 @@ export function setPhaseBreakpoint(
  */
 export function clearPhaseBreakpoint(
   runId: string,
-  phaseId: string
+  phaseId: string,
+  queueId: string
 ): Promise<BreakpointResult> {
   return correlatedRequest(() =>
-    postCommand(CMD_CLEAR_PHASE_BREAKPOINT, { runId, phaseId }).correlationId
+    postCommand(CMD_CLEAR_PHASE_BREAKPOINT, { queueId, runId, phaseId }).correlationId
   );
 }
 

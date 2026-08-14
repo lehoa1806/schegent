@@ -452,31 +452,42 @@ export interface SaveGeneralSettingsCommand
   };
 }
 
-// Feature 011 — operates on the active run; no payload. Rejections:
+// Feature 011 — operates on one queue's active run. Rejections:
 // 'no-active-run', 'not-pending-retry', 'already-retrying',
 // 'secondary-window-readonly'.
-export interface RetryPhaseNowCommand extends CommandBase<typeof CMD_RETRY_PHASE_NOW> {}
+//
+// Feature 093 (FR-018 / T080) — every lifecycle control below names the queue
+// whose Run it addresses. With N Runs concurrent there is no ambient "the"
+// active Run to fall back on, and a control that omits the queue is refused at
+// the boundary rather than resolved to a guess. `queueId` is required even
+// where the old payload was optional or absent, which is why
+// `ResumePhaseCommand`'s payload is no longer optional.
+export interface RetryPhaseNowCommand extends CommandBase<typeof CMD_RETRY_PHASE_NOW> {
+  readonly payload: { readonly queueId: string };
+}
 
 
-export interface PausePhaseCommand extends CommandBase<typeof CMD_PAUSE_PHASE> {}
+export interface PausePhaseCommand extends CommandBase<typeof CMD_PAUSE_PHASE> {
+  readonly payload: { readonly queueId: string };
+}
 export interface ResumePhaseCommand extends CommandBase<typeof CMD_RESUME_PHASE> {
-  readonly payload?: { readonly prompt?: string };
+  readonly payload: { readonly queueId: string; readonly prompt?: string };
 }
 
 export interface RestartPhaseCommand extends CommandBase<typeof CMD_RESTART_PHASE> {
-  readonly payload: { readonly phaseId: string };
+  readonly payload: { readonly queueId: string; readonly phaseId: string };
 }
 
 export interface SkipPhaseCommand extends CommandBase<typeof CMD_SKIP_PHASE> {
-  readonly payload: { readonly phaseId: string };
+  readonly payload: { readonly queueId: string; readonly phaseId: string };
 }
 
 export interface DisablePhaseCommand extends CommandBase<typeof CMD_DISABLE_PHASE> {
-  readonly payload: { readonly phaseId: string };
+  readonly payload: { readonly queueId: string; readonly phaseId: string };
 }
 
 export interface EnablePhaseCommand extends CommandBase<typeof CMD_ENABLE_PHASE> {
-  readonly payload: { readonly phaseId: string };
+  readonly payload: { readonly queueId: string; readonly phaseId: string };
 }
 
 export interface RemoveTaskPhaseCommand extends CommandBase<typeof CMD_REMOVE_TASK_PHASE> {
@@ -512,12 +523,20 @@ export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND>
 // specs/028-advanced-phase-pausing/contracts/ipc.md.
 export interface SetPhaseBreakpointCommand
   extends CommandBase<typeof CMD_SET_PHASE_BREAKPOINT> {
-  readonly payload: { readonly runId: string; readonly phaseId: string };
+  readonly payload: {
+    readonly queueId: string;
+    readonly runId: string;
+    readonly phaseId: string;
+  };
 }
 
 export interface ClearPhaseBreakpointCommand
   extends CommandBase<typeof CMD_CLEAR_PHASE_BREAKPOINT> {
-  readonly payload: { readonly runId: string; readonly phaseId: string };
+  readonly payload: {
+    readonly queueId: string;
+    readonly runId: string;
+    readonly phaseId: string;
+  };
 }
 
 // BUG-002 (FR-012a) — start-queue command. No payload; the host promotes

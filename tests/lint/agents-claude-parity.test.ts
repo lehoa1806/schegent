@@ -86,7 +86,15 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   // and the preflight carve-out now reaches the Workflow graph validator.
   "write a package's catalog layers under one intent",
   'compensate a failed package write with a delete',
-  'extends one level up to `validateworkflowgraph`'
+  'extends one level up to `validateworkflowgraph`',
+  // Feature 093 — per-queue Run execution. Four new rules, four new anchors.
+  // The first two are the store seam (address a Run by queue; write the map
+  // whole), the third the checkpoint attribution rule, and the fourth the
+  // deleted drain gate whose absence is the feature's acceptance signal.
+  'reach a run record without naming a queue',
+  "write one queue's run entry with a partial-map write",
+  'take or offer a recovery checkpoint',
+  'reintroduce drain step 4b'
 ];
 
 function readClaudeMd(): string {

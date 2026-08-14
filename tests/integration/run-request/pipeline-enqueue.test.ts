@@ -238,7 +238,13 @@ describe('a submission that passes validation performs exactly one durable write
       const { writes } = await submit(harness, VALID);
 
       expect(writes.touchedRun).toBe(false);
-      expect(harness.memento.get(KEYS.run)).toBeUndefined();
+      // Feature 093 (T027) — `KEYS.run` holds a `Record<queueId, WorkflowRun>`
+      // now, and the v10 → v11 reshape writes the empty record during
+      // `initialize()`, before `submit()` installs the write tracker. So the key
+      // is present and the claim is about its contents: no Run. The submission's
+      // own behaviour is `writes.touchedRun` above, and that is unchanged — one
+      // queue row written, the run store untouched.
+      expect(harness.memento.get(KEYS.run)).toEqual({});
     } finally {
       harness.cleanup();
     }

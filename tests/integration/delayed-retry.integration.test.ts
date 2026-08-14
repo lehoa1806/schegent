@@ -39,6 +39,7 @@ import {
   DELAYED_RETRY_CAP,
   TRANSIENT_BACKOFF_MS
 } from '../../src/controller/retry-constants';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -168,11 +169,11 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     // Subsequent four resumes — each picks up the persisted run and
     // triggers another transient failure.
     for (let i = 0; i < 4; i++) {
-      const ok = await harness.controller.resumeExisting();
+      const ok = await harness.controller.resumeExisting(DEFAULT_QUEUE_ID);
       expect(ok).toBe(true);
     }
 
-    const run = harness.store.getRun()!;
+    const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.delayedRetryCount).toBe(DELAYED_RETRY_CAP);
     expect(run.pendingRetryAt).toBeNull();
     expect(run.pendingRetryCause).toBeNull();
@@ -192,7 +193,7 @@ describe('Feature 011 — delayed retry end-to-end', () => {
 
     // First phase is `specify` for an unknown featureDir; after a
     // transient failure we must still be on `specify`.
-    const run1 = harness.store.getRun()!;
+    const run1 = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run1.currentPhase).toBe('speckit-specify');
     expect(run1.phasesCompleted.length).toBe(1);
     // The single phaseResult is the failing attempt — not a clean
@@ -201,8 +202,8 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     expect(run1.phasesCompleted[0].result).toBe('transient_error');
 
     // Another resume still does not advance.
-    await harness.controller.resumeExisting();
-    const run2 = harness.store.getRun()!;
+    await harness.controller.resumeExisting(DEFAULT_QUEUE_ID);
+    const run2 = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run2.currentPhase).toBe('speckit-specify');
   });
 
@@ -212,7 +213,7 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     const feature = await harness.queue.enqueue('feature C');
     await harness.controller.startNew(feature, null);
 
-    const pendingRun = harness.store.getRun()!;
+    const pendingRun = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(pendingRun.pendingRetryAt).not.toBeNull();
     expect(harness.watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
 
@@ -243,7 +244,7 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     const feature = await harness1.queue.enqueue('feature D');
     await harness1.controller.startNew(feature, null);
 
-    const persistedRun = harness1.store.getRun()!;
+    const persistedRun = harness1.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(persistedRun.pendingRetryAt).not.toBeNull();
     const persistedAt = persistedRun.pendingRetryAt!;
     // The retry should be ~15 minutes out.

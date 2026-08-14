@@ -566,34 +566,65 @@ describe('MessageRouter.dispatch', () => {
     });
 
     it('routes phase control commands through the command registry', async () => {
-      await dispatch(router, { type: CMD_PAUSE_PHASE, correlationId: 'pp1' }, acks);
-      await dispatch(router, { type: CMD_RESUME_PHASE, correlationId: 'rp1' }, acks);
+      // Feature 093 (T080) — each control names the queue it addresses and
+      // the router forwards it to the palette command verbatim.
       await dispatch(
         router,
-        { type: CMD_RESTART_PHASE, correlationId: 'xp1', payload: { phaseId: 'speckit-plan' } },
+        { type: CMD_PAUSE_PHASE, correlationId: 'pp1', payload: { queueId: 'default' } },
+        acks
+      );
+      await dispatch(
+        router,
+        { type: CMD_RESUME_PHASE, correlationId: 'rp1', payload: { queueId: 'default' } },
+        acks
+      );
+      await dispatch(
+        router,
+        {
+          type: CMD_RESTART_PHASE,
+          correlationId: 'xp1',
+          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+        },
         acks
       );
 
-      expect(executeCommand).toHaveBeenNthCalledWith(1, 'schegent.pausePhase');
-      expect(executeCommand).toHaveBeenNthCalledWith(2, 'schegent.resumePhase');
-      expect(executeCommand).toHaveBeenNthCalledWith(3, 'schegent.restartPhase');
+      expect(executeCommand).toHaveBeenNthCalledWith(1, 'schegent.pausePhase', 'default');
+      expect(executeCommand).toHaveBeenNthCalledWith(
+        2,
+        'schegent.resumePhase',
+        undefined,
+        'default'
+      );
+      expect(executeCommand).toHaveBeenNthCalledWith(3, 'schegent.restartPhase', 'default');
       expect(acks.map((ack) => ack.msg.status)).toEqual(['accepted', 'accepted', 'accepted']);
     });
 
     it('routes skip, disable, and enable through phaseOps', async () => {
       await dispatch(
         router,
-        { type: CMD_SKIP_PHASE, correlationId: 'sk1', payload: { phaseId: 'speckit-plan' } },
+        {
+          type: CMD_SKIP_PHASE,
+          correlationId: 'sk1',
+          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+        },
         acks
       );
       await dispatch(
         router,
-        { type: CMD_DISABLE_PHASE, correlationId: 'ds1', payload: { phaseId: 'speckit-plan' } },
+        {
+          type: CMD_DISABLE_PHASE,
+          correlationId: 'ds1',
+          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+        },
         acks
       );
       await dispatch(
         router,
-        { type: CMD_ENABLE_PHASE, correlationId: 'en1', payload: { phaseId: 'speckit-plan' } },
+        {
+          type: CMD_ENABLE_PHASE,
+          correlationId: 'en1',
+          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+        },
         acks
       );
 

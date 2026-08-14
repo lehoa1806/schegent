@@ -16,6 +16,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -133,7 +134,19 @@ async function runOnce(opts: {
     emitDiagnosticChunks: opts.emitDiagnosticChunks ?? false,
     injectWriteFailure: opts.injectWriteFailure
   });
-  const rawTranscript = new RawTranscriptWriter(opts.workspaceRoot, logger);
+  // Feature 093 (T082) — spool under the test's own workspace root rather than
+  // the default `os.tmpdir()`. The writer scavenges abandoned spools with one
+  // `readdir` of that root per instance; on a machine whose temp dir holds
+  // hundreds of thousands of entries each `runOnce` paid seconds for it, and
+  // the two-run test below exceeded the 5 s timeout for a reason unrelated to
+  // what it asserts. Same remedy as T057, at the second site that needed it:
+  // the scavenger's real behavior stays exercised, at a cost proportional to
+  // what this test created, and the root is removed with the workspace.
+  const rawTranscript = new RawTranscriptWriter(
+    opts.workspaceRoot,
+    logger,
+    path.join(opts.workspaceRoot, 'raw-spool')
+  );
   const phaseRunner = new PhaseRunner(
     runner,
     new PromptBuilder(),
@@ -171,7 +184,7 @@ async function runOnce(opts: {
 
   const feature = await queue.enqueue('Spec a thing', {});
   await controller.startNew(feature, 'specs/001-mock', {});
-  const run = store.getRun()!;
+  const run = store.getRun(DEFAULT_QUEUE_ID)!;
   return { capturedRequests, runId: run.id };
 }
 

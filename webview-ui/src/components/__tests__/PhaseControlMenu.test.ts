@@ -10,6 +10,12 @@ import {
   CMD_ENABLE_PHASE
 } from '../../lib/messages';
 
+// Feature 093 (T080) — lifecycle controls are queue-addressed, so the component
+// under test needs the queue whose Run it acts on, and every payload it posts
+// carries that queue. The assertions below are the webview-side half of the
+// contract the host pins in `queue-addressed-phase-controls.test.ts`.
+const TEST_QUEUE_ID = 'q-alpha';
+
 const postCommandSpy = vi.fn();
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
@@ -28,39 +34,42 @@ afterEach(() => cleanup());
 describe('PhaseControlMenu', () => {
   it('dispatches pause, resume, and restart through phase-control helpers', async () => {
     const { getByTestId, rerender } = render(PhaseControlMenu, {
-      props: { currentPhase: 'speckit-plan', isPrimary: true, manualPauseAt: null }
+      props: { queueId: TEST_QUEUE_ID, currentPhase: 'speckit-plan', isPrimary: true, manualPauseAt: null }
     });
 
     await fireEvent.click(getByTestId('phase-control-pause'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_PHASE, { queueId: TEST_QUEUE_ID });
 
-    await rerender({
+    await rerender({ queueId: TEST_QUEUE_ID,
       currentPhase: 'speckit-plan',
       isPrimary: true,
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
     await fireEvent.click(getByTestId('phase-control-resume'));
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { prompt: undefined });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_PHASE, { queueId: TEST_QUEUE_ID });
 
     await fireEvent.click(getByTestId('phase-control-restart'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESTART_PHASE, {
+      queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
     });
 
     await fireEvent.click(getByTestId('phase-control-skip'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_SKIP_PHASE, {
+      queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
     });
 
     await fireEvent.click(getByTestId('phase-control-disable'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
+      queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
     });
   });
 
   it('disables mutating controls when not primary', async () => {
     const { container, getByTestId } = render(PhaseControlMenu, {
-      props: { currentPhase: 'speckit-plan', isPrimary: false, manualPauseAt: null }
+      props: { queueId: TEST_QUEUE_ID, currentPhase: 'speckit-plan', isPrimary: false, manualPauseAt: null }
     });
 
     container.querySelectorAll('button').forEach((button) => {
@@ -72,7 +81,7 @@ describe('PhaseControlMenu', () => {
 
   it('enables override clearing only when the current phase has an override', async () => {
     const { getByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         manualPauseAt: null,
@@ -83,6 +92,7 @@ describe('PhaseControlMenu', () => {
     expect(getByTestId('phase-control-enable').getAttribute('aria-disabled')).toBe('false');
     await fireEvent.click(getByTestId('phase-control-enable'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_ENABLE_PHASE, {
+      queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-plan'
     });
   });

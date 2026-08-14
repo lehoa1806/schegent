@@ -5,7 +5,7 @@
 //   • `FakeMemento` (in-memory VS Code Memento)
 //   • `MutableClock` (deterministic time for the host services)
 //   • `AuditLogCapture` (records `AuditLogWriter.append` calls)
-//   • `FakeController` (records `startNew` invocations; never spawns CLI)
+//   • `FakeController` (records `admitNew` invocations; never spawns CLI)
 //   • `FakeScheduledStartCoordinator` (records arm/cancel; integrates with
 //     a fake setTimeout so tests can assert audit events deterministically)
 //   • `makeHarness()` — wires `WorkspaceStateStore` + `QueueManager` +
@@ -109,18 +109,42 @@ export function makeAuditCapture(): AuditLogCapture {
 }
 
 export interface FakeController {
+  /**
+   * Still here after feature 093 (T082) because `GuardedRunService.startNow()`
+   * reads it — its own defense-in-depth guard, a different site from the drain
+   * step 4b that T081 deleted. The drain no longer consults it at all.
+   */
   running: boolean;
-  startNew: ReturnType<typeof vi.fn>;
+  /**
+   * Feature 093 (T082) — the execution-capacity gate (drain step 4) reads the
+   * sessions the window owns. These Runs are never driven and never terminate,
+   * so every admission stays live and the count is the admission count.
+   */
+  liveRunCount: number;
+  /**
+   * Feature 093 (T049a) — the drain calls `admitNew`, which resolves once the
+   * Task is in flight and returns the promise of the Run's execution. Assertions
+   * in this suite are all about *whether* a start happened, so the drive is an
+   * already-resolved promise and nothing else changes.
+   */
+  admitNew: ReturnType<typeof vi.fn>;
+  admitResume: ReturnType<typeof vi.fn>;
   getCatalog?: () => PipelineCatalog | null | undefined;
 }
 
 export function makeController(initial?: { running?: boolean; catalog?: PipelineCatalog }): FakeController {
   const c: FakeController = {
     running: initial?.running ?? false,
-    startNew: vi.fn(),
+    liveRunCount: 0,
+    admitNew: vi.fn(),
+    admitResume: vi.fn(),
     getCatalog: () => initial?.catalog ?? null
   };
-  c.startNew.mockResolvedValue(undefined);
+  c.admitNew.mockImplementation(async () => {
+    c.liveRunCount++;
+    return { completed: Promise.resolve() };
+  });
+  c.admitResume.mockResolvedValue({ resumed: false, completed: Promise.resolve() });
   return c;
 }
 

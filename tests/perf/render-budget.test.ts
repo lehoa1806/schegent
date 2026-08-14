@@ -8,6 +8,7 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import type { AuditTailEntry } from '../../src/ui/sidebar/snapshot';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -86,7 +87,7 @@ describe('Render budget regression (SC-006)', () => {
   });
 
   it(`runs ${SNAPSHOT_COUNT} v2 project() passes under ${TOTAL_BUDGET_MS} ms total with median ≤ ${MEDIAN_BUDGET_MS} ms`, async () => {
-    await store.setRun(runningRun(3, 'speckit-analyze'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(3, 'speckit-analyze'));
     const projector = new StateProjector({
       store,
       audit,
@@ -152,7 +153,7 @@ describe('Render budget regression (SC-006)', () => {
       scheduledStartSource: null,
       requests: queueRequests
     });
-    await store.setRun(runningRun(2, 'speckit-plan'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(2, 'speckit-plan'));
 
     const noopDisposable = { dispose: () => {} };
     const fakeMonitor = {
@@ -224,7 +225,7 @@ describe('Render budget regression (SC-006)', () => {
   });
 
   it('hot-path project() with full audit tail and active sub-progress respects per-call budget', async () => {
-    await store.setRun(runningRun(7, 'speckit-clarify'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(7, 'speckit-clarify'));
     const projector = new StateProjector({
       store,
       audit,

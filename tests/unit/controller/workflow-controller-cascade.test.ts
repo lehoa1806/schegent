@@ -121,7 +121,7 @@ async function seedInFlightRun(
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(run);
+  await store.setRun(DEFAULT_QUEUE_ID, run);
   return { feature, run };
 }
 
@@ -132,7 +132,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     const result = await controller.pauseActivePhase();
 
     expect(result).toEqual({ ok: true });
-    const persisted = store.getRun()!;
+    const persisted = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(persisted.manualPauseAt).not.toBeNull();
     expect(persisted.manualPauseCause).toBe('operator-paused');
     const entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
@@ -153,7 +153,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('active');
     expect(entry?.pauseSource).toBeNull();
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.manualPauseAt).toBeNull();
     expect(run.manualPauseCause).toBeNull();
   });
@@ -197,8 +197,8 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     // operate on a run whose manualPauseAt is non-null — covered by the
     // existing `run-already-paused` reject path. Here we exercise the
     // pure cascade-only path by clearing the run's pause first.)
-    const run = store.getRun()!;
-    await store.setRun({ ...run, manualPauseAt: null, manualPauseCause: null });
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+    await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null });
 
     await queue.cascadedPause(DEFAULT_QUEUE_ID);
     entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);

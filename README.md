@@ -42,8 +42,12 @@ waiting for an operator decision.
 Schegent treats each Spec Driven Development workflow phase as a discrete CLI invocation, then
 strings the phases together inside an orchestrator that handles:
 
-- **Queueing and concurrency** — exactly one in-flight run per
-  workspace, with a visible queue of pending tasks.
+- **Queueing and concurrency** — up to 20 independent queues, each
+  running one task at a time, with a visible queue of pending tasks.
+  Runs on different queues execute in parallel up to
+  `schegent.queue.globalConcurrencyCap` (default `3`); they share one
+  working tree, so partition the work by area. See
+  [multiple queues and concurrency](docs/operations/multi-queue-concurrency.md).
 - **Pausing and resuming** — pause mid-phase, inspect the audit log,
   and resume from where you stopped.
 - **Failure recovery** — automatic retries for transient and

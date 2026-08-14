@@ -108,7 +108,7 @@ describe('WorkspaceStateStore.subscribe', () => {
   it('fires listener after setRun with the run key', async () => {
     const events: StoreChangeKey[] = [];
     store.subscribe((key) => events.push(key));
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     expect(events).toEqual([KEYS.run]);
   });
 
@@ -124,7 +124,7 @@ describe('WorkspaceStateStore.subscribe', () => {
     store.subscribe((key) => events.push(key));
 
     store.getQueue();
-    store.getRun();
+    store.getRun(DEFAULT_QUEUE_ID);
     store.getLock();
     store.getWatchdog();
     store.getHistory();
@@ -148,7 +148,7 @@ describe('WorkspaceStateStore.subscribe', () => {
 
     await store.setQueue(emptyQueue());
     subA.dispose();
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     await store.setLock(sampleLock());
 
     expect(a).toEqual([KEYS.queue]);
@@ -171,8 +171,8 @@ describe('WorkspaceStateStore.subscribe', () => {
     store.subscribe((key) => events.push(key));
     await store.setQueue(emptyQueue());
     await store.setQueue(emptyQueue());
-    await store.setRun(sampleRun());
-    await store.setRun(null);
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, null);
     await store.setLock(sampleLock());
     await store.setLock(null);
     expect(events).toEqual([
@@ -341,7 +341,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
   });
 
   it('enforces the manual pause pair invariant at the persistence boundary', async () => {
-    expect(() => store.setRun({ ...sampleRun(), manualPauseAt: 1_700_000_000_000 })).toThrow(
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), manualPauseAt: 1_700_000_000_000 })).toThrow(
       /manualPauseAt/
     );
   });
@@ -350,20 +350,20 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     const manager = new QueueManager(store);
     const running = { ...pendingFeature('running'), status: 'in-flight' as const, runId: 'run-1' };
     await store.setQueue({ ...emptyQueue(), requests: [running], inFlightId: 'running' });
-    await store.setRun({ ...sampleRun(), featureId: 'running' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), featureId: 'running' });
 
     expect(await manager.setQueuePausedState(true, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
-    expect(store.getRun()?.manualPauseCause).toBe('queue-paused-mid-run');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBe('queue-paused-mid-run');
 
     expect(await manager.setQueuePausedState(false, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
-    expect(store.getRun()?.manualPauseCause).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBeNull();
   });
 
   it('resuming a queue preserves operator-paused runs', async () => {
     const manager = new QueueManager(store);
     const running = { ...pendingFeature('running'), status: 'in-flight' as const, runId: 'run-1' };
     await store.setQueue({ ...emptyQueue(), requests: [running], inFlightId: 'running' });
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       ...sampleRun(),
       featureId: 'running',
       manualPauseAt: 1_700_000_000_000,
@@ -371,10 +371,10 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     });
 
     expect(await manager.setQueuePausedState(true, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
-    expect(store.getRun()?.manualPauseCause).toBe('operator-paused');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBe('operator-paused');
 
     expect(await manager.setQueuePausedState(false, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
-    expect(store.getRun()?.manualPauseCause).toBe('operator-paused');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBe('operator-paused');
   });
 });
 
@@ -502,7 +502,7 @@ describe('Persistence migration (T065 / SC-013)', () => {
       removedPhaseCount: 1,
       remainingPhaseCount: 8
     });
-    expect(s.getRun()?.pipeline?.phases.map((p) => p.id)).toEqual([
+    expect(s.getRun(DEFAULT_QUEUE_ID)?.pipeline?.phases.map((p) => p.id)).toEqual([
       'speckit-specify',
       'speckit-clarify',
       'speckit-plan',

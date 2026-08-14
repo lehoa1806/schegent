@@ -14,7 +14,8 @@ export const handler: CommandHandler<ClearPhaseBreakpointCommand> = async (
   }
   const result = await ctx.deps.phaseOps.clearPhaseBreakpoint(
     command.payload.runId,
-    command.payload.phaseId
+    command.payload.phaseId,
+    command.payload.queueId
   );
   await ackGenericResult(ctx, result);
 };

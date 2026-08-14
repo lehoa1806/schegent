@@ -21,16 +21,24 @@ const REJECTION_MESSAGES: Record<string, string> = {
   'already-retrying': 'A retry is already in progress.'
 };
 
+/**
+ * Feature 093 (FR-018 / T080) — `arg` is the queue whose Run the operator
+ * pointed at. The sidebar always supplies it; a palette invocation supplies
+ * nothing, and the controller then resolves a sole Run rather than guessing
+ * between several. Anything that is not a non-empty string is treated as
+ * absent, so a stray argument from a keybinding cannot address a queue.
+ */
 export async function runRetryPhaseNow(
-  _arg: unknown,
+  arg: unknown,
   ctx: RetryPhaseNowCtx
 ): Promise<void> {
   if (!ctx.lock.isHeld()) {
     ctx.notifier.warn('Schegent: another window holds the workspace lock; ignoring retry.');
     return;
   }
+  const queueId = typeof arg === 'string' && arg.length > 0 ? arg : undefined;
   try {
-    const result = await ctx.controller.retryPhaseNow();
+    const result = await ctx.controller.retryPhaseNow(queueId);
     if (result.ok) {
       ctx.notifier.info('Schegent: retrying phase now.');
       return;

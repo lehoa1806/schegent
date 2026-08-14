@@ -42,7 +42,14 @@ export class ProjectorBookkeeping {
 
   constructor(private readonly monotonicNow: () => number) {}
 
-  public get observedStatus(): WorkflowStatus { return this.status; }
+  /**
+   * Feature 093 (T051) — a predicate, where this used to expose the whole
+   * `observedStatus`. Its one consumer is the registry's `anyRunning`, and the
+   * pinned status literal belongs on this side of that call: this file is on
+   * the `no-running-state-literal` allowlist because it owns the discriminator,
+   * and answering with a boolean keeps the registry off it.
+   */
+  public get isRunning(): boolean { return this.status === 'running'; }
 
   public recordAudit(entry: AuditEntry, projected: AuditTailEntry): void {
     if (projected.category !== 'system') {
@@ -89,23 +96,33 @@ export class ProjectorBookkeeping {
     });
   }
 
-  public updateRun(
-    run: WorkflowRun | null,
-    monitor: MonitorLifecycle,
-    cancelTick: () => void
-  ): void {
+  /**
+   * Feature 093 (T051) — the `cancelTick` callback this took is gone. The tick
+   * belongs to the window, not to a Run, and one bookkeeper per Run means a Run
+   * reaching a terminal status would otherwise cancel the tick a sibling Run is
+   * still using. `ProjectorBookkeepingRegistry.anyRunning` answers for the
+   * window instead, and the projector cancels from that.
+   */
+  public updateRun(run: WorkflowRun | null, monitor: MonitorLifecycle): void {
     const now = this.monotonicNow();
     if (!run) {
       if (this.observedRunId !== null) this.resetRunState();
       this.observedRunId = null;
       this.observedPhase = null;
       this.status = 'idle';
-      cancelTick();
       return;
     }
     const nextStatus = mapRunStatus(run);
     const nextPhase = run.currentPhase === 'done'
       ? null : (run.currentPhase as PhaseName);
+    // Feature 093 (T040) — justified survivor of the identity-reconciliation
+    // sweep. This is a memoization change-detector, not a slot check: elapsed
+    // and cumulative timings are accumulated across ticks, so the bookkeeper
+    // resets them when the Run it is measuring changes. `observedRunId` is its
+    // own remembered subject, not a re-read of shared state, so there is no
+    // second source to reconcile against. T050/T051 give the projector one
+    // bookkeeper per queue; the comparison then answers the same question about
+    // a narrower subject and stays correct either way.
     if (run.id !== this.observedRunId) {
       this.workflowStartMonotonic = now;
       this.phaseStartMonotonic = nextPhase === null ? null : now;
@@ -142,7 +159,6 @@ export class ProjectorBookkeeping {
     }
     this.observedPhase = nextPhase;
     this.status = nextStatus;
-    if (nextStatus !== 'running') cancelTick();
   }
 
   public decoratePhases(phases: PhaseTile[], run: WorkflowRun | null): void {

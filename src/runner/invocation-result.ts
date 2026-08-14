@@ -23,6 +23,18 @@ export interface InvocationOutputSink {
 export interface InvocationRequest {
   phase: Phase;
   iteration: number;
+  /**
+   * Feature 093 (T046) — the Run this invocation advances.
+   *
+   * Carried untouched and used for exactly one thing: stamping the monitor
+   * sidecar events so a window observing several concurrent subprocesses can
+   * attribute each chunk, stall, and exit to the Run that produced it. It does
+   * NOT influence argv, env, or any spawn decision. Optional so the contract
+   * harnesses and older construction sites compile unchanged; when absent the
+   * events carry `runId: null` and the monitor ignores them rather than
+   * attributing them to whichever Run happened to start most recently.
+   */
+  runId?: string;
   prompt: string;
   timeoutMs: number;
   cliPath: string;

@@ -60,35 +60,35 @@ describe('SchegentStatusBar (T063)', () => {
   it('idle + pendingCount >= 1 renders "schegent: queue <n>"', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'idle', pendingCount: 3 });
+    bar.update('run-1', { kind: 'idle', pendingCount: 3 });
     expect(item.__text()).toBe('schegent: queue 3');
   });
 
   it('idle + pendingCount === 0 stays as "schegent: idle"', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'idle', pendingCount: 0 });
+    bar.update('run-1', { kind: 'idle', pendingCount: 0 });
     expect(item.__text()).toBe('schegent: idle');
   });
 
   it('running + phase + iteration renders recursive phase form', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'running', phase: 'speckit-clarify', iteration: 2, iterationCap: 10 });
+    bar.update('run-1', { kind: 'running', phase: 'speckit-clarify', iteration: 2, iterationCap: 10 });
     expect(item.__text()).toBe('schegent: speckit-clarify [2/10]');
   });
 
   it('running + phase without iteration renders non-recursive phase form', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-1', { kind: 'running', phase: 'speckit-plan' });
     expect(item.__text()).toBe('schegent: speckit-plan');
   });
 
   it('paused with detail renders "schegent: paused (<reason>)"', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'paused', detail: 'no-credits' });
+    bar.update('run-1', { kind: 'paused', detail: 'no-credits' });
     expect(item.__text()).toBe('schegent: paused (no-credits)');
   });
 
@@ -96,32 +96,32 @@ describe('SchegentStatusBar (T063)', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
     const nextPollAt = new Date('2026-05-10T13:30:00.000Z').getTime();
-    bar.update({ kind: 'paused', nextPollAt });
+    bar.update('run-1', { kind: 'paused', nextPollAt });
     expect(item.__text()).toMatch(/^schegent: paused \(next poll \d{2}:\d{2}\)$/);
   });
 
   it('stalled kind renders "schegent: stalled"', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'stalled' });
+    bar.update('run-1', { kind: 'stalled' });
     expect(item.__text()).toBe('schegent: stalled');
   });
 
   it('terminal kinds render "schegent: <state>"', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'completed' });
+    bar.update('run-1', { kind: 'completed' });
     expect(item.__text()).toBe('schegent: completed');
-    bar.update({ kind: 'failed' });
+    bar.update('run-1', { kind: 'failed' });
     expect(item.__text()).toBe('schegent: failed');
-    bar.update({ kind: 'canceled' });
+    bar.update('run-1', { kind: 'canceled' });
     expect(item.__text()).toBe('schegent: canceled');
   });
 
   it('surfaces degraded and unavailable evidence without losing workflow state', () => {
     const item = makeItem();
     const bar = new SchegentStatusBar(item);
-    bar.update({ kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-1', { kind: 'running', phase: 'speckit-plan' });
 
     bar.setEvidenceHealth('degraded');
     expect(item.__text()).toContain('schegent: speckit-plan');
@@ -150,7 +150,7 @@ describe('SchegentStatusBar (T063)', () => {
     ];
     const observed: string[] = [];
     for (const s of sequence) {
-      bar.update(s);
+      bar.update('run-1', s);
       observed.push(item.__text());
     }
     expect(observed).toEqual([
@@ -162,5 +162,116 @@ describe('SchegentStatusBar (T063)', () => {
       'schegent: paused (rate-limited)',
       'schegent: failed'
     ]);
+  });
+});
+
+describe('SchegentStatusBar aggregates N concurrent Runs (T050)', () => {
+  it('two running Runs render a count instead of one Run winning', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-b', { kind: 'running', phase: 'speckit-tasks' });
+    expect(item.__text()).toBe('schegent: 2 runs');
+  });
+
+  it('a second Run reporting the same kind does not overwrite the first', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-b', { kind: 'running', phase: 'speckit-tasks' });
+    bar.update('run-a', { kind: 'running', phase: 'speckit-analyze' });
+    expect(item.__text()).toBe('schegent: 2 runs');
+    expect(item.__tooltip()).toContain('phase: speckit-analyze');
+    expect(item.__tooltip()).toContain('phase: speckit-tasks');
+    expect(item.__tooltip()).not.toContain('phase: speckit-plan');
+  });
+
+  it('running outranks paused and stalled outranks paused in the headline', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'paused', detail: 'awaiting-approval' });
+    bar.update('run-b', { kind: 'running', phase: 'speckit-plan' });
+    expect(item.__text()).toBe('schegent: speckit-plan');
+
+    bar.update('run-b', { kind: 'stalled' });
+    expect(item.__text()).toBe('schegent: stalled');
+  });
+
+  it('counts only the Runs sharing the headline kind', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'paused', detail: 'awaiting-approval' });
+    bar.update('run-b', { kind: 'paused', detail: 'rate-limited' });
+    bar.update('run-c', { kind: 'stalled' });
+    expect(item.__text()).toBe('schegent: stalled');
+
+    bar.update('run-c', { kind: 'completed' });
+    expect(item.__text()).toBe('schegent: 2 paused');
+  });
+
+  it('a settled Run leaves the live set and the survivor gets its own form back', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-b', { kind: 'running', phase: 'speckit-tasks' });
+    expect(item.__text()).toBe('schegent: 2 runs');
+
+    bar.update('run-b', { kind: 'completed' });
+    expect(item.__text()).toBe('schegent: speckit-plan');
+
+    bar.update('run-a', { kind: 'canceled' });
+    expect(item.__text()).toBe('schegent: canceled');
+  });
+
+  it('a window-level condition outranks the aggregate and clearing it restores the aggregate', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', { kind: 'running', phase: 'speckit-plan' });
+    bar.update('run-b', { kind: 'running', phase: 'speckit-tasks' });
+
+    bar.updateWindow({ kind: 'paused', detail: 'no-credits' });
+    expect(item.__text()).toBe('schegent: paused (no-credits)');
+
+    // The Runs kept reporting underneath; the window condition merely hid them.
+    bar.update('run-a', { kind: 'running', phase: 'speckit-analyze' });
+    expect(item.__text()).toBe('schegent: paused (no-credits)');
+
+    bar.updateWindow(null);
+    expect(item.__text()).toBe('schegent: 2 runs');
+  });
+
+  it('the multi-Run tooltip carries phase detail but no run or queue identifier', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', {
+      kind: 'running',
+      phase: 'speckit-clarify',
+      iteration: 2,
+      iterationCap: 10
+    });
+    bar.update('run-b', { kind: 'paused', detail: 'awaiting-approval' });
+
+    const tooltip = item.__tooltip();
+    expect(tooltip.split('\n')).toEqual([
+      'running — phase: speckit-clarify — iteration: 2/10',
+      'paused — awaiting-approval',
+      'click to view audit log'
+    ]);
+    expect(tooltip).not.toContain('run-a');
+    expect(tooltip).not.toContain('run-b');
+  });
+
+  it('a single live Run keeps the pre-feature single-line tooltip', () => {
+    const item = makeItem();
+    const bar = new SchegentStatusBar(item);
+    bar.update('run-a', {
+      kind: 'running',
+      phase: 'speckit-clarify',
+      iteration: 2,
+      iterationCap: 10
+    });
+    expect(item.__tooltip()).toBe(
+      'phase: speckit-clarify — iteration: 2/10 — click to view audit log'
+    );
   });
 });

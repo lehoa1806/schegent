@@ -18,6 +18,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import PhaseControlMenu from '../PhaseControlMenu.svelte';
 
+// Feature 093 (T080) — lifecycle controls are queue-addressed, so the component
+// under test needs the queue whose Run it acts on.
+const TEST_QUEUE_ID = 'q-alpha';
+
 const setPhaseBreakpointSpy = vi.fn(
   (_runId: string, _phaseId: string) =>
     Promise.resolve({ status: 'accepted' as const })
@@ -51,7 +55,7 @@ afterEach(() => cleanup());
 describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () => {
   it('renders "Pause when reached" when the selected phase is pending and has no breakpoint/override', () => {
     const { getByTestId, queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -74,7 +78,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides "Pause when reached" when the selected phase is the active phase (in-flight)', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-tasks',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -91,7 +95,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides "Pause when reached" when the selected phase has an override', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -108,7 +112,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('renders "Cancel scheduled pause" (and hides Set) when a breakpoint is armed on the selected phase', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -126,7 +130,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides both actions when not primary host', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: false,
         activeRunId: 'run-1',
@@ -144,7 +148,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides both actions when activeRunId is null', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: null,
@@ -162,7 +166,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('clicking "Pause when reached" calls setPhaseBreakpoint with the active run id and selected phase', async () => {
     const { getByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-42',
@@ -181,7 +185,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('clicking "Cancel scheduled pause" calls clearPhaseBreakpoint with the active run id and selected phase', async () => {
     const { getByTestId } = render(PhaseControlMenu, {
-      props: {
+      props: { queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-42',

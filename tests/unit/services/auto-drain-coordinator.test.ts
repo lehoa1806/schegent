@@ -35,11 +35,16 @@ function makeStore(queueState: {
 function makeQueue(
   next: { id: string; description: string } | null,
   hasWorkspaceCapacity = true,
-  hasQueueCapacity = true
+  hasQueueCapacity = true,
+  hasExecutionCapacity = true
 ) {
   return {
     peekNextPending: vi.fn(() => next),
     hasQueueCapacity: vi.fn(() => hasQueueCapacity),
+    // Feature 093 (T072) — step 4's second reading: the cap measured against the
+    // Runs this window is driving. Open by default here so the tests below keep
+    // discriminating on the gate each one is actually about.
+    hasExecutionCapacity: vi.fn(() => hasExecutionCapacity),
     hasWorkspaceCapacity: vi.fn(() => hasWorkspaceCapacity)
   };
 }
@@ -51,8 +56,19 @@ function makeLease(acquired: boolean) {
   };
 }
 
+/**
+ * Feature 093 (T049a) — the drain awaits admission, not completion, so the
+ * double answers the admission pair. `completed` is the promise of the Run's
+ * execution; here it is already resolved, which is the "the Run finished
+ * instantly" case and keeps every gate-order assertion below unchanged.
+ */
 function makeController() {
-  return { startNew: vi.fn(async () => undefined), resumeExisting: vi.fn(async () => false) };
+  return {
+    admitNew: vi.fn(async () => ({ completed: Promise.resolve() })),
+    admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+    // A double holds no sessions, so it drives no Runs (T072).
+    liveRunCount: 0
+  };
 }
 
 describe('AutoDrainCoordinator (T099 / T102)', () => {
@@ -68,7 +84,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).toHaveBeenCalledWith({ id: 'q-2', description: 'next item' }, null);
+    expect(controller.admitNew).toHaveBeenCalledWith({ id: 'q-2', description: 'next item' }, null);
   });
 
   it('short-circuits when the queue is paused', async () => {
@@ -84,7 +100,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('short-circuits when the workspace concurrency ceiling is full', async () => {
@@ -100,7 +116,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('short-circuits when THIS queue already holds an in-flight Task', async () => {
@@ -116,7 +132,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.hasWorkspaceCapacity).not.toHaveBeenCalled();
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('short-circuits when no pending feature exists', async () => {
@@ -132,7 +148,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(lease.tryAcquire).not.toHaveBeenCalled();
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('short-circuits when the execution lease is held by another window', async () => {
@@ -147,20 +163,32 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
-  // Feature 092 — step 4b. The queue model permits N concurrent Runs; the Run
-  // engine does not yet. `KEYS.run` holds one `WorkflowRun` and the single
-  // `RunDriver` ignores a second `drive()` while it is running, so a start
-  // issued past a busy engine would overwrite the live Run's record and then
-  // spawn nothing — one Task in flight with no process, one Run addressable
-  // only through a record describing the other. The gate makes that a wait.
-  it('waits when the shared Run engine is already driving a Run', async () => {
+  // Feature 093 (T081/T082, FR-011, SC-011) — the two tests that stood here
+  // pinned step 4b, and step 4b is gone. Feature 092 needed it because
+  // `KEYS.run` held one `WorkflowRun` and one `RunDriver` served the window, so
+  // a start issued past a busy engine would have overwritten the live Run's
+  // record; the v10 → v11 per-queue record and the per-queue `RunSession`
+  // remove the disagreement the gate absorbed.
+  //
+  // Replacing them with an inverted pair rather than deleting them: "a busy
+  // engine no longer refuses" is the feature's acceptance signal and needs a
+  // test that fails if the gate returns, and `running` needs an assertion that
+  // it is not what the drain consults, or the next edit reads it again.
+  it('starts a second Run while the engine is already driving one', async () => {
     const store = makeStore({ paused: false, inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
-    const controller = { ...makeController(), running: true };
+    let runningReads = 0;
+    const controller = {
+      ...makeController(),
+      get running(): boolean {
+        runningReads++;
+        return true;
+      }
+    };
     const coord = new AutoDrainCoordinator({
       store: store as never,
       queue: queue as never,
@@ -168,27 +196,34 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).not.toHaveBeenCalled();
-    // A wait, not a claim: nothing past step 4b was consulted, so no lease is
-    // left held and no pending head was removed.
+    expect(controller.admitNew).toHaveBeenCalledTimes(1);
+    expect(lease.tryAcquire).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    // The engine's busyness is not an input to the decision at all. Asserting
+    // the start alone would still pass a reintroduced gate that read `running`
+    // and happened to let this case through.
+    expect(runningReads).toBe(0);
+  });
+
+  it('waits on the cap, which is what bounds concurrency now that 4b is gone', async () => {
+    const store = makeStore({ paused: false, inFlightId: null });
+    // Step 4's execution reading is closed; every other gate is open.
+    const queue = makeQueue({ id: 'q-2', description: 'next' }, true, true, false);
+    const lease = makeLease(true);
+    const controller = makeController();
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never
+    });
+    await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(queue.hasExecutionCapacity).toHaveBeenCalledWith(0);
+    // A wait, not a claim: nothing past the capacity check was consulted, so no
+    // lease is left held and no pending head was removed.
+    expect(controller.admitNew).not.toHaveBeenCalled();
     expect(queue.peekNextPending).not.toHaveBeenCalled();
     expect(lease.tryAcquire).not.toHaveBeenCalled();
     expect(lease.release).not.toHaveBeenCalled();
-  });
-
-  it('promotes once the engine is free again', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
-    const queue = makeQueue({ id: 'q-2', description: 'next' });
-    const lease = makeLease(true);
-    const controller = { ...makeController(), running: false };
-    const coord = new AutoDrainCoordinator({
-      store: store as never,
-      queue: queue as never,
-      executionLease: lease as never,
-      controller: controller as never
-    });
-    await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -216,7 +251,7 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
     expect(queue.hasQueueCapacity).not.toHaveBeenCalled();
     expect(queue.hasWorkspaceCapacity).not.toHaveBeenCalled();
     expect(lease.tryAcquire).not.toHaveBeenCalled();
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 
   it('running lifecycle proceeds through the existing checks (FR-005 carve-out)', async () => {
@@ -235,7 +270,7 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).toHaveBeenCalled();
+    expect(controller.admitNew).toHaveBeenCalled();
   });
 
   it('active-empty lifecycle proceeds through the existing checks', async () => {
@@ -254,7 +289,7 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).toHaveBeenCalled();
+    expect(controller.admitNew).toHaveBeenCalled();
   });
 
   it('operator-paused short-circuits via the legacy paused gate (not the new lifecycle gate)', async () => {
@@ -273,7 +308,7 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       controller: controller as never
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
-    expect(controller.startNew).not.toHaveBeenCalled();
+    expect(controller.admitNew).not.toHaveBeenCalled();
   });
 });
 
@@ -325,6 +360,12 @@ function roundRobinHarness(options: { capacity: number }) {
         queueId
       })),
       hasQueueCapacity: vi.fn(() => true),
+      // Feature 093 (T072) — the same ceiling read the other way: `inFlight` is
+      // both the count of persisted in-flight rows and the count of Runs this
+      // window is driving, because in this harness every promotion is one Run in
+      // this window. Modelling it once and answering both readings from it keeps
+      // the sweep's choice — not the ceiling's spelling — the thing under test.
+      hasExecutionCapacity: vi.fn((live: number) => live < options.capacity),
       hasWorkspaceCapacity: vi.fn(() => inFlight < options.capacity)
     } as never,
     executionLease: {
@@ -332,11 +373,15 @@ function roundRobinHarness(options: { capacity: number }) {
       release: vi.fn(async () => undefined)
     } as never,
     controller: {
-      startNew: vi.fn(async (task: { queueId: string }) => {
+      admitNew: vi.fn(async (task: { queueId: string }) => {
         promoted.push(task.queueId);
         inFlight += 1;
+        return { completed: Promise.resolve() };
       }),
-      resumeExisting: vi.fn(async () => false)
+      admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+      get liveRunCount() {
+        return inFlight;
+      }
     } as never
   });
 
@@ -395,5 +440,233 @@ describe('AutoDrainCoordinator — round-robin cursor (T038, FR-028a)', () => {
     const fresh = roundRobinHarness({ capacity: 1 });
     await fresh.sweep();
     expect(fresh.promoted).toEqual(['q-a']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 093 (T049 / T049a) — the sweep guard, and the admission seam it needs.
+//
+// `drainAll()` is triggered fire-and-forget once per terminating Run, so with N
+// Runs in flight N sweeps can be asked for at once. Every test below suspends a
+// sweep at a real await point — the admission of a queue's Run — and then acts
+// while it is suspended, which is the window the guard exists to close. Nothing
+// here sleeps or races a timer: admissions are explicit deferreds and the
+// interleaving is chosen by the test (research R10).
+// ---------------------------------------------------------------------------
+
+interface Deferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = () => r();
+  });
+  return { promise, resolve };
+}
+
+/** Flush the microtask queue far enough for every suspended sweep to settle. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 32; i += 1) await Promise.resolve();
+}
+
+function interleavingHarness(
+  options: { pendingFor?: readonly string[]; audit?: boolean } = {}
+) {
+  const pending = new Set(options.pendingFor ?? QUEUE_IDS);
+  /** Every queue `admitNew`/`admitResume` was called for, in call order. */
+  const offered: string[] = [];
+  const inFlight = new Set<string>();
+  const admissionGates = new Map<string, Deferred>();
+  const runGates = new Map<string, Deferred>();
+  const appends: Array<Record<string, unknown>> = [];
+  let gateAdmissions = true;
+
+  async function admit(queueId: string) {
+    offered.push(queueId);
+    if (gateAdmissions) {
+      const gate = deferred();
+      admissionGates.set(queueId, gate);
+      await gate.promise;
+    }
+    inFlight.add(queueId);
+    const run = deferred();
+    runGates.set(queueId, run);
+    return { completed: run.promise };
+  }
+
+  const coord = new AutoDrainCoordinator({
+    store: {
+      getQueue: () => ({
+        queueLifecycle: 'active-empty' as QueueLifecycle,
+        paused: false,
+        inFlightId: null
+      }),
+      getQueueRegistry: () => ({
+        entries: QUEUE_IDS.map((id, position) => ({
+          id,
+          name: id,
+          position,
+          state: 'active' as const,
+          pauseSource: null,
+          schedule: null,
+          createdAt: 0,
+          updatedAt: 0
+        })),
+        updatedAt: 0
+      })
+    } as never,
+    queue: {
+      peekNextPending: (queueId: string) =>
+        pending.has(queueId) ? { id: `task-${queueId}`, description: 'next', queueId } : null,
+      hasQueueCapacity: (queueId: string) => !inFlight.has(queueId),
+      // No ceiling in this harness, in either reading — the sweep guard is what
+      // is under test, and a capacity refusal would end a sweep early for a
+      // reason that has nothing to do with interleaving.
+      hasExecutionCapacity: () => true,
+      hasWorkspaceCapacity: () => true,
+      inFlightCount: (queueId?: string) =>
+        queueId === undefined ? inFlight.size : inFlight.has(queueId) ? 1 : 0
+    } as never,
+    executionLease: {
+      tryAcquire: async () => ({ acquired: true, ownerId: 'w-1' }),
+      release: async () => undefined
+    } as never,
+    controller: {
+      admitNew: (task: { queueId: string }) => admit(task.queueId),
+      admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
+      get liveRunCount() {
+        return inFlight.size;
+      }
+    } as never,
+    auditWriter: options.audit
+      ? {
+          append: async (entry: { payload: Record<string, unknown> }) => {
+            appends.push(entry.payload);
+            return undefined;
+          }
+        }
+      : null
+  } as never);
+
+  return {
+    coord,
+    offered,
+    appends,
+    inFlight,
+    /** Make this queue's pending head appear mid-sweep. */
+    addPending: (queueId: string) => pending.add(queueId),
+    /** Let every admission so far — and every later one — through. */
+    openAllAdmissions: () => {
+      gateAdmissions = false;
+      for (const gate of admissionGates.values()) gate.resolve();
+    },
+    /** End a Run that has been admitted. */
+    finishRun: (queueId: string) => {
+      inFlight.delete(queueId);
+      runGates.get(queueId)?.resolve();
+    }
+  };
+}
+
+describe('AutoDrainCoordinator sweep guard (Feature 093 T049)', () => {
+  it('a second sweep joins the one in flight instead of walking alongside it', async () => {
+    const h = interleavingHarness();
+
+    const first = h.coord.drainAll();
+    await settle();
+    // Suspended inside q-a's admission: the Task is not in flight yet, so an
+    // interleaved sweep would find q-a eligible and offer it a second time.
+    expect(h.offered).toEqual(['q-a']);
+
+    const second = h.coord.drainAll();
+    await settle();
+    expect(h.offered).toEqual(['q-a']);
+
+    h.openAllAdmissions();
+    await Promise.all([first, second]);
+    expect(h.offered).toEqual(['q-a', 'q-b', 'q-c', 'q-d']);
+  });
+
+  it('a request arriving during a sweep is coalesced, not dropped', async () => {
+    // Only q-a has work when the sweep starts.
+    const h = interleavingHarness({ pendingFor: ['q-a'] });
+
+    const first = h.coord.drainAll();
+    await settle();
+    expect(h.offered).toEqual(['q-a']);
+
+    // A Run elsewhere terminates and enqueues work the current sweep has
+    // already walked past. Its trigger must survive the sweep it arrived during.
+    const second = h.coord.drainAll();
+    h.addPending('q-b');
+    h.openAllAdmissions();
+    await Promise.all([first, second]);
+
+    expect(h.offered).toEqual(['q-a', 'q-b']);
+  });
+
+  it('the overlap episode is opened once across two overlapping triggers', async () => {
+    const h = interleavingHarness({ audit: true });
+
+    const first = h.coord.drainAll();
+    await settle();
+    const second = h.coord.drainAll();
+    h.openAllAdmissions();
+    await Promise.all([first, second]);
+
+    // Four Runs in flight, one episode. The latch is read-modify-written inside
+    // one sweep at a time, so the second trigger cannot re-open what the first
+    // already recorded.
+    expect(h.inFlight.size).toBe(4);
+    expect(h.appends).toHaveLength(1);
+    expect(h.appends[0]).toMatchObject({ eventType: 'runs-overlapped' });
+  });
+
+  it('an addressed drain does not double-start a queue a sweep is admitting', async () => {
+    const h = interleavingHarness();
+
+    const sweep = h.coord.drainAll();
+    await settle();
+    expect(h.offered).toEqual(['q-a']);
+
+    // `drainIfIdle` stays concurrent with the sweep by design — it must not join
+    // it — so the per-queue half of the guard is what refuses this one.
+    const addressed = h.coord.drainIfIdle('q-a');
+    await settle();
+    expect(h.offered).toEqual(['q-a']);
+
+    h.openAllAdmissions();
+    await Promise.all([sweep, addressed]);
+    expect(h.offered.filter((id) => id === 'q-a')).toEqual(['q-a']);
+  });
+});
+
+describe('AutoDrainCoordinator admission seam (Feature 093 T049a)', () => {
+  it('a sweep offers every queue without waiting for the Runs it started', async () => {
+    const h = interleavingHarness();
+    h.openAllAdmissions();
+
+    // No Run ever completes: `finishRun` is not called, so every `completed`
+    // promise stays pending for the whole test. A drain that awaited completion
+    // rather than admission would never reach q-b.
+    await h.coord.drainAll();
+
+    expect(h.offered).toEqual(['q-a', 'q-b', 'q-c', 'q-d']);
+    expect(h.inFlight.size).toBe(4);
+  });
+
+  it('a queue whose Run is still executing is not offered again', async () => {
+    const h = interleavingHarness();
+    h.openAllAdmissions();
+
+    await h.coord.drainAll();
+    await h.coord.drainAll();
+
+    // The second sweep saw the counts the first sweep's admissions produced,
+    // which is the whole reason the seam is `markInFlight` and not the spawn.
+    expect(h.offered).toEqual(['q-a', 'q-b', 'q-c', 'q-d']);
   });
 });

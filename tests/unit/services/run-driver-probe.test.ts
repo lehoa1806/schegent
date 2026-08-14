@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 describe('RunDriver Probing (Feature 074)', () => {
@@ -18,7 +19,7 @@ describe('RunDriver Probing (Feature 074)', () => {
         warnings: [],
         auditEntryId: null
       }) },
-      store: { setRun: vi.fn(), getRun: vi.fn() },
+      store: { setRun: vi.fn(), findRunByTask: vi.fn(() => null) },
       // `findById` is asked for the frozen plan's declared outputs at completion
       // (Feature 091, T011). No plan here means nothing is recorded.
       queue: { notifyStatusChange: vi.fn(), finish: vi.fn(), findById: vi.fn(() => null) },
@@ -60,7 +61,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       resumeTargetPhaseId: null
     };
 
-    deps.store.getRun.mockReturnValue(run);
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
 
     const driver = new RunDriver(deps);
     const originalEnv = process.env.NODE_ENV;
@@ -85,6 +86,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       expect.objectContaining({ status: 'failed' })
     );
     expect(deps.statusBar.update).toHaveBeenCalledWith(
+      'run-1',
       expect.objectContaining({ kind: 'failed' })
     );
     expect(deps.notifier.warn).toHaveBeenCalled();
@@ -112,7 +114,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       resumeTargetPhaseId: null
     };
 
-    deps.store.getRun.mockReturnValue(run);
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
 
     const driver = new RunDriver(deps);
     const originalEnv = process.env.NODE_ENV;
@@ -154,7 +156,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       phaseOverrides: [],
       resumeTargetPhaseId: null
     };
-    deps.store.getRun.mockReturnValue(run);
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
 
     const driver = new RunDriver(deps);
     const originalEnv = process.env.NODE_ENV;
@@ -199,7 +201,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       phaseOverrides: [],
       resumeTargetPhaseId: null
     };
-    deps.store.getRun.mockReturnValue(run);
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
     const originalEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'development';
     try {
@@ -245,7 +247,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       phaseOverrides: [],
       resumeTargetPhaseId: null
     };
-    deps.store.getRun.mockReturnValue(run);
+    deps.store.findRunByTask.mockReturnValue({ queueId: DEFAULT_QUEUE_ID, run });
     const originalNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'development';
     try {

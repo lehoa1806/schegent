@@ -21,7 +21,7 @@ class FakeMemento implements Memento {
 }
 
 function makeStatusBar(): SchegentStatusBar {
-  return { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
+  return { update: vi.fn(), updateWindow: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
 }
 
 function makeRunner(invokeImpl: () => Promise<RawInvocationOutput>): ClaudeCliRunner {
@@ -105,7 +105,9 @@ describe('CreditWatchdog.pauseAndPoll', () => {
       async () => {}
     );
     await watchdog.pauseAndPoll('rate-limit');
-    expect(statusBar.update).toHaveBeenCalledWith(expect.objectContaining({ kind: 'paused' }));
+    expect(statusBar.updateWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'paused' })
+    );
     watchdog.dispose();
   });
 });
@@ -126,6 +128,31 @@ describe('CreditWatchdog poll behavior', () => {
     expect(onResume).toHaveBeenCalled();
     expect(store.getWatchdog().paused).toBe(false);
     expect(store.getWatchdog().lastStatusOk).toBe(true);
+    watchdog.dispose();
+  });
+
+  it('clears the window-level pause before resuming (T050)', async () => {
+    // Feature 093 (T050) — the window condition outranks the per-Run aggregate,
+    // so a resume that does not give it back leaves the bar reading `paused`
+    // while Runs execute. Before the channel split the next driver update
+    // overwrote it, and nothing had to hand it back.
+    const runner = makeRunner(async () => makeRawOutput({ stdout: 'status: ok' }));
+    const statusBar = makeStatusBar();
+    const watchdog = new CreditWatchdog(
+      runner,
+      store,
+      statusBar,
+      new SanitizedLogger(),
+      watchdogOpts,
+      async () => {}
+    );
+
+    await watchdog.pauseAndPoll('rate-limit');
+    await vi.advanceTimersByTimeAsync(watchdogOpts.pollIntervalMs + 100);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(statusBar.updateWindow).toHaveBeenCalledWith(null);
     watchdog.dispose();
   });
 

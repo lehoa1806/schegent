@@ -106,6 +106,7 @@
         phases={runtime?.phases ?? []}
         activeTaskId={isExecuting ? runId : null}
         activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
+        {queueId}
         {isPrimary}
         manualPauseAt={runtime?.manualPause?.at ?? null}
         manualPauseCause={runtime?.manualPause?.cause ?? null}

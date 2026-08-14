@@ -44,6 +44,7 @@ import type {
   DelayedRetryWatchdog,
   WorkflowControllerDeps
 } from '../../src/controller/workflow-controller';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -261,7 +262,7 @@ describe('Feature 032 — end-to-end: transient_error → retry-now → clean ad
     await harness.controller.startNew(feature, null);
 
     // Verify the run is in the pending-retry state.
-    const persistedRun = harness.store.getRun();
+    const persistedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(persistedRun?.pendingRetryCause).toBe('transient_error');
 
     // Operator clicks Retry Now → schedules a setImmediate(resumeExisting).

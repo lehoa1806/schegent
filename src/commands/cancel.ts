@@ -1,8 +1,8 @@
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import { resolveSoleRun } from '../controller/sole-run-resolver';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
-import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 
@@ -21,15 +21,23 @@ export type CancelResult = { ok: true } | { ok: false; reason: string };
  *    the VS Code command palette without an arg, falls back to the
  *    legacy "cancel the active singular run" path so the palette
  *    affordance keeps working.
- *  - In-flight task whose `runId` matches `store.getRun().id`: aborts
- *    the controller, finalizes both the run and the FeatureRequest, and
- *    releases the workspace lock.
+ *  - In-flight task whose `runId` matches the Run on its own queue: aborts
+ *    that queue's driver and finalizes both the run and the FeatureRequest.
  *  - In-flight task without a matching active run (e.g., a stale
  *    in-flight FeatureRequest after pause/resume drift): finalizes the
  *    FeatureRequest only; the controller is not signaled.
  *  - Pending task: transitions to `canceled` directly without touching
- *    the controller or the lock.
+ *    the controller.
  *  - Unknown task or terminal task: returns `{ ok: false, reason }`.
+ *
+ * Feature 093 (T068b, FR-028) — no path here touches window primacy, and the
+ * `WorkspaceLockManager` is no longer on this context at all. Both cancel paths
+ * released it back when a Run's drive held it; 092 retired that wrapper, and
+ * with two Runs in one window a cancel that released primacy would strand the
+ * survivor in a window a rival could take over. Primacy is acquired at
+ * activation and released at disposal. Dropping the dependency rather than
+ * leaving it unread is the point: an unused lock handle on a command context is
+ * how the release comes back.
  *
  * Emits a single sanitized `task-canceled` audit event carrying
  * `{ taskId, runId? }` per FR-035.
@@ -39,7 +47,6 @@ export async function runCancel(ctx: {
   store: WorkspaceStateStore;
   queue: QueueManager;
   audit: AuditLogWriter;
-  lock: WorkspaceLockManager;
   notifier: Notifier;
   logger: SanitizedLogger;
   taskId?: string;
@@ -71,7 +78,12 @@ async function cancelByTaskId(
     return { ok: false, reason: 'illegal-state' };
   }
 
-  const activeRun = ctx.store.getRun();
+  // Feature 093 (T026) — pattern B. The header above already anticipated this:
+  // the singular projection was what put action identity at risk once
+  // `globalConcurrencyCap > 1`. The Task names its queue, so the read addresses
+  // that queue and cannot return a sibling's Run.
+  const queueId = ctx.queue.queueIdForTask(taskId);
+  const activeRun = ctx.store.getRun(queueId);
   const runMatches =
     feature.status === 'in-flight' &&
     activeRun !== null &&
@@ -79,7 +91,9 @@ async function cancelByTaskId(
     activeRun.status === 'running';
 
   if (runMatches && activeRun) {
-    ctx.controller.cancelActive();
+    // Feature 093 (T042) — addressed: cancel this Task's queue, not every Run
+    // the window is driving.
+    ctx.controller.cancelActive(queueId);
     await ctx.audit.append({
       runId: activeRun.id,
       phase: activeRun.currentPhase,
@@ -88,9 +102,14 @@ async function cancelByTaskId(
       payload: { taskId: feature.id, runId: activeRun.id, reason: 'user-cancel' },
       outcome: 'info'
     });
-    await ctx.store.setRun({ ...activeRun, status: 'canceled', lastTransitionAt: Date.now() });
+    await ctx.store.setRun(queueId, {
+      ...activeRun,
+      status: 'canceled',
+      lastTransitionAt: Date.now()
+    });
     await ctx.queue.finish(feature.id, 'canceled');
-    await ctx.lock.release();
+    // Feature 093 (T068b, FR-028) — cancelling one Task does not end the
+    // window's primacy. See the header note.
     ctx.notifier.info('Schegent: task canceled.');
     return { ok: true };
   }
@@ -115,12 +134,26 @@ async function cancelByTaskId(
 }
 
 async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<CancelResult> {
-  const run = ctx.store.getRun();
-  if (!run || run.status !== 'running') {
-    ctx.notifier.info('Schegent: no in-flight run to cancel.');
-    return { ok: false, reason: 'no-active-run' };
+  // Feature 093 (T038) — this is the palette fallback documented above: the
+  // caller named no task, so the target has to be inferred. It is inferred only
+  // when there is nothing to infer between. Canceling a Run the operator was not
+  // looking at is unrecoverable, so several running Runs is a refusal that tells
+  // them to name the task, not a coin flip.
+  const target = resolveSoleRun(ctx.store.getRunMap(), (r) => r.status === 'running');
+  if (!target.ok) {
+    ctx.notifier.info(
+      target.reason === 'ambiguous-run-target'
+        ? 'Schegent: several runs are in flight; cancel a specific task instead.'
+        : 'Schegent: no in-flight run to cancel.'
+    );
+    return { ok: false, reason: target.reason === 'ambiguous-run-target'
+      ? 'ambiguous-run-target'
+      : 'no-active-run' };
   }
-  ctx.controller.cancelActive();
+  const { queueId, run } = target;
+  // Feature 093 (T042) — `resolveControlTarget` already named the queue; cancel
+  // that one.
+  ctx.controller.cancelActive(queueId);
   await ctx.audit.append({
     runId: run.id,
     phase: run.currentPhase,
@@ -129,9 +162,11 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
     outcome: 'info'
   });
-  await ctx.store.setRun({ ...run, status: 'canceled', lastTransitionAt: Date.now() });
+  await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() });
   await ctx.queue.finish(run.featureId, 'canceled');
-  await ctx.lock.release();
+  // Feature 093 (T068b, FR-028) — same as the by-id path: the window keeps
+  // primacy. Here it matters even when the resolver found a sole *running* Run,
+  // because a paused sibling is still this window's work.
   ctx.notifier.info('Schegent: workflow canceled.');
   return { ok: true };
 }

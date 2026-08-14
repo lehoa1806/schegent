@@ -25,7 +25,10 @@ import {
   type QueueStateMap
 } from '../../../src/state/queue-state-migrator';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
-import { STATE_SCHEMA_VERSION_V10 } from '../../../src/contracts/state-schema';
+import {
+  STATE_SCHEMA_VERSION,
+  STATE_SCHEMA_VERSION_V10
+} from '../../../src/contracts/state-schema';
 import type { QueueState } from '../../../src/queue/feature-request';
 import {
   FIXTURE_NOW,
@@ -256,14 +259,21 @@ describe('migrateV9ToV10 — the audit event', () => {
   });
 });
 
-describe('migrateV9ToV10 — forward-only', () => {
-  it('refuses a persisted version above 10 rather than discarding queues', () => {
-    expect(() => assertPersistedVersionSupported(11)).toThrowError(/exceeds/i);
+// Feature 093 (T014, defect D3) — the ceiling is the runtime constant, not a
+// version literal. These expectations used to name `10` because the guard named
+// `STATE_SCHEMA_VERSION_V10`, and a guard pinned to a past version starts
+// refusing workspaces the runtime writes itself at the next bump. Expressing
+// both sides in terms of `STATE_SCHEMA_VERSION` means the next bump moves them
+// together, and a future rung that forgets to fails here rather than in the
+// field.
+describe('assertPersistedVersionSupported — forward-only', () => {
+  it('refuses a persisted version above the runtime rather than discarding queues', () => {
+    expect(() => assertPersistedVersionSupported(STATE_SCHEMA_VERSION + 1)).toThrowError(/exceeds/i);
     expect(() => assertPersistedVersionSupported(99)).toThrowError(/exceeds/i);
   });
 
-  it('accepts every version at or below 10', () => {
-    for (const version of [undefined, 1, 6, 7, 9, 10]) {
+  it('accepts every version at or below the runtime, and a workspace with none', () => {
+    for (const version of [undefined, 1, 6, 7, 9, STATE_SCHEMA_VERSION_V10, STATE_SCHEMA_VERSION]) {
       expect(() => assertPersistedVersionSupported(version)).not.toThrow();
     }
   });

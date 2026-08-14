@@ -97,6 +97,11 @@ async function makeWindow(
   const leaseDenials: Array<{ queueId: string; ownerId: string }> = [];
   const audits: AuditEntry[] = [];
   let runSeq = 0;
+  // Feature 093 (T082) — the sessions this window would own. `liveRunCount` is
+  // `RunSessionRegistry.size` in production: a session exists from admission to
+  // the Run's terminal transition, so the double counts starts and gives the
+  // count back in `finishRun`, which is this harness's terminal transition.
+  let liveRuns = 0;
 
   queue.setLifecycleAuditHook({
     append: async (entry) => {
@@ -105,17 +110,27 @@ async function makeWindow(
     }
   });
 
+  // Feature 093 (T049a) — the double already ended where admission ends: at
+  // `markInFlight`. What changes is that it now says so, returning the promise
+  // of the Run's execution rather than implying the Run was over. The Runs here
+  // are never driven, so `completed` stays resolved and every gate assertion
+  // below is unaffected.
   const controller = {
-    startNew: async (request: FeatureRequest) => {
+    admitNew: async (request: FeatureRequest) => {
       const runId = `run-${++runSeq}-${request.queueId}`;
       await queue.markInFlight(request.id, runId);
+      liveRuns++;
       started.push({
         queueId: request.queueId ?? DEFAULT_QUEUE_ID,
         taskId: request.id,
         runId
       });
+      return { completed: Promise.resolve() };
     },
-    resumeExisting: async () => false
+    admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
+    get liveRunCount(): number {
+      return liveRuns;
+    }
   };
 
   const autoDrain = new AutoDrainCoordinator({
@@ -146,6 +161,7 @@ async function makeWindow(
         .getQueue(queueId)
         .requests.find((r) => r.status === 'in-flight');
       if (inFlight) await queue.finish(inFlight.id, 'completed');
+      if (liveRuns > 0) liveRuns--;
       await executionLease.release(queueId);
     },
     isPrimary(): boolean {

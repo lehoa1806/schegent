@@ -4,6 +4,7 @@ import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowControllerDeps } from '../../../src/controller/workflow-controller';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -56,7 +57,7 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
 
   it('emits task-execution-paused on pauseActivePhase (T020)', async () => {
     const runId = 'run-pause-1';
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       taskId: 'task-1',
       featureId: 'task-1',
@@ -99,7 +100,7 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
     auditAppendSpy.mockRejectedValue(new Error('Audit write failed'));
     
     const runId = 'run-pause-2';
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       taskId: 'task-2',
       featureId: 'task-2',
@@ -121,7 +122,7 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
 
     await expect(controller.pauseActivePhase()).resolves.toMatchObject({ ok: true });
     
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.manualPauseCause).toBe('operator-paused');
   });
 });

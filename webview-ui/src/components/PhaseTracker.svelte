@@ -7,6 +7,17 @@
   import { useConfirm } from '../lib/use-confirm';
   import { formatPhaseLabel } from '../lib/format';
 
+  interface Props {
+    /**
+     * Feature 093 (FR-018 / T080) — the queue whose Run this tracker shows.
+     * Retry-now addresses it explicitly; the host refuses an unaddressed
+     * control now that N Runs can be in flight at once.
+     */
+    queueId: string;
+  }
+
+  const { queueId }: Props = $props();
+
   const phases = $derived(snapshotStore.phases);
   const delayedRetry = $derived(snapshotStore.delayedRetry);
   const activePhase = $derived(phases.find((p) => p.state === 'active') ?? null);
@@ -39,7 +50,7 @@
       context: { phaseName }
     });
     if (!ok) return;
-    const { correlationId } = postCommand(CMD_RETRY_PHASE_NOW);
+    const { correlationId } = postCommand(CMD_RETRY_PHASE_NOW, { queueId });
     snapshotStore.markPending(correlationId);
     pendingCorrelationId = correlationId;
   }

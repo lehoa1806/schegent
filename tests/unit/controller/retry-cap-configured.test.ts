@@ -82,7 +82,9 @@ function makeDeps(retryCap: number, spy: CallSpy) {
     } as unknown as FakeStore,
     queue: {
       setQueuePausedState,
-      pause
+      pause,
+      // Feature 093 (T045) — the handler derives the queue from the Run's task.
+      queueIdForTask: () => 'default'
     } as unknown as never,
     statusBar: { update: vi.fn() } as unknown as never,
     notifier: {
@@ -91,12 +93,12 @@ function makeDeps(retryCap: number, spy: CallSpy) {
       error: vi.fn()
     } as unknown as never,
     logger: new SanitizedLogger(),
-    getWatchdog: () => ({
-      pauseAndPoll: vi.fn(async () => {
-        spy.scheduledCount++;
-      }),
-      cancelPendingTimer: vi.fn()
-    }),
+    // Feature 093 (T045) — the handler arms through the coordinator, naming the
+    // queue, instead of reaching for the window's one watchdog. This suite
+    // counts scheduled retries, so the count moves to the arm seam unchanged.
+    armDelayedRetry: async () => {
+      spy.scheduledCount++;
+    },
     auditWriter: { append: vi.fn() },
     getRetryCap: () => retryCap,
     persistTransition
