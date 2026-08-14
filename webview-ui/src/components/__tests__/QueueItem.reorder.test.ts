@@ -264,3 +264,58 @@ describe('Feature 065 BUG-005 (FR-025) — reorder affordance discoverability', 
     }
   });
 });
+
+// Feature 063 BUG-005 (030 FR-028) — armed-drag lifetime.
+//
+// The row is only `draggable` while the drag is armed, so the arming state
+// is what decides whether a drag can start at all. The tests above cover
+// handle rendering, arrow dispatch, aria labels, and focus order and never
+// touch that state, so re-adding an `onmouseleave` disarm — the original
+// defect — would not fail any of them. HTML5 fires `dragstart` only after
+// the pointer has moved a few pixels, and on a small handle those pixels
+// routinely leave the handle's own box, so a mouseleave disarm races the
+// browser and the drag silently never begins.
+describe('Feature 063 BUG-005 (030 FR-028) — armed-drag lifecycle', () => {
+  function armedRow() {
+    const rendered = render(QueueItem, { props: { item: item() } });
+    const handle = rendered.getByTestId('queue-item-drag-handle-task-1');
+    const row = rendered.getByTestId('queue-item-task-1');
+    return { ...rendered, handle, row };
+  }
+
+  it('is not draggable before the handle is pressed', () => {
+    const { row } = armedRow();
+    expect(row.getAttribute('draggable')).toBe('false');
+  });
+
+  it('arms on handle mousedown', async () => {
+    const { handle, row } = armedRow();
+    await fireEvent.mouseDown(handle);
+    expect(row.getAttribute('draggable')).toBe('true');
+  });
+
+  it('stays armed when the pointer leaves the handle before the drag threshold', async () => {
+    const { handle, row } = armedRow();
+    await fireEvent.mouseDown(handle);
+    await fireEvent.mouseLeave(handle);
+    expect(row.getAttribute('draggable')).toBe('true');
+    // Also survives leaving the row itself — the arming is owned by the
+    // handle press, and only a press release or a finished drag ends it.
+    await fireEvent.mouseLeave(row);
+    expect(row.getAttribute('draggable')).toBe('true');
+  });
+
+  it('disarms on handle mouseup', async () => {
+    const { handle, row } = armedRow();
+    await fireEvent.mouseDown(handle);
+    await fireEvent.mouseUp(handle);
+    expect(row.getAttribute('draggable')).toBe('false');
+  });
+
+  it('disarms on dragend', async () => {
+    const { handle, row } = armedRow();
+    await fireEvent.mouseDown(handle);
+    await fireEvent.dragEnd(row);
+    expect(row.getAttribute('draggable')).toBe('false');
+  });
+});

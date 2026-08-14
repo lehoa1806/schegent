@@ -216,6 +216,38 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     ]);
   });
 
+  it('keeps FIFO order when a task leaves pending before the next enqueue (BUG-004)', async () => {
+    // The `position shifting` test above passes an explicit `position: 0` and
+    // never moves a task out of `pending`, so the pending count and the next
+    // free position never diverge and the pre-fix arithmetic passes it. This
+    // walks the divergence: once A is promoted, a count-derived `insertAt`
+    // lands on a slot C already occupies, C is shifted past the newcomer, and
+    // the projector's `position ascending` sort reports B, D, C — the newest
+    // task queue-jumping a task submitted before it.
+    await store.insertPendingRequest(pendingFeature('A'), {});
+    await store.insertPendingRequest(pendingFeature('B'), {});
+    await store.insertPendingRequest(pendingFeature('C'), {});
+
+    const beforePromotion = store.getQueue();
+    await store.setQueue({
+      ...beforePromotion,
+      requests: beforePromotion.requests.map((request) =>
+        request.id === 'A'
+          ? { ...request, status: 'in-flight' as const, runId: 'run-A' }
+          : request
+      )
+    });
+
+    await store.insertPendingRequest(pendingFeature('D'), {});
+
+    const pendingOrder = store
+      .getQueue()
+      .requests.filter((request) => request.status === 'pending')
+      .sort((a, b) => a.position - b.position)
+      .map((request) => request.id);
+    expect(pendingOrder).toEqual(['B', 'C', 'D']);
+  });
+
   it('serializes concurrent queue read-modify-write mutations without losing either enqueue', async () => {
     await Promise.all([
       store.insertPendingRequest(pendingFeature('concurrent-a')),
