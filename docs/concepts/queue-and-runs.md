@@ -39,7 +39,6 @@ Every state transition triggers the **drainer**, a host-side routine that asks, 
 - the queue is not manually paused,
 - no other task on *this* queue is already in-flight,
 - the workspace is under its concurrency ceiling,
-- the run engine is not already driving a run,
 - the queue's execution lease is free,
 - the Claude CLI is available.
 
@@ -52,7 +51,9 @@ When the drainer accepts a task, it:
 
 Across queues, the drainer walks the registry from a rotating cursor, so a queue that keeps producing work cannot starve the others.
 
-The drainer is idempotent. Multiple state changes that all imply "drain now" will not produce two runs on the same queue — the per-queue lease guarantees that. A queue that clears every gate except the engine one simply waits; the next sweep picks it up, and because the cursor rotates, it is not the same queue that wins every time.
+The drainer is idempotent. Multiple state changes that all imply "drain now" will not produce two runs on the same queue — the per-queue lease guarantees that. A queue that clears every gate but one simply waits; the next sweep picks it up, and because the cursor rotates, it is not the same queue that wins every time.
+
+There used to be one more gate: the run engine drove one run at a time, so a queue that had cleared everything else still waited for whichever run was already going. Feature 093 removed it. The ceiling above is now the only limit on how many runs execute at once, and it bounds runs that genuinely run in parallel rather than queue slots that mostly waited.
 
 ## A run, anatomy of
 
