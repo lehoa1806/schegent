@@ -29,7 +29,19 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 730 },
+  // Feature 092 (T137, BUG-001) — 730 → 750 for the execution lease's terminal
+  // release (FR-033a), against a ceiling that had two lines to give. The logic
+  // moved out, to `releaseExecutionLeaseForTerminalRun` in
+  // src/services/execution-lease-release.ts; extraction was measured first and
+  // buys 44 lines (794 → 750). What could not move is the wiring, and it is in
+  // this file by definition: the two terminal transitions the fix exists to
+  // cover — `handleUnexpectedWorkflowError` and `deleteTask`'s task-removal
+  // cancel — both live here, the `RunDriver` dep that covers the ordinary
+  // funnel is constructed here, and the drain coordinator and the terminal path
+  // must address the same lease manager, which is what turned one inline
+  // constructor argument into a named const. The remainder is one import, one
+  // bound field, four constructor lines, and two call sites.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 750 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both

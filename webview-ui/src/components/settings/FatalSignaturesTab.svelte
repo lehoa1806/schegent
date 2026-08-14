@@ -249,8 +249,8 @@
   .fatal-signatures-tab {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 8px;
+    gap: 0;
+    padding: 8px 0;
   }
   .tab-header h2 {
     margin: 0 0 4px 0;
@@ -266,10 +266,11 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    background: var(--sch-glass-bg);
-    padding: 12px;
+    border: 0;
+    border-top: 1px solid var(--schegent-divider);
+    border-radius: 0;
+    background: transparent;
+    padding: var(--schegent-space-4) 0;
   }
   .section-header {
     display: flex;
@@ -300,7 +301,7 @@
     gap: 8px;
     padding: 6px 8px;
     border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     background: var(--vscode-input-background);
   }
   .signature-item.editable-row {
@@ -319,7 +320,7 @@
     background: var(--vscode-input-background);
     color: var(--schegent-fg);
     border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     padding: 4px 8px;
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 0.85em;
@@ -332,7 +333,7 @@
     font-size: 0.7em;
     font-weight: 600;
     padding: 1px 6px;
-    border-radius: 8px;
+    border-radius: var(--schegent-radius-sm);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -365,7 +366,7 @@
   .status.rejected { color: var(--schegent-error-text); }
   .btn {
     padding: 4px 12px;
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     font-size: 0.9em;
     font-weight: 500;
     cursor: pointer;

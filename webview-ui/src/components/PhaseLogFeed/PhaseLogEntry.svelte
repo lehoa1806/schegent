@@ -115,9 +115,9 @@
     display: grid;
     grid-template-columns: 1.25rem 1fr auto;
     gap: 0.5rem;
-    padding: 0.25rem 0.5rem;
+    padding: 0.3rem 0.5rem;
     border-bottom: 1px solid var(--schegent-border, transparent);
-    font-size: 0.85rem;
+    font-size: var(--schegent-text-secondary);
     align-items: start;
   }
   .icon {
@@ -131,8 +131,10 @@
     word-break: break-word;
   }
   .ts {
-    font-size: 0.7rem;
-    opacity: 0.55;
+    color: var(--schegent-muted-fg);
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
+    opacity: 0.8;
     white-space: nowrap;
   }
   .tool-name {

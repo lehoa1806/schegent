@@ -155,9 +155,9 @@
 <style>
   .selectors {
     display: flex;
-    gap: var(--schegent-gap, 0.5rem);
+    gap: var(--schegent-space-2);
     align-items: center;
-    min-height: 28px;
+    min-height: var(--schegent-control-height-compact);
   }
 
   .breadcrumb-trail {
@@ -170,15 +170,15 @@
   }
 
   .crumb {
-    font-size: 0.78rem;
+    font-size: var(--schegent-text-caption);
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 160px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--vscode-list-hoverBackground) 80%, transparent);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .crumb-queue {
@@ -210,23 +210,23 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 4px 12px 4px 8px;
-    border-radius: 999px;
+    min-height: var(--schegent-control-height-compact);
+    padding: 3px 9px 3px 7px;
+    border-radius: var(--schegent-radius-sm);
     border: 1px solid var(--schegent-color-active);
     background: color-mix(in srgb, var(--schegent-color-active) 12%, transparent);
     color: var(--schegent-color-active);
-    font-size: 0.78rem;
+    font-size: var(--schegent-text-caption);
     font-weight: 600;
     letter-spacing: 0.03em;
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
     transition:
-      background-color 0.2s ease,
-      border-color 0.2s ease,
-      color 0.2s ease,
-      opacity 0.2s ease,
-      transform 0.1s ease;
+      background-color var(--schegent-duration-base) var(--schegent-ease-out),
+      border-color var(--schegent-duration-base) var(--schegent-ease-out),
+      color var(--schegent-duration-base) var(--schegent-ease-out),
+      opacity var(--schegent-duration-base) var(--schegent-ease-out);
   }
 
   .jump-btn:hover:not(.is-aria-disabled) {
@@ -234,7 +234,6 @@
   }
 
   .jump-btn:active:not(.is-aria-disabled) {
-    transform: scale(0.93);
     opacity: 0.8;
   }
 
@@ -286,7 +285,7 @@
     width: 28px;
     height: 28px;
     padding: 0;
-    border-radius: 999px;
+    border-radius: var(--schegent-radius-sm);
     border: 1px solid color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
     background: transparent;
     color: var(--schegent-muted-fg);
@@ -296,8 +295,7 @@
       background-color 0.15s ease,
       border-color 0.15s ease,
       color 0.15s ease,
-      opacity 0.15s ease,
-      transform 0.1s ease;
+      opacity 0.15s ease;
   }
 
   .copy-btn:hover {
@@ -307,7 +305,6 @@
   }
 
   .copy-btn:active {
-    transform: scale(0.88);
     opacity: 0.8;
   }
 

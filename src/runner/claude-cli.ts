@@ -24,13 +24,32 @@ const SIGKILL_DELAY_MS = 2_000;
 // own before grace-terminating it. Short enough that a lingering process does
 // not stall the queue; long enough for a well-behaved CLI to flush and exit
 // normally. Distinct from the idle/stall window (`timeoutMs`).
-const COMPLETION_SETTLE_MS = 5_000;
+//
+// BUG-003 (FR-026) raised this from 5 s. The bound it is derived from is a
+// live turn's time-to-first-token, not a flush duration: whenever the marker
+// arms in error, this window is all that stands between a healthy streaming
+// process and a SIGTERM, so it must exceed the longest ordinary pause between
+// stream-json events. The cost of the larger value is paid only by a process
+// that genuinely finished and will not exit — it lingers 15 s instead of 5 s
+// before the grace-terminate, which the queue absorbs.
+const COMPLETION_SETTLE_MS = 15_000;
 // A resumed print-mode invocation can replay the prior turn before emitting
 // the response to the newly submitted prompt. The replay may contain normal
 // system/assistant/user events before its terminal result, so event shape is
 // not a reliable boundary. Suppress only resumed terminal results during this
 // short startup window; fresh invocations remain eligible immediately.
-const RESUME_HISTORY_REPLAY_MS = 5_000;
+//
+// BUG-003 (FR-026) raised this from 5 s, derived from how long a large
+// conversation takes to replay. It is a wall-clock mitigation, NOT a
+// structural boundary: a replay slower than this window still escapes it and
+// arms the marker from a historical result, exactly as the 5 s value did. The
+// value reduces how often that happens; it cannot make it impossible, because
+// nothing in the stream distinguishes a replayed result from a fresh one. The
+// disarm below is what bounds the damage when the escape does occur — it
+// restores the full idle window as soon as the current turn emits anything,
+// so the exposure is one inter-event gap rather than the whole turn. A real
+// fix would need a replay/live boundary from the CLI itself.
+const RESUME_HISTORY_REPLAY_MS = 60_000;
 
 function isTerminalResultLine(line: string): boolean {
   let parsed: unknown;
@@ -237,7 +256,23 @@ export class ClaudeCliRunner implements BackendRunner {
       // is terminated after the configured idle window). After the marker the
       // window is the short `COMPLETION_SETTLE_MS` settle period.
       const onIdleExpiry = (): void => {
-        this._logger.info(`[ClaudeCliRunner] onIdleExpiry fired! sawCompletionMarker=${sawCompletionMarker}, timeoutMs=${request.timeoutMs}`);
+        // BUG-003 (FR-026) — the two expiries look identical in the process
+        // table and very different in cause: `settle` means the runner
+        // believed the turn was over, `idle` means it saw no output at all.
+        // When a settle expiry fires on a resumed invocation the replay
+        // window is the first thing to suspect, so `resumed` and the elapsed
+        // time are what make that diagnosable after the fact. Fixed fields
+        // only — no prompt, transcript, session id, or workspace path — and
+        // routed through SanitizedLogger so SECRET_PATTERNS stays the single
+        // redaction source.
+        this._logger.info(
+          '[ClaudeCliRunner] invocation window expired ' +
+            `window=${sawCompletionMarker ? 'settle' : 'idle'} ` +
+            `windowMs=${sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
+            `resumed=${shouldResume} ` +
+            `elapsedMs=${Date.now() - invocationStartedAt} ` +
+            `phase=${request.phase} iteration=${request.iteration}`
+        );
         if (sawCompletionMarker) completedAwaitingExit = true;
         else timedOut = true;
         this.terminate(child);

@@ -1547,8 +1547,16 @@ export class QueueManager {
    * both in one write. A Task that has since been removed resolves to the
    * reserved queue, which is where the pre-feature code would have looked and
    * where the ensuing mutation will correctly find nothing.
+   *
+   * Feature 092 (T132, FR-033a) — public because a terminating Run has to name
+   * the queue whose execution lease it is returning, and `WorkflowRun` carries
+   * no `queueId` (FR-008 guarantee 3 froze `KEYS.run` as a single Run). Callers
+   * on that path MUST check the row exists first: the removed-Task fallback to
+   * the reserved queue is safe for a mutation that then finds nothing, but a
+   * lease release keyed on a guessed queue would clear a sibling Run's lease,
+   * since every Run in one window shares an owner id.
    */
-  private queueIdForTask(taskId: string): string {
+  public queueIdForTask(taskId: string): string {
     return this.store.getRequest(taskId)?.queueId ?? DEFAULT_QUEUE_ID;
   }
 

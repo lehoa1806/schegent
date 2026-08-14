@@ -10,6 +10,9 @@
   --schegent-surface-raised: var(--vscode-sideBarSectionHeader-background, #2d2d2d);
   --schegent-surface-sunken: color-mix(in srgb, var(--schegent-bg) 84%, var(--schegent-shell-bg));
   --schegent-surface-selected: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-surface));
+  --schegent-surface-hover: color-mix(in srgb, var(--schegent-fg) 6%, var(--schegent-surface));
+  --schegent-surface-active: color-mix(in srgb, var(--schegent-color-active) 15%, var(--schegent-surface));
+  --schegent-pane-bg: color-mix(in srgb, var(--schegent-bg) 96%, var(--schegent-shell-bg));
   --schegent-muted-fg: var(--vscode-descriptionForeground, #9d9d9d);
   --schegent-disabled-fg: var(--vscode-disabledForeground, #858585);
   --schegent-border: var(--vscode-widget-border, var(--vscode-panel-border, #474747));
@@ -66,6 +69,25 @@
   --schegent-radius-sm: 4px;
   --schegent-gap: 12px;
   --schegent-pad: 16px;
+  --schegent-control-height: 32px;
+  --schegent-control-height-compact: 28px;
+
+  --schegent-space-1: 4px;
+  --schegent-space-2: 8px;
+  --schegent-space-3: 12px;
+  --schegent-space-4: 16px;
+  --schegent-space-5: 24px;
+  --schegent-space-6: 32px;
+
+  --schegent-text-caption: 0.72rem;
+  --schegent-text-secondary: 0.8rem;
+  --schegent-text-body: 0.88rem;
+  --schegent-text-subheading: 1rem;
+  --schegent-text-heading: 1.28rem;
+
+  --schegent-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --schegent-duration-fast: 120ms;
+  --schegent-duration-base: 180ms;
 
   --schegent-z-sticky: 10;
   --schegent-z-popover: 30;
@@ -192,6 +214,7 @@ body,
   background: var(--schegent-bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  font-kerning: normal;
 }
 
 button,
@@ -214,10 +237,10 @@ p {
 
 button {
   transition:
-    background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    background-color var(--schegent-duration-base) var(--schegent-ease-out),
+    border-color var(--schegent-duration-base) var(--schegent-ease-out),
+    color var(--schegent-duration-base) var(--schegent-ease-out),
+    transform var(--schegent-duration-fast) var(--schegent-ease-out);
 }
 
 button:active:not(:disabled) {

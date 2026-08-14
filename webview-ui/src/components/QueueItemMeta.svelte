@@ -68,17 +68,17 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    padding-left: 4px;
+    gap: 4px;
+    padding-left: 20px;
     color: var(--schegent-muted-fg);
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
   }
 
   .chip,
   .badge {
     padding: 0 6px;
     border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     background: transparent;
   }
 

@@ -427,8 +427,9 @@
     margin-bottom: 8px;
   }
   .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius);
+    min-height: var(--schegent-control-height-compact);
+    padding: 3px 10px;
+    border-radius: var(--schegent-radius-sm);
     font-size: 0.9em;
     font-weight: 500;
     cursor: pointer;
