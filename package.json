@@ -840,7 +840,7 @@
           "minimum": 1,
           "maximum": 20,
           "scope": "resource",
-          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1–20."
+          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1–20. Concurrent local runs are authorised for a single local operator on one host process by the architecture record `docs/architecture/local-queue-parallelism-ratification.md`; concurrent runs share one working tree."
         },
         "schegent.logging.verbose": {
           "type": "boolean",

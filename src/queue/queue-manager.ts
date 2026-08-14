@@ -1009,6 +1009,15 @@ export class QueueManager {
     // The package contribution, `SETTINGS_SCHEMA`, the host validator
     // (`KEY_SPECS['queue.globalConcurrencyCap']`), `setGlobalConcurrencyCap`
     // and this validator all share the bound.
+    //
+    // Feature 094 — the authority for a cap above one is
+    // `docs/architecture/local-queue-parallelism-ratification.md`, which
+    // narrows one clause of the remote/multi-user expansion gate for the local
+    // single-operator shape only. The 092 note above explains the mechanism
+    // that made a cap above one representable; it is not the decision to use
+    // one. This is one of the three sites that *enforce* the bound, alongside
+    // `state/workspace-state.ts` and `contracts/validators/
+    // queue-management.ts`; three further sites advertise it.
     if (
       !Number.isInteger(params.globalConcurrencyCap) ||
       params.globalConcurrencyCap < 1 ||
