@@ -200,12 +200,15 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
     // 056 Track 4 (FR-018..FR-022) because one workspace lock meant one run.
     // US2 split that lock into window primacy plus a per-queue execution
-    // lease, so the range opens to [1, 20] with a default of 3. The bound
-    // still lives in three agreeing sites — here (host validation),
-    // package.json (contribution metadata) and the QueueManager (effective
-    // enforcement) — and `settings-schema.ts` pins the same numbers a fourth
-    // time; `tests/unit/config/settings-schema-parity.test.ts` fails unless
-    // they agree.
+    // lease, so the range opens to [1, 20] with a default of 3;
+    // `settings-schema-parity.test.ts` fails unless the advertising sites agree.
+    //
+    // Feature 094 — this comment used to claim the bound lived in "three
+    // agreeing sites … and a fourth". It is six: three advertise (this one,
+    // `settings-schema.ts`, package.json) and three enforce, the half the old
+    // count omitted. All six, and the authority for a range wider than one
+    // (the 092 note above is only the mechanism), are enumerated in
+    // `docs/architecture/local-queue-parallelism-ratification.md`.
     defaultValue: 3,
     min: 1,
     max: 20

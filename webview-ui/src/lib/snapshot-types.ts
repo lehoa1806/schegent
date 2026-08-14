@@ -849,7 +849,14 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
-  queueGlobalConcurrencyCap: 1,
+  // Feature 094 (T032, FR-017) — must equal the manifest's contributed
+  // `default` for `schegent.queue.globalConcurrencyCap`, which this object
+  // mirrors until the first projection lands. It stayed at the pre-092 value
+  // of 1 after the manifest moved to 3;
+  // `tests/parity/settings-defaults-parity.test.ts` now derives the expected
+  // value from the manifest instead of restating it, so a future raise cannot
+  // leave this behind without failing.
+  queueGlobalConcurrencyCap: 3,
   queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',
