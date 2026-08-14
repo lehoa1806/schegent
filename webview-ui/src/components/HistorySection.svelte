@@ -251,7 +251,7 @@
   }
   .badge {
     border: 1px solid var(--schegent-border);
-    border-radius: 999px;
+    border-radius: var(--schegent-radius-sm);
     padding: 0 6px;
   }
   .status-completed .status-badge {
@@ -277,7 +277,7 @@
     background: transparent;
     color: var(--schegent-muted-fg);
     border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
+    border-radius: var(--schegent-radius-sm);
     padding: 0 6px;
     font: inherit;
     cursor: pointer;
@@ -297,7 +297,7 @@
     padding: 9px 14px;
     border-bottom: 1px solid var(--schegent-divider);
     color: var(--schegent-muted-fg);
-    font-size: 0.72rem;
+    font-size: var(--schegent-text-caption);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;

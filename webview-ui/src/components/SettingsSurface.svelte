@@ -102,7 +102,7 @@
     flex: 1;
     min-height: 0;
     box-sizing: border-box;
-    padding: 20px 24px 24px;
+    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
     color: var(--schegent-fg);
     background: transparent;
     overflow: hidden;
@@ -113,20 +113,20 @@
   .settings-title {
     margin: 0;
     color: var(--schegent-fg);
-    font-size: 1.55rem;
+    font-size: var(--schegent-text-heading);
     font-weight: 650;
     letter-spacing: -0.025em;
   }
   .settings-description {
     margin: 5px 0 0;
     color: var(--schegent-muted-fg);
-    font-size: 0.84rem;
+    font-size: var(--schegent-text-secondary);
     line-height: 1.45;
   }
   .settings-layout {
     display: grid;
-    grid-template-columns: 190px minmax(0, 1fr);
-    gap: 28px;
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: var(--schegent-space-5);
     flex: 1;
     min-height: 0;
   }
@@ -134,13 +134,13 @@
     display: flex;
     align-self: start;
     flex-direction: column;
-    gap: 8px;
+    gap: 2px;
   }
   .tab-btn {
     min-height: 38px;
-    background: var(--schegent-bg);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--schegent-radius-sm);
     color: var(--schegent-muted-fg);
     padding: 8px 12px;
     cursor: pointer;
@@ -152,9 +152,9 @@
     background: var(--schegent-surface-subtle);
   }
   .tab-btn.active {
-    color: var(--schegent-fg);
+    color: var(--schegent-color-active);
     border-color: var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 10%, var(--schegent-bg));
+    background: var(--schegent-surface-active);
   }
   .settings-body {
     flex: 1;

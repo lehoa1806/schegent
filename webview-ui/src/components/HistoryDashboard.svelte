@@ -72,9 +72,9 @@
     flex: 1;
     min-height: 0;
     flex-direction: column;
-    gap: 18px;
+    gap: var(--schegent-space-3);
     overflow-y: auto;
-    padding: 20px 24px 24px;
+    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
   }
   .history-header {
     display: flex;
@@ -84,7 +84,7 @@
   }
   .history-header h1 {
     margin: 0;
-    font-size: 1.55rem;
+    font-size: var(--schegent-text-heading);
     font-weight: 650;
     letter-spacing: -0.025em;
   }
@@ -92,14 +92,14 @@
     max-width: 65ch;
     margin: 5px 0 0;
     color: var(--schegent-muted-fg);
-    font-size: 0.84rem;
+    font-size: var(--schegent-text-secondary);
     line-height: 1.45;
     text-wrap: pretty;
   }
   .history-count {
     flex: 0 0 auto;
     color: var(--schegent-muted-fg);
-    font-size: 0.78rem;
+    font-size: var(--schegent-text-caption);
     font-variant-numeric: tabular-nums;
   }
   .history-ledger {
@@ -114,7 +114,7 @@
     align-items: end;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px;
+    padding: var(--schegent-space-3);
     border-bottom: 1px solid var(--schegent-divider);
   }
   .search-field {
@@ -131,10 +131,10 @@
   }
   .search-field input {
     width: 100%;
-    min-height: 34px;
+    min-height: var(--schegent-control-height);
     padding: 6px 10px 6px 34px;
     border: 1px solid var(--schegent-input-border);
-    border-radius: 5px;
+    border-radius: var(--schegent-radius-sm);
     background: var(--schegent-input-bg);
   }
   .outcome-field {
@@ -147,10 +147,10 @@
   }
   .outcome-field select {
     min-width: 148px;
-    min-height: 34px;
+    min-height: var(--schegent-control-height);
     padding: 5px 28px 5px 9px;
     border: 1px solid var(--schegent-input-border);
-    border-radius: 5px;
+    border-radius: var(--schegent-radius-sm);
   }
   .filtered-empty {
     display: flex;

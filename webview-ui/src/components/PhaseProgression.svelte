@@ -3,6 +3,7 @@
   import PhaseControlMenu from './PhaseControlMenu.svelte';
   import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { removeTaskPhase } from '../lib/phase-control';
+  import { formatDuration } from '../lib/format-duration';
 
   interface Props {
     phases: readonly PhaseTile[];
@@ -122,7 +123,8 @@
 >
   <header class="phase-header">
     <div>
-      <div class="zone-title" data-testid="dashboard-phase-progression-header">{headerText}</div>
+      <div class="zone-title" aria-hidden="true">Phases</div>
+      <span class="visually-hidden" data-testid="dashboard-phase-progression-header">{headerText}</span>
       {#if manualPauseAt}
         <div class="manual-pause-badge" data-testid="phase-manual-pause-badge">
           {manualPauseCause === 'queue-paused-mid-run' ? 'Queue paused' : 'Phase paused'}
@@ -179,6 +181,9 @@
 
         <div class="step-content">
           <span class="phase-name">{phase.name}</span>
+          {#if phase.elapsedMs > 0}
+            <span class="phase-elapsed">{formatDuration(phase.elapsedMs)}</span>
+          {/if}
           {#if bpState === 'breakpoint-fired'}
             <span class="breakpoint-fired-badge" data-testid="phase-breakpoint-halted-{phase.name}">Halted</span>
           {/if}
@@ -212,28 +217,32 @@
 
 
 <style>
-  .phase-progression-zone {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
+  .phase-progression-zone { display: flex; flex-direction: column; height: 100%; }
   .zone-title {
-    font-size: 0.9em;
-    font-weight: 600;
-    color: var(--schegent-muted-fg);
-    margin: 0 0 var(--schegent-gap) 0;
-    letter-spacing: 0.05em;
+    font-size: var(--schegent-text-caption);
+    font-weight: 650;
+    color: var(--schegent-fg);
+    margin: 0;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .phase-header {
     display: flex;
     justify-content: space-between;
     gap: 8px;
     align-items: flex-start;
-    margin-bottom: var(--schegent-gap);
+    margin-bottom: var(--schegent-space-2);
   }
-  .phase-header .zone-title {
-    margin-bottom: 4px;
-  }
+  .phase-header .zone-title { margin-bottom: 4px; }
   .manual-pause-badge {
     display: inline-flex;
     align-items: center;
@@ -254,15 +263,15 @@
   
   .stepper-container {
     display: flex;
-    align-items: flex-start;
-    padding: 16px 8px;
-    gap: 8px;
-    overflow-x: auto;
-  }
-  .phase-progression-large {
-    flex-wrap: wrap;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    gap: 0;
     overflow-y: auto;
   }
+  .phase-progression-large { overflow-y: auto; }
   
   .step {
     background: transparent;
@@ -270,26 +279,34 @@
     color: inherit;
     font: inherit;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    gap: 8px;
-    min-width: 64px;
+    gap: var(--schegent-space-2);
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
     position: relative;
     z-index: 1;
     cursor: pointer;
     border-radius: var(--schegent-radius);
-    padding: 6px 4px 8px;
-    transition: background 0.2s ease, border-color 0.2s ease;
+    padding: 5px 7px;
+    transition:
+      background-color var(--schegent-duration-base) var(--schegent-ease-out),
+      border-color var(--schegent-duration-base) var(--schegent-ease-out);
   }
-  .step:hover,
-  .step:focus-visible {
+  .step:hover {
     border-color: var(--schegent-border);
-    outline: none;
-    background: color-mix(in srgb, var(--vscode-list-hoverBackground) 50%, transparent);
+    background: var(--schegent-surface-hover);
+  }
+  .step:focus-visible {
+    border-color: var(--schegent-focus-border);
+    outline: 1px solid var(--schegent-focus-border);
+    outline-offset: -1px;
+    background: var(--schegent-surface-hover);
   }
   .step.selected {
-    border-color: transparent;
-    background: color-mix(in srgb, var(--schegent-color-active) 12%, transparent);
+    border-color: var(--schegent-color-active);
+    background: var(--schegent-surface-active);
   }
   .step.selected:hover,
   .step.selected:focus-visible {
@@ -301,14 +318,15 @@
   }
   
   .step-indicator {
-    width: 32px;
-    height: 32px;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--schegent-bg);
-    border: 2px solid var(--schegent-border);
+    border: 1px solid var(--schegent-border);
     position: relative;
     transition:
       background-color 180ms ease-out,
@@ -321,10 +339,7 @@
     border-color: var(--schegent-color-completed);
     color: var(--schegent-color-completed);
   }
-  .icon-check {
-    width: 14px;
-    height: 14px;
-  }
+  .icon-check { width: 11px; height: 11px; }
   
   .state-active .step-indicator {
     border-color: var(--schegent-color-active);
@@ -338,55 +353,50 @@
     border: 2px solid var(--schegent-color-active);
     animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
-  .pulse-core {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--schegent-color-active);
-  }
+  .pulse-core { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); }
   
   .state-not-started .step-indicator,
   .state-skipped .step-indicator {
     border-color: var(--vscode-list-hoverBackground);
   }
   .pending-dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--vscode-list-activeSelectionBackground);
     transition: background 0.3s ease;
   }
-  .state-skipped {
-    opacity: 0.4;
-  }
+  .state-skipped { opacity: 0.4; }
   .state-disabled .step-indicator {
     border-color: var(--schegent-color-disabled);
     background: color-mix(in srgb, var(--schegent-color-disabled) 8%, transparent);
   }
-  .icon-disabled {
-    width: 14px;
-    height: 14px;
-    color: var(--schegent-color-disabled);
-  }
+  .icon-disabled { width: 14px; height: 14px; color: var(--schegent-color-disabled); }
   .state-disabled .phase-name {
     color: var(--schegent-color-disabled);
     text-decoration: line-through;
     opacity: 0.7;
   }
-  .state-disabled {
-    opacity: 0.65;
-  }
+  .state-disabled { opacity: 0.65; }
   
   .step-content {
     display: flex;
-    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+    flex-wrap: wrap;
+    flex-direction: row;
     align-items: center;
-    text-align: center;
+    gap: 2px 7px;
+    text-align: left;
   }
   .phase-name {
-    font-size: 0.8em;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    font-size: var(--schegent-text-secondary);
     font-weight: 500;
     color: var(--schegent-muted-fg);
+    text-overflow: ellipsis;
     white-space: nowrap;
     transition: color 0.3s;
   }
@@ -395,7 +405,14 @@
     font-weight: 600;
   }
   .state-completed .phase-name {
-    color: var(--schegent-color-completed);
+    color: var(--schegent-fg);
+  }
+  .phase-elapsed {
+    flex: 0 0 auto;
+    color: var(--schegent-muted-fg);
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-caption);
+    font-variant-numeric: tabular-nums;
   }
   
   .step.bp-paused-active .step-indicator {
@@ -403,28 +420,19 @@
     background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent);
     color: var(--schegent-color-active);
   }
-  .icon-pause {
-    width: 14px;
-    height: 14px;
-  }
+  .icon-pause { width: 14px; height: 14px; }
   .step.bp-breakpoint-scheduled .step-indicator {
     border-color: var(--schegent-color-warning);
     background: color-mix(in srgb, var(--schegent-color-warning) 10%, transparent);
     color: var(--schegent-color-warning);
   }
-  .icon-breakpoint-scheduled {
-    width: 16px;
-    height: 16px;
-  }
+  .icon-breakpoint-scheduled { width: 16px; height: 16px; }
   .step.bp-breakpoint-fired .step-indicator {
     border-color: var(--schegent-color-active);
     background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
     color: var(--schegent-color-active);
   }
-  .icon-breakpoint-fired {
-    width: 14px;
-    height: 14px;
-  }
+  .icon-breakpoint-fired { width: 14px; height: 14px; }
   .breakpoint-fired-badge {
     font-size: 0.7em;
     font-weight: 700;
@@ -450,6 +458,7 @@
     color: var(--schegent-color-warning);
   }
   .retry-badge {
+    flex-basis: 100%;
     font-size: 0.7em;
     font-weight: 600;
     color: var(--vscode-editor-background);
@@ -465,16 +474,15 @@
     background: var(--vscode-list-hoverBackground);
     padding: 2px 6px;
     border-radius: 4px;
-    margin-top: 4px;
+    margin-left: auto;
   }
   
   .step-connector {
-    flex: 1;
-    height: 2px;
+    width: 1px;
+    height: 8px;
+    flex: 0 0 8px;
     background: var(--schegent-divider);
-    margin-top: 16px;
-    min-width: 20px;
-    border-radius: 1px;
+    margin-left: 17px;
   }
   
   @keyframes pulse {

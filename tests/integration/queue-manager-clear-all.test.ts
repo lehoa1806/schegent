@@ -225,6 +225,58 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(store.getQueue().requests).toEqual([]);
   });
 
+  // BUG-003 (T079) — the probe tests above return true/false/throw without
+  // ever *writing*, so they pass identically with or without the compensating
+  // clear. In production the probe calls `controller.cancelActive()`, which
+  // drives the RunDriver's abort branch into `persistTransition(canceled)` —
+  // a `setRun` that lands AFTER `clearAll()`'s own `setRun(null)` and
+  // repopulates the surface the operator just cleared. A writing probe is the
+  // only shape that distinguishes the two implementations, so it is what
+  // these three cases use.
+  const makeWritingProbe = (
+    store: WorkspaceStateStore,
+    settle: () => Promise<boolean>
+  ) => async (): Promise<boolean> => {
+    // The write happens before the probe settles, exactly as the real
+    // cancel path does: the transition is persisted on the way to the ack.
+    await store.setRun(sampleRun('feat-1', 'canceled'));
+    return settle();
+  };
+
+  it('clears the run again when the runner-ack probe writes one back (resolves true)', async () => {
+    const { store, queue } = await buildPopulatedSystem();
+    const result = await queue.clearAll(
+      makeWritingProbe(store, async () => true)
+    );
+    expect(result.runnerAcked).toBe(true);
+    expect(result.inflightAborted).toBe(true);
+    expect(store.getRun()).toBeNull();
+  });
+
+  it('clears the run again when the runner-ack probe writes one back (resolves false)', async () => {
+    const { store, queue } = await buildPopulatedSystem();
+    const result = await queue.clearAll(
+      makeWritingProbe(store, async () => false)
+    );
+    expect(result.runnerAcked).toBe(false);
+    expect(result.inflightAborted).toBe(true);
+    expect(store.getRun()).toBeNull();
+  });
+
+  it('clears the run again when a writing runner-ack probe then throws', async () => {
+    // The throw is swallowed, but the write it already performed is not
+    // undone by the throw — the compensating clear still has to run.
+    const { store, queue } = await buildPopulatedSystem();
+    const result = await queue.clearAll(
+      makeWritingProbe(store, async () => {
+        throw new Error('runner exploded after persisting the cancel');
+      })
+    );
+    expect(result.runnerAcked).toBe(false);
+    expect(store.getRun()).toBeNull();
+    expect(store.getQueue().requests).toEqual([]);
+  });
+
   it('skips the runner-ack probe when nothing was in-flight', async () => {
     const memento = new MockMemento();
     const store = new WorkspaceStateStore(memento);

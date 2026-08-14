@@ -271,15 +271,15 @@
     margin: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 2px;
   }
   .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 150px;
-    padding: 24px 16px;
+    min-height: 132px;
+    padding: 20px 12px;
     color: var(--schegent-muted-fg);
     text-align: center;
   }
@@ -289,13 +289,13 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
-    margin-bottom: 8px;
-    font-size: 0.8em;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
     border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius);
-    background: var(--vscode-list-hoverBackground);
+    border-radius: var(--schegent-radius-sm);
+    background: var(--schegent-surface-sunken);
   }
   .lifecycle-dot {
     width: 8px;

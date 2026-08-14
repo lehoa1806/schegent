@@ -2,6 +2,11 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
+  // VS Code rewrites the HTML entry assets to webview-safe URIs, but assets
+  // discovered later by Vite's dynamic-import preloader must remain relative
+  // to the loaded module. A root-relative base (Vite's default) makes lazy
+  // route CSS resolve at the webview origin root instead of dist/webview.
+  base: './',
   plugins: [svelte()],
   build: {
     outDir: '../dist/webview',
