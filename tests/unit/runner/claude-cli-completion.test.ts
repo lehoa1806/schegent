@@ -76,7 +76,9 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     });
 
     await vi.advanceTimersByTimeAsync(10);
-    await vi.advanceTimersByTimeAsync(5_000);
+    // T070 raised COMPLETION_SETTLE_MS from 5s to 15s; the grace-terminate
+    // this test pins now lands 10s later. Assertions unchanged.
+    await vi.advanceTimersByTimeAsync(15_000);
 
     const raw = await p;
     expect(raw.completedAwaitingExit).toBe(true);
@@ -96,7 +98,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
           'data',
           COMPLETE_OUTPUT + '\n{"type":"result","subtype":"success"}\n'
         ),
-        10_000
+        70_000
       );
       return child as unknown as ChildProcess;
     };
@@ -109,10 +111,14 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
       resumeSessionId: 'owned-session'
     });
 
-    await vi.advanceTimersByTimeAsync(6_000);
+    // T072 — rescaled past FR-026's 60s replay window and 15s settle window.
+    // The shape is unchanged from the 5s era: cross the suppression window
+    // with only the replayed result seen (no kill), then deliver the turn's
+    // real result, then let the settle window expire.
+    await vi.advanceTimersByTimeAsync(61_000);
     expect(child.kill).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(4_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await vi.advanceTimersByTimeAsync(15_000);
 
     const raw = await p;
     expect(raw.completedAwaitingExit).toBe(true);
@@ -136,7 +142,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
           'data',
           COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
         ),
-        10_000
+        70_000
       );
       return child as unknown as ChildProcess;
     };
@@ -149,10 +155,11 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
       resumeSessionId: 'owned-session'
     });
 
-    await vi.advanceTimersByTimeAsync(6_000);
+    // T072 — rescaled past FR-026's 60s replay window and 15s settle window.
+    await vi.advanceTimersByTimeAsync(61_000);
     expect(child.kill).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(4_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await vi.advanceTimersByTimeAsync(15_000);
 
     const raw = await p;
     expect(raw.completedAwaitingExit).toBe(true);
@@ -204,6 +211,101 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     expect(raw.exitCode).toBe(0);
     expect(raw.completedAwaitingExit).toBeFalsy();
     expect(raw.timedOut).toBe(false);
+  });
+
+  // Feature 030 BUG-003 (T068, T069) — the inverse of BUG-002. BUG-002 was a
+  // finished run Schegent failed to see as finished; BUG-003 is a *live* run
+  // Schegent wrongly sees as finished and kills. Both turn on the same
+  // `sawCompletionMarker` mechanism, so the fix for the first opened the
+  // failure mode of the second. These two tests pin FR-026's replay-suppression
+  // and disarm clauses; SC-012 is the pair of them.
+
+  it('does not arm the completion marker from a replayed result after a long history replay', async () => {
+    // A resumed invocation with a very large history replays the whole prior
+    // conversation before emitting anything for the new prompt. The replayed
+    // terminal result lands at t=30s — past the old 5s suppression window,
+    // inside FR-026's 60s bound — and the new turn's first token only arrives
+    // 12s later, which is longer than the settle window. Against the old
+    // constants the marker armed at 30s and SIGTERM landed at 35s, mid-stream.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        30_000
+      );
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"assistant","subtype":"message"}\n'),
+        42_000
+      );
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+        ),
+        70_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    // Deliver the replayed result, then cross the whole 12s gap before the new
+    // turn's first token. Nothing may be killed in here: the process has
+    // produced no output of its own yet, so it is working, not lingering.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // The real terminal result of the current turn arrives later and is the
+    // one that legitimately arms the marker.
+    await vi.advanceTimersByTimeAsync(28_000);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const raw = await p;
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+  });
+
+  it('restores the full idle window when a stream-json event follows an armed marker', async () => {
+    // FR-026 disarm clause, pinned independently of the replay path. This is
+    // what bounds the exposure to a single inter-event gap rather than the
+    // whole turn: once the current turn emits anything, an armed-in-error
+    // marker is corrected rather than left to expire against live work.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        1_000
+      );
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"assistant","subtype":"message"}\n'),
+        2_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    // Well past the settle window. The disarm must have restored `timeoutMs`,
+    // so no grace-terminate may fire here.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // Let the long idle window run out so the promise settles.
+    await vi.advanceTimersByTimeAsync(90 * 60_000);
+    const raw = await p;
+    expect(raw.timedOut).toBe(true);
   });
 
   it('still trips the idle timeout when no output and no marker arrive (stall backstop)', async () => {
