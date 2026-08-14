@@ -14,6 +14,7 @@ import type { HistoryStore } from '../state/history-store';
 import { HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import {
   BUILT_IN_CATALOG,
@@ -125,6 +126,8 @@ export class SchegentWorkflowController {
   // mock to exercise the success / failure branches deterministically.
   private readonly sessionCleanup: SessionCleanupRunner;
   private readonly historyRecorder: HistoryRecorder;
+  /** Feature 092 (T132, FR-033a) — ends a terminal Run's execution lease. */
+  private readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
   private readonly runDriver: RunDriver;
@@ -163,10 +166,15 @@ export class SchegentWorkflowController {
       historyStore: deps.historyStore ?? null,
       logger
     });
+    // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
+    // tenure: the drain claims at step 6, the terminal transition releases.
+    const executionLease = deps.executionLease ?? new ExecutionLeaseManager(store, lock.id);
+    this.releaseExecutionLeaseForRun = (run) =>
+      releaseExecutionLeaseForTerminalRun({ queue, executionLease, logger }, run);
     this.autoDrainCoordinator = new AutoDrainCoordinator({
       store,
       queue,
-      executionLease: deps.executionLease ?? new ExecutionLeaseManager(store, lock.id),
+      executionLease,
       controller: this,
       // Same adapter shape `extension.ts` uses for the queue's lifecycle hook:
       // the writer's entry type is stricter than the port's, so the widening
@@ -218,7 +226,8 @@ export class SchegentWorkflowController {
       onRunTerminal: deps.onRunTerminal,
       terminalTransitions: deps.terminalTransitions,
       checkpoints: deps.checkpoints,
-      scheduleAutoDrain: () => this.scheduleAutoDrain()
+      scheduleAutoDrain: () => this.scheduleAutoDrain(),
+      releaseExecutionLease: (run) => this.releaseExecutionLeaseForRun(run)
     });
     this.phaseControlService = new PhaseControlService({
       store,
@@ -411,6 +420,11 @@ export class SchegentWorkflowController {
     }
 
     await this.lock.release().catch(() => undefined);
+    // Feature 092 (T132, FR-033a) — before the drain, so the sweep this
+    // schedules can already see the queue as free.
+    if (terminalRun) {
+      await this.releaseExecutionLeaseForRun(terminalRun);
+    }
     this.scheduleAutoDrain();
   }
 
@@ -577,12 +591,20 @@ export class SchegentWorkflowController {
       const run = this.store.getRun();
       if (run?.featureId === feature.id && run.status === 'running') {
         this.cancelActive();
-        await this.store.setRun({
+        const canceled: WorkflowRun = {
           ...run,
           status: 'canceled',
           lastTransitionAt: Date.now()
-        });
+        };
+        await this.store.setRun(canceled);
         await this.lock.release().catch(() => undefined);
+        // Feature 092 (T133, FR-033a) — the second terminal path: a Run
+        // canceled out from under itself by the removal of its own Task. It
+        // never reaches the driver's terminal funnel, so it returns its queue
+        // here. MUST precede `removeTask` below — once the row is gone the
+        // queue is no longer resolvable, and the helper correctly declines to
+        // guess.
+        await this.releaseExecutionLeaseForRun(canceled);
       }
     }
     const removed = await this.queue.removeTask(taskId);

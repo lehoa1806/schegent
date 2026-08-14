@@ -128,8 +128,13 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     // (c) sidebar lastError.message contains the redacted fatal text.
     expect(run.lastError?.message).toContain(FATAL_TEXT);
 
-    // (d) Workspace lock released (lockReleased path executed).
-    expect(releaseSpy).toHaveBeenCalled();
+    // (d) Feature 092 (T136, BUG-002, FR-032a) — was `toHaveBeenCalled()`, when
+    // `drive()`'s `withLock('drive-run', …)` wrapper released window primacy in
+    // its `finally`. That wrapper is gone: primacy runs activation-to-disposal,
+    // and a fatal fail-fast ends the Run, not the window. What the fatal path
+    // must still return is its queue's execution lease, which is a different
+    // lease and is covered by tests/integration/execution-lease-release.ts.
+    expect(releaseSpy).not.toHaveBeenCalled();
 
     // (e) Audit log has exactly one phase-start and one phase-end for the
     // failing phase. Audit v3 carries only the closed termination reason.

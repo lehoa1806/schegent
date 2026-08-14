@@ -725,18 +725,28 @@ describe('SchegentWorkflowController phase controls', () => {
   });
 });
 
+// Feature 092 (T136, BUG-002, FR-032a) — BUG-005's concern was a workspace lock
+// that outlived its run and stranded the window. The two terminal cases below
+// used to assert the fix as "the run's end releases the lock", which BUG-002
+// showed to be the wrong mechanism rather than the wrong goal: `withLock`
+// acquires idempotently per owner with no reference count, so with two Runs in
+// one window the first to finish released primacy for both. Primacy now runs
+// activation-to-disposal, and BUG-005's protection lives at `dispose()` in
+// src/extension.ts — verified by tests/integration/window-primacy-lifetime.ts,
+// which also asserts the release still happens there. What these cases assert
+// now is the other half: a Run's end does NOT touch it.
 describe('SchegentWorkflowController — workspace lock release (BUG-005)', () => {
-  it('releases the lock when the run completes successfully', async () => {
+  it('leaves the lock held when the run completes successfully', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
     await controller.startNew(feature, null);
 
     expect(store.getRun()!.status).toBe('completed');
-    expect(lock.release).toHaveBeenCalledOnce();
+    expect(lock.release).not.toHaveBeenCalled();
   });
 
-  it('releases the lock when the run fails', async () => {
+  it('leaves the lock held when the run fails', async () => {
     runSpy.mockImplementation(async (req: { phase: string }) => {
       if (req.phase === 'speckit-specify') {
         return makeOutput({
@@ -753,9 +763,12 @@ describe('SchegentWorkflowController — workspace lock release (BUG-005)', () =
     await controller.startNew(feature, null);
 
     expect(store.getRun()!.status).toBe('failed');
-    expect(lock.release).toHaveBeenCalledOnce();
+    expect(lock.release).not.toHaveBeenCalled();
   });
 
+  // No longer discriminating post-FR-032a — no terminal status releases primacy,
+  // so this agrees with the two cases above rather than contrasting with them.
+  // Kept because the pause path reaching `release()` would still be a defect.
   it('does not release the lock when the run pauses on rate-limit', async () => {
     runSpy.mockImplementation(async (req: { phase: string }) => {
       if (req.phase === 'speckit-specify') {
