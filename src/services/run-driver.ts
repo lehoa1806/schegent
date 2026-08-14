@@ -60,6 +60,14 @@ export interface RunDriverDeps {
   readonly statusBar: SchegentStatusBar;
   readonly notifier: Notifier;
   readonly logger: SanitizedLogger;
+  /**
+   * Feature 092 (T136, FR-032a) — no longer read by `drive()`. The `drive-run`
+   * `withLock` wrapper was this dep's only consumer; window primacy is now held
+   * activation-to-disposal by `extension.ts` and is not the driver's to take or
+   * release. Kept on the interface so the many construction sites are untouched
+   * by the bugfix; a driver that needs lock business again should justify it
+   * against FR-032a first.
+   */
   readonly lock: WorkspaceLockManager;
   readonly options: RunDriverOptions;
   readonly backendCapabilities?: BackendAvailabilityProbe;
@@ -93,6 +101,12 @@ export interface RunDriverDeps {
     payload: OptionalPhaseFailureContinuedPayload
   ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
+  /**
+   * Feature 092 (T132, FR-033a) — returns the finished Run's queue execution
+   * lease. Optional so the unit harnesses that build a driver directly keep
+   * working; the controller always supplies it.
+   */
+  readonly releaseExecutionLease?: (run: WorkflowRun) => Promise<void>;
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
   readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
   readonly checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
@@ -101,8 +115,10 @@ export interface RunDriverDeps {
 /**
  * Feature 013 T096 - owns the phase driving loop formerly embedded in
  * WorkflowController. The controller remains the public command surface;
- * RunDriver owns run-loop state, cancellation, lock retention, and phase
- * advancement orchestration.
+ * RunDriver owns run-loop state, cancellation, and phase advancement
+ * orchestration. It no longer owns lock retention — feature 092 (T136,
+ * FR-032a) removed the `drive-run` wrapper, so a Run's lifetime and window
+ * primacy's lifetime are independent.
  */
 export class RunDriver {
   private cancellationController: AbortController | null = null;
@@ -169,423 +185,63 @@ export class RunDriver {
     let allowAutoDrain = true;
 
     try {
-      await this.deps.lock.withLock('drive-run', async (session) => {
-        this.assertAuditEvidenceAvailable();
-        // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
-        if (
-          process.env.NODE_ENV !== 'test' &&
-          !this.deps.options.skipProbing &&
-          run.phasesCompleted.length === 0 &&
-          run.currentIteration === 0 &&
-          run.pipeline
-        ) {
-          const runners = new Set(
-            run.pipeline.phases.map((phase) =>
-              this.resolveRunnerKind(phase, run.defaultRunnerKind)
-            )
-          );
-          for (const runnerKind of runners) {
-            try {
-              const available = this.deps.backendCapabilities
-                ? await this.deps.backendCapabilities.probeAvailability(runnerKind)
-                : false;
-              if (!available) throw new Error('backend unavailable');
-            } catch {
-              const failureMessage =
-                `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
-              this.deps.logger.error(`run-driver: ${failureMessage}`);
-              const sanitized: SanitizedError = {
-                code: 'runner-probe-failed',
-                message: failureMessage,
-                phase: run.currentPhase,
-                iteration: run.currentIteration,
-                at: Date.now()
-              };
-              run = await this.deps.persistTransition(run, {
-                ...run,
-                status: 'failed',
-                lastError: sanitized,
-                lastTransitionAt: Date.now()
-              });
-
-              if (this.deps.appendRunnerProbeFailedAudit) {
-                await this.deps.appendRunnerProbeFailedAudit(run, {
-                  runnerKind,
-                  errorMessage: failureMessage,
-                  runId: run.id
-                });
-              }
-              this.deps.statusBar.update({
-                kind: 'failed',
-                phase: run.currentPhase,
-                detail: failureMessage
-              });
-              this.deps.notifier.warn(`Schegent: ${failureMessage}`);
-              try {
-                await this.deps.queue.finish(run.featureId, 'failed', {
-                  code: sanitized.code,
-                  message: sanitized.message,
-                  phase: sanitized.phase ?? undefined,
-                  correlationId: run.id
-                });
-              } catch (queueError) {
-                this.deps.logger.warn(
-                  `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
-                );
-              }
-              // Feature 072 — emit task-execution-ended
-              try {
-                if (this.deps.emitTaskLifecycleAudit) {
-                  await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-                    taskId: run.featureId,
-                    runId: run.id,
-                    terminalStatus: 'failed',
-                    phasesCompleted: 0,
-                    phasesSkipped: 0,
-                    phasesTotal: run.pipeline?.phases.length || 0,
-                    lastErrorSummary: failureMessage
-                  });
-                }
-              } catch (auditErr) {
-                this.deps.logger.warn(`run-driver: task-execution-ended (failed) audit failed: ${(auditErr as Error).message}`);
-              }
-              
-              await this.deps.emitRunEndedBreakpointAudit(run);
-              await this.deps.historyRecorder.record(run, description, 'failed');
-              return; // break out of withLock completely
-            }
-          }
-        }
-
-        while (run.currentPhase !== 'done' && run.status === 'running') {
-          this.assertAuditEvidenceAvailable();
-          if (this.cancellationController!.signal.aborted) {
-            run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
-            await this.deps.emitRunEndedBreakpointAudit(run);
-            await this.deps.historyRecorder.record(run, description, 'canceled');
-            break;
-          }
-
-          const preDecision = this.sequencer.decideBeforePhase({
-            run,
-            iterationCap: this.deps.options.iterationCap,
-            now: Date.now()
-          });
-          if (preDecision.kind === 'skip-phase') {
-            const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
-            const nextPhaseDef = decision.kind === 'advance'
-              ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
-              : undefined;
-            const nextRunnerKind = nextPhaseDef
-              ? this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind)
-              : undefined;
-            const sessionOwnerMatchesTarget =
-              nextRunnerKind !== undefined &&
-              run.lastCliSessionRunnerKind === nextRunnerKind;
-            if (!sessionOwnerMatchesTarget) pendingSessionReuse = false;
-            const advanced: WorkflowRun = {
-              ...run,
-              phaseOverrides: nextOverridesAfterSkip(run, phaseOverride),
-              currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
-              currentIteration:
-                decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
-              lastTransitionAt: Date.now(),
-              phasesCompleted: [...run.phasesCompleted, skippedResult],
-              ...(sessionOwnerMatchesTarget
-                ? {}
-                : {
-                    lastCliSessionId: undefined,
-                    lastCliSessionRunnerKind: undefined
-                  })
-            };
-            run = await this.deps.persistTransition(run, advanced);
-            previousPhaseMessage = null;
-            await this.deps.appendPhaseControlAudit(
-              phaseOverride.action === 'disabled'
-                ? 'phase-disabled'
-                : phaseOverride.action === 'removed'
-                  ? 'phase-removed'
-                  : 'phase-skipped',
-              run,
-              {
-                runId: run.id,
-                phaseId: skippedResult.phase,
-                disabledByOverride: phaseOverride.action === 'disabled',
-                removedByOverride: phaseOverride.action === 'removed'
-              }
-            );
-            continue;
-          }
-
-          const iteration = preDecision.iteration;
-          this.deps.statusBar.update({
-            kind: 'running',
-            phase: run.currentPhase,
-            iteration,
-            iterationCap: this.deps.options.iterationCap
-          });
-
-          const phaseStartedAt = Date.now();
-          if (this.deps.monitor) {
-            try {
-              this.deps.monitor.onStart(run.id, run.currentPhase as PhaseName, null);
-            } catch {
-              // monitor errors must not propagate
-            }
-          }
-          const activePhaseDef = preDecision.activePhaseDef;
-          const effectiveRunnerKind = this.resolveRunnerKind(
-            activePhaseDef,
-            run.defaultRunnerKind
-          );
-          // A partially migrated pipeline can lack phase.runner even though
-          // the run already has a pinned default. PhaseRunner owns adapter
-          // selection and audit attribution, so pass it the same effective
-          // runner used for CLI-path/session selection. This is an immutable
-          // dispatch view; the persisted pipeline snapshot remains untouched.
-          const dispatchPhaseDef =
-            activePhaseDef && activePhaseDef.runner === undefined
-              ? Object.freeze({ ...activePhaseDef, runner: effectiveRunnerKind })
-              : activePhaseDef;
-          if (
-            (dispatchPhaseDef?.sideEffects === 'git' ||
-              dispatchPhaseDef?.sideEffects === 'unrestricted') &&
-            (!run.mutationPlan ||
-              !mutationPlanIsApproved(run.mutationPlan, run.gitApprovalReceipt) ||
-              !run.mutationPlan.gitCapablePhaseIds.includes(dispatchPhaseDef.id))
-          ) {
-            throw new Error('git-mutation-plan-not-approved');
-          }
-          if (
-            dispatchPhaseDef?.sideEffects === 'git' ||
-            dispatchPhaseDef?.sideEffects === 'unrestricted'
-          ) {
-            await this.deps.checkpoints?.checkpoint(run, dispatchPhaseDef.id);
-          }
-          const requestedContinue = pendingIsContinue;
-          pendingIsContinue = false;
-          const sessionDispatch = resolveSessionDispatch({
-            requestedContinue,
-            pendingSessionReuse,
-            resumePrompt: run.resumePrompt,
-            persistedSessionId: run.lastCliSessionId,
-            persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
-            effectiveRunnerKind
-          });
-          if (run.resumePrompt !== undefined) {
-            const nextRun = { ...run };
-            delete nextRun.resumePrompt;
-            run = await this.deps.persistTransition(run, nextRun);
-          }
-
-          const output = await this.deps.runner.run({
-            phase: run.currentPhase,
-            phaseDef: dispatchPhaseDef,
-            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-            iteration,
-            iterationCap: this.deps.options.iterationCap,
-            featureDescription: description,
-            featureDir: run.featureDir || null,
-            carriedIssues: this.carriedIssues,
-            // Feature 074 — resolve CLI path per-runner-kind. When a phase
-            // specifies a runner, use the cliPathResolver to pick the
-            // correct binary; otherwise fall back to the global cliPath.
-            cliPath: this.resolveCliPath(effectiveRunnerKind),
-            cwd: this.deps.options.cwd,
-            timeoutMs: activePhaseDef?.timeoutSeconds
-              ? activePhaseDef.timeoutSeconds * 1000
-              : this.deps.options.timeoutMs,
-            inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
-            processEnvAllowlist: this.deps.options.processEnvAllowlist,
-            runId: run.id,
-            rawTranscriptMode: run.rawTranscriptMode,
-            phaseMessagePath: composePhaseMessagePath({
-              cwd: this.deps.options.cwd,
-              runId: run.id,
-              pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-              phaseId: run.currentPhase,
-              iteration
-            }),
-            previousPhaseMessage,
-            cancellationSignal: this.cancellationController!.signal as unknown as {
-              aborted: boolean;
-              addEventListener(event: 'abort', cb: () => void): void;
-            },
-            isContinue: sessionDispatch.isContinue,
-            sessionReuse: sessionDispatch.sessionReuse,
-            resumeSessionId: sessionDispatch.resumeSessionId,
-            resumePrompt: sessionDispatch.resumePrompt
-          });
-          if (
-            this.overriddenActivePhaseAborts.delete(
-              this.phaseOverrideAbortKey(run.id, run.currentPhase)
-            )
-          ) {
-            const latestRun = this.deps.store.getRun();
-            if (latestRun?.id === run.id) {
-              run = latestRun;
-            }
-            this.cancellationController = new AbortController();
-            continue;
-          }
-
-          // Capture the backend-owned session before any pause/breakpoint
-          // branch persists and exits. A completed invocation can disclose
-          // its exact session ID even when the controller immediately pauses;
-          // that ID is what makes a later resume safe and deterministic.
-          if (output.cliSessionId !== undefined) {
-            run = {
-              ...run,
-              lastCliSessionId: output.cliSessionId,
-              lastCliSessionRunnerKind: effectiveRunnerKind
-            };
-            pendingSessionReuse = true;
-          }
-
-          const postDecision = this.sequencer.decideAfterPhase({
-            run,
-            output,
-            iteration,
-            iterationCap: this.deps.options.iterationCap,
-            activePhaseDef,
-            latestRun: this.deps.store.getRun(),
-            now: Date.now()
-          });
-          for (const w of postDecision.warnings) {
-            this.deps.logger.warn(w);
-          }
-
-          if (postDecision.kind === 'pause-breakpoint') {
-            const consumedPhaseId = postDecision.consumedPhaseId;
-            const now = Date.now();
-            const paused: WorkflowRun = {
-              ...run,
-              status: 'paused',
-              currentIteration: iteration,
-              manualPauseAt: now,
-              manualPauseCause: 'breakpoint-paused',
-              resumeTargetPhaseId: consumedPhaseId,
-              phaseBreakpoints: run.phaseBreakpoints.filter(
-                (bp) => bp.phaseId !== consumedPhaseId
-              ),
-              lastTransitionAt: now
-            };
-            run = await this.deps.persistTransition(run, paused);
-            await this.deps.appendBreakpointAudit('phase-breakpoint-cleared', run, {
-              runId: run.id,
-              phaseId: consumedPhaseId,
-              cause: 'consumed-by-fire'
-            });
-            this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-            const feature = this.deps.queue.findById(run.featureId);
-            const queueId = feature?.queueId ?? null;
-            if (queueId) {
-              await this.deps.queue.cascadedPause(queueId);
-            }
-            session.retain();
-            break;
-          }
-
-          previousPhaseMessage =
-            output.phaseMessage && output.phaseMessage.entryCount > 0
-              ? output.phaseMessage.entries
-              : null;
-
-          const phaseResult: PhaseResult = {
-            ...postDecision.phaseResult,
-            startedAt: phaseStartedAt
-          };
-
-          if (postDecision.kind === 'pause-delayed-retry') {
-            if (
-              activePhaseDef?.isRequired === false &&
-              !this.sequencer.isVerificationPhase(run.currentPhase) &&
-              this.deps.retryCoordinator.isRetryCapExhaustedOnNextFailure(run)
-            ) {
-              const terminalPhaseResult: PhaseResult = {
-                ...phaseResult,
-                result: 'failed',
-                terminationReason:
-                  postDecision.cause === 'rate_limit' ? 'rate_limit' : 'error'
-              };
-              await this.deps.runner.appendCapExhaustedPhaseEnd({
-                runId: run.id,
-                phase: run.currentPhase,
-                iteration,
-                pipelineId: run.pipeline?.id,
-                phaseDef: dispatchPhaseDef
-              });
-              run = await this.continueOptionalFailure(
-                run,
-                terminalPhaseResult,
-                activePhaseDef,
-                effectiveRunnerKind
-              );
-              continue;
-            }
-            run = await this.deps.retryCoordinator.handleDelayedRetry(
-              run,
-              iteration,
-              phaseResult,
-              postDecision.cause,
-              postDecision.resetsAtMs,
-              postDecision.rateLimitMessage,
-              postDecision.originalCause
-            );
-            session.retain();
-            break;
-          }
-
-          if (postDecision.kind === 'pause-rate-limit') {
-            const paused: WorkflowRun = {
-              ...run,
-              status: 'paused',
-              currentIteration: iteration,
-              lastTransitionAt: Date.now(),
-              phasesCompleted: [...run.phasesCompleted, phaseResult]
-            };
-            run = await this.deps.persistTransition(run, paused);
-            this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-            await this.deps.retryCoordinator.handleRateLimitPause(postDecision.cause, run);
-            session.retain();
-            break;
-          }
-
-          if (postDecision.kind === 'fail') {
-            if (postDecision.capExhausted) {
-              await this.deps.runner.appendCapExhaustedPhaseEnd({
-                runId: run.id,
-                phase: run.currentPhase,
-                iteration,
-                pipelineId: run.pipeline?.id,
-                phaseDef: dispatchPhaseDef
-              });
-            }
+      // Feature 092 (T136, BUG-002, FR-032a) — the `withLock('drive-run', …)`
+      // wrapper that used to enclose this body is gone. Window primacy is
+      // acquired at activation and released at disposal; it was never a single
+      // Run's to end, and `withLock` keeps no reference count, so with two Runs
+      // in one window the first to finish released primacy for both. `drive()`
+      // now holds only its queue's execution lease.
+      this.assertAuditEvidenceAvailable();
+      // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
+      if (
+        process.env.NODE_ENV !== 'test' &&
+        !this.deps.options.skipProbing &&
+        run.phasesCompleted.length === 0 &&
+        run.currentIteration === 0 &&
+        run.pipeline
+      ) {
+        const runners = new Set(
+          run.pipeline.phases.map((phase) =>
+            this.resolveRunnerKind(phase, run.defaultRunnerKind)
+          )
+        );
+        for (const runnerKind of runners) {
+          try {
+            const available = this.deps.backendCapabilities
+              ? await this.deps.backendCapabilities.probeAvailability(runnerKind)
+              : false;
+            if (!available) throw new Error('backend unavailable');
+          } catch {
+            const failureMessage =
+              `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
+            this.deps.logger.error(`run-driver: ${failureMessage}`);
             const sanitized: SanitizedError = {
-              code: 'invocation-failed',
-              message: postDecision.baseMessage.slice(0, 240),
+              code: 'runner-probe-failed',
+              message: failureMessage,
               phase: run.currentPhase,
-              iteration,
+              iteration: run.currentIteration,
               at: Date.now()
             };
-            const failed: WorkflowRun = {
+            run = await this.deps.persistTransition(run, {
               ...run,
               status: 'failed',
-              currentIteration: iteration,
-              lastTransitionAt: Date.now(),
-              phasesCompleted: [...run.phasesCompleted, phaseResult],
-              lastError: sanitized
-            };
-            run = await this.deps.persistTransition(run, failed);
-            await this.deps.emitRunEndedBreakpointAudit(run);
+              lastError: sanitized,
+              lastTransitionAt: Date.now()
+            });
+
+            if (this.deps.appendRunnerProbeFailedAudit) {
+              await this.deps.appendRunnerProbeFailedAudit(run, {
+                runnerKind,
+                errorMessage: failureMessage,
+                runId: run.id
+              });
+            }
             this.deps.statusBar.update({
               kind: 'failed',
               phase: run.currentPhase,
-              detail: sanitized.message
+              detail: failureMessage
             });
-            this.deps.notifier.warn(
-              `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
-            );
+            this.deps.notifier.warn(`Schegent: ${failureMessage}`);
             try {
               await this.deps.queue.finish(run.featureId, 'failed', {
                 code: sanitized.code,
@@ -593,197 +249,572 @@ export class RunDriver {
                 phase: sanitized.phase ?? undefined,
                 correlationId: run.id
               });
-            } catch (qErr) {
+            } catch (queueError) {
               this.deps.logger.warn(
-                `run-driver: queue.finish (failed) failed: ${(qErr as Error).message}`
+                `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
               );
             }
+            // Feature 072 — emit task-execution-ended
             try {
-              await this.deps.historyRecorder.record(run, description, 'failed');
-            } catch (hErr) {
-              this.deps.logger.warn(
-                `run-driver: history record (failed) failed: ${(hErr as Error).message}`
-              );
+              if (this.deps.emitTaskLifecycleAudit) {
+                await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+                  taskId: run.featureId,
+                  runId: run.id,
+                  terminalStatus: 'failed',
+                  phasesCompleted: 0,
+                  phasesSkipped: 0,
+                  phasesTotal: run.pipeline?.phases.length || 0,
+                  lastErrorSummary: failureMessage
+                });
+              }
+            } catch (auditErr) {
+              this.deps.logger.warn(`run-driver: task-execution-ended (failed) audit failed: ${(auditErr as Error).message}`);
             }
-            // Feature 072 — emit task-execution-ended (failed).
-            try {
-              await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-                taskId: run.featureId,
-                runId: run.id,
-                terminalStatus: 'failed',
-                durationMs: Date.now() - run.startedAt,
-                ...this.computePhaseStats(run),
-                lastErrorSummary: sanitized.message
-              });
-            } catch (err) {
-              this.deps.logger.warn(
-                `run-driver: task-execution-ended (failed) audit failed: ${(err as Error).message}`
-              );
-            }
-            break;
+              
+            await this.deps.emitRunEndedBreakpointAudit(run);
+            await this.deps.historyRecorder.record(run, description, 'failed');
+            return; // break out of withLock completely
           }
+        }
+      }
 
-          this.carriedIssues = pickCarriedIssues(output.result);
+      while (run.currentPhase !== 'done' && run.status === 'running') {
+        this.assertAuditEvidenceAvailable();
+        if (this.cancellationController!.signal.aborted) {
+          run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
+          await this.deps.emitRunEndedBreakpointAudit(run);
+          await this.deps.historyRecorder.record(run, description, 'canceled');
+          break;
+        }
 
-          if (postDecision.kind === 'pause-verify') {
-            const paused: WorkflowRun = {
-              ...run,
-              status: 'paused',
-              currentIteration: iteration,
-              lastTransitionAt: Date.now(),
-              phasesCompleted: [...run.phasesCompleted, phaseResult]
-            };
-            run = await this.deps.persistTransition(run, paused);
-            await this.deps.queue.pause(run.featureId, 'phase-paused');
-            await this.deps.appendPhaseControlAudit('phase-paused', run, {
-              runId: run.id,
-              phaseId: run.currentPhase
-            });
-            this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
-            session.retain();
-            break;
-          }
-
-          if (postDecision.kind === 'break-unexpected') {
-            break;
-          }
-
-          if (postDecision.kind === 'pause-manual') {
-            const decision = postDecision.transition;
-            const latestRun = this.deps.store.getRun()!;
-            const paused: WorkflowRun = {
-              ...latestRun,
-              // The invocation just completed after the operator's pause
-              // write. Keep the session ownership captured from its output;
-              // the latest persisted snapshot predates that output.
-              lastCliSessionId: run.lastCliSessionId,
-              lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
-              status: 'paused',
-              currentPhase:
-                decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
-              currentIteration:
-                decision.kind === 'advance' || decision.kind === 'loop'
-                  ? decision.nextIteration
-                  : latestRun.currentIteration,
-              lastTransitionAt: Date.now(),
-              phasesCompleted: [...latestRun.phasesCompleted, phaseResult]
-            };
-            run = await this.deps.persistTransition(latestRun, paused);
-            await this.deps.queue.pause(run.featureId, 'phase-paused');
-            await this.deps.appendPhaseControlAudit('phase-paused', run, {
-              runId: run.id,
-              phaseId: phaseResult.phase,
-              nextPhaseId: run.currentPhase,
-              nextIteration: run.currentIteration
-            });
-            this.deps.statusBar.update({ kind: 'paused', phase: phaseResult.phase });
-            session.retain();
-            break;
-          }
-
-          run = await this.deps.retryCoordinator.maybeEmitRetryRecovered(
-            run,
-            output.outcome
-          );
-
-          const decision = postDecision.transition;
-          const optionalTerminalContinued =
-            activePhaseDef?.isRequired === false &&
-            decision.kind === 'advance' &&
-            (phaseResult.result === 'failed' || phaseResult.result === 'timeout');
+        const preDecision = this.sequencer.decideBeforePhase({
+          run,
+          iterationCap: this.deps.options.iterationCap,
+          now: Date.now()
+        });
+        if (preDecision.kind === 'skip-phase') {
+          const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
           const nextPhaseDef = decision.kind === 'advance'
             ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
             : undefined;
           const nextRunnerKind = nextPhaseDef
             ? this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind)
             : undefined;
-          const crossesRunnerBoundary =
-            decision.kind === 'advance' &&
+          const sessionOwnerMatchesTarget =
             nextRunnerKind !== undefined &&
-            effectiveRunnerKind !== nextRunnerKind;
-          if (crossesRunnerBoundary) pendingSessionReuse = false;
+            run.lastCliSessionRunnerKind === nextRunnerKind;
+          if (!sessionOwnerMatchesTarget) pendingSessionReuse = false;
           const advanced: WorkflowRun = {
             ...run,
+            phaseOverrides: nextOverridesAfterSkip(run, phaseOverride),
             currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
             currentIteration:
-              decision.kind === 'advance' || decision.kind === 'loop'
-                ? decision.nextIteration
-                : run.currentIteration,
+              decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
             lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult],
-            ...(optionalTerminalContinued
-              ? {
-                  delayedRetryCount: 0,
-                  pendingRetryAt: null,
-                  pendingRetryCause: null
-                }
-              : {}),
-            ...(crossesRunnerBoundary
-              ? {
+            phasesCompleted: [...run.phasesCompleted, skippedResult],
+            ...(sessionOwnerMatchesTarget
+              ? {}
+              : {
                   lastCliSessionId: undefined,
                   lastCliSessionRunnerKind: undefined
-                }
-              : {})
+                })
           };
           run = await this.deps.persistTransition(run, advanced);
-          if (optionalTerminalContinued) {
-            await this.deps.emitOptionalPhaseFailureContinued(run, {
+          previousPhaseMessage = null;
+          await this.deps.appendPhaseControlAudit(
+            phaseOverride.action === 'disabled'
+              ? 'phase-disabled'
+              : phaseOverride.action === 'removed'
+                ? 'phase-removed'
+                : 'phase-skipped',
+            run,
+            {
               runId: run.id,
-              pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-              phaseId: phaseResult.phase,
-              runner: effectiveRunnerKind,
-              iteration: phaseResult.iteration,
-              terminationReason: phaseResult.terminationReason
-            });
-          }
+              phaseId: skippedResult.phase,
+              disabledByOverride: phaseOverride.action === 'disabled',
+              removedByOverride: phaseOverride.action === 'removed'
+            }
+          );
+          continue;
         }
 
-        if (run.currentPhase === 'done' && run.status === 'running') {
-          const runOutputs = await this.recordDeclaredOutputs(run);
-          const completed: WorkflowRun = {
-            ...run,
-            status: 'completed',
-            lastTransitionAt: Date.now(),
-            // Folded in *before* persistTransition, not written after it. The
-            // `finally` below re-persists the outer `run` through
-            // `terminalTransitions.complete`, so a later write is overwritten
-            // by a value captured earlier (W7).
-            ...(runOutputs.length > 0 ? { runOutputs } : {})
-          };
-          run = await this.deps.persistTransition(run, completed);
-          await this.deps.emitRunEndedBreakpointAudit(run);
-          this.deps.statusBar.update({ kind: 'completed' });
-          this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
+        const iteration = preDecision.iteration;
+        this.deps.statusBar.update({
+          kind: 'running',
+          phase: run.currentPhase,
+          iteration,
+          iterationCap: this.deps.options.iterationCap
+        });
+
+        const phaseStartedAt = Date.now();
+        if (this.deps.monitor) {
           try {
-            await this.deps.queue.finish(run.featureId, 'completed');
+            this.deps.monitor.onStart(run.id, run.currentPhase as PhaseName, null);
+          } catch {
+            // monitor errors must not propagate
+          }
+        }
+        const activePhaseDef = preDecision.activePhaseDef;
+        const effectiveRunnerKind = this.resolveRunnerKind(
+          activePhaseDef,
+          run.defaultRunnerKind
+        );
+        // A partially migrated pipeline can lack phase.runner even though
+        // the run already has a pinned default. PhaseRunner owns adapter
+        // selection and audit attribution, so pass it the same effective
+        // runner used for CLI-path/session selection. This is an immutable
+        // dispatch view; the persisted pipeline snapshot remains untouched.
+        const dispatchPhaseDef =
+          activePhaseDef && activePhaseDef.runner === undefined
+            ? Object.freeze({ ...activePhaseDef, runner: effectiveRunnerKind })
+            : activePhaseDef;
+        if (
+          (dispatchPhaseDef?.sideEffects === 'git' ||
+            dispatchPhaseDef?.sideEffects === 'unrestricted') &&
+          (!run.mutationPlan ||
+            !mutationPlanIsApproved(run.mutationPlan, run.gitApprovalReceipt) ||
+            !run.mutationPlan.gitCapablePhaseIds.includes(dispatchPhaseDef.id))
+        ) {
+          throw new Error('git-mutation-plan-not-approved');
+        }
+        if (
+          dispatchPhaseDef?.sideEffects === 'git' ||
+          dispatchPhaseDef?.sideEffects === 'unrestricted'
+        ) {
+          await this.deps.checkpoints?.checkpoint(run, dispatchPhaseDef.id);
+        }
+        const requestedContinue = pendingIsContinue;
+        pendingIsContinue = false;
+        const sessionDispatch = resolveSessionDispatch({
+          requestedContinue,
+          pendingSessionReuse,
+          resumePrompt: run.resumePrompt,
+          persistedSessionId: run.lastCliSessionId,
+          persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
+          effectiveRunnerKind
+        });
+        if (run.resumePrompt !== undefined) {
+          const nextRun = { ...run };
+          delete nextRun.resumePrompt;
+          run = await this.deps.persistTransition(run, nextRun);
+        }
+
+        const output = await this.deps.runner.run({
+          phase: run.currentPhase,
+          phaseDef: dispatchPhaseDef,
+          pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+          iteration,
+          iterationCap: this.deps.options.iterationCap,
+          featureDescription: description,
+          featureDir: run.featureDir || null,
+          carriedIssues: this.carriedIssues,
+          // Feature 074 — resolve CLI path per-runner-kind. When a phase
+          // specifies a runner, use the cliPathResolver to pick the
+          // correct binary; otherwise fall back to the global cliPath.
+          cliPath: this.resolveCliPath(effectiveRunnerKind),
+          cwd: this.deps.options.cwd,
+          timeoutMs: activePhaseDef?.timeoutSeconds
+            ? activePhaseDef.timeoutSeconds * 1000
+            : this.deps.options.timeoutMs,
+          inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
+          processEnvAllowlist: this.deps.options.processEnvAllowlist,
+          runId: run.id,
+          rawTranscriptMode: run.rawTranscriptMode,
+          phaseMessagePath: composePhaseMessagePath({
+            cwd: this.deps.options.cwd,
+            runId: run.id,
+            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+            phaseId: run.currentPhase,
+            iteration
+          }),
+          previousPhaseMessage,
+          cancellationSignal: this.cancellationController!.signal as unknown as {
+            aborted: boolean;
+            addEventListener(event: 'abort', cb: () => void): void;
+          },
+          isContinue: sessionDispatch.isContinue,
+          sessionReuse: sessionDispatch.sessionReuse,
+          resumeSessionId: sessionDispatch.resumeSessionId,
+          resumePrompt: sessionDispatch.resumePrompt
+        });
+        if (
+          this.overriddenActivePhaseAborts.delete(
+            this.phaseOverrideAbortKey(run.id, run.currentPhase)
+          )
+        ) {
+          const latestRun = this.deps.store.getRun();
+          if (latestRun?.id === run.id) {
+            run = latestRun;
+          }
+          this.cancellationController = new AbortController();
+          continue;
+        }
+
+        // Capture the backend-owned session before any pause/breakpoint
+        // branch persists and exits. A completed invocation can disclose
+        // its exact session ID even when the controller immediately pauses;
+        // that ID is what makes a later resume safe and deterministic.
+        if (output.cliSessionId !== undefined) {
+          run = {
+            ...run,
+            lastCliSessionId: output.cliSessionId,
+            lastCliSessionRunnerKind: effectiveRunnerKind
+          };
+          pendingSessionReuse = true;
+        }
+
+        const postDecision = this.sequencer.decideAfterPhase({
+          run,
+          output,
+          iteration,
+          iterationCap: this.deps.options.iterationCap,
+          activePhaseDef,
+          latestRun: this.deps.store.getRun(),
+          now: Date.now()
+        });
+        for (const w of postDecision.warnings) {
+          this.deps.logger.warn(w);
+        }
+
+        if (postDecision.kind === 'pause-breakpoint') {
+          const consumedPhaseId = postDecision.consumedPhaseId;
+          const now = Date.now();
+          const paused: WorkflowRun = {
+            ...run,
+            status: 'paused',
+            currentIteration: iteration,
+            manualPauseAt: now,
+            manualPauseCause: 'breakpoint-paused',
+            resumeTargetPhaseId: consumedPhaseId,
+            phaseBreakpoints: run.phaseBreakpoints.filter(
+              (bp) => bp.phaseId !== consumedPhaseId
+            ),
+            lastTransitionAt: now
+          };
+          run = await this.deps.persistTransition(run, paused);
+          await this.deps.appendBreakpointAudit('phase-breakpoint-cleared', run, {
+            runId: run.id,
+            phaseId: consumedPhaseId,
+            cause: 'consumed-by-fire'
+          });
+          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          const feature = this.deps.queue.findById(run.featureId);
+          const queueId = feature?.queueId ?? null;
+          if (queueId) {
+            await this.deps.queue.cascadedPause(queueId);
+          }
+          // Pause-style exit (T136): a fired phase breakpoint. A later resume
+          // entry point continues this Run. The `session.retain()` that used to
+          // stand here suppressed the `drive-run` wrapper's auto-release of
+          // window primacy; with no wrapper there is nothing to retain, and
+          // primacy was never this Run's to hold or hand on.
+          break;
+        }
+
+        previousPhaseMessage =
+          output.phaseMessage && output.phaseMessage.entryCount > 0
+            ? output.phaseMessage.entries
+            : null;
+
+        const phaseResult: PhaseResult = {
+          ...postDecision.phaseResult,
+          startedAt: phaseStartedAt
+        };
+
+        if (postDecision.kind === 'pause-delayed-retry') {
+          if (
+            activePhaseDef?.isRequired === false &&
+            !this.sequencer.isVerificationPhase(run.currentPhase) &&
+            this.deps.retryCoordinator.isRetryCapExhaustedOnNextFailure(run)
+          ) {
+            const terminalPhaseResult: PhaseResult = {
+              ...phaseResult,
+              result: 'failed',
+              terminationReason:
+                postDecision.cause === 'rate_limit' ? 'rate_limit' : 'error'
+            };
+            await this.deps.runner.appendCapExhaustedPhaseEnd({
+              runId: run.id,
+              phase: run.currentPhase,
+              iteration,
+              pipelineId: run.pipeline?.id,
+              phaseDef: dispatchPhaseDef
+            });
+            run = await this.continueOptionalFailure(
+              run,
+              terminalPhaseResult,
+              activePhaseDef,
+              effectiveRunnerKind
+            );
+            continue;
+          }
+          run = await this.deps.retryCoordinator.handleDelayedRetry(
+            run,
+            iteration,
+            phaseResult,
+            postDecision.cause,
+            postDecision.resetsAtMs,
+            postDecision.rateLimitMessage,
+            postDecision.originalCause
+          );
+          // Pause-style exit (T136): a delayed retry is armed and a scheduled
+          // wake-up resumes this Run. Nothing to retain — see the breakpoint
+          // exit above.
+          break;
+        }
+
+        if (postDecision.kind === 'pause-rate-limit') {
+          const paused: WorkflowRun = {
+            ...run,
+            status: 'paused',
+            currentIteration: iteration,
+            lastTransitionAt: Date.now(),
+            phasesCompleted: [...run.phasesCompleted, phaseResult]
+          };
+          run = await this.deps.persistTransition(run, paused);
+          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          await this.deps.retryCoordinator.handleRateLimitPause(postDecision.cause, run);
+          // Pause-style exit (T136): paused on a rate limit, resumed when the
+          // backoff elapses. Nothing to retain — see the breakpoint exit above.
+          break;
+        }
+
+        if (postDecision.kind === 'fail') {
+          if (postDecision.capExhausted) {
+            await this.deps.runner.appendCapExhaustedPhaseEnd({
+              runId: run.id,
+              phase: run.currentPhase,
+              iteration,
+              pipelineId: run.pipeline?.id,
+              phaseDef: dispatchPhaseDef
+            });
+          }
+          const sanitized: SanitizedError = {
+            code: 'invocation-failed',
+            message: postDecision.baseMessage.slice(0, 240),
+            phase: run.currentPhase,
+            iteration,
+            at: Date.now()
+          };
+          const failed: WorkflowRun = {
+            ...run,
+            status: 'failed',
+            currentIteration: iteration,
+            lastTransitionAt: Date.now(),
+            phasesCompleted: [...run.phasesCompleted, phaseResult],
+            lastError: sanitized
+          };
+          run = await this.deps.persistTransition(run, failed);
+          await this.deps.emitRunEndedBreakpointAudit(run);
+          this.deps.statusBar.update({
+            kind: 'failed',
+            phase: run.currentPhase,
+            detail: sanitized.message
+          });
+          this.deps.notifier.warn(
+            `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
+          );
+          try {
+            await this.deps.queue.finish(run.featureId, 'failed', {
+              code: sanitized.code,
+              message: sanitized.message,
+              phase: sanitized.phase ?? undefined,
+              correlationId: run.id
+            });
           } catch (qErr) {
             this.deps.logger.warn(
-              `run-driver: queue.finish (completed) failed: ${(qErr as Error).message}`
+              `run-driver: queue.finish (failed) failed: ${(qErr as Error).message}`
             );
           }
           try {
-            await this.deps.historyRecorder.record(run, description, 'completed');
+            await this.deps.historyRecorder.record(run, description, 'failed');
           } catch (hErr) {
             this.deps.logger.warn(
-              `run-driver: history record (completed) failed: ${(hErr as Error).message}`
+              `run-driver: history record (failed) failed: ${(hErr as Error).message}`
             );
           }
-          // Feature 072 — emit task-execution-ended (completed).
+          // Feature 072 — emit task-execution-ended (failed).
           try {
             await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
               taskId: run.featureId,
               runId: run.id,
-              terminalStatus: 'completed',
+              terminalStatus: 'failed',
               durationMs: Date.now() - run.startedAt,
-              ...this.computePhaseStats(run)
+              ...this.computePhaseStats(run),
+              lastErrorSummary: sanitized.message
             });
           } catch (err) {
             this.deps.logger.warn(
-              `run-driver: task-execution-ended (completed) audit failed: ${(err as Error).message}`
+              `run-driver: task-execution-ended (failed) audit failed: ${(err as Error).message}`
             );
           }
+          break;
         }
-      });
+
+        this.carriedIssues = pickCarriedIssues(output.result);
+
+        if (postDecision.kind === 'pause-verify') {
+          const paused: WorkflowRun = {
+            ...run,
+            status: 'paused',
+            currentIteration: iteration,
+            lastTransitionAt: Date.now(),
+            phasesCompleted: [...run.phasesCompleted, phaseResult]
+          };
+          run = await this.deps.persistTransition(run, paused);
+          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          await this.deps.appendPhaseControlAudit('phase-paused', run, {
+            runId: run.id,
+            phaseId: run.currentPhase
+          });
+          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          // Pause-style exit (T136): an operator or policy pause on the active
+          // phase, resumed by an explicit resume. Nothing to retain — see the
+          // breakpoint exit above.
+          break;
+        }
+
+        if (postDecision.kind === 'break-unexpected') {
+          break;
+        }
+
+        if (postDecision.kind === 'pause-manual') {
+          const decision = postDecision.transition;
+          const latestRun = this.deps.store.getRun()!;
+          const paused: WorkflowRun = {
+            ...latestRun,
+            // The invocation just completed after the operator's pause
+            // write. Keep the session ownership captured from its output;
+            // the latest persisted snapshot predates that output.
+            lastCliSessionId: run.lastCliSessionId,
+            lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
+            status: 'paused',
+            currentPhase:
+              decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
+            currentIteration:
+              decision.kind === 'advance' || decision.kind === 'loop'
+                ? decision.nextIteration
+                : latestRun.currentIteration,
+            lastTransitionAt: Date.now(),
+            phasesCompleted: [...latestRun.phasesCompleted, phaseResult]
+          };
+          run = await this.deps.persistTransition(latestRun, paused);
+          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          await this.deps.appendPhaseControlAudit('phase-paused', run, {
+            runId: run.id,
+            phaseId: phaseResult.phase,
+            nextPhaseId: run.currentPhase,
+            nextIteration: run.currentIteration
+          });
+          this.deps.statusBar.update({ kind: 'paused', phase: phaseResult.phase });
+          // Pause-style exit (T136): paused after a phase completed, with the
+          // next phase and iteration already recorded for the resume. Nothing to
+          // retain — see the breakpoint exit above.
+          break;
+        }
+
+        run = await this.deps.retryCoordinator.maybeEmitRetryRecovered(
+          run,
+          output.outcome
+        );
+
+        const decision = postDecision.transition;
+        const optionalTerminalContinued =
+          activePhaseDef?.isRequired === false &&
+          decision.kind === 'advance' &&
+          (phaseResult.result === 'failed' || phaseResult.result === 'timeout');
+        const nextPhaseDef = decision.kind === 'advance'
+          ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
+          : undefined;
+        const nextRunnerKind = nextPhaseDef
+          ? this.resolveRunnerKind(nextPhaseDef, run.defaultRunnerKind)
+          : undefined;
+        const crossesRunnerBoundary =
+          decision.kind === 'advance' &&
+          nextRunnerKind !== undefined &&
+          effectiveRunnerKind !== nextRunnerKind;
+        if (crossesRunnerBoundary) pendingSessionReuse = false;
+        const advanced: WorkflowRun = {
+          ...run,
+          currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
+          currentIteration:
+            decision.kind === 'advance' || decision.kind === 'loop'
+              ? decision.nextIteration
+              : run.currentIteration,
+          lastTransitionAt: Date.now(),
+          phasesCompleted: [...run.phasesCompleted, phaseResult],
+          ...(optionalTerminalContinued
+            ? {
+                delayedRetryCount: 0,
+                pendingRetryAt: null,
+                pendingRetryCause: null
+              }
+            : {}),
+          ...(crossesRunnerBoundary
+            ? {
+                lastCliSessionId: undefined,
+                lastCliSessionRunnerKind: undefined
+              }
+            : {})
+        };
+        run = await this.deps.persistTransition(run, advanced);
+        if (optionalTerminalContinued) {
+          await this.deps.emitOptionalPhaseFailureContinued(run, {
+            runId: run.id,
+            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+            phaseId: phaseResult.phase,
+            runner: effectiveRunnerKind,
+            iteration: phaseResult.iteration,
+            terminationReason: phaseResult.terminationReason
+          });
+        }
+      }
+
+      if (run.currentPhase === 'done' && run.status === 'running') {
+        const runOutputs = await this.recordDeclaredOutputs(run);
+        const completed: WorkflowRun = {
+          ...run,
+          status: 'completed',
+          lastTransitionAt: Date.now(),
+          // Folded in *before* persistTransition, not written after it. The
+          // `finally` below re-persists the outer `run` through
+          // `terminalTransitions.complete`, so a later write is overwritten
+          // by a value captured earlier (W7).
+          ...(runOutputs.length > 0 ? { runOutputs } : {})
+        };
+        run = await this.deps.persistTransition(run, completed);
+        await this.deps.emitRunEndedBreakpointAudit(run);
+        this.deps.statusBar.update({ kind: 'completed' });
+        this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
+        try {
+          await this.deps.queue.finish(run.featureId, 'completed');
+        } catch (qErr) {
+          this.deps.logger.warn(
+            `run-driver: queue.finish (completed) failed: ${(qErr as Error).message}`
+          );
+        }
+        try {
+          await this.deps.historyRecorder.record(run, description, 'completed');
+        } catch (hErr) {
+          this.deps.logger.warn(
+            `run-driver: history record (completed) failed: ${(hErr as Error).message}`
+          );
+        }
+        // Feature 072 — emit task-execution-ended (completed).
+        try {
+          await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+            taskId: run.featureId,
+            runId: run.id,
+            terminalStatus: 'completed',
+            durationMs: Date.now() - run.startedAt,
+            ...this.computePhaseStats(run)
+          });
+        } catch (err) {
+          this.deps.logger.warn(
+            `run-driver: task-execution-ended (completed) audit failed: ${(err as Error).message}`
+          );
+        }
+      }
     } catch (error) {
       const auditUnavailable =
         error instanceof RequiredEvidenceUnavailableError ||
@@ -808,6 +839,12 @@ export class RunDriver {
       this.isRunning = false;
       this.cancellationController = null;
       this.carriedIssues = [];
+      // Feature 092 (T132, FR-033a) — this is the ordinary terminal funnel for
+      // completed, failed, and canceled Runs, so it is where the execution
+      // lease's tenure ends. Unconditional on the drain gates below: a Run that
+      // ends with auto-drain suppressed still has to give its queue back, or
+      // the suppression outlives the reason for it.
+      await this.deps.releaseExecutionLease?.(run);
       if (allowAutoDrain && this.isAuditEvidenceAvailable()) {
         this.deps.scheduleAutoDrain();
       }

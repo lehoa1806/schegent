@@ -511,9 +511,15 @@ describe('a composed run and a plain run leave the same runtime trace (FR-037, S
     expect(node.transcript).toEqual(plain.transcript);
   });
 
-  it('acquires and releases the workspace lock identically', () => {
-    expect(plain.scopes).toEqual(['drive-run']);
-    expect(plain.releases).toBe(1);
+  it('takes no per-Run workspace-lock scope, identically on all three paths', () => {
+    // Feature 092 (T136, BUG-002, FR-032a) — was `['drive-run']` and one
+    // release. `RunDriver.drive()` no longer wraps itself in `withLock`: window
+    // primacy runs activation-to-disposal and is not a Run's to take or end, so
+    // a Run now leaves no trace on the workspace lock at all. The parity this
+    // test exists for (FR-037) is unaffected — what changed is the shared
+    // baseline all three paths are compared against, not whether they agree.
+    expect(plain.scopes).toEqual([]);
+    expect(plain.releases).toBe(0);
     expect(composed.scopes).toEqual(plain.scopes);
     expect(composed.releases).toBe(plain.releases);
     // The node path enqueued through the guarded service on its way here, and
@@ -625,8 +631,12 @@ describe('cancelling a composed run behaves as cancelling any other (FR-037)', (
     expect(node.phasesCompleted).toEqual(plain.phasesCompleted);
   });
 
-  it('releases the workspace lock on the cancel path too', () => {
-    expect(plain.releases).toBe(1);
+  it('leaves the workspace lock alone on the cancel path too', () => {
+    // Feature 092 (T136, FR-032a) — was one release, for the same reason as
+    // above: a cancelled Run ends its own tenure on its queue's execution lease,
+    // never the window's primacy. Still asserted, because a cancel path that
+    // started releasing primacy again would be the defect returning.
+    expect(plain.releases).toBe(0);
     expect(composed.releases).toBe(plain.releases);
     expect(node.releases).toBe(plain.releases);
   });
