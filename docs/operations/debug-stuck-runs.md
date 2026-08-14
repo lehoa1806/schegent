@@ -65,6 +65,13 @@ In order of escalation:
 3. **Schegent: Cancel In-Flight Workflow** (`schegent.cancel`) — terminates the run; auto-drain takes over if more queue items are pending.
 4. **Schegent: Reset Workspace State** (`schegent.reset`) — last resort; see [reset-safely.md](reset-safely.md).
 
+**These palette commands name no run, so with several in flight they refuse rather than guess.** You will see one of:
+
+- `several runs are in flight; cancel a specific task instead.`
+- `several runs are resumable; resume one from the sidebar instead.`
+
+That is not a malfunction — cancelling or resuming a run you were not looking at is silent and, for cancel, unrecoverable. Name the target instead: use the per-queue controls in the sidebar or Dashboard, or cancel by task. With exactly one matching run the commands behave exactly as they always did.
+
 ## Step 6 — Capture for an issue report
 
 If the run can't be recovered, capture:

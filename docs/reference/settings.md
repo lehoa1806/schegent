@@ -428,11 +428,13 @@ The advertised maximum was reduced from `20` to `5` in feature 056 to match the 
 - **Scope:** `resource`
 - **Range:** `1` to `20`
 
-Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many *queues* may be busy at once — set it to `1` to get the pre-092 sequential behaviour back without deleting any queue.
+Maximum number of workflow runs that may **execute** across the whole workspace at the same time. Each queue still runs at most one Task, so `cap` concurrent runs means `cap` different queues — set it to `1` for single-run behaviour without deleting any queue.
 
 A value outside the range is refused, not clamped: an out-of-range setting is reported and the previous value stays in force, so a typo cannot silently change how much work runs at once.
 
-Feature 092 unpinned this knob. It was fixed at `1` while a single workspace lock made concurrency unrepresentable; the lock split (window primacy vs per-queue execution lease) removed that constraint. Raising it does **not** widen the remote or multi-user boundary — see [the expansion gate](../architecture/remote-multi-user-expansion-gate.md).
+The cap gates starts only. Lowering it below the number of runs already executing terminates none of them; the excess drains as they finish. A paused run keeps its slot, so pausing does not free capacity and resuming is never refused for want of one.
+
+Feature 092 unpinned this knob. It was fixed at `1` while a single workspace lock made concurrency unrepresentable; the lock split (window primacy vs per-queue execution lease) removed that constraint. Between 092 and 093 it bounded eligible queues rather than executing runs, because the run engine still drove one run at a time; feature 093 made it a real ceiling on concurrent execution. Raising it does **not** widen the remote or multi-user boundary — see [the expansion gate](../architecture/remote-multi-user-expansion-gate.md). It does mean more Claude processes against one working tree — see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#concurrent-runs-share-one-working-tree).
 
 ## Logging and diagnostics
 

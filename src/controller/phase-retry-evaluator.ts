@@ -39,8 +39,17 @@ export interface PhaseRetryEvaluatorInputs {
  * with the operator-visible projection. Wired by the workflow-controller to
  * write to `WorkflowRun.lastRetryDecision` via `WorkspaceStateStore.setRun()`.
  * Unset in unit tests; the evaluator never blocks on a missing sink.
+ *
+ * Feature 093 (T047) — the decision now names the Run it was evaluated for.
+ * Without an identity in the payload the sink wrote to "the" Run: correct by
+ * construction while a window had one, and last-writer-wins once it has
+ * several, so one queue's `missingKeys` would render in a sibling's phase tile.
+ * The binding resolves the id to its queue and addresses the write there.
  */
-export type LastRetryDecisionSink = (decision: LastRetryDecision) => Promise<void> | void;
+export type LastRetryDecisionSink = (
+  runId: string,
+  decision: LastRetryDecision
+) => Promise<void> | void;
 
 export class PhaseRetryEvaluator {
   constructor(
@@ -132,7 +141,7 @@ export class PhaseRetryEvaluator {
     // mode. The sink is optional and never blocks the audit emission.
     if (this.decisionSink !== null) {
       try {
-        await this.decisionSink({
+        await this.decisionSink(inputs.runId, {
           phase: inputs.phase,
           iteration: inputs.iteration,
           decision,

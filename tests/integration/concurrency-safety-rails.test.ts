@@ -253,6 +253,11 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
   const audits: AuditEntry[] = [];
   const queueNames: string[] = [];
   let runSeq = 0;
+  // Feature 093 (T082) — the sessions this window would own. `liveRunCount` is
+  // `RunSessionRegistry.size` in production: a session exists from admission to
+  // the Run's terminal transition, so the double counts starts and gives the
+  // count back in `finishRun`, which is this harness's terminal transition.
+  let liveRuns = 0;
 
   const auditWriter = {
     append: async (entry: {
@@ -280,11 +285,18 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
   await store.setQueueRegistry(registry);
   await store.setGlobalConcurrencyCap(cap);
 
+  // Feature 093 (T049a) — admission ends at `markInFlight`, which is where this
+  // double already ended. `completed` is the Run's execution, never driven here.
   const controller = {
-    startNew: async (request: FeatureRequest) => {
+    admitNew: async (request: FeatureRequest) => {
       await queue.markInFlight(request.id, `run-${++runSeq}`);
+      liveRuns++;
+      return { completed: Promise.resolve() };
     },
-    resumeExisting: async () => false
+    admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
+    get liveRunCount(): number {
+      return liveRuns;
+    }
   };
 
   const autoDrain = new AutoDrainCoordinator({
@@ -308,6 +320,7 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
     async finishRun(queueId: string): Promise<void> {
       const inFlight = store.getQueue(queueId).requests.find((r) => r.status === 'in-flight');
       if (inFlight) await queue.finish(inFlight.id, 'completed');
+      if (liveRuns > 0) liveRuns--;
       await executionLease.release(queueId);
     },
     queueNames

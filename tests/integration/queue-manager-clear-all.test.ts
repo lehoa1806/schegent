@@ -93,7 +93,7 @@ async function buildPopulatedSystem(): Promise<{
   await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'maintenance', 'operator');
 
   // Set an active run + watchdog backoff
-  await store.setRun(sampleRun(a.id));
+  await store.setRun(DEFAULT_QUEUE_ID, sampleRun(a.id));
   await store.setWatchdog({
     paused: true,
     pausedSince: 1_700_000_000_000,
@@ -133,7 +133,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(afterQueue.paused).toBe(false);
     expect(afterQueue.pausedReason).toBeNull();
 
-    expect(store.getRun()).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
 
     const afterWatchdog = store.getWatchdog();
     expect(afterWatchdog.paused).toBe(false);
@@ -212,7 +212,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(result.inflightAborted).toBe(true);
     // State is still fully cleared — runner ack is post-persistence:
     expect(store.getQueue().requests).toEqual([]);
-    expect(store.getRun()).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
   });
 
   it('runner-ack probe that throws is swallowed; state still clears', async () => {
@@ -239,7 +239,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
   ) => async (): Promise<boolean> => {
     // The write happens before the probe settles, exactly as the real
     // cancel path does: the transition is persisted on the way to the ack.
-    await store.setRun(sampleRun('feat-1', 'canceled'));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun('feat-1', 'canceled'));
     return settle();
   };
 
@@ -250,7 +250,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     );
     expect(result.runnerAcked).toBe(true);
     expect(result.inflightAborted).toBe(true);
-    expect(store.getRun()).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
   });
 
   it('clears the run again when the runner-ack probe writes one back (resolves false)', async () => {
@@ -260,7 +260,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     );
     expect(result.runnerAcked).toBe(false);
     expect(result.inflightAborted).toBe(true);
-    expect(store.getRun()).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
   });
 
   it('clears the run again when a writing runner-ack probe then throws', async () => {
@@ -273,7 +273,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
       })
     );
     expect(result.runnerAcked).toBe(false);
-    expect(store.getRun()).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
     expect(store.getQueue().requests).toEqual([]);
   });
 

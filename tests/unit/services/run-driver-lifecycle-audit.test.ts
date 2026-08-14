@@ -6,6 +6,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 function makeLock(): any {
   return {
@@ -88,7 +89,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       isContinueGate: { consume: vi.fn().mockReturnValue(false) } as any,
       lock: makeLock(),
       persistTransition: async (_oldRun, newRun) => {
-        await store.setRun(newRun);
+        await store.setRun(DEFAULT_QUEUE_ID, newRun);
         return newRun;
       },
       scheduleAutoDrain: vi.fn(),
@@ -100,7 +101,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
   it('emits task-execution-ended on failure (T016)', async () => {
     const runId = 'run-fail-1';
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       taskId: 'task-1',
       featureId: 'task-1',
@@ -131,7 +132,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       auditEntryId: null
     } as PhaseRunOutput);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     await driver.drive(run, 'Test description');
     
     expect(emitTaskLifecycleAuditSpy).toHaveBeenCalledTimes(1);
@@ -157,7 +158,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
   it('emits task-execution-ended on completion (T016)', async () => {
     const runId = 'run-complete-1';
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       taskId: 'task-2',
       featureId: 'task-2',
@@ -188,7 +189,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       auditEntryId: null
     } as PhaseRunOutput);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     await driver.drive(run, 'Test description');
     
     expect(emitTaskLifecycleAuditSpy).toHaveBeenCalledTimes(1);
@@ -224,7 +225,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     ];
 
     async function seedRunningRun(runId: string, currentPhase = 'plan'): Promise<void> {
-      await store.setRun({
+      await store.setRun(DEFAULT_QUEUE_ID, {
         id: runId,
         taskId: runId,
         featureId: runId,
@@ -280,9 +281,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring(DECLARED);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
-      expect(store.getRun()?.runOutputs?.map((record) => record.name)).toEqual([
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs?.map((record) => record.name)).toEqual([
         'report',
         'summary'
       ]);
@@ -300,11 +301,11 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring(DECLARED);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
       expect(completeSpy).toHaveBeenCalledOnce();
-      expect(store.getRun()?.status).toBe('completed');
-      expect(store.getRun()?.runOutputs).toHaveLength(2);
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('completed');
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs).toHaveLength(2);
     });
 
     it('records nothing for a Run that ends failed (FR-008)', async () => {
@@ -312,10 +313,10 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring(DECLARED);
       failingPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
-      expect(store.getRun()?.status).toBe('failed');
-      expect(store.getRun()?.runOutputs).toBeUndefined();
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('failed');
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs).toBeUndefined();
     });
 
     it('records nothing when the plan declared no outputs (FR-008)', async () => {
@@ -323,10 +324,10 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring([]);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
-      expect(store.getRun()?.status).toBe('completed');
-      expect(store.getRun()?.runOutputs).toBeUndefined();
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('completed');
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs).toBeUndefined();
     });
 
     it('records nothing when the queue row or its plan is absent', async () => {
@@ -335,10 +336,10 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       (deps.queue as any).findById = vi.fn(() => null);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
-      expect(store.getRun()?.status).toBe('completed');
-      expect(store.getRun()?.runOutputs).toBeUndefined();
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('completed');
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs).toBeUndefined();
     });
 
     it('adds no audit event type and puts no location in any audit payload (W9)', async () => {
@@ -346,7 +347,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring(DECLARED);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
       const eventTypes = emitTaskLifecycleAuditSpy.mock.calls.map(([type]) => type);
       expect(eventTypes).toEqual(['task-execution-ended']);
@@ -364,13 +365,13 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       declaring(DECLARED);
       cleanPhase();
 
-      await driver.drive(store.getRun()!, 'Test description');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
 
-      expect(store.getRun()?.status).toBe('completed');
-      expect(store.getRun()?.runOutputs?.every((record) => record.status === 'unresolved')).toBe(
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('completed');
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs?.every((record) => record.status === 'unresolved')).toBe(
         true
       );
-      expect(store.getRun()?.runOutputs?.some((record) => 'reference' in record)).toBe(false);
+      expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs?.some((record) => 'reference' in record)).toBe(false);
     });
   });
 
@@ -378,7 +379,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     'continues after direct optional %s with terminal evidence and no lastError',
     async (outcome) => {
       const runId = `run-optional-${outcome}`;
-      await store.setRun({
+      await store.setRun(DEFAULT_QUEUE_ID, {
         id: runId,
         taskId: runId,
         featureId: runId,
@@ -419,9 +420,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         auditEntryId: null
       } as PhaseRunOutput);
 
-      await driver.drive(store.getRun()!, 'optional terminal');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'optional terminal');
 
-      const finalRun = store.getRun()!;
+      const finalRun = store.getRun(DEFAULT_QUEUE_ID)!;
       expect(finalRun.status).toBe('completed');
       expect(finalRun.lastError).toBeUndefined();
       expect(finalRun.phasesCompleted).toEqual([
@@ -454,7 +455,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     'converts optional %s at retry cap into terminal failed evidence without pausing',
     async (outcome, terminationReason) => {
       const runId = `run-optional-cap-${outcome}`;
-      await store.setRun({
+      await store.setRun(DEFAULT_QUEUE_ID, {
         id: runId,
         taskId: runId,
         featureId: runId,
@@ -499,9 +500,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         auditEntryId: null
       } as unknown as PhaseRunOutput);
 
-      await driver.drive(store.getRun()!, 'optional retry cap');
+      await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'optional retry cap');
 
-      const finalRun = store.getRun()!;
+      const finalRun = store.getRun(DEFAULT_QUEUE_ID)!;
       expect(finalRun.status).toBe('completed');
       expect(finalRun.lastError).toBeUndefined();
       expect(finalRun.delayedRetryCount).toBe(0);
@@ -523,7 +524,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     emitTaskLifecycleAuditSpy.mockRejectedValue(new Error('Audit disk write failed'));
     
     const runId = 'run-complete-2';
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       taskId: 'task-3',
       featureId: 'task-3',
@@ -554,16 +555,16 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       auditEntryId: null
     } as PhaseRunOutput);
 
-    const initialRun = store.getRun()!;
+    const initialRun = store.getRun(DEFAULT_QUEUE_ID)!;
     await expect(driver.drive(initialRun, 'Test description')).resolves.toBeUndefined();
     
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
   });
 
   it('contains terminal retention-hook failure and still schedules queue drain', async () => {
     onRunTerminalSpy.mockRejectedValueOnce(new Error('retention unavailable'));
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-retention-failure',
       taskId: 'task-retention-failure',
       featureId: 'task-retention-failure',
@@ -583,14 +584,14 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       resumeTargetPhaseId: null
     } as any);
 
-    await expect(driver.drive(store.getRun()!, 'retention failure')).resolves.toBeUndefined();
+    await expect(driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'retention failure')).resolves.toBeUndefined();
 
     expect(onRunTerminalSpy).toHaveBeenCalledOnce();
     expect(deps.scheduleAutoDrain).toHaveBeenCalledOnce();
   });
 
   it('fails the active run and suppresses queue drain when required audit evidence is unavailable', async () => {
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-audit-unavailable',
       taskId: 'task-audit-unavailable',
       featureId: 'task-audit-unavailable',
@@ -625,10 +626,10 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     };
 
     await expect(
-      new RunDriver(deps).drive(store.getRun()!, 'audit unavailable')
+      new RunDriver(deps).drive(store.getRun(DEFAULT_QUEUE_ID)!, 'audit unavailable')
     ).resolves.toBeUndefined();
 
-    expect(store.getRun()).toMatchObject({
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toMatchObject({
       id: 'run-audit-unavailable',
       status: 'failed',
       lastError: {

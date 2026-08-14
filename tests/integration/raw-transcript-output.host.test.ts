@@ -42,6 +42,11 @@ export async function run(): Promise<void> {
     if (!fs.existsSync(schegentDir)) created.schegentDir = true;
     if (!fs.existsSync(sessionsDir)) created.sessionsDir = true;
 
+    // Deliberately the default `os.tmpdir()` spool root, unlike the per-test
+    // roots feature 093 (T082) gave the vitest suites: `workspaceRoot` here is
+    // the real open workspace, and a spool directory under it would be an
+    // untracked path outside gitignored `.schegent/` — which is exactly what
+    // assertion 2 below scans for. One writer, one scavenge, host smoke only.
     const writer = new RawTranscriptWriter(workspaceRoot, new SanitizedLogger());
     await writer.appendStart({
       runId,

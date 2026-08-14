@@ -54,6 +54,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -226,7 +227,7 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
 
     // (a) Completed status — the controller transitions to 'completed' after
     // sweeping through `done`.
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
     expect(run.pipeline?.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
@@ -269,7 +270,7 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     });
     await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
 
-    const snapshot = store.getRun()!.pipeline;
+    const snapshot = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     const phaseIdsBefore = (snapshot?.phases ?? []).map((p) => p.id);
 
     // Even after a controller setCatalog (mid-flight settings change) the
@@ -281,7 +282,7 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     // to what was captured at startNew(), regardless of catalog reloads.
     controller.setCatalog(tamperedCatalog);
 
-    const snapshotAfter = store.getRun()!.pipeline;
+    const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     expect(snapshotAfter).toBe(snapshot);
     expect((snapshotAfter?.phases ?? []).map((p) => p.id)).toEqual(phaseIdsBefore);
   });
@@ -330,7 +331,7 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
     await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
 
     // (a) Run paused with currentPhase pinned to the failing verify phase.
-    const pausedRun = store.getRun()!;
+    const pausedRun = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(pausedRun.status).toBe('paused');
     expect(pausedRun.currentPhase).toBe('bugfix-verify-pre');
 
@@ -368,7 +369,7 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
     expect(pauseEvent).toBeDefined();
 
     // (d) Resume IPC re-invokes bugfix-verify-pre — NOT bugfix-implement.
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
 
     // The next CLI invocation after the pause boundary is the SAME phase.
     // We expect the second bugfix-verify-pre to appear at index 3 (right
@@ -377,7 +378,7 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
 
     // (e) Second verify success continues forward: bugfix-implement, then
     // bugfix-verify-post (both clean), then done → completed.
-    const completed = store.getRun()!;
+    const completed = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(completed.status).toBe('completed');
     expect(completed.currentPhase).toBe('done');
 

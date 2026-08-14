@@ -74,7 +74,12 @@ per-phase drill-in.
 
 - **Queue selector** — populated from `snapshot.queue.queues`; defaults to
   the queue owning the active run when present, otherwise the first
-  non-empty queue.
+  non-empty queue. With several runs executing concurrently, **follow-live
+  tracks one of them** — the default queue's — because the feed shows one
+  phase stream at a time. Select another queue to watch its run instead;
+  the selection is remembered until you jump back to live. The per-queue
+  drill-down (Queues → Queue Detail → Run Detail) is the surface built for
+  watching a specific run among several.
 - **Task selector** — populated from the queue's tasks (in-flight,
   pending, recent, and history). Defaults to the in-flight task when the
   selected queue has one.

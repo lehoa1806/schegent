@@ -21,6 +21,7 @@ import {
   RATE_LIMIT_BACKOFF_MS,
   TRANSIENT_BACKOFF_MS
 } from '../../../src/controller/retry-constants';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -196,7 +197,7 @@ describe('FR-002 — 15-min backoff on transient_error', () => {
     await controller.startNew(feature, null);
     const afterMs = Date.now();
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('paused');
     expect(run.delayedRetryCount).toBe(1);
     expect(run.pendingRetryCause).toBe('transient_error');
@@ -239,7 +240,7 @@ describe('FR-003 — 60-min backoff on rate_limited', () => {
     const beforeMs = Date.now();
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('paused');
     expect(run.delayedRetryCount).toBe(1);
     expect(run.pendingRetryCause).toBe('rate_limit');
@@ -269,7 +270,7 @@ describe('FR-004 — fatal-signature bypass', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('failed');
     expect(run.delayedRetryCount).toBe(0);
     expect(run.pendingRetryAt).toBeNull();
@@ -293,16 +294,16 @@ describe('FR-006 — cap exhaustion pauses the queue', () => {
     // We can't easily pre-state in this setup; instead chain 5 attempts via
     // resumeExisting (since startNew handles only the first invocation
     // before halting). Per delayed-retry contract the watchdog would have
-    // re-armed and called controller.resumeExisting() to drive each retry.
+    // re-armed and called controller.resumeExisting(DEFAULT_QUEUE_ID) to drive each retry.
     await controller.startNew(feature, null);
-    expect(store.getRun()!.delayedRetryCount).toBe(1);
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.delayedRetryCount).toBe(1);
 
     // Resume 4 more times to reach the cap.
     for (let i = 0; i < 4; i++) {
-      await controller.resumeExisting();
+      await controller.resumeExisting(DEFAULT_QUEUE_ID);
     }
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.delayedRetryCount).toBe(DELAYED_RETRY_CAP);
     expect(run.status).toBe('paused');
     expect(run.pendingRetryAt).toBeNull(); // cap-exhausted state clears the timer
@@ -333,11 +334,11 @@ describe('FR-007 — counter resets to 0 on clean success', () => {
 
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
-    expect(store.getRun()!.delayedRetryCount).toBe(1);
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.delayedRetryCount).toBe(1);
 
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.delayedRetryCount).toBe(0);
     expect(run.pendingRetryAt).toBeNull();
     expect(run.pendingRetryCause).toBeNull();

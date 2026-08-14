@@ -128,7 +128,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
       hasActiveProcess: false
     } as unknown as ClaudeCliRunner;
 
-    const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
+    const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
     const phaseRunner = new PhaseRunner(
       cliRunner,
       new PromptBuilder(),
@@ -166,7 +166,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     // Wait for clarify (phase A) to complete so the controller has an
     // in-flight run id to attach the breakpoint to.
     for (let i = 0; i < 200; i++) {
-      const r = store.getRun();
+      const r = store.getRun(DEFAULT_QUEUE_ID);
       if (
         r &&
         (r.phasesCompleted.some((p) => p.phase === 'speckit-clarify') ||
@@ -181,7 +181,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
 
     // While the run is mid-pipeline (post-clarify, pre-implement), set a
     // breakpoint on speckit-implement (phase C in the walkthrough).
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     const setResult = await controller.setPhaseBreakpoint(run.id, 'speckit-implement');
     expect(setResult).toEqual({ ok: true });
 
@@ -191,7 +191,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
 
     // Assert: the pipeline halted at the breakpoint, CLI was NOT invoked
     // for the marked phase, and intermediate phases ran.
-    const halted = store.getRun()!;
+    const halted = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(halted.status).toBe('paused');
     expect(halted.manualPauseCause).toBe('breakpoint-paused');
     expect(halted.resumeTargetPhaseId).toBe('speckit-implement');
@@ -211,14 +211,14 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     // Resume: invokes the marked phase and completes the pipeline.
     await controller.resumeActivePhase();
     for (let i = 0; i < 500; i++) {
-      const r = store.getRun();
+      const r = store.getRun(DEFAULT_QUEUE_ID);
       if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
         break;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
 
-    const resumed = store.getRun()!;
+    const resumed = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(resumed.status).toBe('completed');
     expect(resumed.manualPauseAt).toBeNull();
     expect(resumed.manualPauseCause).toBeNull();

@@ -11,12 +11,11 @@
 //      reported as `false` in the "no-op" sense.
 //   3. `QueueManager.clearAll(probe)` which performs all five canonical writes
 //      atomically (queue items, in-flight, pause, active run, watchdog backoff).
-//   4. Lock release — only when the operation actually aborted an in-flight
-//      run AND the runner acked the cancel. If the runner did not ack within
-//      the 2s window, the lock release is deferred to the runner's eventual
-//      exit path (which is invariant under cancel-then-cleanup). This avoids
-//      racing the runner's own `lock.release()` in its `finally` and prevents
-//      the same-owner re-acquire pattern from double-releasing.
+//   4. (Retired by feature 093 T068b, FR-028.) This step released the
+//      workspace lock when the operation aborted an in-flight run and the
+//      runner acked. Window primacy is the window's for its whole lifetime —
+//      activation to disposal — and Clean All is not a disposal. See the note
+//      at the former call site below.
 //   5. A single `queue-cleared-all` audit event, emitted ONLY when
 //      `result.wasNoop === false`. The no-op path is silent on the audit log
 //      per the contract (specs/063-clean-all-confirmations/contracts/cmd-clear-all.md
@@ -114,13 +113,18 @@ export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
     );
   }
 
-  if (result.inflightAborted && result.runnerAcked) {
-    await ctx.lock.release().catch((err) => {
-      ctx.logger.warn(
-        `runClearAll: lock release failed: ${(err as Error).message}`
-      );
-    });
-  }
+  // Feature 093 (T068b, FR-028) — the primacy release that stood here is gone.
+  // Its own rationale retired it: it existed to avoid racing "the runner's own
+  // `lock.release()` in its `finally`", and 092's T136 deleted that `finally`
+  // with the `withLock('drive-run', …)` wrapper. What was left released the
+  // *window's* primacy on an operator action the window survives — and
+  // `release()` stops the heartbeat and nulls the record, while nothing but
+  // `tryAcquire()` ever restores it. So a single Clean All left this window
+  // non-primary for the rest of the session: its own step-1 `isHeld()` guard
+  // would reject the next Clean All, `isPrimary` would read false everywhere,
+  // and a rival window could claim a workspace this one is still live in.
+  // Under concurrency it is worse — Clean All aborts every queue's Run, so the
+  // release lands while other drivers are still unwinding.
 
   if (result.inflightAborted && !result.runnerAcked) {
     ctx.notifier.warn(CLEAN_ALL_RUNNER_STILL_PENDING_TOAST);

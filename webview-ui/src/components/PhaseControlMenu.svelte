@@ -21,6 +21,13 @@
     isPrimary: boolean;
     activeTaskId?: string | null;
     activeRunId?: string | null;
+    /**
+     * Feature 093 (FR-018 / T080) — the queue whose Run this menu controls.
+     * Every lifecycle command below is addressed with it; with N Runs in
+     * flight the host has no ambient "the active Run" to fall back on and
+     * refuses an unaddressed control at the IPC boundary.
+     */
+    queueId: string;
     manualPauseAt?: string | null;
     phaseOverrides?: readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed' }[];
     /**
@@ -41,6 +48,7 @@
     isPrimary,
     activeTaskId = null,
     activeRunId = null,
+    queueId,
     manualPauseAt = null,
     phaseOverrides = [],
     selectedPhase = null,
@@ -92,12 +100,12 @@
 
   function onSetBreakpoint(): void {
     if (!showSetBreakpoint || activeRunId === null || selectedPhase === null) return;
-    void setPhaseBreakpoint(activeRunId, selectedPhase);
+    void setPhaseBreakpoint(activeRunId, selectedPhase, queueId);
   }
 
   function onClearBreakpoint(): void {
     if (!showClearBreakpoint || activeRunId === null || selectedPhase === null) return;
-    void clearPhaseBreakpoint(activeRunId, selectedPhase);
+    void clearPhaseBreakpoint(activeRunId, selectedPhase, queueId);
   }
 
   function aria(disabled: boolean): 'true' | 'false' {
@@ -106,20 +114,20 @@
 
   function onPause(): void {
     if (pauseDisabled) return;
-    pausePhase();
+    pausePhase(queueId);
   }
 
   let resumePromptStr = $state('');
 
   function onResume(): void {
     if (resumeDisabled) return;
-    resumePhase(resumePromptStr.trim() || undefined);
+    resumePhase(queueId, resumePromptStr.trim() || undefined);
     resumePromptStr = '';
   }
 
   function onRestart(): void {
     if (restartDisabled || currentPhase === null) return;
-    restartPhase(currentPhase);
+    restartPhase(currentPhase, queueId);
   }
 
   async function onSkip(event: MouseEvent): Promise<void> {
@@ -129,17 +137,17 @@
       context: { phaseName: currentPhase }
     });
     if (!confirmed) return;
-    skipPhase(currentPhase);
+    skipPhase(currentPhase, queueId);
   }
 
   function onDisable(): void {
     if (overrideDisabled || currentPhase === null) return;
-    disablePhase(currentPhase);
+    disablePhase(currentPhase, queueId);
   }
 
   function onEnable(): void {
     if (enableDisabled || currentPhase === null) return;
-    enablePhase(currentPhase);
+    enablePhase(currentPhase, queueId);
   }
 
   function onDelete(): void {

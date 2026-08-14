@@ -26,6 +26,7 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import { runOf, runtimeOf } from './queue-runtime-read.helpers';
+import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -76,7 +77,7 @@ function makeProjector(): StateProjector {
  */
 async function seedOwnedRun(overrides: Partial<WorkflowRun> = {}): Promise<void> {
   const task = await queue.enqueue('breakpoint projection task');
-  await store.setRun(sampleRun({ featureId: task.id, ...overrides }));
+  await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ featureId: task.id, ...overrides }));
 }
 
 function sampleRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {

@@ -120,7 +120,24 @@ function safeSpawn(
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
-  private active: ChildProcess | null = null;
+  /**
+   * Feature 093 (T046a) — every live subprocess, not just the newest.
+   *
+   * `BackendRunnerRegistry` caches one runner per backend kind for the
+   * workspace lifetime, so concurrent Runs on the same kind share this
+   * instance. A single `ChildProcess | null` slot made the second spawn
+   * overwrite the first's handle and the first exit clear the slot for both,
+   * which left `cancelActive()` at deactivation orphaning every child but one
+   * and `hasActiveProcess` reporting `false` while a subprocess was alive.
+   *
+   * Keyed by a per-runner invocation token rather than by run id: an
+   * invocation need not name a Run (contract harnesses do not), so a run-keyed
+   * map would collide anonymous invocations onto one entry and reintroduce the
+   * same clobber. The token also makes the exit-path delete exact — an
+   * invocation removes its own entry and no other.
+   */
+  private readonly active = new Map<number, ChildProcess>();
+  private nextInvocationToken = 1;
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
@@ -133,7 +150,7 @@ export class ClaudeCliRunner implements BackendRunner {
   }
 
   public get hasActiveProcess(): boolean {
-    return this.active !== null;
+    return this.active.size > 0;
   }
 
   public async invoke(
@@ -206,6 +223,12 @@ export class ClaudeCliRunner implements BackendRunner {
     // writer's sanitizer runs the field through the redaction set.
     const command = [request.cliPath, ...args].join(' ');
 
+    // Feature 093 (T046a) — declared outside the `try` so the `finally` below
+    // can retire this invocation's entry on every exit path, thrown included.
+    // A single slot self-healed on a throw because the next spawn overwrote it;
+    // a map entry would leak, and a leaked entry makes `hasActiveProcess`
+    // permanently true.
+    const invocationToken = this.nextInvocationToken++;
     try {
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
@@ -214,8 +237,8 @@ export class ClaudeCliRunner implements BackendRunner {
         env: buildSpawnEnv(request)
       });
       this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
-      this.active = child;
-      this.emitHook({ kind: 'started', pid: child.pid ?? null });
+      this.active.set(invocationToken, child);
+      this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
 
       if (child.stdin) {
         try {
@@ -316,7 +339,7 @@ export class ClaudeCliRunner implements BackendRunner {
           }
         }
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stdout-chunk', chunk });
+        this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
         }
@@ -325,7 +348,7 @@ export class ClaudeCliRunner implements BackendRunner {
         stderrBuffer.append(chunk);
         outputBackpressure.write('stderr', child.stderr!, chunk);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stderr-chunk', chunk });
+        this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
         }
@@ -368,8 +391,14 @@ export class ClaudeCliRunner implements BackendRunner {
       clearTimeout(timer);
       const exitSignal = completion.signal ??
         (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
-      this.emitHook({ kind: 'exited', exitCode, signal: exitSignal, killed, timedOut });
-      this.active = null;
+      this.emitHook({
+        kind: 'exited',
+        runId: request.runId ?? null,
+        exitCode,
+        signal: exitSignal,
+        killed,
+        timedOut
+      });
 
       let diagnosticWarnings: ReadonlyArray<string> | undefined;
       if (diagnosticWriter) {
@@ -399,7 +428,7 @@ export class ClaudeCliRunner implements BackendRunner {
         cliSessionId
       };
     } finally {
-      // tempPromptFile cleanup logic removed.
+      this.active.delete(invocationToken);
     }
   }
 
@@ -412,10 +441,21 @@ export class ClaudeCliRunner implements BackendRunner {
     }
   }
 
+  /**
+   * Terminate every live subprocess this runner owns, reporting whether there
+   * was any. Feature 093 (T046a): the sole production caller is
+   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
+   * reach all of a shared runner's children rather than whichever one happened
+   * to spawn last. Deliberately takes no run id — per-Run cancellation already
+   * runs through each session's own `AbortController` and `cancellationSignal`,
+   * so a run-addressed overload here would have no caller.
+   */
   public cancelActive(): boolean {
-    if (!this.active) return false;
-    this._logger.info(`[ClaudeCliRunner] cancelActive called!`);
-    this.terminate(this.active);
+    if (this.active.size === 0) return false;
+    this._logger.info(`[ClaudeCliRunner] cancelActive called for ${this.active.size} subprocess(es)`);
+    for (const child of this.active.values()) {
+      this.terminate(child);
+    }
     return true;
   }
 

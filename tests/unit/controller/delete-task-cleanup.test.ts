@@ -24,6 +24,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import type { SessionCleanupRunner } from '../../../src/controller/workflow-controller';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -230,10 +231,18 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await seedSessionArtifacts(runId);
 
-    // Order tracking: cancel → setRun(canceled) → lock.release → cleanup
+    // Order tracking: cancel → setRun(canceled) → cleanup.
+    //
+    // Feature 093 (T068b, FR-028) — `lock.release` was the third step here and
+    // the ordering anchor the cleanup was asserted to follow. It is gone from
+    // `deleteTask`: deleting one Task cancels one queue's Run, and primacy
+    // belongs to the window whose other Runs are still executing under it. The
+    // ordering claim survives on `setRun:canceled`, which is the step that
+    // actually has to precede the cleanup — the cleanup deletes the session
+    // tree for a Run the store must already show as terminal.
     const order: string[] = [];
     const cleanupSpy = vi.fn(async () => {
       order.push('cleanup');
@@ -247,23 +256,20 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
         order.push('cancel');
       });
     const origSetRun = store.setRun.bind(store);
-    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (r) => {
+    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r) => {
       if (r && r.status === 'canceled') order.push('setRun:canceled');
-      return origSetRun(r);
+      return origSetRun(queueId, r);
     });
-    lockManager.release.mockImplementation(async () => {
-      order.push('lock.release');
-    });
-
     const result = await controller.deleteTask(feature.id);
 
     expect(result.ok).toBe(true);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
-    // Cancel-setRun-release MUST precede the cleanup invocation.
+    // Cancel-then-setRun MUST precede the cleanup invocation.
     expect(order[0]).toBe('cancel');
     expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('lock.release')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('lock.release'));
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('setRun:canceled'));
+    // And primacy is not a `deleteTask` concern at all.
+    expect(lockManager.release).not.toHaveBeenCalled();
 
     setRunSpy.mockRestore();
   });

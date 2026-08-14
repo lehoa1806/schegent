@@ -147,7 +147,7 @@ async function seedRunningRun(): Promise<{ feature: { id: string }; run: Workflo
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(run);
+  await store.setRun(DEFAULT_QUEUE_ID, run);
   return { feature, run };
 }
 
@@ -175,7 +175,7 @@ async function seedDelayedRetryRun(): Promise<void> {
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(run);
+  await store.setRun(DEFAULT_QUEUE_ID, run);
 }
 
 describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
@@ -208,7 +208,7 @@ describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
     // the AUDIT for `phase-pause-requested`). The audit log is the
     // canonical record so we verify the run state has been persisted
     // with the pause cause.
-    const persisted = store.getRun()!;
+    const persisted = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(persisted.manualPauseAt).not.toBeNull();
     expect(persisted.manualPauseCause).toBe('operator-paused');
   });

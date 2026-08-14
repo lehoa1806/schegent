@@ -16,6 +16,7 @@ import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -180,7 +181,7 @@ describe('retryPhaseNow — happy path', () => {
     });
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
-    const initialRun = store.getRun()!;
+    const initialRun = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(initialRun.delayedRetryCount).toBe(1);
     expect(initialRun.pendingRetryAt).not.toBeNull();
 
@@ -194,7 +195,7 @@ describe('retryPhaseNow — happy path', () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 5));
 
-    const settled = store.getRun()!;
+    const settled = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(settled.delayedRetryCount).toBe(0);
     expect(settled.pendingRetryAt).toBeNull();
     expect(settled.pendingRetryCause).toBeNull();
@@ -215,9 +216,9 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
     for (let i = 0; i < 4; i++) {
-      await controller.resumeExisting();
+      await controller.resumeExisting(DEFAULT_QUEUE_ID);
     }
-    const capRun = store.getRun()!;
+    const capRun = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(store.getQueue().pausedReason).toBe(`retry-cap-exhausted:${capRun.id}`);
 
     // To make retryPhaseNow accept, the run needs pendingRetryAt set.
@@ -226,7 +227,7 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     // a single phase by re-arming pendingRetryAt or by calling
     // retryPhaseNow from a different code path. For this test we focus
     // on the queue-unpause logic: simulate the pre-pause state.
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       ...capRun,
       delayedRetryCount: 4,
       pendingRetryAt: Date.now() + 60_000,

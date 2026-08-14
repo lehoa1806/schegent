@@ -16,6 +16,7 @@ import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -102,7 +103,7 @@ describe('Task Lifecycle Events Integration (072 T025)', () => {
     } as unknown as ClaudeCliRunner;
 
     const logger = new SanitizedLogger();
-    const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
+    const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
     
     const phaseRunner = new PhaseRunner(
       mockRunner,
@@ -153,7 +154,7 @@ describe('Task Lifecycle Events Integration (072 T025)', () => {
       }, 50);
     });
 
-    const finalRun = store.getRun()!;
+    const finalRun = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(finalRun.status).toBe('completed');
     expect(finalRun.pipeline).toBeDefined();
 

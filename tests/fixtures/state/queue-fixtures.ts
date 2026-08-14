@@ -1,5 +1,9 @@
 /**
  * Feature 092 (T005, T006) — shared fixture builders for the v9 → v10 work.
+ * Feature 093 (T004) adds `buildWorkflowRun()` for the v10 → v11 work, in this
+ * module rather than a sibling one because a Run fixture must share
+ * `FIXTURE_NOW` with the queue fixtures it is migrated alongside; a second file
+ * would import this one back and make the fixed clock a dependency chain.
  *
  * Two builders, used across US1, US2 and US4:
  *
@@ -28,6 +32,7 @@ import {
   type QueueLifecycle,
   type QueueState
 } from '../../../src/queue/feature-request';
+import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow-run';
 
 /** Fixed clock. Fixtures must not vary run to run. */
 export const FIXTURE_NOW = 1_700_000_000_000;
@@ -129,6 +134,56 @@ export function buildV9QueueState(options: V9QueueStateOptions = {}): QueueState
     scheduledStartAt: options.scheduledStartAt ?? null,
     scheduledStartSource: options.scheduledStartSource ?? null,
     migrationNotice: options.migrationNotice ?? 'dismissed'
+  };
+}
+
+export interface WorkflowRunOptions {
+  readonly id?: string;
+  /** The Task this Run advances. `migrateV10ToV11` resolves the queue from it. */
+  readonly featureId?: string;
+  readonly status?: WorkflowRunStatus;
+  readonly manualPauseCause?: WorkflowRun['manualPauseCause'];
+}
+
+/**
+ * A complete `WorkflowRun`, valid under `validateRunInvariants`.
+ *
+ * Defaults to a *running* Run with a pipeline, because the v10 → v11 lift is
+ * only interesting when there is something to carry: the empty case is a
+ * separate corpus row, not a default. Pause state is built as a **pair** —
+ * supplying `manualPauseCause` also stamps `manualPauseAt` — so a caller cannot
+ * accidentally construct the one-sided record `setRun()` rejects.
+ */
+export function buildWorkflowRun(options: WorkflowRunOptions = {}): WorkflowRun {
+  const manualPauseCause = options.manualPauseCause ?? null;
+  return {
+    id: options.id ?? 'run-1',
+    featureId: options.featureId ?? 'task-0',
+    featureDir: 'specs/093-per-queue-run-execution',
+    status: options.status ?? 'running',
+    currentPhase: 'speckit-plan',
+    currentIteration: 0,
+    startedAt: FIXTURE_NOW,
+    lastTransitionAt: FIXTURE_NOW,
+    phasesCompleted: [],
+    lastError: null,
+    delayedRetryCount: 0,
+    pendingRetryAt: null,
+    pendingRetryCause: null,
+    phaseOverrides: [],
+    manualPauseAt: manualPauseCause === null ? null : FIXTURE_NOW,
+    manualPauseCause,
+    phaseBreakpoints: [],
+    resumeTargetPhaseId: null,
+    pipeline: {
+      id: 'default',
+      name: 'Default pipeline',
+      phases: [
+        { id: 'speckit-specify', name: 'speckit-specify', instruction: 'Specify' },
+        { id: 'speckit-plan', name: 'speckit-plan', instruction: 'Plan' },
+        { id: 'finalize', name: 'finalize', instruction: 'Finalize' }
+      ]
+    }
   };
 }
 

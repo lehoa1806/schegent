@@ -20,6 +20,7 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { buildHistoryEntry } from '../../../src/state/history-entry';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { parseAuditLogLine } from '../../../src/parser/audit-log-parser';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -60,7 +61,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
     // (delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null)
     // so setRun's validator accepts the write.
     const startedAtMs = 1_700_000_000_000;
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: runId,
       featureId: 'feat-1',
       featureDir: 'specs/001-feat-1',
@@ -132,7 +133,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
     expect(initResult.migrated).toBe(false);
 
     // run, queue, lock, history all hydrated with shared runId
-    const rehydratedRun = reborn.getRun();
+    const rehydratedRun = reborn.getRun(DEFAULT_QUEUE_ID);
     const rehydratedQueue = reborn.getQueue();
     const rehydratedLock = reborn.getLock();
     const rehydratedHistory = new HistoryStore(reborn).list();

@@ -19,6 +19,7 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
+import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -100,7 +101,7 @@ afterEach(async () => {
 
 describe('Multi-window equivalence (T068 / SC-014)', () => {
   it('two projectors with the same store inputs produce byte-equal deterministic cores', async () => {
-    await store.setRun(runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
     await store.setQueue({
       paused: false,
       pausedReason: null,
@@ -248,7 +249,7 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
   });
 
   it('lock heartbeat staleness flips secondary back to primary readonly behavior', async () => {
-    await store.setRun(runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
     await store.setLock({
       ownerId: 'window-A',
       acquiredAt: 1_700_000_000_000,

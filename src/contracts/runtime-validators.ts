@@ -97,6 +97,12 @@ import {
   validateSaveQueueSettings,
   validateSetQueueSchedule
 } from './validators/queue-management';
+import {
+  validatePhaseBreakpointPayload,
+  validatePhaseIdPayload,
+  validateQueueIdPayload,
+  validateResumePhasePayload
+} from './validators/phase-control';
 import { validateSavePhases } from './validators/save-phases';
 import { validateSavePipelines } from './validators/save-pipelines';
 import { validateSaveWorkflows } from './validators/save-workflows';
@@ -191,7 +197,7 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_SAVE_GENERAL_SETTINGS:
       return validateSaveGeneralSettings(obj, correlationId);
     case CMD_RETRY_PHASE_NOW:
-      return validateNoPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
+      return validateQueueIdPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
     // Feature 092 (T034, US1, FR-019) — the seven multi-queue management
     // validators feature 030 removed with their commands. Bodies live in
     // ./validators/queue-management.ts; the cases stay here because this
@@ -217,9 +223,9 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_RESTART_CANCELED_TASK:
       return validateTaskIdPayload(CMD_RESTART_CANCELED_TASK, obj, correlationId);
     case CMD_PAUSE_PHASE:
-      return validateNoPayload(CMD_PAUSE_PHASE, obj, correlationId);
+      return validateQueueIdPayload(CMD_PAUSE_PHASE, obj, correlationId);
     case CMD_RESUME_PHASE:
-      return validateNoPayload(CMD_RESUME_PHASE, obj, correlationId);
+      return validateResumePhasePayload(obj, correlationId);
     case CMD_RESTART_PHASE:
       return validatePhaseIdPayload(CMD_RESTART_PHASE, obj, correlationId);
     case CMD_SKIP_PHASE:
@@ -531,9 +537,6 @@ type NoPayloadType =
   | typeof CMD_CLEAR_FAILED
   | typeof CMD_OPEN_DASHBOARD
   | typeof CMD_RETRY_ACTIVE_RUN
-  | typeof CMD_RETRY_PHASE_NOW
-  | typeof CMD_PAUSE_PHASE
-  | typeof CMD_RESUME_PHASE
   | typeof CMD_OPEN_VERBOSE_SETTING
   | typeof CMD_DISMISS_MIGRATION_NOTICE;
 
@@ -572,62 +575,6 @@ function validateNoPayload(
   return ok({ type, correlationId } as SidebarCommand);
 }
 
-
-// Feature 017 — phase-control commands that carry a single `phaseId` string.
-type PhaseIdCommandType =
-  | typeof CMD_RESTART_PHASE
-  | typeof CMD_SKIP_PHASE
-  | typeof CMD_DISABLE_PHASE
-  | typeof CMD_ENABLE_PHASE;
-
-function validatePhaseIdPayload(
-  type: PhaseIdCommandType,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['phaseId'])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const phaseId = p['phaseId'];
-  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
-    return fail('invalid-phaseId', { type, correlationId });
-  }
-  return ok({ type, correlationId, payload: { phaseId } } as SidebarCommand);
-}
-
-// Feature 028 — phase breakpoint commands carry `{ runId, phaseId }`.
-type PhaseBreakpointCommandType =
-  | typeof CMD_SET_PHASE_BREAKPOINT
-  | typeof CMD_CLEAR_PHASE_BREAKPOINT;
-
-function validatePhaseBreakpointPayload(
-  type: PhaseBreakpointCommandType,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['runId', 'phaseId'])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const runId = p['runId'];
-  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
-    return fail('invalid-runId', { type, correlationId });
-  }
-  const phaseId = p['phaseId'];
-  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
-    return fail('invalid-phaseId', { type, correlationId });
-  }
-  return ok({ type, correlationId, payload: { runId, phaseId } } as SidebarCommand);
-}
 
 function validateSaveModels(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
   const payload = obj['payload'];

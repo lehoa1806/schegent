@@ -122,6 +122,14 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'system-pause-restore-unavailable': 'system',
   // Feature 065 — v6 → v7 state migration (system)
   'state-migrated-v6-to-v7': 'system',
+  // Feature 093 — v10 → v11 Run-record reshape and its repairs (system). The
+  // reassign event names a Run, which normally reads as task scope; it is
+  // system-scoped anyway because it is emitted during `initialize()`, before any
+  // Run is driven, so there is no reachable Run for an Activity Feed entry to
+  // hang off.
+  'state-migrated-v10-to-v11': 'system',
+  'run-reassigned-to-default-queue': 'system',
+  'run-record-repaired': 'system',
   // Feature 072 — task-level execution lifecycle (task)
   'task-execution-started': 'task',
   'task-execution-ended': 'task',
@@ -289,6 +297,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'system-pause-scheduled-restore':
         case 'system-pause-restore-unavailable':
         case 'state-migrated-v6-to-v7':
+        case 'state-migrated-v10-to-v11':
+        case 'run-reassigned-to-default-queue':
+        case 'run-record-repaired':
         case 'task-execution-started':
         case 'task-execution-ended':
         case 'task-execution-paused':

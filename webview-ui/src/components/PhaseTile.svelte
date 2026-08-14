@@ -7,7 +7,8 @@
   // the host's snapshot reports `delayedRetry.pendingRetryAt !== null`
   // (FR-008 hidden-when-not-pending). `nowMs` is a reactive clock the
   // parent ticks every second so the countdown re-renders smoothly.
-  // `onRetryNow` dispatches CMD_RETRY_PHASE_NOW via the parent.
+  // `onRetryNow` is a callback the parent wires to its own confirm-gated
+  // retry handler; the tile never posts a command itself.
   // `retryDisabled` reflects pending-ack state so we cannot fire twice.
   let {
     tile,

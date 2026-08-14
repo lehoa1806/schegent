@@ -217,7 +217,6 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         store: deps.store,
         queue: deps.queue,
         audit: deps.auditWriter,
-        lock: deps.lock,
         notifier: deps.notifier,
         logger: deps.logger,
         taskId: typeof arg?.taskId === 'string' ? arg.taskId : undefined
@@ -313,20 +312,26 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.pausePhase', async () => {
-      const result = await deps.controller.pauseActivePhase();
+    // Feature 093 (FR-018 / T080) — the sidebar always passes the addressed
+    // queue; a human invoking these from the palette passes nothing and the
+    // controller resolves a sole Run, refusing when N are in flight.
+    vscode.commands.registerCommand('schegent.pausePhase', async (queueId?: string) => {
+      const result = await deps.controller.pauseActivePhase(queueId);
       if (!result.ok) {
         deps.notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
       }
     }),
-    vscode.commands.registerCommand('schegent.resumePhase', async (prompt?: string) => {
-      const result = await deps.controller.resumeActivePhase(prompt);
-      if (!result.ok) {
-        deps.notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
+    vscode.commands.registerCommand(
+      'schegent.resumePhase',
+      async (prompt?: string, queueId?: string) => {
+        const result = await deps.controller.resumeActivePhase(prompt, queueId);
+        if (!result.ok) {
+          deps.notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
+        }
       }
-    }),
-    vscode.commands.registerCommand('schegent.restartPhase', async () => {
-      const result = await deps.controller.restartActivePhase();
+    ),
+    vscode.commands.registerCommand('schegent.restartPhase', async (queueId?: string) => {
+      const result = await deps.controller.restartActivePhase(queueId);
       if (!result.ok) {
         deps.notifier.warn(`Schegent: restart phase rejected (${result.reason}).`);
       }

@@ -12,15 +12,17 @@
 // copy, and it would be wrong the moment a Run outlives the queue binding the
 // operator is looking at.
 //
-// One thing these tests deliberately do NOT assert, because the host cannot
-// currently produce it: two *simultaneously persisted* `WorkflowRun` records.
-// `KEYS.run` holds a single run (`workspace-state.ts` `getRun()`/`setRun()`),
-// so a second queue reaching in-flight overwrites the first Run's record even
-// though its per-queue `inFlightId` is correct. The v4 shape makes that gap
-// visible rather than hiding it — a queue whose Run record was overwritten
-// publishes an empty runtime instead of borrowing another queue's Run — and
-// that visibility is what is pinned below. Making `KEYS.run` plural is a
-// further forward-only state migration, outside this feature's task list.
+// Feature 093 (T051) closed the one gap these tests originally recorded as out
+// of reach. `KEYS.run` held a single record, so a second queue reaching
+// in-flight overwrote the first Run's record even though its per-queue
+// `inFlightId` was correct, and the assertions below could only pin that the
+// overwritten queue published an empty runtime rather than borrowing a
+// neighbour's Run. The v10 → v11 migration makes the record a
+// `Record<queueId, WorkflowRun>`, so two simultaneously persisted Runs are now
+// representable and each `setRun` names the queue it belongs to. The isolation
+// property is unchanged and now asserted on the shape that can actually violate
+// it: the key **is** the attribution, and the `featureId` scan it replaces is
+// gone.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs/promises';
@@ -130,7 +132,7 @@ describe('per-queue snapshot isolation — audit lines (T087, FR-051, SC-005)', 
   it('attributes each queue only the lines its own Run wrote', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     await queue.enqueue('task on B', { queueId: QUEUE_B });
-    await store.setRun(sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
 
     const snapshot = project();
     // The tail the host publishes is the workspace feed — it is not partitioned
@@ -151,7 +153,7 @@ describe('per-queue snapshot isolation — audit lines (T087, FR-051, SC-005)', 
   it('never lets one queue read another queue Run as its own', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     await queue.enqueue('task on B', { queueId: QUEUE_B });
-    await store.setRun(sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
 
     const snapshot = project();
     expect(runtimeFor(snapshot, DEFAULT_QUEUE_ID).inFlightRun?.runId).toBe('run-default');
@@ -164,29 +166,40 @@ describe('per-queue snapshot isolation — log tail binding (T088, FR-052)', () 
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     const onB = await queue.enqueue('task on B', { queueId: QUEUE_B });
 
-    await store.setRun(sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
     const attached = runtimeFor(project(), DEFAULT_QUEUE_ID).inFlightRun;
     expect(attached?.runId).toBe('run-default');
 
     // A Run starts in the other queue. The tail an operator had open is
     // addressed by (queueId, runId) — neither of which the new Run changes.
-    await store.setRun(sampleRun({ id: 'run-b', featureId: onB.id }));
+    //
+    // Feature 093 (T051) — under v11 that start is a write to *queue B's* key,
+    // where before the single record left it no queue to name. The default
+    // queue therefore keeps `run-default` instead of losing it, and both
+    // assertions get sharper: it is not that the displaced queue publishes
+    // nothing, it is that neither queue's binding moved.
+    await store.setRun(QUEUE_B, sampleRun({ id: 'run-b', featureId: onB.id }));
     const after = project();
     expect(runtimeFor(after, QUEUE_B).inFlightRun?.runId).toBe('run-b');
 
-    // The default queue's tail does not follow the new Run. It reports no Run
-    // of its own rather than re-pointing at `run-b`, so a feed pinned to
-    // `run-default` reads empty instead of silently showing another queue's
-    // lines — the failure FR-052 exists to prevent.
-    expect(runtimeFor(after, DEFAULT_QUEUE_ID).inFlightRun?.runId).not.toBe('run-b');
-    expect(linesFor(after, DEFAULT_QUEUE_ID)).toEqual([]);
+    // The default queue's tail does not follow the new Run — a feed pinned to
+    // `run-default` still reads `run-default`'s lines and none of `run-b`'s,
+    // which is the failure FR-052 exists to prevent.
+    expect(runtimeFor(after, DEFAULT_QUEUE_ID).inFlightRun?.runId).toBe('run-default');
+    const seeded: readonly AuditTailEntry[] = [
+      { id: 'a', timestamp: '2026-08-12T00:00:00.000Z', phase: null, category: 'phase-start', summary: 'default line', runId: 'run-default', scope: 'run' },
+      { id: 'b', timestamp: '2026-08-12T00:00:01.000Z', phase: null, category: 'phase-start', summary: 'B line', runId: 'run-b', scope: 'run' }
+    ] as unknown as readonly AuditTailEntry[];
+    const withTail = { ...after, auditTail: seeded } as WorkflowSnapshot;
+    expect(linesFor(withTail, DEFAULT_QUEUE_ID).map((entry) => entry.id)).toEqual(['a']);
+    expect(linesFor(withTail, QUEUE_B).map((entry) => entry.id)).toEqual(['b']);
   });
 });
 
 describe('per-queue snapshot isolation — inactive queues (T089, FR-053)', () => {
   it('publishes an empty projection rather than inheriting another queue Run', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
-    await store.setRun(sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
 
     const idle = runtimeFor(project(), QUEUE_B);
     expect(idle.inFlightRun).toBeNull();
@@ -206,7 +219,7 @@ describe('per-queue snapshot isolation — inactive queues (T089, FR-053)', () =
 
   it('does not borrow the other queue phase projection', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
-    await store.setRun(
+    await store.setRun(DEFAULT_QUEUE_ID, 
       sampleRun({
         id: 'run-default',
         featureId: onDefault.id,

@@ -38,7 +38,7 @@ type StoreShape = NonNullable<ConstructorParameters<typeof StateProjector>[0]['s
 
 function makeStoreWithoutAccessor(): StoreShape {
   return {
-    getRun: () => null,
+    getRunMap: () => ({}),
     getQueue: () => EMPTY_QUEUE,
     getLock: () => null,
     subscribe: () => ({ dispose: () => undefined })
@@ -49,7 +49,7 @@ function makeStoreWithAccessor(
   value: ConfirmSuppressionState
 ): StoreShape & Pick<WorkspaceStateStore, 'getConfirmSuppression'> {
   return {
-    getRun: () => null,
+    getRunMap: () => ({}),
     getQueue: () => EMPTY_QUEUE,
     getLock: () => null,
     subscribe: () => ({ dispose: () => undefined }),

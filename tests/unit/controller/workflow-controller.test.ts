@@ -18,6 +18,7 @@ import {
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -125,7 +126,7 @@ describe('SchegentWorkflowController.startNew', () => {
 
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
     expect(runSpy).toHaveBeenCalledTimes(9);
@@ -149,7 +150,7 @@ describe('SchegentWorkflowController.startNew', () => {
 
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline).toBeTruthy();
     expect(run.pipeline?.id).toBe('speckit-new-feature');
     expect(run.pipeline?.name).toBe('Spec-kit New Feature');
@@ -182,7 +183,7 @@ describe('SchegentWorkflowController.startNew', () => {
 
     await agyController.startNew(feature, null);
 
-    const persistedRun = store.getRun()!;
+    const persistedRun = store.getRun(DEFAULT_QUEUE_ID)!;
     const phases = persistedRun.pipeline!.phases;
     expect(persistedRun.defaultRunnerKind).toBe('agy');
     expect(phases.find((phase) => phase.id === 'speckit-specify')?.runner).toBe('claude');
@@ -217,7 +218,7 @@ describe('SchegentWorkflowController.startNew', () => {
 
     await controller.startNew(feature, null, { pipelineId: 'custom-pipe' });
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline?.id).toBe('custom-pipe');
     const snapPhase = run.pipeline?.phases.find((p) => p.id === 'custom-loop');
     expect(snapPhase).toBeTruthy();
@@ -259,7 +260,7 @@ describe('SchegentWorkflowController.startNew', () => {
 
     const clarifyCalls = runSpy.mock.calls.filter((c) => (c[0] as { phase: string }).phase === 'speckit-clarify');
     expect(clarifyCalls.length).toBeGreaterThanOrEqual(2);
-    expect(store.getRun()!.status).toBe('completed');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
   });
 
   it('halts and pauses on rate_limited (Feature 011 — delayed retry path)', async () => {
@@ -282,7 +283,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('paused');
     expect(run.pendingRetryCause).toBe('rate_limit');
     expect(run.delayedRetryCount).toBe(1);
@@ -305,7 +306,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('failed');
     expect(run.lastError).not.toBeNull();
     expect(run.lastError!.code).toBe('invocation-failed');
@@ -317,7 +318,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const feature = await queue.enqueue('feature description');
     await expect(controller.startNew(feature, null)).resolves.toBeUndefined();
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('failed');
     expect(run.lastError).not.toBeNull();
     expect(run.lastError!.code).toBe('unexpected-controller-error');
@@ -331,7 +332,14 @@ describe('SchegentWorkflowController.startNew', () => {
       expect(row.lastError.message).toContain('parser invariant exploded');
       expect(row.lastError.correlationId).toBe(run.id);
     }
-    expect(lock.release).toHaveBeenCalled();
+    // Feature 093 (T068b, FR-028) — was `expect(lock.release).toHaveBeenCalled()`.
+    // The sign is inverted, not the assertion dropped: an unexpected start
+    // failure is a Run-scoped event, and primacy is the window's. With a sibling
+    // Run mid-phase this release ended primacy for both, because
+    // `WorkspaceLockManager.release()` keeps no reference count and both Runs
+    // share the window's owner id. It joins the BUG-005 block below, which
+    // already asserts the same for complete / fail / rate-limit-pause.
+    expect(lock.release).not.toHaveBeenCalled();
   });
 
   it('cancels mid-run when cancelActive is invoked', async () => {
@@ -343,7 +351,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('canceled');
   });
 
@@ -433,7 +441,7 @@ describe('SchegentWorkflowController.startNew', () => {
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, 'specs/001-existing');
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     const task = queue.findById(feature.id)!;
     expect(run.status).toBe('paused');
     expect(run.manualPauseCause).toBe('operator-paused');
@@ -461,7 +469,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
 
     await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline?.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
     expect(run.pipeline?.name).toBe('Spec-kit Bugfix');
     const ids = run.pipeline?.phases.map((p) => p.id) ?? [];
@@ -478,7 +486,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     const feature = await queue.enqueue('bug report');
 
     await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
-    const snapshotBefore = store.getRun()!.pipeline;
+    const snapshotBefore = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     const phasesBefore = snapshotBefore!.phases.map((p) => p.id);
 
     // Replace the controller's catalog with one that defines a DIFFERENT 'speckit-bugfix'
@@ -497,7 +505,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     );
     controller.setCatalog(tamperedCatalog);
 
-    const snapshotAfter = store.getRun()!.pipeline;
+    const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     expect(snapshotAfter).toBe(snapshotBefore);
     expect(snapshotAfter?.name).toBe('Spec-kit Bugfix');
     expect(snapshotAfter?.phases.map((p) => p.id)).toEqual(phasesBefore);
@@ -517,7 +525,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
 
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline?.id).toBe(BUILT_IN_PIPELINE_ID);
     expect(run.pipeline?.id).toBe('speckit-new-feature');
     // BUILT_IN_PIPELINES now ships three pipelines (speckit-new-feature, speckit-bugfix,
@@ -549,7 +557,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     try {
       await controller.startNew(feature, null, { pipelineId: 'pipeline-that-does-not-exist' });
 
-      const run = store.getRun()!;
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
       expect(run.pipeline?.id).toBe(BUILT_IN_PIPELINE_ID);
       expect(warnSpy).toHaveBeenCalled();
       const messages = warnSpy.mock.calls.map((c) => String(c[0]));
@@ -564,7 +572,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
 
 describe('SchegentWorkflowController.resumeExisting', () => {
   it('returns false when no persisted run exists', async () => {
-    const result = await controller.resumeExisting();
+    const result = await controller.resumeExisting(DEFAULT_QUEUE_ID);
     expect(result).toBe(false);
   });
 
@@ -573,13 +581,13 @@ describe('SchegentWorkflowController.resumeExisting', () => {
     runSpy.mockImplementation(async () => makeOutput());
     await controller.startNew(feature, null);
 
-    const result = await controller.resumeExisting();
+    const result = await controller.resumeExisting(DEFAULT_QUEUE_ID);
     expect(result).toBe(false);
   });
 
   it('pins the configured backend when first migrating a pre-074 run', async () => {
     const feature = await queue.enqueue('legacy Codex feature');
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-pre-074-codex',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
@@ -611,9 +619,9 @@ describe('SchegentWorkflowController.resumeExisting', () => {
       { ...opts, defaultRunnerKind: 'codex' }
     );
 
-    expect(await codexController.resumeExisting()).toBe(true);
+    expect(await codexController.resumeExisting(DEFAULT_QUEUE_ID)).toBe(true);
 
-    expect(store.getRun()!.defaultRunnerKind).toBe('codex');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.defaultRunnerKind).toBe('codex');
     expect(runSpy.mock.calls[0][0]).toMatchObject({
       phase: 'speckit-clarify',
       phaseDef: expect.objectContaining({ runner: 'codex' })
@@ -625,7 +633,7 @@ describe('SchegentWorkflowController phase controls', () => {
   it('resumeActivePhase clears manual pause and pending retry state', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-manual',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
@@ -647,7 +655,7 @@ describe('SchegentWorkflowController phase controls', () => {
     });
 
     const result = await controller.resumeActivePhase();
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
 
     expect(result).toEqual({ ok: true });
     expect(run.manualPauseAt).toBeNull();
@@ -659,7 +667,7 @@ describe('SchegentWorkflowController phase controls', () => {
 
   it('restartActivePhase resets iteration and clears current-phase overrides', async () => {
     const feature = await queue.enqueue('feature description');
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-restart',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
@@ -684,7 +692,7 @@ describe('SchegentWorkflowController phase controls', () => {
     });
 
     const result = await controller.restartActivePhase();
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
 
     expect(result).toEqual({ ok: true });
     expect(run.currentIteration).toBe(1);
@@ -695,7 +703,7 @@ describe('SchegentWorkflowController phase controls', () => {
   it('skips disabled phases without mutating the pipeline snapshot', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-disabled',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
@@ -716,12 +724,12 @@ describe('SchegentWorkflowController phase controls', () => {
       resumeTargetPhaseId: null
     });
 
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
 
     const calledPhases = runSpy.mock.calls.map((call) => (call[0] as { phase: string }).phase);
     expect(calledPhases).not.toContain('speckit-clarify');
-    expect(store.getRun()!.phasesCompleted[0].result).toBe('skipped');
-    expect(store.getRun()!.pipeline?.phases.map((phase) => phase.id)).toContain('speckit-clarify');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.phasesCompleted[0].result).toBe('skipped');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.pipeline?.phases.map((phase) => phase.id)).toContain('speckit-clarify');
   });
 });
 
@@ -742,7 +750,7 @@ describe('SchegentWorkflowController — workspace lock release (BUG-005)', () =
 
     await controller.startNew(feature, null);
 
-    expect(store.getRun()!.status).toBe('completed');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
     expect(lock.release).not.toHaveBeenCalled();
   });
 
@@ -762,7 +770,7 @@ describe('SchegentWorkflowController — workspace lock release (BUG-005)', () =
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    expect(store.getRun()!.status).toBe('failed');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('failed');
     expect(lock.release).not.toHaveBeenCalled();
   });
 
@@ -785,7 +793,7 @@ describe('SchegentWorkflowController — workspace lock release (BUG-005)', () =
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
 
-    expect(store.getRun()!.status).toBe('paused');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('paused');
     expect(lock.release).not.toHaveBeenCalled();
   });
 });

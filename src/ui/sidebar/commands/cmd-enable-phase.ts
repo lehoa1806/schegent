@@ -7,6 +7,6 @@ export const handler: CommandHandler<EnablePhaseCommand> = async (ctx, command) 
     await ack(ctx, 'rejected', 'phase-ops-unavailable');
     return;
   }
-  const result = await ctx.deps.phaseOps.enablePhase(command.payload.phaseId);
+  const result = await ctx.deps.phaseOps.enablePhase(command.payload.phaseId, command.payload.queueId);
   await ackGenericResult(ctx, result);
 };

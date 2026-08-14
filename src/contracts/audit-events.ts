@@ -273,6 +273,26 @@ export const SCHEDULE_EVENT_TYPES = [
 // unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
 
+// Feature 093 — emitted by `WorkspaceStateStore.initialize()` (via
+// `migration-audit-forwarder.ts`) when the v10 → v11 reshape turns the singular
+// `KEYS.run` record into the per-queue map, plus one event per repair the
+// migrator had to make on the way. Three types rather than one: the reshape is
+// the record an auditor correlates on, and a Run that had to be reassigned or a
+// record that had to be repaired are separate facts about that same reshape —
+// folding them into the reshape's payload would make "what happened to my Run"
+// depend on parsing a count.
+//
+// Every payload is identifiers, counts and closed reason codes. A queue name is
+// operator-authored content and never reaches the audit log, so `SECRET_PATTERNS`
+// is unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 030 / 065
+// migration-event precedent); historical records lack these events entirely and
+// stay readable under the warn-and-preserve parser discipline.
+export const MIGRATION_V11_EVENT_TYPES = [
+  'state-migrated-v10-to-v11',
+  'run-reassigned-to-default-queue',
+  'run-record-repaired'
+] as const;
+
 // Feature 072 — task-level execution lifecycle events. Bridges the gap
 // between operator-driven queue events (task-enqueued, task-removed, etc.)
 // and system-driven phase events (phase-start, phase-end). Enables the
@@ -367,6 +387,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...QUEUE_FULL_RESET_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
+  ...MIGRATION_V11_EVENT_TYPES,
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
@@ -397,6 +418,7 @@ export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
+export type MigrationV11EventType = (typeof MIGRATION_V11_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
@@ -718,6 +740,13 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated',
     'workflow-run-repaired',
     'state-migrated-v6-to-v7',
+    // Feature 093 — the v10 → v11 reshape and its repairs. System-scoped even
+    // though `run-reassigned-to-default-queue` names a Run: it is emitted before
+    // any Run is driven, so the runId it carries has no reachable Run behind it
+    // yet and an Activity Feed entry would hang off nothing.
+    'state-migrated-v10-to-v11',
+    'run-reassigned-to-default-queue',
+    'run-record-repaired',
     // Feature 065 — scheduled-start lifecycle / idle-pending transitions
     'scheduled-start-armed',
     'scheduled-start-fired',

@@ -8,10 +8,13 @@
 // recomputed here, so there is no second place a phase list or a retry count
 // could be derived differently.
 //
-// The ownership rule is a lookup, not an inference: the Run names a Task
-// (`run.featureId`), and exactly one queue holds that Task's row. A queue that
-// does not hold it publishes the empty projection FR-053 requires — never the
-// owning queue's Run, and never a fabricated stand-in.
+// The ownership rule is a lookup, not an inference. Feature 093 (T051) made it
+// a direct one: the Run record is keyed by queue, so the key *is* the
+// attribution and there is nothing left to resolve. The scan it replaces —
+// "which queue holds a row whose id matches `run.featureId`" — existed only
+// because the record had no key to ask; with N Runs it would also have to be run
+// N times per queue. A queue that owns no Run publishes the empty projection
+// FR-053 requires: never a sibling queue's Run, and never a fabricated stand-in.
 
 import type { FeatureRequest } from '../../queue/feature-request';
 import type { WorkflowRun } from '../../state/workflow-run';
@@ -30,10 +33,18 @@ import type {
   WorkflowStatus
 } from './snapshot';
 
-export interface QueueRuntimeComposerContext {
-  /** The registry read the queue projector already performed, in position order. */
-  readonly summaries: readonly QueueSummary[];
-  readonly run: WorkflowRun | null;
+/**
+ * Feature 093 (T051) — every run-scoped reading for one queue's Run, computed
+ * by the projector and handed in whole.
+ *
+ * One bundle per queue replaces the eight flat fields this context carried while
+ * a window had one Run. They travel together because they are one Run's
+ * readings: splitting them back out would let a caller pass queue A's phases
+ * beside queue B's elapsed time, which is exactly the interleaving the per-queue
+ * projection exists to stop.
+ */
+export interface QueueRunProjection {
+  readonly run: WorkflowRun;
   readonly status: WorkflowStatus;
   readonly phases: readonly PhaseTile[];
   readonly activePipeline: ActivePipelineSummary | null;
@@ -42,6 +53,13 @@ export interface QueueRuntimeComposerContext {
   readonly delayedRetry: DelayedRetryState;
   readonly outputs: readonly RunOutputRecord[];
   readonly activeFeature: ActiveFeatureSummary | null;
+}
+
+export interface QueueRuntimeComposerContext {
+  /** The registry read the queue projector already performed, in position order. */
+  readonly summaries: readonly QueueSummary[];
+  /** The Run this queue owns and its readings, or `null` when it owns none. */
+  readonly runOf: (queueId: string) => QueueRunProjection | null;
   readonly lifecycleOf: (queueId: string) => QueueLifecycle;
   readonly requestsOf: (queueId: string) => readonly FeatureRequest[];
   /**
@@ -81,17 +99,17 @@ function emptyRuntime(
   });
 }
 
-function projectInFlightRun(ctx: QueueRuntimeComposerContext, run: WorkflowRun): InFlightRunProjection {
+function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjection {
   return Object.freeze({
-    runId: run.id,
-    status: ctx.status,
-    feature: ctx.activeFeature,
-    pipeline: ctx.activePipeline,
-    elapsedMs: ctx.elapsedMs,
-    liveActivity: ctx.liveActivity,
-    delayedRetry: ctx.delayedRetry,
-    resumeTargetPhaseId: run.resumeTargetPhaseId ?? null,
-    outputs: Object.freeze(ctx.outputs.slice())
+    runId: projection.run.id,
+    status: projection.status,
+    feature: projection.activeFeature,
+    pipeline: projection.activePipeline,
+    elapsedMs: projection.elapsedMs,
+    liveActivity: projection.liveActivity,
+    delayedRetry: projection.delayedRetry,
+    resumeTargetPhaseId: projection.run.resumeTargetPhaseId ?? null,
+    outputs: Object.freeze(projection.outputs.slice())
   });
 }
 
@@ -121,25 +139,22 @@ function projectBreakpoints(run: WorkflowRun): QueueRuntime['phaseBreakpoints'] 
 }
 
 export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly QueueRuntime[] {
-  const run = ctx.run;
   return Object.freeze(
     ctx.summaries.map((summary) => {
       const requests = ctx.requestsOf(summary.id);
       const pendingCount = requests.filter((request) => request.status === 'pending').length;
       const lifecycle = ctx.lifecycleOf(summary.id);
       const tasks = Object.freeze((ctx.rowsOf?.(summary.id) ?? []).slice());
-      // Ownership by Task row, not by `inFlightId`: a Run whose Task has already
-      // left the in-flight slot (completed, failed) still belongs to the queue
-      // that ran it, and the operator is still looking at its result.
-      const owns = run !== null && requests.some((request) => request.id === run.featureId);
-      if (!owns) return emptyRuntime(summary, lifecycle, pendingCount, tasks);
+      const projection = ctx.runOf(summary.id);
+      if (projection === null) return emptyRuntime(summary, lifecycle, pendingCount, tasks);
+      const run = projection.run;
       return Object.freeze({
         queueId: summary.id,
         name: summary.name,
         position: summary.position,
         lifecycle,
-        inFlightRun: projectInFlightRun(ctx, run),
-        phases: Object.freeze(ctx.phases.map((phase) => Object.freeze(phase))),
+        inFlightRun: projectInFlightRun(projection),
+        phases: Object.freeze(projection.phases.map((phase) => Object.freeze(phase))),
         phaseOverrides: Object.freeze(
           (run.phaseOverrides ?? []).map((override) =>
             Object.freeze({ phaseId: override.phaseId, action: override.action })

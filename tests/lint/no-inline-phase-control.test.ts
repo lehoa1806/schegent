@@ -9,6 +9,13 @@ const PHASE_CONTROL_CONSTANTS = [
   'CMD_PAUSE_PHASE',
   'CMD_RESUME_PHASE',
   'CMD_RESTART_PHASE'
+  // Feature 093 (T080) considered adding CMD_RETRY_PHASE_NOW here and did not:
+  // it is a destructive command, and `destructive-actions.lint.test.ts` requires
+  // its dispatch to share a scope with the `useConfirm` that gates it. Routing
+  // it through the shared helper would put the two in different modules and
+  // defeat that gate, which is the stronger of the two invariants. Its queue
+  // cannot go missing regardless — `PhaseTracker.svelte` takes it as a required
+  // prop and the payload type demands it.
 ] as const;
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([

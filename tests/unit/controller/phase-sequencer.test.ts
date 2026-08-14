@@ -167,7 +167,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('pause-breakpoint');
@@ -195,7 +195,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('pause-delayed-retry');
@@ -218,7 +218,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('pause-delayed-retry');
@@ -250,7 +250,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     // The outcome 'rate_limited' maps to a paused halt with cause
@@ -279,7 +279,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('fail');
@@ -303,7 +303,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('fail');
@@ -325,7 +325,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('fail');
@@ -371,7 +371,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
         iteration: 3,
         iterationCap: 5,
         activePhaseDef,
-        latestRun: run,
+        latestManualPauseAt: run.manualPauseAt,
         now: NOW
       });
 
@@ -420,7 +420,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: run.pipeline?.phases[0],
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
 
@@ -452,7 +452,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
         retryCondition: 'remaining > 0',
         contributesTo: []
       } as never,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('fail');
@@ -479,7 +479,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('pause-verify');
@@ -505,7 +505,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('pause-verify');
@@ -523,19 +523,14 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('advance-or-loop');
   });
 
-  it('routes manual-pause-mid-run detection: latestRun.manualPauseAt set', () => {
+  it('routes manual-pause-mid-run detection: latestManualPauseAt set', () => {
     const run = makeRun({ currentPhase: 'speckit-plan' });
-    const latestRun = makeRun({
-      currentPhase: 'speckit-plan',
-      manualPauseAt: NOW,
-      manualPauseCause: 'operator-paused'
-    });
     const output = makeOutput({
       result: { kind: 'clean', auditEntry: { metrics: {} } as never },
       outcome: 'clean'
@@ -546,7 +541,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun,
+      latestManualPauseAt: NOW,
       now: NOW
     });
     expect(decision.kind).toBe('pause-manual');
@@ -555,31 +550,21 @@ describe('PhaseSequencer.decideAfterPhase', () => {
     }
   });
 
-  it('does not route to pause-manual when latestRun.id mismatches', () => {
-    const run = makeRun({ currentPhase: 'speckit-plan', id: 'run-1' });
-    const latestRun = makeRun({
-      id: 'run-2',
-      currentPhase: 'speckit-plan',
-      manualPauseAt: NOW,
-      manualPauseCause: 'operator-paused'
-    });
-    const output = makeOutput({
-      result: { kind: 'clean', auditEntry: { metrics: {} } as never },
-      outcome: 'clean'
-    });
-    const decision = sequencer.decideAfterPhase({
-      run,
-      output,
-      iteration: 1,
-      iterationCap: 5,
-      activePhaseDef: undefined,
-      latestRun,
-      now: NOW
-    });
-    expect(decision.kind).toBe('advance-or-loop');
-  });
+  // Feature 093 (T040) — a third case used to sit here: "does not route to
+  // pause-manual when latestRun.id mismatches", which handed the sequencer a
+  // *different* Run's snapshot and asserted it was ignored. That case is now
+  // unrepresentable rather than untested. `PostPhaseInputs.latestManualPauseAt`
+  // is a `number | null`, so there is no longer any way to express "some other
+  // Run's pause timestamp" at this boundary — which is the whole point of the
+  // narrowing, and re-encoding the old test would only assert that a non-null
+  // timestamp pauses, contradicting the case above.
+  //
+  // The identity reconciliation it was really testing did not disappear; it
+  // moved to the one caller that can answer it, `RunDriver.latestSnapshotOf()`.
+  // Its replacement coverage lives in
+  // `tests/unit/services/run-driver-manual-pause-identity.test.ts`.
 
-  it('does not route to pause-manual when latestRun is null', () => {
+  it('does not route to pause-manual when latestManualPauseAt is null', () => {
     const run = makeRun({ currentPhase: 'speckit-plan' });
     const output = makeOutput({
       result: { kind: 'clean', auditEntry: { metrics: {} } as never },
@@ -591,7 +576,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: null,
+      latestManualPauseAt: null,
       now: NOW
     });
     expect(decision.kind).toBe('advance-or-loop');
@@ -609,7 +594,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 1,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     expect(decision.kind).toBe('advance-or-loop');
@@ -639,7 +624,7 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       iteration: 5,
       iterationCap: 5,
       activePhaseDef: undefined,
-      latestRun: run,
+      latestManualPauseAt: run.manualPauseAt,
       now: NOW
     });
     // iteration cap → force-advance, transition emits a warning.
