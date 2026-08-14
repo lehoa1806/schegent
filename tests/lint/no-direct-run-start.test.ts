@@ -78,8 +78,18 @@ const START_PATH_ENTRANCES: readonly string[] = [
 // an enqueue seam rather than a start seam, so FR-034's queue-identification
 // obligation does not reach them, but a new caller appearing among them is still
 // a change to the start surface that someone has to look at.
-const SEAM_CALL_PATTERNS: readonly string[] = [
+// Feature 093 (T049a) — `admitNew` is the same seam as `startNew` with the
+// drive handed back instead of awaited, so it is guarded on identical terms.
+// Listing only `startNew` would leave a caller one word away from the gate:
+// `controller.admitNew(feature, null)` starts a Run exactly as `startNew` does,
+// and a file reaching it would have matched nothing here.
+const START_SEAM_METHODS: readonly string[] = [
   'controller\\.startNew(',
+  'controller\\.admitNew('
+];
+
+const SEAM_CALL_PATTERNS: readonly string[] = [
+  ...START_SEAM_METHODS,
   'drainIfIdle(',
   'applyStartQueueIntent(',
   'scheduleOrEnqueue(',
@@ -139,12 +149,12 @@ describe('Feature 013 T033 — no direct queue.enqueue / controller.startNew', (
     ).toEqual([]);
   });
 
-  it('only the allowlisted files reference controller.startNew(', () => {
-    const matched = listMatchingFiles('controller\\.startNew(');
+  it.each(START_SEAM_METHODS)('only the allowlisted files reference %s', (pattern) => {
+    const matched = listMatchingFiles(pattern);
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(
       offenders,
-      `Files calling controller.startNew(...) outside the allowlist must go through GuardedRunService.\nOffenders:\n${offenders.join('\n')}`
+      `Files calling ${pattern.replace(/\\/g, '')}...) outside the allowlist must go through GuardedRunService.\nOffenders:\n${offenders.join('\n')}`
     ).toEqual([]);
   });
 

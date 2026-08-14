@@ -10,6 +10,7 @@ import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow-run';
 import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 import type { Memento } from '../../../src/state/workspace-state';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -79,6 +80,8 @@ let queue: QueueManager;
 let phaseRunner: PhaseRunner;
 let controller: SchegentWorkflowController;
 let auditWriter: { append: ReturnType<typeof vi.fn> };
+/** The `RunDriver` on the default queue's session — see the note in beforeEach. */
+let activeDriver: { noteActivePhaseOverrideAbort: (runId: string, phaseId: string) => void };
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -102,8 +105,20 @@ beforeEach(async () => {
   
   // Observe the real injected collaborator instead of replacing it after the
   // phase-control service has captured the dependency.
-  vi.spyOn((controller as any).runDriver, 'noteActivePhaseOverrideAbort')
-    .mockImplementation(() => undefined);
+  //
+  // Feature 093 (T042) — the driver is per-queue now, so the collaborator the
+  // phase controls reach lives on the session for the Run's queue rather than on
+  // a window-wide `controller.runDriver` field. These tests seed a `running` Run
+  // directly, which in production always implies a live session driving it, so
+  // the harness creates the session that state implies and spies on its real
+  // driver. Without it the `sessions.peek(queueId)?.driver` seam would find no
+  // session and silently no-op, which is correct for a queue that is not
+  // executing and wrong as a stand-in for one that is.
+  activeDriver = (controller as any).sessions.acquire(DEFAULT_QUEUE_ID).driver;
+  vi.spyOn(activeDriver, 'noteActivePhaseOverrideAbort').mockImplementation(() => undefined);
+  // `cancelActive` and `resumeExisting` stay controller-level: the phase-control
+  // service captured bound closures that dispatch through `this`, so replacing
+  // the methods is still observed at the call site.
   (controller as any).cancelActive = vi.fn();
   (controller as any).resumeExisting = vi.fn(async () => {});
 });
@@ -149,7 +164,7 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(run);
+  await store.setRun(DEFAULT_QUEUE_ID, run);
   return { feature, run };
 }
 
@@ -159,8 +174,8 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     const result = await controller.skipPhase('speckit-clarify');
     expect(result).toEqual({ ok: true });
     
-    // Check that runDriver.noteActivePhaseOverrideAbort was called
-    expect((controller as any).runDriver.noteActivePhaseOverrideAbort).toHaveBeenCalledWith('run-skip-1', 'speckit-clarify');
+    // Check that the queue's driver was told to abort the overridden phase
+    expect(activeDriver.noteActivePhaseOverrideAbort).toHaveBeenCalledWith('run-skip-1', 'speckit-clarify');
     
     // Check that cancelActive was called
     expect((controller as any).cancelActive).toHaveBeenCalled();
@@ -186,7 +201,7 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     const result = await controller.skipPhase('finalize');
     expect(result).toEqual({ ok: true });
     
-    expect((controller as any).runDriver.noteActivePhaseOverrideAbort).toHaveBeenCalledWith('run-skip-1', 'finalize');
+    expect(activeDriver.noteActivePhaseOverrideAbort).toHaveBeenCalledWith('run-skip-1', 'finalize');
     expect((controller as any).cancelActive).toHaveBeenCalled();
   });
 
@@ -203,7 +218,7 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     
     // The paused run is resumed and dispatch is scheduled so the override is
     // evaluated by the engine.
-    expect(store.getRun()).toMatchObject({
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toMatchObject({
       status: 'running',
       manualPauseAt: null,
       manualPauseCause: null
@@ -217,7 +232,7 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     const result = await controller.skipPhase('speckit-clarify');
     expect(result).toEqual({ ok: true });
     
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('running');
     expect(run.lastError).toBeNull();
     // pipeline woke up via resumeExisting

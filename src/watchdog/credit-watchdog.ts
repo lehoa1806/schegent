@@ -87,7 +87,7 @@ export class CreditWatchdog {
       lastStatusOk: null,
       cause
     });
-    this.statusBar.update({ kind: 'paused', nextPollAt });
+    this.statusBar.updateWindow({ kind: 'paused', nextPollAt });
     this.logger.info(
       `watchdog: pausing run (${cause}); delayMs=${delay} (pollIntervalMs=${this.pollIntervalMs})`
     );
@@ -115,7 +115,7 @@ export class CreditWatchdog {
     const state = this.store.getWatchdog();
     if (!state.paused || !state.nextPollAt) return;
     const delay = Math.max(0, state.nextPollAt - Date.now());
-    this.statusBar.update({ kind: 'paused', nextPollAt: state.nextPollAt });
+    this.statusBar.updateWindow({ kind: 'paused', nextPollAt: state.nextPollAt });
     this.scheduleNext(delay);
   }
 
@@ -152,6 +152,10 @@ export class CreditWatchdog {
           cause: null
         });
         this.logger.info('watchdog: delayed-retry backoff elapsed — resuming without /status');
+        // Feature 093 (T050) — the window-level pause outranks the per-Run
+        // aggregate, so it has to be given back or the bar stays `paused` while
+        // Runs execute. Before the split, the next driver update overwrote it.
+        this.statusBar.updateWindow(null);
         await this.onResume();
         return;
       }
@@ -176,6 +180,7 @@ export class CreditWatchdog {
           cause: null
         });
         this.logger.info('watchdog: credits restored — resuming');
+        this.statusBar.updateWindow(null);
         await this.onResume();
       } else {
         const nextPollAt = Date.now() + this.pollIntervalMs;
@@ -185,7 +190,7 @@ export class CreditWatchdog {
           nextPollAt,
           lastStatusOk: false
         });
-        this.statusBar.update({ kind: 'paused', nextPollAt });
+        this.statusBar.updateWindow({ kind: 'paused', nextPollAt });
         this.scheduleNext(this.pollIntervalMs);
       }
     } catch (err) {

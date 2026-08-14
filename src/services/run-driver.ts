@@ -167,6 +167,30 @@ export class RunDriver {
     return this.deps.options.cliPath;
   }
 
+  /**
+   * Feature 093 (T039) — pattern C-2. The latest persisted snapshot **of the
+   * Run this driver is advancing**, or `null` if that Run is no longer the one
+   * on its queue.
+   *
+   * The three reads this replaces asked the store "what is running?" and took
+   * whatever occupied the single slot. Every one of them feeds its answer
+   * straight back into this Run's next write, so under N Runs the ambient form
+   * would have merged a sibling's phase, iteration, and completed-phase list
+   * into this Run's record — a corruption with no error attached to it.
+   *
+   * Addressing by the Run's own Task is the same answer the queue would give
+   * and needs nothing threaded in; T041 hands the session its queue at
+   * construction and the resolution moves there. The identity check lives here
+   * rather than at the three call sites so there is one place that decides what
+   * "still mine" means: `deleteTask` can cancel this Run and let the drain start
+   * a successor on the same queue while this driver is mid-flight, and the
+   * successor is not a newer snapshot of this Run.
+   */
+  private latestSnapshotOf(run: WorkflowRun): WorkflowRun | null {
+    const found = this.deps.store.findRunByTask(run.featureId);
+    return found !== null && found.run.id === run.id ? found.run : null;
+  }
+
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
     if (this.isRunning) {
       this.deps.logger.warn('controller already running; ignoring duplicate driveRun');
@@ -236,7 +260,7 @@ export class RunDriver {
                 runId: run.id
               });
             }
-            this.deps.statusBar.update({
+            this.deps.statusBar.update(run.id, {
               kind: 'failed',
               phase: run.currentPhase,
               detail: failureMessage
@@ -339,7 +363,7 @@ export class RunDriver {
         }
 
         const iteration = preDecision.iteration;
-        this.deps.statusBar.update({
+        this.deps.statusBar.update(run.id, {
           kind: 'running',
           phase: run.currentPhase,
           iteration,
@@ -442,8 +466,8 @@ export class RunDriver {
             this.phaseOverrideAbortKey(run.id, run.currentPhase)
           )
         ) {
-          const latestRun = this.deps.store.getRun();
-          if (latestRun?.id === run.id) {
+          const latestRun = this.latestSnapshotOf(run);
+          if (latestRun !== null) {
             run = latestRun;
           }
           this.cancellationController = new AbortController();
@@ -469,7 +493,7 @@ export class RunDriver {
           iteration,
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
-          latestRun: this.deps.store.getRun(),
+          latestManualPauseAt: this.latestSnapshotOf(run)?.manualPauseAt ?? null,
           now: Date.now()
         });
         for (const w of postDecision.warnings) {
@@ -497,7 +521,7 @@ export class RunDriver {
             phaseId: consumedPhaseId,
             cause: 'consumed-by-fire'
           });
-          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          this.deps.statusBar.update(run.id, { kind: 'paused', phase: run.currentPhase });
           const feature = this.deps.queue.findById(run.featureId);
           const queueId = feature?.queueId ?? null;
           if (queueId) {
@@ -572,7 +596,7 @@ export class RunDriver {
             phasesCompleted: [...run.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(run, paused);
-          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          this.deps.statusBar.update(run.id, { kind: 'paused', phase: run.currentPhase });
           await this.deps.retryCoordinator.handleRateLimitPause(postDecision.cause, run);
           // Pause-style exit (T136): paused on a rate limit, resumed when the
           // backoff elapses. Nothing to retain — see the breakpoint exit above.
@@ -606,7 +630,7 @@ export class RunDriver {
           };
           run = await this.deps.persistTransition(run, failed);
           await this.deps.emitRunEndedBreakpointAudit(run);
-          this.deps.statusBar.update({
+          this.deps.statusBar.update(run.id, {
             kind: 'failed',
             phase: run.currentPhase,
             detail: sanitized.message
@@ -667,7 +691,7 @@ export class RunDriver {
             runId: run.id,
             phaseId: run.currentPhase
           });
-          this.deps.statusBar.update({ kind: 'paused', phase: run.currentPhase });
+          this.deps.statusBar.update(run.id, { kind: 'paused', phase: run.currentPhase });
           // Pause-style exit (T136): an operator or policy pause on the active
           // phase, resumed by an explicit resume. Nothing to retain — see the
           // breakpoint exit above.
@@ -680,7 +704,20 @@ export class RunDriver {
 
         if (postDecision.kind === 'pause-manual') {
           const decision = postDecision.transition;
-          const latestRun = this.deps.store.getRun()!;
+          // Feature 093 (T039) — was `store.getRun()!`. The assertion held only
+          // because the single slot was necessarily this Run; addressed by Task,
+          // a null answer means this Run is no longer the one on its queue
+          // (`deleteTask` canceled it and the drain started a successor). The
+          // old read would have merged the successor's phase, iteration, and
+          // completed-phase list into this pause write. There is nothing left to
+          // pause, so the loop exits the same way every other pause branch does.
+          const latestRun = this.latestSnapshotOf(run);
+          if (latestRun === null) {
+            this.deps.logger.warn(
+              `manual pause skipped: run ${run.id} is no longer active on its queue`
+            );
+            break;
+          }
           const paused: WorkflowRun = {
             ...latestRun,
             // The invocation just completed after the operator's pause
@@ -706,7 +743,7 @@ export class RunDriver {
             nextPhaseId: run.currentPhase,
             nextIteration: run.currentIteration
           });
-          this.deps.statusBar.update({ kind: 'paused', phase: phaseResult.phase });
+          this.deps.statusBar.update(run.id, { kind: 'paused', phase: phaseResult.phase });
           // Pause-style exit (T136): paused after a phase completed, with the
           // next phase and iteration already recorded for the resume. Nothing to
           // retain — see the breakpoint exit above.
@@ -784,7 +821,7 @@ export class RunDriver {
         };
         run = await this.deps.persistTransition(run, completed);
         await this.deps.emitRunEndedBreakpointAudit(run);
-        this.deps.statusBar.update({ kind: 'completed' });
+        this.deps.statusBar.update(run.id, { kind: 'completed' });
         this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
         try {
           await this.deps.queue.finish(run.featureId, 'completed');
@@ -929,7 +966,7 @@ export class RunDriver {
     this.deps.logger.error(
       'run-driver: execution stopped because required structured audit evidence is unavailable'
     );
-    this.deps.statusBar.update({
+    this.deps.statusBar.update(failed.id, {
       kind: 'failed',
       phase: failed.currentPhase,
       detail: message

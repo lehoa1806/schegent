@@ -96,6 +96,7 @@ import type { InvocationRequest, RawInvocationOutput } from '../../../src/runner
 import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -264,7 +265,15 @@ async function makeHarness(
 ): Promise<Harness> {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot }, logger);
-  const transcript = new RawTranscriptWriter(workspaceRoot, logger);
+  // Feature 093 (T082) — per-harness spool root; see the note in
+  // `tests/integration/verbose-logging.test.ts`. The default `os.tmpdir()` is
+  // scavenged with one `readdir` per instance and this harness builds one per
+  // test.
+  const transcript = new RawTranscriptWriter(
+    workspaceRoot,
+    logger,
+    path.join(workspaceRoot, 'raw-spool')
+  );
   let cliCancels = 0;
   const runner = {
     invoke: vi.fn(invoke),
@@ -464,7 +473,7 @@ async function runToCompletion(variant: Variant): Promise<Observed> {
 
   await harness.controller.startNew(feature, null);
 
-  const run = harness.store.getRun()!;
+  const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
   const connected = harness.store.getConnectedRun(CONNECTED_RUN_ID);
   return {
     audit: await readAuditShapes(workspaceRoot),
@@ -596,7 +605,7 @@ describe('cancelling a composed run behaves as cancelling any other (FR-037)', (
     release();
     await driving;
 
-    const run = harness.store.getRun()!;
+    const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     return {
       status: run.status,
       phasesCompleted: run.phasesCompleted.map(

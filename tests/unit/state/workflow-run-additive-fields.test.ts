@@ -78,7 +78,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
 
   it('injects neither runInputs nor runOutputs', async () => {
     const { store } = await seededStore();
-    const run = store.getRun();
+    const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
     for (const key of RUN_KEYS) {
       expect(run, `${key} must not be injected on read`).not.toHaveProperty(key);
@@ -96,7 +96,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
 
   it('returns the persisted Run and queue byte-for-byte', async () => {
     const { store, fixture } = await seededStore();
-    expect(store.getRun()).toEqual(fixture[KEYS.run]);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(fixture[KEYS.run]);
     expect(store.getQueue().requests).toEqual(
       (fixture[KEYS.queue] as { requests: readonly unknown[] }).requests
     );
@@ -106,12 +106,18 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     // The read side proves nothing if the write side then adds the keys. This
     // round-trips through the real setter, which is the path a drain takes.
     const { store, memento, fixture } = await seededStore();
-    const run = store.getRun();
+    const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
 
-    expect(JSON.stringify(memento.get(KEYS.run))).toBe(JSON.stringify(fixture[KEYS.run]));
+    // Feature 093 (T027) — the byte comparison is against the Run under its
+    // queue, because the record is now a map. Comparing the whole map to the
+    // pre-feature fixture would only ever assert the reshape happened, which
+    // `run-state-migrator-v10-to-v11.test.ts` already owns; the claim here is
+    // that a write through the real setter adds no field to the Run itself.
+    const persisted = memento.get<Record<string, unknown>>(KEYS.run);
+    expect(JSON.stringify(persisted?.[DEFAULT_QUEUE_ID])).toBe(JSON.stringify(fixture[KEYS.run]));
   });
 
   it('re-persists every queue item with the same fields it was read with', async () => {
@@ -139,10 +145,10 @@ describe('a Run and a queue item built without the new fields serialize without 
     // does not, and neither does a memento that stores the object as-is. Pinning
     // the key set is what makes "written only when present" checkable.
     const { store, memento } = await seededStore();
-    const run = store.getRun();
+    const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     const stored = memento.get<WorkflowRun>(KEYS.run);
     if (stored === undefined) throw new Error('setRun must persist');
     for (const key of RUN_KEYS) {

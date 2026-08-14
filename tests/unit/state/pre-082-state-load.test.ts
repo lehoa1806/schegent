@@ -22,6 +22,7 @@ import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../../../src/cont
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { snapshotPipelineContract } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 
@@ -88,14 +89,14 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
 
   it('returns the persisted pipeline contract byte-for-byte', async () => {
     const { store, fixture } = await seededStore();
-    const run = store.getRun();
+    const run = store.getRun(DEFAULT_QUEUE_ID);
     const persisted = (fixture[KEYS.run] as { pipeline: unknown }).pipeline;
     expect(run?.pipeline).toEqual(persisted);
   });
 
   it('injects none of the fields feature 082 added', async () => {
     const { store } = await seededStore();
-    const pipeline = store.getRun()?.pipeline;
+    const pipeline = store.getRun(DEFAULT_QUEUE_ID)?.pipeline;
     if (pipeline === undefined) throw new Error('fixture must persist a Run carrying a pipeline');
     expect(Object.keys(pipeline).sort()).toEqual(['id', 'name', 'phases']);
     for (const key of FEATURE_082_PIPELINE_KEYS) {
@@ -110,19 +111,27 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
   });
 
   it('rewrites nothing when the same state is loaded twice', async () => {
+    // Feature 093 (T027) — the persisted shape moved, so the assertion reads
+    // one level deeper. The claim is unchanged and is still the one worth
+    // making: the v10 → v11 reshape happens **once**, on the first load, and a
+    // second load of an already-reshaped record is a no-op. Comparing the
+    // entry under its queue against the pre-feature fixture keeps the
+    // byte-for-byte half honest — the reshape moved the Run, it did not edit it.
     const { memento, fixture } = await seededStore();
-    const afterFirst = JSON.stringify(memento.get<WorkflowRun>(KEYS.run));
+    const afterFirst = JSON.stringify(memento.get<Record<string, WorkflowRun>>(KEYS.run));
     const second = new WorkspaceStateStore(memento);
     await second.initialize();
-    expect(JSON.stringify(memento.get<WorkflowRun>(KEYS.run))).toBe(afterFirst);
-    expect(memento.get<WorkflowRun>(KEYS.run)).toEqual(fixture[KEYS.run]);
+    expect(JSON.stringify(memento.get<Record<string, WorkflowRun>>(KEYS.run))).toBe(afterFirst);
+    const persisted = memento.get<Record<string, WorkflowRun>>(KEYS.run);
+    expect(Object.keys(persisted ?? {})).toEqual([DEFAULT_QUEUE_ID]);
+    expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual(fixture[KEYS.run]);
   });
 
   it('re-snapshotting a legacy definition reproduces the persisted shape', async () => {
     // The write side of the same claim: a Pipeline that declares no contract
     // fields must serialize to exactly what the fixture already holds.
     const { store } = await seededStore();
-    const persisted = store.getRun()?.pipeline as {
+    const persisted = store.getRun(DEFAULT_QUEUE_ID)?.pipeline as {
       id: string;
       name: string;
       phases: readonly PhaseDef[];

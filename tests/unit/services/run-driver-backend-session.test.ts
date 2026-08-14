@@ -62,7 +62,11 @@ describe('RunDriver backend-scoped sessions', () => {
           .mockResolvedValueOnce(cleanOutput('session-from-first'))
           .mockResolvedValueOnce(cleanOutput('session-from-second'))
       },
-      store: { getRun: vi.fn().mockReturnValue(null) },
+      // Feature 093 (T039/T040) — the driver resolves the persisted snapshot by
+      // the Run's own Task instead of reading the one ambient slot. This
+      // harness's `getRun` answered `null`, so its replacement answers `null`
+      // too: no persisted snapshot, which is all these session tests need.
+      store: { findRunByTask: vi.fn(() => null) },
       // `findById` is asked for the frozen plan's declared outputs at completion
       // (Feature 091, T011). No plan here means nothing is recorded.
       queue: { finish: vi.fn(), findById: vi.fn(() => null) },

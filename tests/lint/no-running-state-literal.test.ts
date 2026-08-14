@@ -29,6 +29,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // P4 extraction — owns phase mutation policy and therefore transitions a
   // resumed/restarted phase back to the canonical running workflow status.
   'src/controller/phase-control-service.ts',
+  // Feature 093 — the per-queue driving context. Reads `driver.running`, the
+  // boolean accessor that reports whether a session is mid-drive, in the one
+  // place that decides whether a session may be disposed. Same reason
+  // `src/services/auto-drain-coordinator.ts` and `src/commands/clear-all.ts`
+  // are here: a property name that shares the substring, never the pinned
+  // per-task status discriminator. The terminal statuses this module *does*
+  // compare against come from `isTerminalRunStatus`, so it names none of them.
+  'src/controller/run-session.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',
@@ -62,6 +70,12 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/state/workspace-state.ts',
   'src/state/workflow-run.ts',
   'src/state/workflow-run-migrator.ts',
+  // Feature 093 — the v10 → v11 run-record reshape. `RUN_STATUSES` enumerates
+  // the `WorkflowRunStatus` union so `isWorkflowRun` can tell a persisted Run
+  // from an unreadable record, which is the same pinned status projection
+  // `src/state/workflow-run-migrator.ts` above is here for; a migrator that
+  // could not name the statuses could not recognise the shape it migrates.
+  'src/state/run-state-migrator.ts',
   'src/telemetry/platform/platform-ps.ts',
   'src/telemetry/platform/platform-windows.ts',
   'src/ui/sidebar/phase-projector.ts',

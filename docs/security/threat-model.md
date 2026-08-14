@@ -397,7 +397,9 @@ Queues are independent for scheduling, pausing, projection and audit attribution
 
 Two tasks that touch the same files will interleave their edits. This is a risk *reduction* boundary, not a guarantee of isolation: per-queue attribution in the audit log and per-run session trees make it possible to determine after the fact which run wrote what, which is a different property from preventing the write. Operators partitioning work across queues own the conflict resolution; this is stated in [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
 
-The current run engine drives one `WorkflowRun` at a time and the drainer gates on it, so the interleaving window today is between successive runs rather than within a pair of simultaneous ones. That is a property of the engine, not of the queue model, and it narrows the exposure without removing it.
+Feature 093 removed the narrowing that used to apply here. The run engine drove one `WorkflowRun` at a time and the drainer gated on it, so the interleaving window was between successive runs; it now holds one Run per queue, and up to `schegent.queue.globalConcurrencyCap` Runs edit the shared tree at the same time. The exposure is unchanged in kind and wider in window: interleaving is now *within* a pair of simultaneous runs, and the cap is the only thing bounding how many can contend. Operators who need the narrower window set the cap to `1`.
+
+One consequence is mitigated in-product rather than left to the operator: a recovery checkpoint is a `git diff HEAD` of the shared tree, so under concurrency it would capture a sibling Run's uncommitted work and present it as restorable. `RunCheckpointService` declines the snapshot whenever more than one Run is in flight, writing a `.declined.json` marker (reason `concurrent-runs-share-one-worktree`, `restorable: false`) and **no** `.patch` — there is no in-product restore path, so the write side is the only place the guarantee can be made. A decline is recorded, not silent, and does not block the phase.
 
 ### T15 — Phase-message env injection
 

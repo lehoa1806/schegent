@@ -17,6 +17,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { TRANSIENT_BACKOFF_MS } from '../../../src/controller/retry-constants';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -147,7 +148,7 @@ describe('FR-013 — restart handshake for pendingRetryAt', () => {
     // Re-initialize the store (simulates VS Code restart).
     const { store } = makeController(memento, watchdog);
     await store.initialize();
-    const reloaded = store.getRun();
+    const reloaded = store.getRun(DEFAULT_QUEUE_ID);
     expect(reloaded).not.toBeNull();
     expect(reloaded!.pendingRetryAt).toBe(futureMs);
     expect(reloaded!.pendingRetryCause).toBe('transient_error');

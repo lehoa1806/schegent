@@ -40,6 +40,7 @@ import {
   RATE_LIMIT_BACKOFF_MS,
   RETRY_BUFFER_MS
 } from '../../src/controller/retry-constants';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -207,7 +208,7 @@ describe('Feature 027 — dynamic quota reset countdown end-to-end', () => {
     const feature = await harness.queue.enqueue('feat-027-sc001');
     await harness.controller.startNew(feature, null);
 
-    const run = harness.store.getRun()!;
+    const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('paused');
     expect(run.pendingRetryCause).toBe('rate_limit');
     expect(run.pendingRetryAt).not.toBeNull();
@@ -254,7 +255,7 @@ describe('Feature 027 — dynamic quota reset countdown end-to-end', () => {
     const feature = await harness.queue.enqueue('feat-027-fallback');
     await harness.controller.startNew(feature, null);
 
-    const run = harness.store.getRun()!;
+    const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pendingRetryCause).toBe('rate_limit');
     const offset = run.pendingRetryAt! - Date.now();
     expect(offset).toBeGreaterThanOrEqual(RATE_LIMIT_BACKOFF_MS - 2_000);
@@ -276,7 +277,7 @@ describe('Feature 027 — dynamic quota reset countdown end-to-end', () => {
     const feature = await harness.queue.enqueue('feat-027-sc004');
     await harness.controller.startNew(feature, null);
 
-    const run = harness.store.getRun()!;
+    const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     // The cause persisted is `rate_limit` (the family-mapped
     // DelayedRetryCause), NOT `transient_error`.
     expect(run.pendingRetryCause).toBe('rate_limit');
@@ -339,7 +340,7 @@ describe('Feature 027 — dynamic quota reset countdown end-to-end', () => {
       const feature = await harness.queue.enqueue('feat-027-bug-002');
       await harness.controller.startNew(feature, null);
 
-      const run = harness.store.getRun()!;
+      const run = harness.store.getRun(DEFAULT_QUEUE_ID)!;
       expect(run.pendingRetryCause).toBe('rate_limit');
 
       // (1) pendingRetryAt = resetsAtMs + RETRY_BUFFER_MS, within tolerance.

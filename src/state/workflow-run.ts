@@ -37,6 +37,30 @@ export interface WorkflowRunPipeline {
 export type WorkflowRunStatus = 'running' | 'paused' | 'failed' | 'completed' | 'canceled';
 export type RawTranscriptMode = 'always' | 'errors-only' | 'off';
 
+/**
+ * The statuses that end a Run.
+ *
+ * Enumerated, never derived by negating the active status: `!== 'running'` also
+ * admits `paused`, and a paused Run is not over — it still owns its queue, its
+ * execution lease, and (feature 093) its driving session, and a later resume
+ * continues on all three. That distinction is the whole of feature 092's
+ * FR-033a and feature 093's RS-3/RS-4, which is why the two disposals hang off
+ * one list rather than two agreeing ones.
+ *
+ * Feature 093 (T044) — this list is that one list. It had grown a copy in
+ * `services/execution-lease-release.ts` and another in
+ * `services/terminal-transition-coordinator.ts`, and session disposal would
+ * have made a third; they are the same rule about the same union, so they read
+ * it from the union's own module. Distinct from
+ * `WORKFLOW_NODE_TERMINAL_STATUSES` in `contracts/workflow-definitions.ts`,
+ * which spells the same three words about a Workflow **node** and is not this.
+ */
+export const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'canceled'] as const;
+
+export function isTerminalRunStatus(status: WorkflowRunStatus | string): boolean {
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
+}
+
 export interface GitApprovalReceipt {
   readonly approvedAt: number;
   readonly planFingerprint: string;

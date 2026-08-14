@@ -18,7 +18,7 @@ A workspace starts with one queue, id `default`, and you can create up to **20**
 
 Two ceilings, two meanings. A Task that waits because its own queue is busy is **waiting its turn**. A queue that does not start because the workspace ceiling is reached is **blocked** — it will start as soon as a slot frees, without you doing anything.
 
-**Runs still execute one at a time.** Queues are independent for everything except the subprocess itself: the run engine holds one active `WorkflowRun`, so a queue whose turn has come waits until the executing run finishes. You get independent inboxes, schedules, pause switches and history — not parallel Claude processes. See [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
+**Runs execute in parallel, up to the cap.** Since feature 093 the run engine holds one `WorkflowRun` per queue rather than one per workspace, so `cap` queues run `cap` Claude processes at once, each with its own phase progression, retry accounting and record. One run pausing, stalling or failing does not stall the others. What is still shared is the working tree and the window — see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#what-concurrent-does-and-does-not-mean-today).
 
 (Versions between feature 030 and feature 092 supported exactly one queue. If you are reading older notes that say the create/rename/delete/schedule commands are "intentionally gone", they described that period.)
 

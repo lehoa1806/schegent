@@ -54,9 +54,10 @@ rejected and no tasks move.
 Queue settings live under:
 
 - `schegent.queue.globalConcurrencyCap` — integer in `1..20`, default `3`
-  (feature 092; formerly pinned to `1..1` by feature 056 Track 4). It bounds
-  how many queues may be busy at once; each queue still runs one Task at a
-  time.
+  (feature 092; formerly pinned to `1..1` by feature 056 Track 4). Since
+  feature 093 it bounds how many runs may execute at the same time; each
+  queue still runs one Task at a time, so the ceiling is reached by that
+  many different queues.
 - `schegent.queue.defaultQueueId` — id of an existing queue.
 
 The host validates both settings transactionally. The webview helper

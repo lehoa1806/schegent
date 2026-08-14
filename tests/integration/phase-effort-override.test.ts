@@ -56,6 +56,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -236,7 +237,7 @@ async function runHarness(opts: HarnessOpts): Promise<{
   await controller.startNew(feature, null, { pipelineId });
 
   const auditLog = await readAuditLog(opts.workspaceRoot);
-  const storedRunPipeline = store.getRun()?.pipeline;
+  const storedRunPipeline = store.getRun(DEFAULT_QUEUE_ID)?.pipeline;
   return { invocations, auditLog, storedRunPipeline, controller, store };
 }
 
@@ -489,7 +490,7 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
     // confirm the persisted snapshot still references the workspace
     // catalog state captured at enqueue time.
     controller.setCatalog(BUILT_IN_CATALOG);
-    const snapshotAfter = store.getRun()?.pipeline;
+    const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)?.pipeline;
     expect(snapshotAfter).toBe(storedRunPipeline);
     expect((snapshotAfter?.phases ?? []).map((p) => p.id)).toEqual(snapshotIds);
   });

@@ -79,8 +79,32 @@
  *       produce. Migrator: `migrateV9ToV10()` in
  *       `src/state/queue-state-migrator.ts`. Forward-only: a persisted version
  *       above 10 is refused rather than silently discarding queues.
+ *  11 — feature 093: pluralises run execution state. `KEYS.run` moves from a
+ *       single `WorkflowRun | null` to `Record<queueId, WorkflowRun>`, the
+ *       shape that lets more than one queue hold an executing Run at once.
+ *       This is the exact complement of v10 above: v10 reshaped `KEYS.queue`
+ *       and left `KEYS.run` untouched, v11 reshapes `KEYS.run` and leaves
+ *       `KEYS.queue` untouched. The two migrations never overlap a key, which
+ *       is what keeps each of them a single-key write.
+ *
+ *       `WorkflowRun` itself is unchanged — no field is added, removed or
+ *       retyped. In particular no `queueId` is stamped onto the Run: the map
+ *       key *is* the queue association, so it has exactly one representation
+ *       and cannot disagree with a stored copy of itself. Each entry holds
+ *       that queue's **active** Run only; a terminal Run leaves the map and
+ *       flows into the existing Run history, so the stored size is bounded by
+ *       queue count rather than by Runs ever executed.
+ *
+ *       A Run inherited from v10 is keyed by the queue its Task belongs to. If
+ *       that Task belongs to no queue, the Run is reassigned to `'default'`
+ *       with an audit event naming the reason rather than dropped — dropping
+ *       the Run would not drop the Task pointing at it, leaving a queue stuck
+ *       on work nothing is left to advance or terminate. Migrator:
+ *       `migrateV10ToV11()` in `src/state/run-state-migrator.ts`.
+ *       Forward-only: a persisted version above 11 is refused rather than
+ *       silently discarding runs.
  */
-export const STATE_SCHEMA_VERSION = 10 as const;
+export const STATE_SCHEMA_VERSION = 11 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -91,6 +115,7 @@ export const STATE_SCHEMA_VERSION_V7 = 7 as const;
 export const STATE_SCHEMA_VERSION_V8 = 8 as const;
 export const STATE_SCHEMA_VERSION_V9 = 9 as const;
 export const STATE_SCHEMA_VERSION_V10 = 10 as const;
+export const STATE_SCHEMA_VERSION_V11 = 11 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

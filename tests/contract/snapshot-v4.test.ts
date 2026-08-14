@@ -163,7 +163,7 @@ describe('snapshot v4 — envelope shape (T085, FR-048 – FR-050)', () => {
   it.each(DELETED_ROOT_SINGULARS)(
     'has no top-level `%s` — deleted, not deprecated (FR-049)',
     async (field) => {
-      await store.setRun(sampleRun());
+      await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
       const snapshot = project() as unknown as Record<string, unknown>;
       expect(field in snapshot).toBe(false);
       expect(buildIdleSnapshot({ isPrimary: true }) as unknown as Record<string, unknown>).not.toHaveProperty(
@@ -256,7 +256,7 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
     // `resumeTargetPhaseId` is non-null iff the run is breakpoint-paused — a
     // persisted-run invariant `setRun` enforces, so the pause pair travels with
     // the resume target rather than being set on its own.
-    await store.setRun(
+    await store.setRun(DEFAULT_QUEUE_ID, 
       sampleRun({
         featureId: enqueued.id,
         pipeline: { id: 'ported', name: 'Ported', phases: [] } as unknown as WorkflowRun['pipeline'],
@@ -280,7 +280,7 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
   it('projects manual-pause state as one nullable pair rather than two loose fields', async () => {
     const manager = new QueueManager(store);
     const enqueued = await manager.enqueue('paused here', { queueId: DEFAULT_QUEUE_ID });
-    await store.setRun(
+    await store.setRun(DEFAULT_QUEUE_ID, 
       sampleRun({
         featureId: enqueued.id,
         manualPauseAt: 1_700_000_001_000,
@@ -298,7 +298,7 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
   it('projects phase overrides and breakpoints under the owning queue, sorted by setAt', async () => {
     const manager = new QueueManager(store);
     const enqueued = await manager.enqueue('overridden here', { queueId: DEFAULT_QUEUE_ID });
-    await store.setRun(
+    await store.setRun(DEFAULT_QUEUE_ID, 
       sampleRun({
         featureId: enqueued.id,
         phaseOverrides: [

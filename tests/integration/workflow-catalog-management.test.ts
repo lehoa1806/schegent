@@ -1060,7 +1060,7 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     ]);
     await save([authoredRow()], { kind: 'edit', workflowId: WORKFLOW_ID }, [INVALID_ROW]);
 
-    expect(observer.store.getRun()).toBeNull();
+    expect(observer.store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
     expect(observer.queue.list()).toEqual([]);
     const snapshot = observer.snapshot();
     // Feature 092 — the run singulars moved under the queue that owns the Run,

@@ -197,7 +197,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 
   it('reflects run state into status, activeFeature, and active phase tile', async () => {
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -283,7 +283,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 
   it('projects run phase overrides and manual pause state', async () => {
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       ...sampleRun(),
       phaseOverrides: [
         { phaseId: 'speckit-plan', action: 'disabled', actor: 'op', setAt: 1_700_000_000_000 }
@@ -308,7 +308,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
 
   it('projects phase-message metadata without message values', async () => {
     vi.useFakeTimers();
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     await ownRun();
     const p = makeProjector({ debounceMs: 100 });
     p.start();
@@ -554,7 +554,7 @@ describe('StateProjector.subscribe', () => {
       outcome: 'info'
     });
     await vi.advanceTimersByTimeAsync(50);
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     await ownRun();
     await vi.advanceTimersByTimeAsync(110);
 
@@ -663,7 +663,7 @@ describe('StateProjector multi-window snapshot equivalence (SC-005)', () => {
     const nowA = deterministicNow();
     const nowB = deterministicNow();
 
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
 
     const projA = makeWindowProjector({ monoClock, nowFn: nowA });
     const projB = makeWindowProjector({ monoClock, nowFn: nowB });
@@ -701,7 +701,7 @@ describe('StateProjector multi-window snapshot equivalence (SC-005)', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     monoClock.value = 7_500;
-    await store.setRun({ ...sampleRun(), currentPhase: 'speckit-tasks' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), currentPhase: 'speckit-tasks' });
     await vi.advanceTimersByTimeAsync(120);
 
     monoClock.value = 12_000;
@@ -820,16 +820,16 @@ describe('StateProjector monitor projection (T023)', () => {
   it('forwards workflow paused/resumed transitions to the monitor exactly once', async () => {
     vi.useFakeTimers();
     const monitor = makeFakeMonitor({ initial: buildMonitorState({ status: 'running' }) });
-    await store.setRun(sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
     const p = new StateProjector({
       store, audit, ownerId: 'this-window', debounceMs: 100, monitor
     });
     p.start();
     await vi.advanceTimersByTimeAsync(120);
-    await store.setRun({ ...sampleRun(), status: 'paused' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'paused' });
     await vi.advanceTimersByTimeAsync(120);
     expect(monitor.pausedCalls).toBe(1);
-    await store.setRun({ ...sampleRun(), status: 'running' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'running' });
     await vi.advanceTimersByTimeAsync(120);
     expect(monitor.resumedCalls).toBe(1);
     p.dispose();
@@ -995,7 +995,7 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
   });
 
   it('sets currentPhase only on the in-flight item, matching run.currentPhase', async () => {
-    await store.setRun({
+    await store.setRun(DEFAULT_QUEUE_ID, {
       id: 'run-x',
       featureId: 'q-active',
       featureDir: 'specs/777-x',
@@ -1106,7 +1106,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: pipelinePhases
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1125,7 +1125,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('speckit-plan'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1154,7 +1154,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: standardPhases
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1185,7 +1185,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: pipelinePhases
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1200,7 +1200,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
   it('falls back to the 7 built-in tiles for legacy runs lacking pipeline snapshot (T050)', async () => {
     const legacyRun: WorkflowRun = sampleRun();
     expect(legacyRun.pipeline).toBeUndefined();
-    await store.setRun(legacyRun);
+    await store.setRun(DEFAULT_QUEUE_ID, legacyRun);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1228,7 +1228,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('security-audit'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1262,7 +1262,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('security-audit'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(run);
+    await store.setRun(DEFAULT_QUEUE_ID, run);
     await ownRun();
     const p = makeProjector();
     p.start();

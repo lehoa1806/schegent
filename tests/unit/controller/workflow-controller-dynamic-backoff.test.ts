@@ -18,6 +18,7 @@ import {
   RETRY_FLOOR_MS,
   TRANSIENT_BACKOFF_MS
 } from '../../../src/controller/retry-constants';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -145,7 +146,7 @@ describe('FR-009 — backoffForCause: dynamic path on future resetsAtMs', () => 
     runSpy.mockImplementation(async () => makeRateLimitedOutput(future));
     const feature = await queue.enqueue('feature-A');
     await controller.startNew(feature, null);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pendingRetryAt).not.toBeNull();
     expect(Math.abs(run.pendingRetryAt! - (future + RETRY_BUFFER_MS))).toBeLessThan(200);
   });
@@ -159,7 +160,7 @@ describe('FR-010 — backoffForCause: floor on past resetsAtMs', () => {
     const feature = await queue.enqueue('feature-B');
     await controller.startNew(feature, null);
     const after = Date.now();
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pendingRetryAt).not.toBeNull();
     const offsetFromBefore = run.pendingRetryAt! - before;
     const offsetFromAfter = run.pendingRetryAt! - after;
@@ -174,7 +175,7 @@ describe('FR-011 — backoffForCause: fallback to fixed 60-min on null resetsAtM
     runSpy.mockImplementation(async () => makeRateLimitedOutput(null));
     const feature = await queue.enqueue('feature-C');
     await controller.startNew(feature, null);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pendingRetryAt).not.toBeNull();
     const offset = run.pendingRetryAt! - before;
     expect(offset).toBeGreaterThanOrEqual(RATE_LIMIT_BACKOFF_MS - 200);
@@ -186,7 +187,7 @@ describe('FR-011 — backoffForCause: fallback to fixed 60-min on null resetsAtM
     runSpy.mockImplementation(async () => makeRateLimitedOutput(undefined));
     const feature = await queue.enqueue('feature-D');
     await controller.startNew(feature, null);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     const offset = run.pendingRetryAt! - before;
     expect(offset).toBeGreaterThanOrEqual(RATE_LIMIT_BACKOFF_MS - 200);
     expect(offset).toBeLessThan(RATE_LIMIT_BACKOFF_MS + 5000);
@@ -199,7 +200,7 @@ describe('FR-012 — transient_error ignores any resetsAtMs', () => {
     runSpy.mockImplementation(async () => makeTransientOutput());
     const feature = await queue.enqueue('feature-E');
     await controller.startNew(feature, null);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     const offset = run.pendingRetryAt! - before;
     expect(offset).toBeGreaterThanOrEqual(TRANSIENT_BACKOFF_MS - 200);
     expect(offset).toBeLessThan(TRANSIENT_BACKOFF_MS + 5000);
@@ -212,7 +213,7 @@ describe('FR-016 — toDelayedRetryCause widening (US2)', () => {
     runSpy.mockImplementation(async () => makeRateLimitedOutput(future, 'out-of-usage'));
     const feature = await queue.enqueue('feature-F');
     await controller.startNew(feature, null);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pendingRetryCause).toBe('rate_limit');
   });
 
@@ -220,28 +221,28 @@ describe('FR-016 — toDelayedRetryCause widening (US2)', () => {
     runSpy.mockImplementation(async () => makeRateLimitedOutput(null, 'credits-exhausted'));
     const feature = await queue.enqueue('feature-G');
     await controller.startNew(feature, null);
-    expect(store.getRun()!.pendingRetryCause).toBe('rate_limit');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.pendingRetryCause).toBe('rate_limit');
   });
 
   it('maps "quota-exceeded" cause to rate_limit', async () => {
     runSpy.mockImplementation(async () => makeRateLimitedOutput(null, 'quota-exceeded'));
     const feature = await queue.enqueue('feature-H');
     await controller.startNew(feature, null);
-    expect(store.getRun()!.pendingRetryCause).toBe('rate_limit');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.pendingRetryCause).toBe('rate_limit');
   });
 
   it('maps "rate-limit" cause to rate_limit (existing parser cause string)', async () => {
     runSpy.mockImplementation(async () => makeRateLimitedOutput(null, 'rate-limit'));
     const feature = await queue.enqueue('feature-I');
     await controller.startNew(feature, null);
-    expect(store.getRun()!.pendingRetryCause).toBe('rate_limit');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.pendingRetryCause).toBe('rate_limit');
   });
 
   it('preserves transient_error → transient_error mapping (regression)', async () => {
     runSpy.mockImplementation(async () => makeTransientOutput());
     const feature = await queue.enqueue('feature-J');
     await controller.startNew(feature, null);
-    expect(store.getRun()!.pendingRetryCause).toBe('transient_error');
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.pendingRetryCause).toBe('transient_error');
   });
 });
 

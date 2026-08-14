@@ -224,7 +224,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   // `WorkflowRun.phaseBreakpoints` and short-circuit to
   // `paused-at-breakpoint` BEFORE invoking the CLI. Mirrors production
   // wiring in `src/extension.ts`.
-  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
+  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
   const phaseRunner = new PhaseRunner(
     runner,
     new PromptBuilder(),
@@ -349,10 +349,10 @@ describe('Feature 033 US1 — pause then resume preserves -c continuation (032 i
     await harness.controller.startNew(feature, null);
 
     // Drain pending microtasks so the scheduled pause resolves.
-    await drainUntil(() => harness.store.getRun()?.status === 'paused', 'the run to settle as paused');
+    await drainUntil(() => harness.store.getRun(DEFAULT_QUEUE_ID)?.status === 'paused', 'the run to settle as paused');
 
     // The run must now be paused.
-    const pausedRun = harness.store.getRun();
+    const pausedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(pausedRun).not.toBeNull();
     expect(pausedRun?.status).toBe('paused');
     expect(pausedRun?.manualPauseAt).not.toBeNull();
@@ -426,9 +426,9 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
         if (!breakpointInstalled) {
           breakpointInstalled = true;
           setImmediate(async () => {
-            const run = harness.store.getRun();
+            const run = harness.store.getRun(DEFAULT_QUEUE_ID);
             if (run !== null) {
-              await harness.store.setRun({
+              await harness.store.setRun(DEFAULT_QUEUE_ID, {
                 ...run,
                 phaseBreakpoints: [
                   ...run.phaseBreakpoints,
@@ -452,12 +452,12 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
     // Drain pending microtasks so the breakpoint install + the breakpoint
     // fire on invocation 1 resolve.
     await drainUntil(
-      () => harness.store.getRun()?.manualPauseCause === 'breakpoint-paused',
+      () => harness.store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause === 'breakpoint-paused',
       'the breakpoint to fire and settle the run'
     );
 
     // The run must now be paused at the breakpoint.
-    const pausedRun = harness.store.getRun();
+    const pausedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(pausedRun).not.toBeNull();
     expect(pausedRun?.status).toBe('paused');
     expect(pausedRun?.manualPauseAt).not.toBeNull();
@@ -506,7 +506,7 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
     expect(postResumeInvocation.isContinue).toBe(true);
 
     // Resume MUST clear the breakpoint-paused fields.
-    const resumedRun = harness.store.getRun();
+    const resumedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(resumedRun?.manualPauseCause).toBeNull();
     expect(resumedRun?.manualPauseAt).toBeNull();
     expect(resumedRun?.resumeTargetPhaseId).toBeNull();
@@ -561,13 +561,13 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     await harness.controller.startNew(feature, null);
 
     // Drain so the scheduled pause path settles.
-    await drainUntil(() => harness.store.getRun()?.status === 'paused', 'the run to settle as paused');
+    await drainUntil(() => harness.store.getRun(DEFAULT_QUEUE_ID)?.status === 'paused', 'the run to settle as paused');
 
     // Verify both the phase and the queue are paused, with the queue's
     // pauseSource preserved as 'operator' (a cascade pause was attempted
     // by pauseActivePhase but it's an idempotent no-op when the queue
     // is already operator-paused — see queue-manager.ts:326).
-    const pausedRun = harness.store.getRun();
+    const pausedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(pausedRun?.status).toBe('paused');
     expect(pausedRun?.manualPauseCause).toBe('operator-paused');
     const queueBeforeResume = findQueue(harness.store.getQueueRegistry(), DEFAULT_QUEUE_ID);
@@ -580,7 +580,7 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
 
     // Drain so the resume's cascadedResume completes.
     await drainUntil(
-      () => harness.store.getRun()?.manualPauseAt === null,
+      () => harness.store.getRun(DEFAULT_QUEUE_ID)?.manualPauseAt === null,
       "the resume to clear the run's manual pause"
     );
 
@@ -591,7 +591,7 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     expect(queueAfterResume?.pauseSource).toBe('operator');
 
     // The run's manualPauseAt is cleared (phase resumed independently).
-    const resumedRun = harness.store.getRun();
+    const resumedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(resumedRun?.manualPauseAt).toBeNull();
     expect(resumedRun?.manualPauseCause).toBeNull();
 

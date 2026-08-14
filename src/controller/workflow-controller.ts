@@ -5,7 +5,8 @@ import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
-import { IsContinueGate } from './is-continue-gate';
+import { RunSessionRegistry, type RunSession } from './run-session';
+import { resolveControlTarget } from './sole-run-resolver';
 import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
@@ -101,23 +102,19 @@ export interface StartNewOptions {
   pipelineId?: string;
 }
 
+// Feature 093 (T049a) — the admission contract lives in its own module; see
+// `./run-admission` for why the drain waits for admission and not completion.
+import {
+  NOTHING_TO_DRIVE,
+  NOT_RESUMED,
+  type RunAdmission,
+  type ResumeAdmission
+} from './run-admission';
+
+export type { RunAdmission, ResumeAdmission } from './run-admission';
 export type { MutationResult } from './phase-control-service';
 
 export class SchegentWorkflowController {
-  /**
-   * Feature 032 — transient session-continuation hint consumed by
-   * `RunDriver.drive()` on the FIRST `runner.run()` call of a single dispatch
-   * cycle. Entry points call `isContinueGate.arm()` BEFORE invoking
-   * `resumeExisting()` / `RunDriver.drive()`; `RunDriver` consumes-and-resets
-   * via `consume()` so subsequent iterations within the same invocation carry
-   * `isContinue: false`. NEVER persisted.
-   *
-   * Feature 056 R5 — extracted to `is-continue-gate.ts` so the arm /
-   * consume semantics live in a single tiny class that can't be
-   * misused from outside the controller.
-   */
-  private readonly isContinueGate = new IsContinueGate();
-
   private readonly monitor: Pick<ClaudeCliMonitor, 'onStart'> | null;
   private catalog: PipelineCatalog;
   private readonly getRetryCapFn: (() => number) | null;
@@ -130,7 +127,15 @@ export class SchegentWorkflowController {
   private readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
-  private readonly runDriver: RunDriver;
+  /**
+   * Feature 093 (T042) — one driving context per *executing* queue, in place of
+   * the single `runDriver` / `isContinueGate` pair a one-Run window needed. The
+   * controller stays one per window: it constructs the `AutoDrainCoordinator`
+   * below, and N controllers would mean N drain coordinators, which the
+   * CLAUDE.md hard rule "Never add a second idle-pending enforcement site"
+   * forbids outright.
+   */
+  private readonly sessions: RunSessionRegistry;
   private readonly phaseControlService: PhaseControlService;
   private readonly lifecycleAuditor: WorkflowLifecycleAuditor;
   private readonly terminalTransitions: WorkflowControllerDeps['terminalTransitions'];
@@ -144,7 +149,12 @@ export class SchegentWorkflowController {
     private readonly statusBar: SchegentStatusBar,
     private readonly notifier: Notifier,
     private readonly logger: SanitizedLogger,
-    private readonly lock: WorkspaceLockManager,
+    // Feature 093 (T068b, FR-028) — a parameter, no longer a property. It is
+    // read twice during construction (`lock.id` for the lease owner, the manager
+    // for the driver deps) and never after. Keeping it a property would leave a
+    // primacy handle reachable from every Run-scoped method, which is how the
+    // two releases below got there.
+    lock: WorkspaceLockManager,
     private readonly options: WorkflowControllerOptions,
     deps: WorkflowControllerDeps = {}
   ) {
@@ -196,7 +206,11 @@ export class SchegentWorkflowController {
       persistTransition: (prev, next) => this.persistTransition(prev, next)
     });
     this.lifecycleAuditor = new WorkflowLifecycleAuditor(auditWriter, logger);
-    this.runDriver = new RunDriver({
+    // Feature 093 (T041-T043) — the driver moved from a field to a per-session
+    // factory. Every dep below is unchanged and still shared by reference; what
+    // is now per-queue is the driver instance itself, and with it the private
+    // run-loop state its re-entrancy guard protects.
+    this.sessions = new RunSessionRegistry((isContinueGate) => new RunDriver({
       runner,
       store,
       queue,
@@ -209,7 +223,7 @@ export class SchegentWorkflowController {
       monitor: this.monitor,
       historyRecorder: this.historyRecorder,
       retryCoordinator: this.retryCoordinator,
-      isContinueGate: this.isContinueGate,
+      isContinueGate,
       persistTransition: (prev, next) => this.persistTransition(prev, next),
       appendPhaseControlAudit: (eventType, run, payload) =>
         this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
@@ -228,16 +242,22 @@ export class SchegentWorkflowController {
       checkpoints: deps.checkpoints,
       scheduleAutoDrain: () => this.scheduleAutoDrain(),
       releaseExecutionLease: (run) => this.releaseExecutionLeaseForRun(run)
-    });
+    }), (queueId) => store.getRun(queueId));
     this.phaseControlService = new PhaseControlService({
       store,
       queue,
       logger,
       retryCoordinator: this.retryCoordinator,
-      runDriver: this.runDriver,
-      isContinueGate: this.isContinueGate,
-      cancelActive: () => this.cancelActive(),
-      resumeExisting: (customPrompt) => this.resumeExisting(customPrompt),
+      // Feature 093 (T042) — the three session-scoped deps became queue-addressed
+      // seams. Every call site in the service already had its `queueId` in hand,
+      // so what changed is that the answer now comes from that queue's session
+      // instead of from the window's one driver.
+      isDriving: (queueId) => this.sessions.peek(queueId)?.driver.running === true,
+      noteActivePhaseOverrideAbort: (queueId, runId, phaseId) =>
+        this.sessions.peek(queueId)?.driver.noteActivePhaseOverrideAbort(runId, phaseId),
+      armIsContinue: (queueId) => this.sessions.acquire(queueId).isContinueGate.arm(),
+      cancelActive: (queueId) => this.cancelActive(queueId),
+      resumeExisting: (queueId, customPrompt) => this.resumeExisting(queueId, customPrompt),
       auditor: {
         appendPhaseControl: (eventType, run, payload) =>
           this.lifecycleAuditor.appendPhaseControl(eventType, run, payload),
@@ -263,6 +283,21 @@ export class SchegentWorkflowController {
    */
   public setWatchdog(watchdog: DelayedRetryWatchdog | null): void {
     this.retryCoordinator.setWatchdog(watchdog);
+  }
+
+  /**
+   * Feature 093 (T045) — the watchdog's resume callback is window-level, so it
+   * asks the coordinator which queues its fire was actually for. Claiming is
+   * destructive by design: the elapsed deadlines are removed and the next
+   * outstanding one is re-armed, so a second read does not resume them twice.
+   */
+  public claimElapsedDelayedRetries(): readonly string[] {
+    return this.retryCoordinator.claimElapsedDelayedRetries();
+  }
+
+  /** True while `queueId`'s delayed-retry backoff has not yet elapsed. */
+  public hasPendingDelayedRetry(queueId: string): boolean {
+    return this.retryCoordinator.hasPendingDelayedRetry(queueId);
   }
 
   /**
@@ -294,6 +329,19 @@ export class SchegentWorkflowController {
     await this.autoDrainCoordinator.drainIfIdle(queueId);
   }
 
+  /**
+   * Feature 093 (T049a) — resolve once every auto-drained Run has terminated.
+   *
+   * `drainQueuedWork` above used to answer this by accident: it awaited the
+   * whole Run, so its resolution meant both "the queue was offered work" and
+   * "that work is over". Those are two moments now, and this is the second one.
+   * It is a separate call precisely so the drain's own callers do not
+   * accidentally re-serialize the sweep by awaiting it.
+   */
+  public async drainedRunsSettled(): Promise<void> {
+    await this.autoDrainCoordinator.settled();
+  }
+
   public setRateLimitHandler(handler: RateLimitHandler): void {
     this.retryCoordinator.setRateLimitHandler(handler);
   }
@@ -306,12 +354,43 @@ export class SchegentWorkflowController {
     return this.catalog;
   }
 
+  /**
+   * Feature 093 (T042) — window-scoped: is *any* session driving? This is the
+   * C-4 aggregate shape SC-012 exempts, and it is what the two remaining
+   * consumers actually mean — drain step 4b ("is this window busy?", deleted by
+   * T081) and Clean All's runner-ack probe ("has everything stopped?").
+   */
   public get running(): boolean {
-    return this.runDriver.running;
+    return this.sessions.all().some((session) => session.driver.running);
   }
 
-  public cancelActive(): void {
-    this.runDriver.cancelActive();
+  /**
+   * Feature 093 (T072, FR-014, RS-1) — the number of live Runs this window
+   * holds, which is the count the concurrency cap bounds.
+   *
+   * Deliberately not `running` above. `running` asks whether any driver is
+   * *currently executing a phase* and goes false the moment every Run is
+   * paused; this asks how many Runs this window owns, and a paused Run still
+   * owns its queue, its lease, and its slot (FR-014a). Conflating them would
+   * make a resume refusable once the cap refilled behind it.
+   */
+  public get liveRunCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
+   * Cancel one queue's Run, or every Run in the window when no queue is named.
+   *
+   * Feature 093 (T042) — the unaddressed form is deliberate, not a leftover
+   * ambient read: `clear-all.ts` and the queue manager's `CleanAllRunnerAckProbe`
+   * mean "stop everything in this window", and with one session it is identical
+   * to the pre-feature behavior. Callers that mean one Run — `cancel.ts`,
+   * `deleteTask`, the phase controls — name their queue.
+   */
+  public cancelActive(queueId?: string): void {
+    const targets: readonly (RunSession | null)[] =
+      queueId === undefined ? this.sessions.all() : [this.sessions.peek(queueId)];
+    for (const session of targets) session?.driver.cancelActive();
   }
 
   public async startNew(
@@ -319,17 +398,87 @@ export class SchegentWorkflowController {
     featureDir: string | null,
     options: StartNewOptions = {}
   ): Promise<void> {
+    await (await this.admitNew(feature, featureDir, options)).completed;
+  }
+
+  /**
+   * Feature 093 (T049a) — admit a Run and hand back the promise of its
+   * execution instead of awaiting it here.
+   *
+   * `startNew` above resolves when the Run *finishes*, which is what every
+   * caller meaning "run this and tell me when it is done" already depends on,
+   * and it is preserved byte for byte by delegating. The drain means something
+   * else: it promotes a queue and moves on to the next one. A drain that awaited
+   * the Run would offer work to exactly one queue per sweep and leave the rest
+   * waiting for that Run to terminate — which is the serialization this feature
+   * exists to remove, surviving inside the sweep after step 4b is deleted, where
+   * no test for the deleted gate would find it.
+   *
+   * The seam is `markInFlight`, not the spawn. Once the Task is in flight the
+   * queue's capacity, the workspace's in-flight count and `sessions.size` all
+   * see the new Run, so the rest of a sweep evaluates its gates against current
+   * counts rather than against a Run it cannot yet observe. Everything before
+   * that point is admission, and a failure there is a Run that never came into
+   * existence — precisely the case CLAUDE.md's lease rule assigns to the drain's
+   * step 7 release rather than to `releaseExecutionLeaseForRun()`.
+   */
+  public async admitNew(
+    feature: FeatureRequest,
+    featureDir: string | null,
+    options: StartNewOptions = {}
+  ): Promise<RunAdmission> {
     this.logger.info(`Workflow operation triggered: startNew`, { featureId: feature.id, featureDir, options });
     let run: WorkflowRun | null = null;
     try {
       run = await this.runFactory.create(feature, featureDir,
         options.pipelineId ?? feature.pipelineId ?? this.catalog.defaultPipelineId
       );
-      await this.store.setRun(run);
+      // Feature 093 (T023) — pattern B. The Task is in hand, so its queue is
+      // resolved through the one existing resolver rather than a second copy of
+      // the `?? DEFAULT_QUEUE_ID` rule. The row is present here — `markInFlight`
+      // on the next line requires it — so the resolver's removed-Task fallback
+      // is not reachable from this call.
+      const queueId = this.queue.queueIdForTask(feature.id);
+      await this.store.setRun(queueId, run);
       await this.queue.markInFlight(feature.id, run.id, false);
-      await this.runDriver.drive(run, feature.description);
+      // The `catch` below covered the drive too before the split, so it keeps
+      // covering it — attached synchronously, so a rejection is never briefly
+      // unhandled while the caller decides whether to await.
+      const admitted = run;
+      return {
+        completed: this.driveSession(queueId, admitted, feature.description).catch((err) =>
+          this.handleUnexpectedStartFailure(feature, admitted, feature.description, err)
+        )
+      };
     } catch (err) {
       await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
+      return NOTHING_TO_DRIVE;
+    }
+  }
+
+  /**
+   * Feature 093 (T042/T044) — drive a queue's Run on that queue's session and
+   * dispose the session iff the Run ended.
+   *
+   * The disposal decision sits here, after `drive()` returns, rather than inside
+   * `persistTransition`: the driver is still doing terminal bookkeeping when it
+   * writes the terminal record, and tearing its session down mid-write would
+   * flip `controller.running` to false while the Run is still finishing. The
+   * `finally` covers the throwing path too — a Run that dies takes its own
+   * session with it and no sibling's (RS-5).
+   *
+   * `disposeIfEnded` is the whole RS-3/RS-4 rule; a paused Run leaves this
+   * method with its session, its lease, and its cap slot intact.
+   */
+  private async driveSession(
+    queueId: string,
+    run: WorkflowRun,
+    description: string
+  ): Promise<void> {
+    try {
+      await this.sessions.acquire(queueId).driver.drive(run, description);
+    } finally {
+      this.sessions.disposeIfEnded(queueId);
     }
   }
 
@@ -344,7 +493,16 @@ export class SchegentWorkflowController {
       ? `Another VS Code window holds the workspace lock`
       : this.sanitizeUnexpectedError(err).slice(0, 240);
       
-    const latestRun = this.store.getRun();
+    // Feature 093 (T023) — pattern B, the failing Task names its own queue.
+    //
+    // The id comparison **survives** the conversion, and is not the one-slot
+    // artifact T040 sweeps out. It answers "did the Run we started get as far as
+    // being persisted?", which stays a real question once the read is
+    // queue-addressed: `startNew` assigns `run` before it writes it, so a
+    // `setRun` that itself threw leaves `startedRun` set while the queue still
+    // holds whatever preceded it. Without the comparison that predecessor would
+    // be failed and history-recorded in place of the Run that actually failed.
+    const latestRun = this.store.getRun(this.queue.queueIdForTask(feature.id));
     const activeRun =
       startedRun && latestRun?.id === startedRun.id
         ? latestRun
@@ -388,7 +546,7 @@ export class SchegentWorkflowController {
       terminalRun = activeRun;
     }
 
-    this.statusBar.update({
+    this.statusBar.update(terminalRun?.id ?? startedRun?.id ?? feature.id, {
       kind: 'failed',
       ...(lastError.phase ? { phase: lastError.phase } : {}),
       detail: message
@@ -419,7 +577,14 @@ export class SchegentWorkflowController {
       await this.terminalTransitions?.complete(terminalRun, description);
     }
 
-    await this.lock.release().catch(() => undefined);
+    // Feature 093 (T068b, FR-028) — the window-primacy release that stood here
+    // is gone. 092's T136 retired the `withLock('drive-run', …)` wrapper because
+    // primacy's tenure is the window's, but left the Run-scoped releases that
+    // wrapper had company from. `release()` keeps no reference count, so one
+    // unexpectedly-failed start dropped primacy for every sibling Run still
+    // mid-phase. The per-queue execution lease below is the one a terminal Run
+    // does owe back.
+    //
     // Feature 092 (T132, FR-033a) — before the drain, so the sweep this
     // schedules can already see the queue as free.
     if (terminalRun) {
@@ -452,14 +617,42 @@ export class SchegentWorkflowController {
    * Resumes the currently persisted run if it is in a legal resumable state
    * (paused, pending-retry, or failed/bugfix-terminal).
    */
-  public async resumeExisting(customPrompt?: string): Promise<boolean> {
+  public async resumeExisting(queueId: string, customPrompt?: string): Promise<boolean> {
+    const admission = await this.admitResume(queueId, customPrompt);
+    await admission.completed;
+    return admission.resumed;
+  }
+
+  /**
+   * Feature 093 (T049a) — the resume half of the admission seam, on the same
+   * terms as `admitNew`. `resumed` is decidable at admission because every
+   * refusal in `resumeExistingOnQueue` returns before `markInFlight`, so the
+   * drain still learns whether to fall through to a fresh start without waiting
+   * for the resumed Run to finish.
+   */
+  public async admitResume(queueId: string, customPrompt?: string): Promise<ResumeAdmission> {
+    try {
+      return await this.resumeExistingOnQueue(queueId, customPrompt);
+    } finally {
+      // Feature 093 (T044) — every early return below leaves without driving,
+      // and an entry point may already have armed this queue's gate (which
+      // creates the session). Without this the refused resume would strand a
+      // session holding a cap slot for a Run that never started.
+      this.sessions.disposeIfEnded(queueId);
+    }
+  }
+
+  private async resumeExistingOnQueue(
+    queueId: string,
+    customPrompt?: string
+  ): Promise<ResumeAdmission> {
     this.logger.info(`Workflow operation triggered: resumeExisting`);
-    const run = this.store.getRun();
-    if (!run) return false;
-    if (run.status === 'completed' || run.status === 'canceled') return false;
+    const run = this.store.getRun(queueId);
+    if (!run) return NOT_RESUMED;
+    if (run.status === 'completed' || run.status === 'canceled') return NOT_RESUMED;
 
     if (customPrompt) {
-      await this.store.setRun({
+      await this.store.setRun(queueId, {
         ...run,
         resumePrompt: customPrompt
       });
@@ -468,7 +661,7 @@ export class SchegentWorkflowController {
     const feature = this.queue.findById(run.featureId);
     if (!feature) {
       this.logger.warn(`resume: feature ${run.featureId} no longer in queue`);
-      return false;
+      return NOT_RESUMED;
     }
     // Feature 032 — derive the continuation hint at resume entry, BEFORE
     // clearing the pause-cause fields below. Two derivation triggers:
@@ -484,7 +677,7 @@ export class SchegentWorkflowController {
     // `retryPhaseNow`) takes effect downstream in `RunDriver.drive()`
     // regardless of what we derive here.
     if (run.pendingRetryCause !== null || run.manualPauseCause !== null) {
-      this.isContinueGate.arm();
+      this.sessions.acquire(queueId).isContinueGate.arm();
     }
     const defaultRunnerKind = resolvePinnedRunnerKind(
       run.defaultRunnerKind, run.lastCliSessionRunnerKind, this.options.defaultRunnerKind
@@ -503,7 +696,7 @@ export class SchegentWorkflowController {
       !mutationPlanIsApproved(mutationPlan, gitApprovalReceipt)
     ) {
       const approved = await (this.requestGitApproval?.(mutationPlan) ?? Promise.resolve(true));
-      if (!approved) return false;
+      if (!approved) return NOT_RESUMED;
       gitApprovalReceipt = {
         approvedAt: Date.now(),
         planFingerprint: mutationPlan.fingerprint,
@@ -533,42 +726,75 @@ export class SchegentWorkflowController {
           }
         : {})
     };
-    await this.store.setRun(next);
+    await this.store.setRun(queueId, next);
     await this.queue.markInFlight(feature.id, next.id, true);
-    await this.runDriver.drive(next, feature.description);
-    return true;
+    // Admitted. `driveSession` carries its own `finally` disposal, so the drive
+    // is handed back rather than awaited (T049a).
+    return { resumed: true, completed: this.driveSession(queueId, next, feature.description) };
   }
 
-  public async pauseActivePhase(): Promise<MutationResult> {
-    return this.phaseControlService.pauseActivePhase();
+  /**
+   * Feature 093 (T035/T036) — resolve the queue a phase control acts on, then
+   * delegate. The resolution rule lives in `resolveControlTarget`; see there for
+   * why an unaddressed control refuses rather than picks a queue. This folds the
+   * resolve-or-refuse preamble the eight controls below would otherwise repeat
+   * verbatim, which is how they are kept from drifting apart one at a time.
+   */
+  private async control(
+    queueId: string | undefined,
+    act: (queueId: string) => Promise<MutationResult>
+  ): Promise<MutationResult> {
+    const target = resolveControlTarget(queueId, this.store.getRunMap());
+    return target.ok ? act(target.queueId) : target;
   }
 
-  public async resumeActivePhase(customPrompt?: string): Promise<MutationResult> {
-    return this.phaseControlService.resumeActivePhase(customPrompt);
+  public async pauseActivePhase(queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.pauseActivePhase(q));
   }
 
-  public async restartActivePhase(): Promise<MutationResult> {
-    return this.phaseControlService.restartActivePhase();
+  public async resumeActivePhase(
+    customPrompt?: string,
+    queueId?: string
+  ): Promise<MutationResult> {
+    return this.control(queueId, (q) =>
+      this.phaseControlService.resumeActivePhase(q, customPrompt)
+    );
   }
 
-  public async skipPhase(phaseId: string): Promise<MutationResult> {
-    return this.phaseControlService.skipPhase(phaseId);
+  public async restartActivePhase(queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.restartActivePhase(q));
   }
 
-  public async disablePhase(phaseId: string): Promise<MutationResult> {
-    return this.phaseControlService.disablePhase(phaseId);
+  public async skipPhase(phaseId: string, queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.skipPhase(q, phaseId));
   }
 
-  public async enablePhase(phaseId: string): Promise<MutationResult> {
-    return this.phaseControlService.enablePhase(phaseId);
+  public async disablePhase(phaseId: string, queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.disablePhase(q, phaseId));
   }
 
-  public async setPhaseBreakpoint(runId: string, phaseId: string): Promise<MutationResult> {
-    return this.phaseControlService.setPhaseBreakpoint(runId, phaseId);
+  public async enablePhase(phaseId: string, queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.enablePhase(q, phaseId));
   }
 
-  public async clearPhaseBreakpoint(runId: string, phaseId: string): Promise<MutationResult> {
-    return this.phaseControlService.clearPhaseBreakpoint(runId, phaseId);
+  public async setPhaseBreakpoint(
+    runId: string,
+    phaseId: string,
+    queueId?: string
+  ): Promise<MutationResult> {
+    return this.control(queueId, (q) =>
+      this.phaseControlService.setPhaseBreakpoint(q, runId, phaseId)
+    );
+  }
+
+  public async clearPhaseBreakpoint(
+    runId: string,
+    phaseId: string,
+    queueId?: string
+  ): Promise<MutationResult> {
+    return this.control(queueId, (q) =>
+      this.phaseControlService.clearPhaseBreakpoint(q, runId, phaseId)
+    );
   }
   public async deleteTask(taskId: string): Promise<{
     ok: boolean;
@@ -588,16 +814,27 @@ export class SchegentWorkflowController {
     this.logger.info(`Workflow operation triggered: deleteTask`, { taskId });
     const feature = this.queue.findById(taskId);
     if (feature?.status === 'in-flight') {
-      const run = this.store.getRun();
+      // Feature 093 (T023) — pattern B. Reading ambiently asked whether the one
+      // workspace Run happened to be this Task's; in a window running several it
+      // would have cancelled a bystander's Run whenever it was not. The queue
+      // answers *which* Run, and the `featureId` comparison below is left for
+      // T040 to retire, so this phase changes addressing and nothing else.
+      const queueId = this.queue.queueIdForTask(taskId);
+      const run = this.store.getRun(queueId);
       if (run?.featureId === feature.id && run.status === 'running') {
-        this.cancelActive();
+        // Feature 093 (T042) — addressed. Cancelling ambiently here would have
+        // aborted every Run in the window because one Task was deleted.
+        this.cancelActive(queueId);
         const canceled: WorkflowRun = {
           ...run,
           status: 'canceled',
           lastTransitionAt: Date.now()
         };
-        await this.store.setRun(canceled);
-        await this.lock.release().catch(() => undefined);
+        await this.store.setRun(queueId, canceled);
+        // Feature 093 (T068b, FR-028) — no window-primacy release here either.
+        // Deleting one Task cancelled one queue's Run; primacy is the window's
+        // and its siblings are still executing under it.
+        //
         // Feature 092 (T133, FR-033a) — the second terminal path: a Run
         // canceled out from under itself by the removal of its own Task. It
         // never reaches the driver's terminal funnel, so it returns its queue
@@ -633,7 +870,14 @@ export class SchegentWorkflowController {
     taskId: string,
     phaseId: string
   ): Promise<MutationResult & { priorPhaseState?: string; runId?: string }> {
-    return this.phaseControlService.removeTaskPhase(taskId, phaseId);
+    // Feature 093 (T036) — no `resolveControlQueue` fallback here: this control
+    // already names its target by Task, so the queue is derived rather than
+    // inferred, and the ambiguity the helper guards against cannot arise.
+    return this.phaseControlService.removeTaskPhase(
+      this.queue.queueIdForTask(taskId),
+      taskId,
+      phaseId
+    );
   }
   /**
    * Feature 011 — manual override for an active delayed-retry run.
@@ -641,26 +885,39 @@ export class SchegentWorkflowController {
    * `schegent.retryPhaseNow` command. Per contracts/delayed-retry.md
    * §Manual override.
    */
-  public async retryPhaseNow(): Promise<MutationResult> {
+  public async retryPhaseNow(queueId?: string): Promise<MutationResult> {
     this.logger.info(`Workflow operation triggered: retryPhaseNow`);
-    const run = this.store.getRun();
+    const target = resolveControlTarget(queueId, this.store.getRunMap());
+    if (!target.ok) {
+      // Preserve this control's own vocabulary: it answered `no-active-run`
+      // before the queue existed, and an operator-facing reason string is not
+      // the place to leak the addressing change.
+      return { ok: false, reason: target.reason === 'no-run-in-flight' ? 'no-active-run' : target.reason };
+    }
+    const run = this.store.getRun(target.queueId);
     if (!run) return { ok: false, reason: 'no-active-run' };
     if (run.pendingRetryAt === null || run.pendingRetryCause === null) {
       return { ok: false, reason: 'not-pending-retry' };
     }
-    if (this.runDriver.running) return { ok: false, reason: 'already-retrying' };
+    if (this.sessions.peek(target.queueId)?.driver.running === true) {
+      return { ok: false, reason: 'already-retrying' };
+    }
 
     // Feature 032 — manual override of a delayed retry is a continuation
     // (same semantics as the watchdog-fired retry). Arm the gate before
     // clearing `pendingRetryCause` below so `RunDriver.drive()` consumes it.
-    this.isContinueGate.arm();
-    this.retryCoordinator.cancelPendingTimer();
+    // Feature 093 (T042) — on this queue's session: a shared gate would append
+    // `-c` to whichever conversation drove next, not to the one being retried.
+    this.sessions.acquire(target.queueId).isContinueGate.arm();
+    // Feature 093 (T045) — retrying this queue now drops this queue's armed
+    // deadline and no other's; a sibling still counting down keeps counting.
+    this.retryCoordinator.cancelPendingTimer(target.queueId);
 
-    const queueState = this.store.getQueue();
+    const queueState = this.store.getQueue(target.queueId);
     const expectedReason = `retry-cap-exhausted:${run.id}`;
     const queueUnpaused = queueState.paused && queueState.pausedReason === expectedReason;
     if (queueUnpaused) {
-      await this.queue.setQueuePausedState(false, undefined, null);
+      await this.queue.setQueuePausedState(false, target.queueId, null);
     }
 
     const priorCount = run.delayedRetryCount;
@@ -670,7 +927,7 @@ export class SchegentWorkflowController {
       pendingRetryAt: null,
       pendingRetryCause: null
     };
-    await this.store.setRun(updated);
+    await this.store.setRun(target.queueId, updated);
     await this.retryCoordinator.appendManualRetryAudit({
       runId: run.id,
       phase: run.currentPhase,
@@ -684,7 +941,7 @@ export class SchegentWorkflowController {
     });
 
     setImmediate(() => {
-      void this.resumeExisting().catch((err) =>
+      void this.resumeExisting(target.queueId).catch((err) =>
         this.logger.warn(`retryPhaseNow resume failed: ${(err as Error).message}`)
       );
     });
@@ -699,11 +956,15 @@ export class SchegentWorkflowController {
    * handshake (FR-013).
    */
   public async resumeExistingFromActivation(): Promise<void> {
-    const run = this.store.getRun();
-    if (!run) return;
-    await this.retryCoordinator.resumeExistingFromActivation(run, async () => {
-      await this.resumeExisting();
-    });
+    // Feature 093 (T036/T039) — activation is the C-4 aggregate case: it is not
+    // resuming "the" Run, it is re-arming every Run the workspace persisted, and
+    // after a crash mid-concurrency there can be several. Each is then addressed
+    // by its own queue. With one entry this is the previous behavior exactly.
+    for (const [queueId, run] of Object.entries(this.store.getRunMap())) {
+      await this.retryCoordinator.resumeExistingFromActivation(queueId, run, async () => {
+        await this.resumeExisting(queueId);
+      });
+    }
   }
 
   // Feature 034 Item 047 — rate-limit family + cause normalization +
@@ -722,7 +983,19 @@ export class SchegentWorkflowController {
   // resetsAtMs in audit, DELAYED_RETRY_CAP bounds attempts) preserved.
 
   private async persistTransition(_prev: WorkflowRun, next: WorkflowRun): Promise<WorkflowRun> {
-    const latest = this.store.getRun();
+    // Feature 093 (T036) — pattern C-2: the driver's write funnel resolves its
+    // queue from the Run it is persisting, so a transition can no longer land on
+    // a sibling's record.
+    //
+    // The `latest?.id === next.id` comparison **survives** the conversion, and is
+    // recorded here as a justified survivor for T040's sweep. Map addressing
+    // removes the case it could not previously distinguish — `latest` being some
+    // *other queue's* Run — but not the one it was written for: this queue's Run
+    // can still have been replaced (`deleteTask` cancels and the drain starts the
+    // next Task) while the aborting driver is mid-flight. Dropping the check
+    // would merge that successor's `phaseOverrides` into this Run's write.
+    const queueId = this.queue.queueIdForTask(next.featureId);
+    const latest = this.store.getRun(queueId);
     const merged =
       latest?.id === next.id
         ? {
@@ -743,7 +1016,7 @@ export class SchegentWorkflowController {
           }
         : next;
     await this.terminalTransitions?.begin(merged);
-    await this.store.setRun(merged);
+    await this.store.setRun(queueId, merged);
     return merged;
   }
 }

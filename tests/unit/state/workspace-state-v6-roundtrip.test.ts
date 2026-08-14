@@ -211,7 +211,13 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
     });
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
-    const persistedRun = memento.get<{ queueId?: string }>(KEYS.run);
+    // Feature 093 (T027) — `KEYS.run` is a `Record<queueId, WorkflowRun>` from
+    // v11 on, so the Run is read from under its key. The 030 claim being made
+    // is unchanged: the v5 → v6 collapse rewrites a Run's own `queueId` field
+    // to the default. Which key the v11 reshape then files it under is a
+    // separate question, owned by the migrator's own tests.
+    const persistedRuns = memento.get<Record<string, { queueId?: string }>>(KEYS.run);
+    const persistedRun = Object.values(persistedRuns ?? {})[0];
     expect(persistedRun?.queueId).toBe(DEFAULT_QUEUE_ID);
   });
 

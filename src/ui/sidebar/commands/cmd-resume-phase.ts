@@ -3,10 +3,8 @@ import type { CommandHandler } from './handler-contract';
 import { ack, exec } from './handler-helpers';
 
 export const handler: CommandHandler<ResumePhaseCommand> = async (ctx, cmd) => {
-  if (cmd.payload?.prompt) {
-    await exec(ctx, 'schegent.resumePhase', cmd.payload.prompt);
-  } else {
-    await exec(ctx, 'schegent.resumePhase');
-  }
+  // The prompt stays positional and optional; the queue is always sent, so a
+  // resume with no operator prompt still says which Run it resumes.
+  await exec(ctx, 'schegent.resumePhase', cmd.payload.prompt, cmd.payload.queueId);
   await ack(ctx, 'accepted');
 };

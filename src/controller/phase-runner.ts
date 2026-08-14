@@ -414,6 +414,7 @@ export class PhaseRunner {
       raw = await this.resolveRunner(inputs).invoke({
         phase: inputs.phase,
         iteration: inputs.iteration,
+        runId: inputs.runId,
         prompt,
         timeoutMs: inputs.timeoutMs,
         completionMarker: AUDIT_LOG_CLOSE_MARKER,

@@ -22,6 +22,7 @@ import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/stat
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 const T0 = 1_700_000_000_000;
 
@@ -151,7 +152,7 @@ async function makeDriver(
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as never,
     lock,
     persistTransition: async (_oldRun, newRun) => {
-      await store.setRun(newRun);
+      await store.setRun(DEFAULT_QUEUE_ID, newRun);
       return newRun;
     },
     scheduleAutoDrain: vi.fn()
@@ -192,7 +193,7 @@ describe('feature 092 (T134, BUG-002, FR-032a, SC-013) — primacy outlives the 
     const secondDrive = second.driver.drive(runFixture('run-2', 'task-2'), 'second');
     await second.entered;
     await first.driver.drive(runFixture('run-1', 'task-1'), 'first');
-    expect(first.store.getRun()?.currentPhase).toBe('done');
+    expect(first.store.getRun(DEFAULT_QUEUE_ID)?.currentPhase).toBe('done');
 
     // The first Run has ended. The second is still in flight, and the window is
     // still the window.
@@ -218,7 +219,7 @@ describe('feature 092 (T134, BUG-002, FR-032a, SC-013) — primacy outlives the 
 
     gate.resolve();
     await secondDrive;
-    expect(second.store.getRun()?.currentPhase).toBe('done');
+    expect(second.store.getRun(DEFAULT_QUEUE_ID)?.currentPhase).toBe('done');
   });
 
   it('leaves the tenure to activation and disposal, so both Runs ending keeps it held', async () => {

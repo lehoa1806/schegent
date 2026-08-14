@@ -91,7 +91,7 @@ async function populateAllSurfaces(): Promise<{
   await queue.enqueue('task B');
   await queue.markInFlight(a.id, 'run-A');
   await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'maintenance', 'operator');
-  await store.setRun(makeRun(a.id));
+  await store.setRun(DEFAULT_QUEUE_ID, makeRun(a.id));
   await store.setWatchdog({
     paused: true,
     pausedSince: 1_700_000_000_000,

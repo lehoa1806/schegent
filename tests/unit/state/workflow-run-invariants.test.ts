@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import type { WorkflowRun, PhaseBreakpoint, PhaseOverride } from '../../../src/state/workflow-run';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -79,19 +80,19 @@ function override(phaseId: string, action: PhaseOverride['action']): PhaseOverri
 describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feature 028)', () => {
   it('rejects manualPauseAt non-null with manualPauseCause null', () => {
     expect(() =>
-      store.setRun(baseRun({ manualPauseAt: 1_700_000_000_000, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: 1_700_000_000_000, manualPauseCause: null }))
     ).toThrow(/manualPauseAt.*manualPauseCause.*both null or both non-null/);
   });
 
   it('rejects manualPauseAt null with manualPauseCause non-null (operator-paused)', () => {
     expect(() =>
-      store.setRun(baseRun({ manualPauseAt: null, manualPauseCause: 'operator-paused' }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: 'operator-paused' }))
     ).toThrow(/manualPauseAt.*manualPauseCause.*both null or both non-null/);
   });
 
   it('rejects manualPauseAt null with manualPauseCause non-null (breakpoint-paused)', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: null,
           manualPauseCause: 'breakpoint-paused',
@@ -103,13 +104,13 @@ describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feat
 
   it('accepts both-null', async () => {
     await expect(
-      store.setRun(baseRun({ manualPauseAt: null, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: null }))
     ).resolves.toBeUndefined();
   });
 
   it('accepts both-non-null with breakpoint-paused + matching resumeTargetPhaseId', async () => {
     await expect(
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'breakpoint-paused',
@@ -124,19 +125,19 @@ describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feat
 describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
   it('rejects a breakpoint whose phaseId is not in pipeline.phases', () => {
     expect(() =>
-      store.setRun(baseRun({ phaseBreakpoints: [bp('unknown-phase')] }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('unknown-phase')] }))
     ).toThrow(/phaseBreakpoints phaseId 'unknown-phase' is not in pipeline.phases/);
   });
 
   it('rejects duplicate phaseIds in phaseBreakpoints', () => {
     expect(() =>
-      store.setRun(baseRun({ phaseBreakpoints: [bp('speckit-plan'), bp('speckit-plan')] }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('speckit-plan'), bp('speckit-plan')] }))
     ).toThrow(/phaseBreakpoints contains duplicate phaseId 'speckit-plan'/);
   });
 
   it('rejects a phaseId in both phaseBreakpoints and phaseOverrides[skipped]', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'skipped')]
@@ -147,7 +148,7 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
 
   it('rejects a phaseId in both phaseBreakpoints and phaseOverrides[disabled]', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'disabled')]
@@ -158,7 +159,7 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
 
   it('rejects a phaseId in both phaseBreakpoints and phaseOverrides[removed]', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'removed')]
@@ -168,12 +169,12 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
   });
 
   it('accepts an empty phaseBreakpoints (default for fresh runs)', async () => {
-    await expect(store.setRun(baseRun({ phaseBreakpoints: [] }))).resolves.toBeUndefined();
+    await expect(store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [] }))).resolves.toBeUndefined();
   });
 
   it('accepts multiple distinct breakpoints all in the pipeline', async () => {
     await expect(
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({ phaseBreakpoints: [bp('speckit-tasks'), bp('finalize')] })
       )
     ).resolves.toBeUndefined();
@@ -181,7 +182,7 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
 
   it('accepts a breakpoint on a phase that has a non-conflicting override on a different phase', async () => {
     await expect(
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('finalize', 'skipped')]
@@ -194,7 +195,7 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
 describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coupling (Feature 028)', () => {
   it('rejects manualPauseCause=breakpoint-paused with resumeTargetPhaseId=null', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'breakpoint-paused',
@@ -206,7 +207,7 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
 
   it('rejects resumeTargetPhaseId non-null with manualPauseCause=operator-paused', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'operator-paused',
@@ -218,7 +219,7 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
 
   it('rejects resumeTargetPhaseId non-null with manualPauseCause=queue-paused-mid-run', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'queue-paused-mid-run',
@@ -230,7 +231,7 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
 
   it('rejects resumeTargetPhaseId non-null with manualPauseCause=null', () => {
     expect(() =>
-      store.setRun(
+      store.setRun(DEFAULT_QUEUE_ID, 
         baseRun({
           manualPauseAt: null,
           manualPauseCause: null,
@@ -242,7 +243,7 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
 
   it('accepts resumeTargetPhaseId null with manualPauseCause=null', async () => {
     await expect(
-      store.setRun(baseRun({ resumeTargetPhaseId: null, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ resumeTargetPhaseId: null, manualPauseCause: null }))
     ).resolves.toBeUndefined();
   });
 });
@@ -251,7 +252,7 @@ describe('WorkflowRun invariants — phaseBreakpoints shape (Feature 028)', () =
   it('rejects phaseBreakpoints when not an array', () => {
     const bad = baseRun() as unknown as WorkflowRun & { phaseBreakpoints: unknown };
     (bad as { phaseBreakpoints: unknown }).phaseBreakpoints = 'not-an-array';
-    expect(() => store.setRun(bad as WorkflowRun)).toThrow(
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, bad as WorkflowRun)).toThrow(
       /phaseBreakpoints must be an array/
     );
   });

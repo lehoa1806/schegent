@@ -25,7 +25,17 @@ beforeEach(async () => {
   workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'raw-tx-'));
   logger = new SanitizedLogger();
   warnSpy = vi.spyOn(logger, 'warn');
-  writer = new RawTranscriptWriter(workspaceRoot, logger);
+  // Feature 093 (T082) — spool under this test's own workspace root. The
+  // writer scavenges its spool root with one `readdir` per instance, and the
+  // default is the shared `os.tmpdir()`; on a machine whose temp dir holds
+  // hundreds of thousands of entries that read is what made this file
+  // load-sensitive. The scavenger stays exercised — the dedicated test below
+  // injects its own root and asserts an abandoned spool is removed.
+  writer = new RawTranscriptWriter(
+    workspaceRoot,
+    logger,
+    path.join(workspaceRoot, 'raw-spool')
+  );
 });
 
 afterEach(async () => {

@@ -23,7 +23,7 @@ import {
   type FeatureRequestStatus,
   type QueueState
 } from '../queue/feature-request';
-import { STATE_SCHEMA_VERSION_V10 } from '../contracts/state-schema';
+import { STATE_SCHEMA_VERSION } from '../contracts/state-schema';
 
 export interface LegacyQueueLiftResult {
   readonly queueState: QueueState;
@@ -628,11 +628,22 @@ export interface MigrateV9ToV10Result {
  * work — refusing to open is the only outcome that does not risk discarding
  * them. `undefined` is a workspace that predates the numeric version and
  * migrates normally.
+ *
+ * Feature 093 (T014, defect D3) fixed two things about this function at once,
+ * because either alone leaves the defect standing. It compared against a
+ * hard-pinned `STATE_SCHEMA_VERSION_V10` — so at the v11 bump it would have
+ * started refusing workspaces this runtime writes itself — and it was called
+ * from nowhere but its own test, while `WorkspaceStateStore.initialize()`
+ * enforced the same rule from an inline copy. A guard with a duplicate is not
+ * one guard tested twice; it is two guards, and only the one with a test drifts
+ * visibly. `initialize()` now calls this function and keeps no copy, so the
+ * comparison lives in exactly one place and is keyed to the runtime constant
+ * rather than to whichever version was current when it was written.
  */
 export function assertPersistedVersionSupported(persistedNumeric: number | undefined): void {
-  if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION_V10) {
+  if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION) {
     throw new Error(
-      `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION_V10}. Update the extension before opening this workspace.`
+      `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION}. Update the extension before opening this workspace.`
     );
   }
 }

@@ -1728,4 +1728,41 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       expect.objectContaining({ capture: phaseCapture })
     );
   });
+
+  it('attributes the compaction invocation to the same Run as the phase', async () => {
+    // Feature 093 — census gap found by the concurrent-execution suite. T046
+    // gave `InvocationRequest` a `runId` so the monitor can attribute sidecar
+    // events per Run, and wired it through `PhaseRunner`; compaction spawns its
+    // own CLI subprocess and was missed. Unstamped, its events carry
+    // `runId: null` and the monitor drops them — invisible while one Run exists
+    // per window, but with two live subprocesses a stalling compaction belongs
+    // to a Run nobody can name.
+    const invoke = vi.fn(async (
+      _request: InvocationRequest,
+      _outputSink?: InvocationOutputSink
+    ) => makeRawOutput());
+    cliRunner = {
+      invoke,
+      cancelActive: vi.fn(() => false),
+      hasActiveProcess: false
+    } as unknown as ClaudeCliRunner;
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger(),
+      makeFakeRawTranscript()
+    );
+
+    await runner.run({
+      ...baseInputs,
+      runId: 'run-compaction',
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[0][0].runId).toBe('run-compaction');
+    expect(invoke.mock.calls[1][0].runId).toBe('run-compaction');
+  });
 });

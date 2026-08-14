@@ -6,7 +6,7 @@
   import PhaseProgression from './PhaseProgression.svelte';
   import PhaseLogFeed from './PhaseLogFeed/PhaseLogFeed.svelte';
   import RunOutputs from './RunOutputs.svelte';
-  import { runtimeForTask } from '../lib/queue-runtime-view';
+  import { defaultQueueId, runtimeForTask } from '../lib/queue-runtime-view';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -49,9 +49,7 @@
   const focusedPhase = $derived(
     visiblePhases.find((phase) => phase.name === selectedPhaseId) ?? activePhase ?? visiblePhases[0] ?? null
   );
-  const runTitle = $derived(
-    selectedTask?.label ?? inFlightRun?.feature?.label ?? 'No active run'
-  );
+  const runTitle = $derived(selectedTask?.label ?? inFlightRun?.feature?.label ?? 'No active run');
   const runIdentity = $derived(inFlightRun?.runId ?? activeTaskId);
   const pipelineLabel = $derived(
     selectedTask?.currentPipelineId ?? inFlightRun?.pipeline?.name ?? 'Default pipeline'
@@ -151,6 +149,7 @@
         activePipeline={inFlightRun?.pipeline ?? null}
         {activeTaskId}
         activeRunId={inFlightRun?.runId ?? null}
+        queueId={runtime?.queueId ?? defaultQueueId(snapshot)}
         isPrimary={snapshot.isPrimary}
         manualPauseAt={runtime?.manualPause?.at ?? null}
         manualPauseCause={runtime?.manualPause?.cause ?? null}

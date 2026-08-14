@@ -37,6 +37,7 @@ import { HistoryStore } from '../../src/state/history-store';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 const NOW = 1_700_000_000_000;
 
@@ -200,14 +201,14 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as any,
     lock: makeLock(),
     persistTransition: async (_prev: WorkflowRun, next: WorkflowRun) => {
-      await store.setRun(next);
+      await store.setRun(DEFAULT_QUEUE_ID, next);
       return next;
     },
     scheduleAutoDrain: vi.fn(),
     onRunTerminal: vi.fn()
   } as unknown as RunDriverDeps;
 
-  await store.setRun({
+  await store.setRun(DEFAULT_QUEUE_ID, {
     id: runId,
     taskId: runId,
     featureId: runId,
@@ -231,8 +232,8 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     resumeTargetPhaseId: null
   } as any);
 
-  await new RunDriver(deps).drive(store.getRun()!, 'produce the report');
-  return store.getRun()!;
+  await new RunDriver(deps).drive(store.getRun(DEFAULT_QUEUE_ID)!, 'produce the report');
+  return store.getRun(DEFAULT_QUEUE_ID)!;
 }
 
 /** The reader `extension.ts` supplies, composed with the real resolver. */

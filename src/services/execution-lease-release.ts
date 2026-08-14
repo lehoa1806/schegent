@@ -1,6 +1,6 @@
 import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
-import type { WorkflowRun } from '../state/workflow-run';
+import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import type { ExecutionLeasePort } from './auto-drain-coordinator';
 
 export interface ExecutionLeaseReleaseDeps {
@@ -8,9 +8,6 @@ export interface ExecutionLeaseReleaseDeps {
   readonly executionLease: ExecutionLeasePort;
   readonly logger: SanitizedLogger;
 }
-
-/** The statuses that end a Run's execution-lease tenure (FR-033a). */
-const TERMINAL_STATUSES = ['completed', 'failed', 'canceled'] as const;
 
 /**
  * Feature 092 (T132, T133, BUG-001, FR-033a) — end a queue execution lease's
@@ -27,6 +24,10 @@ const TERMINAL_STATUSES = ['completed', 'failed', 'canceled'] as const;
  * - Terminal is `completed | failed | canceled`, enumerated rather than derived
  *   by negating the active status — that negation also admits `paused`, and a
  *   paused Run still owns its queue; a later resume continues on the same lease.
+ *   Feature 093 (T044) reads that enumeration from `TERMINAL_RUN_STATUSES` in
+ *   `state/workflow-run.ts` instead of keeping a local copy, because session
+ *   disposal (RS-4) ends at the same three transitions and the two must not be
+ *   able to disagree about which those are.
  * - The queue is resolved from the Task row and never guessed. `queueIdForTask`
  *   falls back to the reserved queue for a row that is gone, which is right for
  *   a mutation that then finds nothing and wrong here: every Run in one window
@@ -46,7 +47,7 @@ export async function releaseExecutionLeaseForTerminalRun(
   deps: ExecutionLeaseReleaseDeps,
   run: WorkflowRun
 ): Promise<void> {
-  if (!(TERMINAL_STATUSES as readonly string[]).includes(run.status)) return;
+  if (!isTerminalRunStatus(run.status)) return;
   try {
     if (!deps.queue.findById(run.featureId)) {
       deps.logger.warn(

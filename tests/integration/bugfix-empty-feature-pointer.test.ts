@@ -43,6 +43,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -212,7 +213,7 @@ describe('Feature 026 T020a — speckit-bugfix fails fast on empty feature point
 
     // (a) Run halts via the existing audited-failure pathway (no new
     // state literal). currentPhase stays pinned at bugfix-report.
-    const failedRun = store.getRun()!;
+    const failedRun = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(failedRun.status).toBe('failed');
     expect(failedRun.currentPhase).toBe('bugfix-report');
     expect(failedRun.lastError).toBeTruthy();
@@ -246,10 +247,10 @@ describe('Feature 026 T020a — speckit-bugfix fails fast on empty feature point
     // CLI runner returning clean on subsequent invocations — the second
     // bugfix-report invocation will succeed), resume drives the pipeline
     // forward past bugfix-report.
-    const resumed = await controller.resumeExisting();
+    const resumed = await controller.resumeExisting(DEFAULT_QUEUE_ID);
     expect(resumed).toBe(true);
 
-    const completed = store.getRun()!;
+    const completed = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(completed.status).toBe('completed');
     expect(completed.currentPhase).toBe('done');
 

@@ -248,11 +248,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   let v6MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV5ToV6AuditEvent[] = [];
   // Feature 065 — v6 → v7 migration audit events; same forwarding contract.
   let v7MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV6ToV7AuditEvent[] = [];
+  // Feature 093 — v10 → v11 per-queue Run-record reshape; same forwarding
+  // contract, and destructured here rather than left on the result object,
+  // which is how feature 092's v10 events went unaudited.
+  let v11MigrationEvents: readonly import('./state/run-state-migrator').RunStateMigrationAuditEvent[] = [];
   let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
   try {
     const initResult = await store.initialize();
     v6MigrationEvents = initResult.v6MigrationEvents;
     v7MigrationEvents = initResult.v7MigrationEvents;
+    v11MigrationEvents = initResult.v11MigrationEvents;
     runRepairEvents = initResult.runRepairEvents;
   } catch (err) {
     void vscode.window.showErrorMessage(
@@ -330,11 +335,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     evidenceHealth
   );
 
-  // Forward all state-migration audit events (v5→v6, v6→v7, workflow-run
-  // repair) through the sanitized audit writer. Helper preserves the
-  // append-error best-effort semantics — never blocks activation.
+  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11,
+  // workflow-run repair) through the sanitized audit writer. Helper preserves
+  // the append-error best-effort semantics — never blocks activation.
   await forwardMigrationAuditEvents(
-    { v6MigrationEvents, v7MigrationEvents, runRepairEvents },
+    { v6MigrationEvents, v7MigrationEvents, v11MigrationEvents, runRepairEvents },
     auditWriter,
     logger
   );
@@ -357,10 +362,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     }
   });
   const protectedSessionRunIds = (): ReadonlySet<string> => {
-    const run = store.getRun();
-    return run !== null && (run.status === 'running' || run.status === 'paused')
-      ? new Set([run.id])
-      : new Set();
+    // Feature 093 (T037/T039) — C-4 aggregate. Retention protects the session
+    // directory of *every* Run still in flight, which is what the sweep needed
+    // all along; the ambient read could only ever name one, so under N Runs it
+    // would have left N-1 session groups eligible for deletion while their Runs
+    // were still writing into them.
+    const protectedIds = new Set<string>();
+    for (const run of Object.values(store.getRunMap())) {
+      if (run.status === 'running' || run.status === 'paused') protectedIds.add(run.id);
+    }
+    return protectedIds;
   };
   // Sweep once at activation. The service is fail-soft and restricts deletion
   // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
@@ -413,18 +424,20 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger
   );
   const runnerRegistry = new BackendRunnerRegistry({
+    // Feature 093 (T046) — forward each event to the Run that produced it.
+    // The hook stays one window-level function; only the addressing changes.
     monitorHook: (event) => {
       if (event.kind === 'started') {
-        monitor.onSpawnPid(event.pid);
+        monitor.onSpawnPid(event.runId, event.pid);
         if (event.pid !== null) {
           sampler.start(event.pid, Date.now());
         }
       } else if (event.kind === 'stdout-chunk') {
-        monitor.onStdoutChunk(event.chunk);
+        monitor.onStdoutChunk(event.runId, event.chunk);
       } else if (event.kind === 'stderr-chunk') {
-        monitor.onStderrChunk(event.chunk);
+        monitor.onStderrChunk(event.runId, event.chunk);
       } else if (event.kind === 'exited') {
-        monitor.onExit({
+        monitor.onExit(event.runId, {
           exitCode: event.exitCode,
           signal: event.signal,
           killed: event.killed,
@@ -474,11 +487,28 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     () => vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)),
     logger
   );
-  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun());
-  const lastRetryDecisionSink = async (decision: import('./state/workflow-run').LastRetryDecision) => {
-    const current = store.getRun();
-    if (current === null) return;
-    await store.setRun({ ...current, lastRetryDecision: decision });
+  // Feature 093 (T037) — C-3, bind at construction. The accessor is handed a
+  // resolver rather than an ambient thunk: its own method names the Run by id,
+  // and this binding answers that id from the whole record — the C-4 aggregate
+  // SC-012 exempts, not a Run reached without a queue. T041 rebinds the same
+  // resolver per session, where the queue is known and only that queue is read.
+  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(
+    (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
+  );
+  const lastRetryDecisionSink = async (
+    runId: string,
+    decision: import('./state/workflow-run').LastRetryDecision
+  ) => {
+    // Feature 093 (T047) — the decision names its Run, so the write names that
+    // Run's queue. T037's interim binding had no identity to work from and so
+    // declined whenever more than one Run existed, which is the same defect
+    // read defensively: a decision that belonged to a real Run went nowhere.
+    // Run ids are unique across queues, so this resolves to exactly one entry —
+    // the C-4 aggregate read SC-012 exempts, not a Run reached without a queue.
+    const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
+    if (entry === undefined) return;
+    const [queueId, current] = entry;
+    await store.setRun(queueId, { ...current, lastRetryDecision: decision });
   };
   const phaseRunner = new PhaseRunner(
     runnerRegistry,
@@ -649,7 +679,22 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       timeoutMs: 60 * 1000
     },
     async () => {
-      await controller.resumeExisting();
+      // Feature 093 (T037/T039) — C-4 aggregate. Credits returning un-blocks
+      // every Run that was waiting on them; the watchdog is per window because
+      // the credit balance is, but the resume it triggers is per queue.
+      //
+      // Feature 093 (T045) — the window has one timer and N queues can be in
+      // backoff, so the fire is claimed first: elapsed deadlines are consumed
+      // and the next-earliest is re-armed. A queue whose own backoff is still
+      // running is then skipped, because `resumeExisting` does not consult
+      // `pendingRetryAt` and would otherwise resume it early on a sibling's
+      // shorter deadline. A queue with no deadline at all is not in a delayed
+      // retry — that is the credit-poll arm, and it resumes as it always did.
+      controller.claimElapsedDelayedRetries();
+      for (const queueId of Object.keys(store.getRunMap())) {
+        if (controller.hasPendingDelayedRetry(queueId)) continue;
+        await controller.resumeExisting(queueId);
+      }
     }
   );
 
@@ -1155,10 +1200,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // persisted, this window must be primary so the sidebar mounts as enabled. See plan.md
   // "Activation Lifecycle" rule and FR-041(c).
   const lockResult = await lock.tryAcquire();
-  const persistedRun = store.getRun();
-  if (persistedRun && persistedRun.status === 'running' && lockResult.acquired) {
-    logger.info(`activation: resuming run ${persistedRun.id} at ${persistedRun.currentPhase}`);
-    void controller.resumeExisting();
+  // Feature 093 (T037/T039) — C-4 aggregate. A window that crashed mid-
+  // concurrency persisted several Runs, and each is re-armed on the queue that
+  // owns it. With one entry this is the previous behavior exactly.
+  if (lockResult.acquired) {
+    for (const [queueId, persistedRun] of Object.entries(store.getRunMap())) {
+      if (persistedRun.status !== 'running') continue;
+      logger.info(`activation: resuming run ${persistedRun.id} at ${persistedRun.currentPhase}`);
+      void controller.resumeExisting(queueId);
+    }
   }
 
   const dispose = async (): Promise<void> => {

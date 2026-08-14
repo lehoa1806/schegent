@@ -34,6 +34,7 @@ import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -212,7 +213,7 @@ describe('Feature 032 US1 — delayed-retry resume sets isContinue=true', () => 
     expect(runSpy.mock.calls[0][0].isContinue ?? false).toBe(false);
 
     // Pre-condition: state is paused with pendingRetryAt set.
-    const paused = store.getRun()!;
+    const paused = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(paused.delayedRetryCount).toBe(1);
     expect(paused.pendingRetryCause).toBe('transient_error');
 
@@ -221,7 +222,7 @@ describe('Feature 032 US1 — delayed-retry resume sets isContinue=true', () => 
     // retried phase) and possibly more times as the pipeline advances
     // through subsequent phases. We only care about call index 1: the
     // FIRST call after the resume, which is the continuation dispatch.
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
 
     // Post-condition: second runner.run() call (the retry of the
     // transient-failed phase) MUST have isContinue=true.
@@ -243,11 +244,11 @@ describe('Feature 032 US1 — delayed-retry resume sets isContinue=true', () => 
 
     expect(runSpy.mock.calls[0][0].isContinue ?? false).toBe(false);
 
-    const paused = store.getRun()!;
+    const paused = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(paused.delayedRetryCount).toBe(1);
     expect(paused.pendingRetryCause).toBe('rate_limit');
 
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
 
     expect(runSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     const secondCallInputs = runSpy.mock.calls[1][0];
@@ -403,7 +404,7 @@ describe('Feature 032 Phase 7 — loop iteration boundaries reset isContinue to 
 
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
-    await controller.resumeExisting();
+    await controller.resumeExisting(DEFAULT_QUEUE_ID);
     await flushAsync();
 
     // The very first call (call index 0) is fresh.

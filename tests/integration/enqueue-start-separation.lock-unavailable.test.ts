@@ -234,7 +234,7 @@ describe('Feature 065 (T053 / FR-014) — lock-unavailable-at-fire regression', 
     // remains correct: lock release alone is not enough.
     f.foreignLockHeld.value = false;
     await f.autoDrain.drainIfIdle();
-    expect(f.controller.startNew).not.toHaveBeenCalled();
+    expect(f.controller.admitNew).not.toHaveBeenCalled();
     expect(f.store.getQueue().queueLifecycle).toBe('idle-pending');
 
     // The operator's explicit "Start queue" click would then flip the

@@ -131,12 +131,21 @@ export interface PostPhaseInputs {
   readonly iterationCap: number;
   readonly activePhaseDef: PhaseDef | undefined;
   /**
-   * The persisted run snapshot read AFTER the runner returned. Lets the
-   * sequencer detect a manual-pause that landed mid-run (the operator
-   * toggled `manualPauseAt` while the CLI was executing). When null or
-   * has a different `id`, the manual-pause check is skipped.
+   * `manualPauseAt` as persisted AFTER the runner returned, for **this** Run.
+   * Lets the sequencer detect a manual pause that landed mid-run (the operator
+   * toggled it while the CLI was executing). `null` when no pause is recorded
+   * or the snapshot could not be read, in which case the check is skipped.
+   *
+   * Feature 093 (T040) — was `latestRun: WorkflowRun | null`, carrying an
+   * `id !== run.id` guard here because the caller read the single ambient Run
+   * slot and could hand over a *different* Run's snapshot. `RunDriver`
+   * now resolves the snapshot by the Run's own identity, so the guard had
+   * nothing left to catch. Narrowing the parameter to the one field the
+   * sequencer reads is what removes the comparison rather than merely deleting
+   * it: a foreign Run's pause timestamp is no longer something this signature
+   * can express.
    */
-  readonly latestRun: WorkflowRun | null;
+  readonly latestManualPauseAt: number | null;
   readonly now: number;
 }
 
@@ -235,7 +244,7 @@ export class PhaseSequencer {
    * queue, lock retain). The sequencer never mutates run state.
    */
   decideAfterPhase(inputs: PostPhaseInputs): PostPhaseDecision {
-    const { run, output, iteration, iterationCap, activePhaseDef, latestRun, now } = inputs;
+    const { run, output, iteration, iterationCap, activePhaseDef, latestManualPauseAt, now } = inputs;
 
     if (output.outcome === 'paused-at-breakpoint') {
       return {
@@ -323,11 +332,7 @@ export class PhaseSequencer {
       return { kind: 'break-unexpected', phaseResult, transition: decision, warnings };
     }
 
-    if (
-      latestRun !== null &&
-      latestRun.id === run.id &&
-      latestRun.manualPauseAt !== null
-    ) {
+    if (latestManualPauseAt !== null) {
       return { kind: 'pause-manual', phaseResult, transition: decision, warnings };
     }
 

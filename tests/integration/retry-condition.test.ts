@@ -21,6 +21,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -204,7 +205,7 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
     await controller.startNew(feature, 'specs/001-mock', { pipelineId: 'security' });
 
     expect(invokeCount.value).toBe(3);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
 
     // SC-004 — every consulted decision is recorded.
@@ -234,7 +235,7 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
     await controller.startNew(feature, 'specs/001-mock', { pipelineId: 'security' });
 
     expect(invokeCount.value).toBe(1);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
 
     const lines = await readAuditLog(tmpRoot);
@@ -257,7 +258,7 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
     await controller.startNew(feature, 'specs/001-mock', { pipelineId: 'security' });
 
     expect(invokeCount.value).toBe(2);
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('failed');
     expect(run.lastError?.message).toBe('cap_exhausted');
 

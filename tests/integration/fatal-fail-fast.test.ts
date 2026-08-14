@@ -16,6 +16,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -117,7 +118,7 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     const feature = await queue.enqueue('Add login');
     await controller.startNew(feature, null);
 
-    const run = store.getRun()!;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
 
     // (a) iteration count = 1 — only one CLI invocation happened (SC-002).
     expect(invokeCount.value).toBe(1);

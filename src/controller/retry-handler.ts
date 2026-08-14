@@ -54,12 +54,20 @@ export interface RetryHandlerDeps {
   notifier: Notifier;
   logger: SanitizedLogger;
   /**
-   * Lazy reader for the delayed-retry watchdog. The watchdog is constructed
-   * AFTER the controller (see `setWatchdog`), so the handler reads via a
-   * callback at the moment of use. This preserves the original
-   * `this.watchdog` late-read semantics from inline code.
+   * Feature 093 (T045) — arm this Run's delayed-retry deadline, addressed by the
+   * queue it belongs to.
+   *
+   * Replaces the former `getWatchdog()` lazy read, which handed the handler the
+   * window's one `CreditWatchdog` and let it call `pauseAndPoll` directly. That
+   * was correct while a window had one Run: there was one deadline, so one timer
+   * held it. With N Runs the deadline is per queue, and the handler must say
+   * whose it is arming — `RetryCoordinator` owns the registry that keeps N
+   * deadlines from collapsing onto one handle, and it is still the coordinator
+   * that talks to the watchdog. Late wiring is preserved: the coordinator reads
+   * its watchdog reference at the moment of the call, exactly as this callback
+   * used to.
    */
-  getWatchdog: () => DelayedRetryWatchdog | null;
+  armDelayedRetry: (queueId: string, cause: string, delayMs: number) => Promise<void>;
   auditWriter: Pick<AuditLogWriter, 'append'> | null;
   getRetryCap: () => number;
   persistTransition: (prev: WorkflowRun, next: WorkflowRun) => Promise<WorkflowRun>;
@@ -144,7 +152,7 @@ export class RetryHandler {
       delayedRetryCount: nextCount
     };
     const persisted = await this.deps.persistTransition(run, updated);
-    this.deps.statusBar.update({ kind: 'paused', phase: persisted.currentPhase });
+    this.deps.statusBar.update(persisted.id, { kind: 'paused', phase: persisted.currentPhase });
     // Feature 027 FR-012/FR-013 — `resetsAtMs` is the pre-buffer parsed
     // epoch (NOT `+ RETRY_BUFFER_MS`); operators reading the audit log
     // can derive the buffered retry as `resetsAtMs + 60_000`. Null when
@@ -164,17 +172,15 @@ export class RetryHandler {
       },
       outcome: 'info'
     });
-    const watchdog = this.deps.getWatchdog();
-    if (watchdog) {
-      await watchdog.pauseAndPoll(cause, {
-        durationOverrideMs: backoff,
-        skipStatusCheck: true
-      });
-    } else {
-      this.deps.logger.warn(
-        `handleDelayedRetry: watchdog not wired; persisted retry deadline ${scheduledAt} cannot be re-armed without restart`
-      );
-    }
+    // Feature 093 (T045) — the deadline belongs to this Run's queue, so the arm
+    // names it. `run.featureId` is the task the Run advances and the queue that
+    // owns the task owns the Run, so the queue is derivable here and needs no
+    // new parameter on the retry path.
+    await this.deps.armDelayedRetry(
+      this.deps.queue.queueIdForTask(persisted.featureId),
+      cause,
+      backoff
+    );
     return persisted;
   }
 
@@ -212,7 +218,7 @@ export class RetryHandler {
       delayedRetryCount: retryCap
     };
     const persisted = await this.deps.persistTransition(run, updated);
-    this.deps.statusBar.update({ kind: 'paused', phase: persisted.currentPhase });
+    this.deps.statusBar.update(persisted.id, { kind: 'paused', phase: persisted.currentPhase });
 
     // BUG-006 — evaluate whether the rate-limit branch can perform a
     // system-armed scheduled restore. All four conditions must hold:
