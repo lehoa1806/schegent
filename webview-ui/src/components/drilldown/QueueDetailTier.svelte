@@ -6,8 +6,7 @@
   // active/history tabs, the phase progression — is reused by embedding
   // `Dashboard` scoped to this queue via its one optional `queueId` prop, so this
   // component adds only what is genuinely new: the queue's identity, a throughput
-  // reading, a configuration affordance, the FR-047 row collapse, and the back
-  // step out.
+  // reading, a configuration affordance, the row list, and the back step out.
   //
   // Embedding rather than replacing also keeps `Dashboard.svelte` mounted, which
   // `tests/lint/svelte-surface-reachability.test.ts` requires; and the embedded
@@ -17,13 +16,31 @@
   // Mockup: docs/mockup/schegent_mockup.html `view-queue-detail` and
   // `modal-queue-config`.
 
+  // Feature 095 (US1, US2, US4) — the tier gains the three per-queue controls
+  // feature 092 registered commands for and never wired up: delete the queue,
+  // arm/disarm its scheduled start, and move a pending Task off it. All three
+  // post through `queue-control-ipc.ts` and none of them reaches for a `CMD_`
+  // constant; the workspace-scoped settings live a tier up, in `QueuesTier`.
+  //
+  // The third of those, the per-Task move, lives with the row list in
+  // `QueueDetailRows.svelte` — it acts on a Task, not on the queue — and the
+  // list went with it (T040). This file kept the queue-level controls and the
+  // one refusal line they share; the child reports its refusals up to it.
+
   import Dashboard from '../Dashboard.svelte';
+  import QueueDetailRows from './QueueDetailRows.svelte';
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_RENAME_QUEUE } from '../../lib/messages';
   import { queueLifecycleLabel } from '../../lib/queue-lifecycle-label';
-  import { findQueueRuntime } from '../../lib/queue-runtime-view';
-  import { buildQueueRunRows, type ConnectedRunRow } from '../../lib/queue-run-rows';
-  import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
+  import {
+    clearQueueSchedule,
+    confirmAndDeleteQueue,
+    refusalText,
+    setQueueSchedule
+  } from '../../lib/queue-control-ipc';
+  import { formatScheduleTarget, queueSchedule } from '../../lib/queue-schedule-view';
+  import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -55,28 +72,6 @@
   const tasks = $derived(runtime?.tasks ?? []);
   const queueName = $derived(runtime?.name ?? queueId);
 
-  // FR-047 — a connected run is ONE row. The collapse is derived from the
-  // aggregate's node projections, so the wire carries nothing extra for it.
-  const runRows = $derived(buildQueueRunRows(tasks, snapshot.connectedRuns));
-
-  type Row =
-    | { readonly kind: 'run'; readonly key: string; readonly position: number; readonly run: ConnectedRunRow }
-    | { readonly kind: 'task'; readonly key: string; readonly position: number; readonly task: QueueItem };
-
-  // Collapsed runs and standalone Tasks share one ordered list: a run sorts by
-  // its earliest member's position, so the operator reads the queue in the order
-  // the queue will work it rather than as two disjoint sections.
-  const rows = $derived<readonly Row[]>(
-    [
-      ...runRows.rows.map(
-        (run): Row => ({ kind: 'run', key: `run:${run.connectedRunId}`, position: run.position, run })
-      ),
-      ...runRows.standaloneTasks.map(
-        (task): Row => ({ kind: 'task', key: `task:${task.id}`, position: task.position, task })
-      )
-    ].sort((a, b) => a.position - b.position)
-  );
-
   // Throughput as this queue's own rows report it. Derived rather than published:
   // the counts are a fold over `QueueRuntime.tasks`, and a published total would
   // be a second source of truth for something the rows already say.
@@ -84,17 +79,35 @@
   const failedCount = $derived(tasks.filter((task) => task.status === 'failed').length);
   const pendingCount = $derived(runtime?.pendingCount ?? 0);
 
+  // US2 — the queue's registry schedule, read through the one seam. NOT gated on
+  // lifecycle: a queue that is actively draining can be armed, and the target
+  // must still read. The lifecycle-paired `scheduledStartAt` that
+  // `ScheduledStartIndicator` shows is a different mechanism and is left where
+  // it is (plan §R4).
+  const schedule = $derived(queueSchedule(snapshot, queueId));
+
+  // US1 — the default queue is not deletable. Resolved from the projection the
+  // operator can actually change, never from the `'default'` literal.
+  const isDefaultQueue = $derived(queueId === defaultQueueId(snapshot));
+
   let configuring = $state(false);
   let draftName = $state('');
+  let draftSchedule = $state('');
+  let refusal = $state<string | null>(null);
+  let busy = $state(false);
 
   function openConfig(): void {
     configuring = true;
     draftName = queueName;
+    draftSchedule = '';
+    refusal = null;
   }
 
   function closeConfig(): void {
     configuring = false;
     draftName = '';
+    draftSchedule = '';
+    refusal = null;
   }
 
   function submitRename(): void {
@@ -106,16 +119,53 @@
     closeConfig();
   }
 
-  function selectRow(row: Row): void {
-    onSelectRun(row.kind === 'run' ? row.run.connectedRunId : row.task.id);
+  async function deleteThisQueue(event: MouseEvent): Promise<void> {
+    refusal = null;
+    busy = true;
+    try {
+      const outcome = await confirmAndDeleteQueue(
+        queueId,
+        queueName,
+        event.currentTarget as HTMLElement
+      );
+      if (outcome.status === 'deleted') {
+        // The queue this tier is showing no longer exists; there is nothing left
+        // to render here (FR-005).
+        onBack();
+        return;
+      }
+      if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
+    } finally {
+      busy = false;
+    }
   }
 
-  function onRowKeyDown(event: KeyboardEvent, row: Row): void {
-    // A `<button>` fires click on Enter and Space in a browser; jsdom does not
-    // synthesise that, so FR-059's keyboard path is handled explicitly.
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    selectRow(row);
+  async function armSchedule(): Promise<void> {
+    // Verbatim (FR-007). The webview trims the operator's stray whitespace and
+    // otherwise neither parses the expression nor computes a target instant —
+    // `parseSchedule()` on the host owns the grammar and the arithmetic.
+    const expression = draftSchedule.trim();
+    if (expression.length === 0) return;
+    refusal = null;
+    busy = true;
+    try {
+      const result = await setQueueSchedule(queueId, expression);
+      if (result.status === 'rejected') refusal = refusalText(result.reason);
+      else draftSchedule = '';
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function disarmSchedule(): Promise<void> {
+    refusal = null;
+    busy = true;
+    try {
+      const result = await clearQueueSchedule(queueId);
+      if (result.status === 'rejected') refusal = refusalText(result.reason);
+    } finally {
+      busy = false;
+    }
   }
 </script>
 
@@ -135,15 +185,44 @@
         </span>
       </p>
     </div>
-    {#if isPrimary && !configuring}
-      <button
-        type="button"
-        data-testid="queue-config-open"
-        aria-label="Queue settings"
-        onclick={openConfig}
-      >Settings</button>
+    {#if isPrimary}
+      <div class="actions">
+        {#if !configuring}
+          <button
+            type="button"
+            data-testid="queue-config-open"
+            aria-label="Queue settings"
+            onclick={openConfig}
+          >Settings</button>
+        {/if}
+        <!--
+          FR-003 — the default queue is the one every unrouted Task lands on, so
+          deleting it has no coherent outcome. The control stays visible and
+          disabled with the reason attached, rather than disappearing: an absent
+          button is the shape this whole feature exists to fix.
+        -->
+        <button
+          type="button"
+          class="danger"
+          data-testid="queue-delete"
+          aria-label="Delete queue"
+          disabled={isDefaultQueue || busy}
+          aria-describedby={isDefaultQueue ? 'queue-delete-reason' : undefined}
+          onclick={deleteThisQueue}
+        >Delete Queue</button>
+      </div>
     {/if}
   </header>
+
+  {#if isPrimary && isDefaultQueue}
+    <p class="hint" id="queue-delete-reason" data-testid="queue-delete-disabled-reason">
+      The default queue cannot be deleted. Make another queue the default first.
+    </p>
+  {/if}
+
+  {#if refusal !== null}
+    <p class="refusal" role="alert" data-testid="queue-control-refusal">{refusal}</p>
+  {/if}
 
   {#if configuring}
     <div class="config-row">
@@ -160,49 +239,52 @@
     </div>
   {/if}
 
-  <div class="rows" data-testid="queue-detail-rows">
-    {#if rows.length === 0}
-      <p class="empty" data-testid="queue-detail-empty">This queue has no work yet.</p>
-    {:else}
-      {#each rows as row (row.key)}
-        {#if row.kind === 'run'}
-          <button
-            type="button"
-            class="row"
-            data-row-key={row.key}
-            data-testid="queue-run-row-{row.run.connectedRunId}"
-            data-selected={row.run.connectedRunId === selectedRunId ? 'true' : 'false'}
-            aria-label="Open connected run {row.run.label}"
-            onclick={() => selectRow(row)}
-            onkeydown={(event) => onRowKeyDown(event, row)}
-          >
-            <span class="row-label">{row.run.label}</span>
-            <span class="row-kind">Workflow</span>
-            <span class="row-progress">
-              {row.run.completedNodeCount} of {row.run.nodeCount} nodes
-            </span>
-            <span class="row-status">{row.run.status}</span>
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="row"
-            data-row-key={row.key}
-            data-testid="queue-task-row-{row.task.id}"
-            data-selected={row.task.id === selectedRunId ? 'true' : 'false'}
-            aria-label="Open run {row.task.label}"
-            onclick={() => selectRow(row)}
-            onkeydown={(event) => onRowKeyDown(event, row)}
-          >
-            <span class="row-label">{row.task.label}</span>
-            <span class="row-kind">Pipeline</span>
-            <span class="row-progress">{row.task.currentPhase ?? ''}</span>
-            <span class="row-status">{row.task.status}</span>
-          </button>
-        {/if}
-      {/each}
-    {/if}
-  </div>
+  {#if isPrimary}
+    <!--
+      US2 — the queue's registry schedule (FR-006 to FR-009). The armed reading
+      comes from `QueueSummary.schedule`, which the host computed; the expression
+      goes back out untouched.
+    -->
+    <div class="schedule-row" data-testid="queue-schedule">
+      {#if schedule !== null}
+        <p class="armed" data-testid="queue-schedule-armed">
+          <span class="armed-expression">{schedule.expression}</span>
+          <span class="armed-target" data-testid="queue-schedule-target">
+            starts {formatScheduleTarget(schedule.targetAt)}
+          </span>
+        </p>
+        <button
+          type="button"
+          data-testid="queue-schedule-disarm"
+          disabled={busy}
+          onclick={disarmSchedule}
+        >Disarm</button>
+      {/if}
+      <input
+        type="text"
+        data-testid="queue-schedule-expression"
+        aria-label="Schedule expression"
+        placeholder="in 30m"
+        bind:value={draftSchedule}
+      />
+      <button
+        type="button"
+        class="primary"
+        data-testid="queue-schedule-arm"
+        disabled={busy}
+        onclick={armSchedule}
+      >{schedule === null ? 'Arm' : 'Re-arm'}</button>
+    </div>
+  {/if}
+
+  <QueueDetailRows
+    {snapshot}
+    {queueId}
+    {isPrimary}
+    {selectedRunId}
+    {onSelectRun}
+    onRefusal={(text) => (refusal = text)}
+  />
 
   <Dashboard {snapshot} {queueId} />
 </section>
@@ -278,14 +360,48 @@
     outline-offset: 2px;
   }
 
-  .config-row {
+  .actions {
+    grid-area: action;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  button.danger {
+    color: var(--vscode-errorForeground);
+    border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border, transparent));
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .hint,
+  .refusal {
+    margin: 0;
+    padding: 0 20px;
+    font-size: 12px;
+  }
+
+  .hint {
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .refusal {
+    color: var(--vscode-errorForeground);
+  }
+
+  .config-row,
+  .schedule-row {
     display: flex;
     gap: 8px;
     align-items: center;
     padding: 0 20px;
   }
 
-  .config-row input {
+  .config-row input,
+  .schedule-row input {
     flex: 1;
     font: inherit;
     padding: 6px 8px;
@@ -295,46 +411,16 @@
     border-radius: 4px;
   }
 
-  .rows {
+  .armed {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 0 20px;
-  }
-
-  .empty {
+    gap: 8px;
     margin: 0;
     font-size: 12px;
     color: var(--vscode-descriptionForeground);
   }
 
-  .row {
-    display: grid;
-    grid-template-columns: 2fr auto 1fr auto;
-    gap: 12px;
-    align-items: center;
-    text-align: left;
-    border-radius: 0;
-    background: var(--vscode-editorWidget-background);
-  }
-
-  .row[data-selected='true'] {
-    background: var(--vscode-list-activeSelectionBackground, var(--vscode-editorWidget-background));
-  }
-
-  .row-label {
-    font-weight: 500;
+  .armed-expression {
     color: var(--vscode-editor-foreground);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .row-kind,
-  .row-progress,
-  .row-status {
-    font-size: 11px;
-    text-transform: uppercase;
-    color: var(--vscode-descriptionForeground);
-  }
 </style>
