@@ -13,6 +13,7 @@
     activeRunId?: string | null;
     /** Feature 093 (FR-018 / T080) — the queue whose Run these phases belong to. */
     queueId: string;
+    targetsSubjectRun: boolean; // Off-target guard — `PhaseControlMenu` documents it.
     isPrimary?: boolean;
     manualPauseAt?: string | null;
     manualPauseCause?:
@@ -38,6 +39,7 @@
     activeTaskId = null,
     activeRunId = null,
     queueId,
+    targetsSubjectRun,
     isPrimary = true,
     manualPauseAt = null,
     manualPauseCause = null,
@@ -140,6 +142,7 @@
       {activeTaskId}
       {activeRunId}
       {queueId}
+      {targetsSubjectRun}
       {manualPauseAt}
       {phaseOverrides}
       {phaseBreakpoints}

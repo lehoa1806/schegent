@@ -830,6 +830,86 @@ describe('Dashboard Activity Feed click-to-navigate (021)', () => {
   // selects that exact Activity Feed phase" test above.
 });
 
+// Off-target phase controls — the dashboard's phase strip has two derivations
+// of "which Run is this about" and they can disagree. The tiles come from
+// `effectivePhases`, which follows the activity-feed selection; the controls are
+// addressed by queue, which follows whatever is executing. A *failed* task is the
+// shape that matters: its `currentPhase` resolves to an `active` tile, so the
+// menu found an active phase, enabled itself, and pointed Pause/Restart/Skip at
+// the Run still executing beside it. A completed task would disable the
+// controls for an unrelated reason (no active tile) and prove nothing.
+describe('Dashboard phase controls follow the displayed task', () => {
+  function buildMismatchedSnapshot(): WorkflowSnapshot {
+    return buildSnapshot({
+      // The runtime's Run and the queue's in-flight row are the same Task —
+      // any other pairing is a snapshot the host does not emit, and it would
+      // make the baseline below pass for the wrong reason.
+      activeFeature: Object.freeze({
+        id: 'run-active',
+        label: 'still running',
+        startedAt: '2026-05-10T11:30:00.000Z'
+      }),
+      phases: Object.freeze([
+        buildPhase('speckit-specify', 1, 'completed'),
+        buildPhase('speckit-plan', 2, 'active')
+      ]),
+      availablePhases: Object.freeze([
+        Object.freeze({ id: 'speckit-specify', name: 'Specify', instruction: '', loopable: false }),
+        Object.freeze({ id: 'speckit-plan', name: 'Plan', instruction: '', loopable: false })
+      ]),
+      queue: buildQueue({
+        inFlight: buildQueueItem({
+          id: 'run-active',
+          label: 'still running',
+          status: 'in-flight',
+          currentPhase: 'speckit-plan',
+          currentPipelineId: 'standard',
+          startedAt: '2026-05-10T11:30:00.000Z'
+        }),
+        recent: Object.freeze([
+          buildQueueItem({
+            id: 'run-failed',
+            label: 'failed feature',
+            status: 'failed',
+            currentPhase: 'speckit-plan',
+            currentPipelineId: 'standard',
+            completedAt: '2026-05-10T12:00:00.000Z'
+          })
+        ])
+      })
+    });
+  }
+
+  it('disables the queue-addressed controls once the feed shows another task', async () => {
+    const { getByTestId } = render(Dashboard, { props: { snapshot: buildMismatchedSnapshot() } });
+
+    // Baseline: with the feed following the executing Run, these act on it.
+    expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('false');
+
+    await fireEvent.click(getByTestId('dashboard-queue-item-select-run-failed'));
+    await tick();
+
+    // The strip is now drawing the failed task's phases, so the menu still sees
+    // an active phase — but it is not this queue's active phase.
+    expect(getByTestId('phase-progression-speckit-plan').getAttribute('data-state')).toBe('active');
+    expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('phase-control-skip').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('phase-control-pause').getAttribute('aria-disabled')).toBe('true');
+    expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps Delete available for the task the operator is looking at', async () => {
+    // Delete posts the displayed Task id and the displayed phase, so it is the
+    // one control the address guard must leave alone.
+    const { getByTestId } = render(Dashboard, { props: { snapshot: buildMismatchedSnapshot() } });
+
+    await fireEvent.click(getByTestId('dashboard-queue-item-select-run-failed'));
+    await tick();
+
+    expect(getByTestId('phase-control-delete').getAttribute('aria-disabled')).toBe('false');
+  });
+});
+
 describe('Dashboard History to Activity Feed integration (069)', () => {
   const historyEntry: HistoryEntry = Object.freeze({
     runId: 'run-history-only',

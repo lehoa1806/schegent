@@ -33,7 +33,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
   it('renders all 15 tiles in the DOM for a 15-phase pipeline', () => {
     const phases = makePipeline(15);
     const { container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
     });
     const tiles = container.querySelectorAll('[data-testid^="phase-progression-phase-"]');
     expect(tiles.length).toBe(15);
@@ -48,7 +48,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
   it('marks the container with data-large-pipeline="true" when phases.length >= 10', () => {
     const phases = makePipeline(12);
     const { container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
     });
     const list = container.querySelector('[data-testid="phase-progression-list"]');
     expect(list).not.toBeNull();
@@ -58,7 +58,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
   it('marks the container with data-large-pipeline="false" when phases.length < 10', () => {
     const phases = makePipeline(7);
     const { container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
     });
     const list = container.querySelector('[data-testid="phase-progression-list"]');
     expect(list).not.toBeNull();
@@ -78,7 +78,7 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
   it('surfaces the activePipeline.name in the header when set and not "standard"', () => {
     const phases = makePipeline(5);
     const { container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases,
         activeFeature: { id: 'f-1', label: 'My feature', startedAt: '2026-05-10T00:00:00.000Z' },
         activePipeline: { id: 'security', name: 'Security Audit' }
@@ -92,13 +92,13 @@ describe('PhaseProgression — large pipelines (T047, US3, SC-005)', () => {
   it('hides the pipeline suffix when activePipeline is null or "standard"', () => {
     const phases = makePipeline(5);
     const { container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeFeature: null, activePipeline: null }
     });
     const header = container.querySelector('[data-testid="dashboard-phase-progression-header"]');
     expect(header!.textContent).not.toContain('Pipeline:');
     cleanup();
     const { container: c2 } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases,
         activeFeature: null,
         activePipeline: { id: 'standard', name: 'Standard' }

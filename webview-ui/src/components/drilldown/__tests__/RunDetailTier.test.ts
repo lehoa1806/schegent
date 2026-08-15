@@ -249,6 +249,37 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
     expect(getByTestId('run-detail-live-feed').textContent).toMatch(/idle/i);
   });
 
+  it('disables the phase controls when the Run executing here is a different one', () => {
+    // The phase strip below the title is the *queue's* strip, and its controls
+    // are addressed by queue alone. On this tier — one destination, one Run —
+    // that put a live Pause/Restart/Skip under the title of a Task that is not
+    // the one they would act on. Same `isExecuting` conjunct the live feed
+    // above already applies, for the same reason.
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+        inFlightTaskId: 'sibling'
+      })
+    );
+
+    expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('phase-control-skip').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('phase-control-pause').getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('leaves the phase controls live for the Run this tier is about', () => {
+    // The other half of the guard: disabling everything unconditionally would
+    // pass the test above and take the feature away.
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1'
+      })
+    );
+
+    expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('false');
+  });
+
   it('offers the Task’s lifecycle controls', () => {
     const { getByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })] })

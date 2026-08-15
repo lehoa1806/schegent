@@ -55,7 +55,7 @@ afterEach(() => cleanup());
 describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () => {
   it('renders "Pause when reached" when the selected phase is pending and has no breakpoint/override', () => {
     const { getByTestId, queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -78,7 +78,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides "Pause when reached" when the selected phase is the active phase (in-flight)', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-tasks',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -95,7 +95,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides "Pause when reached" when the selected phase has an override', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -112,7 +112,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('renders "Cancel scheduled pause" (and hides Set) when a breakpoint is armed on the selected phase', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-1',
@@ -130,7 +130,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides both actions when not primary host', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: false,
         activeRunId: 'run-1',
@@ -148,7 +148,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('hides both actions when activeRunId is null', () => {
     const { queryByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: null,
@@ -164,9 +164,51 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
     expect(queryByTestId('phase-control-clear-breakpoint')).toBeNull();
   });
 
+  it('hides both actions when the view is showing a task other than the executing run', () => {
+    // Both actions post `activeRunId` — the Run the queue is executing —
+    // together with `selectedPhase`, a tile from whatever the surface chose to
+    // display. On a mismatched surface that arms a breakpoint on one Run at a
+    // phase named by another, and the armed pause then fires on a Run the
+    // operator never touched. Hidden rather than disabled, matching how these
+    // two already behave when there is no pending phase to arm.
+    const { queryByTestId } = render(PhaseControlMenu, {
+      props: { targetsSubjectRun: false, queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-plan',
+        isPrimary: true,
+        activeRunId: 'run-1',
+        manualPauseAt: null,
+        selectedPhase: 'speckit-tasks',
+        selectedPhaseState: 'not-started',
+        phaseOverrides: [],
+        phaseBreakpoints: []
+      }
+    });
+
+    expect(queryByTestId('phase-control-set-breakpoint')).toBeNull();
+    expect(queryByTestId('phase-control-clear-breakpoint')).toBeNull();
+  });
+
+  it('hides "Cancel scheduled pause" on an armed phase the view is not showing', () => {
+    const { queryByTestId } = render(PhaseControlMenu, {
+      props: { targetsSubjectRun: false, queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-plan',
+        isPrimary: true,
+        activeRunId: 'run-1',
+        manualPauseAt: null,
+        selectedPhase: 'speckit-tasks',
+        selectedPhaseState: 'not-started',
+        phaseOverrides: [],
+        phaseBreakpoints: [{ phaseId: 'speckit-tasks' }]
+      }
+    });
+
+    expect(queryByTestId('phase-control-clear-breakpoint')).toBeNull();
+    expect(queryByTestId('phase-control-set-breakpoint')).toBeNull();
+  });
+
   it('clicking "Pause when reached" calls setPhaseBreakpoint with the active run id and selected phase', async () => {
     const { getByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-42',
@@ -185,7 +227,7 @@ describe('PhaseControlMenu — future-phase breakpoint actions (028 US3)', () =>
 
   it('clicking "Cancel scheduled pause" calls clearPhaseBreakpoint with the active run id and selected phase', async () => {
     const { getByTestId } = render(PhaseControlMenu, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         isPrimary: true,
         activeRunId: 'run-42',

@@ -28,6 +28,33 @@
      * refuses an unaddressed control at the IPC boundary.
      */
     queueId: string;
+    /**
+     * Whether the Run these controls address is the Run the surrounding
+     * surface is *about*. Closes the off-target-phase-controls defect recorded
+     * in `docs/features/bugs/`
+     * `phase-controls-target-a-run-the-operator-is-not-viewing.md`.
+     *
+     * The two are not the same question, and every control below except Delete
+     * is addressed by `queueId` — that is, at whichever Run the queue is
+     * executing — while the phase tiles it reads (`currentPhase`,
+     * `selectedPhase`) come from whatever the surface chose to display. A
+     * surface showing a finished Task beside an executing one therefore had a
+     * well-formed control menu pointed at a Run the operator was not looking
+     * at, and the host could not refuse it: the command named a real queue with
+     * a real Run on it.
+     *
+     * Required, not defaulted. A default of `true` is a guess that reads as
+     * "correctly addressed", and the failure it admits is silent — the whole
+     * defect was a surface that enabled controls it had no business enabling.
+     *
+     * Both wiring sites answer it the same way, at the point where they form
+     * the address: `inFlightRun?.feature?.id === activeTaskId` in
+     * `DashboardActivityPane`, `isExecuting` in `RunDetailTier`. That is a
+     * comparison of the two values already in disagreement, not a third
+     * opinion about them — and it fails closed when the queue holds no Run at
+     * all, which a display-side flag would not.
+     */
+    targetsSubjectRun: boolean;
     manualPauseAt?: string | null;
     phaseOverrides?: readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed' }[];
     /**
@@ -49,6 +76,7 @@
     activeTaskId = null,
     activeRunId = null,
     queueId,
+    targetsSubjectRun,
     manualPauseAt = null,
     phaseOverrides = [],
     selectedPhase = null,
@@ -59,15 +87,43 @@
 
   const hasActivePhase = $derived(currentPhase !== null);
   const isManuallyPaused = $derived(manualPauseAt !== null);
-  const pauseDisabled = $derived(!isPrimary || !hasActivePhase || isManuallyPaused);
-  const resumeDisabled = $derived(!isPrimary || !hasActivePhase || !isManuallyPaused);
-  const restartDisabled = $derived(!isPrimary || !hasActivePhase);
+  /**
+   * The conjunct every `queueId`-addressed control shares, spelled once rather
+   * than repeated per control — the off-target defect was in part a shape where
+   * each control restated its own precondition, so a missing conjunct was
+   * invisible.
+   */
+  const canControlRun = $derived(isPrimary && targetsSubjectRun && hasActivePhase);
+  const pauseDisabled = $derived(!canControlRun || isManuallyPaused);
+  const resumeDisabled = $derived(!canControlRun || !isManuallyPaused);
+  const restartDisabled = $derived(!canControlRun);
   const hasOverride = $derived(
     currentPhase !== null && phaseOverrides.some((override) => override.phaseId === currentPhase)
   );
-  const overrideDisabled = $derived(!isPrimary || !hasActivePhase);
-  const enableDisabled = $derived(!isPrimary || !hasActivePhase || !hasOverride);
+  const overrideDisabled = $derived(!canControlRun);
+  const enableDisabled = $derived(!canControlRun || !hasOverride);
+  /**
+   * Delete is deliberately NOT gated on `targetsSubjectRun`, and it is the one
+   * control that is not: it posts `removeTaskPhase(activeTaskId, currentPhase)`
+   * — a Task id and a phase drawn from the *displayed* set, both of which
+   * describe the surface's own subject. It is already addressed correctly, so
+   * disabling it here would remove a working capability to fix a defect it does
+   * not have. The bug report proposed conjoining the guard into every
+   * `*Disabled`; that over-applies, and this is the exception.
+   */
   const deleteDisabled = $derived(!isPrimary || !hasActivePhase || activeTaskId === null);
+
+  /**
+   * Why a control is greyed out, when the reason is the address rather than the
+   * phase. A control that fails closed without saying so reads as a broken
+   * extension; this is the one state an operator cannot infer from the surface.
+   */
+  const OFF_TARGET_TITLE =
+    'Unavailable while this view is showing a task other than the run executing on this queue.';
+
+  function controlTitle(base: string): string {
+    return targetsSubjectRun ? base : OFF_TARGET_TITLE;
+  }
 
   // Feature 028 US3 — breakpoint action visibility.
   // "Pause when reached" surfaces when:
@@ -87,15 +143,22 @@
   const selectedIsPending = $derived(
     selectedPhase !== null && selectedPhaseState === 'not-started'
   );
+  //   - Off-target — the surface's subject is the Run `activeRunId` names. Both
+  //     breakpoint actions post `activeRunId` (the executing Run) together with
+  //     `selectedPhase` (a tile from the displayed set), so on a mismatched
+  //     surface they arm a breakpoint on one Run at a phase named by another.
+  //     Hidden rather than disabled, matching how they already behave when
+  //     there is no pending phase to arm.
   const showSetBreakpoint = $derived(
     isPrimary &&
+      targetsSubjectRun &&
       activeRunId !== null &&
       selectedIsPending &&
       !selectedHasOverride &&
       !selectedHasBreakpoint
   );
   const showClearBreakpoint = $derived(
-    isPrimary && activeRunId !== null && selectedHasBreakpoint
+    isPrimary && targetsSubjectRun && activeRunId !== null && selectedHasBreakpoint
   );
 
   function onSetBreakpoint(): void {
@@ -175,7 +238,7 @@
         data-testid="phase-control-resume"
         aria-label="Resume active phase"
         aria-disabled={aria(resumeDisabled)}
-        title="Resume active phase"
+        title={controlTitle('Resume active phase')}
         onclick={onResume}
       >Resume</button>
     </div>
@@ -185,7 +248,7 @@
       data-testid="phase-control-pause"
       aria-label="Pause active phase"
       aria-disabled={aria(pauseDisabled)}
-      title="Pause active phase"
+      title={controlTitle('Pause active phase')}
       onclick={onPause}
     >Pause</button>
   {/if}
@@ -194,7 +257,7 @@
     data-testid="phase-control-restart"
     aria-label="Restart active phase"
     aria-disabled={aria(restartDisabled)}
-    title="Restart active phase"
+    title={controlTitle('Restart active phase')}
     onclick={onRestart}
   >Restart</button>
   <button
@@ -202,7 +265,7 @@
     data-testid="phase-control-skip"
     aria-label="Skip active phase"
     aria-disabled={aria(overrideDisabled)}
-    title="Skip active phase"
+    title={controlTitle('Skip active phase')}
     onclick={onSkip}
   >Skip</button>
   {#if hasOverride}
@@ -211,7 +274,7 @@
       data-testid="phase-control-enable"
       aria-label="Enable active phase"
       aria-disabled={aria(enableDisabled)}
-      title="Enable active phase"
+      title={controlTitle('Enable active phase')}
       onclick={onEnable}
     >Enable</button>
   {:else}
@@ -220,7 +283,7 @@
       data-testid="phase-control-disable"
       aria-label="Disable active phase"
       aria-disabled={aria(overrideDisabled)}
-      title="Disable active phase"
+      title={controlTitle('Disable active phase')}
       onclick={onDisable}
     >Disable</button>
   {/if}
