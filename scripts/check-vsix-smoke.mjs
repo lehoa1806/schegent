@@ -22,12 +22,26 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   // Vite code-split chunks and their extracted stylesheets. Names are
   // build-assigned, so a new lazily-loaded surface or a change in CSS
   // emission order shows up here as a smoke-test failure — that is the
-  // point: packaged content is pinned, not pattern-matched.
+  // point: packaged content is pinned, not pattern-matched. Each chunk below
+  // must name a module that exists under `webview-ui/src/`; an entry that
+  // resolves to nothing is the signal the pin was updated without being
+  // checked. What the pin is really guarding is the *absence* of everything
+  // not listed — source maps above all, plus fixtures, dotfiles, and
+  // dependency trees — so widening it is a review step, not a rebuild step.
   'extension/dist/webview/chunks/HistoryDashboard.js',
+  'extension/dist/webview/chunks/HistorySection.js',
   'extension/dist/webview/chunks/MetricsDashboard.js',
+  'extension/dist/webview/chunks/PhaseProgression.js',
   'extension/dist/webview/chunks/PipelineBuilder.js',
+  'extension/dist/webview/chunks/QueueDetailTier.js',
+  'extension/dist/webview/chunks/QueueItem.js',
+  'extension/dist/webview/chunks/RunDetailTier.js',
+  'extension/dist/webview/chunks/RunsSurface.js',
   'extension/dist/webview/chunks/SettingsSurface.js',
   'extension/dist/webview/chunks/SystemTab.js',
+  'extension/dist/webview/chunks/WorkflowRun.js',
+  'extension/dist/webview/chunks/format-duration.js',
+  'extension/dist/webview/chunks/format.js',
   'extension/dist/webview/chunks/i18n.js',
   'extension/dist/webview/chunks/theme.js',
   'extension/dist/webview/dashboard.css',
@@ -41,7 +55,14 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/dist/webview/index4.css',
   'extension/dist/webview/index5.css',
   'extension/dist/webview/index6.css',
-  'extension/dist/webview/index7.css'
+  'extension/dist/webview/index7.css',
+  'extension/dist/webview/index8.css',
+  'extension/dist/webview/index9.css',
+  'extension/dist/webview/index10.css',
+  'extension/dist/webview/index11.css',
+  'extension/dist/webview/index12.css',
+  'extension/dist/webview/index13.css',
+  'extension/dist/webview/index14.css'
 ]);
 
 function findEndOfCentralDirectory(buf, vsixPath) {
