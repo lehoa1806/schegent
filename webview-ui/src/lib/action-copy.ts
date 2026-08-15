@@ -23,7 +23,8 @@ export type ActionKey =
   | 'catalog.remove-pipeline'
   | 'catalog.remove-workflow'
   | 'catalog.reset-workflows'
-  | 'run.overwrite-output';
+  | 'run.overwrite-output'
+  | 'queue.delete';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -84,6 +85,14 @@ export type ActionCopyContext = {
   'run.overwrite-output': {
     readonly portName: string;
     readonly target: string;
+  };
+  // Feature 095 (FR-002) — both counts come from the host's deletion probe, not
+  // from the snapshot the operator is looking at. The prompt has to state what
+  // the delete will actually do, and the snapshot may already have moved on.
+  'queue.delete': {
+    readonly queueName: string;
+    readonly pendingTaskCount: number;
+    readonly connectedRunCount: number;
   };
 };
 
@@ -196,6 +205,13 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
       'The **{portName}** output is targeted at `{target}`, which already exists. Running this Pipeline replaces it. This cannot be undone.',
     confirmLabel: 'Overwrite',
     severity: 'destructive'
+  },
+  'queue.delete': {
+    title: 'Delete queue?',
+    bodyTemplate:
+      'Deletes **{queueName}**{impactSummary}. This cannot be undone.',
+    confirmLabel: 'Delete Queue',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -208,6 +224,10 @@ export const CLEAN_ALL_LOCK_CONTENTION_TOAST =
   'Clean All could not start — another operation is in progress.';
 export const CLEAN_ALL_PERSISTENCE_ERROR_TOAST =
   'Clean All could not complete — workspace state could not be written.';
+
+function plural(count: number, noun: string): string {
+  return count === 1 ? noun : `${noun}s`;
+}
 
 // Render a body template with its typed context. The function is generic
 // over `ActionKey` so the type checker rejects passing the wrong context
@@ -294,6 +314,25 @@ export function renderActionBody<K extends ActionKey>(
       return entry.bodyTemplate
         .replace('{portName}', ctx.portName)
         .replace('{target}', ctx.target);
+    }
+    case 'queue.delete': {
+      const ctx = context as ActionCopyContext['queue.delete'];
+      // An empty queue with no bound runs says nothing beyond its name — the
+      // alternative reads "0 pending tasks and 0 connected runs", which is
+      // noise on the one case where the delete is uncontroversial.
+      const parts: string[] = [];
+      if (ctx.pendingTaskCount > 0) {
+        parts.push(`**${ctx.pendingTaskCount}** pending ${plural(ctx.pendingTaskCount, 'task')}`);
+      }
+      if (ctx.connectedRunCount > 0) {
+        parts.push(
+          `**${ctx.connectedRunCount}** bound connected ${plural(ctx.connectedRunCount, 'run')}`
+        );
+      }
+      return entry.bodyTemplate.replace(
+        '{impactSummary}',
+        parts.length === 0 ? '' : `, along with ${parts.join(' and ')}`
+      );
     }
     case 'queue.pause':
     case 'queue.resume':

@@ -25,8 +25,15 @@ export interface AckResult {
   readonly reason?: string;
   // Feature 020 — optional typed payload from the read-only phase-log
   // IPC surface (see webview-ui/src/lib/phase-log-ipc.ts for the
-  // canonical caller). Mutating commands MUST leave this field
-  // absent; helpers that don't need it can ignore it.
+  // canonical caller). Helpers that don't need it can ignore it.
+  //
+  // Feature 095 (T008) — corrected. This said "mutating commands MUST leave
+  // this field absent", which was already untrue when it was written: a
+  // two-phase mutating command populates `result` on the *refusal* that asks
+  // for confirmation, carrying the impact the prompt has to state.
+  // `CMD_DELETE_QUEUE` does exactly that (see queue-control-ipc.ts). The rule
+  // that does hold is narrower — no mutating command returns a success value
+  // here; an accepted mutation is observed through the next snapshot.
   readonly result?: unknown;
 }
 

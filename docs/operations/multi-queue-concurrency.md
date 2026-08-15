@@ -35,19 +35,37 @@ You cannot create the twenty-first queue. The attempt is refused, not silently c
 
 Both are mutating actions, so they work only in the primary window. Travelling between tiers is not a mutation and stays available in a secondary window.
 
-## What has no dashboard control yet
+## Delete, move, and the workspace settings
 
-Delete, set schedule, clear schedule, save queue settings and move-task-between-queues are reinstated end to end on the host — each is a validated IPC command with a handler, primary-window gated and audited — but no tier renders a control for them in this release. Practical consequences:
+Feature 092 reinstated delete, set schedule, clear schedule, save queue settings and move-task-between-queues end to end on the host, but shipped no control for any of them. Feature 095 added the controls. Where each one lives:
 
-- A queue you create stays until a later release adds the delete control. Pause it if you are done with it.
-- Per-queue scheduled starts are enforced everywhere they are described below, and nothing arms one from the dashboard today. The behaviour is live; the affordance is not.
-- Move a task between queues by removing it from one and re-enqueueing it in the other.
+| Action | Control | Tier |
+|---|---|---|
+| Delete a queue | **Delete Queue** | Queue Detail |
+| Arm or re-arm a queue schedule | **Arm** / **Re-arm**, beside the schedule field | Queue Detail |
+| Clear a queue schedule | **Disarm** | Queue Detail |
+| Move a pending task to another queue | **Move to…**, beside the task row | Queue Detail |
+| Concurrency cap and default queue | **Queue Settings** | Queues |
 
-## Scheduled starts (behaviour, not yet an affordance)
+Three things to know before you use them:
 
-A queue with a scheduled start sits in the `idle-pending` lifecycle: it holds its pending tasks and deliberately does not auto-promote until its trigger fires or you start it by hand. Each queue's timer is independent — up to twenty may be armed at once, and firing or cancelling one leaves the rest armed.
+- **Delete confirms first, and the default queue is exempt.** On the default queue the control stays visible and disabled with the reason attached — deleting the queue every unrouted task lands on has no coherent outcome. Make another queue the default from **Queue Settings**, and the control enables.
+- **Only a pending task moves.** A task that has started is executing against its queue's lease and a finished task is a record, so **Move to…** appears on pending rows only.
+- **The two workspace settings are not on Queue Detail, deliberately.** The concurrency cap and the default queue belong to the workspace, not to whichever queue you happen to be looking at, so they sit behind **Queue Settings** on the Queues tier. Both save in one write. The cap's range is the host's rule, not the field's: a value outside `1..20` travels, is refused, and the refusal is shown — it is never silently clamped as you type.
 
-The lockstep is strict: a queue either has both a scheduled start and the `idle-pending` lifecycle, or neither. You will never see one without the other.
+All of these are mutating actions, so they work only in the primary window.
+
+## Scheduled starts
+
+Two different mechanisms can start a queue at a time you choose. They are independent, they are stored separately, and a queue may carry one, both, or neither — so read which one you are looking at before you reason about it.
+
+**Lifecycle scheduled start.** Choose a start mode when you start a queue, and the queue moves into the `idle-pending` lifecycle: it holds its pending tasks and deliberately does not auto-promote until its trigger fires or you start it by hand. This is the one the lifecycle badge reports, and the one the rest of this page means by `idle-pending`.
+
+The lockstep is strict, and it is per queue: a queue either has both a scheduled start and the `idle-pending` lifecycle, or neither. You will never see one without the other, and one queue's armed start says nothing about another's lifecycle.
+
+**Queue schedule.** Type an expression into the schedule field on Queue Detail and press **Arm**. This is stored on the queue's registry entry rather than in its lifecycle, so arming it does not move the queue to `idle-pending` and does not show up on the lifecycle badge — the armed reading appears in the schedule row itself, with the target time the host computed. When it comes due, the queue is unpaused and the schedule is cleared. **Disarm** clears it without waiting; **Re-arm** replaces it.
+
+Each queue's timers are its own, whichever mechanism they belong to — up to twenty queues may be armed at once, and firing or clearing one leaves the rest armed.
 
 ## The concurrency ceiling
 
