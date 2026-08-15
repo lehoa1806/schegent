@@ -19,6 +19,7 @@
 //     cursor so a saturated ceiling does not let position 0 win every sweep.
 
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
@@ -169,6 +170,35 @@ export class AutoDrainCoordinator {
    */
   private readonly detachedDrives = new Set<Promise<unknown>>();
 
+  /**
+   * Feature 093 (bulk review) — starts this coordinator has committed to but
+   * that no capacity reading can see yet.
+   *
+   * Step 4 reads its counts synchronously; the admission it guards is several
+   * awaits away — the lease acquire, then `admitNew`'s factory, `setRun` and
+   * `markInFlight` before `sessions.size` grows. For that whole window both
+   * readings of the ceiling are stale, and neither is wrong in a way it can
+   * detect: the Run genuinely does not exist yet.
+   *
+   * Within one sweep that is harmless, because the loop awaits each queue's
+   * drain before starting the next. `drainIfIdle` is the case that is not: it
+   * stays concurrent with a sweep by design, so an operator's Start Queue or a
+   * scheduled start can pass step 4 on the strength of a slot a suspended sweep
+   * has already spent. Both admit and the cap is exceeded by one.
+   *
+   * Step 4b hid this while it stood — it refused every second concurrent start
+   * outright — so deleting it (T081) is what opened the window rather than what
+   * created it. The counter closes it by making the gate count intent as well as
+   * fact: incremented synchronously in the same continuation that read the
+   * counts, so no drain can observe the pre-increment value, and released in a
+   * `finally` so a drain that goes on to start nothing gives the slot back.
+   *
+   * Only the execution-capacity reading is adjusted. `hasWorkspaceCapacity` is
+   * the cross-window count, and a rival window's admissions are bounded by the
+   * per-queue execution lease, not by a counter local to this object.
+   */
+  private reservedStarts = 0;
+
   constructor(deps: AutoDrainCoordinatorDeps) {
     this.store = deps.store;
     this.queue = deps.queue;
@@ -290,7 +320,16 @@ export class AutoDrainCoordinator {
     // This stays a single conjunctive predicate at the one existing gate — T074
     // and CLAUDE.md's "no second enforcement site" rule are about *where* the
     // decision is made, and it is made here.
-    if (!this.queue.hasExecutionCapacity(this.controller.liveRunCount)) return false;
+    //
+    // `reservedStarts` is added to the driven-Run count so the gate counts the
+    // starts already committed to but not yet observable. See the field's own
+    // note: without it a concurrent addressed drain spends a slot a suspended
+    // sweep has already claimed.
+    if (
+      !this.queue.hasExecutionCapacity(this.controller.liveRunCount + this.reservedStarts)
+    ) {
+      return false;
+    }
     if (!this.queue.hasWorkspaceCapacity()) return false;
     // Feature 093 (T081, FR-011) — step 4b stood here and is gone. It refused a
     // second concurrent start because `KEYS.run` held one `WorkflowRun` and the
@@ -304,6 +343,29 @@ export class AutoDrainCoordinator {
     // Step 5 — this queue's pending head, in FIFO order.
     const next = this.queue.peekNextPending(queueId);
     if (!next) return false;
+    // Everything from step 1 to here has been synchronous, so this is the first
+    // point at which another drain could interleave — and the last at which this
+    // one can still take the slot it was just granted. Reserved here rather than
+    // at the gate so a drain that stops at step 5 never holds one.
+    this.reservedStarts += 1;
+    try {
+      return await this.startPendingHead(queueId, next);
+    } finally {
+      this.reservedStarts -= 1;
+    }
+  }
+
+  /**
+   * Steps 6 and 7 — claim the queue's lease and admit its head.
+   *
+   * Split out so the reservation above has an unmistakable scope: it is held for
+   * exactly this call and released on every exit, including the throw the step-7
+   * `catch` re-reports as a warning.
+   */
+  private async startPendingHead(
+    queueId: string,
+    next: FeatureRequest
+  ): Promise<boolean> {
     // Step 6 — claim this queue's execution lease. Losing it means another
     // window is draining this queue right now.
     const acquired = await this.executionLease.tryAcquire(queueId);

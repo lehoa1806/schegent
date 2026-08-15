@@ -473,8 +473,14 @@ async function settle(): Promise<void> {
 }
 
 function interleavingHarness(
-  options: { pendingFor?: readonly string[]; audit?: boolean } = {}
+  options: { pendingFor?: readonly string[]; audit?: boolean; capacity?: number } = {}
 ) {
+  /**
+   * Unbounded unless a test asks for a ceiling. Most tests here are about the
+   * sweep guard, where a capacity refusal would end a sweep early for a reason
+   * that has nothing to do with interleaving.
+   */
+  const capacity = options.capacity ?? Number.POSITIVE_INFINITY;
   const pending = new Set(options.pendingFor ?? QUEUE_IDS);
   /** Every queue `admitNew`/`admitResume` was called for, in call order. */
   const offered: string[] = [];
@@ -522,11 +528,12 @@ function interleavingHarness(
       peekNextPending: (queueId: string) =>
         pending.has(queueId) ? { id: `task-${queueId}`, description: 'next', queueId } : null,
       hasQueueCapacity: (queueId: string) => !inFlight.has(queueId),
-      // No ceiling in this harness, in either reading — the sweep guard is what
-      // is under test, and a capacity refusal would end a sweep early for a
-      // reason that has nothing to do with interleaving.
-      hasExecutionCapacity: () => true,
-      hasWorkspaceCapacity: () => true,
+      // Both readings answered from the one `inFlight` set: in this harness
+      // every promotion is one Run in this window, so the persisted-row count
+      // and the driven-Run count coincide. What a test varies is the ceiling,
+      // never which of the two spellings enforces it.
+      hasExecutionCapacity: (live: number) => live < capacity,
+      hasWorkspaceCapacity: () => inFlight.size < capacity,
       inFlightCount: (queueId?: string) =>
         queueId === undefined ? inFlight.size : inFlight.has(queueId) ? 1 : 0
     } as never,
@@ -641,6 +648,80 @@ describe('AutoDrainCoordinator sweep guard (Feature 093 T049)', () => {
     h.openAllAdmissions();
     await Promise.all([sweep, addressed]);
     expect(h.offered.filter((id) => id === 'q-a')).toEqual(['q-a']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 093 — the ceiling across the admission window (bulk review finding).
+//
+// Step 4's capacity gate is read synchronously, but the admission it guards is
+// several awaits away: the lease acquire, then `admitNew`'s own factory / store
+// / `markInFlight` writes before `sessions.size` grows. Every count the gate
+// consults — driven Runs and persisted in-flight rows alike — is therefore
+// stale for the whole of that window.
+//
+// Within one sweep that is harmless: the loop awaits each queue's drain before
+// the next. But `drainIfIdle` is concurrent with a sweep *by design* (it must
+// not join it, or an operator's Start Queue would block behind an unrelated
+// sweep), so two drains of two different queues can both pass the gate before
+// either admits, and the cap is exceeded by one per interleaving.
+//
+// Step 4b masked this while it existed — it refused every second concurrent
+// start outright, for an unrelated reason — so the window opened when T081
+// deleted it. The reservation the gate now takes is what closes it.
+// ---------------------------------------------------------------------------
+
+describe('AutoDrainCoordinator ceiling across the admission window', () => {
+  it('an addressed drain cannot pass a full ceiling while a sweep is mid-admission', async () => {
+    const h = interleavingHarness({ capacity: 1 });
+
+    const sweep = h.coord.drainAll();
+    await settle();
+    // Suspended inside q-a's admission. The Run exists as far as the drain is
+    // concerned, but nothing observable has been written yet: `inFlight` is
+    // empty, so both capacity readings still report a free slot.
+    expect(h.offered).toEqual(['q-a']);
+    expect(h.inFlight.size).toBe(0);
+
+    // An operator presses Start Queue on a different queue, or a scheduled
+    // start fires, while the sweep is suspended.
+    const addressed = h.coord.drainIfIdle('q-b');
+    await settle();
+
+    // The ceiling is 1 and q-a has already claimed it.
+    expect(h.offered).toEqual(['q-a']);
+
+    h.openAllAdmissions();
+    await Promise.all([sweep, addressed]);
+    expect(h.inFlight.size).toBe(1);
+  });
+
+  it('the reserved slot is given back when the drain that took it starts nothing', async () => {
+    // q-b has no pending head, so its drain passes the gate and then bails at
+    // step 5. A reservation that leaked there would permanently shrink the
+    // ceiling by one — the failure mode a bare counter invites, and the reason
+    // it is released in a `finally` rather than on the success path.
+    const h = interleavingHarness({ pendingFor: ['q-a'], capacity: 1 });
+
+    await h.coord.drainIfIdle('q-b');
+    expect(h.offered).toEqual([]);
+
+    h.openAllAdmissions();
+    await h.coord.drainIfIdle('q-a');
+    expect(h.offered).toEqual(['q-a']);
+    expect(h.inFlight.size).toBe(1);
+  });
+
+  it('a sweep still fills every slot the ceiling allows', async () => {
+    // The guard against over-admitting must not under-admit: three queues, cap
+    // three, one sweep, all three promoted.
+    const h = interleavingHarness({ capacity: 3 });
+    h.openAllAdmissions();
+
+    await h.coord.drainAll();
+
+    expect(h.offered).toEqual(['q-a', 'q-b', 'q-c']);
+    expect(h.inFlight.size).toBe(3);
   });
 });
 

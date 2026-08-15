@@ -1556,15 +1556,26 @@ export class WorkspaceStateStore {
    * the default queue. That is not a second migration path — `initialize()`
    * owns the write, and this is the projection that keeps a read taken *before*
    * that write from reporting a workspace with nothing executing. It writes
-   * nothing. The "is this a Run?" rule is imported from the migrator rather
-   * than restated, so the pre-write and post-write views cannot disagree about
-   * what a Run looks like.
+   * nothing.
+   *
+   * **Both** shape rules are imported from the migrator rather than restated, so
+   * the pre-write and post-write views cannot disagree about what a Run looks
+   * like. The map half used to be restated here as
+   * `typeof raw === 'object' && !Array.isArray(raw)`, which is laxer than
+   * `isRunStateMap` — it accepts a map whose values are not Runs. That is the
+   * one input on which the two views disagreed: this read cast the junk to
+   * `RunStateMap` and handed callers values typed as `WorkflowRun` that are not
+   * one, while the migrator classified the same record `unrecognised-record-shape`
+   * and repaired it to `{}`. Reading it as `{}` here is what the write is about
+   * to make true, and an empty map is the safe direction — a fabricated Run
+   * would hand the drain coordinator a queue that looks busy forever, which is
+   * the migrator's own stated reason for repairing rather than guessing.
    */
   private readRunMap(): RunStateMap {
     const raw = this.memento.get<unknown>(KEYS.run);
     if (raw === undefined || raw === null) return {};
     if (isWorkflowRun(raw)) return { [DEFAULT_QUEUE_ID]: raw };
-    if (typeof raw === 'object' && !Array.isArray(raw)) return raw as RunStateMap;
+    if (isRunStateMap(raw)) return raw;
     return {};
   }
 
