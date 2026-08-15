@@ -678,11 +678,25 @@ export class RunDriver {
         this.carriedIssues = pickCarriedIssues(output.result);
 
         if (postDecision.kind === 'pause-verify') {
+          const now = Date.now();
           const paused: WorkflowRun = {
             ...run,
             status: 'paused',
             currentIteration: iteration,
-            lastTransitionAt: Date.now(),
+            // BUG-003 — `status: 'paused'` is not what makes a Run resumable;
+            // `manualPauseAt` is. `resumeActivePhase` — the webview's Resume
+            // control — refuses `run-not-paused` unless one of `manualPauseAt` /
+            // `pendingRetryAt` is set, so this branch used to leave the Run in a
+            // status the UI renders as paused with the pair that lets it leave
+            // that status unset. The command-palette `resumeExisting` path did
+            // work, which is why the end-to-end test passed throughout.
+            //
+            // No `resumeTargetPhaseId`: that field is `'breakpoint-paused'`-only
+            // by a migrator invariant, and it is not needed here — `currentPhase`
+            // stays on the verify phase, so resume re-runs the verification.
+            manualPauseAt: now,
+            manualPauseCause: 'verify-paused',
+            lastTransitionAt: now,
             phasesCompleted: [...run.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(run, paused);

@@ -75,7 +75,15 @@ const VALID_PHASE_OVERRIDE_ACTIONS: ReadonlySet<PhaseOverrideAction> = new Set<P
 const VALID_MANUAL_PAUSE_CAUSES: ReadonlySet<ManualPauseCause> = new Set<ManualPauseCause>([
   'operator-paused',
   'queue-paused-mid-run',
-  'breakpoint-paused'
+  'breakpoint-paused',
+  // BUG-003 — a verify phase that reported a non-clean outcome. Additive, so no
+  // version bump: no record written before the fix can carry it. It must be
+  // listed here regardless, because a value this set does not hold is parsed to
+  // null and `manualPausePairInvariant` then zeroes `manualPauseAt` with it —
+  // the Run would reload without the field the webview Resume control requires.
+  // Deliberately not the task-level `'phase-paused'`: this set is what keeps the
+  // two vocabularies disjoint, and a test feeds that exact value in to prove it.
+  'verify-paused'
 ]);
 
 const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'operator' | 'system'>([

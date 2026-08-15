@@ -22,6 +22,7 @@ import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import { isTerminalRunStatus } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
 
@@ -53,7 +54,7 @@ export interface OverlapAuditPort {
 }
 
 export interface AutoDrainCoordinatorDeps {
-  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueRegistry'>;
+  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueRegistry' | 'getRun'>;
   readonly queue: Pick<
     QueueManager,
     | 'peekNextPending'
@@ -304,8 +305,35 @@ export class AutoDrainCoordinator {
     if (queueState.queueLifecycle === 'idle-pending') return false;
     // Step 2 — paused by the operator or by a system pause.
     if (queueState.paused) return false;
-    // Step 3 — this queue already has its one Task in flight.
+    // Step 3 — this queue is busy. One limit, two readings, on the same terms as
+    // step 4 below: neither subsumes the other, so a start needs both.
+    //
+    // `hasQueueCapacity` counts the queue's in-flight **Task rows**, which is the
+    // reading that has always been here. BUG-003 — a Task row leaves that count
+    // the moment its Run pauses, while the Run itself keeps the queue's one Run
+    // slot, its session and its execution lease. So a paused Run was invisible to
+    // every gate in this sequence, and step 7's `admitNew` overwrote its record
+    // with the successor's: `setRun(queueId, run)` is a whole-map write and
+    // `KEYS.run` holds one Run per queue, so the paused Run was simply gone. No
+    // refusal, no audit event, and its Task row stranded at `paused` forever.
+    //
+    // The second reading asks the Run map directly, which is the authority on
+    // whether this queue holds a Run — the Task rows are a projection of it that
+    // a pause deliberately removes from the count. Terminal is
+    // `isTerminalRunStatus`, the same enumeration `disposeIfEnded` and the
+    // execution-lease release read, rather than a locally derived
+    // `status !== 'running'` — which would also admit `paused` and reopen exactly
+    // this hole.
+    //
+    // This is a wait of the same shape as every other step: nothing is written,
+    // nothing is signalled, the Task stays pending, and the queue drains normally
+    // once the operator resumes or cancels the Run that holds it. In particular
+    // it sits **before** step 6's `tryAcquire`, so the paused Run's execution
+    // lease is never touched — a refusal after the acquire would reach step 7's
+    // release path and strip the lease out from under a Run that still owns it.
     if (!this.queue.hasQueueCapacity(queueId)) return false;
+    const occupant = this.store.getRun(queueId);
+    if (occupant !== null && !isTerminalRunStatus(occupant.status)) return false;
     // Step 4 — the workspace is at its concurrency ceiling. A wait, not an
     // error: nothing is written and nothing is signalled, and the next sweep
     // (from a different cursor position) will try again.

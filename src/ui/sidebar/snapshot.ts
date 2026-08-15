@@ -350,6 +350,7 @@ export interface QueueProjection {
 }
 
 import type { QueueLifecycle, ScheduledStartSource } from '../../queue/feature-request';
+import type { ManualPauseCause } from '../../state/workflow-run';
 export type { QueueLifecycle, ScheduledStartSource };
 
 import type { AuditScope } from '../../contracts/audit-events';
@@ -517,10 +518,14 @@ export interface QueueRuntime {
    * Feature 028 — one nullable pair rather than two loose fields, so a cause
    * without a timestamp is unrepresentable. `'breakpoint-paused'` distinguishes
    * a future-phase breakpoint fire from an active pause on the phase tile.
+   *
+   * BUG-003 — `cause` was a hand-copied inline union and had silently fallen a
+   * member behind `ManualPauseCause`. It carries the run-level cause verbatim,
+   * so it is that type; re-listing the members here is what let it drift.
    */
   readonly manualPause: {
     readonly at: string;
-    readonly cause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused';
+    readonly cause: ManualPauseCause;
   } | null;
   /**
    * Feature 028 — per-run future-phase breakpoints projected for the UI.

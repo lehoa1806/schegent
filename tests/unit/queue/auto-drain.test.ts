@@ -88,6 +88,7 @@ const QUEUE_B = '11111111-2222-4333-8444-555555555555';
 
 interface StepSpies {
   readonly getQueue: ReturnType<typeof vi.fn>;
+  readonly getRun: ReturnType<typeof vi.fn>;
   readonly hasQueueCapacity: ReturnType<typeof vi.fn>;
   readonly hasExecutionCapacity: ReturnType<typeof vi.fn>;
   readonly hasWorkspaceCapacity: ReturnType<typeof vi.fn>;
@@ -106,6 +107,7 @@ function makeCoordinator(
     | 'lifecycle'
     | 'paused'
     | 'queue-capacity'
+    | 'queue-run-slot'
     | 'execution-capacity'
     | 'workspace-capacity'
     | 'pending'
@@ -119,6 +121,12 @@ function makeCoordinator(
       paused: stopAt === 'paused',
       inFlightId: null
     })),
+    // BUG-003 — step 3's second reading. A paused Run holds its queue's one Run
+    // slot while leaving the in-flight Task count that `hasQueueCapacity` reads,
+    // so the two readings answer "is this queue busy?" from different sides.
+    getRun: vi.fn(() =>
+      stopAt === 'queue-run-slot' ? { id: 'run-held', status: 'paused' } : null
+    ),
     hasQueueCapacity: vi.fn(() => stopAt !== 'queue-capacity'),
     hasExecutionCapacity: vi.fn(() => stopAt !== 'execution-capacity'),
     hasWorkspaceCapacity: vi.fn(() => stopAt !== 'workspace-capacity'),
@@ -132,7 +140,7 @@ function makeCoordinator(
     admitNew: vi.fn(async () => ({ completed: Promise.resolve() }))
   };
   const coord = new AutoDrainCoordinator({
-    store: { getQueue: spies.getQueue } as never,
+    store: { getQueue: spies.getQueue, getRun: spies.getRun } as never,
     queue: {
       peekNextPending: spies.peekNextPending,
       hasQueueCapacity: spies.hasQueueCapacity,
@@ -176,6 +184,25 @@ describe('drainIfIdle(queueId) — the seven ordered steps (T036, FR-023 – FR-
     expect(spies.hasQueueCapacity).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
     expect(spies.hasWorkspaceCapacity).not.toHaveBeenCalled();
     expect(spies.peekNextPending).not.toHaveBeenCalled();
+    expect(spies.admitNew).not.toHaveBeenCalled();
+  });
+
+  // BUG-003 — step 3's own second reading, on the same terms as step 4's pair
+  // below: one limit, two sources, and a start needs both. `hasQueueCapacity`
+  // counts in-flight Task rows, which a Run leaves the moment it pauses, while
+  // the Run keeps this queue's one Run slot; `getRun` is the side that still
+  // sees it. Placement inside step 3 rather than at step 7 is the load-bearing
+  // part: refusing here is before the lease acquire, so the Run that holds the
+  // queue keeps the execution lease it owns, where a refusal at admission would
+  // reach step 7's release path and strip it from a live Run.
+  it('step 3b: a queue holding a paused Run refuses before the ceiling and the lease', async () => {
+    const { coord, spies } = makeCoordinator('queue-run-slot');
+    await expect(coord.drainIfIdle(DEFAULT_QUEUE_ID)).resolves.toBeUndefined();
+    expect(spies.getRun).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(spies.hasExecutionCapacity).not.toHaveBeenCalled();
+    expect(spies.hasWorkspaceCapacity).not.toHaveBeenCalled();
+    expect(spies.peekNextPending).not.toHaveBeenCalled();
+    expect(spies.tryAcquire).not.toHaveBeenCalled();
     expect(spies.admitNew).not.toHaveBeenCalled();
   });
 
@@ -266,6 +293,9 @@ describe('drainAll() keeps the idle-pending gate a single enforcement site (T037
     const coord = new AutoDrainCoordinator({
       store: {
         getQueue,
+        // BUG-003 — step 3's second reading; no queue here holds a Run, which is
+        // what these round-robin cursor tests were already assuming.
+        getRun: vi.fn(() => null),
         getQueueRegistry: () => ({
           entries: ids.map((id, position) => ({
             id,

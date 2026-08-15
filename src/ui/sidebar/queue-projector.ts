@@ -17,6 +17,7 @@ import type {
   ScheduledStartSource
 } from '../../queue/feature-request';
 import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../queue/queue-registry';
+import type { ManualPauseCause } from '../../state/workflow-run';
 import { projectQueues } from './queue-summary-projector';
 import {
   RECENT_QUEUE_MAX,
@@ -50,12 +51,12 @@ export interface QueueProjectionContext {
    * the run-level `manualPauseCause === 'breakpoint-paused'`. The projector
    * surfaces this as task-level `pauseCause: 'breakpoint'` on the in-flight
    * QueueItem. Null when the in-flight run is not breakpoint-paused.
+   *
+   * BUG-003 — was a hand-copied inline union that had fallen a member behind
+   * `ManualPauseCause`. `snapshot-composer` assigns `run.manualPauseCause`
+   * straight into it, so it is that type.
    */
-  readonly inFlightManualPauseCause?:
-    | 'operator-paused'
-    | 'queue-paused-mid-run'
-    | 'breakpoint-paused'
-    | null;
+  readonly inFlightManualPauseCause?: ManualPauseCause | null;
   /** The id of the run currently held in the orchestrator store (may be failed/paused). */
   readonly activeRunTaskId?: string | null;
   /** The current phase of the run currently held in the orchestrator store. */
@@ -227,11 +228,7 @@ function derivePausedField(
 function derivePauseCause(
   req: FeatureRequest,
   registry: QueueRegistry | undefined,
-  inFlightManualPauseCause:
-    | 'operator-paused'
-    | 'queue-paused-mid-run'
-    | 'breakpoint-paused'
-    | null
+  inFlightManualPauseCause: ManualPauseCause | null
 ): QueueItem['pauseCause'] {
   // Feature 028 — when the in-flight run is paused at a future-phase
   // breakpoint, surface task-level pauseCause 'breakpoint'. Takes precedence
