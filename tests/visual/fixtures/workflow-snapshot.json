@@ -1,20 +1,52 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "isPrimary": true,
-  "status": "running",
-  "activeFeature": {
-    "id": "visual-task-active",
-    "label": "Harden deterministic visual coverage",
-    "startedAt": "2026-08-01T09:00:00.000Z"
-  },
-  "phases": [
-    { "name": "speckit-specify", "displayName": "Specify", "order": 1, "state": "completed", "iteration": 1, "lastResult": "clean", "elapsedMs": 42000, "subProgress": null },
-    { "name": "speckit-clarify", "displayName": "Clarify", "order": 2, "state": "completed", "iteration": 2, "lastResult": "clean", "elapsedMs": 81000, "subProgress": null },
-    { "name": "speckit-plan", "displayName": "Plan", "order": 3, "state": "active", "iteration": 2, "lastResult": "ambiguities-remain", "elapsedMs": 96000, "subProgress": { "current": 3, "total": 5, "label": "iteration" } },
-    { "name": "speckit-tasks", "displayName": "Tasks", "order": 4, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
-    { "name": "speckit-analyze", "displayName": "Analyze", "order": 5, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
-    { "name": "speckit-implement", "displayName": "Implement", "order": 6, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
-    { "name": "finalize", "displayName": "Finalize", "order": 7, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null }
+  "queues": [
+    {
+      "queueId": "default",
+      "name": "Active Queue",
+      "position": 0,
+      "lifecycle": "running",
+      "inFlightRun": {
+        "runId": "visual-run-active",
+        "status": "running",
+        "feature": {
+          "id": "visual-task-active",
+          "label": "Harden deterministic visual coverage",
+          "startedAt": "2026-08-01T09:00:00.000Z"
+        },
+        "pipeline": { "id": "dev-new-feature", "name": "New Feature" },
+        "elapsedMs": 366000,
+        "liveActivity": {
+          "summary": "Refining the implementation plan and validating contracts",
+          "category": "cli-invocation",
+          "lastEventAt": "2026-08-01T09:06:00.000Z",
+          "freshness": "live",
+          "staleSeconds": 2
+        },
+        "delayedRetry": { "pendingRetryAt": null, "pendingRetryCause": null, "delayedRetryCount": 0 },
+        "resumeTargetPhaseId": null,
+        "outputs": []
+      },
+      "phases": [
+        { "name": "speckit-specify", "displayName": "Specify", "order": 1, "state": "completed", "iteration": 1, "lastResult": "clean", "elapsedMs": 42000, "subProgress": null },
+        { "name": "speckit-clarify", "displayName": "Clarify", "order": 2, "state": "completed", "iteration": 2, "lastResult": "clean", "elapsedMs": 81000, "subProgress": null },
+        { "name": "speckit-plan", "displayName": "Plan", "order": 3, "state": "active", "iteration": 2, "lastResult": "ambiguities-remain", "elapsedMs": 96000, "subProgress": { "current": 3, "total": 5, "label": "iteration" } },
+        { "name": "speckit-tasks", "displayName": "Tasks", "order": 4, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
+        { "name": "speckit-analyze", "displayName": "Analyze", "order": 5, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
+        { "name": "speckit-implement", "displayName": "Implement", "order": 6, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null },
+        { "name": "finalize", "displayName": "Finalize", "order": 7, "state": "not-started", "iteration": 0, "lastResult": null, "elapsedMs": 0, "subProgress": null }
+      ],
+      "phaseOverrides": [],
+      "manualPause": null,
+      "phaseBreakpoints": [],
+      "pendingCount": 1,
+      "tasks": [
+        { "id": "visual-task-active", "label": "Harden deterministic visual coverage", "enqueuedAt": "2026-08-01T08:55:00.000Z", "startedAt": "2026-08-01T09:00:00.000Z", "updatedAt": "2026-08-01T09:06:00.000Z", "completedAt": null, "status": "in-flight", "retryCount": 0, "lastErrorSummary": null, "pausedReason": null, "currentPhase": "speckit-plan", "queueId": "default", "position": 0, "pauseCause": null, "currentPipelineId": "dev-new-feature", "hasOnDiskLogs": true },
+        { "id": "visual-task-pending", "label": "Document degraded network behavior", "enqueuedAt": "2026-08-01T09:02:00.000Z", "startedAt": null, "updatedAt": "2026-08-01T09:02:00.000Z", "completedAt": null, "status": "pending", "retryCount": 0, "lastErrorSummary": null, "pausedReason": null, "currentPhase": null, "queueId": "default", "position": 1, "pauseCause": null, "currentPipelineId": "dev-new-feature", "hasOnDiskLogs": false },
+        { "id": "visual-task-complete", "label": "Bound backend output capture", "enqueuedAt": "2026-07-31T14:00:00.000Z", "startedAt": "2026-07-31T14:01:00.000Z", "updatedAt": "2026-07-31T14:09:00.000Z", "completedAt": "2026-07-31T14:09:00.000Z", "status": "completed", "retryCount": 0, "lastErrorSummary": null, "pausedReason": null, "currentPhase": "finalize", "queueId": "default", "position": 2, "pauseCause": null, "currentPipelineId": "dev-new-feature", "hasOnDiskLogs": true }
+      ]
+    }
   ],
   "queue": {
     "inFlight": {
@@ -141,20 +173,11 @@
     "scheduledStartSource": null,
     "migrationNotice": "dismissed"
   },
-  "activeRunId": "visual-run-active",
   "defaultRunnerKind": "claude",
   "auditTail": [
     { "id": "visual-audit-1", "timestamp": "2026-08-01T09:05:00.000Z", "phase": "speckit-plan", "category": "phase-transition", "summary": "phase-start iteration 2", "runId": "visual-run-active", "scope": "task", "taskId": "visual-task-active", "phaseId": "speckit-plan", "outcome": "pending", "runner": "codex" }
   ],
   "debugLogTail": [],
-  "liveActivity": {
-    "summary": "Refining the implementation plan and validating contracts",
-    "category": "cli-invocation",
-    "lastEventAt": "2026-08-01T09:06:00.000Z",
-    "freshness": "live",
-    "staleSeconds": 2
-  },
-  "workflowElapsedMs": 366000,
   "monitor": {
     "runId": "visual-run-active",
     "phase": "speckit-plan",
@@ -184,7 +207,6 @@
     { "runId": "visual-run-complete", "featureId": "visual-task-complete", "descriptionPreview": "Bound backend output capture", "terminalStatus": "completed", "startedAt": "2026-07-31T14:01:00.000Z", "completedAt": "2026-07-31T14:09:00.000Z", "durationMs": 480000, "lastErrorSummary": null, "auditLogPointer": "runId:visual-run-complete" }
   ],
   "producedAt": "2026-08-01T09:06:00.000Z",
-  "activePipeline": { "id": "dev-new-feature", "name": "New Feature" },
   "availablePipelines": [
     { "id": "dev-new-feature", "name": "New Feature", "phases": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"] },
     { "id": "bugfix", "name": "Bug Fix", "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"] }
@@ -270,7 +292,6 @@
       "sessionRetentionMaxBytes": "default"
     }
   },
-  "delayedRetry": { "pendingRetryAt": null, "pendingRetryCause": null, "delayedRetryCount": 0 },
   "confirmationsEnabled": true,
   "confirmSuppression": { "version": 1, "suppressedActionKeys": [] }
 }
