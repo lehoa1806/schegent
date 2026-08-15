@@ -150,6 +150,7 @@
         {activeTaskId}
         activeRunId={inFlightRun?.runId ?? null}
         queueId={runtime?.queueId ?? defaultQueueId(snapshot)}
+        targetsSubjectRun={inFlightRun?.feature?.id === activeTaskId}
         isPrimary={snapshot.isPrimary}
         manualPauseAt={runtime?.manualPause?.at ?? null}
         manualPauseCause={runtime?.manualPause?.cause ?? null}

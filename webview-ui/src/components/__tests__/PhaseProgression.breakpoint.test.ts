@@ -52,7 +52,7 @@ function buildStandardPhases(): readonly PhaseTile[] {
 describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
   it('paused-active: active tile carries data-state="paused-active" when manualPauseCause is operator-paused', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -71,7 +71,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
 
   it('breakpoint-fired: active tile carries data-state="breakpoint-fired" when manualPauseCause is breakpoint-paused AND resumeTargetPhaseId matches', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -90,7 +90,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
 
   it('breakpoint-scheduled: pending tile with an entry in phaseBreakpoints carries data-state="breakpoint-scheduled"', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -115,7 +115,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
 
   it('completed tile does NOT pick up a breakpoint-scheduled indicator even if listed in phaseBreakpoints', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -138,7 +138,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
     // are pairwise distinct. This is what protects against accidental
     // consolidation into a single "paused" indicator.
     const a = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -153,7 +153,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
     a.unmount();
 
     const b = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',
@@ -168,7 +168,7 @@ describe('PhaseProgression — breakpoint indicators (028 US3)', () => {
     b.unmount();
 
     const c = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildStandardPhases(),
         activeTaskId: 'req-1',
         activeRunId: 'run-1',

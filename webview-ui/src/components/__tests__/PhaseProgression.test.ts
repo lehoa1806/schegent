@@ -40,7 +40,7 @@ function buildPhases(): readonly PhaseTile[] {
 describe('PhaseProgression — header (016)', () => {
   it('I-4.1 header contains "(Active: <id>)" when activeTaskId is set', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-abc' }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-abc' }
     });
     const header = getByTestId('dashboard-phase-progression-header');
     expect(header.textContent ?? '').toContain('(Active: req-abc)');
@@ -48,10 +48,10 @@ describe('PhaseProgression — header (016)', () => {
 
   it('I-4.1 header re-renders when activeTaskId transitions to a new id', async () => {
     const { getByTestId, rerender } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-1' }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-1' }
     });
     expect(getByTestId('dashboard-phase-progression-header').textContent ?? '').toContain('(Active: req-1)');
-    await rerender({ queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-2' });
+    await rerender({ targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: 'req-2' });
     expect(getByTestId('dashboard-phase-progression-header').textContent ?? '').toContain('(Active: req-2)');
   });
 
@@ -61,7 +61,7 @@ describe('PhaseProgression — header (016)', () => {
       name: 'Custom Pipeline'
     });
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildPhases(),
         activeTaskId: 'req-X',
         activePipeline: pipeline
@@ -79,7 +79,7 @@ describe('PhaseProgression — phase controls (017)', () => {
       buildPhase('speckit-plan', 2, 'active')
     ]);
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeTaskId: 'req-1', isPrimary: true }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeTaskId: 'req-1', isPrimary: true }
     });
 
     expect(getByTestId('phase-control-menu')).not.toBeNull();
@@ -100,7 +100,7 @@ describe('PhaseProgression — phase controls (017)', () => {
       }
     ]);
     const { getByTestId, queryByText } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, activeTaskId: 'req-1', isPrimary: true }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, activeTaskId: 'req-1', isPrimary: true }
     });
 
     expect(getByTestId('phase-message-meta-speckit-plan').textContent).toContain('message 2 entries');
@@ -110,7 +110,7 @@ describe('PhaseProgression — phase controls (017)', () => {
   it('renders a manual pause badge and enables Resume when paused', () => {
     const phases = Object.freeze([buildPhase('speckit-plan', 1, 'active')]);
     const { getByTestId, queryByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases,
         activeTaskId: 'req-1',
         isPrimary: true,
@@ -134,7 +134,7 @@ describe('PhaseProgression — Activity Feed selection (021)', () => {
       buildPhase('speckit-plan', 2, 'active')
     ]);
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases, selectedPhaseId: 'speckit-plan', onSelectPhase }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases, selectedPhaseId: 'speckit-plan', onSelectPhase }
     });
 
     const specify = getByTestId('phase-progression-speckit-specify');
@@ -148,7 +148,7 @@ describe('PhaseProgression — Activity Feed selection (021)', () => {
 describe('PhaseProgression — empty state (016 US4)', () => {
   it('I-4.2 header does NOT contain "(Active:" when activeTaskId is null', () => {
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: null }
     });
     const text = getByTestId('dashboard-phase-progression-header').textContent ?? '';
     expect(text).not.toContain('(Active:');
@@ -157,7 +157,7 @@ describe('PhaseProgression — empty state (016 US4)', () => {
 
   it('I-4.3 no tile carries state-active class or aria-current when every phase is not-started', () => {
     const { getByTestId, container } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: null }
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID, phases: buildPhases(), activeTaskId: null }
     });
     const list = getByTestId('phase-progression-list');
     expect(list).not.toBeNull();
@@ -173,7 +173,7 @@ describe('PhaseProgression — empty state (016 US4)', () => {
       name: 'Standard'
     });
     const { getByTestId } = render(PhaseProgression, {
-      props: { queueId: TEST_QUEUE_ID,
+      props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
         phases: buildPhases(),
         activeTaskId: null,
         activePipeline: pipeline

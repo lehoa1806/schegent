@@ -102,11 +102,20 @@
         </div>
       {/if}
 
+      <!-- Off-target phase controls — `phases` is the *runtime's* strip, so for
+           a Task that is not the one executing, this tier draws the executing
+           Run's phases under the selected Task's title, and the queue-addressed
+           controls in the strip's menu act on that executing Run.
+           `targetsSubjectRun` is the same
+           `isExecuting` conjunct the live feed above already applies, for the
+           same reason: this tier is about one Run, and it borrows nothing from
+           whichever Run the queue happens to be working. -->
       <PhaseProgression
         phases={runtime?.phases ?? []}
         activeTaskId={isExecuting ? runId : null}
         activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
         {queueId}
+        targetsSubjectRun={isExecuting}
         {isPrimary}
         manualPauseAt={runtime?.manualPause?.at ?? null}
         manualPauseCause={runtime?.manualPause?.cause ?? null}
