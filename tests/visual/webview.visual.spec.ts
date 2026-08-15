@@ -4,7 +4,16 @@ import phaseLogJson from './fixtures/phase-log-response.json';
 import snapshotJson from './fixtures/workflow-snapshot.json';
 
 type ThemeName = 'light' | 'dark' | 'high-contrast';
-type SurfaceName = 'sidebar' | 'dashboard' | 'pipeline-builder' | 'metrics' | 'activity-feed';
+type SurfaceName =
+  | 'sidebar'
+  | 'queues'
+  | 'dashboard'
+  | 'pipeline-builder'
+  | 'metrics'
+  | 'activity-feed';
+
+/** The one queue `fixtures/workflow-snapshot.json` registers. */
+const FIXTURE_QUEUE_ID = 'default';
 
 interface ThemePalette {
   readonly foreground: string;
@@ -255,6 +264,22 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
   }
 
   await page.getByTestId('dashboard-route-operations').click();
+
+  if (surface === 'queues') {
+    const queues = page.getByTestId('queues-tier');
+    await expect(queues).toBeVisible();
+    await expect(page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`)).toBeVisible();
+    return queues;
+  }
+
+  // Feature 092 (FR-057) turned the operations route into a three-tier
+  // drill-down, so `Dashboard.svelte` — and the activity pane inside it — is no
+  // longer the route's landing view. It is embedded in the Queue Detail tier,
+  // one click in. Both surfaces below still target that pane; only the path to
+  // it changed.
+  await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
+  await expect(page.getByTestId('queue-detail-tier')).toBeVisible();
+
   if (surface === 'activity-feed') {
     const feed = page.getByTestId('dashboard-activity-audit-feed');
     await expect(page.getByTestId('phase-log-entry').first()).toBeVisible();
@@ -275,7 +300,14 @@ const volatileMasks = (page: Page): readonly Locator[] => [
 ];
 
 for (const theme of ['light', 'dark', 'high-contrast'] as const) {
-  for (const surface of ['sidebar', 'dashboard', 'pipeline-builder', 'metrics', 'activity-feed'] as const) {
+  for (const surface of [
+    'sidebar',
+    'queues',
+    'dashboard',
+    'pipeline-builder',
+    'metrics',
+    'activity-feed'
+  ] as const) {
     test(`${surface} remains visually stable in ${theme}`, async ({ page }) => {
       const target = await openSurface(page, surface, theme);
       await expect(target).toHaveScreenshot(`${surface}-${theme}.png`, {
@@ -294,11 +326,14 @@ test.describe('responsive accessibility hardening', () => {
     await page.goto('/dashboard.html');
     await page.addStyleTag({ content: themeCss('dark') });
     await publishSnapshot(page);
-    await expect(page.getByTestId('dashboard-root')).toBeVisible();
+    await expect(page.getByTestId('queues-tier')).toBeVisible();
     await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
 
     const routeTargets = {
-      operations: 'dashboard-root',
+      // The operations route lands on the Queues tier since feature 092; the
+      // pane that used to be here is a click deeper and is covered by the
+      // `dashboard` surface above.
+      operations: 'queues-tier',
       history: 'history-dashboard',
       metrics: 'metrics-section',
       system: 'system-tab',
