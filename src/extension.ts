@@ -30,6 +30,7 @@ import {
   warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
+import { warnIfScaffoldingMissing } from './activation/workspace-scaffolding';
 import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
@@ -315,6 +316,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     showErrorMessage: (m) => vscode.window.showErrorMessage(m)
   });
   warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
+  // The extension also activates via the implicit `onView:schegent.sidebar` event,
+  // so `workspaceContains:.specify/` does not imply the directory is there.
+  warnIfScaffoldingMissing(workspaceRoot, logger, notifier);
 
   const queue = new QueueManager(store, logger);
   // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
