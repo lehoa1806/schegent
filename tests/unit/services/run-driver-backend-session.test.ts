@@ -73,9 +73,7 @@ describe('RunDriver backend-scoped sessions', () => {
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
-      lock: {
-        withLock: vi.fn(async (_scope: string, fn: any) => fn({ retain: vi.fn() }))
-      },
+      lock: {},
       options: {
         cliPath: 'claude-bin',
         cwd: '/tmp',

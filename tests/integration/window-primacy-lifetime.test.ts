@@ -5,14 +5,19 @@
 // activation-to-disposal — `extension.ts` acquires it at activation and releases
 // it at `dispose()`.
 //
-// `RunDriver.drive()` wrapped its whole body in `withLock('drive-run', …)`.
-// `withLock` acquires idempotently for the same owner and keeps no reference
-// count, so with two Runs in one window the FIRST one to finish releases
+// `RunDriver.drive()` used to wrap its whole body in `withLock('drive-run', …)`.
+// That wrapper acquired idempotently for the same owner and kept no reference
+// count, so with two Runs in one window the FIRST one to finish released
 // primacy for BOTH — and for the window itself
-// (specs/092-multi-queue-concurrency/bugs/BUG-002.md). Drain step 4b hides this
-// today by refusing to start a second Run at all, which is why this file
-// constructs the two scopes at the driver seam instead of through `drainAll()`:
-// driven through the drain it would pass vacuously and prove nothing.
+// (specs/092-multi-queue-concurrency/bugs/BUG-002.md). Feature 093 removed the
+// wrapper, and the `withLock` method itself was deleted on 2026-08-15.
+//
+// This file still drives the two Runs at the driver seam rather than through
+// `drainAll()`. When it was written that was forced: drain step 4b refused a
+// second concurrent start outright, so a drain-driven version would have passed
+// vacuously. 093 deleted step 4b as well, so the seam is now a choice — and
+// still the right one, because it pins `drive()` itself with no scheduler in
+// between deciding whether a second Run exists to observe.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RunDriver } from '../../src/services/run-driver';

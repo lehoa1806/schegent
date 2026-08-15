@@ -106,7 +106,7 @@ describe('RunDriver completes the verify pause (BUG-003)', () => {
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
-      lock: { withLock: vi.fn(async (_scope: string, fn: any) => fn({ retain: vi.fn() })) },
+      lock: {},
       options: { cliPath: 'claude', cwd: '/tmp', iterationCap: 5 },
       monitor: { emit: vi.fn() },
       historyRecorder: { recordPhaseOutput: vi.fn(), record: vi.fn() },

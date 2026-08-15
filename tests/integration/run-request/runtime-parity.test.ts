@@ -24,9 +24,10 @@
 //   Transcript — the raw transcript the run wrote, keyed by run id. Compared as
 //   its own event sequence for the same reason.
 //
-//   Lock — `withLock` scopes recorded in order, with release accounted for by
-//   the wrapper. A composed run that acquired a different scope, acquired
-//   twice, or left the lock held would show here.
+//   Lock — every Run-scoped touch of window primacy, counted in both
+//   directions. Primacy runs activation-to-disposal (FR-028), so the expected
+//   count is zero on all three paths: a composed run that acquired the lock, or
+//   released one it never took, would show here.
 //
 //   Cancellation — a real in-flight cancel. The CLI double blocks inside the
 //   first Phase, the test cancels while the run is genuinely mid-Phase, and the
@@ -210,36 +211,32 @@ function output(phase: string): RawInvocationOutput {
   return { stdoutBuffer: stdout, stderrBuffer: stderr, exitCode: 0, killed: false, timedOut: false, durationMs: 1 };
 }
 
-/** A lock double that records every acquisition, and whether each released. */
+/**
+ * A lock double that counts every Run-scoped touch of window primacy, in both
+ * directions. This used to record `withLock` scopes, but that method is gone
+ * (feature 093, FR-028) and a recorder nothing can write to asserts `[]`
+ * vacuously — the gate would keep passing however a Run misbehaved. Counting
+ * `tryAcquire` and `release` on the real surface keeps it live: primacy runs
+ * activation-to-disposal, so a Run must touch neither.
+ */
 function recordingLock(): {
   lock: WorkspaceLockManager;
-  scopes: string[];
+  acquires: () => number;
   releases: () => number;
 } {
-  const scopes: string[] = [];
-  const state = { released: 0 };
+  const state = { acquired: 0, released: 0 };
   const lock = {
     release: vi.fn(async () => { state.released += 1; }),
-    tryAcquire: vi.fn(async () => ({ acquired: false, owner: null })),
+    tryAcquire: vi.fn(async () => {
+      state.acquired += 1;
+      return { acquired: false, owner: null };
+    }),
     heartbeat: vi.fn(),
     isHeld: vi.fn(),
     ownerOfRecord: vi.fn(),
-    withLock: async function (
-      this: { release(): Promise<void> },
-      scope: string,
-      fn: (session: { retain(): void }) => Promise<unknown>
-    ) {
-      scopes.push(scope);
-      let retain = false;
-      try {
-        return await fn({ retain: () => { retain = true; } });
-      } finally {
-        if (!retain) await this.release().catch(() => undefined);
-      }
-    },
     id: 'this-window'
   } as unknown as WorkspaceLockManager;
-  return { lock, scopes, releases: () => state.released };
+  return { lock, acquires: () => state.acquired, releases: () => state.released };
 }
 
 interface Harness {
@@ -249,7 +246,7 @@ interface Harness {
   readonly lock: WorkspaceLockManager;
   readonly logger: SanitizedLogger;
   readonly workspaceRoot: string;
-  readonly scopes: readonly string[];
+  readonly acquires: () => number;
   readonly releases: () => number;
   readonly cliCancels: () => number;
 }
@@ -286,7 +283,7 @@ async function makeHarness(
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);
-  const { lock, scopes, releases } = recordingLock();
+  const { lock, acquires, releases } = recordingLock();
 
   const controller = new SchegentWorkflowController(
     phaseRunner,
@@ -307,7 +304,7 @@ async function makeHarness(
     lock,
     logger,
     workspaceRoot,
-    scopes,
+    acquires,
     releases,
     cliCancels: () => cliCancels
   };
@@ -452,7 +449,7 @@ afterAll(async () => {
 interface Observed {
   readonly audit: readonly AuditShape[];
   readonly transcript: readonly string[];
-  readonly scopes: readonly string[];
+  readonly acquires: number;
   readonly releases: number;
   readonly status: string;
   readonly phasesCompleted: readonly string[];
@@ -476,7 +473,7 @@ async function runToCompletion(variant: Variant): Promise<Observed> {
   return {
     audit: await readAuditShapes(workspaceRoot),
     transcript: await readTranscriptShapes(workspaceRoot, run.id),
-    scopes: harness.scopes,
+    acquires: harness.acquires(),
     releases: harness.releases(),
     status: run.status,
     phasesCompleted: run.phasesCompleted.map(
@@ -518,21 +515,25 @@ describe('a composed run and a plain run leave the same runtime trace (FR-037, S
     expect(node.transcript).toEqual(plain.transcript);
   });
 
-  it('takes no per-Run workspace-lock scope, identically on all three paths', () => {
+  it('never touches window primacy, identically on all three paths', () => {
     // Feature 092 (T136, BUG-002, FR-032a) — was `['drive-run']` and one
-    // release. `RunDriver.drive()` no longer wraps itself in `withLock`: window
-    // primacy runs activation-to-disposal and is not a Run's to take or end, so
-    // a Run now leaves no trace on the workspace lock at all. The parity this
-    // test exists for (FR-037) is unaffected — what changed is the shared
+    // release. `RunDriver.drive()` no longer wraps itself in a lock scope:
+    // window primacy runs activation-to-disposal and is not a Run's to take or
+    // end, so a Run leaves no trace on the workspace lock at all. The parity
+    // this test exists for (FR-037) is unaffected — what changed is the shared
     // baseline all three paths are compared against, not whether they agree.
-    expect(plain.scopes).toEqual([]);
+    //
+    // Counted on `tryAcquire` / `release` rather than on recorded `withLock`
+    // scopes: that method was deleted with the wrapper, and a scope recorder
+    // nothing can write to would assert `[]` however a Run misbehaved.
+    expect(plain.acquires).toBe(0);
     expect(plain.releases).toBe(0);
-    expect(composed.scopes).toEqual(plain.scopes);
+    expect(composed.acquires).toBe(plain.acquires);
     expect(composed.releases).toBe(plain.releases);
     // The node path enqueued through the guarded service on its way here, and
     // that service holds the same lock manager — so an acquisition it failed to
-    // release would show up as an extra scope or an extra release.
-    expect(node.scopes).toEqual(plain.scopes);
+    // release would show up as an extra acquire or an extra release.
+    expect(node.acquires).toBe(plain.acquires);
     expect(node.releases).toBe(plain.releases);
   });
 
