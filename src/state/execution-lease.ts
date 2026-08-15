@@ -147,12 +147,16 @@ export class ExecutionLeaseManager {
    * Run `fn` while holding one queue's lease, releasing on both the normal and
    * the throwing path.
    *
-   * Unlike `WorkspaceLockManager.withLock`, contention returns `null` instead
-   * of throwing `LockHeldError`: losing an execution lease means another window
-   * is already draining that queue, which is the ordinary outcome of the
-   * drain's step 6 and not an error the operator should ever see. The workspace
-   * lock throws because losing *primacy* genuinely aborts what the caller was
-   * doing.
+   * Contention returns `null` rather than throwing: losing an execution lease
+   * means another window is already draining that queue, which is the ordinary
+   * outcome of the drain's step 6 and not an error the operator should ever
+   * see. Callers that genuinely lose *primacy* raise `LockHeldError` at their
+   * own `tryAcquire()` site instead — see `commands/resume.ts`.
+   *
+   * A scope wrapper is right here and wrong for `WorkspaceLockManager`
+   * (which has none, deliberately) because a lease taken by `withLease` ends
+   * inside the call that took it. A Run outlives its drain, so the workspace
+   * lock has no equivalent — see the note on `WorkspaceLockManager`.
    */
   public async withLease<T>(queueId: string, fn: () => Promise<T>): Promise<T | null> {
     const probe = await this.tryAcquire(queueId);

@@ -5,12 +5,10 @@ import {
   STALENESS_THRESHOLD_MS,
   type Clock,
   type Scheduler,
-  type SchedulerHandle,
-  type LockSession
+  type SchedulerHandle
 } from '../../../src/state/lock';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
-import { LockHeldError } from '../../../src/lib/errors';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -169,140 +167,4 @@ describe('WorkspaceLockManager.release', () => {
     await lock.release();
     expect(scheduler.intervals).toHaveLength(0);
   });
-});
-
-describe('WorkspaceLockManager.withLock', () => {
-  it('releases the lock after the body resolves without retain', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    const result = await lock.withLock('test-scope', async () => 'ok');
-    expect(result).toBe('ok');
-    expect(store.getLock()).toBeNull();
-    expect(scheduler.intervals).toHaveLength(0);
-  });
-
-  it('retains the lock when session.retain() is called', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    await lock.withLock('test-scope', async (session) => {
-      session.retain();
-    });
-    expect(store.getLock()?.ownerId).toBe('owner-1');
-    expect(scheduler.intervals).toHaveLength(1);
-  });
-
-  it('releases the lock when body throws and retain was NOT called', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    await expect(
-      lock.withLock('test-scope', async () => {
-        throw new Error('synthetic-failure');
-      })
-    ).rejects.toThrow('synthetic-failure');
-    expect(store.getLock()).toBeNull();
-  });
-
-  it('retains the lock when body throws AFTER calling retain()', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    await expect(
-      lock.withLock('test-scope', async (session) => {
-        session.retain();
-        throw new Error('paused-then-failed');
-      })
-    ).rejects.toThrow('paused-then-failed');
-    expect(store.getLock()?.ownerId).toBe('owner-1');
-  });
-
-  it('throws LockHeldError when another non-stale owner holds the lock', async () => {
-    const lockA = new WorkspaceLockManager(store, 'owner-A', clock, scheduler);
-    await lockA.tryAcquire();
-    const lockB = new WorkspaceLockManager(store, 'owner-B', clock, scheduler);
-    let bodyRan = false;
-    await expect(
-      lockB.withLock('test-scope', async () => {
-        bodyRan = true;
-      })
-    ).rejects.toBeInstanceOf(LockHeldError);
-    expect(bodyRan).toBe(false);
-    expect(store.getLock()?.ownerId).toBe('owner-A');
-  });
-
-  it('treats retain() as idempotent', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    await lock.withLock('test-scope', async (session) => {
-      session.retain();
-      session.retain();
-      session.retain();
-    });
-    expect(store.getLock()?.ownerId).toBe('owner-1');
-  });
-
-  it('reuses an idempotent acquire when the same owner re-enters', async () => {
-    const lock = new WorkspaceLockManager(store, 'owner-1', clock, scheduler);
-    await lock.tryAcquire();
-    const acquiredAtBefore = store.getLock()!.acquiredAt;
-    clock.advance(1_500);
-    await lock.withLock('test-scope', async (session) => {
-      session.retain();
-    });
-    // tryAcquire inside withLock should renew without resetting acquiredAt
-    expect(store.getLock()?.acquiredAt).toBe(acquiredAtBefore);
-  });
-
-  // Fuzz-style: enumerate synthetic errors that simulate every distinct exit
-  // branch in `WorkflowController.driveRun()` — terminal paths (failed,
-  // completed, cancelled, unexpected break) must release; pause paths
-  // (breakpoint, delayed-retry, rate-limit, verify-pause, manual-pause)
-  // must retain. The wrapper has no per-branch logic: it routes on whether
-  // the body called `session.retain()`. This test enumerates the matrix.
-  type Branch = {
-    label: string;
-    behavior: 'throws' | 'returns';
-    retain: boolean;
-    expectReleased: boolean;
-  };
-  const BRANCHES: Branch[] = [
-    // Terminal release paths
-    { label: 'terminal-failed-throws', behavior: 'throws', retain: false, expectReleased: true },
-    { label: 'terminal-failed-returns', behavior: 'returns', retain: false, expectReleased: true },
-    { label: 'terminal-completed', behavior: 'returns', retain: false, expectReleased: true },
-    { label: 'terminal-cancelled-throws', behavior: 'throws', retain: false, expectReleased: true },
-    { label: 'unexpected-break', behavior: 'throws', retain: false, expectReleased: true },
-    // Pause retain paths
-    { label: 'pause-breakpoint', behavior: 'returns', retain: true, expectReleased: false },
-    { label: 'pause-delayed-retry', behavior: 'returns', retain: true, expectReleased: false },
-    { label: 'pause-rate-limit', behavior: 'returns', retain: true, expectReleased: false },
-    { label: 'pause-verify-non-clean', behavior: 'returns', retain: true, expectReleased: false },
-    { label: 'pause-manual-mid-flight', behavior: 'returns', retain: true, expectReleased: false },
-    // Pause-then-throw paths (controller still retains even if body raises)
-    {
-      label: 'pause-then-throws-cleanup-error',
-      behavior: 'throws',
-      retain: true,
-      expectReleased: false
-    }
-  ];
-
-  for (const branch of BRANCHES) {
-    it(`fuzz: ${branch.label} ${branch.behavior} retain=${branch.retain} → released=${branch.expectReleased}`, async () => {
-      const ownerId = `owner-${branch.label}`;
-      const lock = new WorkspaceLockManager(store, ownerId, clock, scheduler);
-      const body = async (session: LockSession): Promise<string> => {
-        if (branch.retain) session.retain();
-        if (branch.behavior === 'throws') throw new Error(`synthetic:${branch.label}`);
-        return 'ok';
-      };
-      const invocation = lock.withLock(branch.label, body);
-      if (branch.behavior === 'throws') {
-        await expect(invocation).rejects.toThrow(`synthetic:${branch.label}`);
-      } else {
-        await expect(invocation).resolves.toBe('ok');
-      }
-      const persisted = store.getLock();
-      if (branch.expectReleased) {
-        expect(persisted, `${branch.label} expected lock release`).toBeNull();
-      } else {
-        expect(persisted?.ownerId, `${branch.label} expected retain`).toBe(ownerId);
-      }
-      // Always clean up so the next iteration starts from a known state.
-      if (!branch.expectReleased) await lock.release();
-    });
-  }
 });
