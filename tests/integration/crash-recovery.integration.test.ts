@@ -9,9 +9,10 @@
 //      has elapsed since the last heartbeat, AND succeed `tryAcquire`.
 //   2. Read back the persisted state and find the in-flight run
 //      intact (audit log untouched, run state recoverable).
-//   3. NOT throw or wedge if the previous owner's withLock body
-//      never completed (the `finally` block of the dead process is
-//      moot; the new owner takes over by stale-detection).
+//   3. NOT throw or wedge because the dead owner never released.
+//      Nothing runs cleanup in a killed process, so stale-detection is
+//      the only takeover path — there is no scope wrapper whose
+//      `finally` could have released on the way out.
 //
 // This is the operational scenario behind the "Reliability gaps:
 // no documented crash-recovery integration test" finding in the
@@ -26,7 +27,6 @@ import {
   type SchedulerHandle
 } from '../../src/state/lock';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { LockHeldError } from '../../src/lib/errors';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -95,39 +95,6 @@ describe('Crash-recovery: lock survives host crash and stale-takeover succeeds',
     const newAcq = await newManager.tryAcquire();
     expect(newAcq.acquired).toBe(true);
     expect(newAcq.ownerId).toBe('host-pid-2-bbbbbbbb');
-  });
-
-  it('withLock on the new manager succeeds after the old owner is stale, even if the prior body never ran finally', async () => {
-    const oldManager = new WorkspaceLockManager(store, 'host-pid-1-aaaaaaaa', clock, scheduler);
-    // Simulate a withLock that was in-flight when the host died — we
-    // start it but never await its completion; the manager's `finally`
-    // block never fires because the process is gone.
-    // Concretely: just acquire and abandon.
-    await oldManager.tryAcquire();
-    expect(oldManager.isHeld()).toBe(true);
-
-    // Now the host crashes; we model that by simply not interacting
-    // with `oldManager` again and letting time pass.
-    clock.advance(STALENESS_THRESHOLD_MS + 100);
-
-    const newManager = new WorkspaceLockManager(store, 'host-pid-2-bbbbbbbb', clock, scheduler);
-    const result = await newManager.withLock('recover-after-crash', async () => 'recovered');
-    expect(result).toBe('recovered');
-    // Lock released by the wrapper.
-    expect(newManager.isHeld()).toBe(false);
-  });
-
-  it('a still-fresh foreign lock blocks withLock with LockHeldError', async () => {
-    const oldManager = new WorkspaceLockManager(store, 'host-pid-1-aaaaaaaa', clock, scheduler);
-    await oldManager.tryAcquire();
-
-    // Less than stale threshold — old owner still considered alive.
-    clock.advance(1_000);
-
-    const newManager = new WorkspaceLockManager(store, 'host-pid-2-bbbbbbbb', clock, scheduler);
-    await expect(
-      newManager.withLock('should-fail', async () => 'never')
-    ).rejects.toBeInstanceOf(LockHeldError);
   });
 });
 

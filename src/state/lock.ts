@@ -1,27 +1,8 @@
 import type { WorkspaceStateStore } from './workspace-state';
 import type { WorkspaceLock } from './workflow-run';
-import { LockHeldError } from '../lib/errors';
 
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const STALENESS_THRESHOLD_MS = 15_000;
-
-/**
- * Feature 034 Item 046 — handle passed to a `withLock` body so it can mark
- * the lock as intentionally retained beyond the scope (e.g. a paused
- * workflow expects a later resume call to claim ownership). Without the
- * call, `withLock` releases the lock in its `finally` block on both normal
- * and exceptional exit.
- */
-export interface LockSession {
-  /**
-   * Mark the lock as intentionally retained beyond this `withLock` scope.
-   * Use when the wrapped function transitions persisted state into a
-   * paused / pending-retry shape that a follow-up entry point will
-   * resume. Without this call, the lock is released on exit (normal or
-   * thrown). Idempotent; safe to call multiple times.
-   */
-  retain(): void;
-}
 
 export interface Clock {
   now(): number;
@@ -48,6 +29,25 @@ export const systemScheduler: Scheduler = {
   }
 };
 
+/**
+ * The per-workspace window-primacy lease. Its tenure is activation-to-disposal:
+ * acquired in `extension.ts` at activation, released at `dispose()`, and nowhere
+ * else (feature 093, FR-028 / FR-032a).
+ *
+ * Deliberately **no** scope wrapper. Feature 034's `withLock(scope, fn)` released
+ * in a `finally`, which made a window-scoped lease end at a Run-scoped moment:
+ * it acquired idempotently per owner and kept no reference count, so
+ * with two Runs in one window the first `finally` to run dropped primacy for
+ * every Run in the window, and a rival window could claim the workspace while
+ * this one was still executing. `RunDriver.drive()` was its last production
+ * caller; removing that wrapper (and the `session.retain()` calls that existed
+ * only to suppress its auto-release) left the method dead, and it is deleted
+ * rather than kept, because a working wrapper is a working template for
+ * reintroducing the defect. Reference-counting it was the rejected alternative —
+ * it keeps the lease's lifetime implicit and has to be right at every release
+ * site. Acquire with `tryAcquire()` and release only where the tenure genuinely
+ * ends. `tests/integration/concurrent-run-execution.test.ts` (SC-009) pins this.
+ */
 export class WorkspaceLockManager {
   private readonly store: WorkspaceStateStore;
   private readonly ownerId: string;
@@ -119,43 +119,6 @@ export class WorkspaceLockManager {
     const lock = this.store.getLock();
     if (lock && lock.ownerId === this.ownerId) {
       await this.store.setLock(null);
-    }
-  }
-
-  /**
-   * Feature 034 Item 046 — auto-release lock wrapper. Acquires (idempotent
-   * for the same owner), runs `fn`, and releases the lock in a `finally`
-   * block. `fn` may call `session.retain()` to keep the lock held past
-   * this scope (e.g. paused workflows that expect a later resume to claim
-   * ownership). Thrown errors propagate; the lock is still released
-   * unless retained.
-   *
-   * Replaces the hand-rolled `lockReleased` flag pattern now owned by
-   * `RunDriver.drive()`. The wrapper IS the new
-   * lock-released invariant: any new exit path is covered automatically.
-   *
-   * Throws `LockHeldError` when the lock is held by another owner.
-   */
-  public async withLock<T>(
-    _scope: string,
-    fn: (session: LockSession) => Promise<T>
-  ): Promise<T> {
-    const probe = await this.tryAcquire();
-    if (!probe.acquired) {
-      throw new LockHeldError(probe.ownerId);
-    }
-    let shouldRetain = false;
-    const session: LockSession = {
-      retain: () => {
-        shouldRetain = true;
-      }
-    };
-    try {
-      return await fn(session);
-    } finally {
-      if (!shouldRetain) {
-        await this.release().catch(() => undefined);
-      }
     }
   }
 
