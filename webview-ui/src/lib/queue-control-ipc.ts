@@ -168,19 +168,67 @@ export function moveTask(taskId: string, targetQueueId: string): Promise<QueueCo
 // host answers reads the same wherever it surfaces. Unknown codes fall through
 // verbatim rather than being swallowed: a refusal the operator cannot act on is
 // still better than a control that silently does nothing.
+//
+// Every key below is a string the host actually emits. That is not a truism: the
+// first version of this table was written from the refusals as the spec *names*
+// them — `default-queue`, `in-flight-task`, `unknown-queue`, `connected-run-child`,
+// `invalid-expression`, `out-of-range` — and not one of those six is a code any
+// host site produces. `cmd-delete-queue.ts` acks `impact.reason` verbatim, so the
+// commonest refusal in the feature reached the operator as "The host refused:
+// default-queue-undeletable". The fall-through hid it: every entry looked
+// plausible and nothing was silently wrong, so only reading both ends together
+// finds it. `queue-refusal-vocabulary.test.ts` now pins each key to its emitting
+// site, which is the check that would have caught it.
+//
+// Emitting sites, so the pairing can be re-checked rather than trusted:
+//   - `contracts/validators/queue-management.ts` — payload refusals, ahead of
+//     every handler
+//   - `QueueManager.queueDeletionImpact` — the delete refusals
+//   - `QueueManager.moveTask`, `WorkspaceState.movePendingRequest` and the one
+//     rename in `taskErrorReason` (`task-not-found` → `unknown-task-id`)
+//   - `parseSchedule` (`lib/schedule-parser.ts`) — the five `ScheduleParseError`
+//     codes, passed through by `setQueueSchedule` as `parsed.code`
+//   - `QueueManager.saveQueueSettings` — the settings refusals
+//   - `commands/constants.ts` and each `cmd-*.ts` guard — transport refusals
+// `timeout` and `unexpected-accept` are the two this module synthesises itself.
+//
+// `invalid-queue-name` is deliberately absent: it belongs to create and rename,
+// which this module does not post (see the header).
 const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
-  'default-queue': 'The default queue cannot be deleted. Make another queue the default first.',
-  'in-flight-task': 'This queue has a Task in flight. Wait for it to finish, or cancel it first.',
-  'connected-run-child': 'This Task belongs to a connected run and moves with it.',
-  'invalid-expression': 'That schedule expression could not be read. Try "in 30m" or "at 14:00".',
+  // Payload — reachable only from a control that sent something malformed.
+  'missing-payload': 'The request was incomplete and was not sent.',
+  'unexpected-payload-fields': 'The request carried unexpected fields and was not sent.',
+  'invalid-confirmation': 'The confirmation could not be read. Try the action again.',
+  'invalid-schedule-expression': 'That schedule expression could not be read.',
   'invalid-position': 'That position is not valid for the target queue.',
-  'out-of-range': 'That value is outside the range this setting accepts.',
-  'unknown-queue': 'That queue no longer exists.',
+  // Delete
+  'default-queue-undeletable':
+    'The default queue cannot be deleted. Make another queue the default first.',
+  'queue-has-in-flight-task':
+    'This queue has a Task in flight. Wait for it to finish, or cancel it first.',
+  'unknown-queue-id': 'That queue no longer exists.',
+  // Move
+  'task-bound-to-connected-run': 'This Task belongs to a connected run and moves with it.',
+  'unknown-task-id': 'That Task no longer exists.',
+  'task-not-in-pending-state': 'Only a pending Task can be moved to another queue.',
+  'task-cap-reached': 'The target queue is already full.',
+  'position-out-of-range': 'That position is not valid for the target queue.',
+  // Schedule
+  'empty-input': 'Enter a schedule, such as "in 30m" or "at 14:00".',
+  'mixed-units': 'A schedule takes one unit only — "in 2h" or "in 30m", not "in 2h30m".',
+  'value-out-of-range': 'That schedule is too far off, or not a positive whole number.',
+  'invalid-time-of-day': 'That time of day could not be read. Use HH:MM between 00:00 and 23:59.',
+  'unrecognized-format':
+    'That schedule expression could not be read. Try "in 30m", "in 2h", or "at 14:00".',
+  // Settings
+  'invalid-concurrency-cap': 'That value is outside the range this setting accepts.',
+  'config-write-failed': 'The setting could not be saved. Try again.',
+  // Transport
   'secondary-window-readonly': 'This window is not the primary one, so it cannot change the queue.',
   unsupported: 'This host build does not support that operation.',
+  'operation-rejected': 'The host refused the operation.',
   timeout: 'The host did not answer. Try again.',
-  'unexpected-accept': 'The host answered unexpectedly and the queue was left unchanged.',
-  'operation-rejected': 'The host refused the operation.'
+  'unexpected-accept': 'The host answered unexpectedly and the queue was left unchanged.'
 });
 
 export function refusalText(reason: string): string {

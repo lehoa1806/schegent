@@ -106,10 +106,10 @@ describe('correlated-request contract', () => {
 
   it('carries the host refusal reason through', async () => {
     const promise = setQueueSchedule('q-beta', 'in 30m');
-    fireAck(posted[0]!.correlationId, 'rejected', 'invalid-expression');
+    fireAck(posted[0]!.correlationId, 'rejected', 'unrecognized-format');
     await expect(promise).resolves.toEqual({
       status: 'rejected',
-      reason: 'invalid-expression'
+      reason: 'unrecognized-format'
     });
   });
 
@@ -161,8 +161,8 @@ describe('saveQueueSettings', () => {
     const promise = saveQueueSettings(99, 'q-beta');
     expect(posted).toHaveLength(1);
     expect(posted[0]!.payload).toMatchObject({ globalConcurrencyCap: 99 });
-    fireAck(posted[0]!.correlationId, 'rejected', 'out-of-range');
-    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'out-of-range' });
+    fireAck(posted[0]!.correlationId, 'rejected', 'invalid-concurrency-cap');
+    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'invalid-concurrency-cap' });
   });
 });
 
@@ -213,7 +213,7 @@ describe('confirmAndDeleteQueue', () => {
   });
 
   it('refuses without prompting when the probe is refused ahead of the gate', async () => {
-    for (const reason of ['default-queue', 'in-flight-task', 'unsupported']) {
+    for (const reason of ['default-queue-undeletable', 'queue-has-in-flight-task', 'unsupported']) {
       posted.length = 0;
       confirmCalls.length = 0;
       const promise = confirmAndDeleteQueue('default', 'Default');
@@ -256,7 +256,7 @@ describe('confirmAndDeleteQueue', () => {
     const promise = confirmAndDeleteQueue('q-beta', 'Beta');
     fireAck(posted[0]!.correlationId, 'rejected', 'confirmation-required', IMPACT);
     await vi.advanceTimersByTimeAsync(0);
-    fireAck(posted[1]!.correlationId, 'rejected', 'in-flight-task');
-    await expect(promise).resolves.toEqual({ status: 'refused', reason: 'in-flight-task' });
+    fireAck(posted[1]!.correlationId, 'rejected', 'queue-has-in-flight-task');
+    await expect(promise).resolves.toEqual({ status: 'refused', reason: 'queue-has-in-flight-task' });
   });
 });

@@ -163,11 +163,38 @@ describe('retryPhaseNow — rejection guards', () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
     await controller.startNew(feature, null);
-    // Run completed normally — pendingRetryAt is null.
+    // This fixture used to stop at the completed Run above and assert
+    // `not-pending-retry`. It reached that branch only because the target
+    // resolver counted finished Runs, so a completed Run was handed to the
+    // guard below; once the resolver started excluding them (feature 093
+    // cumulative review) the call refused earlier, at `no-active-run` — see the
+    // sibling case. The branch this test names belongs to an *operable* Run
+    // with no armed retry, which is what is arranged here.
+    await store.setRun(DEFAULT_QUEUE_ID, {
+      ...store.getRun(DEFAULT_QUEUE_ID)!,
+      status: 'paused',
+      pendingRetryAt: null,
+      pendingRetryCause: null
+    });
 
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('not-pending-retry');
+  });
+
+  it('rejects with no-active-run when only a finished run remains', async () => {
+    runSpy.mockImplementation(async () => makeOutput());
+    const feature = await queue.enqueue('feature description');
+    await controller.startNew(feature, null);
+    // A completed Run stays in the run record — only `clearAll` removes an
+    // entry — so this is the state every queue sits in between Tasks. The
+    // control has nothing to act on, and says so, rather than resolving the
+    // finished Run and failing one guard deeper with a less accurate reason.
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
+
+    const result = await controller.retryPhaseNow();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('no-active-run');
   });
 });
 

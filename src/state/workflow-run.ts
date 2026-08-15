@@ -61,6 +61,32 @@ export function isTerminalRunStatus(status: WorkflowRunStatus | string): boolean
   return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * The statuses from which no operator control can act — a different question
+ * from the one above, and sited here so the difference is unmissable.
+ *
+ * `failed` is in `TERMINAL_RUN_STATUSES` and **not** here, which is the whole
+ * point. Terminality answers "has execution ended, release the lease and the
+ * session"; a failed Run has, and does. Operability answers "can the operator
+ * still do something with this Run", and for a failed Run the answer is
+ * emphatically yes — `skipPhase` advances past the failed phase and wakes the
+ * pipeline, and retry re-admits it. Those two controls exist very largely *for*
+ * failed Runs. Only `completed` and `canceled` are finished in both senses.
+ *
+ * Enumerated for the same reason as the list above, and negatively for a
+ * further one: spelling the operable set positively would put the pinned
+ * per-task status literal in this predicate, and the enumeration that matters
+ * here is the short, stable, closed one — a status added later is far more
+ * likely to be operable than not, so defaulting an unknown status to operable
+ * fails toward a control the operator can still reach rather than one that
+ * silently refuses.
+ */
+export const UNCONTROLLABLE_RUN_STATUSES = ['completed', 'canceled'] as const;
+
+export function isOperableRunStatus(status: WorkflowRunStatus | string): boolean {
+  return !(UNCONTROLLABLE_RUN_STATUSES as readonly string[]).includes(status);
+}
+
 export interface GitApprovalReceipt {
   readonly approvedAt: number;
   readonly planFingerprint: string;

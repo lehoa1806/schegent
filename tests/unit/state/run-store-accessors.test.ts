@@ -22,6 +22,7 @@ import {
   type Memento
 } from '../../../src/state/workspace-state';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { migrateV10ToV11 } from '../../../src/state/run-state-migrator';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { buildQueueRegistry, buildWorkflowRun, fixtureQueueId } from '../../fixtures/state/queue-fixtures';
 
@@ -189,6 +190,67 @@ describe('getRunMap is a read-only projection (G-4)', () => {
 
   it('reads empty on a workspace that has never run anything', () => {
     expect(store.getRunMap()).toEqual({});
+  });
+});
+
+// Found in the cumulative 093–095 review. `readRunMap()` imported the migrator's
+// "is this a Run?" rule but restated the map rule as
+// `typeof raw === 'object' && !Array.isArray(raw)`, which is laxer than
+// `isRunStateMap` — it accepts a map whose *values* are not Runs. On that one
+// input the pre-write read and the migrator disagreed, which is precisely what
+// the method's own comment says cannot happen: this read cast the junk and
+// handed callers values typed `WorkflowRun` that are not one, while the
+// migrator classified the same record `unrecognised-record-shape`.
+//
+// The seeded records below are shapes a downgrade, a partial write or a hand-
+// edited workspace can leave behind. Each asserts the *agreement*, not merely
+// the emptiness: whatever `readRunMap` answers before the write must be what
+// the migrator is about to make true.
+describe('a record the migrator would repair reads as empty, not as junk', () => {
+  const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
+    ['values that are not Runs', { [DEFAULT_QUEUE_ID]: { nothing: 'like a run' } }],
+    ['a value with an unknown status', { [DEFAULT_QUEUE_ID]: { id: 'r', featureId: 't', status: 'sideways' } }],
+    ['one good entry and one bad', {
+      [DEFAULT_QUEUE_ID]: buildWorkflowRun({ id: 'run-a' }),
+      [OTHER_QUEUE]: 'not a run'
+    }],
+    ['a primitive', 'not an object'],
+    ['an array', [buildWorkflowRun({ id: 'run-a' })]]
+  ];
+
+  for (const [label, raw] of UNREADABLE) {
+    it(`reads empty for ${label}`, () => {
+      memento.seed(KEYS.run, raw);
+
+      expect(store.getRunMap()).toEqual({});
+      expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+      expect(store.findRunByTask('task-a')).toBeNull();
+    });
+  }
+
+  it('agrees with the migrator, which is the property that failed', () => {
+    // The mixed record is the sharpest case: the old rule returned it whole, so
+    // one caller saw a live Run on the default queue and the migrator saw a
+    // record to repair. Both must now answer "nothing is executing".
+    const mixed = {
+      [DEFAULT_QUEUE_ID]: buildWorkflowRun({ id: 'run-a' }),
+      [OTHER_QUEUE]: 'not a run'
+    };
+    memento.seed(KEYS.run, mixed);
+
+    const migrated = migrateV10ToV11(mixed, () => DEFAULT_QUEUE_ID, 0);
+
+    expect(migrated.runs).toEqual({});
+    expect(migrated.events.some((e) => e.type === 'run-record-repaired')).toBe(true);
+    expect(store.getRunMap()).toEqual(migrated.runs);
+  });
+
+  it('still lifts a genuine v10 record — the case the laxer rule was there for', () => {
+    const legacy = buildWorkflowRun({ id: 'run-legacy', featureId: 'task-legacy' });
+    memento.seed(KEYS.run, legacy);
+
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.id).toBe('run-legacy');
+    expect(store.findRunByTask('task-legacy')?.queueId).toBe(DEFAULT_QUEUE_ID);
   });
 });
 

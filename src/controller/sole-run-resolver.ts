@@ -24,7 +24,7 @@
 // every call below is byte-for-byte the previous behavior; the refusal branch
 // only becomes reachable once drain step 4b is deleted (T081).
 
-import type { WorkflowRun } from '../state/workflow-run';
+import { isOperableRunStatus, type WorkflowRun } from '../state/workflow-run';
 
 /** Why a control with no named target could not be resolved to one Run. */
 export type SoleRunRefusal = 'no-run-in-flight' | 'ambiguous-run-target';
@@ -76,12 +76,34 @@ export type ControlTarget =
  * It lives here rather than on the controller because the rule is about the run
  * record, not about the controller: the same question is asked by every surface
  * that can act on a Run without naming one.
+ *
+ * The predicate is **not** the default. Finished Runs stay in the record — only
+ * `clearAll` ever calls `setRun(queueId, null)`, and an ordinary completion
+ * writes the end status back so the finished pipeline still renders. Under one
+ * slot that was invisible; under a map, a queue that has *ever* finished a Task
+ * keeps an entry forever. Resolving with the default `() => true` therefore
+ * counted history: two queues, one live and one that completed last week, and
+ * every unaddressed phase control refused `ambiguous-run-target` — permanently,
+ * in any workspace where a second queue had ever run. The palette commands in
+ * `activation/ui-wiring.ts` say they refuse "when N are in flight", and
+ * `isOperableRunStatus` is what makes that sentence true.
+ *
+ * It is deliberately **not** `!isTerminalRunStatus`, which was the first repair
+ * and was wrong. That oracle counts `failed`, and three suites said so
+ * immediately: `skipPhase` on a failed phase wakes the pipeline, and
+ * `retryPhaseNow` reports `not-pending-retry` rather than `no-active-run`. Both
+ * controls exist largely for failed Runs, so excluding them refused the very
+ * operations the operator reaches for after a failure. `workflow-run.ts` now
+ * carries both predicates side by side with the distinction spelled out:
+ * terminality is about releasing the lease and the session, operability is about
+ * what the operator can still reach. A **paused** Run is neither finished nor
+ * uncontrollable and stays resolvable, which is what resume depends on.
  */
 export function resolveControlTarget(
   explicit: string | undefined,
   runs: Readonly<Record<string, WorkflowRun>>
 ): ControlTarget {
   if (explicit !== undefined) return { ok: true, queueId: explicit };
-  const sole = resolveSoleRun(runs);
+  const sole = resolveSoleRun(runs, (run) => isOperableRunStatus(run.status));
   return sole.ok ? { ok: true, queueId: sole.queueId } : { ok: false, reason: sole.reason };
 }

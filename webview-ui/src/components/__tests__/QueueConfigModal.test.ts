@@ -193,7 +193,8 @@ describe('QueueConfigModal — the host owns the range (FR-011)', () => {
 
     await fireEvent.input(getByTestId('queue-config-cap'), { target: { value: '99' } });
     await fireEvent.click(getByTestId('queue-config-save'));
-    ack(0, 'rejected', 'out-of-range');
+    // `QueueManager.saveQueueSettings`'s code for a cap outside the accepted range.
+    ack(0, 'rejected', 'invalid-concurrency-cap');
 
     await waitFor(() =>
       expect(queryByTestId('queue-config-refusal')?.textContent).toContain(

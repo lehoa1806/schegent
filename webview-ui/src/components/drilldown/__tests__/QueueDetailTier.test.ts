@@ -498,7 +498,9 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-delete'));
-    ack(0, 'rejected', 'in-flight-task');
+    // `QueueManager.queueDeletionImpact` emits this code; `queue-refusal-vocabulary.test.ts`
+    // pins the pairing. The spec's name for it — `in-flight-task` — is not a code.
+    ack(0, 'rejected', 'queue-has-in-flight-task');
 
     await vi.waitFor(() =>
       expect(getByTestId('queue-control-refusal').textContent).toMatch(/in flight/i)
@@ -577,7 +579,8 @@ describe('QueueDetailTier — arming a scheduled start (US2)', () => {
       target: { value: 'whenever' }
     });
     await fireEvent.click(getByTestId('queue-schedule-arm'));
-    ack(0, 'rejected', 'invalid-expression');
+    // What `parseSchedule` answers for text it cannot match to any form.
+    ack(0, 'rejected', 'unrecognized-format');
 
     await vi.waitFor(() =>
       expect(getByTestId('queue-control-refusal').textContent).toMatch(/could not be read/i)
@@ -639,7 +642,8 @@ describe('QueueDetailTier — moving a pending Task (US4)', () => {
     await fireEvent.change(getByTestId('queue-task-move-waiting'), {
       target: { value: 'default' }
     });
-    ack(0, 'rejected', 'connected-run-child');
+    // `QueueManager.moveTask`'s code for it.
+    ack(0, 'rejected', 'task-bound-to-connected-run');
 
     await vi.waitFor(() =>
       expect(getByTestId('queue-control-refusal').textContent).toMatch(/connected run/i)
