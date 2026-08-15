@@ -7,6 +7,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import { RunSessionRegistry, type RunSession } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
+import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
 import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
@@ -663,20 +664,12 @@ export class SchegentWorkflowController {
       this.logger.warn(`resume: feature ${run.featureId} no longer in queue`);
       return NOT_RESUMED;
     }
-    // Feature 032 — derive the continuation hint at resume entry, BEFORE
-    // clearing the pause-cause fields below. Two derivation triggers:
-    //   1. `pendingRetryCause !== null` — watchdog-fired delayed retry
-    //      (transient_error or rate_limit). The retry continues the
-    //      failed invocation's conversation.
-    //   2. `manualPauseCause !== null` — queue-paused-mid-run cascade
-    //      where the queue manager cleared its own field but the
-    //      controller never had a chance to clear them via an entry
-    //      point. (Operator and breakpoint resumes use the entry-point
-    //      arm path below and clear the field BEFORE reaching here.)
-    // The explicit `isContinueGate` (armed by `resumeActivePhase` /
-    // `retryPhaseNow`) takes effect downstream in `RunDriver.drive()`
-    // regardless of what we derive here.
-    if (run.pendingRetryCause !== null || run.manualPauseCause !== null) {
+    // Feature 032 — derive the continuation hint at resume entry, BEFORE the
+    // `clearedPauseFieldsOnResume` spread below erases what it reads. Both
+    // per-cause rules live in `resume-pause-fields.ts`. The explicit
+    // `isContinueGate` (armed by `resumeActivePhase` / `retryPhaseNow`) takes
+    // effect downstream in `RunDriver.drive()` regardless of what we derive.
+    if (shouldContinueConversation(run)) {
       this.sessions.acquire(queueId).isContinueGate.arm();
     }
     const defaultRunnerKind = resolvePinnedRunnerKind(
@@ -724,7 +717,8 @@ export class SchegentWorkflowController {
             manualPauseCause: null,
             resumeTargetPhaseId: null
           }
-        : {})
+        : {}),
+      ...clearedPauseFieldsOnResume(run)
     };
     await this.store.setRun(queueId, next);
     await this.queue.markInFlight(feature.id, next.id, true);

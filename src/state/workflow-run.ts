@@ -186,11 +186,30 @@ export interface PhaseOverride {
  * task-level pause-cause projection (`'breakpoint'`); the run-level
  * `resumeTargetPhaseId` carries the marked phase id so resume invokes
  * the same phase that fired the breakpoint.
+ *
+ * BUG-003 — extends with `'verify-paused'`, set when a verify phase reports a
+ * non-clean outcome (`PhaseSequencer`'s `pause-verify`). Naming it after the
+ * task-level `'phase-paused'` the same event sets was the rejected alternative:
+ * the first paragraph above makes the two vocabularies disjoint on purpose, and
+ * `workflow-run-migrator.test.ts` pins that by feeding a task-level cause in and
+ * requiring the pair be zeroed. Reusing `'breakpoint-paused'` was rejected too —
+ * `derivePauseCause` maps it to the `'breakpoint'` projection, which would label
+ * a verify halt as a breakpoint the operator never set.
+ *
+ * Purely additive on a forward-only schema: no persisted record can carry it, so
+ * there is nothing to migrate and no version bump. It does have to be added to
+ * `VALID_MANUAL_PAUSE_CAUSES`, or the parser drops it on reload and
+ * `manualPausePairInvariant` zeroes the pair the driver just wrote.
+ *
+ * Unlike `'breakpoint-paused'` this cause carries no `resumeTargetPhaseId`:
+ * `pause-verify` leaves `currentPhase` on the verify phase, so resume re-runs
+ * the verification the operator was asked to satisfy.
  */
 export type ManualPauseCause =
   | 'operator-paused'
   | 'queue-paused-mid-run'
-  | 'breakpoint-paused';
+  | 'breakpoint-paused'
+  | 'verify-paused';
 
 /**
  * Feature 028 — future-phase breakpoint entry. Operator marks a pending

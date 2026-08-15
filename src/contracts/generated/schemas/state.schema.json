@@ -43,7 +43,8 @@
         "enum": [
           "operator-paused",
           "queue-paused-mid-run",
-          "breakpoint-paused"
+          "breakpoint-paused",
+          "verify-paused"
         ]
       },
       "uniqueItems": true

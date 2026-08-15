@@ -28,7 +28,11 @@ function makeStore(queueState: {
     getQueue: vi.fn(() => ({
       queueLifecycle: queueState.queueLifecycle ?? 'active-empty',
       ...queueState
-    }))
+    })),
+    // BUG-003 — step 3's second reading. `null` is "this queue holds no Run",
+    // which is the state every test below was already implicitly asserting
+    // against, so each keeps discriminating on the one gate it is about.
+    getRun: vi.fn(() => null)
   };
 }
 
@@ -134,6 +138,56 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
     expect(queue.hasWorkspaceCapacity).not.toHaveBeenCalled();
     expect(controller.admitNew).not.toHaveBeenCalled();
   });
+
+  // BUG-003 — step 3's second reading. A paused Run keeps its queue's one Run
+  // slot but leaves the in-flight Task count, so `hasQueueCapacity` is open and
+  // every later gate is open too; before this, step 7's `admitNew` overwrote the
+  // paused Run's record with the successor's and nothing reported the loss.
+  it.each([['paused'], ['running']] as const)(
+    'short-circuits when this queue already holds a %s Run',
+    async (status) => {
+      const store = makeStore({ paused: false, inFlightId: null });
+      store.getRun = vi.fn(() => ({ id: 'run-1', status }) as never);
+      const queue = makeQueue({ id: 'q-2', description: 'next' });
+      const lease = makeLease(true);
+      const controller = makeController();
+      const coord = new AutoDrainCoordinator({
+        store: store as never,
+        queue: queue as never,
+        executionLease: lease as never,
+        controller: controller as never
+      });
+      await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+      expect(controller.admitNew).not.toHaveBeenCalled();
+      // Refused before step 6, so the Run that holds this queue keeps the
+      // execution lease it owns. A refusal after the acquire would reach step
+      // 7's release and strip the lease from a live Run.
+      expect(lease.tryAcquire).not.toHaveBeenCalled();
+      expect(lease.release).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([['completed'], ['failed'], ['canceled']] as const)(
+    'still drains when this queue holds a %s Run',
+    async (status) => {
+      // The queue's Run slot is free once its Run is terminal — the successor is
+      // exactly what should claim it. Guards the case above from becoming
+      // "a queue never drains twice".
+      const store = makeStore({ paused: false, inFlightId: null });
+      store.getRun = vi.fn(() => ({ id: 'run-1', status }) as never);
+      const queue = makeQueue({ id: 'q-2', description: 'next' });
+      const lease = makeLease(true);
+      const controller = makeController();
+      const coord = new AutoDrainCoordinator({
+        store: store as never,
+        queue: queue as never,
+        executionLease: lease as never,
+        controller: controller as never
+      });
+      await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+      expect(controller.admitNew).toHaveBeenCalled();
+    }
+  );
 
   it('short-circuits when no pending feature exists', async () => {
     const store = makeStore({ paused: false, inFlightId: null });
@@ -339,6 +393,7 @@ function roundRobinHarness(options: { capacity: number }) {
         paused: false,
         inFlightId: null
       })),
+      getRun: vi.fn(() => null),
       getQueueRegistry: () => ({
         entries: QUEUE_IDS.map((id, position) => ({
           id,
@@ -510,6 +565,7 @@ function interleavingHarness(
         paused: false,
         inFlightId: null
       }),
+      getRun: (_queueId: string) => null,
       getQueueRegistry: () => ({
         entries: QUEUE_IDS.map((id, position) => ({
           id,
