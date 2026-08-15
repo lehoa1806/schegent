@@ -24,7 +24,6 @@ const PHASE_LOG_IPC_CONSTANTS = [
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/messages.ts',
   'webview-ui/src/lib/phase-log-ipc.ts',
-  'webview-ui/src/lib/__tests__/phase-log-ipc.test.ts',
   'webview-ui/src/lib/phase-log-store.svelte.ts'
 ]);
 
