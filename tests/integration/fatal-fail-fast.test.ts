@@ -65,14 +65,6 @@ function makeLock(): { lock: WorkspaceLockManager; releaseSpy: ReturnType<typeof
     heartbeat: vi.fn(),
     isHeld: vi.fn(),
     ownerOfRecord: vi.fn(),
-    withLock: async function (this: { release(): Promise<void> }, _scope: string, fn: (session: { retain(): void }) => Promise<unknown>) {
-      let retain = false;
-      try {
-        return await fn({ retain: () => { retain = true; } });
-      } finally {
-        if (!retain) await this.release().catch(() => undefined);
-      }
-    },
     id: 'this-window'
   } as unknown as WorkspaceLockManager;
   return { lock, releaseSpy };
@@ -134,7 +126,7 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     // its `finally`. That wrapper is gone: primacy runs activation-to-disposal,
     // and a fatal fail-fast ends the Run, not the window. What the fatal path
     // must still return is its queue's execution lease, which is a different
-    // lease and is covered by tests/integration/execution-lease-release.ts.
+    // lease and is covered by tests/integration/execution-lease-release.test.ts.
     expect(releaseSpy).not.toHaveBeenCalled();
 
     // (e) Audit log has exactly one phase-start and one phase-end for the

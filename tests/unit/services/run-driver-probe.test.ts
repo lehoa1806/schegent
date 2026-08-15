@@ -26,7 +26,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
-      lock: { withLock: vi.fn(async (_scope: string, fn: any) => fn({ retain: vi.fn() })) },
+      lock: {},
       options: { cliPath: 'good-bin', cwd: '/tmp', iterationCap: 5, cliPathResolver: (r: string) => r === 'claude' ? 'good-bin' : 'bad-bin' },
       backendCapabilities: { probeAvailability: vi.fn().mockResolvedValue(true) },
       monitor: { emit: vi.fn() },

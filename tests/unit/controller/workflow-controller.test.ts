@@ -54,14 +54,6 @@ function makeLock(): WorkspaceLockManager & { release: ReturnType<typeof vi.fn> 
     heartbeat: vi.fn(),
     isHeld: vi.fn(),
     ownerOfRecord: vi.fn(),
-    withLock: async function (this: { release(): Promise<void> }, _scope: string, fn: (session: { retain(): void }) => Promise<unknown>) {
-      let retain = false;
-      try {
-        return await fn({ retain: () => { retain = true; } });
-      } finally {
-        if (!retain) await this.release().catch(() => undefined);
-      }
-    },
     id: 'this-window'
   } as unknown as WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 }
@@ -740,7 +732,7 @@ describe('SchegentWorkflowController phase controls', () => {
 // acquires idempotently per owner with no reference count, so with two Runs in
 // one window the first to finish released primacy for both. Primacy now runs
 // activation-to-disposal, and BUG-005's protection lives at `dispose()` in
-// src/extension.ts — verified by tests/integration/window-primacy-lifetime.ts,
+// src/extension.ts — verified by tests/integration/window-primacy-lifetime.test.ts,
 // which also asserts the release still happens there. What these cases assert
 // now is the other half: a Run's end does NOT touch it.
 describe('SchegentWorkflowController — workspace lock release (BUG-005)', () => {

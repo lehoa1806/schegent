@@ -79,14 +79,6 @@ function makeLock(): WorkspaceLockManager {
     heartbeat: vi.fn(),
     isHeld: vi.fn(() => true),
     ownerOfRecord: vi.fn(),
-    withLock: async function (this: { release(): Promise<void> }, _scope: string, fn: (session: { retain(): void }) => Promise<unknown>) {
-      let retain = false;
-      try {
-        return await fn({ retain: () => { retain = true; } });
-      } finally {
-        if (!retain) await this.release().catch(() => undefined);
-      }
-    },
     id: 'this-window'
   } as unknown as WorkspaceLockManager;
 }
