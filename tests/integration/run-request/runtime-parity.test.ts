@@ -328,8 +328,6 @@ async function startParityNode(harness: Harness): Promise<string> {
     controller: harness.controller,
     logger: harness.logger,
     store: harness.store,
-    cliPathProvider: () => 'noop',
-    workspaceRoot: harness.workspaceRoot,
     catalogProvider: () => catalog()
   });
   const deps: WorkflowLauncherDeps = {

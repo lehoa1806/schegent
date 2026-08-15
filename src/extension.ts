@@ -597,11 +597,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     controller,
     logger,
     audit: auditWriter,
-    store,
-    cliPathProvider: (runnerKind) =>
-      resolveCliPath(runnerKind ?? backendKind, workspaceRoot, cliPath),
-    defaultRunnerKind: backendKind,
-    workspaceRoot
+    store
   });
 
   // Feature 065 (T009, T011) — the scheduled-start coordinator owns the

@@ -1,7 +1,5 @@
 export { GuardedRunService } from './guarded-run-service';
 export type {
   GuardedScheduleRequest,
-  GuardedScheduleResult,
-  GuardedStartRequest,
-  GuardedStartResult
+  GuardedScheduleResult
 } from './guarded-run-service';

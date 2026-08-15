@@ -98,8 +98,6 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
     logger: logger as unknown as SanitizedLogger,
     audit: audit as unknown as AuditLogWriter,
     store,
-    cliPathProvider: () => process.execPath,
-    workspaceRoot: '/tmp',
     clock: () => clock.now(),
     catalogProvider: () => catalog,
     scheduledStartCoordinator: coordinator
