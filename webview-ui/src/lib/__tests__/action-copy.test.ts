@@ -43,7 +43,10 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   // durable state exists. Launching a run is not itself destructive; only this
   // one decision inside it is, which is why the key is scoped to the overwrite
   // rather than to the launch.
-  'run.overwrite-output'
+  'run.overwrite-output',
+  // Feature 095 (FR-003) — deleting a queue drops its pending Tasks with no
+  // undo, and the queue-scoped analogue of `queue.clean-all`.
+  'queue.delete'
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
@@ -71,6 +74,9 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
       'catalog.remove-workflow',
       'catalog.reset-workflows',
       'queue.clean-all',
+      // Feature 095 — dropping a queue drops the pending Tasks on it. Sorts
+      // after `queue.clean-all` and before `run.overwrite-output`.
+      'queue.delete',
       // Feature 087 — replacing existing content has no undo, which is what
       // `destructive` means here.
       'run.overwrite-output',

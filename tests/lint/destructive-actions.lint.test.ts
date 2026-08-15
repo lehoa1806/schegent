@@ -3,10 +3,12 @@
 // wrapped by `useConfirm(actionKey)` so the operator-facing confirmation
 // flow gates the destructive side effect.
 //
-// The 12 destructive commands are the ones that mutate persisted queue,
-// run, or workspace state in a user-visible way. They map 1:1 to the
-// 11 `ActionKey` entries in `webview-ui/src/lib/action-copy.ts` plus
-// `CMD_RESET` (workspace.reset is the lone non-suppressible action).
+// The 13 destructive commands are the ones that mutate persisted queue,
+// run, or workspace state in a user-visible way. Each has an `ActionKey`
+// entry in `webview-ui/src/lib/action-copy.ts`, but the table is a superset:
+// it also carries keys for destructive decisions that are not commands of
+// their own (the catalog removals, and the output overwrite confirmed inside
+// a run launch). `workspace.reset` is the lone non-suppressible action.
 //
 // For each `postCommand(CMD_DESTRUCTIVE, ...)` call site under
 // `webview-ui/src/**/*.{svelte,ts}` (excluding `__tests__/`), the test
@@ -32,9 +34,9 @@ import { resolve } from 'node:path';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
-// The 12 commands that the action-copy table gates. Adding a new
+// The 13 commands that the action-copy table gates. Adding a new
 // destructive command means adding it here AND to ACTION_COPY (the
-// pinned-11 unit test at `webview-ui/src/lib/__tests__/action-copy.test.ts`
+// pinned-key unit test at `webview-ui/src/lib/__tests__/action-copy.test.ts`
 // keeps the latter honest).
 const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_CLEAR_ALL',
@@ -48,7 +50,12 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_RESTART_CANCELED_TASK',
   'CMD_MODIFY_TASK',
   'CMD_RERUN_FROM_HISTORY',
-  'CMD_RESET'
+  'CMD_RESET',
+  // Feature 095 (T011, FR-003) — deleting a queue drops its pending Tasks with
+  // no undo. Both posts of its two-phase flow live in one function body in
+  // `webview-ui/src/lib/queue-control-ipc.ts` alongside the `useConfirm(` call,
+  // which is what lets this scan see the gate; see that file's comment.
+  'CMD_DELETE_QUEUE'
 ];
 
 // Dead-code components that still carry ungated destructive call sites
@@ -193,7 +200,7 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
     expect(allSites.length).toBeGreaterThan(0);
   });
 
-  it('discovers each of the 12 destructive commands at least once in webview source', () => {
+  it('discovers each of the 13 destructive commands at least once in webview source', () => {
     // We accept matches from either live or legacy files so the sanity
     // check stays meaningful even when a destructive command has been
     // subsumed by another (e.g., `CMD_CLEAR_FAILED` is no longer wired
@@ -310,7 +317,7 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
   //
   // Pinned as a list rather than a count so a swap — one command out, one in —
   // is as visible as an addition.
-  it('leaves the destructive-command list at the pinned 12 (FR-018, FR-044b, QS-40)', () => {
+  it('leaves the destructive-command list at the pinned 13 (FR-018, FR-044b, QS-40)', () => {
     expect(DESTRUCTIVE_COMMANDS).toEqual([
       'CMD_CLEAR_ALL',
       'CMD_CLEAR_COMPLETED',
@@ -323,7 +330,11 @@ describe('Feature 063 T046 — destructive postCommand sites must be useConfirm-
       'CMD_RESTART_CANCELED_TASK',
       'CMD_MODIFY_TASK',
       'CMD_RERUN_FROM_HISTORY',
-      'CMD_RESET'
+      'CMD_RESET',
+      // Feature 095 (T011, FR-003) — the thirteenth. Deleting a queue drops
+      // its pending Tasks with no undo, which is the queue-scoped analogue of
+      // `CMD_CLEAR_ALL`; the gate is the same one, not a second flow.
+      'CMD_DELETE_QUEUE'
     ]);
   });
 

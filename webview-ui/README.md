@@ -105,13 +105,37 @@ every one is primary-host gated, and every one has a host handler under
 and the up/down arrows *within* a queue; `CMD_MOVE_TASK` is the across-queues
 move.
 
-Two of the seven have webview call sites so far — `CMD_CREATE_QUEUE`
-(`drilldown/QueuesTier.svelte`) and `CMD_RENAME_QUEUE`
-(`drilldown/QueueDetailTier.svelte`). `CMD_DELETE_QUEUE`,
-`CMD_SET_QUEUE_SCHEDULE`, `CMD_CLEAR_QUEUE_SCHEDULE`,
-`CMD_SAVE_QUEUE_SETTINGS` and `CMD_MOVE_TASK` are reinstated on the wire and
-handled by the host, but no tier renders a control for them yet. Per-queue
-**pause and resume** are not part of the seven: `CMD_PAUSE_QUEUE` /
+All seven now have webview call sites. Feature 092 shipped five of them with
+none — handler, validator, refusal codes and audit events on the host, and
+nothing in any tier that posted them — and feature 095 added the controls:
+
+| Command | Control | Component |
+|---|---|---|
+| `CMD_CREATE_QUEUE` | New Queue | `drilldown/QueuesTier.svelte` |
+| `CMD_RENAME_QUEUE` | Settings | `drilldown/QueueDetailTier.svelte` |
+| `CMD_DELETE_QUEUE` | Delete | `drilldown/QueueDetailTier.svelte` |
+| `CMD_SET_QUEUE_SCHEDULE` | Arm | `drilldown/QueueDetailTier.svelte` |
+| `CMD_CLEAR_QUEUE_SCHEDULE` | Disarm | `drilldown/QueueDetailTier.svelte` |
+| `CMD_SAVE_QUEUE_SETTINGS` | Queue Settings | `QueueConfigModal.svelte` |
+| `CMD_MOVE_TASK` | Move to… | `drilldown/QueueDetailTier.svelte` |
+
+The five feature 095 wired post from **one** module,
+`webview-ui/src/lib/queue-control-ipc.ts`, on the same correlated-request terms
+as `phase-log-ipc.ts` and `save-general-settings.ts`. The two that already had
+call sites keep them; relocating working code to make the rule uniform would be
+a diff with no requirement behind it.
+`tests/lint/queue-command-reachability.test.ts` derives the mutating
+queue-command set from `MUTATING_COMMAND_REASONS` and fails the build if any
+member has no non-test call site — the gap is now checked rather than recorded.
+
+Two schedule mechanisms exist and are not the same thing. `CMD_SET_QUEUE_SCHEDULE`
+writes `QueueRegistry.entries[].schedule`, is paired with no lifecycle, and
+surfaces in `QueueDetailTier`; the feature 065 **lifecycle** scheduled start
+writes `QueueState.scheduledStartAt`, is paired with `queueLifecycle ===
+'idle-pending'`, and surfaces in `ScheduledStartIndicator.svelte`. Reading one
+through the other's projection is the mistake to avoid.
+
+Per-queue **pause and resume** are not part of the seven: `CMD_PAUSE_QUEUE` /
 `CMD_RESUME_QUEUE` gained an optional `queueId`, and `Dashboard.svelte`
 posts them with **no** second argument when unscoped — argument-identical to
 the pre-feature call, which is what lets the earlier assertions stand
