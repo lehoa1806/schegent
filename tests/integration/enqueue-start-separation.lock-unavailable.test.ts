@@ -119,8 +119,6 @@ async function makeFixture(): Promise<Fixture> {
     logger: logger as unknown as SanitizedLogger,
     audit: audit as unknown as AuditLogWriter,
     store,
-    cliPathProvider: () => process.execPath,
-    workspaceRoot: '/tmp',
     clock: () => clock.now(),
     catalogProvider: () => catalog,
     scheduledStartCoordinator: coordinator

@@ -9,13 +9,9 @@
 //   operator entry points are wired through scheduleOrEnqueue per
 //   feature 017 BUG-003 / FR-036)
 // - early-validation failure → rejected-validation, lock NOT acquired
-// - successful start → started, controller.startNew called once
 // - successful enqueue → enqueued exactly once
 
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GuardedRunService } from '../../../src/services/guarded-run-service';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import {
@@ -26,11 +22,9 @@ import {
 } from '../../../src/state/lock';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import type {
-  PhaseDef,
   PipelineCatalog,
   PipelineDef
 } from '../../../src/config/pipeline-config';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
 
 function makeCatalog(pipelineIds: readonly string[]): PipelineCatalog {
   const pipelines: PipelineDef[] = pipelineIds.map((id) => ({
@@ -47,53 +41,6 @@ function makeCatalog(pipelineIds: readonly string[]): PipelineCatalog {
     defaultPipelineId: pipelineIds[0] ?? 'default',
     phasesById: new Map(),
     pipelinesById
-  };
-}
-
-function makeRunnerCatalog(runner: BackendRunnerKind): PipelineCatalog {
-  const phase: PhaseDef = {
-    id: 'custom-phase',
-    name: 'Custom phase',
-    instruction: 'Run it',
-    runner
-  };
-  const pipeline: PipelineDef = {
-    id: 'custom-pipeline',
-    name: 'Custom pipeline',
-    phases: [phase.id]
-  };
-  return {
-    phases: [phase],
-    pipelines: [pipeline],
-    models: { claude: [], codex: [], agy: [] },
-    defaultPipelineId: pipeline.id,
-    phasesById: new Map([[phase.id, phase]]),
-    pipelinesById: new Map([[pipeline.id, pipeline]])
-  };
-}
-
-function makeGitPhaseCatalog(
-  runner?: BackendRunnerKind,
-  phaseId = 'finalize'
-): PipelineCatalog {
-  const phase: PhaseDef = {
-    id: phaseId,
-    name: phaseId,
-    instruction: 'Commit and merge the work.',
-    ...(runner === undefined ? {} : { runner })
-  };
-  const pipeline: PipelineDef = {
-    id: 'git-pipeline',
-    name: 'Git pipeline',
-    phases: [phase.id]
-  };
-  return {
-    phases: [phase],
-    pipelines: [pipeline],
-    models: { claude: [], codex: [], agy: [] },
-    defaultPipelineId: pipeline.id,
-    phasesById: new Map([[phase.id, phase]]),
-    pipelinesById: new Map([[pipeline.id, pipeline]])
   };
 }
 
@@ -174,7 +121,6 @@ interface Harness {
   logger: ReturnType<typeof makeLogger>;
   audit: ReturnType<typeof makeAudit>;
   service: GuardedRunService;
-  workspaceRoot: string;
   clock: MutableClock;
   ownerId: string;
 }
@@ -182,10 +128,6 @@ interface Harness {
 async function makeHarness(opts?: {
   ownerId?: string;
   controllerRunning?: boolean;
-  cliPath?: string;
-  cliPaths?: Partial<Record<BackendRunnerKind, string>>;
-  defaultRunnerKind?: BackendRunnerKind;
-  withScaffolding?: boolean;
   catalog?: PipelineCatalog;
 }): Promise<Harness> {
   const ownerId = opts?.ownerId ?? 'self-window';
@@ -197,15 +139,8 @@ async function makeHarness(opts?: {
   const clock = new MutableClock(1_000_000);
   const lock = new WorkspaceLockManager(store, ownerId, clock, noopScheduler);
 
-  // Workspace root with .specify/ scaffolding so assertScaffoldingPresent passes.
-  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'schegent-grs-test-'));
-  if (opts?.withScaffolding !== false) {
-    fs.mkdirSync(path.join(workspaceRoot, '.specify'), { recursive: true });
-  }
-
   const logger = makeLogger();
   const audit = makeAudit();
-  const cliPath = opts?.cliPath ?? process.execPath; // node binary, X_OK guaranteed
 
   const service = new GuardedRunService({
     lock,
@@ -214,12 +149,6 @@ async function makeHarness(opts?: {
     logger: logger as unknown as import('../../../src/lib/logger').SanitizedLogger,
     audit: audit as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
     store,
-    cliPathProvider: (runnerKind) =>
-      (runnerKind ? opts?.cliPaths?.[runnerKind] : undefined) ?? cliPath,
-    ...(opts?.defaultRunnerKind
-      ? { defaultRunnerKind: opts.defaultRunnerKind }
-      : {}),
-    workspaceRoot,
     clock: () => clock.now(),
     ...(opts?.catalog ? { catalogProvider: () => opts.catalog as PipelineCatalog } : {})
   });
@@ -232,36 +161,14 @@ async function makeHarness(opts?: {
     logger,
     audit,
     service,
-    workspaceRoot,
     clock,
     ownerId
   };
 }
 
-function cleanupRoot(root: string): void {
-  try {
-    fs.rmSync(root, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
-
-let createdRoots: string[] = [];
-
-afterEach(() => {
-  for (const r of createdRoots) cleanupRoot(r);
-  createdRoots = [];
-});
-
-async function trackedHarness(opts?: Parameters<typeof makeHarness>[0]): Promise<Harness> {
-  const h = await makeHarness(opts);
-  createdRoots.push(h.workspaceRoot);
-  return h;
-}
-
 describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   it('rejects with rejected-foreign-lock when a fresh foreign lock is present', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     const now = h.clock.now();
     await h.store.setLock({
       ownerId: 'other-window',
@@ -282,7 +189,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 
   it('allows enqueue when foreign lock has expired (older than staleness threshold)', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     const now = h.clock.now();
     await h.store.setLock({
       ownerId: 'other-window',
@@ -301,7 +208,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 
   it('rejects with rejected-paused when the queue is paused', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     await h.queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
 
     const result = await h.service.scheduleOrEnqueue({
@@ -316,7 +223,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 
   it('enqueues a new item behind the in-flight one when controller is running and lock is held by self', async () => {
-    const h = await trackedHarness({ controllerRunning: true });
+    const h = await makeHarness({ controllerRunning: true });
     // Acquire self lock so foreign-lock check passes.
     const acquired = await h.lock.tryAcquire();
     expect(acquired.acquired).toBe(true);
@@ -341,7 +248,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   // is true. The legacy `'rejected-already-running'` outcome MUST NOT
   // be returned on a `controller.running` basis.
   it('accepts submissions via `dashboard-submit` while the controller is running and never returns rejected-already-running', async () => {
-    const h = await trackedHarness({ controllerRunning: true });
+    const h = await makeHarness({ controllerRunning: true });
     const acquired = await h.lock.tryAcquire();
     expect(acquired.acquired).toBe(true);
     const first = await h.queue.enqueue('first');
@@ -364,7 +271,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 
   it('rejects empty descriptions with rejected-validation', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     const result = await h.service.scheduleOrEnqueue({
       description: '   ',
       scheduledAt: h.clock.now(),
@@ -376,7 +283,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 
   it('rejects descriptions exceeding the 32k cap with rejected-validation', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     const tooLong = 'x'.repeat(33_000);
     const result = await h.service.scheduleOrEnqueue({
       description: tooLong,
@@ -389,217 +296,15 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
   });
 });
 
-describe('GuardedRunService.startNow (FR-006/FR-009/FR-010)', () => {
-  it('starts the controller and acquires the lock when inputs are valid', async () => {
-    const h = await trackedHarness();
-
-    const result = await h.service.startNow({
-      description: 'do thing',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-
-    expect(result.outcome).toBe('started');
-    expect(result.runId).toBeTruthy();
-    expect(result.feature?.description).toBe('do thing');
-    // Lock acquired by self; controller.startNew called exactly once.
-    expect(h.lock.isHeld()).toBe(true);
-    expect(h.controller.startNew).toHaveBeenCalledTimes(1);
-    // Queue mutated with exactly one new feature.
-    expect(h.store.getQueue().requests).toHaveLength(1);
-  });
-
-  it('rejects with rejected-already-running when controller.running is true (defense-in-depth — BUG-003 routes operator paths around this)', async () => {
-    // Feature 017 — BUG-003. This branch is now defense-in-depth only.
-    // Production paths (Dashboard `CMD_START`, Command Palette
-    // `schegent.auto`) dispatch through `runEnqueue()` →
-    // `scheduleOrEnqueue()` so this `startNow()` path is unreachable
-    // from operator input. The check remains so future internal callers
-    // can not accidentally call `startNew()` mid-run.
-    const h = await trackedHarness({ controllerRunning: true });
-    const result = await h.service.startNow({
-      description: 'do thing',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('rejected-already-running');
-    // Lock must NOT be acquired by us when we reject due to controller-running.
-    expect(h.lock.isHeld()).toBe(false);
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-    expect(h.store.getQueue().requests).toHaveLength(0);
-  });
-
-  it('rejects with rejected-foreign-lock when a fresh foreign lock is present and does NOT acquire the lock', async () => {
-    const h = await trackedHarness();
-    const now = h.clock.now();
-    await h.store.setLock({
-      ownerId: 'other-window',
-      acquiredAt: now - 1_000,
-      heartbeatAt: now - 1_000
-    });
-    const result = await h.service.startNow({
-      description: 'do thing',
-      startedAt: now,
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('rejected-foreign-lock');
-    // Foreign lock must remain on record; we never overwrote it.
-    expect(h.store.getLock()?.ownerId).toBe('other-window');
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-    expect(h.store.getQueue().requests).toHaveLength(0);
-  });
-
-  it('rejects with rejected-validation on early-validation failure WITHOUT acquiring the lock (FR-010)', async () => {
-    const h = await trackedHarness();
-    // Early-validation failure: empty description.
-    const result = await h.service.startNow({
-      description: '',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('rejected-validation');
-    expect(result.reason).toBe('description-empty');
-    // FR-010: lock must not be held after a rejected outcome.
-    expect(h.store.getLock()).toBeNull();
-    expect(h.lock.isHeld()).toBe(false);
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-    expect(h.store.getQueue().requests).toHaveLength(0);
-  });
-
-  it('rejects with rejected-validation when the CLI is not available (no lock acquired)', async () => {
-    const h = await trackedHarness({
-      cliPath: '/this/binary/does/not/exist'
-    });
-    const result = await h.service.startNow({
-      description: 'do thing',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('rejected-validation');
-    expect(result.reason).toBe('cli-not-found');
-    expect(h.store.getLock()).toBeNull();
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-  });
-
-  it('preflights the selected pipeline runner instead of the unavailable global default', async () => {
-    const h = await trackedHarness({
-      cliPath: '/this/global/claude/does/not/exist',
-      cliPaths: { agy: process.execPath },
-      defaultRunnerKind: 'claude',
-      catalog: makeRunnerCatalog('agy')
-    });
-    const result = await h.service.startNow({
-      description: 'run only on agy',
-      startedAt: h.clock.now(),
-      pipelineId: 'custom-pipeline',
-      via: 'command-palette'
-    });
-
-    expect(result.outcome).toBe('started');
-    expect(h.controller.startNew).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects a Git-mutating phase that would inherit the global Codex runner', async () => {
-    const h = await trackedHarness({
-      defaultRunnerKind: 'codex',
-      catalog: makeGitPhaseCatalog()
-    });
-
-    const result = await h.service.startNow({
-      description: 'finalize work',
-      startedAt: h.clock.now(),
-      pipelineId: 'git-pipeline',
-      via: 'command-palette'
-    });
-
-    expect(result).toMatchObject({
-      outcome: 'rejected-validation',
-      reason: 'runner-incompatible:finalize:codex'
-    });
-    expect(h.store.getLock()).toBeNull();
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-  });
-
-  it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement'])(
-    'rejects worktree-creating phase %s when it would inherit Codex',
-    async (phaseId) => {
-      const h = await trackedHarness({
-        defaultRunnerKind: 'codex',
-        catalog: makeGitPhaseCatalog(undefined, phaseId)
-      });
-
-      const result = await h.service.startNow({
-        description: 'specify work',
-        startedAt: h.clock.now(),
-        pipelineId: 'git-pipeline',
-        via: 'command-palette'
-      });
-
-      expect(result).toMatchObject({
-        outcome: 'rejected-validation',
-        reason: `runner-incompatible:${phaseId}:codex`
-      });
-      expect(h.controller.startNew).not.toHaveBeenCalled();
-    }
-  );
-
-  it.each(['claude', 'agy'] as const)(
-    'accepts a Git-mutating phase with explicit %s runner',
-    async (runner) => {
-      const h = await trackedHarness({
-        defaultRunnerKind: 'codex',
-        catalog: makeGitPhaseCatalog(runner)
-      });
-
-      const result = await h.service.startNow({
-        description: 'finalize work',
-        startedAt: h.clock.now(),
-        pipelineId: 'git-pipeline',
-        via: 'command-palette'
-      });
-
-      expect(result.outcome).toBe('started');
-      expect(h.controller.startNew).toHaveBeenCalledTimes(1);
-    }
-  );
-
-  it('rejects with rejected-validation when scaffolding is missing (no lock acquired)', async () => {
-    const h = await trackedHarness({ withScaffolding: false });
-    const result = await h.service.startNow({
-      description: 'do thing',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('rejected-validation');
-    expect(result.reason).toBe('scaffolding-missing');
-    expect(h.store.getLock()).toBeNull();
-    expect(h.controller.startNew).not.toHaveBeenCalled();
-  });
-
-  it('does not double-acquire the lock; lock release is centralized in the controller (FR-009)', async () => {
-    const h = await trackedHarness();
-
-    // Spy on lock.tryAcquire and lock.release to count how many times each is called.
-    const tryAcquireSpy = vi.spyOn(h.lock, 'tryAcquire');
-    const releaseSpy = vi.spyOn(h.lock, 'release');
-
-    const result = await h.service.startNow({
-      description: 'feature',
-      startedAt: h.clock.now(),
-      via: 'command-palette'
-    });
-    expect(result.outcome).toBe('started');
-    // The service acquires once; release is the controller's responsibility,
-    // so the service should NOT call release on the success path.
-    expect(tryAcquireSpy).toHaveBeenCalledTimes(1);
-    expect(releaseSpy).not.toHaveBeenCalled();
-  });
-
+describe('GuardedRunService — rejection auditing', () => {
+  // Relocated from the retired `startNow` suite. `emitRejection` is shared, so
+  // the payload contract still needs a test; only the operation it reports
+  // changed, because `schedule` is now the sole operation the service performs.
   it('emits an audit record on every rejection so operators can observe attempted bypasses', async () => {
-    const h = await trackedHarness();
-    await h.service.startNow({
+    const h = await makeHarness();
+    await h.service.scheduleOrEnqueue({
       description: '',
-      startedAt: h.clock.now(),
+      scheduledAt: h.clock.now(),
       via: 'command-palette'
     });
     expect(h.audit.append).toHaveBeenCalled();
@@ -610,28 +315,28 @@ describe('GuardedRunService.startNow (FR-006/FR-009/FR-010)', () => {
     expect(call.eventType).toBe('warning');
     expect(call.outcome).toBe('failure');
     expect(call.payload.source).toBe('guarded-run-service');
-    expect(call.payload.operation).toBe('start');
+    expect(call.payload.operation).toBe('schedule');
     expect(call.payload.outcome).toBe('rejected-validation');
   });
 });
 
 describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
-  it('startNow preserves pipelineId on the enqueued FeatureRequest', async () => {
-    const h = await trackedHarness({
+  it('scheduleOrEnqueue preserves pipelineId on the enqueued FeatureRequest', async () => {
+    const h = await makeHarness({
       catalog: makeCatalog(['speckit-default', 'fast-fix'])
     });
-    const result = await h.service.startNow({
+    const result = await h.service.scheduleOrEnqueue({
       description: 'do thing',
-      startedAt: h.clock.now(),
+      scheduledAt: h.clock.now(),
       via: 'command-palette',
       pipelineId: 'fast-fix'
     });
-    expect(result.outcome).toBe('started');
-    expect(result.feature?.pipelineId).toBe('fast-fix');
+    expect(result.outcome).toBe('enqueued');
+    expect(h.store.getQueue().requests[0]?.pipelineId).toBe('fast-fix');
   });
 
   it('scheduleOrEnqueue rejects an unknown pipelineId with rejected-validation', async () => {
-    const h = await trackedHarness({
+    const h = await makeHarness({
       catalog: makeCatalog(['speckit-default'])
     });
     const result = await h.service.scheduleOrEnqueue({
@@ -645,13 +350,13 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
     expect(h.store.getQueue().requests).toHaveLength(0);
   });
 
-  it('startNow preserves the rerun block on the enqueued FeatureRequest', async () => {
-    const h = await trackedHarness({
+  it('scheduleOrEnqueue preserves the rerun block on the enqueued FeatureRequest', async () => {
+    const h = await makeHarness({
       catalog: makeCatalog(['speckit-default'])
     });
-    const result = await h.service.startNow({
+    const result = await h.service.scheduleOrEnqueue({
       description: 'do thing',
-      startedAt: h.clock.now(),
+      scheduledAt: h.clock.now(),
       via: 'rerun-from-history',
       pipelineId: 'speckit-default',
       rerun: {
@@ -660,19 +365,20 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
         reason: 'manual'
       }
     });
-    expect(result.outcome).toBe('started');
-    expect(result.feature?.rerun).toBeDefined();
-    expect(result.feature?.rerun?.originalRunId).toBe('run-prev');
-    expect(result.feature?.rerun?.reason).toBe('manual');
+    expect(result.outcome).toBe('enqueued');
+    const enqueued = h.store.getQueue().requests[0];
+    expect(enqueued?.rerun).toBeDefined();
+    expect(enqueued?.rerun?.originalRunId).toBe('run-prev');
+    expect(enqueued?.rerun?.reason).toBe('manual');
   });
 
   it('rejects rerun without pipelineId (T022 invariant: rerun-requires-pipeline-id)', async () => {
-    const h = await trackedHarness({
+    const h = await makeHarness({
       catalog: makeCatalog(['speckit-default'])
     });
-    const result = await h.service.startNow({
+    const result = await h.service.scheduleOrEnqueue({
       description: 'do thing',
-      startedAt: h.clock.now(),
+      scheduledAt: h.clock.now(),
       via: 'rerun-from-history',
       // pipelineId deliberately omitted
       rerun: {
@@ -683,13 +389,13 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
     });
     expect(result.outcome).toBe('rejected-validation');
     expect(result.reason).toBe('rerun-requires-pipeline-id');
-    // Lock must NOT be acquired on early-validation rejection.
+    // Validation rejects before the queue write; no lock is taken either way.
     expect(h.store.getLock()).toBeNull();
-    expect(h.controller.startNew).not.toHaveBeenCalled();
+    expect(h.store.getQueue().requests).toHaveLength(0);
   });
 
   it('rejects rerun with an invalid reason value', async () => {
-    const h = await trackedHarness({
+    const h = await makeHarness({
       catalog: makeCatalog(['speckit-default'])
     });
     const result = await h.service.scheduleOrEnqueue({
@@ -710,7 +416,7 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
 
 describe('GuardedRunService — sanitization', () => {
   it('passes reason strings through logger.sanitize() before returning or auditing', async () => {
-    const h = await trackedHarness();
+    const h = await makeHarness();
     // Inject a foreign lock whose ownerId would be sanitized.
     await h.store.setLock({
       ownerId: 'other-window-sk-secret',

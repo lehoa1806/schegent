@@ -301,8 +301,6 @@ export async function makeHarness(opts: {
     logger: logger as unknown as SanitizedLogger,
     audit: audit as unknown as AuditLogWriter,
     store,
-    cliPathProvider: () => process.execPath,
-    workspaceRoot,
     clock: () => clock.now(),
     catalogProvider: () => catalog,
     scheduledStartCoordinator: coordinator

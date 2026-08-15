@@ -2,15 +2,20 @@
 // queue-mutating command paths (FR-006/FR-007/FR-008/FR-009/FR-010).
 //
 // Centralizes lock checks, primary-window detection, and validation so no
-// command can bypass them. Direct calls to queue.enqueue() or
-// controller.startNew() from command handlers are forbidden once US2 is
-// fully landed; all paths must delegate through this service.
+// command can bypass them. Direct calls to queue.enqueue() from command
+// handlers are forbidden; all paths must delegate through this service.
+//
+// Feature 093 follow-up — the start-immediately surface (`startNow`, its
+// controller hand-off, and its CLI/scaffolding preflights) is deleted. It had
+// no non-test caller, and it modelled two patterns this project bans by name:
+// a Run-scoped `lock.release()` on the window-primacy lease, and a
+// `controller.running` gate of the same shape as the removed drain step 4b.
+// The scaffolding preflight it carried was never reachable; the gap that
+// leaves is tracked in `docs/features/bugs/`
+// `no-preflight-for-missing-speckit-scaffolding.md`.
 //
 // See `specs/007-principal-review-remediation/contracts/guarded-run-service.md`.
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { spawn } from 'child_process';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { WorkspaceLockManager } from '../state/lock';
@@ -18,8 +23,6 @@ import { STALENESS_THRESHOLD_MS } from '../state/lock';
 import type { SanitizedLogger } from '../lib/logger';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
-  FeatureRequest,
-  FeatureRequestFailure,
   FeatureRequestRerun,
   QueueLifecycle,
   ScheduledStartSource
@@ -28,13 +31,8 @@ import { MAX_DESCRIPTION_LENGTH } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { PipelineCatalog } from '../config/pipeline-config';
-import { phaseRunnerPolicyError } from '../config/phase-runner-policy';
 import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
 import type { EnqueueStartIntent } from '../contracts/sidebar-ipc';
-import {
-  DEFAULT_BACKEND,
-  type BackendRunnerKind
-} from '../runner/backend-runner-factory';
 
 // Feature 065 — `scheduleOrEnqueue` accepts an optional `startIntent` to
 // drive the host policy table (see contracts/sidebar-ipc.diff.md).
@@ -106,38 +104,13 @@ export interface GuardedScheduleResult {
   lifecycleAfter?: QueueLifecycle;
 }
 
-export interface GuardedStartRequest {
-  description: string;
-  startedAt: number;
-  via?: GuardedVia;
-  featureDir?: string | null;
-  pipelineId?: string | null;
-  queueId?: string | null;
-  position?: number | null;
-  rerun?: FeatureRequestRerun | null;
-}
-
-export interface GuardedStartResult {
-  outcome:
-    | 'started'
-    | 'rejected-foreign-lock'
-    | 'rejected-already-running'
-    | 'rejected-validation';
-  reason?: string;
-  runId?: string;
-  feature?: FeatureRequest;
-}
-
 export interface GuardedRunServiceDeps {
   readonly lock: WorkspaceLockManager;
   readonly queue: QueueManager;
-  readonly controller: Pick<SchegentWorkflowController, 'running' | 'startNew' | 'getCatalog'>;
+  readonly controller: Pick<SchegentWorkflowController, 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
   readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue'>;
-  readonly cliPathProvider: (runnerKind?: BackendRunnerKind) => Promise<string> | string;
-  readonly defaultRunnerKind?: BackendRunnerKind;
-  readonly workspaceRoot: string;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
   readonly catalogProvider?: () => PipelineCatalog;
@@ -685,122 +658,7 @@ export class GuardedRunService {
     }
   }
 
-  public async startNow(req: GuardedStartRequest): Promise<GuardedStartResult> {
-    const validated = this.validateDescription(req.description);
-    if (validated.kind === 'invalid') {
-      await this.emitRejection('start', 'rejected-validation', validated.reason, req.via);
-      return { outcome: 'rejected-validation', reason: validated.reason };
-    }
-
-    const rerunCheck = this.validateRerunPair(req.rerun ?? null, req.pipelineId ?? null);
-    if (rerunCheck.kind === 'invalid') {
-      await this.emitRejection('start', 'rejected-validation', rerunCheck.reason, req.via);
-      return { outcome: 'rejected-validation', reason: rerunCheck.reason };
-    }
-
-    const pipelineCheck = this.validatePipelineId(req.pipelineId ?? null);
-    if (pipelineCheck.kind === 'invalid') {
-      await this.emitRejection('start', 'rejected-validation', pipelineCheck.reason, req.via);
-      return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
-    }
-
-    const cliCheck = await this.assertCliAvailable(req.pipelineId ?? null);
-    if (cliCheck.kind === 'invalid') {
-      await this.emitRejection('start', 'rejected-validation', cliCheck.reason, req.via);
-      return { outcome: 'rejected-validation', reason: cliCheck.reason };
-    }
-
-    const scaffold = await this.assertScaffoldingPresent();
-    if (scaffold.kind === 'invalid') {
-      await this.emitRejection('start', 'rejected-validation', scaffold.reason, req.via);
-      return { outcome: 'rejected-validation', reason: scaffold.reason };
-    }
-
-    // Feature 017 — BUG-003. Defense-in-depth only. Operator-driven
-    // enqueue paths (Dashboard `CMD_START`, Command Palette
-    // `schegent.auto`) now route through `scheduleOrEnqueue()` via
-    // `runEnqueue()` so an operator submitting while a controller is
-    // mid-pipeline gets a pending task (FR-010 / FR-013 / FR-029 /
-    // FR-036). `startNow()` is reserved for direct
-    // start-immediately call sites that already guarantee no
-    // controller run is active.
-    if (this.deps.controller.running) {
-      const reason = 'controller-already-running';
-      await this.emitRejection('start', 'rejected-already-running', reason, req.via);
-      return { outcome: 'rejected-already-running', reason };
-    }
-
-    const foreign = this.checkForeignFreshLock();
-    if (foreign) {
-      await this.emitRejection('start', 'rejected-foreign-lock', foreign, req.via);
-      return { outcome: 'rejected-foreign-lock', reason: foreign };
-    }
-
-    const lockResult = await this.deps.lock.tryAcquire();
-    if (!lockResult.acquired) {
-      const reason = `lock-held-by:${this.deps.logger.sanitize(lockResult.ownerId)}`;
-      await this.emitRejection('start', 'rejected-foreign-lock', reason, req.via);
-      return { outcome: 'rejected-foreign-lock', reason };
-    }
-
-    let feature: FeatureRequest;
-    try {
-      feature = await this.deps.queue.enqueue(validated.value, {
-        ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
-        ...(req.queueId ? { queueId: req.queueId } : {}),
-        ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
-        ...(req.rerun ? { rerun: req.rerun } : {})
-      });
-    } catch (err) {
-      // Validation passed but enqueue failed — release the lock we just took.
-      await this.deps.lock.release().catch(() => undefined);
-      const reason = this.deps.logger.sanitize((err as Error).message ?? 'enqueue-failed');
-      await this.emitRejection('start', 'rejected-validation', reason, req.via);
-      return { outcome: 'rejected-validation', reason };
-    }
-
-    // Pass ownership to the controller. driveRun() releases via lockReleased.
-    this.startController(feature, req.featureDir ?? null);
-    return { outcome: 'started', runId: feature.id, feature };
-  }
-
   // --- helpers --------------------------------------------------------------
-
-  private startController(feature: FeatureRequest, featureDir: string | null): void {
-    try {
-      void Promise.resolve(this.deps.controller.startNew(feature, featureDir)).catch((err) =>
-        this.handleControllerStartFailure(feature, err)
-      );
-    } catch (err) {
-      void this.handleControllerStartFailure(feature, err);
-    }
-  }
-
-  private async handleControllerStartFailure(
-    feature: FeatureRequest,
-    err: unknown
-  ): Promise<void> {
-    const message = this.deps.logger.sanitize(
-      err instanceof Error ? err.message : String(err)
-    ).slice(0, 240);
-    const lastError: FeatureRequestFailure = {
-      code: 'controller-start-failed',
-      message,
-      correlationId: feature.runId ?? feature.id
-    };
-    this.deps.logger.error(`controller.startNew failed for ${feature.id}: ${message}`);
-    try {
-      await this.deps.queue.finish(feature.id, 'failed', lastError);
-    } catch (finishErr) {
-      this.deps.logger.warn(
-        `failed to mark ${feature.id} failed after controller.startNew rejection: ${
-          this.deps.logger.sanitize((finishErr as Error).message)
-        }`
-      );
-    } finally {
-      await this.deps.lock.release().catch(() => undefined);
-    }
-  }
 
   private validateDescription(
     raw: string
@@ -889,74 +747,11 @@ export class GuardedRunService {
     return `foreign-fresh:${this.deps.logger.sanitize(existing.ownerId)}`;
   }
 
-  private async assertCliAvailable(pipelineId: string | null): Promise<
-    { kind: 'ok' } | { kind: 'invalid'; reason: string }
-  > {
-    const catalog =
-      this.deps.catalogProvider?.() ?? this.deps.controller.getCatalog();
-    const pipeline = catalog.pipelinesById.get(
-      pipelineId ?? catalog.defaultPipelineId
-    );
-    const runnerKinds = new Set<BackendRunnerKind>();
-    if (pipeline) {
-      for (const phaseId of pipeline.phases) {
-        const runnerKind =
-          catalog.phasesById.get(phaseId)?.runner ??
-          this.deps.defaultRunnerKind ??
-          DEFAULT_BACKEND;
-        const runnerPolicyError = phaseRunnerPolicyError(phaseId, runnerKind);
-        if (runnerPolicyError !== null) {
-          return {
-            kind: 'invalid',
-            reason: `runner-incompatible:${phaseId}:${runnerKind}`
-          };
-        }
-        runnerKinds.add(runnerKind);
-      }
-    }
-    if (runnerKinds.size === 0) {
-      runnerKinds.add(this.deps.defaultRunnerKind ?? DEFAULT_BACKEND);
-    }
-
-    for (const runnerKind of runnerKinds) {
-      let cliPath: string;
-      try {
-        cliPath = await this.deps.cliPathProvider(runnerKind);
-      } catch (err) {
-        return {
-          kind: 'invalid',
-          reason: `cli-path-unavailable:${this.deps.logger.sanitize((err as Error).message ?? 'unknown')}`
-        };
-      }
-      if (!cliPath || cliPath.trim().length === 0) {
-        return { kind: 'invalid', reason: 'cli-path-empty' };
-      }
-      if (!(await isExecutableAvailable(cliPath))) {
-        return { kind: 'invalid', reason: 'cli-not-found' };
-      }
-    }
-    return { kind: 'ok' };
-  }
-
-  private async assertScaffoldingPresent(): Promise<
-    { kind: 'ok' } | { kind: 'invalid'; reason: string }
-  > {
-    try {
-      const stat = await fs.stat(path.join(this.deps.workspaceRoot, '.specify'));
-      if (!stat.isDirectory()) {
-        return { kind: 'invalid', reason: 'scaffolding-not-directory' };
-      }
-      return { kind: 'ok' };
-    } catch {
-      return { kind: 'invalid', reason: 'scaffolding-missing' };
-    }
-  }
-
   private async emitRejection(
-    operation: 'start' | 'schedule',
+    operation: 'schedule',
     outcomeLiteral: string,
     reason: string,
-    via: GuardedScheduleRequest['via'] | GuardedStartRequest['via'] | undefined
+    via: GuardedScheduleRequest['via'] | undefined
   ): Promise<void> {
     const sanitizedReason = this.deps.logger.sanitize(reason);
     this.deps.logger.warn(
@@ -986,23 +781,3 @@ export class GuardedRunService {
   }
 }
 
-async function isExecutableAvailable(cliPath: string): Promise<boolean> {
-  if (path.isAbsolute(cliPath)) {
-    try {
-      await fs.access(cliPath, fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  const which = process.platform === 'win32' ? 'where' : 'which';
-  return new Promise<boolean>((resolve) => {
-    try {
-      const proc = spawn(which, [cliPath], { stdio: 'ignore' });
-      proc.on('exit', (code) => resolve(code === 0));
-      proc.on('error', () => resolve(false));
-    } catch {
-      resolve(false);
-    }
-  });
-}
