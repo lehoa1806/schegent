@@ -14,9 +14,16 @@
   //
   // Mockup: docs/mockup/schegent_mockup.html `view-active-queue`.
 
+  // Feature 095 (T027, US3) — the workspace queue settings open from this tier,
+  // because both values are workspace-scoped. They are deliberately not folded
+  // into `QueueDetailTier`'s per-queue Settings affordance, which renames the one
+  // queue in front of the operator.
+
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
   import { queueLifecycleLabel } from '../../lib/queue-lifecycle-label';
+  import { snapshotStore } from '../../lib/snapshot-store.svelte';
+  import QueueConfigModal from '../QueueConfigModal.svelte';
   import type { QueueRuntime } from '../../lib/snapshot-types';
 
   interface Props {
@@ -48,6 +55,17 @@
 
   let creating = $state(false);
   let draftName = $state('');
+  let configuring = $state(false);
+  let configOpener: HTMLElement | null = $state(null);
+
+  function openConfig(event: MouseEvent): void {
+    configOpener = event.currentTarget as HTMLElement;
+    configuring = true;
+  }
+
+  function closeConfig(): void {
+    configuring = false;
+  }
 
   function openCreate(): void {
     creating = true;
@@ -88,12 +106,28 @@
       <h1>Queues</h1>
       <p>Monitor and manage parallel execution queues and lifecycles.</p>
     </div>
-    {#if isPrimary && !creating}
-      <button type="button" class="primary" data-testid="queue-create" onclick={openCreate}>
-        New Queue
-      </button>
+    {#if isPrimary}
+      <div class="header-actions">
+        <button type="button" data-testid="queue-settings-open" onclick={openConfig}>
+          Queue Settings
+        </button>
+        {#if !creating}
+          <button type="button" class="primary" data-testid="queue-create" onclick={openCreate}>
+            New Queue
+          </button>
+        {/if}
+      </div>
     {/if}
   </header>
+
+  {#if configuring}
+    <QueueConfigModal
+      generalSettings={snapshotStore.generalSettings}
+      {queues}
+      onClose={closeConfig}
+      originatingElement={configOpener}
+    />
+  {/if}
 
   {#if creating}
     <div class="create-row">

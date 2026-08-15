@@ -206,11 +206,34 @@ describe('QueuesTier — creating a queue (FR-056)', () => {
   });
 });
 
+// Feature 095 (T027, US3) — the workspace queue settings open from tier 1,
+// because both values are workspace-scoped. The modal's own behaviour is covered
+// by `components/__tests__/QueueConfigModal.test.ts`; these two assert only that
+// the tier is the entry point and that a non-primary window has none.
+describe('QueuesTier — workspace queue settings (feature 095, US3)', () => {
+  it('opens the settings modal from the tier header', async () => {
+    const { container, getByTestId } = render(QueuesTier, {
+      props: { queues: QUEUES, isPrimary: true }
+    });
+
+    expect(container.querySelector('[data-testid="queue-config-modal"]')).toBeNull();
+    await fireEvent.click(getByTestId('queue-settings-open'));
+
+    expect(container.querySelector('[data-testid="queue-config-modal"]')).not.toBeNull();
+  });
+});
+
 describe('QueuesTier — read-only in a non-primary window (FR-065)', () => {
   it('withholds the create action', () => {
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: false } });
 
     expect(container.querySelector('[data-testid="queue-create"]')).toBeNull();
+  });
+
+  it('withholds the queue settings entry point', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: false } });
+
+    expect(container.querySelector('[data-testid="queue-settings-open"]')).toBeNull();
   });
 
   it('still lets the operator read and drill into every queue', async () => {
