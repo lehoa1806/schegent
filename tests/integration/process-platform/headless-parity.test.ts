@@ -114,6 +114,7 @@ import {
   CMD_EXPORT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WORKFLOWS
@@ -125,6 +126,11 @@ import {
 } from './built-in-run-harness';
 import type { ExportProcessYamlRequest } from '../../../src/contracts/sidebar-ipc/process-yaml';
 import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
+import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type {
+  ModelCatalogImportRow,
+  ModelCatalogSkipRow
+} from '../../../src/services/process-yaml/types';
 
 /** Where the mirrored operator-side composer actually lives. */
 const SIDEBAR_COMPOSER_SOURCE =
@@ -132,6 +138,18 @@ const SIDEBAR_COMPOSER_SOURCE =
 
 type Scope = WritablePhaseDefinitionScope;
 type LayerKey = 'phases' | 'pipelines' | 'workflows';
+
+/** The one writable layer Model Catalog has (research.md Decision 6) — no `{user, workspace}` split. */
+type ModelsLayer = Record<BackendRunnerKind, readonly string[]>;
+
+/**
+ * `LayerKey` plus `'models'`. The other three keys index into a `{user,
+ * workspace}` pair (`store[key as LayerKey][target] = value`); Model Catalog
+ * has one writable layer only, so `depsFor`'s `updateConfig` writes
+ * `store.models` directly for that key instead of indexing into it, matching
+ * `cmd-save-models.ts`, which never passes a scope argument at all.
+ */
+type RecordedLayerKey = LayerKey | 'models';
 
 // ---------------------------------------------------------------------------
 // The document corpus
@@ -283,6 +301,39 @@ const DOCUMENTS: readonly { readonly label: string; readonly text: string }[] = 
   { label: 'a document with one row of each outcome', text: MIXED }
 ];
 
+/**
+ * A Model Catalog document, deliberately not a member of `DOCUMENTS` above.
+ * FR-015 rules out a document mixing a Model Catalog with a Phase/Pipeline/
+ * Workflow, so the two fixture families are never interchangeable — this one
+ * is exercised by its own describe blocks (T013) rather than folded into the
+ * `it.each(DOCUMENTS)` cases.
+ *
+ * Against `MODEL_CATALOG_SEED` below, plans one `import` (a new model under a
+ * recognized backend) and both `skip` reasons (an already-existing model
+ * under a recognized backend, and a model under a backend the catalog does
+ * not recognize).
+ */
+const MODEL_CATALOG_DOCUMENT =
+  [
+    'apiVersion: schegent/v1',
+    'kind: ModelCatalog',
+    'groups:',
+    '  - backend: claude',
+    '    models:',
+    '      - parity-model-new',
+    '      - parity-model-existing',
+    '  - backend: not-a-backend',
+    '    models:',
+    '      - parity-model-orphan'
+  ].join('\n') + '\n';
+
+/** What `MODEL_CATALOG_DOCUMENT` above plans against: one pre-existing model. */
+const MODEL_CATALOG_SEED = Object.freeze({
+  claude: ['parity-model-existing'],
+  codex: [],
+  agy: []
+});
+
 // ---------------------------------------------------------------------------
 // One isolated configuration fixture per surface
 // ---------------------------------------------------------------------------
@@ -296,20 +347,23 @@ interface Store {
   readonly phases: Layers;
   readonly pipelines: Layers;
   readonly workflows: Layers;
+  models: ModelsLayer;
   /** Configuration keys written, in the order `updateConfig` saw them. */
-  readonly writes: LayerKey[];
+  readonly writes: RecordedLayerKey[];
 }
 
 function makeStore(
   seed: {
     readonly phases?: readonly unknown[];
     readonly pipelines?: readonly unknown[];
+    readonly models?: ModelsLayer;
   } = {}
 ): Store {
   return {
     phases: { user: seed.phases ?? [], workspace: [] },
     pipelines: { user: seed.pipelines ?? [], workspace: [] },
     workflows: { user: [], workspace: [] },
+    models: seed.models ?? { claude: [], codex: [], agy: [] },
     writes: []
   };
 }
@@ -345,13 +399,18 @@ function depsFor(store: Store, bytes?: Uint8Array) {
     readPhaseConfig: () => store.phases,
     readPipelineConfig: () => store.pipelines,
     readWorkflowConfig: () => store.workflows,
+    readModelsConfig: () => store.models,
     ...(bytes !== undefined
       ? { openProcessYamlDocument: async () => ({ outcome: 'read' as const, bytes }) }
       : {}),
-    updateConfig: async (key: string, value: unknown, target: Scope) => {
-      expect(['phases', 'pipelines', 'workflows']).toContain(key);
-      store.writes.push(key as LayerKey);
-      store[key as LayerKey][target] = value as readonly unknown[];
+    updateConfig: async (key: string, value: unknown, target?: Scope) => {
+      expect(['phases', 'pipelines', 'workflows', 'models']).toContain(key);
+      store.writes.push(key as RecordedLayerKey);
+      if (key === 'models') {
+        store.models = value as ModelsLayer;
+        return;
+      }
+      store[key as LayerKey][target as Scope] = value as readonly unknown[];
     },
     executeCommand: vi.fn(),
     queueRemover: { remove: vi.fn() },
@@ -431,7 +490,8 @@ async function headlessImport(
     {
       savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
       savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload)
+      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
+      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
     },
     { plan, scope, layers: heldLayers(store, scope) }
   );
@@ -466,6 +526,19 @@ function importRows<K extends ImportPlanRow['resourceKind']>(
 
 interface LayerWrite {
   readonly key: LayerKey;
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+}
+
+/**
+ * `LayerWrite` plus the one key it has no arm for. `sidebarWrites()` below
+ * returns `LayerWrite[]` because it mirrors the pre-096 sidebar composer
+ * byte-for-byte and has no `models` arm to mirror yet (T013). The recorder in
+ * the `importProcessDocument` parity test, below, drives the real four-port
+ * `ImportWritePort` and needs the wider key so its `saveModels` stub type-checks.
+ */
+interface RecordedLayerWrite {
+  readonly key: RecordedLayerKey;
   readonly type: string;
   readonly payload: Record<string, unknown>;
 }
@@ -612,9 +685,15 @@ async function headlessExport(
   return result.bytes;
 }
 
-/** A store holding the whole self-contained package, imported through the real writes. */
+/**
+ * A store holding the whole self-contained package, imported through the real
+ * writes, plus a seeded Model Catalog so the new export case below (T013)
+ * serializes actual groups rather than three empty ones. The Workflow package
+ * import never touches `models` (FR-015 rules out a mixed document), so the
+ * seed passes through untouched for every other case this store feeds.
+ */
 async function storeWithPackage(): Promise<Store> {
-  const store = makeStore();
+  const store = makeStore({ models: MODEL_CATALOG_SEED });
   const plan = await headlessPreview(store, SELF_CONTAINED);
   const result = await headlessImport(store, plan, 'user');
   expect(result.outcome, 'export fixture failed to import').toBe('imported');
@@ -706,7 +785,12 @@ const EXPORTS: readonly { readonly label: string; readonly selection: ExportProc
         resourceId: 'parity-flow',
         inclusion: 'include-closure'
       }
-    }
+    },
+    // Model Catalog (T013): no `resourceId`, no `inclusion` — there is exactly
+    // one catalog and no dependency bundling (contract §3). It carries no
+    // `EXPORT_REFUSALS` counterpart because FR-007 never routes it to the
+    // `unavailable` branch; an empty catalog is still a valid document.
+    { label: 'the Model Catalog', selection: { resourceKind: 'modelCatalog' } }
   ];
 
 // ---------------------------------------------------------------------------
@@ -732,9 +816,25 @@ function comparableRow(row: ImportPlanRow): Record<string, unknown> {
       row.outcome === 'blocked'
         ? [row.reason.dependency, ...(row.reason.code === 'dependency-blocked' ? [row.reason.via] : [])]
         : undefined,
+    // `row.resourceKind !== 'modelCatalog'` narrows out `ModelCatalogSkipRow`,
+    // whose skip reasons (`already-exists` / `unrecognized-backend`) are not a
+    // presence scope/status pair.
     presence:
-      row.outcome === 'skip' ? { in: row.presentIn, status: row.presentRowStatus } : undefined,
-    defects: row.outcome === 'invalid' ? row.defects : undefined
+      row.outcome === 'skip' && row.resourceKind !== 'modelCatalog'
+        ? { in: row.presentIn, status: row.presentRowStatus }
+        : undefined,
+    defects: row.outcome === 'invalid' ? row.defects : undefined,
+    // Model Catalog's own two fields (T013), named apart from `reason` above:
+    // that field is typed to a `blocked` row's reason object, and a Model
+    // Catalog skip's reason is one of two plain strings — folding the two
+    // together would make rows that differ only in backend or in skip reason
+    // compare equal.
+    backend:
+      (row.outcome === 'import' || row.outcome === 'skip') && row.resourceKind === 'modelCatalog'
+        ? row.backend
+        : undefined,
+    modelCatalogSkipReason:
+      row.resourceKind === 'modelCatalog' && row.outcome === 'skip' ? row.reason : undefined
   };
 }
 
@@ -744,7 +844,8 @@ function comparablePlan(plan: ImportPlan): Record<string, unknown> {
     counts: plan.counts,
     computedAgainstRevision: plan.computedAgainstRevision,
     computedAgainstPipelineRevision: plan.computedAgainstPipelineRevision,
-    computedAgainstWorkflowRevision: plan.computedAgainstWorkflowRevision
+    computedAgainstWorkflowRevision: plan.computedAgainstWorkflowRevision,
+    computedAgainstModelsRevision: plan.computedAgainstModelsRevision
   };
 }
 
@@ -905,9 +1006,9 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     // The automation payloads, recorded at the port rather than inferred. The
     // acks are stubbed accepted so the whole sequence is observed: a real write
     // here would refuse the second layer and the comparison would stop early.
-    const sent: LayerWrite[] = [];
+    const sent: RecordedLayerWrite[] = [];
     const record =
-      (key: LayerKey, type: string) =>
+      (key: RecordedLayerKey, type: string) =>
       async (payload: unknown): Promise<LayerSaveAck> => {
         sent.push({ key, type, payload: payload as Record<string, unknown> });
         return { status: 'accepted' };
@@ -916,7 +1017,8 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
       {
         savePhases: record('phases', CMD_SAVE_PHASES),
         savePipelines: record('pipelines', CMD_SAVE_PIPELINES),
-        saveWorkflows: record('workflows', CMD_SAVE_WORKFLOWS)
+        saveWorkflows: record('workflows', CMD_SAVE_WORKFLOWS),
+        saveModels: record('models', CMD_SAVE_MODELS)
       },
       { plan: headlessPlan, scope: 'user', layers: heldLayers(headlessStore, 'user') }
     );
@@ -1066,6 +1168,189 @@ describe('exportProcessDefinitions matches the sidebar export (T033, FR-009, SC-
       expect(headless).toEqual(sidebar.ack.result);
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Model Catalog (T013, FR-002, FR-008, FR-009, FR-011, FR-013, FR-015)
+// ---------------------------------------------------------------------------
+//
+// Import-commit parity here is narrower than the Phase/Pipeline/Workflow
+// coverage above, and deliberately so. `cmd-save-models.ts` now runs the full
+// gated sequence (T021: revision check, server-side re-plan, merge into the
+// current catalog), but the operator-side composer (`buildImportWrites`,
+// mirrored above as `sidebarWrites`) still has no Model Catalog branch — T023
+// gave the webview a separate, simpler commit path
+// (`runModelCatalogImportCommit`) instead of widening `buildImportWrites`,
+// because a Model Catalog commit is one scope-less write, not an ordered
+// multi-layer sequence. A two-surface "sidebar composer vs. headless
+// composer" comparison here would therefore compare the real headless
+// composition against a composer that deliberately does not exist. What IS
+// true today, and what the tests below prove instead: the headless port
+// composes the contract's delta-by-backend payload correctly, that payload
+// reaches the real `CMD_SAVE_MODELS` handler and is merged into the current
+// catalog exactly as the handler's gated sequence merges it, and whichever
+// caller sends that payload gets the identical answer back — including an
+// identical refusal when the catalog has moved underneath the plan (T026).
+
+/** Every row this document plans, narrowed to the two Model Catalog arms. */
+function modelCatalogRows(
+  plan: ImportPlan
+): readonly (ModelCatalogImportRow | ModelCatalogSkipRow)[] {
+  return plan.rows.filter(
+    (row): row is ModelCatalogImportRow | ModelCatalogSkipRow => row.resourceKind === 'modelCatalog'
+  );
+}
+
+describe('previewProcessDocument matches the sidebar preflight — Model Catalog (T013, FR-002)', () => {
+  it('plans the Model Catalog document identically on both surfaces', async () => {
+    const headlessStore = makeStore({ models: MODEL_CATALOG_SEED });
+    const sidebarStore = makeStore({ models: MODEL_CATALOG_SEED });
+
+    const headless = await headlessPreview(headlessStore, MODEL_CATALOG_DOCUMENT);
+    const sidebar = await sidebarPreview(sidebarStore, MODEL_CATALOG_DOCUMENT);
+
+    expect(comparablePlan(sidebar)).toEqual(comparablePlan(headless));
+  });
+
+  it('produces one import row and both skip reasons (positive control)', async () => {
+    const plan = await headlessPreview(
+      makeStore({ models: MODEL_CATALOG_SEED }),
+      MODEL_CATALOG_DOCUMENT
+    );
+
+    const rows = modelCatalogRows(plan);
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((row) => row.outcome))).toEqual(new Set(['import', 'skip']));
+    const skipReasons = rows
+      .filter((row): row is ModelCatalogSkipRow => row.outcome === 'skip')
+      .map((row) => row.reason);
+    expect(new Set(skipReasons)).toEqual(new Set(['already-exists', 'unrecognized-backend']));
+    expect(plan.counts).toEqual({ import: 1, skip: 2, blocked: 0, invalid: 0 });
+    expect(plan.computedAgainstModelsRevision).toBeDefined();
+  });
+
+  it('changes nothing on either surface — preview is read-only (FR-002)', async () => {
+    const headlessStore = makeStore({ models: MODEL_CATALOG_SEED });
+    const sidebarStore = makeStore({ models: MODEL_CATALOG_SEED });
+
+    await headlessPreview(headlessStore, MODEL_CATALOG_DOCUMENT);
+    await sidebarPreview(sidebarStore, MODEL_CATALOG_DOCUMENT);
+
+    expect(headlessStore.writes).toEqual([]);
+    expect(sidebarStore.writes).toEqual([]);
+    expect(headlessStore.models).toEqual(MODEL_CATALOG_SEED);
+    expect(sidebarStore.models).toEqual(MODEL_CATALOG_SEED);
+  });
+});
+
+describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — Model Catalog (T013, FR-008, FR-015)', () => {
+  it('sends the import-outcome rows as a delta grouped by backend, and touches no other layer', async () => {
+    const store = makeStore({ models: MODEL_CATALOG_SEED });
+    const plan = await headlessPreview(store, MODEL_CATALOG_DOCUMENT);
+
+    const refuse =
+      (label: string) =>
+      async (): Promise<LayerSaveAck> => {
+        throw new Error(`${label} must not be called for a Model-Catalog-only document`);
+      };
+    let sentPayload: unknown;
+    const result = await importProcessDocument(
+      {
+        savePhases: refuse('savePhases'),
+        savePipelines: refuse('savePipelines'),
+        saveWorkflows: refuse('saveWorkflows'),
+        saveModels: async (payload) => {
+          sentPayload = payload;
+          return { status: 'accepted' };
+        }
+      },
+      { plan, scope: 'user', layers: heldLayers(store, 'user') }
+    );
+
+    expect(result.outcome).toBe('imported');
+    expect(sentPayload).toEqual({
+      models: { claude: ['parity-model-new'] },
+      expectedRevision: plan.computedAgainstModelsRevision,
+      mutation: { kind: 'import-package' }
+    });
+  });
+
+  it('reaches the real CMD_SAVE_MODELS handler and merges what it sent into the current catalog (positive control)', async () => {
+    // The gated sequence (T021) re-derives the delta server-side and merges
+    // it into the CURRENT catalog rather than overwriting, so the stored
+    // value is the seed plus the one imported model — not the delta standing
+    // alone. This control proves the headless port reaches the real router
+    // and the real handler, gate included.
+    const store = makeStore({ models: MODEL_CATALOG_SEED });
+    const plan = await headlessPreview(store, MODEL_CATALOG_DOCUMENT);
+
+    const result = await headlessImport(store, plan, 'user');
+
+    expect(result.outcome).toBe('imported');
+    expect(store.models).toEqual({
+      claude: ['parity-model-existing', 'parity-model-new'],
+      codex: [],
+      agy: []
+    });
+  });
+
+  it('gives the same answer whichever caller sends the computed delta (same gates, same answer)', async () => {
+    const planStore = makeStore({ models: MODEL_CATALOG_SEED });
+    const plan = await headlessPreview(planStore, MODEL_CATALOG_DOCUMENT);
+
+    const viaPort = makeStore({ models: MODEL_CATALOG_SEED });
+    const viaRouter = makeStore({ models: MODEL_CATALOG_SEED });
+
+    const portResult = await headlessImport(viaPort, plan, 'user');
+    const portAck = portResult.results.find((result) => result.key === 'models')?.ack;
+
+    const routerAck = await dispatch(depsFor(viaRouter), CMD_SAVE_MODELS, {
+      models: { claude: ['parity-model-new'] },
+      expectedRevision: plan.computedAgainstModelsRevision,
+      mutation: { kind: 'import-package' }
+    });
+
+    expect(portAck?.status).toBe('accepted');
+    expect(routerAck.status).toBe('accepted');
+    expect(viaPort.models).toEqual(viaRouter.models);
+  });
+
+  it('refuses a stale revision identically, whichever caller sends it (T026, FR-008)', async () => {
+    // The plan is computed, then the catalog moves underneath it on both
+    // stores identically. Both callers carry the plan's revision into the
+    // write, so both must report the staleness rather than merge into the
+    // row that appeared — the same claim the Phase/Pipeline/Workflow test
+    // above makes, narrowed to the one write Model Catalog has.
+    const planStore = makeStore({ models: MODEL_CATALOG_SEED });
+    const plan = await headlessPreview(planStore, MODEL_CATALOG_DOCUMENT);
+
+    const viaPort = makeStore({ models: MODEL_CATALOG_SEED });
+    const viaRouter = makeStore({ models: MODEL_CATALOG_SEED });
+    const intruder = {
+      claude: [...MODEL_CATALOG_SEED.claude, 'parity-model-intruder'],
+      codex: [],
+      agy: []
+    };
+    viaPort.models = intruder;
+    viaRouter.models = intruder;
+
+    const portResult = await headlessImport(viaPort, plan, 'user');
+    const portAck = portResult.results.find((result) => result.key === 'models')?.ack;
+
+    const routerAck = await dispatch(depsFor(viaRouter), CMD_SAVE_MODELS, {
+      models: { claude: ['parity-model-new'] },
+      expectedRevision: plan.computedAgainstModelsRevision,
+      mutation: { kind: 'import-package' }
+    });
+
+    expect(portResult.outcome).toBe('failed');
+    expect(portAck?.status).toBe('rejected');
+    expect(portAck && 'reason' in portAck ? portAck.reason : undefined).toBe('stale-catalog');
+    expect(routerAck.status).toBe('rejected');
+    expect(routerAck.reason).toBe('stale-catalog');
+    expect(viaPort.models).toEqual(intruder);
+    expect(viaRouter.models).toEqual(intruder);
+  });
 });
 
 // ---------------------------------------------------------------------------

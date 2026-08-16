@@ -264,6 +264,7 @@ describe('Feature 084 QS-25 — a skill reference is never followed (FR-007)', (
     const [row] = result.plan.rows;
     expect(row?.outcome).toBe('import');
     if (row?.outcome !== 'import') return;
+    if (row.resourceKind === 'modelCatalog') return;
     // The reference is carried as authored — not resolved, not inlined, not
     // checked for existence. What a skill name means is decided at run time by
     // the runner, in the installation that runs it.

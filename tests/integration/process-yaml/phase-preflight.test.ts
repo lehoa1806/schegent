@@ -311,6 +311,7 @@ describe('Feature 084 — Phase import preflight', () => {
     const [row] = result.plan.rows;
     expect(row?.outcome).toBe('import');
     if (row?.outcome !== 'import') return;
+    if (row.resourceKind === 'modelCatalog') return;
     expect(row.name).toBe('[redacted] It');
   });
 

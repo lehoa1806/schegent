@@ -195,6 +195,23 @@ export const WORKFLOW_INCLUDED_KEY_ORDER = Object.freeze([
   'phases'
 ] as const);
 
+// --- Model Catalog document orders (feature 096, data-model.md "Model Catalog
+// File") -----------------------------------------------------------------
+//
+// Flatter than the other three: no `metadata`/`spec` split, no `included` —
+// Model Catalog has one writable layer and no cross-catalog references
+// (FR-015), so neither concept applies. Same rule as WORKFLOW_* above: each
+// order is also the reader's admitted-key set, so a key this format does not
+// list here is a key the reader refuses.
+
+export const MODEL_CATALOG_DOCUMENT_KEY_ORDER = Object.freeze([
+  'apiVersion',
+  'kind',
+  'groups'
+] as const);
+
+export const MODEL_CATALOG_GROUP_KEY_ORDER = Object.freeze(['backend', 'models'] as const);
+
 export type ScalarValue = string | number | boolean;
 
 /**

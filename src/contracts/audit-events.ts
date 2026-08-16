@@ -435,7 +435,10 @@ export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[num
  * Widening `resourceKind` adds a second literal and nothing else. A Pipeline
  * document carries strictly more operator-authored text than a Phase one — port
  * labels, binding keys, a whole referenced sequence — so the way the envelope
- * holds is that it still has no field any of that could go in.
+ * holds is that it still has no field any of that could go in. Feature 096's
+ * `'modelCatalog'` literal holds for the same reason: a model id and a backend
+ * name are still just declared identifiers, and the envelope has nowhere to
+ * put either beyond `resourceIds`.
  *
  * `import-commit` is the third and last operation: what a confirmed package
  * write did to one catalog layer. It reuses this envelope rather than getting
@@ -444,8 +447,8 @@ export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[num
  */
 export interface ProcessExchangePayload {
   readonly operation: 'export' | 'import-preflight' | 'import-commit';
-  /** Feature 086 adds `'workflow'`; the envelope itself is unchanged. */
-  readonly resourceKind: 'phase' | 'pipeline' | 'workflow';
+  /** Feature 086 adds `'workflow'`; feature 096 adds `'modelCatalog'`. */
+  readonly resourceKind: 'phase' | 'pipeline' | 'workflow' | 'modelCatalog';
   /**
    * Empty for a document-level refusal: a refused document named no resource,
    * which is itself the fact worth recording (FR-027).

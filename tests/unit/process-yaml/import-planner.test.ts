@@ -480,6 +480,7 @@ describe('planPipelineImport', () => {
     for (const row of rows) {
       expect(row.outcome).toBe('import');
       if (row.outcome !== 'import') continue;
+      if (row.resourceKind === 'modelCatalog') continue;
       expect(row.definition).toBeDefined();
     }
   });
@@ -513,7 +514,7 @@ describe('planPipelineImport', () => {
     expect(nonImport.length).toBeGreaterThan(0);
 
     for (const row of nonImport) {
-      if (row.outcome === 'skip') {
+      if (row.outcome === 'skip' && row.resourceKind !== 'modelCatalog') {
         expect(row.presentIn).toBeTruthy();
         expect(row.presentRowStatus).toBeTruthy();
       } else if (row.outcome === 'blocked') {
@@ -703,6 +704,7 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
       const phase = rows.find((row) => row.resourceKind === 'phase' && row.resourceId === 'specify');
       expect(phase?.outcome).toBe('skip');
       if (phase?.outcome !== 'skip') continue;
+      if (phase.resourceKind === 'modelCatalog') continue;
       expect(phase.presentIn).toBe('workspace');
       expect(phase.presentRowStatus).toBe(status);
     }
@@ -774,6 +776,7 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
     expect(skips).toHaveLength(2);
     for (const row of skips) {
       if (row.outcome !== 'skip') continue;
+      if (row.resourceKind === 'modelCatalog') continue;
       expect(PRESENCE_SCOPES).toContain(row.presentIn);
       expect(PRESENCE_STATUSES).toContain(row.presentRowStatus);
     }
@@ -950,6 +953,7 @@ describe('planWorkflowImport', () => {
     expect(rows.map((row) => row.outcome)).toEqual(['import', 'import', 'import']);
     for (const row of rows) {
       if (row.outcome !== 'import') continue;
+      if (row.resourceKind === 'modelCatalog') continue;
       // The row carries what the write will store; nothing else can, because the
       // host retains nothing past the read that produced the plan (FR-031).
       expect(row.definition).toBeDefined();
@@ -1016,7 +1020,7 @@ describe('planWorkflowImport', () => {
     expect(nonImport.length).toBeGreaterThan(0);
 
     for (const row of nonImport) {
-      if (row.outcome === 'skip') {
+      if (row.outcome === 'skip' && row.resourceKind !== 'modelCatalog') {
         expect(PRESENCE_SCOPES).toContain(row.presentIn);
         expect(PRESENCE_STATUSES).toContain(row.presentRowStatus);
       } else if (row.outcome === 'blocked') {

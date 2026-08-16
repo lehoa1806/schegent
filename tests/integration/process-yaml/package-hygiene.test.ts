@@ -238,6 +238,10 @@ describe('Feature 085 T065 — every rendered string is sanitized and bounded (F
         continue;
       }
       expect(row.resourceId, row.outcome).toHaveLength(CAPS.resourceId);
+      // Model Catalog rows carry `backend`/`modelId`, not `name` — this fixture
+      // is a Phase/Pipeline/Workflow package (FR-015 forbids a mixed document),
+      // so the arm never fires here; it exists to keep the loop type-safe.
+      if (row.resourceKind === 'modelCatalog') continue;
       if (row.outcome !== 'import') {
         expect(row.name, row.outcome).toHaveLength(CAPS.name);
       } else {
@@ -542,6 +546,7 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
     const row = rowFor(plan, 'flaky');
     expect(row.outcome).toBe('import');
     if (row.outcome !== 'import') throw new Error('unreachable');
+    if (row.resourceKind === 'modelCatalog') throw new Error('unreachable');
 
     const definition = row.definition as { readonly retryCondition?: string };
     // Not merely equal after trimming, quoting, or whitespace collapse. Identical.

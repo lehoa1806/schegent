@@ -20,10 +20,13 @@
 // same envelope; a second copy is how two surfaces come to log the same act
 // differently.
 
+import { groupsFromModelsConfig } from '../../config/model-catalog';
 import { resolvePipelineCatalog } from '../../config/pipeline-catalog';
+import { coerceModels } from '../../config/pipeline-config-loader';
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../config/pipeline-config';
 import { resolvePhaseCatalog } from '../../config/process-catalog';
 import { BUILT_IN_WORKFLOWS } from '../../config/workflow-config';
+import { serializeModelCatalogDocument } from './model-catalog-yaml-mapper';
 import { documentFromPhaseDefinition } from './phase-yaml-mapper';
 import {
   documentFromPipelineDefinition,
@@ -52,8 +55,19 @@ import type {
   WorkflowNode
 } from '../../contracts/workflow-definitions';
 import type { ExchangeDeps } from './service-ports';
-import type { ProcessYamlResourceKind } from './types';
+import { MODEL_CATALOG_YAML_KIND, PHASE_YAML_API_VERSION, type ProcessYamlResourceKind } from './types';
 import type { WorkflowInclusion } from './workflow-document';
+
+/**
+ * Feature 096 — the audit `resourceId` for a Model Catalog export. Contract
+ * §3 states there is no operator-facing id for this kind ("there is exactly
+ * one Model Catalog — nothing to identify"), but `ExportAuditEntry.resourceId`
+ * is a required `string` shared by all four kinds. This fixed literal fills
+ * that field where every other kind's caller-supplied id would go; it never
+ * crosses the IPC boundary itself and is bounded well within
+ * `RESOURCE_ID_MAX_LEN.modelCatalog`.
+ */
+export const MODEL_CATALOG_EXPORT_RESOURCE_ID = 'model-catalog';
 
 export type ExportScope = PhaseDefinitionScope | PipelineDefinitionScope | WorkflowDefinitionScope;
 
@@ -391,6 +405,30 @@ function selectWorkflow(
 }
 
 /**
+ * Feature 096 — Model Catalog's one writable/readable layer is 'workspace'
+ * (research.md Decision 6): there is no built-in/user/workspace tiering to
+ * resolve an effective row from, so this reads that scope directly rather
+ * than calling a `resolveXCatalog` the way the other three kinds do.
+ *
+ * Per FR-007 this never returns `ExportProcessYamlUnavailable` — an empty
+ * catalog is still a valid, exportable document, so there is no absence this
+ * branch can report.
+ */
+function selectModelCatalog(deps: ExchangeDeps): ExportSelection {
+  const modelsConfig = coerceModels(deps.readModelsConfig?.());
+  return {
+    outcome: 'resolved',
+    scope: 'workspace',
+    suggestedFileName: 'model-catalog.yaml',
+    text: serializeModelCatalogDocument({
+      apiVersion: PHASE_YAML_API_VERSION,
+      kind: MODEL_CATALOG_YAML_KIND,
+      groups: groupsFromModelsConfig(modelsConfig)
+    })
+  };
+}
+
+/**
  * Resolve one export request to a serialized document, or to the refusal that
  * says why there is none.
  *
@@ -402,6 +440,9 @@ export function selectProcessExportDocument(
   deps: ExchangeDeps,
   request: ExportProcessYamlRequest
 ): ExportSelection {
+  // Checked first — this arm carries no `resourceId`, so it must narrow out of
+  // the union before any branch below reads one.
+  if (request.resourceKind === 'modelCatalog') return selectModelCatalog(deps);
   if (request.resourceKind === 'workflow') return selectWorkflow(deps, request);
   if (request.resourceKind === 'pipeline') return selectPipeline(deps, request);
   return selectPhase(deps, request.resourceId);

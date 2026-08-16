@@ -68,6 +68,7 @@
   import { preflightProcessYaml } from '../../lib/process-yaml-ipc';
   import ProcessImportPlanTable from './ProcessImportPlanTable.svelte';
   import ProcessImportResultsTable from './ProcessImportResultsTable.svelte';
+  import { saveModelsImport } from '../../lib/save-models';
   import { savePhases } from '../../lib/save-phases';
   import { savePipelines } from '../../lib/save-pipelines';
   import { saveWorkflows } from '../../lib/save-workflows';
@@ -84,8 +85,11 @@
     IMPORT_TARGET_SCOPES,
     commitStatement,
     confirmBlockedReason,
+    isModelCatalogPlan,
+    modelCatalogCommitStatement,
     refusalHeadline,
     runImportCommit,
+    runModelCatalogImportCommit,
     type ImportCommitOutcome,
     type ImportLayerResult,
     type ImportResultRow,
@@ -149,6 +153,17 @@
       scope
     })
   );
+  /**
+   * FR-042a for Model Catalog: `outcome` is shared with the Phase/Pipeline/
+   * Workflow path (a superset type), so this re-derives, from `plan` itself,
+   * whether the CURRENT result set came from a modelCatalog commit — the same
+   * signal `onConfirm` reads to choose which commit function to call.
+   */
+  const modelCatalogOutcome = $derived(
+    plan !== null && isModelCatalogPlan(plan) && (outcome === 'imported' || outcome === 'failed')
+      ? outcome
+      : null
+  );
 
   async function onInspect(): Promise<void> {
     // One inspection at a time: a second request would race two acks onto one
@@ -185,7 +200,21 @@
   async function onConfirm(): Promise<void> {
     // The gate is re-read here, not trusted from the rendered `disabled`: a
     // keyboard activation can arrive in the same tick the state changed.
-    if (blockedReason !== null || plan === null || scope === null) return;
+    if (blockedReason !== null || plan === null) return;
+    // Feature 096 T024 — Model Catalog has exactly one implicit target, so it
+    // has no `scope` to read and dispatches through its own, simpler commit
+    // function (Implementation Notes point 1) instead of `runImportCommit`.
+    if (isModelCatalogPlan(plan)) {
+      committing = true;
+      const report = await runModelCatalogImportCommit(plan, { saveModels: saveModelsImport });
+      committing = false;
+      committedScope = null;
+      outcome = report.outcome;
+      layerResults = [];
+      results = report.rows;
+      return;
+    }
+    if (scope === null) return;
     const target = scope;
     committing = true;
     // The three writes, in dependency order, each gated on its own revision.
@@ -219,7 +248,7 @@
          on what the document declares. The title names the readable kinds so it
          is clear what this accepts, not so a choice has to be made first. -->
     <h3 class="preflight-title" id="process-import-title">
-      Import a Phase, Pipeline, or Workflow document
+      Import a Phase, Pipeline, Workflow, or Model Catalog document
     </h3>
     <button
       type="button"
@@ -290,31 +319,36 @@
              descriptions, because it is true of the surface at all times and
              not a reason a particular control is unavailable. -->
         <p class="preflight-note" data-testid="process-import-commit-statement">
-          {commitStatement(plan, scope)}
+          {isModelCatalogPlan(plan) ? modelCatalogCommitStatement(plan) : commitStatement(plan, scope)}
         </p>
 
         <div class="preflight-commit">
-          <!-- FR-034/FR-035/FR-056 — an explicit choice between the two writable
-               layers. The placeholder is the initial selection and is not a
-               target, so an unchosen scope cannot resolve to the workspace. -->
-          <label class="preflight-scope" for="process-import-scope">
-            Import into
-            <select
-              id="process-import-scope"
-              data-testid="process-import-scope"
-              disabled={committing}
-              value={scope ?? ''}
-              aria-describedby={blockedReason !== null
-                ? 'process-import-confirm-reason'
-                : undefined}
-              onchange={onScopeChange}
-            >
-              <option value="">Choose a scope…</option>
-              {#each IMPORT_TARGET_SCOPES as candidate (candidate)}
-                <option value={candidate}>{candidate}</option>
-              {/each}
-            </select>
-          </label>
+          {#if !isModelCatalogPlan(plan)}
+            <!-- FR-034/FR-035/FR-056 — an explicit choice between the two writable
+                 layers. The placeholder is the initial selection and is not a
+                 target, so an unchosen scope cannot resolve to the workspace.
+                 Feature 096 — Model Catalog has exactly one implicit target
+                 (`'workspace'`), so this choice does not exist for it and no
+                 selector is rendered at all. -->
+            <label class="preflight-scope" for="process-import-scope">
+              Import into
+              <select
+                id="process-import-scope"
+                data-testid="process-import-scope"
+                disabled={committing}
+                value={scope ?? ''}
+                aria-describedby={blockedReason !== null
+                  ? 'process-import-confirm-reason'
+                  : undefined}
+                onchange={onScopeChange}
+              >
+                <option value="">Choose a scope…</option>
+                {#each IMPORT_TARGET_SCOPES as candidate (candidate)}
+                  <option value={candidate}>{candidate}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
 
           <!-- FR-036/FR-057 — unavailable confirmation always says why, next to
                the control, rather than leaving a dead button. -->
@@ -323,7 +357,10 @@
             class="preflight-button"
             data-testid="process-import-confirm"
             disabled={blockedReason !== null}
-            title={blockedReason ?? 'Import this Phase into the chosen scope'}
+            title={blockedReason ??
+              (isModelCatalogPlan(plan)
+                ? 'Import these models into the catalog'
+                : 'Import this Phase into the chosen scope')}
             aria-describedby={blockedReason !== null
               ? 'process-import-confirm-reason'
               : undefined}
@@ -350,7 +387,13 @@
     {/if}
 
     {#if results !== null}
-      <ProcessImportResultsTable {results} {layerResults} {outcome} {committedScope} />
+      <ProcessImportResultsTable
+        {results}
+        {layerResults}
+        {outcome}
+        {committedScope}
+        {modelCatalogOutcome}
+      />
     {/if}
   {/if}
 </section>

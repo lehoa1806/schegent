@@ -109,6 +109,7 @@ import {
   CMD_EXPORT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_SAVE_MODELS,
   CMD_SAVE_PHASES,
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WORKFLOWS
@@ -418,7 +419,8 @@ async function driveImport(): Promise<readonly Emission[]> {
     {
       savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
       savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload)
+      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
+      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
     },
     { plan, scope: 'user', layers: heldLayers(store, 'user') }
   );
@@ -460,7 +462,8 @@ async function driveExport(): Promise<readonly Emission[]> {
     {
       savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
       savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload)
+      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
+      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
     },
     { plan, scope: 'user', layers: heldLayers(store, 'user') }
   );

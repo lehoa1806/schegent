@@ -171,7 +171,16 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // refusal arms, so the webview needs the names, and re-exporting through the
   // barrel is what every other family here does. Measured after registration,
   // not estimated.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1009 },
+  // Feature 096 (T005) — 1009 → 1024 for `SaveModelsCommand`'s two new optional
+  // fields (`expectedRevision`, `mutation`) and their explanatory comment. Not
+  // moved to sidebar-ipc/catalog-save.ts beside its Phase/Pipeline/Workflow
+  // counterparts: that module's own header says all three share one scoped,
+  // revisioned complete-layer envelope, and this command does not — it has no
+  // `scope` (the Model Catalog has exactly one writable layer) and both new
+  // fields stay optional so the pre-096 unconditional manual-edit call site
+  // keeps compiling unmodified. Joining them would misstate the module for a
+  // command that does not fit its shape.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1024 },
   // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
   // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
   // raised to 10_000 lines. Helpers may be extracted for cohesion, but the

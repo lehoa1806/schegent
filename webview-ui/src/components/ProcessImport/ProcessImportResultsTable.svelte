@@ -27,9 +27,11 @@
   import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
   import {
     commitOutcomeStatement,
+    modelCatalogCommitOutcomeStatement,
     type ImportCommitOutcome,
     type ImportLayerResult,
-    type ImportResultRow
+    type ImportResultRow,
+    type ModelCatalogCommitOutcome
   } from './process-import-state';
 
   interface Props {
@@ -39,18 +41,46 @@
      * The acks the commit actually collected, in the order it sent them. Passed
      * through untouched — the outcome sentence reads them to name which layers
      * landed, and a layer the sequence never reached has no entry here at all.
+     * Always empty for a Model Catalog commit — it is one write, not layers.
      */
     layerResults: readonly ImportLayerResult[];
     /** Set with `results`, and only with them. Never inferred from the rows. */
     outcome: ImportCommitOutcome | null;
     /** The scope the completed commit wrote to, so the summary cannot drift. */
     committedScope: WritablePhaseDefinitionScope | null;
+    /**
+     * Feature 096 T024 — set instead of (never alongside, in practice)
+     * `outcome`/`committedScope` when the result set came from a Model Catalog
+     * commit, which has no scope and no layers to name. A separate field
+     * rather than widening `committedScope` to a Model-Catalog value: that
+     * scope type is `WritablePhaseDefinitionScope`, and Model Catalog is not a
+     * third member of it, it has no scope at all (FR-056).
+     */
+    modelCatalogOutcome?: ModelCatalogCommitOutcome | null;
   }
 
-  const { results, layerResults, outcome, committedScope }: Props = $props();
+  const {
+    results,
+    layerResults,
+    outcome,
+    committedScope,
+    modelCatalogOutcome = null
+  }: Props = $props();
 </script>
 
-{#if outcome !== null && committedScope !== null}
+{#if modelCatalogOutcome !== null}
+  <!-- FR-042a for Model Catalog: same announcement discipline as the layered
+       outcome below, with no scope or layer to name. -->
+  <p
+    class="preflight-note"
+    data-testid="process-import-outcome"
+    data-outcome={modelCatalogOutcome}
+    role="status"
+    aria-live="polite"
+  >
+    {modelCatalogCommitOutcomeStatement(modelCatalogOutcome)}
+  </p>
+{:else if outcome !== null && committedScope !== null}
   <!-- FR-042a — the whole-commit outcome, above the per-row table. It is
        announced: an operator who clicked Confirm and got a partial write needs
        to hear that before they read anything else. -->

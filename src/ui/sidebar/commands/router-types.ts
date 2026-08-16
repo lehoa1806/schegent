@@ -245,6 +245,12 @@ export interface RouterDeps {
     readonly user: readonly unknown[];
     readonly workspace: readonly unknown[];
   };
+  /**
+   * Feature 096 — Model Catalog's one writable layer ('workspace', research.md
+   * Decision 6), read fresh per save for the same reason as `readWorkflowConfig`:
+   * the revision gate must compare against the layer as it stands now.
+   */
+  readonly readModelsConfig?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getCatalog?: () => PipelineCatalog;
   /**
    * Feature 087 (T044, US3, plan D3) — the one seam `CMD_LAUNCH_PIPELINE`

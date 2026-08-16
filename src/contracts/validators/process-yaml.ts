@@ -16,8 +16,14 @@ import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared'
 
 type ExportableKind = keyof typeof RESOURCE_ID_MAX_LEN;
 
+/**
+ * Derived from `RESOURCE_ID_MAX_LEN`'s own keys, not a re-listed literal union —
+ * a second, manually-kept-in-sync copy of this vocabulary is exactly how the
+ * Workflow arm shipped unreachable behind this same gate (feature 086); see the
+ * comment on `validateExportProcessYaml` below.
+ */
 function isExportableKind(value: unknown): value is ExportableKind {
-  return value === 'phase' || value === 'pipeline' || value === 'workflow';
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(RESOURCE_ID_MAX_LEN, value);
 }
 
 /**
@@ -50,11 +56,19 @@ export function validateExportProcessYaml(
     return fail('invalid-resource-kind', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
   }
   const resourceId = value['resourceId'];
-  if (typeof resourceId !== 'string' || resourceId.length === 0) {
-    return fail('invalid-resource-id', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
-  }
-  if (resourceId.length > RESOURCE_ID_MAX_LEN[resourceKind]) {
-    return fail('resource-id-too-long', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
+  // The Model Catalog is a singleton (contract §3): it carries no `resourceId`
+  // at all, so its failure here is an extra field rather than a bad value.
+  if (resourceKind === 'modelCatalog') {
+    if (resourceId !== undefined) {
+      return fail('unexpected-payload-fields', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
+    }
+  } else {
+    if (typeof resourceId !== 'string' || resourceId.length === 0) {
+      return fail('invalid-resource-id', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
+    }
+    if (resourceId.length > RESOURCE_ID_MAX_LEN[resourceKind]) {
+      return fail('resource-id-too-long', { type: CMD_EXPORT_PROCESS_YAML, correlationId });
+    }
   }
   const inclusion = value['inclusion'];
   if (!admitsExportInclusion(resourceKind, inclusion)) {
@@ -68,9 +82,11 @@ export function validateExportProcessYaml(
     type: CMD_EXPORT_PROCESS_YAML,
     correlationId,
     payload:
-      resourceKind === 'phase'
-        ? { resourceKind, resourceId }
-        : { resourceKind, resourceId, inclusion }
+      resourceKind === 'modelCatalog'
+        ? { resourceKind }
+        : resourceKind === 'phase'
+          ? { resourceKind, resourceId: resourceId as string }
+          : { resourceKind, resourceId: resourceId as string, inclusion }
   } as SidebarCommand);
 }
 

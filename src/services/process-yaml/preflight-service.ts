@@ -26,17 +26,26 @@
 
 import { resolvePipelineCatalog } from '../../config/pipeline-catalog';
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../config/pipeline-config';
+import { coerceModels } from '../../config/pipeline-config-loader';
+import { modelsLayerRevision } from '../../config/model-catalog';
 import { resolvePhaseCatalog } from '../../config/process-catalog';
 import { invalidPipelineCauses, resolveWorkflowCatalog } from '../../config/workflow-catalog';
 import { BUILT_IN_WORKFLOWS } from '../../config/workflow-config';
 import { WORKFLOW_ERROR_FIELD_MAX } from '../../config/workflow-definition-validator';
 import { planPhaseImport, planPipelineImport, planWorkflowImport } from './import-planner';
-import type { PackageImportContext, WorkflowPackageImportContext } from './import-planner';
+import type {
+  PackageImportContext,
+  ProcessImportPlanResult,
+  WorkflowPackageImportContext
+} from './import-planner';
+import { planModelCatalogImport } from './model-catalog-import-planner';
+import { parseModelCatalogDocument } from './model-catalog-yaml-mapper';
 import { findScalar, validatePhaseDocument } from './phase-yaml-validator';
 import { parsePipelinePackage } from './pipeline-document';
 import { parseWorkflowPackage } from './workflow-document';
 import { parseDocumentBytes } from './yaml-parser';
 import {
+  MODEL_CATALOG_YAML_KIND,
   PHASE_YAML_API_VERSION,
   PHASE_YAML_KIND,
   PIPELINE_YAML_KIND,
@@ -53,6 +62,7 @@ import type {
   BlockedReason,
   DocumentRefusal,
   ImportPlan,
+  ImportPlanCounts,
   ImportPlanRow,
   ProcessYamlResourceKind,
   YamlMappingNode
@@ -154,6 +164,19 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
       totalDefects: row.totalDefects
     };
   }
+  if (row.outcome === 'skip' && row.resourceKind === 'modelCatalog') {
+    return {
+      outcome: 'skip',
+      resourceKind: 'modelCatalog',
+      resourceId: bound(row.resourceId, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize),
+      // No dedicated cap declared for `backend`: it is this row's other
+      // identifier-class field (not a display `name`, which this kind has no
+      // use for), so it shares the resource-kind id bound rather than NAME_MAX.
+      backend: bound(row.backend, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize),
+      modelId: bound(row.modelId, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize),
+      reason: row.reason
+    };
+  }
   if (row.outcome === 'skip') {
     return {
       outcome: 'skip',
@@ -171,6 +194,15 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
       resourceId: bound(row.resourceId, RESOURCE_ID_MAX_LEN[row.resourceKind], sanitize),
       name: bound(row.name, NAME_MAX, sanitize),
       reason: boundReason(row.reason, sanitize)
+    };
+  }
+  if (row.resourceKind === 'modelCatalog') {
+    return {
+      outcome: 'import',
+      resourceKind: 'modelCatalog',
+      resourceId: bound(row.resourceId, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize),
+      backend: bound(row.backend, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize),
+      modelId: bound(row.modelId, RESOURCE_ID_MAX_LEN.modelCatalog, sanitize)
     };
   }
   // The `definition` on an import row is the one field passed through
@@ -217,6 +249,12 @@ function boundPlan(plan: ImportPlan, sanitize: Sanitize): ImportPlan {
     // acquire a value the planner did not compute.
     ...(plan.computedAgainstWorkflowRevision !== undefined
       ? { computedAgainstWorkflowRevision: plan.computedAgainstWorkflowRevision }
+      : {}),
+    // Feature 096, same rule one layer up again: an opaque token, forwarded
+    // rather than sanitized, present only when the document declared a
+    // ModelCatalog.
+    ...(plan.computedAgainstModelsRevision !== undefined
+      ? { computedAgainstModelsRevision: plan.computedAgainstModelsRevision }
       : {})
   };
 }
@@ -263,11 +301,12 @@ function dispatchKind(node: YamlMappingNode): ProcessYamlResourceKind | Document
   if (kind.value === PHASE_YAML_KIND) return 'phase';
   if (kind.value === PIPELINE_YAML_KIND) return 'pipeline';
   if (kind.value === WORKFLOW_YAML_KIND) return 'workflow';
+  if (kind.value === MODEL_CATALOG_YAML_KIND) return 'modelCatalog';
   return {
     code: 'unsupported-kind',
     // Every kind this build DOES read, so an operator holding a document from a
     // newer build learns which are available rather than only that theirs is not.
-    message: `Unsupported kind '${kind.value.slice(0, ECHO_MAX)}'; this build reads ${PHASE_YAML_KIND}, ${PIPELINE_YAML_KIND} and ${WORKFLOW_YAML_KIND}`
+    message: `Unsupported kind '${kind.value.slice(0, ECHO_MAX)}'; this build reads ${PHASE_YAML_KIND}, ${PIPELINE_YAML_KIND}, ${WORKFLOW_YAML_KIND} and ${MODEL_CATALOG_YAML_KIND}`
   };
 }
 
@@ -465,7 +504,7 @@ export async function preflightProcessDocument(
   // One reader per kind, chosen once. A `switch` rather than a nested ternary now
   // that there are three: the arms are a closed set, and the compiler checks the
   // set is covered rather than a final `else` absorbing whatever is added next.
-  let planned;
+  let planned: ProcessImportPlanResult;
   switch (kind) {
     case 'phase':
       planned = planPhaseImport(
@@ -486,6 +525,36 @@ export async function preflightProcessDocument(
         workflowContext(deps, phaseCatalog)
       );
       break;
+    case 'modelCatalog': {
+      const parsedModelCatalog = parseModelCatalogDocument(parsed.node);
+      if (!parsedModelCatalog.ok) {
+        planned = { outcome: 'refused', refusal: parsedModelCatalog.refusal };
+        break;
+      }
+      // Feature 096 — Model Catalog has one writable layer, so there is no
+      // pipeline/workflow-style layer split to read; `readModelsConfig` is the
+      // whole of it (data-model.md Decision 6).
+      const modelsConfig = coerceModels(deps.readModelsConfig?.());
+      const rows = planModelCatalogImport(parsedModelCatalog.document, modelsConfig);
+      const counts: ImportPlanCounts = {
+        import: rows.filter((row) => row.outcome === 'import').length,
+        skip: rows.filter((row) => row.outcome === 'skip').length,
+        blocked: 0,
+        invalid: 0
+      };
+      planned = {
+        outcome: 'planned',
+        plan: {
+          rows,
+          counts,
+          // Always the Phase catalog's revision (every plan can write
+          // Phases); ModelCatalog's own revision is the field below.
+          computedAgainstRevision: phaseCatalog.revisions,
+          computedAgainstModelsRevision: modelsLayerRevision(modelsConfig)
+        }
+      };
+      break;
+    }
   }
 
   if (planned.outcome === 'refused') {

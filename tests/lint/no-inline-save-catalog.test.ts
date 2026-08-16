@@ -15,7 +15,11 @@ const ALLOWED_BY_COMMAND: Record<string, ReadonlySet<string>> = {
   CMD_SAVE_MODELS: new Set([
     'webview-ui/src/lib/messages.ts',
     'webview-ui/src/lib/save-models.ts',
-    'webview-ui/src/lib/__tests__/save-catalog-command.test.ts'
+    'webview-ui/src/lib/__tests__/save-catalog-command.test.ts',
+    // Feature 096 (T023) — pins the import-confirm envelope emitted by
+    // `saveModelsImport`, the second `CMD_SAVE_MODELS` call site added
+    // alongside the pre-existing manual add/remove `saveModels` path.
+    'webview-ui/src/lib/__tests__/save-models.test.ts'
   ]),
   // Feature 083 (T035) — same gate as the Pipeline save: a per-component send
   // would bypass the correlation, pending, and timeout handling the helper owns.

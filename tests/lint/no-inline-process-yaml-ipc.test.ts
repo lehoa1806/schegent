@@ -57,7 +57,7 @@ describe('Phase exchange single webview call site', () => {
 describe('Feature 086 T072 — the exchange helper is the whole webview surface', () => {
   const HELPER_SOURCE = readFileSync(resolve(REPO_ROOT, HELPER), 'utf8');
 
-  it('declares one sender per kind, and one preflight for all three', () => {
+  it('declares one sender per kind, and one preflight for all four', () => {
     // Export is per-kind because the operator picks a resource of a known kind;
     // preflight is not, because the DOCUMENT declares its kind (FR-055a/FR-058).
     // A second preflight helper would be a kind on the request in disguise.
@@ -65,6 +65,7 @@ describe('Feature 086 T072 — the exchange helper is the whole webview surface'
       (match) => match[1]!
     );
     expect(declared.sort()).toEqual([
+      'exportModelCatalogYaml',
       'exportPhaseYaml',
       'exportPipelineYaml',
       'exportWorkflowYaml',

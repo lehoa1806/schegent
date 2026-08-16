@@ -425,7 +425,16 @@ export type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/cata
 export type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
-  readonly payload: { readonly models: Record<string, readonly string[]> };
+  readonly payload: {
+    readonly models: Record<string, readonly string[]>;
+    /**
+     * Feature 096 — present only on the import-confirm call site
+     * (`mutation` always accompanies it there); the manual add/remove call
+     * site omits both and keeps its unconditional-write behavior unchanged.
+     */
+    readonly expectedRevision?: string;
+    readonly mutation?: { readonly kind: 'manual-edit' | 'import-package' };
+  };
 }
 
 // Feature 011 — keys in `updates` are unprefixed scalar setting names;
@@ -707,7 +716,21 @@ export function isCmdSaveWorkflows(value: unknown): value is SaveWorkflowsComman
   return isObjectWithType(value, CMD_SAVE_WORKFLOWS);
 }
 export function isCmdSaveModels(value: unknown): value is SaveModelsCommand {
-  return isObjectWithType(value, CMD_SAVE_MODELS);
+  if (!isObjectWithType(value, CMD_SAVE_MODELS)) return false;
+  // Feature 096 — `expectedRevision`/`mutation` are optional; omission is
+  // always valid (the manual add/remove call site), presence requires shape
+  // (the import-confirm call site, contracts/model-catalog-exchange.md §4).
+  const payload = (value as { payload?: unknown }).payload;
+  if (payload === null || typeof payload !== 'object') return false;
+  const { expectedRevision, mutation } = payload as {
+    expectedRevision?: unknown;
+    mutation?: unknown;
+  };
+  if (expectedRevision !== undefined && typeof expectedRevision !== 'string') return false;
+  if (mutation === undefined) return true;
+  if (mutation === null || typeof mutation !== 'object') return false;
+  const kind = (mutation as { kind?: unknown }).kind;
+  return kind === 'manual-edit' || kind === 'import-package';
 }
 export function isCmdSaveGeneralSettings(value: unknown): value is SaveGeneralSettingsCommand {
   return isObjectWithType(value, CMD_SAVE_GENERAL_SETTINGS);
@@ -893,6 +916,11 @@ export function isCmdExportProcessYaml(value: unknown): value is ExportProcessYa
     resourceId?: unknown;
     inclusion?: unknown;
   };
+  // Feature 096 — modelCatalog has exactly one catalog, so it carries no
+  // resourceId; every other kind still requires one, unchanged.
+  if (resourceKind === 'modelCatalog') {
+    return resourceId === undefined && admitsExportInclusion(resourceKind, inclusion);
+  }
   if (typeof resourceId !== 'string') return false;
   return admitsExportInclusion(resourceKind, inclusion);
 }

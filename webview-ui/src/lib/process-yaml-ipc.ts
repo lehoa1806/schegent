@@ -70,6 +70,17 @@ export function exportWorkflowYaml(
 }
 
 /**
+ * Ask the host to export the Model Catalog as a portable document.
+ *
+ * No `resourceId` and no `inclusion`: there is exactly one Model Catalog and
+ * no cross-catalog references to include or omit (contract §3, FR-015).
+ */
+export function exportModelCatalogYaml(): PostCommandResult {
+  const request: ExportProcessYamlRequest = { resourceKind: 'modelCatalog' };
+  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
+}
+
+/**
  * A host ack whose `result` is not a recognizable preflight outcome cannot be
  * rendered, so it is reported as a failure rather than shown as an empty plan
  * (FR-055: no plan is displayed unless validation actually produced one).

@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { DocumentRefusalCode, ImportPlan, ImportPlanRow } from '../../lib/messages';
+import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
 import type { SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
 import type { SavePipelinesRequest, SavePipelinesResult } from '../../lib/save-pipelines';
 import type { SaveWorkflowsRequest, SaveWorkflowsResult } from '../../lib/save-workflows';
@@ -18,13 +19,19 @@ import {
   commitStatement,
   confirmBlockedReason,
   eligibleRows,
+  modelCatalogCommitOutcomeStatement,
+  modelCatalogCommitStatement,
+  modelCatalogImportDelta,
+  modelCatalogImportRows,
   phaseImportRows,
   pipelineImportRows,
   projectCommitResults,
+  projectModelCatalogCommitResults,
   reasonLines,
   refusalHeadline,
   resourceKindLabel,
   runImportCommit,
+  runModelCatalogImportCommit,
   savePhaseRowFromDefinition,
   savePipelineRowFromDefinition,
   saveWorkflowRowFromDefinition,
@@ -197,6 +204,38 @@ const BLOCKED_WORKFLOW_ROW: ImportPlanRow = {
     dependency: { kind: 'pipeline', resourceId: 'ship-it' },
     via: { kind: 'phase', resourceId: 'specify' }
   }
+};
+
+/**
+ * Feature 096 — a Model Catalog `import` row. Distinct field set from the other
+ * three kinds' import arms: no `definition`, since there is no
+ * PhaseDefinition/PipelineDefinition/WorkflowDefinition analog for a model id.
+ */
+const MODEL_CATALOG_IMPORT_ROW: ImportPlanRow = {
+  outcome: 'import',
+  resourceKind: 'modelCatalog',
+  resourceId: 'custom-model-a',
+  backend: 'claude',
+  modelId: 'custom-model-a'
+};
+
+/** A Model Catalog skip row — `ModelCatalogSkipRow`, not the presence-scope arm. */
+const MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW: ImportPlanRow = {
+  outcome: 'skip',
+  resourceKind: 'modelCatalog',
+  resourceId: 'custom-model-a',
+  backend: 'claude',
+  modelId: 'custom-model-a',
+  reason: 'already-exists'
+};
+
+const MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW: ImportPlanRow = {
+  outcome: 'skip',
+  resourceKind: 'modelCatalog',
+  resourceId: 'custom-model-x',
+  backend: 'foo',
+  modelId: 'custom-model-x',
+  reason: 'unrecognized-backend'
 };
 
 /**
@@ -459,6 +498,36 @@ describe('Feature 085 T035 — the plan is kind-tagged (FR-056)', () => {
   it('treats a blocked Pipeline as ineligible, not as a Pipeline to write', () => {
     expect(eligibleRows(plan([BLOCKED_PIPELINE_ROW]))).toHaveLength(0);
     expect(pipelineImportRows(plan([BLOCKED_PIPELINE_ROW]))).toHaveLength(0);
+  });
+});
+
+describe('Feature 096 T022 — Model Catalog row rendering (contracts §6)', () => {
+  it('labels a Model Catalog row with its own kind', () => {
+    expect(resourceKindLabel(MODEL_CATALOG_IMPORT_ROW)).toBe('Model Catalog');
+    expect(resourceKindLabel(MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW)).toBe('Model Catalog');
+  });
+
+  it('states an import row as adding the model id to its backend', () => {
+    expect(reasonLines(MODEL_CATALOG_IMPORT_ROW)).toEqual(['Add `custom-model-a` to claude']);
+  });
+
+  it('states an already-exists skip naming the model id and its backend', () => {
+    expect(reasonLines(MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW)).toEqual([
+      '`custom-model-a` already exists under claude — skipped'
+    ]);
+  });
+
+  it('states an unrecognized-backend skip naming the backend and the model id', () => {
+    expect(reasonLines(MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW)).toEqual([
+      'Unrecognized backend `foo` — `custom-model-x` skipped'
+    ]);
+  });
+
+  it('names every kind exactly once, Model Catalog included (FR-056 totality)', () => {
+    const labels = [importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW, MODEL_CATALOG_IMPORT_ROW].map(
+      resourceKindLabel
+    );
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });
 
@@ -1627,5 +1696,310 @@ describe('Feature 086 T071 — a capped defect list says it was capped (FR-030)'
       totalDefects: 1
     });
     expect(line).toBe('nodes[0].nodeId: <img src=x onerror=alert(1)>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 096 T023 — the Model Catalog commit (Implementation Note 1)
+// ---------------------------------------------------------------------------
+//
+// A parallel track through this file for the same reason it is a parallel
+// track through the source: FR-015 guarantees a plan is either all-modelCatalog
+// or carries no modelCatalog rows at all, so these plans are never built with
+// `packagePlan`/`workflowPackagePlan`, and the commit these tests exercise never
+// touches `buildImportWrites`/`runImportCommit`.
+
+const MODELS_REVISION = 'models-rev-1';
+
+/**
+ * A Model Catalog-only plan — what preflight produces for a document that
+ * declares ONLY a ModelCatalog. `plan()` itself stays revision-less for Model
+ * Catalog, so the two shapes cannot be confused in a test's fixtures, the same
+ * reason `packagePlan`/`workflowPackagePlan` are kept apart from it above.
+ */
+function modelCatalogPlan(rows: readonly ImportPlanRow[]): ImportPlan {
+  return { ...plan(rows), computedAgainstModelsRevision: MODELS_REVISION };
+}
+
+/** A second Model Catalog import row, under a different backend. */
+const SECOND_MODEL_CATALOG_IMPORT_ROW: ImportPlanRow = {
+  outcome: 'import',
+  resourceKind: 'modelCatalog',
+  resourceId: 'custom-model-b',
+  backend: 'codex',
+  modelId: 'custom-model-b'
+};
+
+describe('Feature 096 T023 — the Model Catalog import rows (FR-015)', () => {
+  it('partitions the Model Catalog import rows, in plan order', () => {
+    const rows = modelCatalogImportRows(
+      modelCatalogPlan([
+        MODEL_CATALOG_IMPORT_ROW,
+        MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW,
+        SECOND_MODEL_CATALOG_IMPORT_ROW
+      ])
+    );
+    expect(rows.map((row) => row.resourceId)).toEqual(['custom-model-a', 'custom-model-b']);
+  });
+
+  it('excludes a skip row — it is not a model to write', () => {
+    expect(
+      modelCatalogImportRows(modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW]))
+    ).toEqual([]);
+  });
+
+  it('is empty for a plan with no Model Catalog rows at all', () => {
+    expect(modelCatalogImportRows(plan([importRow()]))).toEqual([]);
+  });
+});
+
+describe('Feature 096 T023 — confirmation with a Model Catalog plan (FR-015, FR-056)', () => {
+  it('confirms with no scope chosen — Model Catalog has no scope to choose', () => {
+    // The one behavior that sets this branch apart from the Phase/Pipeline/
+    // Workflow checks below it in the source: FR-056's "choose a scope" gate
+    // must never fire for a plan this branch has already claimed.
+    const reason = confirmBlockedReason({
+      state: 'planned',
+      plan: modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW]),
+      scope: null
+    });
+    expect(reason).toBeNull();
+  });
+
+  it('holds closed a Model Catalog plan carrying no Model Catalog revision, and says why', () => {
+    const reason = confirmBlockedReason({
+      state: 'planned',
+      plan: plan([MODEL_CATALOG_IMPORT_ROW]),
+      scope: null
+    });
+    expect(reason).toContain('Model Catalog revision');
+    expect(reason).not.toContain('nothing to import');
+  });
+
+  it('still reports "nothing to import" for an all-skip Model Catalog plan', () => {
+    // Eligibility is asked first and reads no kind (FR-057), so a plan with
+    // zero import rows never reaches the Model Catalog branch at all.
+    const reason = confirmBlockedReason({
+      state: 'planned',
+      plan: modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW]),
+      scope: null
+    });
+    expect(reason).toContain('nothing to import');
+    expect(reason).not.toContain('Model Catalog revision');
+  });
+});
+
+describe('Feature 096 T023 — what confirming a Model Catalog import will do (FR-058)', () => {
+  it('names the eligible count and excludes the rest, without naming a scope', () => {
+    const statement = modelCatalogCommitStatement(
+      modelCatalogPlan([
+        MODEL_CATALOG_IMPORT_ROW,
+        MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW,
+        MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW
+      ])
+    );
+    expect(statement).toContain('1 model');
+    expect(statement).toContain('model catalog');
+    expect(statement).toContain('2 rows are left unchanged');
+    for (const scope of ['user layer', 'workspace layer']) {
+      expect(statement).not.toContain(scope);
+    }
+  });
+
+  it('mentions no leftover when every row is eligible', () => {
+    const statement = modelCatalogCommitStatement(
+      modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW, SECOND_MODEL_CATALOG_IMPORT_ROW])
+    );
+    expect(statement).toContain('2 models');
+    expect(statement).not.toContain('unchanged');
+  });
+
+  it('says nothing would be written when no row is eligible', () => {
+    const statement = modelCatalogCommitStatement(
+      modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW])
+    );
+    expect(statement).toContain('write nothing');
+  });
+});
+
+describe('Feature 096 T023 — the delta a Model Catalog commit sends (contracts §4)', () => {
+  it('groups import rows by backend, never a pre-merged catalog', () => {
+    const delta = modelCatalogImportDelta(
+      modelCatalogPlan([
+        MODEL_CATALOG_IMPORT_ROW,
+        SECOND_MODEL_CATALOG_IMPORT_ROW,
+        MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW
+      ])
+    );
+    expect(delta).toEqual({ claude: ['custom-model-a'], codex: ['custom-model-b'] });
+  });
+
+  it('collects more than one model id under the same backend', () => {
+    const secondClaudeRow: ImportPlanRow = {
+      outcome: 'import',
+      resourceKind: 'modelCatalog',
+      resourceId: 'custom-model-c',
+      backend: 'claude',
+      modelId: 'custom-model-c'
+    };
+    const delta = modelCatalogImportDelta(
+      modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW, secondClaudeRow])
+    );
+    expect(delta).toEqual({ claude: ['custom-model-a', 'custom-model-c'] });
+  });
+
+  it('is empty for a plan with nothing eligible to import', () => {
+    expect(
+      modelCatalogImportDelta(modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW]))
+    ).toEqual({});
+  });
+});
+
+describe('Feature 096 T023 — projecting the Model Catalog ack onto the plan (FR-042)', () => {
+  const mixed = modelCatalogPlan([
+    SECOND_MODEL_CATALOG_IMPORT_ROW,
+    MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW,
+    MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW
+  ]);
+
+  it('produces exactly one result per plan row, in order', () => {
+    const results = projectModelCatalogCommitResults(mixed, { status: 'accepted' });
+    expect(results).toHaveLength(mixed.rows.length);
+    expect(results.map((row) => row.resourceId)).toEqual([
+      'custom-model-b',
+      'custom-model-a',
+      'custom-model-x'
+    ]);
+  });
+
+  it('reports the import row imported, naming its backend, on an accepted ack', () => {
+    const results = projectModelCatalogCommitResults(mixed, { status: 'accepted' });
+    expect(results[0]).toEqual({
+      resourceId: 'custom-model-b',
+      outcome: 'imported',
+      detail: 'Added to codex.'
+    });
+  });
+
+  it('reports the import row failed, with the formatted reason, on a rejected ack', () => {
+    const results = projectModelCatalogCommitResults(mixed, {
+      status: 'rejected',
+      reason: 'persistence-failed'
+    });
+    expect(results[0]).toEqual({
+      resourceId: 'custom-model-b',
+      outcome: 'failed',
+      detail: 'persistence-failed'
+    });
+  });
+
+  it('formats a stale-catalog rejection as the recovery sentence, not the bare code', () => {
+    const results = projectModelCatalogCommitResults(mixed, {
+      status: 'rejected',
+      reason: 'stale-catalog'
+    });
+    expect(results[0].outcome).toBe('failed');
+    expect(results[0].detail).toContain('inspect it again');
+  });
+
+  it('keeps the preflight outcome and reason for skip rows, regardless of the ack', () => {
+    const results = projectModelCatalogCommitResults(mixed, {
+      status: 'rejected',
+      reason: 'stale-catalog'
+    });
+    expect(results[1]).toEqual({
+      resourceId: 'custom-model-a',
+      outcome: 'skipped',
+      detail: reasonLines(MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW).join(' ')
+    });
+    expect(results[2]).toEqual({
+      resourceId: 'custom-model-x',
+      outcome: 'skipped',
+      detail: reasonLines(MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW).join(' ')
+    });
+  });
+});
+
+describe('Feature 096 T023 — running the Model Catalog commit (FR-016, FR-042a)', () => {
+  it('sends the delta, expected revision, and import-package intent in one call', async () => {
+    const saveModels = vi.fn(
+      async (_request: SaveModelsImportRequest): Promise<SaveModelsImportResult> => ({
+        status: 'accepted'
+      })
+    );
+    const report = await runModelCatalogImportCommit(modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW]), {
+      saveModels
+    });
+    expect(saveModels).toHaveBeenCalledWith({
+      models: { claude: ['custom-model-a'] },
+      expectedRevision: MODELS_REVISION,
+      mutation: { kind: 'import-package' }
+    });
+    expect(report.outcome).toBe('imported');
+  });
+
+  it('sends no write, and reports failure, for a plan with no Model Catalog revision', async () => {
+    const saveModels = vi.fn(
+      async (_request: SaveModelsImportRequest): Promise<SaveModelsImportResult> => ({
+        status: 'accepted'
+      })
+    );
+    const report = await runModelCatalogImportCommit(plan([MODEL_CATALOG_IMPORT_ROW]), {
+      saveModels
+    });
+    expect(saveModels).not.toHaveBeenCalled();
+    expect(report.outcome).toBe('failed');
+    expect(report.ack).toEqual({ status: 'rejected', reason: 'no-plan-revision' });
+  });
+
+  it('reports failed, not imported, when the save is rejected', async () => {
+    const saveModels = vi.fn(
+      async (_request: SaveModelsImportRequest): Promise<SaveModelsImportResult> => ({
+        status: 'rejected',
+        reason: 'stale-catalog',
+        result: { currentRevision: 'models-rev-2' }
+      })
+    );
+    const report = await runModelCatalogImportCommit(modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW]), {
+      saveModels
+    });
+    expect(report.outcome).toBe('failed');
+    expect(report.rows[0].outcome).toBe('failed');
+    expect(report.rows[0].detail).toContain('inspect it again');
+  });
+
+  it('projects one row per plan row into the report', async () => {
+    const saveModels = vi.fn(
+      async (_request: SaveModelsImportRequest): Promise<SaveModelsImportResult> => ({
+        status: 'accepted'
+      })
+    );
+    const withSkip = modelCatalogPlan([
+      MODEL_CATALOG_IMPORT_ROW,
+      MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW
+    ]);
+    const report = await runModelCatalogImportCommit(withSkip, { saveModels });
+    expect(report.rows).toHaveLength(2);
+    expect(report.rows[0].outcome).toBe('imported');
+    expect(report.rows[1].outcome).toBe('skipped');
+  });
+});
+
+describe('Feature 096 T023 — the Model Catalog commit outcome sentence (FR-042a)', () => {
+  it('states every eligible model was added, on the imported outcome', () => {
+    expect(modelCatalogCommitOutcomeStatement('imported')).toContain('added to the catalog');
+  });
+
+  it('says nothing was added, on the failed outcome', () => {
+    expect(modelCatalogCommitOutcomeStatement('failed')).toContain('Nothing was added');
+  });
+
+  it('names no scope or layer — Model Catalog has exactly one implicit target', () => {
+    for (const outcome of ['imported', 'failed'] as const) {
+      const statement = modelCatalogCommitOutcomeStatement(outcome);
+      for (const scope of ['user layer', 'workspace layer', 'built-in']) {
+        expect(statement).not.toContain(scope);
+      }
+    }
   });
 });

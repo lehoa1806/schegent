@@ -18,6 +18,7 @@ import type {
   CMD_PREFLIGHT_PROCESS_YAML,
   CommandBase
 } from '../sidebar-ipc';
+import { MODEL_ID_MAX_LEN } from '../../services/process-yaml/types';
 import type { DocumentRefusal, ImportPlan, ProcessYamlResourceKind } from '../../services/process-yaml/types';
 
 // The plan types have exactly one definition, in the service module that also
@@ -63,7 +64,8 @@ export const RESOURCE_ID_MAX_LEN: Readonly<Record<ProcessYamlResourceKind, numbe
   {
     phase: PHASE_ID_MAX_LEN,
     pipeline: PIPELINE_ID_MAX_LEN,
-    workflow: WORKFLOW_ID_MAX_LEN
+    workflow: WORKFLOW_ID_MAX_LEN,
+    modelCatalog: MODEL_ID_MAX_LEN
   }
 );
 
@@ -114,6 +116,14 @@ export type ExportProcessYamlRequest =
       /** The id to export. Read from the EFFECTIVE catalog (FR-014). */
       readonly resourceId: string;
       readonly inclusion: WorkflowExportInclusion;
+    }
+  | {
+      readonly resourceKind: 'modelCatalog';
+      /**
+       * No `resourceId` — there is exactly one Model Catalog, nothing to
+       * identify — and no `inclusion` — FR-015 rules out cross-catalog
+       * references, so there is nothing to include or exclude (contract §3).
+       */
     };
 
 export interface ExportProcessYamlCommand
@@ -161,6 +171,7 @@ export function admitsExportInclusion(resourceKind: unknown, inclusion: unknown)
   if (resourceKind === 'workflow') {
     return WORKFLOW_EXPORT_INCLUSIONS.includes(inclusion as WorkflowExportInclusion);
   }
+  if (resourceKind === 'modelCatalog') return inclusion === undefined;
   return false;
 }
 

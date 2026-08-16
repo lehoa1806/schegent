@@ -77,7 +77,12 @@ function pipelineResolutionWarnings(
   return warnings;
 }
 
-function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
+/**
+ * Feature 096 — exported so `readModelsConfig` (extension.ts) can apply the
+ * exact same legacy-array-migration + trim/filter coercion the Pipeline
+ * catalog loader already uses, rather than a second copy of this logic.
+ */
+export function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
   const out: Record<BackendRunnerKind, string[]> = {
     claude: [],
     codex: [],

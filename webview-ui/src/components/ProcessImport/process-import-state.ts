@@ -38,6 +38,7 @@ import type {
   ImportPlanRow,
   ProcessYamlResourceKind
 } from '../../lib/messages';
+import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
 import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
 import type {
   SavePipelineRow,
@@ -50,6 +51,7 @@ import type {
   SaveWorkflowsRequest,
   SaveWorkflowsResult
 } from '../../lib/save-workflows';
+import { formatModelCatalogSaveRejection } from '../PipelineBuilderEditors/model-catalog-state';
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
 import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
 import { formatWorkflowSaveRejection } from '../PipelineBuilderEditors/workflow-catalog-state';
@@ -91,6 +93,17 @@ type PipelineImportOutcomeRow = Extract<
 type WorkflowImportOutcomeRow = Extract<
   ImportPlanRow,
   { outcome: 'import'; resourceKind: 'workflow' }
+>;
+
+/**
+ * A fourth import-row shape, structurally apart from the other three: there
+ * is no `PhaseDefinition`/`PipelineDefinition`/`WorkflowDefinition` analog for
+ * a model id, so this carries `backend`/`modelId` instead of `definition`
+ * (contracts §6, data-model.md "ImportPlanRow — new arms").
+ */
+type ModelCatalogImportOutcomeRow = Extract<
+  ImportPlanRow,
+  { outcome: 'import'; resourceKind: 'modelCatalog' }
 >;
 
 /**
@@ -176,6 +189,39 @@ export function workflowImportRows(plan: ImportPlan): readonly WorkflowImportOut
 }
 
 /**
+ * The Model Catalog `import` rows of a plan, in plan order.
+ *
+ * A fourth accessor, structurally apart from the other three rather than a
+ * peer sharing their machinery: FR-015 guarantees a plan never mixes Model
+ * Catalog rows with Phase/Pipeline/Workflow rows, so this and the other three
+ * are never both non-empty for the same plan, and Model Catalog commits
+ * through its own single-write path (`runModelCatalogImportCommit`) below,
+ * not `buildImportWrites`/`runImportCommit` (Implementation Note 1).
+ */
+export function modelCatalogImportRows(plan: ImportPlan): readonly ModelCatalogImportOutcomeRow[] {
+  return plan.rows.filter(
+    (row): row is ModelCatalogImportOutcomeRow =>
+      row.outcome === 'import' && row.resourceKind === 'modelCatalog'
+  );
+}
+
+/**
+ * Feature 096 T024 — whether `plan` came from a Model Catalog document, the
+ * single signal `ProcessImportPreflight.svelte` reads to choose its scope-less
+ * rendering and commit branch over the Phase/Pipeline/Workflow one.
+ *
+ * `computedAgainstModelsRevision` is present on a plan exactly when the
+ * document declared a ModelCatalog (`ImportPlan`'s own doc comment), and
+ * FR-015's homogeneity guarantee makes that the same fact as "every row in
+ * this plan is a Model Catalog row" — there is no plan that is partly one and
+ * partly the other, so a single plan-level check is enough; no per-row scan
+ * needed.
+ */
+export function isModelCatalogPlan(plan: ImportPlan): boolean {
+  return plan.computedAgainstModelsRevision !== undefined;
+}
+
+/**
  * The kind word shown in a row's own column (FR-056).
  *
  * Shown per row rather than once for the document, because a package declares
@@ -192,7 +238,8 @@ export function workflowImportRows(plan: ImportPlan): readonly WorkflowImportOut
 const RESOURCE_KIND_LABELS: Readonly<Record<ProcessYamlResourceKind, string>> = {
   phase: 'Phase',
   pipeline: 'Pipeline',
-  workflow: 'Workflow'
+  workflow: 'Workflow',
+  modelCatalog: 'Model Catalog'
 };
 
 export function resourceKindLabel(row: ImportPlanRow): string {
@@ -231,7 +278,27 @@ function dependencyLabel(dependency: BlockedDependency): string {
  * something else first.
  */
 export function reasonLines(row: ImportPlanRow): readonly string[] {
+  if (row.outcome === 'import') {
+    // Feature 096 (contracts §6) — a Model Catalog row's "Resource" cell shows
+    // the model id alone; nothing else on the row names the backend it would
+    // join, so that fact belongs here.
+    if (row.resourceKind === 'modelCatalog') {
+      return [`Add \`${row.modelId}\` to ${row.backend}`];
+    }
+    if (row.resourceKind === 'phase' && row.requiresRetryConditionCapability) {
+      return ['Declares a retry condition, which the commit checks separately.'];
+    }
+    return [];
+  }
   if (row.outcome === 'skip') {
+    // A distinct arm (`ModelCatalogSkipRow`), not the presence-scope reason
+    // below: Model Catalog has no built-in/user/workspace tiering, so its two
+    // reasons are `already-exists` and `unrecognized-backend` (contracts §6).
+    if (row.resourceKind === 'modelCatalog') {
+      return row.reason === 'already-exists'
+        ? [`\`${row.modelId}\` already exists under ${row.backend} — skipped`]
+        : [`Unrecognized backend \`${row.backend}\` — \`${row.modelId}\` skipped`];
+    }
     return [
       `Already present in the ${row.presentIn} layer as a ${row.presentRowStatus} row, so this import would not change it.`
     ];
@@ -272,9 +339,6 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
       lines.push(`and ${row.totalDefects - row.defects.length} more not shown.`);
     }
     return lines;
-  }
-  if (row.resourceKind === 'phase' && row.requiresRetryConditionCapability) {
-    return ['Declares a retry condition, which the commit checks separately.'];
   }
   return [];
 }
@@ -340,6 +404,16 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   }
   // FR-057 — the eligibility question, asked of the plan and of no kind.
   if (eligibleRows(gate.plan).length === 0) return 'This plan has nothing to import.';
+  // Model Catalog branches out here, before the scope-related checks below:
+  // FR-015 guarantees a plan with any Model Catalog row has ONLY Model
+  // Catalog rows, and Model Catalog has exactly one implicit target, so there
+  // is no scope for the operator to choose (T024) and none of the
+  // Pipeline/Workflow revision checks below apply to it.
+  if (modelCatalogImportRows(gate.plan).length > 0) {
+    return gate.plan.computedAgainstModelsRevision === undefined
+      ? 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.'
+      : null;
+  }
   // The writability question, asked once per layer that has rows to write
   // (T048, T054). A row whose plan carries no revision for its own layer has no
   // gate for its write to present, so writing it would drop FR-040 for that layer
@@ -388,6 +462,24 @@ export function commitStatement(
       ? ''
       : ` The other ${others === 1 ? 'row is' : `${others} rows are`} left unchanged.`;
   return `Confirming writes ${subject} into ${target}, and nothing else.${rest}`;
+}
+
+/**
+ * What confirming a Model Catalog import would do, stated before the click
+ * (FR-058) — the scope-less counterpart to `commitStatement` (Implementation
+ * Note 1). Model Catalog has exactly one implicit target, so unlike the other
+ * three kinds there is no scope to name or to have chosen yet.
+ */
+export function modelCatalogCommitStatement(plan: ImportPlan): string {
+  const eligible = modelCatalogImportRows(plan).length;
+  if (eligible === 0) return 'No row here is eligible, so confirming would write nothing.';
+  const others = plan.rows.length - eligible;
+  const subject = eligible === 1 ? '1 model' : `${eligible} models`;
+  const rest =
+    others === 0
+      ? ''
+      : ` The other ${others === 1 ? 'row is' : `${others} rows are`} left unchanged.`;
+  return `Confirming adds ${subject} to the model catalog, and nothing else.${rest}`;
 }
 
 /**
@@ -742,4 +834,148 @@ export async function runImportCommit(
     results,
     rows: projectCommitResults(plan, scope, results)
   };
+}
+
+// ---------------------------------------------------------------------------
+// Feature 096 T023 — Model Catalog import commit.
+//
+// A parallel, deliberately separate track from everything above (Implementation
+// Note 1): `buildImportWrites`/`runImportCommit` assume `phases`/`pipelines`/
+// `workflows` × `user`/`workspace`, and Model Catalog has one implicit target
+// and no scope choice. Forcing it into that shape would mean a 4th
+// `ImportLayerKey`, a degenerate single-choice scope type, and a
+// `commitOutcomeStatement` that has to explain why a "layer" nobody chose
+// landed — so instead it gets its own small, single-write path below, built
+// from the same primitives (`ImportPlan`, `ImportPlanRow`, `reasonLines`,
+// `ImportResultRow`) rather than the layer machinery.
+// ---------------------------------------------------------------------------
+
+/**
+ * The delta a Model Catalog commit sends: only the `import`-outcome rows,
+ * grouped by backend (contracts §4 Implementation Note 2) — never a
+ * pre-merged catalog, because the host re-derives classification and merges
+ * server-side (FR-016). Mirrors `modelsDeltaByBackend` in
+ * `src/headless/process-yaml-api.ts`, duplicated rather than imported: that
+ * module is headless-only and this is a separate webview bundle.
+ */
+export function modelCatalogImportDelta(plan: ImportPlan): Record<string, readonly string[]> {
+  const delta: Record<string, string[]> = {};
+  for (const row of modelCatalogImportRows(plan)) {
+    (delta[row.backend] ??= []).push(row.modelId);
+  }
+  return delta;
+}
+
+/** The Model Catalog save, injected so the commit can be exercised without a host. */
+export interface ModelCatalogCommitDeps {
+  readonly saveModels: (request: SaveModelsImportRequest) => Promise<SaveModelsImportResult>;
+}
+
+/**
+ * What a confirmed Model Catalog import did (FR-042a's Model Catalog analog).
+ * Binary rather than `ImportCommitOutcome`'s three values: a single write has
+ * nothing in between imported and failed, so there is no `partial` to report.
+ */
+export type ModelCatalogCommitOutcome = 'imported' | 'failed';
+
+export interface ModelCatalogCommitReport {
+  readonly outcome: ModelCatalogCommitOutcome;
+  readonly ack: SaveModelsImportResult;
+  readonly rows: readonly ImportResultRow[];
+}
+
+/**
+ * The ack, as one result per plan row (FR-042's Model Catalog analog) — the
+ * scope-less counterpart to `projectCommitResults`. One ack decides every
+ * `import` row's outcome, because Model Catalog is a single write rather than
+ * an ordered sequence of independently-gated layers.
+ */
+export function projectModelCatalogCommitResults(
+  plan: ImportPlan,
+  ack: SaveModelsImportResult
+): readonly ImportResultRow[] {
+  const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason);
+  return plan.rows.map((row) => {
+    if (row.outcome === 'skip') {
+      return {
+        resourceId: row.resourceId,
+        outcome: 'skipped' as const,
+        detail: reasonLines(row).join(' ')
+      };
+    }
+    if (row.outcome === 'blocked') {
+      return {
+        resourceId: row.resourceId,
+        outcome: 'blocked' as const,
+        detail: reasonLines(row).join(' ')
+      };
+    }
+    if (row.outcome === 'invalid') {
+      return {
+        resourceId: row.resourceId,
+        outcome: 'invalid' as const,
+        detail: reasonLines(row).join(' ')
+      };
+    }
+    // Every row `runModelCatalogImportCommit` is given is a Model Catalog row
+    // (FR-015 homogeneity; the caller only reaches here via
+    // `modelCatalogImportRows`), so `backend` is always present in practice —
+    // the null fallback covers what the row union still permits at the type
+    // level.
+    const backend = row.resourceKind === 'modelCatalog' ? row.backend : null;
+    return failure === null
+      ? {
+          resourceId: row.resourceId,
+          outcome: 'imported' as const,
+          detail: backend === null ? 'Added to the catalog.' : `Added to ${backend}.`
+        }
+      : { resourceId: row.resourceId, outcome: 'failed' as const, detail: failure };
+  });
+}
+
+/**
+ * Send a Model Catalog plan's delta and report what happened — the
+ * scope-less counterpart to `runImportCommit` (Implementation Note 1). One
+ * write, not an ordered sequence: FR-015 rules out a mixed document, so there
+ * is no second, independently-revisioned layer for this write to depend on or
+ * to leave stranded on a rejection.
+ *
+ * Answers `failed` with no write attempted when the plan carries no Model
+ * Catalog revision to gate against — the same "nothing to send" case
+ * `buildImportWrites` answers with `[]` for the other three kinds. Reachable
+ * only if called against a plan `confirmBlockedReason` would not have let
+ * through Confirm.
+ */
+export async function runModelCatalogImportCommit(
+  plan: ImportPlan,
+  deps: ModelCatalogCommitDeps
+): Promise<ModelCatalogCommitReport> {
+  const expectedRevision = plan.computedAgainstModelsRevision;
+  if (expectedRevision === undefined) {
+    const ack: SaveModelsImportResult = { status: 'rejected', reason: 'no-plan-revision' };
+    return { outcome: 'failed', ack, rows: projectModelCatalogCommitResults(plan, ack) };
+  }
+  const ack = await deps.saveModels({
+    models: modelCatalogImportDelta(plan),
+    expectedRevision,
+    mutation: { kind: 'import-package' }
+  });
+  return {
+    outcome: ack.status === 'accepted' ? 'imported' : 'failed',
+    ack,
+    rows: projectModelCatalogCommitResults(plan, ack)
+  };
+}
+
+/**
+ * The whole-commit sentence for a Model Catalog import (FR-042a's Model
+ * Catalog analog) — the scope-less counterpart to `commitOutcomeStatement`.
+ * Binary rather than three-way, and names no layer: a single write has
+ * nothing to report between imported and failed, and there is only ever the
+ * one implicit target.
+ */
+export function modelCatalogCommitOutcomeStatement(outcome: ModelCatalogCommitOutcome): string {
+  return outcome === 'imported'
+    ? 'Every eligible model was added to the catalog.'
+    : 'Nothing was added to the catalog.';
 }

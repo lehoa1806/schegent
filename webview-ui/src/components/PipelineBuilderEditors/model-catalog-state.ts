@@ -23,3 +23,21 @@ export function initialModels(
   }
   return models;
 }
+
+/**
+ * Turns a Model Catalog import-commit rejection into one line the operator
+ * can act on — the Model Catalog counterpart to `formatPipelineSaveRejection`
+ * and `formatWorkflowSaveRejection` in the sibling `*-catalog-state.ts`
+ * files. A single reason rather than a table of them: FR-015/research.md
+ * Decision 9 rule out a cross-reference gate, a consumer-removal-block gate,
+ * and a capability-trust gate for Model Catalog, so `stale-catalog` is the
+ * only structured rejection this write can return; everything else (a
+ * timeout, a persistence failure, the config API being unavailable) has no
+ * extra detail to add beyond the code itself.
+ */
+export function formatModelCatalogSaveRejection(reason: string): string {
+  if (reason === 'stale-catalog') {
+    return `${reason} — the catalog changed since this document was inspected; inspect it again`;
+  }
+  return reason;
+}

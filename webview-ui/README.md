@@ -314,10 +314,10 @@ Queue Detail tier (FR-064), and `schegent.queue.globalConcurrencyCap` — now
 ranged `1..20`, default `3` — stays in **General** alongside the other
 scalar `schegent.*` keys.
 
-The Phases, Pipelines, and Models editors are not in `SettingsSurface` —
-they live in Pipeline Builder (Phases, Pipelines) and Operations
-(Models). This co-locates configuration with the workflows that consume
-it.
+The Phases, Pipelines, Workflows, and Models editors are not in
+`SettingsSurface` — they live in Pipeline Builder, as its four tabs
+(Pipelines / Phases / Workflows / Models, per spec 083 and spec 096). This
+co-locates configuration with the workflows that consume it.
 
 ### Settings hover-text primitive (spec 018)
 
@@ -608,7 +608,12 @@ Pipeline re-enables it without a reload.
 ### Process document exchange (specs 084 / 085 / 086)
 
 The three catalog managers above can hand a definition to another installation as
-a YAML document, and take one back. The webview owns the operator's decisions;
+a YAML document, and take one back. The Model Catalog (spec 096) joins the same
+**Import…**/**Export** buttons and file dialogs with a structurally separate
+shape rather than a fourth catalog-manager subsection of its own — see the
+ownership table and "A fourth arm, structurally apart" below, and
+[Model Catalog](../docs/operations/process-yaml.md#model-catalog) for the
+operator-facing procedure. The webview owns the operator's decisions;
 the host owns the file. **No filesystem path crosses this boundary in either
 direction** — the webview names no path, receives none, and no plan row, payload,
 or message may carry one. Export reports only whether a document was written, and
@@ -617,13 +622,27 @@ the location it tried to write.
 
 | File | Owns |
 |---|---|
-| [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportPipelineYaml`, `exportWorkflowYaml`, `preflightProcessYaml` |
+| [`process-yaml-ipc.ts`](src/lib/process-yaml-ipc.ts) | The **single call site** for the whole exchange family: `exportPhaseYaml`, `exportPipelineYaml`, `exportWorkflowYaml`, `exportModelCatalogYaml`, `preflightProcessYaml` |
 | [`ProcessExportButton.svelte`](src/components/ProcessImport/ProcessExportButton.svelte) | The per-Phase Export control and its disabled reason |
 | [`WorkflowToolbar.svelte`](src/components/PipelineBuilderEditors/WorkflowToolbar.svelte) | The Workflow Export control **and its three-mode inclusion list** |
-| [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the ordered commit |
-| [`ProcessImportPlanTable.svelte`](src/components/ProcessImport/ProcessImportPlanTable.svelte) / [`ProcessImportResultsTable.svelte`](src/components/ProcessImport/ProcessImportResultsTable.svelte) | Plan rows before the confirm, result rows after it |
-| [`process-import-state.ts`](src/components/ProcessImport/process-import-state.ts) | Pure projection — row labels, reason lines, `confirmBlockedReason`, `commitOutcome`, and the ordered-write sequencer |
+| [`ModelCatalogEditor.svelte`](src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte) | The Model Catalog's own Export control — unconditional, since a Model Catalog document always resolves, even an empty one (FR-007) |
+| [`ProcessImportPreflight.svelte`](src/components/ProcessImport/ProcessImportPreflight.svelte) | The import flow shell and the ordered commit, branching to `runModelCatalogImportCommit` for a Model Catalog plan |
+| [`ProcessImportPlanTable.svelte`](src/components/ProcessImport/ProcessImportPlanTable.svelte) / [`ProcessImportResultsTable.svelte`](src/components/ProcessImport/ProcessImportResultsTable.svelte) | Plan rows before the confirm, result rows after it — a Model Catalog row's fields (`backend`, `modelId`) replace the shared `resourceId`/`name` shape |
+| [`process-import-state.ts`](src/components/ProcessImport/process-import-state.ts) | Pure projection — row labels, reason lines, `confirmBlockedReason`, `commitOutcome`, and the ordered-write sequencer; `modelCatalogImportRows`, `isModelCatalogPlan`, and `runModelCatalogImportCommit` are the Model Catalog's structurally separate, single-write counterparts |
+| [`save-models.ts`](src/lib/save-models.ts) | `saveModelsImport` — the Model Catalog's own `CMD_SAVE_MODELS` call site for a confirmed import; kept apart from the pre-existing `saveModels` manual add/remove path rather than widening that function's signature |
 | [`process-exchange-entry.ts`](src/components/ProcessImport/process-exchange-entry.ts) | The three preconditions a manager must decide before offering the controls |
+
+**A fourth arm, structurally apart.** A Model Catalog plan never mixes with
+Phase/Pipeline/Workflow rows in the same plan (FR-015), so it does not fit the
+three-arm/three-vocabulary shape described next: there is no inclusion-depth
+choice on export (`ModelCatalogEditor.svelte`'s button always produces the
+whole catalog, every backend, as one document) and no ordered multi-layer
+commit on import — a confirmed Model Catalog plan writes once, through
+`saveModelsImport` (`save-models.ts`), never through the
+`buildImportWrites`/`runImportCommit` sequencer the rest of this section
+describes. See
+[Model Catalog](../docs/operations/process-yaml.md#model-catalog) for the
+operator-facing outcomes and skip reasons.
 
 **Three export arms, three inclusion vocabularies.** A Phase has no dependencies,
 so `exportPhaseYaml` takes an id and nothing else. A Pipeline has one level below
