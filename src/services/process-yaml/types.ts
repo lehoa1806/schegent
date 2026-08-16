@@ -61,8 +61,12 @@ export const PHASE_YAML_INDENT = '  ';
  * Feature 086 T004 — `'workflow'` joins them, and the closure it heads is the
  * first that is two levels deep: a Workflow depends on Pipelines, which depend
  * on Phases (data-model.md §3.1).
+ *
+ * Feature 096 T003 — `'modelCatalog'` joins them as a 4th, structurally simpler
+ * member: no layers, no cross-catalog references, no dependency closure
+ * (data-model.md "Relationships to existing entities").
  */
-export type ProcessYamlResourceKind = 'phase' | 'pipeline' | 'workflow';
+export type ProcessYamlResourceKind = 'phase' | 'pipeline' | 'workflow' | 'modelCatalog';
 
 // ---------------------------------------------------------------------------
 // Document
@@ -285,6 +289,40 @@ export interface WorkflowYamlDocument {
 }
 
 // ---------------------------------------------------------------------------
+// Model Catalog document — feature 096
+// ---------------------------------------------------------------------------
+
+export const MODEL_CATALOG_YAML_KIND = 'ModelCatalog';
+
+/** Longer than the other three kinds' uniform 64 — a model id is a free-form string, not a slug. */
+export const MODEL_ID_MAX_LEN = 128;
+
+/**
+ * One backend's group in a Model Catalog document (data-model.md §2).
+ *
+ * `models` is omitted, never `[]`, when the backend has no custom models —
+ * the same absent-not-empty convention every other list in this file follows
+ * (research R3). `backend` is carried opaquely at this layer: an unrecognized
+ * value is not a parse-time defect, it is a per-row import-planner decision
+ * (`ModelCatalogSkipRow` with `reason: 'unrecognized-backend'`).
+ */
+export interface ModelCatalogYamlGroup {
+  readonly backend: string;
+  readonly models?: readonly string[];
+}
+
+/**
+ * A Model Catalog document. Unlike Phase/Pipeline/Workflow, there is no
+ * `metadata` and no `included` — Model Catalog has one writable layer and no
+ * cross-catalog references (FR-015), so neither concept applies.
+ */
+export interface ModelCatalogYamlDocument {
+  readonly apiVersion: typeof PHASE_YAML_API_VERSION;
+  readonly kind: typeof MODEL_CATALOG_YAML_KIND;
+  readonly groups: readonly ModelCatalogYamlGroup[];
+}
+
+// ---------------------------------------------------------------------------
 // Parse tree — the only shapes the closed subset can produce
 // ---------------------------------------------------------------------------
 
@@ -465,6 +503,38 @@ export type ProcessYamlPresenceStatus =
  * webview can already reach through the catalog managers. So round-tripping it
  * grants no authority the webview did not already have.
  */
+/**
+ * A Model Catalog import row (feature 096, data-model.md "ImportPlanRow — new
+ * arms"). Not a generic `resourceKind: ProcessYamlResourceKind` shape: there is
+ * no `PhaseDefinition`/`PipelineDefinition`/`WorkflowDefinition` analog for a
+ * model id, so `backend` + `modelId` stand in for `definition`.
+ */
+export interface ModelCatalogImportRow {
+  readonly outcome: 'import';
+  readonly resourceKind: 'modelCatalog';
+  /** The model id itself. */
+  readonly resourceId: string;
+  /** As authored in the document — opaque at this layer. */
+  readonly backend: string;
+  readonly modelId: string;
+}
+
+/**
+ * A Model Catalog skip row. A distinct arm rather than a reuse of the generic
+ * `skip` arm below: `presentIn` / `presentRowStatus` describe a scope-tiered
+ * catalog (built-in/user/workspace), and Model Catalog has neither — its two
+ * skip reasons are `already-exists` (FR-011) and `unrecognized-backend`
+ * (FR-013), not a presence scope/status pair.
+ */
+export interface ModelCatalogSkipRow {
+  readonly outcome: 'skip';
+  readonly resourceKind: 'modelCatalog';
+  readonly resourceId: string;
+  readonly backend: string;
+  readonly modelId: string;
+  readonly reason: 'already-exists' | 'unrecognized-backend';
+}
+
 export type ImportPlanRow =
   | {
       readonly outcome: 'import';
@@ -489,14 +559,25 @@ export type ImportPlanRow =
       readonly name: string;
       readonly definition: WorkflowDefinition;
     }
+  | ModelCatalogImportRow
   | {
       readonly outcome: 'skip';
-      readonly resourceKind: ProcessYamlResourceKind;
+      /**
+       * Excludes 'modelCatalog' deliberately: `ModelCatalogSkipRow` below
+       * carries that kind instead, with a disjoint field set
+       * (`backend`/`modelId`/`reason` vs. `name`/`presentIn`/`presentRowStatus`).
+       * Widening this to the full `ProcessYamlResourceKind` would make the two
+       * arms structurally overlap on `{outcome: 'skip', resourceKind:
+       * 'modelCatalog'}`, and a reader narrowing on `resourceKind` alone could
+       * no longer tell which field set it holds.
+       */
+      readonly resourceKind: 'phase' | 'pipeline' | 'workflow';
       readonly resourceId: string;
       readonly name: string;
       readonly presentIn: ProcessYamlPresenceScope;
       readonly presentRowStatus: ProcessYamlPresenceStatus;
     }
+  | ModelCatalogSkipRow
   | {
       /**
        * The resource itself is well-formed; only its dependencies fail (FR-033).
@@ -566,6 +647,13 @@ export interface ImportPlan {
    * ordered writes each carrying its own expected revision (data-model.md §3.4).
    */
   readonly computedAgainstWorkflowRevision?: ProcessYamlLayerRevisions;
+  /**
+   * Model Catalog (feature 096). Present exactly when the document declared a
+   * `ModelCatalog`. A single string, not a `ProcessYamlLayerRevisions` pair:
+   * Model Catalog has exactly one writable layer (`'workspace'`), so there is
+   * only ever one revision to gate against (data-model.md Decision 6).
+   */
+  readonly computedAgainstModelsRevision?: string;
 }
 
 /** Errors are values throughout this module. Nothing here throws. */

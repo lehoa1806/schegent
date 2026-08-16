@@ -124,7 +124,12 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
           supplemental: [],
           outputs: []
         }
-      }
+      },
+      // Feature 096 — `models` is the only required field. `expectedRevision`
+      // and `mutation` are the import-confirm call site's fields (contracts/
+      // model-catalog-exchange.md §4); the existing manual add/remove call
+      // site's minimal command correctly omits both.
+      [Authoritative.CMD_SAVE_MODELS]: { models: {} }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];

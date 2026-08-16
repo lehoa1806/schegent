@@ -371,7 +371,7 @@ describe('Feature 086 T033 — an import row carries what the write will store (
 
     const included = result.plan.rows
       .slice(1)
-      .map((row) => (row.outcome === 'import' ? row.definition : null));
+      .map((row) => (row.resourceKind !== 'modelCatalog' && row.outcome === 'import' ? row.definition : null));
 
     // The empty lists and `required: true` are the CATALOG's normalization, not the
     // exchange path rewriting a declared value: `readInputs`/`readOutputs`/

@@ -218,6 +218,47 @@ If a write fails repeatedly, check the destination directory's
 permissions and free space from a terminal. Schegent will not tell you
 which directory it was, by design.
 
+## Model Catalog
+
+The Model Catalog — the list of model ids Schegent offers per backend —
+moves through the same **Import…**/**Export** buttons and the same file
+dialogs as a Phase, Pipeline, or Workflow, but several of the choices
+above do not apply to it. This section only covers where it differs; the
+document lifecycle (preview before write, confirm before commit) is the
+same one described above.
+
+**No scope choice.** A Phase, Pipeline, or Workflow can land in **user**
+or **workspace**. The Model Catalog has one writable layer — this
+workspace — so there is nothing to choose at confirm time.
+
+**Two outcomes, not four.** A Model Catalog row is never `blocked` or
+`invalid`: a model id has no dependency to be blocked on, and nothing
+about a model id can be defective the way a malformed Phase definition
+can.
+
+| Outcome | What it means | Will it be written? |
+|---|---|---|
+| `import` | This id is new for this backend | Yes |
+| `skip` | Something already claims this id, or the row cannot be classified | No |
+
+`skip` carries one of two reasons, neither of which is the `blocked` or
+`invalid` reasons above:
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `already-exists` | This backend already has this exact id, byte for byte — no case-folding, no whitespace-trimming | Nothing — it is already there |
+| `unrecognized-backend` | The group's `backend` is not one this workspace runs | Check the backend name against the ones this workspace supports, then re-export from a workspace that has the right ones |
+
+An empty model id is silently dropped rather than reported as a row of
+its own — the same convention the catalog editor already applies to a
+blank entry.
+
+**No inclusion-depth choice on export.** Export always produces the whole
+catalog, every backend, as one document. There is no
+references-only/include-referenced-style choice to make, and no
+per-resource **Export** button to press one entry at a time — one
+**Export Model Catalog** button covers all of it, even an empty catalog.
+
 ## What the exchange never carries
 
 No filesystem path crosses between the extension host and the webview in

@@ -18,6 +18,7 @@ import type {
   ImportPlanRow,
   PreflightProcessYamlResult
 } from '../../lib/messages';
+import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
 import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
 import type {
   SavePipelineRow,
@@ -52,6 +53,16 @@ vi.mock('../../lib/save-pipelines', () => ({
   savePipelines: (request: SavePipelinesRequest) => savePipelinesSpy(request)
 }));
 
+// Feature 096 T024 — Model Catalog commits through its own single-write helper,
+// never through `runImportCommit`/`savePhases` (Implementation Notes point 1),
+// so it gets its own mock rather than reusing `saveSpy`.
+const saveModelsImportSpy = vi.fn<
+  (request: SaveModelsImportRequest) => Promise<SaveModelsImportResult>
+>();
+vi.mock('../../lib/save-models', () => ({
+  saveModelsImport: (request: SaveModelsImportRequest) => saveModelsImportSpy(request)
+}));
+
 // Late import so the component binds to the mocked call sites above.
 import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
 
@@ -78,6 +89,25 @@ function plan(rows: readonly ImportPlanRow[]): ImportPlan {
 function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
   return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISIONS };
 }
+
+const MODELS_REVISION = 'models-rev-1';
+
+/**
+ * A Model Catalog plan — what preflight produces for a document that declares
+ * ONLY a ModelCatalog (FR-015 homogeneity). `computedAgainstModelsRevision` is
+ * the one signal `isModelCatalogPlan` reads to choose the scope-less branch.
+ */
+function modelCatalogPlan(rows: readonly ImportPlanRow[]): ImportPlan {
+  return { ...plan(rows), computedAgainstModelsRevision: MODELS_REVISION };
+}
+
+const MODEL_IMPORT_ROW: ImportPlanRow = {
+  outcome: 'import',
+  resourceKind: 'modelCatalog',
+  resourceId: 'custom-model-a',
+  backend: 'claude',
+  modelId: 'custom-model-a'
+};
 
 /**
  * An `import` row carries the definition the commit writes, exactly as the
@@ -127,6 +157,8 @@ beforeEach(() => {
   saveSpy.mockResolvedValue({ status: 'accepted' });
   savePipelinesSpy.mockReset();
   savePipelinesSpy.mockResolvedValue({ status: 'accepted' });
+  saveModelsImportSpy.mockReset();
+  saveModelsImportSpy.mockResolvedValue({ status: 'accepted' });
 });
 
 afterEach(cleanup);
@@ -1202,5 +1234,87 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     // layer's reason and send the operator to fix the wrong thing.
     expect(rows[2].textContent).toContain('stopped before this layer');
     expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+  });
+});
+
+// Feature 096 T024 — wiring the modelCatalog branch: no scope selector, and
+// confirm dispatches through `saveModelsImport`, never `savePhases`.
+describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () => {
+  it('names Model Catalog among the accepted document kinds', () => {
+    render(ProcessImportPreflight);
+    expect(document.getElementById('process-import-title')?.textContent).toContain('Model Catalog');
+  });
+
+  it('renders no scope selector, and confirms without one chosen (FR-056)', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { container, getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+
+    expect(container.querySelector('[data-testid="process-import-scope"]')).toBeNull();
+    // Nothing left to choose, so nothing blocks confirmation.
+    expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(false);
+    expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
+  });
+
+  it('states what confirming will do without naming a scope or layer (FR-058)', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+
+    const statement = getByTestId('process-import-commit-statement').textContent ?? '';
+    expect(statement).toContain('model catalog');
+    expect(statement).not.toContain('chosen scope');
+  });
+
+  it('holds confirmation closed on a plan carrying no Model Catalog revision, and says why', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: plan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+
+    expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
+    expect(getByTestId('process-import-confirm-blocked').textContent).toContain('Model Catalog revision');
+  });
+
+  it('sends the delta grouped by backend, the plan revision, and the import-package intent', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(saveModelsImportSpy).toHaveBeenCalledTimes(1);
+    expect(saveModelsImportSpy.mock.calls[0][0]).toEqual({
+      models: { claude: ['custom-model-a'] },
+      expectedRevision: MODELS_REVISION,
+      mutation: { kind: 'import-package' }
+    });
+    // Model Catalog's single write must not fall through to the Phase path.
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(savePipelinesSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders the Model Catalog outcome sentence, not the layered one (FR-042a)', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    const outcome = getByTestId('process-import-outcome');
+    expect(outcome.dataset['outcome']).toBe('imported');
+    expect(outcome.textContent).toContain('added to the catalog');
+    const row = getByTestId('process-import-result-row');
+    expect(row.dataset['outcome']).toBe('imported');
+    expect(row.textContent).toContain('claude');
+  });
+
+  it('reports a rejected save as failed, with the recovery detail for a stale catalog', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    saveModelsImportSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    const { getByTestId } = render(ProcessImportPreflight);
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+    expect(getByTestId('process-import-result-outcome').textContent).toBe('failed');
+    expect(getByTestId('process-import-result-detail').textContent).toContain('inspect it again');
   });
 });

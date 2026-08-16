@@ -30,6 +30,12 @@ export interface ProcessCatalogPort {
   readonly readPhaseConfig?: () => StoredLayers;
   readonly readPipelineConfig?: () => StoredLayers;
   readonly readWorkflowConfig?: () => StoredLayers;
+  /**
+   * Feature 096 — Model Catalog has one writable layer, not `{user,
+   * workspace}`, so its reader returns the current merged config directly
+   * rather than a `StoredLayers` pair.
+   */
+  readonly readModelsConfig?: () => Record<string, readonly string[]>;
 }
 
 /**

@@ -19,6 +19,7 @@ import type {
   SavePipelinesCommand,
   SaveWorkflowsCommand
 } from '../contracts/sidebar-ipc/catalog-save';
+import type { SaveModelsCommand } from '../contracts/sidebar-ipc';
 import type {
   ExportProcessYamlRequest,
   ExportProcessYamlResult,
@@ -27,6 +28,7 @@ import type {
 import type { WritablePhaseDefinitionScope } from '../contracts/process-definitions';
 import {
   appendExportAudit,
+  MODEL_CATALOG_EXPORT_RESOURCE_ID,
   selectProcessExportDocument
 } from '../services/process-yaml/export-service';
 import { preflightProcessDocument } from '../services/process-yaml/preflight-service';
@@ -83,6 +85,7 @@ export interface ImportWritePort {
   savePhases(payload: SavePhasesCommand['payload']): Promise<LayerSaveAck>;
   savePipelines(payload: SavePipelinesCommand['payload']): Promise<LayerSaveAck>;
   saveWorkflows(payload: SaveWorkflowsCommand['payload']): Promise<LayerSaveAck>;
+  saveModels(payload: SaveModelsCommand['payload']): Promise<LayerSaveAck>;
 }
 
 /** The stored rows of each catalog the import appends to, for the target scope. */
@@ -103,10 +106,23 @@ export interface ImportProcessDocumentInput {
   readonly layers: ImportTargetLayers;
 }
 
-export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows';
+export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows' | 'models';
 
-/** The layer keys in write order — the one place this module states the order. */
-export const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = ['phases', 'pipelines', 'workflows'];
+/**
+ * The layer keys in write order — the one place this module states the order.
+ *
+ * `'models'` has no ordering relationship with the other three: FR-015 rules
+ * out cross-catalog references, so a Model Catalog document never shares a
+ * plan with Phase/Pipeline/Workflow rows (contract §1, research.md Decision
+ * 4). Its position here is therefore unconstrained; it is listed last only
+ * because it was added last.
+ */
+export const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = [
+  'phases',
+  'pipelines',
+  'workflows',
+  'models'
+];
 
 export interface ImportLayerResult {
   readonly key: ImportLayerKey;
@@ -133,6 +149,23 @@ function importRows<K extends ImportPlanRow['resourceKind']>(
   return plan.rows.filter(
     (row): row is ImportRowOf<K> => row.outcome === 'import' && row.resourceKind === resourceKind
   );
+}
+
+/**
+ * Group `import`-outcome Model Catalog rows into the delta `CMD_SAVE_MODELS`
+ * expects (contract §4 / Implementation Note 2): only the candidate entries
+ * the plan classified, never a pre-merged catalog. The server re-plans against
+ * the freshly-read current catalog and merges; this port sends the delta the
+ * same way the sidebar's import-confirm call site does.
+ */
+function modelsDeltaByBackend(
+  rows: readonly ImportRowOf<'modelCatalog'>[]
+): Record<string, readonly string[]> {
+  const delta: Record<string, string[]> = {};
+  for (const row of rows) {
+    (delta[row.backend] ??= []).push(row.modelId);
+  }
+  return delta;
 }
 
 /**
@@ -183,8 +216,10 @@ export async function importProcessDocument(
   const phases = importRows(plan, 'phase');
   const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
+  const models = importRows(plan, 'modelCatalog');
   const pipelineRevisions = plan.computedAgainstPipelineRevision;
   const workflowRevisions = plan.computedAgainstWorkflowRevision;
+  const modelsRevision = plan.computedAgainstModelsRevision;
 
   // Half a package is the one outcome no requirement admits. A plan that carries
   // rows for a layer but no revision to gate that layer's write cannot be applied
@@ -193,6 +228,9 @@ export async function importProcessDocument(
     return { outcome: 'failed', results: [] };
   }
   if (workflows.length > 0 && workflowRevisions === undefined) {
+    return { outcome: 'failed', results: [] };
+  }
+  if (models.length > 0 && modelsRevision === undefined) {
     return { outcome: 'failed', results: [] };
   }
 
@@ -254,6 +292,20 @@ export async function importProcessDocument(
     results.push({ key: 'workflows', ack });
   }
 
+  // Independent of the three above (FR-015 rules out a mixed document), so it is
+  // neither gated on their success nor required to precede or follow them — a
+  // document that declares a Model Catalog declares nothing else. The revision
+  // guard already ran above; `modelsRevision` is narrowed non-undefined here by
+  // the same half-a-package check.
+  if (models.length > 0 && modelsRevision !== undefined) {
+    const ack = await deps.saveModels({
+      models: modelsDeltaByBackend(models),
+      expectedRevision: modelsRevision,
+      mutation: { kind: 'import-package' }
+    });
+    results.push({ key: 'models', ack });
+  }
+
   return { outcome: importCommitOutcome(results), results };
 }
 
@@ -287,11 +339,15 @@ export async function exportProcessDefinitions(
   if (refusal !== null) return refusal;
 
   const request = input.selection;
+  // The 'modelCatalog' arm carries no `resourceId` (contract §3 — exactly one
+  // catalog, nothing to identify); the audit envelope still needs a string.
+  const resourceId =
+    request.resourceKind === 'modelCatalog' ? MODEL_CATALOG_EXPORT_RESOURCE_ID : request.resourceId;
   const selection = selectProcessExportDocument(deps, request);
   if (selection.outcome === 'unavailable') {
     await appendExportAudit(deps, {
       resourceKind: request.resourceKind,
-      resourceId: request.resourceId,
+      resourceId,
       scope: null,
       outcome: 'unavailable'
     });
@@ -300,7 +356,7 @@ export async function exportProcessDefinitions(
 
   await appendExportAudit(deps, {
     resourceKind: request.resourceKind,
-    resourceId: request.resourceId,
+    resourceId,
     scope: selection.scope,
     outcome: 'saved',
     ...(selection.includedPhaseCount !== undefined

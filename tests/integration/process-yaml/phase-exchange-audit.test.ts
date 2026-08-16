@@ -654,6 +654,7 @@ describe('Feature 084 — the document has no say in the target layer (T056, FR-
     const row = plan.rows[0]!;
     expect(row.outcome).toBe('import');
     if (row.outcome !== 'import') throw new Error('unreachable');
+    if (row.resourceKind === 'modelCatalog') throw new Error('unreachable');
     expect(Object.keys(row.definition)).not.toContain('scope');
     expect(Object.keys(row.definition)).not.toContain('sourceScope');
   });

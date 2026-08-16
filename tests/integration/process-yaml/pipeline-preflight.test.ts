@@ -279,7 +279,7 @@ describe('Feature 085 — an import row carries what the write will store (FR-02
 
     const included = result.plan.rows
       .filter((row) => row.resourceKind === 'phase')
-      .map((row) => (row.outcome === 'import' ? row.definition : null));
+      .map((row) => (row.resourceKind !== 'modelCatalog' && row.outcome === 'import' ? row.definition : null));
 
     expect(included).toEqual([
       { phaseId: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },

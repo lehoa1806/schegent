@@ -23,6 +23,7 @@
 
 import {
   appendExportAudit,
+  MODEL_CATALOG_EXPORT_RESOURCE_ID,
   selectProcessExportDocument
 } from '../../../services/process-yaml/export-service';
 import type { ExportProcessYamlCommand, ExportProcessYamlResult } from '../messages';
@@ -31,7 +32,11 @@ import { ack } from './handler-helpers';
 
 export const handler: CommandHandler<ExportProcessYamlCommand> = async (ctx, command) => {
   const request = command.payload;
-  const { resourceKind, resourceId } = request;
+  const { resourceKind } = request;
+  // The 'modelCatalog' arm carries no `resourceId` (contract §3 — exactly one
+  // catalog, nothing to identify); the audit envelope still needs a string.
+  const resourceId =
+    request.resourceKind === 'modelCatalog' ? MODEL_CATALOG_EXPORT_RESOURCE_ID : request.resourceId;
   const correlationId = ctx.correlationId;
   const selection = selectProcessExportDocument(ctx.deps, request);
 

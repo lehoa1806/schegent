@@ -60,6 +60,7 @@ import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
 import { HistoryStore } from './state/history-store';
 import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
+import { coerceModels } from './config/pipeline-config-loader';
 import type { CatalogConfigReader } from './config/pipeline-config-loader';
 import { loadAndReportCatalog } from './activation/catalog-loading';
 import type { PipelineCatalog } from './config/pipeline-config';
@@ -1002,6 +1003,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // Feature 083 — read fresh per save so the revision gate compares against the
     // layer as it stands now, not as it stood when the catalog last resolved.
     readWorkflowConfig: () => readWorkflowLayers(workflowConfigReader),
+    // Feature 096 — Model Catalog's one writable layer is 'workspace' (research.md
+    // Decision 6), so this reads that scope only, fresh per call, same reason as
+    // readWorkflowConfig above — not activeCatalog.models, which is the merged
+    // user+workspace view and would let the revision gate react to a layer this
+    // command never writes.
+    readModelsConfig: () => coerceModels(catalogReader.getModels('workspace')),
     getCatalog: () => activeCatalog,
     guardedRun: guardedRunService,
     defaultRunnerKind: backendKind,

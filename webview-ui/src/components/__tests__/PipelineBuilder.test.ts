@@ -593,6 +593,18 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(items.length).toBe(2);
   });
 
+  // Feature 096 T025 — the Model Catalog import trigger. Unmounted on every
+  // other tab, same as the per-tab save affordances above: it must not be
+  // reachable before the Models tab is active.
+  it('Models tab: mounts the Model Catalog import entry point', async () => {
+    const snap = buildSnapshot([], [], ['claude-sonnet-4-6']);
+    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    await switchTab(container, 'Models');
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="process-import-inspect"]')).not.toBeNull();
+  });
+
   // Feature 082 — saves are mutation-scoped: the operator declares a change,
   // and only that change is submitted against the adopted layer revision. A
   // Save click with nothing declared is inert (FR-029).

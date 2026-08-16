@@ -5,6 +5,7 @@
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
+  import ProcessImportPreflight from './ProcessImport/ProcessImportPreflight.svelte';
   import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
   import WorkflowCatalogEditor from './PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
   import type { MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
@@ -471,6 +472,13 @@
       {/if}
       <WorkflowCatalogEditor {snapshot} trusted={workflowMutationsAllowed} />
     {:else if activeTab === 'models'}
+      <!-- Feature 096 T025 — the import entry point for the Model Catalog, its
+           own region above the editor for the same reason PhaseCatalogEditor's
+           is: the preflight it opens renders in place. No `disabledReason`: a
+           Model Catalog write has no capability-trust gate to observe
+           (research.md Decision 9, cmd-save-models.ts), so unlike the Phase
+           mount there is no condition here to compute or state. -->
+      <ProcessImportPreflight />
       <ModelCatalogEditor
         availableModels={snapshot.availableModels}
         {models}
