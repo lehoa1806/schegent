@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { transition, isLoopPhase, nextSuccessor, INVOCABLE_PHASES } from '../../../src/controller/phase';
+import {
+  transition,
+  isLoopPhase,
+  nextSuccessor,
+  INVOCABLE_PHASES,
+  FORCE_CONTINUE_NOTIFY_TAG
+} from '../../../src/controller/phase';
 import { BUILT_IN_PIPELINE, BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 
 describe('Phase enum and transitions', () => {
@@ -243,6 +249,74 @@ describe('Phase enum and transitions', () => {
       }
     });
 
+    describe('forceContinueOnRetryCap', () => {
+      // The escape hatch is scoped to cap exhaustion and nothing else: a phase
+      // whose retryCondition never went falsy advances instead of halting, and
+      // says so under a notification tag. It is NOT a way past a `failed` or
+      // `timeout` outcome — those are terminal before the cap is ever read.
+      const CAP_EXHAUSTED = {
+        phase: 'security-audit',
+        outcome: 'clean',
+        iteration: 5,
+        iterationCap: 5,
+        metrics: { open_questions: 3 }
+      } as const;
+
+      it('advances past the cap and tags the warning when the phase opts in', () => {
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true }
+        });
+
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase).toBe(nextSuccessor('security-audit', undefined));
+        expect(result.warnings.some((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG))).toBe(true);
+        expect(result.warnings.join(' ')).toContain('UNVERIFIED');
+      });
+
+      it('advances when only the workspace default opts in', () => {
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          phaseDef: PHASE_DEF,
+          forceContinueOnRetryCapDefault: true
+        });
+
+        expect(result.kind).toBe('advance');
+      });
+
+      it('lets an explicit phase `false` override a workspace default of true', () => {
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: false },
+          forceContinueOnRetryCapDefault: true
+        });
+
+        expect(result.kind).toBe('halt');
+        if (result.kind === 'halt') expect(result.cause).toBe('cap_exhausted');
+      });
+
+      it('still halts a terminal outcome — the hatch never reaches the cap branch', () => {
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          outcome: 'failed',
+          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true },
+          forceContinueOnRetryCapDefault: true
+        });
+
+        expect(result.kind).toBe('halt');
+        if (result.kind !== 'halt') return;
+        expect(result.status).toBe('failed');
+        expect(result.warnings.some((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG))).toBe(false);
+      });
+
+      it('defaults off — an unset field with no default keeps the halt', () => {
+        const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF });
+
+        expect(result.kind).toBe('halt');
+        if (result.kind === 'halt') expect(result.cause).toBe('cap_exhausted');
+      });
+    });
 
     it('failed outcome bypasses retryCondition (FR-010)', () => {
       const result = transition({

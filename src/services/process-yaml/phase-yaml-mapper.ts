@@ -38,6 +38,9 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
       : {}),
     ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
+    ...(definition.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
+      : {}),
     ...(definition.retryCondition !== undefined
       ? { retryCondition: definition.retryCondition }
       : {})
@@ -79,6 +82,9 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.loopable !== undefined ? { loopable: spec.loopable } : {}),
     ...(spec.retryCondition !== undefined ? { retryCondition: spec.retryCondition } : {}),
     ...(spec.isRequired !== undefined ? { isRequired: spec.isRequired } : {}),
+    ...(spec.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: spec.forceContinueOnRetryCap }
+      : {}),
     ...(spec.runner !== undefined ? { runner: spec.runner } : {})
   };
   return spec.instruction !== undefined

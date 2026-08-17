@@ -466,6 +466,18 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.retry.forceContinueOnCap",
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.retry.maxAttempts",
           "type": "integer",
           "default": 5,

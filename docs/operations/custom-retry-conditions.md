@@ -50,10 +50,40 @@ the recorded expression against the recorded metrics.
 | Symptom | Likely cause |
 |---|---|
 | Phase advances when you expected it to loop | Metric key not emitted at the top level of the audit log block (nested under Open Questions / Remaining Issues). Move it to the top level. |
-| Phase loops forever then halts with `cause: "cap_exhausted"` | `schegent.loop.maxIterations` (default 10) is the hard ceiling. Lower the expected metric or raise the cap. |
+| Phase loops forever then halts with `cause: "cap_exhausted"` | `schegent.loop.maxIterations` (default 10) is the hard ceiling. Lower the expected metric, raise the cap, or force past it (below). |
 | One-shot warning about reserved key | A reserved field name (`status`, `model`, `effort`, `pipelineId`, …) collided with a metric. Rename your metric. |
 | One-shot warning about non-finite / non-numeric value | Model emitted `NaN`, `Infinity`, or text like `many`. Update your prompt to emit a finite number. |
 | Workspace activation logs a single retry-condition warning at load time | Syntactically invalid expression. The phase remains loadable with default loop semantics. Fix the expression and reload. |
+
+## Forcing a run past an exhausted cap
+
+A `retryCondition` that never goes falsy halts the run with
+`cause: "cap_exhausted"`. That is the default and it is the safe answer:
+whatever the condition gated has not happened. When the remaining work
+genuinely cannot be done in-process — a phase whose completion depends on
+a manual step the headless runner cannot perform — the halt can be
+converted into an advance:
+
+| Surface | Effect |
+|---|---|
+| `schegent.retry.forceContinueOnCap` (default `false`) | Workspace-wide default for every phase. |
+| `forceContinueOnRetryCap: true` on a phase | Per-phase override; an explicit `false` wins over a workspace default of `true`. |
+
+When it fires, the run advances to the successor phase and records a
+warning under the `[notify] forced-continue` tag naming the phase, the
+cap, and the successor, and stating that whatever the condition gated is
+**unverified**. Search the runtime log for the tag to find every run that
+took the hatch:
+
+```bash
+grep '\[notify\] forced-continue' .schegent/syslog
+```
+
+Two limits are deliberate. The hatch applies **only** to cap exhaustion —
+a phase that ends `failed`, `timeout`, `skipped`, `rate_limited`, or
+`transient_error` is terminal before the cap is consulted, so this never
+converts a genuine failure into an advance. And it does not mark the
+gated work as done; it records that the run continued without it.
 
 ## Canonical reference
 

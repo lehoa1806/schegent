@@ -834,6 +834,12 @@
           "scope": "resource",
           "markdownDescription": "Maximum delayed-retry attempts per run before pausing the queue. When a phase encounters a transient error or rate limit, it schedules a delayed retry. After this many consecutive failures without a clean recovery, the run and queue are paused. Range: 1–5. Feature 056 reduced the advertised max from 20 to match the effective implementation cap (`DELAYED_RETRY_CAP = 5`)."
         },
+        "schegent.retry.forceContinueOnCap": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "Default for a phase's `forceContinueOnRetryCap`. When a phase's `retryCondition` is **still truthy** after its last permitted iteration, advance to the next phase instead of failing the run, and write a `[notify] forced-continue` line to the runtime log. Use this for a phase gated on something an autonomous run cannot satisfy — a manual verification step, for example — where the alternative is a loop that burns every iteration and then fails. **Whatever the condition gates is left unverified**, so the log line is the record that it was skipped. A phase's own `forceContinueOnRetryCap` overrides this. Does not apply to `failed` or `timeout` outcomes, which are terminal and never consult `retryCondition`."
+        },
         "schegent.queue.globalConcurrencyCap": {
           "type": "integer",
           "default": 3,

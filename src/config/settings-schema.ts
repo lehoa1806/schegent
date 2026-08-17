@@ -229,6 +229,13 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Maximum delayed-retry attempts per run'
   },
+  'schegent.retry.forceContinueOnCap': {
+    key: 'schegent.retry.forceContinueOnCap',
+    type: 'boolean',
+    default: false,
+    scope: 'resource',
+    docLabel: 'Continue past an unsatisfied retryCondition at the cap'
+  },
   // Feature 092 (T054, FR-026/FR-027) — the cap is no longer pinned. Feature
   // 056 held it at exactly 1 because a single workspace lock made concurrency
   // unrepresentable; the lock split of US2 removed that constraint, so the

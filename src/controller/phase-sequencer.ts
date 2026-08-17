@@ -146,6 +146,12 @@ export interface PostPhaseInputs {
    */
   readonly latestManualPauseAt: number | null;
   readonly now: number;
+  /**
+   * Workspace default for `PhaseDef.forceContinueOnRetryCap`, resolved by the
+   * caller per phase invocation rather than held here, so a mid-run settings
+   * change takes effect on the next phase instead of the next window.
+   */
+  readonly forceContinueOnRetryCapDefault?: boolean;
 }
 
 export interface OptionalTerminalFailureInputs {
@@ -243,7 +249,16 @@ export class PhaseSequencer {
    * queue, lock retain). The sequencer never mutates run state.
    */
   decideAfterPhase(inputs: PostPhaseInputs): PostPhaseDecision {
-    const { run, output, iteration, iterationCap, activePhaseDef, latestManualPauseAt, now } = inputs;
+    const {
+      run,
+      output,
+      iteration,
+      iterationCap,
+      activePhaseDef,
+      latestManualPauseAt,
+      now,
+      forceContinueOnRetryCapDefault
+    } = inputs;
 
     if (output.outcome === 'paused-at-breakpoint') {
       return {
@@ -275,7 +290,10 @@ export class PhaseSequencer {
       iterationCap,
       pipeline: run.pipeline,
       phaseDef: activePhaseDef ?? undefined,
-      ...(auditMetrics ? { metrics: auditMetrics } : {})
+      ...(auditMetrics ? { metrics: auditMetrics } : {}),
+      ...(forceContinueOnRetryCapDefault !== undefined
+        ? { forceContinueOnRetryCapDefault }
+        : {})
     });
     const warnings = [...output.warnings, ...decision.warnings];
 

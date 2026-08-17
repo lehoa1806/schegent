@@ -64,6 +64,7 @@ through VS Code settings and read at activation.
 | `schegent.logging.runtimeLogMaxBytes` | number (default `5_242_880` / 5 MiB) | Size threshold at which the runtime log rotates `<path> → <path>.1 → … → <path>.<maxGens>`. Read uncached on every emit. See [docs/operations/runtime-log.md](runtime-log.md). |
 | `schegent.logging.runtimeLogMaxGenerations` | number (0–10, default `3`) | Number of rotated generations to keep on disk. `0` disables rotation (truncate-in-place). Worst-case disk = active file + `maxGens × maxBytes`. |
 | `schegent.loop.maxIterations` | number (1–50) | Maximum recursive iterations per loopable phase. |
+| `schegent.retry.forceContinueOnCap` | boolean (default `false`) | Workspace default for advancing past an exhausted `retryCondition` cap instead of halting `cap_exhausted`. A phase's own `forceContinueOnRetryCap` overrides it. Applies to cap exhaustion only — never to a `failed` or `timeout` outcome. See [Custom Retry Conditions](custom-retry-conditions.md). |
 | `schegent.invocation.timeoutSeconds` | number (minimum 30) | Maximum wall-clock duration per CLI call. |
 | `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |
 | `schegent.audit.rotation.sizeMB` | number (minimum 1) | Audit log size threshold for rotation. |

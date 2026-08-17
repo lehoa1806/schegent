@@ -57,6 +57,7 @@ export interface GeneralSettings {
   readonly runtimeLogLevel: string;
   readonly runtimeLogFilePath: string;
   readonly retryMaxAttempts: number;
+  readonly retryForceContinueOnCap: boolean;
   readonly codexPath: string;
   readonly agyPath: string;
   readonly runtimeLogMaxBytes: number;
@@ -80,6 +81,7 @@ export interface GeneralSettings {
     readonly runtimeLogLevel: SettingScope;
     readonly runtimeLogFilePath: SettingScope;
     readonly retryMaxAttempts: SettingScope;
+    readonly retryForceContinueOnCap: SettingScope;
     readonly codexPath: SettingScope;
     readonly agyPath: SettingScope;
     readonly runtimeLogMaxBytes: SettingScope;
@@ -106,6 +108,7 @@ type AllowedKey =
   | 'logging.runtimeLogLevel'
   | 'logging.runtimeLogFilePath'
   | 'retry.maxAttempts'
+  | 'retry.forceContinueOnCap'
   | 'codex.path'
   | 'agy.path'
   | 'logging.runtimeLogMaxBytes'
@@ -240,6 +243,14 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     defaultValue: 5,
     min: 1,
     max: 5
+  },
+  // Workspace-wide default for a phase's `forceContinueOnRetryCap`. Defaults
+  // OFF: advancing on an unsatisfied condition is a deliberate trade of
+  // verification for progress, so it is opted into, never inherited.
+  'retry.forceContinueOnCap': {
+    type: 'boolean',
+    typedField: 'retryForceContinueOnCap',
+    defaultValue: false
   },
   'logging.runtimeLogMaxBytes': {
     type: 'number-int-range',

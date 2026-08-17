@@ -198,6 +198,7 @@ export const SETTINGS_KEYS = [
   "schegent.phases",
   "schegent.pipelines",
   "schegent.queue.globalConcurrencyCap",
+  "schegent.retry.forceContinueOnCap",
   "schegent.retry.maxAttempts",
   "schegent.trust.allowCustomPhases",
   "schegent.trust.allowCustomRetryConditions",

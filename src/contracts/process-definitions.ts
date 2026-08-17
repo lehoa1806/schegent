@@ -29,6 +29,8 @@ interface PhaseDefinitionBase {
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
+  /** Advance rather than fail when `retryCondition` is truthy at the cap. */
+  readonly forceContinueOnRetryCap?: boolean;
   readonly runner?: BackendRunnerKind;
 }
 

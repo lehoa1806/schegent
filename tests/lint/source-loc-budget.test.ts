@@ -219,7 +219,16 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // Feature 074 — bumped 800 → 850 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
   // isPhaseDef runner check, and validatePhaseRaw runner validation.
   { path: 'src/config/pipeline-config.ts', maxLines: 900 },
-  { path: 'src/config/general-settings.ts', maxLines: 650 }
+  // `retry.forceContinueOnCap` (2026-08-16) — 650 → 660 for the retry-cap
+  // force-continue default. Extraction was considered and rejected on shape,
+  // not on cost: every line added is a row in a declaration this file exists to
+  // be — the typed field, its entry in `scopes`, its member of the `AllowedKey`
+  // union, and its `KEY_SPECS` spec. Moving one key's rows out would split a
+  // single table across two files so that the table could stay under a ceiling,
+  // which hides the growth rather than recording it. Raised to exactly what the
+  // file now measures, not to a round number with slack, per the note on
+  // snapshot-composer.ts above.
+  { path: 'src/config/general-settings.ts', maxLines: 660 }
 ];
 
 function lineCount(path: string): number {

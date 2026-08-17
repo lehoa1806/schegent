@@ -1,5 +1,15 @@
 import { validate as parseRetryCondition, evaluate as evalRetryCondition } from '../lib/retry-condition';
 
+/**
+ * Prefix on the system-log line emitted when a phase is forced past its
+ * retry cap. Tagged rather than plain so the one case where the pipeline
+ * advanced WITHOUT its condition being satisfied is greppable, and reads
+ * differently from the ordinary `retryCondition missing metric(s)` noise.
+ *
+ * Bracketed-lowercase to match the existing `[constitution]` convention.
+ */
+export const FORCE_CONTINUE_NOTIFY_TAG = '[notify] forced-continue';
+
 export const BUILT_IN_PHASE_IDS = [
   'speckit-specify',
   'speckit-clarify',
@@ -54,6 +64,21 @@ export interface PhaseDefLike {
   readonly id: string;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
+  /**
+   * When the `retryCondition` is STILL truthy at the iteration cap, advance
+   * with a `[notify]` warning instead of halting `failed`.
+   *
+   * Scoped deliberately to the cap. A phase whose condition can never go
+   * falsy — one gated on a step no headless run can perform — otherwise
+   * burns every iteration and then fails the whole task, and the only ways
+   * out were to leave it failing or to record work that did not happen.
+   *
+   * This is NOT a way past a `failed` or `timeout` outcome: those are
+   * terminal and never reach the retryCondition branch at all. Forcing past
+   * a fatal-signature match is a different decision on different evidence,
+   * and `isRequired: false` is the field that already makes it.
+   */
+  readonly forceContinueOnRetryCap?: boolean;
 }
 
 export type TransitionInput = {
@@ -66,6 +91,12 @@ export type TransitionInput = {
   // Feature 010 — operator-authored retryCondition is evaluated against the
   // SCHEGENT AUDIT LOG metrics map. Optional; absent for legacy callers.
   metrics?: Readonly<Record<string, number>>;
+  /**
+   * Workspace-level default for `PhaseDefLike.forceContinueOnRetryCap`,
+   * read fresh per phase invocation from `schegent.retry.forceContinueOnCap`.
+   * The phase field overrides it; absent on both sides means `false`.
+   */
+  forceContinueOnRetryCapDefault?: boolean;
 };
 
 export type TransitionResult =
@@ -116,7 +147,16 @@ export function nextSuccessor(phase: Phase, pipeline?: PipelineLike): Phase {
 }
 
 export function transition(input: TransitionInput): TransitionResult {
-  const { phase, outcome, iteration, iterationCap, pipeline, phaseDef, metrics } = input;
+  const {
+    phase,
+    outcome,
+    iteration,
+    iterationCap,
+    pipeline,
+    phaseDef,
+    metrics,
+    forceContinueOnRetryCapDefault
+  } = input;
   const warnings: string[] = [];
 
   // Terminal outcomes bypass retryCondition entirely (FR-010).
@@ -168,6 +208,24 @@ export function transition(input: TransitionInput): TransitionResult {
     const truthy = evaluateRetryCondition(retrySource, metrics ?? {}, warnings);
     if (truthy) {
       if (iteration >= iterationCap) {
+        // Phase field wins over the workspace default; absent on both is `false`,
+        // which is the pre-existing halt.
+        const forceContinue =
+          phaseDef?.forceContinueOnRetryCap ?? forceContinueOnRetryCapDefault ?? false;
+        if (forceContinue) {
+          const next = nextSuccessor(phase, pipeline);
+          warnings.push(
+            `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
+              `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
+              'satisfied, so whatever it gates is UNVERIFIED.'
+          );
+          return {
+            kind: 'advance',
+            nextPhase: next,
+            nextIteration: isLoopPhase(next) ? 1 : 0,
+            warnings
+          };
+        }
         // FR-010 / SC-009: cap reached + truthy condition → terminal failure
         // with a redacted cause string distinct from the fatal-CLI cause.
         warnings.push(`retryCondition still truthy at cap (${iterationCap}) on ${phase}`);

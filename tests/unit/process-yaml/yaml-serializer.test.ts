@@ -90,6 +90,7 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'timeoutSeconds',
       'loopable',
       'isRequired',
+      'forceContinueOnRetryCap',
       'retryCondition'
     ]);
   });

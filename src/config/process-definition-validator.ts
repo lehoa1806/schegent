@@ -30,6 +30,7 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'loopable',
   'retryCondition',
   'isRequired',
+  'forceContinueOnRetryCap',
   'runner'
 ]);
 
@@ -293,6 +294,17 @@ export function validatePhaseDefinition(
       fieldError(phaseId, 'isRequired', 'boolean-required', 'Phase isRequired must be boolean')
     );
   }
+  const forceContinueOnRetryCap = value.forceContinueOnRetryCap;
+  if (forceContinueOnRetryCap !== undefined && typeof forceContinueOnRetryCap !== 'boolean') {
+    errors.push(
+      fieldError(
+        phaseId,
+        'forceContinueOnRetryCap',
+        'boolean-required',
+        'Phase forceContinueOnRetryCap must be boolean'
+      )
+    );
+  }
 
   let retryCondition: string | undefined;
   if (value.retryCondition !== undefined) {
@@ -343,6 +355,7 @@ export function validatePhaseDefinition(
     ...(typeof loopable === 'boolean' ? { loopable } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {}),
     ...(typeof isRequired === 'boolean' ? { isRequired } : {}),
+    ...(typeof forceContinueOnRetryCap === 'boolean' ? { forceContinueOnRetryCap } : {}),
     ...(runner !== undefined ? { runner } : {})
   };
   const definition: PhaseDefinition = hasInstruction

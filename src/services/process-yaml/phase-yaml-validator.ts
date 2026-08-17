@@ -385,6 +385,11 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
 
   const loopable = readOptionalBoolean(section, 'loopable', defects);
   const isRequired = readOptionalBoolean(section, 'isRequired', defects);
+  const forceContinueOnRetryCap = readOptionalBoolean(
+    section,
+    'forceContinueOnRetryCap',
+    defects
+  );
 
   let retryCondition: string | undefined;
   const retryNode = optionalScalar(section, 'retryCondition', defects);
@@ -408,6 +413,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
     ...(loopable !== undefined ? { loopable } : {}),
     ...(isRequired !== undefined ? { isRequired } : {}),
+    ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {})
   };
   return hasInstruction

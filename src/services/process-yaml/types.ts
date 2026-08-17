@@ -90,6 +90,7 @@ interface PhaseYamlSpecBase {
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly isRequired?: boolean;
+  readonly forceContinueOnRetryCap?: boolean;
   /** Inert text. This feature never parses, evaluates, or rewrites it (FR-012). */
   readonly retryCondition?: string;
 }
