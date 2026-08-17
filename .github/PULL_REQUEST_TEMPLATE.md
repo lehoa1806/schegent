@@ -59,7 +59,7 @@ Justifications go here (one line each):
 - Closes #<issue-number>
 - Spec: `specs/<NNN-feature>/spec.md`
 - Plan: `specs/<NNN-feature>/plan.md`
-- Roadmap entry (if from the architecture refactoring & hardening plan): `docs/features/round_1/034-architecture-refactoring-and-hardening-plan.md` Item NNN
+- Roadmap entry (if from the architecture refactoring & hardening plan): `docs/features/round_1/DONE_034-architecture-refactoring-and-hardening-plan.md` Item NNN
 -->
 
 ## Reviewer notes
