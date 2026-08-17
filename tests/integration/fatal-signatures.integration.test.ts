@@ -103,8 +103,10 @@ describe('Feature 011 T063 — fatal-signatures integration', () => {
     const operatorAdditions = readFatalSignaturesSetting(config);
     const effective = getEffectiveSignatures(operatorAdditions);
 
-    const stdout = `${builtIn} appears AND so does custom-tag`;
-    const result = classifyFatal(stdout, '', effective);
+    // On stderr: FATAL_SIGNATURES[0] is stderr-scoped, so that is the stream
+    // where both entries are eligible and precedence is observable.
+    const stderr = `${builtIn} appears AND so does custom-tag`;
+    const result = classifyFatal('', stderr, effective);
 
     expect(result.matched).toBe(true);
     if (result.matched) {
@@ -164,8 +166,8 @@ describe('Feature 011 T063 — fatal-signatures integration', () => {
     const operatorAdditions = readFatalSignaturesSetting(config);
     expect(operatorAdditions).toEqual([]);
     const effective = getEffectiveSignatures(operatorAdditions);
-    // Force a built-in match
-    const result = classifyFatal(FATAL_SIGNATURES[0], '', effective);
+    // Force a built-in match, on the stream FATAL_SIGNATURES[0] is scoped to.
+    const result = classifyFatal('', FATAL_SIGNATURES[0], effective);
     expect(result.matched).toBe(true);
     if (result.matched) {
       expect(result.source).toBe('built-in');

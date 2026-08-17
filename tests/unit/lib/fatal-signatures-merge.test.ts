@@ -88,11 +88,14 @@ describe('Feature 011 T060 — getEffectiveSignatures invariants', () => {
     const builtIn = FATAL_SIGNATURES[0];
     const effective = getEffectiveSignatures([builtIn, 'op-pattern']);
     const text = `${builtIn} and op-pattern both appear`;
-    const r = classifyFatal(text, '', effective);
+    // On stderr: FATAL_SIGNATURES[0] is stderr-scoped, so that is the stream
+    // where both entries are eligible and precedence is observable.
+    const r = classifyFatal('', text, effective);
     expect(r.matched).toBe(true);
     if (r.matched) {
       expect(r.signature).toBe(builtIn);
       expect(r.source).toBe('built-in');
+      expect(r.stream).toBe('stderr');
     }
   });
 
