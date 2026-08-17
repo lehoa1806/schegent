@@ -145,7 +145,7 @@ controller assumes these invariants and will *not* tolerate divergence.
    execution surface. The grep regression in `tests/lint/` enforces this
    for the existing adapters; new adapters MUST mirror the pattern.
 3. **Output cap with truncation observability.** Stdout and stderr are
-   each capped at the runner's buffer limit (currently 4 MiB).
+   each capped at the runner's buffer limit (currently 64 MiB).
    `stdoutTruncated` / `stderrTruncated` MUST flip `true` the first time
    the cumulative byte counter exceeds the cap and stay sticky for the
    remainder of the invocation (feature 042).

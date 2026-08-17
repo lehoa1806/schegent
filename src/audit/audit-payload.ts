@@ -2,8 +2,21 @@ import type { AuditEventType } from '../contracts/audit-events';
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
-export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 240;
+export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 640;
 export const AUDIT_PAYLOAD_MAX_ARRAY_LENGTH = 100;
+
+/**
+ * Suffix stamped on a string the projector shortened to
+ * `AUDIT_PAYLOAD_MAX_STRING_LENGTH`. An over-long string is truncated, not
+ * refused: rejecting one dropped the WHOLE entry, so `monitor-stdout-line`
+ * recorded only the short lines and the informative ones vanished. On
+ * 2026-08-16 that silently discarded 7046 of 7452 stdout lines from one
+ * `speckit-implement` run — including the line carrying the fatal signature
+ * that ended it, leaving the run's cause unreconstructable from the audit.
+ * The marker is what distinguishes a shortened value from one that was
+ * always this length.
+ */
+export const AUDIT_PAYLOAD_TRUNCATION_MARKER = '...';
 
 export type AuditPermissionMode =
   | 'read-only'
@@ -34,6 +47,29 @@ export interface PhaseEndPayloadV3 {
   readonly toolCategoryCounts: Readonly<Record<string, number>>;
   readonly omittedFileEvidenceCount: number;
   readonly omittedToolEvidenceCount: number;
+  /**
+   * Diagnostic codes, drawn from `RECORDABLE_PHASE_END_WARNINGS`, that
+   * explain the recorded `outcome`.
+   *
+   * Without this the projection recorded `outcome: 'failed'` /
+   * `terminationReason: 'error'` with no indication of WHY, leaving the
+   * cause only in the transient runtime log — which is what made a
+   * volume-triggered run failure on 2026-08-16 undiagnosable from the
+   * audit alone.
+   *
+   * An allowlist rather than a passthrough: the runner's warning list also
+   * carries matched fatal signatures and parser messages that interpolate
+   * model output, and `phase-end` deliberately records neither. Anything
+   * outside the vocabulary is counted in `omittedWarningCount`, never
+   * carried.
+   */
+  readonly warnings?: ReadonlyArray<string>;
+  /**
+   * Number of warnings dropped because they fall outside
+   * `RECORDABLE_PHASE_END_WARNINGS`. Present only when nonzero, so the
+   * record shows that unrecorded diagnostics existed without naming them.
+   */
+  readonly omittedWarningCount?: number;
 }
 
 export interface MetricsViewOpenedPayloadV3 {
@@ -96,18 +132,32 @@ function assertFiniteNumber(value: number): number {
   return value;
 }
 
+/**
+ * Shorten `value` to at most `AUDIT_PAYLOAD_MAX_STRING_LENGTH` characters,
+ * spending the tail of that budget on `AUDIT_PAYLOAD_TRUNCATION_MARKER` so
+ * the result stays within the bound rather than exceeding it by the
+ * marker's own length.
+ */
+function boundString(value: string): string {
+  if (value.length <= AUDIT_PAYLOAD_MAX_STRING_LENGTH) return value;
+  const keep = AUDIT_PAYLOAD_MAX_STRING_LENGTH - AUDIT_PAYLOAD_TRUNCATION_MARKER.length;
+  return `${value.slice(0, keep)}${AUDIT_PAYLOAD_TRUNCATION_MARKER}`;
+}
+
 function projectValue(value: unknown, depth: number): unknown {
   if (depth > 4) throw new AuditPayloadValidationError('max-depth-exceeded');
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return assertFiniteNumber(value);
   if (typeof value === 'string') {
-    if (value.length > AUDIT_PAYLOAD_MAX_STRING_LENGTH) {
-      throw new AuditPayloadValidationError('string-too-long');
-    }
-    if (PATH_OR_ENDPOINT_RE.test(value)) {
+    const bounded = boundString(value);
+    // Deliberately tested against the BOUNDED value, not the raw one: the
+    // bounded string is what gets written, so it is what the no-paths rule
+    // has to hold for. A path beyond the cut is already gone; one before it
+    // still refuses, and now reports the reason it actually failed.
+    if (PATH_OR_ENDPOINT_RE.test(bounded)) {
       throw new AuditPayloadValidationError('path-or-endpoint-detected');
     }
-    return value;
+    return bounded;
   }
   if (Array.isArray(value)) {
     if (value.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) {
@@ -194,6 +244,53 @@ function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPa
   });
 }
 
+/**
+ * The closed vocabulary of `phase-end` diagnostic codes.
+ *
+ * Every member is a code-resident literal with no interpolated content —
+ * that is the entry condition, not a coincidence. The warning list reaching
+ * this module also contains matched fatal signatures (which may be
+ * operator-authored) and parser messages that splice in up to 60 characters
+ * of model output; those are content, they are what `OMITTED_KEYS` exists
+ * to keep out of the log, and no amount of length-bounding makes them
+ * recordable.
+ *
+ * Drift is contained by construction: if an emitter's literal changes, its
+ * warning stops matching and lands in `omittedWarningCount`. The record
+ * degrades to "something was warned about" rather than recording the wrong
+ * thing or leaking content. `tests/unit/audit/audit-payload-v3.test.ts`
+ * pins the set.
+ */
+export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
+  // src/controller/phase-outcome-mapper.ts — OUTPUT_TRUNCATED_WARNING
+  'output-truncated-unclassifiable',
+  // src/parser/audit-log-parser.ts
+  '[constitution] missing audit log',
+  '[constitution] unterminated audit log',
+  // src/parser/stdout-parser.ts
+  '[constitution] multiple contract blocks',
+  '[constitution] missing audit log on clean response'
+]);
+
+interface ProjectedWarnings {
+  readonly recorded: ReadonlyArray<string>;
+  readonly omitted: number;
+}
+
+function projectPhaseEndWarnings(value: unknown): ProjectedWarnings {
+  if (!Array.isArray(value)) return { recorded: [], omitted: 0 };
+  const recorded: string[] = [];
+  let omitted = 0;
+  for (const entry of value) {
+    if (typeof entry === 'string' && RECORDABLE_PHASE_END_WARNINGS.has(entry)) {
+      if (!recorded.includes(entry)) recorded.push(entry);
+      continue;
+    }
+    omitted += 1;
+  }
+  return { recorded: Object.freeze(recorded), omitted };
+}
+
 function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawOutcome = stringValue(payload.outcome, 'malformed');
   const outcome = ['clean', 'failed', 'timeout', 'rate-limited', 'malformed'].includes(rawOutcome)
@@ -218,6 +315,7 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const modified = countArray(payload.filesModified ?? payload.files_modified);
   const deleted = countArray(payload.filesDeleted ?? payload.files_deleted);
   const omittedTools = countArray(payload.commandsExecuted ?? payload.commands_executed);
+  const warnings = projectPhaseEndWarnings(payload.warnings);
   return Object.freeze({
     outcome: outcome as PhaseEndPayloadV3['outcome'],
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
@@ -229,7 +327,9 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
     fileChangeCounts: Object.freeze({ created, modified, deleted }),
     toolCategoryCounts: projectMetrics(payload.toolCategoryCounts),
     omittedFileEvidenceCount: created + modified + deleted,
-    omittedToolEvidenceCount: omittedTools
+    omittedToolEvidenceCount: omittedTools,
+    ...(warnings.recorded.length > 0 ? { warnings: warnings.recorded } : {}),
+    ...(warnings.omitted > 0 ? { omittedWarningCount: warnings.omitted } : {})
   });
 }
 

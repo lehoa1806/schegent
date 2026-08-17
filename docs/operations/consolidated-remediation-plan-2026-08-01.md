@@ -46,8 +46,8 @@ Status values are `Done`, `In progress`, `Planned`, `Decision`, or `Accepted`.
 | F-006 | Mutating IPC safety depended on an isolated hand-maintained router list. | High | Metadata is centralized in `sidebar-command-metadata.ts`, the router derives its set, and naming/pinned-list tests enforce coverage. Residual manual classification is an explicit review duty. | Accepted |
 | F-007 | Backend subprocesses inherited the full VS Code environment with no safer mode. | High | A central `inherit`/`minimal`/names-only `allowlist` policy now covers probes, phases, and pre-compaction while preserving the legacy boolean opt-out and compatibility default. | Done |
 | F-008 | Raw and verbose diagnostic artifacts are unredacted and had no automatic retention. | High | One retention owner now protects active runs, prunes complete inactive groups by age/bytes, emits metadata-only evidence, and exposes usage/failures in Settings. | Done |
-| F-009 | Runner stdout/stderr capture could grow memory without a durable bound. | High | Feature 074 uses a 4 MiB ordered head/tail buffer with explicit truncation state and sustained-stream unit coverage. | Done |
-| F-010 | A fatal error discarded from the middle of truncated output could be misclassified as clean. | Critical | Truncated otherwise-clean/malformed output now fails terminally with `output-truncated-unclassifiable`. | Done |
+| F-009 | Runner stdout/stderr capture could grow memory without a durable bound. | High | Feature 074 uses an ordered head/tail buffer with explicit truncation state and sustained-stream unit coverage. Sized at 4 MiB per stream on delivery; raised to 64 MiB on 2026-08-16 once the classification amplifier in `stream-json-unwrapper.ts` was removed and peak heap stopped being a multiple of the cap. | Done |
+| F-010 | A fatal error discarded from the middle of truncated output could be misclassified as clean. | Critical | Fatal classification no longer depends on retention: `src/lib/incremental-fatal-scanner.ts` scans every emitted byte as it arrives. Truncation still blocks advancement with `output-truncated-unclassifiable` for the API-error and completion-marker evidence it cannot recover, but as a paused `transient_error` rather than the run-terminal failure delivered on 2026-08-01 — that variant failed runs on output volume alone. | Done |
 | F-011 | Bounded parser buffers could also truncate the canonical raw transcript. | High | Runner chunks are teed with backpressure to private `0600` spools and streamed into the append-only raw transcript. Late spool failures rewind partial copies, and pre-compaction uses a separate invocation transcript. | Done |
 | F-012 | Separate Codex `agent_message` records could concatenate and corrupt headings/audit markers. | High | The stream un-wrapper recognizes current snake-case and legacy dotted completion events and inserts a logical newline boundary with regression coverage. | Done |
 | F-013 | Codex `workspace-write` protects `.git`, so branch/commit phases could never complete. | High | Branch-creating and Git-mutating built-ins are pinned to Claude; config, IPC, run-start, runtime, and UI layers reject Codex/inherited selection. | Done |
@@ -293,8 +293,13 @@ spools, and deterministic recovery.
 ### Completion evidence (2026-08-01)
 
 - The blocking real-child profile emits 4,600 records per stream (9,600,264
-  output bytes total), while retained parser state stays at two independent
-  4 MiB caps and the raw transcript hashes to the original streams.
+  output bytes total), while retained parser state stays within two
+  independent per-stream caps and the raw transcript hashes to the original
+  streams. Measured against 4 MiB caps on 2026-08-01, which that volume
+  exceeded; the cap is 64 MiB as of 2026-08-16, so the default profile no
+  longer reaches it and asserts the absence of truncation instead. Raise
+  `SCHEGENT_SUSTAINED_RECORD_COUNT` past the cap to exercise the truncating
+  path through the production runner.
 - Split UTF-8 writes and clean, fatal, timeout, and cancellation terminal modes
   pass through the production runner path.
 - A 10,000-row phase log projects the newest 200 ordered entries. The exercise

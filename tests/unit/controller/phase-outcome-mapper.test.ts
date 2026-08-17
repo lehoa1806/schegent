@@ -3,7 +3,8 @@ import {
   mapOutcome,
   mapTerminationReason,
   summarize,
-  STDOUT_SUMMARY_LIMIT
+  STDOUT_SUMMARY_LIMIT,
+  OUTPUT_TRUNCATED_WARNING
 } from '../../../src/controller/phase-outcome-mapper';
 import type { InvocationResult } from '../../../src/parser/stdout-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
@@ -48,6 +49,12 @@ const r = {
     warnings: [],
     auditEntry: null,
     ...(fatalCause ? { fatalCause, fatalSource: 'built-in' as const } : {})
+  }),
+  truncated: (fatalCause?: string): InvocationResult => ({
+    kind: 'malformed',
+    warnings: [OUTPUT_TRUNCATED_WARNING],
+    auditEntry: null,
+    ...(fatalCause ? { fatalCause, fatalSource: 'built-in' as const } : {})
   })
 };
 
@@ -71,6 +78,21 @@ describe('mapOutcome', () => {
     expect(mapOutcome(r.malformed('parse-fail'), 0)).toBe('failed');
     expect(mapOutcome(r.malformed('parse-fail'), 1)).toBe('failed');
     expect(mapOutcome(r.malformed('parse-fail'), null)).toBe('failed');
+  });
+  it('truncated output → transient_error, not failed', () => {
+    // "We could not classify this output" is not "we classified it as a
+    // failure". `transient_error` still halts the phase — it never
+    // advances — but it takes the delayed-retry path instead of the
+    // required-phase run-terminal halt, which used to discard the rest of
+    // the pipeline for output volume alone.
+    expect(mapOutcome(r.truncated(), 0)).toBe('transient_error');
+    expect(mapOutcome(r.truncated(), 1)).toBe('transient_error');
+    expect(mapOutcome(r.truncated(), null)).toBe('transient_error');
+  });
+  it('truncated output with a fatalCause → failed', () => {
+    // Evidence outranks doubt: a fatal signature found by the runner's
+    // incremental scan is terminal even though retention truncated.
+    expect(mapOutcome(r.truncated('parse-fail'), 0)).toBe('failed');
   });
   it('malformed without fatalCause + non-zero exitCode → failed', () => {
     expect(mapOutcome(r.malformed(), 1)).toBe('failed');
@@ -101,6 +123,12 @@ describe('mapTerminationReason', () => {
   });
   it('malformed with fatalCause → error', () => {
     expect(mapTerminationReason(r.malformed('parse-fail'), 0)).toBe('error');
+  });
+  it('truncated output → error, matching its transient_error outcome', () => {
+    // The two causes diverge in `mapOutcome` but agree here: the
+    // 'transient_error' outcome's own reason is 'error' as well.
+    expect(mapTerminationReason(r.truncated(), 0)).toBe('error');
+    expect(mapTerminationReason(r.truncated('parse-fail'), 0)).toBe('error');
   });
   it('malformed without fatalCause + non-zero exitCode → error', () => {
     expect(mapTerminationReason(r.malformed(), 1)).toBe('error');

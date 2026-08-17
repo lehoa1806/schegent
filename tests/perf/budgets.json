@@ -56,9 +56,9 @@
     {
       "test": "tests/perf/sustained-evidence-path.test.ts",
       "name": "Sustained runner retained bytes per stream",
-      "budgetBytes": 4194304,
+      "budgetBytes": 67108864,
       "constant": "MAX_STREAM_BUFFER_BYTES",
-      "rationale": "Keeps stdout and stderr parser memory bounded independently while raw capture remains complete"
+      "rationale": "Keeps stdout and stderr parser memory bounded independently while raw capture remains complete. Raised from 4 MiB on 2026-08-16 after a single planning phase emitted 4.8 MiB and was failed on output volume; the classification amplifier that made the old number a memory constraint was removed from stream-json-unwrapper.ts in the same change"
     },
     {
       "test": "tests/perf/sustained-evidence-path.test.ts",

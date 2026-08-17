@@ -241,6 +241,55 @@ describe('PhaseRunner.run', () => {
       kind: 'malformed',
       warnings: ['output-truncated-unclassifiable']
     });
+    // Never advance — but not run-terminal. `transient_error` halts the phase
+    // to paused and takes the delayed-retry path; `failed` on a required
+    // phase would discard the rest of the pipeline for output volume alone.
+    expect(output.outcome).toBe('transient_error');
+    expect(output.terminationReason).toBe('error');
+  });
+
+  it('classifies a discarded-middle signature as fatal from the runner stream scan', async () => {
+    // Companion to the test above: same buffer, same unreachable signature,
+    // but the runner reports the incremental scan it now performs over every
+    // emitted byte. That recovers the fatal classification the retained
+    // head/tail cannot support, so the outcome is terminal on evidence
+    // rather than on truncation.
+    const stdoutBuffer = new ZippedStreamBuffer(4, 2_048);
+    stdoutBuffer.append(
+      [
+        'h'.repeat(1_024),
+        'error: unknown option --unsafe-middle',
+        'm'.repeat(4_096),
+        cleanStdout
+      ].join('\n')
+    );
+    stdoutBuffer.finalize();
+    const stderrBuffer = new ZippedStreamBuffer(4, 2_048);
+    stderrBuffer.finalize();
+    expect(stdoutBuffer.getTrailingLines(100)).not.toContain('error: unknown option');
+
+    cliRunner = makeFakeRunner(async () => ({
+      stdoutBuffer,
+      stderrBuffer,
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      durationMs: 25,
+      streamFatalMatch: {
+        matched: true as const,
+        signature: 'error: unknown option',
+        stream: 'stdout' as const,
+        source: 'built-in' as const
+      }
+    }));
+    runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+
+    const output = await runner.run(baseInputs);
+
+    expect(output.result).toMatchObject({
+      kind: 'malformed',
+      fatalCause: 'error: unknown option'
+    });
     expect(output.outcome).toBe('failed');
     expect(output.terminationReason).toBe('error');
   });
@@ -280,7 +329,7 @@ describe('PhaseRunner.run', () => {
         kind: 'malformed',
         warnings: ['output-truncated-unclassifiable']
       });
-      expect(output.outcome).toBe('failed');
+      expect(output.outcome).toBe('transient_error');
       expect(output.terminationReason).toBe('error');
     }
   );

@@ -1,6 +1,22 @@
 import * as zlib from 'zlib';
 
-export const MAX_STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
+/**
+ * Per-stream retention ceiling.
+ *
+ * Raised from 4 MiB on 2026-08-16: a single xhigh planning phase emitted
+ * 4.8 MiB of stream-json and tripped the cap, and because exceeding it
+ * forces `failClosedOnTruncatedOutput` to discard an otherwise clean
+ * classification, the run was failed on output *volume* rather than on
+ * anything in the output. 64 MiB is ~13x that phase's observed size.
+ *
+ * The binding cost is not this number: retention is ~0.66x the cap
+ * (compressed head + raw tail), while classification used to peak at
+ * several multiples of it by materializing the whole stream. That
+ * amplification was removed from `stream-json-unwrapper.ts` in the same
+ * change; raising the cap without it would have put peak heap in the
+ * hundreds of MiB per invocation, times two buffers, times concurrent runs.
+ */
+export const MAX_STREAM_BUFFER_BYTES = 64 * 1024 * 1024;
 export const STREAM_TRUNCATION_MARKER = '\n[SCHEGENT_OUTPUT_TRUNCATED]\n';
 const TAIL_SEGMENT_MAX_BYTES = 64 * 1024;
 
