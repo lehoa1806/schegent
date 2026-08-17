@@ -99,7 +99,8 @@ describe('Feature 011 — general-settings allowlist', () => {
         'logging.runtimeLogMaxGenerations',
         'logging.sessionRetentionMaxAgeDays',
         'logging.sessionRetentionMaxBytes',
-        'retry.maxAttempts'
+        'retry.maxAttempts',
+        'retry.forceContinueOnCap'
       ])
     );
   });

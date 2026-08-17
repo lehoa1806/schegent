@@ -880,6 +880,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
   rawTranscriptMode: 'always',
   retryMaxAttempts: 5,
+  retryForceContinueOnCap: false,
   scopes: Object.freeze({
     cliPath: 'default',
     codexPath: 'default',
@@ -902,7 +903,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
     rawTranscriptMode: 'default',
-    retryMaxAttempts: 'default'
+    retryMaxAttempts: 'default',
+    retryForceContinueOnCap: 'default'
   })
 });
 

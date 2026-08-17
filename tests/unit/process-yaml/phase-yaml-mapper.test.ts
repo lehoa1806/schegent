@@ -53,6 +53,7 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   timeoutSeconds: 120,
   loopable: true,
   retryCondition: 'attempts < 3',
+  forceContinueOnRetryCap: true,
   isRequired: false,
   runner: 'claude'
 };

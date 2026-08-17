@@ -49,6 +49,7 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'timeoutSeconds',
   'loopable',
   'isRequired',
+  'forceContinueOnRetryCap',
   'retryCondition'
 ] as const);
 

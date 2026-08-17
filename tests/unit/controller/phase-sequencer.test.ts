@@ -463,6 +463,43 @@ describe('PhaseSequencer.decideAfterPhase', () => {
     }
   });
 
+  it('threads forceContinueOnRetryCapDefault through to the advance-or-loop branch', () => {
+    // The workspace-setting default is resolved per phase decision by the
+    // driver and passed down; the sequencer's only job is to hand it to
+    // `transition()` unchanged. Same input as the cap_exhausted test above —
+    // only the default differs, so a `fail` here would mean the thread is cut.
+    const run = makeRun({ currentPhase: 'speckit-implement' });
+    const output = makeOutput({
+      result: {
+        kind: 'clean',
+        auditEntry: { metrics: { remaining: 1 } } as never
+      },
+      outcome: 'clean'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 5,
+      iterationCap: 5,
+      activePhaseDef: {
+        id: 'speckit-implement',
+        label: 'Implement',
+        scope: 'shared',
+        invocation: { command: '/x' },
+        loopable: true,
+        retryCondition: 'remaining > 0',
+        contributesTo: []
+      } as never,
+      latestManualPauseAt: run.manualPauseAt,
+      forceContinueOnRetryCapDefault: true,
+      now: NOW
+    });
+    expect(decision.kind).toBe('advance-or-loop');
+    if (decision.kind === 'advance-or-loop') {
+      expect(decision.warnings.some((w) => w.includes('forced-continue'))).toBe(true);
+    }
+  });
+
   it('routes verify phase with non-clean outcome to pause-verify (bugfix-verify-pre)', () => {
     const run = makeRun({ currentPhase: 'bugfix-verify-pre' });
     const output = makeOutput({

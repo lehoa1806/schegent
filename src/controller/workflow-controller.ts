@@ -53,6 +53,8 @@ export interface WorkflowControllerOptions {
   cliPathResolver?: (runnerKind: string) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;
+  /** Dynamic reader for `schegent.retry.forceContinueOnCap`; never cached. */
+  getForceContinueOnRetryCap?: () => boolean;
 }
 
 export type { DelayedRetryWatchdog } from './retry-handler';

@@ -558,6 +558,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       defaultRunnerKind: backendKind,
       isAuditEvidenceAvailable: () =>
         evidenceHealth.getSnapshot().audit.status !== 'unavailable',
+      // Read per phase invocation, never cached at activation, so flipping the
+      // setting mid-run takes effect on the next phase.
+      getForceContinueOnRetryCap: () =>
+        vscode.workspace
+          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+          .get<boolean>('retry.forceContinueOnCap', false) === true,
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.

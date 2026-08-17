@@ -28,6 +28,12 @@ export interface PhaseDef {
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
+  /**
+   * Advance instead of failing when `retryCondition` is still truthy at the
+   * iteration cap. Overrides `schegent.retry.forceContinueOnCap`; see
+   * `PhaseDefLike.forceContinueOnRetryCap` in controller/phase.ts.
+   */
+  readonly forceContinueOnRetryCap?: boolean;
   readonly runner?: BackendRunnerKind;
   readonly sideEffects?: PhaseSideEffects; // Custom omission => unrestricted.
   readonly evidencePolicy?: PhaseEvidencePolicy;
@@ -459,6 +465,7 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'loopable',
   'retryCondition',
   'isRequired',
+  'forceContinueOnRetryCap',
   'runner'
 ]);
 
@@ -494,6 +501,8 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.retryCondition === undefined ||
       (typeof v.retryCondition === 'string' && v.retryCondition.length > 0)) &&
     (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
+    (v.forceContinueOnRetryCap === undefined ||
+      typeof v.forceContinueOnRetryCap === 'boolean') &&
     (v.runner === undefined || isBackendRunnerKind(v.runner)) &&
     (v.sourceScope === undefined ||
       v.sourceScope === 'built-in' ||

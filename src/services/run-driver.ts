@@ -45,6 +45,14 @@ interface RunDriverOptions {
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;
   readonly isAuditEvidenceAvailable?: () => boolean;
+  /**
+   * Dynamic reader for `schegent.retry.forceContinueOnCap`. A reader rather
+   * than a value on purpose: the driver outlives a phase, and caching an
+   * operator setting on a long-lived runner object is the defect this
+   * codebase already bans for `logging.verbose` and the fatal-signature
+   * additions. Absent reader means the pre-existing halt.
+   */
+  readonly getForceContinueOnRetryCap?: () => boolean;
 }
 
 type PhaseControlEventType =
@@ -494,7 +502,9 @@ export class RunDriver {
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
           latestManualPauseAt: this.latestSnapshotOf(run)?.manualPauseAt ?? null,
-          now: Date.now()
+          now: Date.now(),
+          forceContinueOnRetryCapDefault:
+            this.deps.options.getForceContinueOnRetryCap?.() ?? false
         });
         for (const w of postDecision.warnings) {
           this.deps.logger.warn(w);

@@ -72,6 +72,9 @@ function authoredBuiltInRow(phase: PhaseDef): Record<string, unknown> {
     ...(phase.loopable !== undefined ? { loopable: phase.loopable } : {}),
     ...(phase.retryCondition !== undefined ? { retryCondition: phase.retryCondition } : {}),
     ...(phase.isRequired !== undefined ? { isRequired: phase.isRequired } : {}),
+    ...(phase.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: phase.forceContinueOnRetryCap }
+      : {}),
     ...(phase.runner !== undefined ? { runner: phase.runner } : {})
   };
 }
@@ -160,6 +163,9 @@ export function phaseDefinitionToPhaseDef(
       ? { retryCondition: definition.retryCondition }
       : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
+    ...(definition.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
+      : {}),
     ...(pinnedRunner !== undefined ? { runner: pinnedRunner } : {}),
     ...(builtIn?.sideEffects !== undefined ? { sideEffects: builtIn.sideEffects } : {}),
     ...(builtIn?.evidencePolicy !== undefined ? { evidencePolicy: builtIn.evidencePolicy } : {}),

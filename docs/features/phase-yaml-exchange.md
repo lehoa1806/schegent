@@ -109,6 +109,7 @@ the same rule the Phase manager enforces when you author a row by hand.
 | `spec.timeoutSeconds` | no | integer | 1–3600 |
 | `spec.loopable` | no | boolean | — |
 | `spec.isRequired` | no | boolean | — |
+| `spec.forceContinueOnRetryCap` | no | boolean | — |
 | `spec.retryCondition` | no | string | non-empty |
 
 Those bounds are not a second copy maintained by hand. The document validator
@@ -179,7 +180,8 @@ subset that cannot express those constructs cannot be made to expand them.
 Serialization writes a fixed key order — `apiVersion`, `kind`, `metadata`,
 `spec`; then `phaseId`, `name`, `version`, `description`; then `instruction`,
 `skill`, `runner`, `model`, `effort`, `timeoutSeconds`, `loopable`,
-`isRequired`, `retryCondition` — with a two-space indent and no other step.
+`isRequired`, `forceContinueOnRetryCap`, `retryCondition` — with a two-space
+indent and no other step.
 Absent optional fields are omitted rather than written as `null`.
 
 Exporting the same Phase twice produces identical bytes, so a checked-in
