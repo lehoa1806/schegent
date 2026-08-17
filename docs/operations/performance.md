@@ -31,13 +31,25 @@ If you are seeing UI lag with a much larger queue (>100 items), file an issue �
 ## Subprocess output cap
 
 Each invocation keeps an ordered head and rolling tail of stdout and stderr up
-to `MAX_BUFFER_BYTES` (4 MiB per stream). Once the cumulative stream exceeds
-that budget, the buffer inserts a truncation marker and sets the matching
-`stdoutTruncated` / `stderrTruncated` audit flag. The subprocess continues
-running; Schegent does not abort merely because the parser buffer reached its
-cap. A result that would otherwise advance fails closed with
-`output-truncated-unclassifiable`, because fatal evidence may have appeared in
-the discarded middle.
+to `MAX_STREAM_BUFFER_BYTES` (64 MiB per stream). Once the cumulative stream
+exceeds that budget, the buffer inserts a truncation marker and sets the
+matching `stdoutTruncated` / `stderrTruncated` audit flag. The subprocess
+continues running; Schegent does not abort merely because the parser buffer
+reached its cap. A result that would otherwise advance fails closed with
+`output-truncated-unclassifiable`, because API-error and completion-marker
+evidence may have appeared in the discarded middle.
+
+Fatal signatures are exempt from that doubt. The runner scans each chunk as it
+arrives (`src/lib/incremental-fatal-scanner.ts`), so fatal classification
+covers every emitted byte whether or not retention kept it — the retained-text
+scan is only a fallback for callers that supply no signature list.
+
+Failing closed means *not advancing*, not failing the run: the phase halts to
+paused with the `transient_error` outcome and takes the ordinary delayed-retry
+path. Until 2026-08-16 it returned `failed`, which on a required phase is an
+unconditional run-terminal halt — a phase that exited 0 and wrote every
+artifact it promised could still discard the rest of the pipeline purely for
+emitting a large stream.
 
 The canonical raw transcript remains complete: each runner tees the full byte
 stream with backpressure to private mode-`0600` OS-temporary spools, which are

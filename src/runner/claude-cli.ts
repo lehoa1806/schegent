@@ -15,6 +15,10 @@ import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
+import {
+  IncrementalFatalScanner,
+  combineStreamScans
+} from '../lib/incremental-fatal-scanner';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 
@@ -256,6 +260,18 @@ export class ClaudeCliRunner implements BackendRunner {
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
 
+      // Fatal-signature scan on the live stream. The buffers above retain a
+      // bounded head/tail, so past the cap the parser's own `classifyFatal`
+      // reads incomplete text; these scanners read every byte. Constructed
+      // per invocation from the request's list and discarded with it.
+      const scanFatal = request.effectiveFatalSignatures !== undefined;
+      const stdoutScanner = scanFatal
+        ? new IncrementalFatalScanner('stdout', request.effectiveFatalSignatures)
+        : null;
+      const stderrScanner = scanFatal
+        ? new IncrementalFatalScanner('stderr', request.effectiveFatalSignatures)
+        : null;
+
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
 
@@ -319,6 +335,7 @@ export class ClaudeCliRunner implements BackendRunner {
       const diagnosticWrites: Promise<void>[] = [];
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk);
+        stdoutScanner?.append(chunk);
         outputBackpressure.write('stdout', child.stdout!, chunk);
         // Feature 030 BUG-002 (Fix) — parse the JSON lines to find the true final result.
         // A parsed terminal result starts the short settle window. Resumed
@@ -346,6 +363,7 @@ export class ClaudeCliRunner implements BackendRunner {
       });
       child.stderr?.on('data', (chunk: string) => {
         stderrBuffer.append(chunk);
+        stderrScanner?.append(chunk);
         outputBackpressure.write('stderr', child.stderr!, chunk);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
@@ -413,6 +431,9 @@ export class ClaudeCliRunner implements BackendRunner {
       // session_id field was found (the caller falls back to `-c`).
       stdoutBuffer.finalize();
       stderrBuffer.finalize();
+      // Classify a trailing line that arrived without a terminating newline.
+      stdoutScanner?.finalize();
+      stderrScanner?.finalize();
       const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
 
       return {
@@ -425,7 +446,10 @@ export class ClaudeCliRunner implements BackendRunner {
         durationMs: Date.now() - start,
         diagnosticWarnings,
         command,
-        cliSessionId
+        cliSessionId,
+        ...(stdoutScanner && stderrScanner
+          ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
+          : {})
       };
     } finally {
       this.active.delete(invocationToken);

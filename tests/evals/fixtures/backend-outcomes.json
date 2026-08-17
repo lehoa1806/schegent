@@ -122,7 +122,7 @@
       },
       "expected": {
         "parserKind": "malformed",
-        "phaseOutcome": "failed",
+        "phaseOutcome": "transient_error",
         "terminationReason": "error",
         "auditEntryPresent": true,
         "resultWarningIncludes": "output-truncated-unclassifiable",

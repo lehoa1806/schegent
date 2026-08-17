@@ -409,9 +409,13 @@ export class PhaseRunner {
     const rawTranscriptCapture = await this.rawTranscript?.createInvocationCapture?.(
       inputs.runId, inputs.rawTranscriptMode
     ) ?? null;
+    // FR-033 — one read per invocation (never cached), shared by both scans.
+    const effectiveFatalSignatures =
+      getEffectiveSignatures(this.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
     let raw: RawInvocationOutput;
     try {
       raw = await this.resolveRunner(inputs).invoke({
+        effectiveFatalSignatures,
         phase: inputs.phase,
         iteration: inputs.iteration,
         runId: inputs.runId,
@@ -473,11 +477,6 @@ export class PhaseRunner {
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdoutBuffer, raw.stderrBuffer, raw.exitCode);
     const audit = parseAuditLogBlock(unwrappedStream.text);
-    // Feature 011 FR-033 — operator-additive fatal signatures, read per
-    // invocation (never cached); the built-in floor is preserved.
-    const operatorAdditions =
-      this.fatalSignaturesAccessor?.readOperatorAdditions() ?? [];
-    const effectiveFatalSignatures = getEffectiveSignatures(operatorAdditions);
     const parsedResult = parseInvocation({
       stdout: unwrappedStream.text,
       stderr: typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100),
@@ -486,7 +485,8 @@ export class PhaseRunner {
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
       effectiveFatalSignatures,
-      apiError: unwrappedStream.apiError
+      apiError: unwrappedStream.apiError,
+      ...(raw.streamFatalMatch ? { streamFatalMatch: raw.streamFatalMatch } : {})
     });
     const result = failClosedOnTruncatedOutput(
       parsedResult,

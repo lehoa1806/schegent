@@ -114,8 +114,19 @@ describe('sustained execution evidence path', () => {
 
     const expectedStdout = streamPayload('stdout');
     const expectedStderr = streamPayload('stderr');
-    expect(output.stdoutBuffer.truncated).toBe(true);
-    expect(output.stderrBuffer.truncated).toBe(true);
+    // Truncation is asserted exactly, not conditionally skipped. At the
+    // default record count the emitted volume sits below the 64 MiB cap, so
+    // the correct assertion is `false` — which catches spurious truncation
+    // just as the `true` case catches a cap that never engages. Raising
+    // SCHEGENT_SUSTAINED_RECORD_COUNT past the cap flips both sides.
+    // Sticky-flag semantics themselves are covered against explicit small
+    // caps in tests/unit/runner/zipped-stream-buffer.test.ts; what this
+    // profile uniquely proves is that retention stays bounded and raw
+    // capture stays complete while emitted bytes keep growing.
+    const expectTruncation = (emitted: string): boolean =>
+      Buffer.byteLength(emitted) > MAX_STREAM_BUFFER_BYTES;
+    expect(output.stdoutBuffer.truncated).toBe(expectTruncation(expectedStdout));
+    expect(output.stderrBuffer.truncated).toBe(expectTruncation(expectedStderr));
     expect(output.stdoutBuffer.retainedBytes).toBeLessThanOrEqual(MAX_STREAM_BUFFER_BYTES);
     expect(output.stderrBuffer.retainedBytes).toBeLessThanOrEqual(MAX_STREAM_BUFFER_BYTES);
     expect(output.stdoutBuffer.totalBytes).toBe(Buffer.byteLength(expectedStdout));

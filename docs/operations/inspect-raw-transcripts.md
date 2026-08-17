@@ -110,14 +110,20 @@ Guards in place:
 
 ## Parser-buffer truncation flag
 
-Each backend caps its in-memory parsing buffers at 4 MiB, retaining an ordered
+Each backend caps its in-memory parsing buffers at 64 MiB, retaining an ordered
 head and rolling tail. The matching `phase-end` audit entry carries
 `stdoutTruncated: true` and/or `stderrTruncated: true` when this occurs; the
 flags are omitted on the common non-truncated path. A result that would
-otherwise be clean fails closed as the terminal
-`output-truncated-unclassifiable` failure, because fatal evidence could have
-appeared in the discarded middle. The raw transcript remains verbatim and is
-the supported place to inspect those omitted bytes.
+otherwise be clean fails closed with `output-truncated-unclassifiable`, because
+API-error and completion-marker evidence could have appeared in the discarded
+middle. Fatal signatures are not part of that doubt — the runner scans them
+incrementally over every emitted byte. The `phase-end` entry also carries the
+warning list itself, so the recorded outcome names its own cause.
+
+Failing closed halts the phase to paused as a `transient_error` and schedules
+the ordinary delayed retry; it is not a run-terminal failure. The raw
+transcript remains verbatim and is the supported place to inspect the omitted
+bytes.
 
 ## When to inspect
 

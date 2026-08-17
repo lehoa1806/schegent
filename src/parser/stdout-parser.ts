@@ -2,6 +2,7 @@ import type { AuditEntryFields } from '../audit/audit-entry';
 import {
   classifyFatal,
   type EffectiveSignature,
+  type FatalClassification,
   type FatalSource
 } from '../lib/fatal-signature-registry';
 import { extractRateLimitMessage, extractResetTimestamp } from './rate-limit-reset-extractor';
@@ -117,6 +118,18 @@ export interface ParseInputs {
    * floor only, preserving the pre-011 behavior for callers that have
    * not been updated (e.g. tests).  */
   effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
+  /**
+   * Result of the runner's incremental scan over every byte the invocation
+   * emitted (`RawInvocationOutput.streamFatalMatch`).
+   *
+   * `inputs.stdout` is post-retention text: above `MAX_STREAM_BUFFER_BYTES`
+   * it is a head plus a rolling tail, so `classifyFatal` cannot see a
+   * signature in the discarded middle. A `matched` value here is used in
+   * place of that scan. It is only ever consulted when it matched, so it
+   * can add a classification the retained text would have missed and can
+   * never suppress one — the code-resident floor is unchanged either way.
+   */
+  streamFatalMatch?: FatalClassification;
 }
 
 export function parseInvocation(inputs: ParseInputs): InvocationResult {
@@ -126,7 +139,9 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // other detection (including rate-limit). A registered signature in
   // either stream halts the run on this invocation regardless of exit
   // code or block presence. Exit-code-only detection is not sufficient.
-  const fatal = classifyFatal(inputs.stdout, inputs.stderr, inputs.effectiveFatalSignatures);
+  const fatal = inputs.streamFatalMatch?.matched
+    ? inputs.streamFatalMatch
+    : classifyFatal(inputs.stdout, inputs.stderr, inputs.effectiveFatalSignatures);
   if (fatal.matched) {
     return {
       kind: 'malformed',

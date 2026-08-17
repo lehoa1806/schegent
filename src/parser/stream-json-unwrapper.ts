@@ -15,34 +15,20 @@ export interface UnwrappedStream {
 export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): UnwrappedStream {
   const chunks: Iterable<string> =
     typeof stdout === 'string' ? [stdout] : stdout.decompressStream();
-  const linesToProcess: unknown[] = [];
   let rawText = '';
   let partialTrailingBuffer = '';
-  for (const chunk of chunks) {
-    rawText += chunk;
-    const result = parseStreamJsonlBytes(chunk, partialTrailingBuffer);
-    linesToProcess.push(...result.parsedLines);
-    partialTrailingBuffer = result.partialTrailingBuffer;
-  }
-
-  if (partialTrailingBuffer.length > 0) {
-    try {
-      linesToProcess.push(JSON.parse(partialTrailingBuffer));
-    } catch {
-      // Ignore invalid JSON in trailing buffer
-    }
-  }
+  let sawAnyLine = false;
 
   let hasModelText = false;
   let unwrapped = '';
   let apiError: ApiErrorMetadata | null = null;
 
-  if (linesToProcess.length === 0) {
-    return { text: rawText, apiError: null };
-  }
-
-  for (const line of linesToProcess) {
-    if (line === null || typeof line !== 'object') continue;
+  // Lines are consumed as they are parsed rather than collected first.
+  // Holding every parsed object from the whole stream simultaneously made
+  // peak heap a multiple of the retained buffer, which is what made the
+  // stream cap a memory decision instead of a retention one.
+  const processLine = (line: unknown): void => {
+    if (line === null || typeof line !== 'object') return;
     const rec = line as Record<string, unknown>;
 
     // Check for error metadata
@@ -56,7 +42,10 @@ export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): Unwrapped
 
     if (rec.type === 'assistant') {
       const message = rec.message as Record<string, unknown> | undefined;
-      if (!message || !Array.isArray(message.content)) continue;
+      // `return` rather than the former loop's `continue`: a record typed
+      // 'assistant' is never also an item_completed, so skipping the rest
+      // of this line is what the original control flow did.
+      if (!message || !Array.isArray(message.content)) return;
       for (const block of message.content) {
         if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
           const text = (block as Record<string, unknown>).text;
@@ -92,6 +81,35 @@ export function unwrapStreamJson(stdout: ZippedStreamBuffer | string): Unwrapped
         hasModelText = true;
       }
     }
+  };
+
+  for (const chunk of chunks) {
+    // `rawText` is only ever returned when no model text was found, so it
+    // stops being reachable the moment `hasModelText` flips. Releasing it
+    // there keeps the common stream-json path from carrying a second full
+    // copy of the stream purely as a fallback that will not be used.
+    if (!hasModelText) rawText += chunk;
+    const result = parseStreamJsonlBytes(chunk, partialTrailingBuffer);
+    for (const line of result.parsedLines) {
+      sawAnyLine = true;
+      processLine(line);
+    }
+    partialTrailingBuffer = result.partialTrailingBuffer;
+    if (hasModelText && rawText.length > 0) rawText = '';
+  }
+
+  if (partialTrailingBuffer.length > 0) {
+    try {
+      const line: unknown = JSON.parse(partialTrailingBuffer);
+      sawAnyLine = true;
+      processLine(line);
+    } catch {
+      // Ignore invalid JSON in trailing buffer
+    }
+  }
+
+  if (!sawAnyLine) {
+    return { text: rawText, apiError: null };
   }
 
   return {

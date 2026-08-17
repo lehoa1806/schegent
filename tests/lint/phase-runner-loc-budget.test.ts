@@ -39,7 +39,13 @@ const BUDGETS = [
   { path: 'src/controller/phase-runner.ts', max: 790 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
-  { path: 'src/controller/phase-outcome-mapper.ts', max: 100 }
+  // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
+  // returning 'failed' and now returns 'transient_error'; the budget is spent
+  // on recording why, because a reader who assumed the old mapping was
+  // deliberate is exactly how a required phase came to be failed on output
+  // volume. No responsibility was added to the file — it is still pure
+  // classification — so the fix is headroom, not a split.
+  { path: 'src/controller/phase-outcome-mapper.ts', max: 110 }
 ] as const;
 
 function countLines(absPath: string): number {

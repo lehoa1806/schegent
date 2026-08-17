@@ -151,9 +151,27 @@ export interface InvocationRequest {
    * exit-only completion path unchanged.
    */
   completionMarker?: string;
+  /**
+   * Effective fatal-signature list (code-resident floor merged with the
+   * operator-additive setting) for THIS invocation, so the runner can scan
+   * for a fatal signature as chunks arrive rather than only over the text
+   * retention happened to keep.
+   *
+   * Supplied per invocation and never held across one, per the
+   * "never cache the operator-additive fatal-signature setting across
+   * phase invocations" rule. Omitting it disables the streaming scan and
+   * leaves the retained-text `classifyFatal` in `stdout-parser.ts` as the
+   * only classifier — the pre-existing behavior, which is what contract
+   * harnesses and fixtures get.
+   */
+  effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
 }
 
 import type { ZippedStreamBuffer } from './zipped-stream-buffer';
+import type {
+  EffectiveSignature,
+  FatalClassification
+} from '../lib/fatal-signature-registry';
 
 export interface RawInvocationOutput {
   stdoutBuffer: ZippedStreamBuffer;
@@ -195,4 +213,19 @@ export interface RawInvocationOutput {
    * "no session ID captured"; the caller falls back to `-c`.
    */
   cliSessionId?: string;
+  /**
+   * Result of the incremental fatal-signature scan over every byte this
+   * invocation emitted, present only when the request supplied
+   * `effectiveFatalSignatures`.
+   *
+   * `classifyFatal` in the parser sees `stdoutBuffer` / `stderrBuffer`
+   * AFTER retention, so above `MAX_STREAM_BUFFER_BYTES` it reads a head
+   * plus a rolling tail and a signature in the discarded middle is
+   * invisible to it. This field is computed on the live stream and is
+   * therefore complete regardless of truncation. It can only ever ADD a
+   * fatal classification the retained-text scan would have missed; it
+   * never suppresses one, so it does not widen or narrow the
+   * code-resident floor.
+   */
+  streamFatalMatch?: FatalClassification;
 }

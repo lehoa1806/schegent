@@ -30,9 +30,12 @@ export function summarize(text: string): string {
 }
 
 /**
- * A retained head/tail cannot prove that its discarded middle contained no
- * fatal signature or API error. Never advance on any parser result when either
- * source buffer is incomplete.
+ * A retained head/tail cannot prove its discarded middle held no API error.
+ * Never advance on any parser result when either source buffer is incomplete.
+ *
+ * "Never advance" is deliberately weaker than "fail the run" — see
+ * `mapOutcome`. Fatal signatures are covered regardless of retention by
+ * `lib/incremental-fatal-scanner.ts`.
  */
 export function failClosedOnTruncatedOutput(
   result: InvocationResult,
@@ -65,9 +68,11 @@ export function mapOutcome(result: InvocationResult, exitCode: number | null): P
     case 'malformed':
       // Feature 010 FR-004: a fatal-classification result terminates the
       // phase on the current invocation regardless of exit code.
-      if (result.fatalCause || result.warnings.includes(OUTPUT_TRUNCATED_WARNING)) {
-        return 'failed';
-      }
+      if (result.fatalCause) return 'failed';
+      // Truncation returned 'failed' until 2026-08-16, conflating "could not
+      // classify" with "failed" — run-terminal on a required phase, for output
+      // volume alone. 'transient_error' halts too, but without ending the run.
+      if (result.warnings.includes(OUTPUT_TRUNCATED_WARNING)) return 'transient_error';
       return exitCode !== null && exitCode !== 0 ? 'failed' : 'issues_remain';
   }
 }
@@ -91,6 +96,8 @@ export function mapTerminationReason(
       // the controller's pendingRetryCause is the load-bearing distinguisher).
       return 'error';
     case 'malformed':
+      // Still one arm: 'transient_error' reports 'error' too, so only the
+      // outcome diverged.
       if (result.fatalCause || result.warnings.includes(OUTPUT_TRUNCATED_WARNING)) {
         return 'error';
       }
