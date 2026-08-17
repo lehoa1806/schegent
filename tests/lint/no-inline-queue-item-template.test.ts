@@ -74,17 +74,4 @@ describe('Feature 065 BUG-009 T079 — single-render-path queue row template', (
     const matched = listFilesMatching(ROW_TEMPLATE_SIGNATURE);
     expect(matched).toContain('webview-ui/src/components/QueueItem.svelte');
   });
-
-  it('QueueListView.svelte uses <QueueItemComponent /> rather than inline `<li>`', () => {
-    // FR-024 regression: BUG-009 issue 4 was a hardcoded inline `<li>`
-    // template in QueueListView.svelte. After T079 the component MUST
-    // delegate to the shared `<QueueItemComponent>` so all surfaces share
-    // the same row markup.
-    const src = readFileSync(
-      resolve(SCAN_ROOT, 'components', 'QueueListView.svelte'),
-      'utf8'
-    );
-    expect(src).toMatch(/<QueueItemComponent\b/);
-    expect(src).not.toMatch(ROW_TEMPLATE_SIGNATURE);
-  });
 });

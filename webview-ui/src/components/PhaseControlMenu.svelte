@@ -47,12 +47,13 @@
      * "correctly addressed", and the failure it admits is silent — the whole
      * defect was a surface that enabled controls it had no business enabling.
      *
-     * Both wiring sites answer it the same way, at the point where they form
-     * the address: `inFlightRun?.feature?.id === activeTaskId` in
-     * `DashboardActivityPane`, `isExecuting` in `RunDetailTier`. That is a
-     * comparison of the two values already in disagreement, not a third
-     * opinion about them — and it fails closed when the queue holds no Run at
-     * all, which a display-side flag would not.
+     * The sole surviving wiring site, `RunDetailTier`, answers it this way,
+     * at the point where it forms the address: `isExecuting`. (A second site,
+     * `DashboardActivityPane`, answered it the same way via
+     * `inFlightRun?.feature?.id === activeTaskId` before feature 097 removed
+     * that component.) That is a comparison of two values already in
+     * disagreement, not a third opinion about them — and it fails closed when
+     * the queue holds no Run at all, which a display-side flag would not.
      */
     targetsSubjectRun: boolean;
     manualPauseAt?: string | null;

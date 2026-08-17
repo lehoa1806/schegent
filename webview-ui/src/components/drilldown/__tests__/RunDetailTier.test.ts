@@ -21,8 +21,10 @@ import type {
   ConnectedRunProjection,
   PhaseTile,
   QueueItem,
+  RunOutputRecord,
   WorkflowSnapshot
 } from '../../../lib/snapshot-types';
+import type { PhaseLogReadResult } from '../../../../../src/services/phase-log/types';
 
 const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({ correlationId: 'corr-1' }));
 vi.mock('../../../lib/vscode-api', () => ({
@@ -34,6 +36,19 @@ vi.mock('../../../lib/vscode-api', () => ({
 
 vi.mock('../../../lib/use-confirm', () => ({
   useConfirm: vi.fn(async () => true)
+}));
+
+// The Activity Feed embed (T006) resolves through `phase-log-store.svelte.ts`,
+// which defaults to these `phase-log-ipc` functions. Mocked here so the
+// regression test below can assert exactly what selection tuple this tier
+// asks for, without a real IPC round-trip.
+const readPhaseLogSpy = vi.fn<(req: unknown) => Promise<PhaseLogReadResult>>();
+vi.mock('../../../lib/phase-log-ipc', () => ({
+  readPhaseLog: (req: unknown) => readPhaseLogSpy(req),
+  startPhaseLogTail: vi.fn(),
+  stopPhaseLogTail: vi.fn(),
+  subscribePhaseLogPush: () => () => {},
+  openVerboseSetting: vi.fn()
 }));
 
 function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
@@ -76,6 +91,7 @@ function buildSnapshot(overrides: {
   readonly connectedRuns?: readonly ConnectedRunProjection[];
   readonly liveSummary?: string;
   readonly inFlightTaskId?: string;
+  readonly outputs?: readonly RunOutputRecord[];
 }): WorkflowSnapshot {
   const tasks = overrides.tasks ?? [];
   return Object.freeze({
@@ -117,7 +133,7 @@ function buildSnapshot(overrides: {
                 },
                 delayedRetry: IDLE_DELAYED_RETRY,
                 resumeTargetPhaseId: null,
-                outputs: []
+                outputs: overrides.outputs ?? []
               }
             }
           : {})
@@ -186,6 +202,19 @@ const CONNECTED_RUN: ConnectedRunProjection = Object.freeze({
 
 beforeEach(() => {
   postCommandSpy.mockClear();
+  readPhaseLogSpy.mockReset();
+  readPhaseLogSpy.mockResolvedValue({
+    outcome: 'success',
+    manifest: {
+      iterations: [],
+      selectedIteration: null,
+      entries: [],
+      skippedLines: 0,
+      truncatedCount: 0,
+      verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+      isInFlight: false
+    }
+  });
 });
 
 afterEach(() => {
@@ -295,6 +324,29 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
   });
 });
 
+// Feature 097 (T010, T011, FR-010, SC-003) — the same resolver tier 2's row
+// calls (`resolveTaskPipelineName`), so the two tiers can never disagree
+// about what a Task's Pipeline is named.
+describe('RunDetailTier — pipeline name (T010, T011, FR-010, SC-003)', () => {
+  it('shows the Task’s pipeline name', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [task('r-1', { currentPipelineId: 'standard' })] })
+    );
+
+    expect(getByTestId('run-detail-pipeline').textContent).toContain('Standard');
+  });
+
+  it('falls back to a labeled placeholder for an unresolved Pipeline, never the raw id', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [task('r-1', { currentPipelineId: 'ghost-pipeline' })] })
+    );
+
+    const text = getByTestId('run-detail-pipeline').textContent ?? '';
+    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).not.toContain('ghost-pipeline');
+  });
+});
+
 describe('RunDetailTier — a Run that is gone (FR-062)', () => {
   it('explains rather than rendering an empty view', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot({ tasks: [task('other')] }));
@@ -311,6 +363,133 @@ describe('RunDetailTier — a Run that is gone (FR-062)', () => {
     await fireEvent.click(getByTestId('run-detail-back'));
 
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('RunDetailTier — Activity Feed and outputs (T006, FR-007)', () => {
+  it('mounts the Activity Feed for a Pipeline-backed Run', () => {
+    const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+
+    expect(getByTestId('phase-log-feed')).not.toBeNull();
+  });
+
+  it('asks the Activity Feed to load this Run’s own queue and phase, not the default queue', async () => {
+    // Regression: the embed used to pin only { taskId, pipelineId }, leaving
+    // queueId/phaseId null forever. `loadIfComplete()` requires all four, so
+    // on any queue other than 'default' — this fixture's Run lives on
+    // 'q-beta' — no fetch ever fired and the feed stayed permanently empty.
+    mount(
+      buildSnapshot({
+        tasks: [task('r-1', { currentPipelineId: 'standard', currentPhase: 'speckit-plan' })]
+      })
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: null
+      }
+    });
+  });
+
+  it('keeps the pin when the default queue’s in-flight identity changes while Live Mode is on', async () => {
+    // Regression: PhaseLogFeed's own Live-Mode auto-follow effect
+    // (`applyInFlightIdentityChange`) used to run unconditionally, so a
+    // phase transition on the *default* queue's in-flight task — unrelated
+    // to the Run this tier is showing — silently redirected the Activity
+    // Feed to that other queue's task. Live Mode defaults to on and this
+    // tier never turns it off (its own pin uses { origin: 'cascade' }), so
+    // nothing but `autoFollow={false}` on the embed prevents the steal.
+    const initialSnapshot = buildSnapshot({
+      tasks: [task('r-1', { currentPipelineId: 'standard', currentPhase: 'speckit-plan' })]
+    });
+    const { rerender } = mount(initialSnapshot);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    const nextSnapshot: WorkflowSnapshot = {
+      ...initialSnapshot,
+      queue: {
+        ...initialSnapshot.queue,
+        inFlight: {
+          ...task('other-queue-task'),
+          queueId: 'default',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-specify'
+        }
+      }
+    } as unknown as WorkflowSnapshot;
+
+    await rerender({
+      snapshot: nextSnapshot,
+      queueId: 'q-beta',
+      runId: 'r-1',
+      isPrimary: true,
+      onBack: () => {}
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).not.toHaveBeenCalledWith({
+      selection: expect.objectContaining({ queueId: 'default' })
+    });
+  });
+
+  it('does not mount the Activity Feed for a Workflow-backed Run', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({ tasks: [task('member')], connectedRuns: [CONNECTED_RUN] }),
+      { runId: 'cr-1' }
+    );
+
+    expect(queryByTestId('phase-log-feed')).toBeNull();
+  });
+
+  it('does not mount the Activity Feed when the Run is gone', () => {
+    const { queryByTestId } = mount(buildSnapshot({ tasks: [task('other')] }));
+
+    expect(queryByTestId('phase-log-feed')).toBeNull();
+  });
+
+  it('shows this Run’s recorded outputs once it is the one executing', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        outputs: [{ name: 'summary', status: 'resolved', reference: 'out/summary.md' }]
+      })
+    );
+
+    expect(getByTestId('run-outputs').textContent).toContain('summary');
+  });
+
+  it('shows no outputs section when the Run has recorded none', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
+    );
+
+    expect(queryByTestId('run-outputs')).toBeNull();
+  });
+
+  it('does not show outputs recorded by a different Run executing on this queue', () => {
+    // Same non-borrowing guarantee as the disabled phase controls above: a Task
+    // that is not the one executing must not surface a sibling Run's outputs.
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+        inFlightTaskId: 'sibling',
+        outputs: [{ name: 'summary', status: 'resolved', reference: 'out/summary.md' }]
+      })
+    );
+
+    expect(queryByTestId('run-outputs')).toBeNull();
   });
 });
 

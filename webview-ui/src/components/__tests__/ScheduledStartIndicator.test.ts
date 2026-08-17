@@ -118,8 +118,8 @@ describe('ScheduledStartIndicator — Start in 00:00 edge case (Edge Cases line 
     // The component requires scheduledStartAt as a non-null prop. When the
     // chooser commits `Start in 00:00`, it collapses to startMode: 'now'
     // (validated by T023 / T024(6)) and the host never sets
-    // scheduledStartAt — therefore the parent (`QueueListView` /
-    // `QueueInputForm`) never instantiates `ScheduledStartIndicator`.
+    // scheduledStartAt — therefore the parent (`QueueIdlePendingPanel`) never
+    // instantiates `ScheduledStartIndicator`.
     //
     // We verify the contract by asserting that the indicator is NOT
     // rendered when the parent's render path was *not* invoked for a

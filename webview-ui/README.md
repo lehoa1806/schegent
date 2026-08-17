@@ -9,6 +9,8 @@ Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashb
 | Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
 | Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: queue management across up to twenty queues, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
 
+The Dashboard's default route (`operations`) is itself three drill-down tiers (see "Drill-down locations under `operations`" below). Feature 097 deleted `Dashboard.svelte` and its subtree and redistributed its content: tier 2 (`drilldown/QueueDetailTier.svelte`) now owns the task list (`QueueDetailRows.svelte`), queue controls (`QueueControls.svelte`), the on-demand task composer, and the scheduled-start indicator (`QueueIdlePendingPanel.svelte`); tier 3 (`drilldown/RunDetailTier.svelte`) now owns a single run's phase progression, phase log feed, and outputs.
+
 Both webviews subscribe to the same host `WorkflowSnapshot` projected by `src/ui/sidebar/state-projector.ts`. The dashboard renders the full operator surface; the sidebar projects a strict subset of the same `WorkflowSnapshot` (see `contracts/sidebar-view-contract.md` in the active spec for the testid contract).
 
 ## Layout
@@ -90,22 +92,23 @@ singleton, so "the" Run is no longer a thing the root can publish:
 
 Read seams for that shape live in `webview-ui/src/lib/`:
 `queue-runtime-view.ts` (`findQueueRuntime` — a caller must still name which
-queue's Run it means), `scope-queue-projection.ts` (rebuilds a
-`QueueProjection` from a named queue's own rows; `queueId === undefined`
-keeps reading `snapshot.queue` verbatim), `queue-run-rows.ts` (folds a
-connected run into one row per FR-047), and `queue-lifecycle-label.ts`.
+queue's Run it means), `queue-run-rows.ts` (folds a connected run into one
+row per FR-047), and `queue-lifecycle-label.ts`.
 
-Seven queue mutation commands feature 030 removed are reinstated in
-`src/contracts/sidebar-ipc.ts` — `CMD_CREATE_QUEUE`, `CMD_RENAME_QUEUE`,
-`CMD_DELETE_QUEUE`, `CMD_SET_QUEUE_SCHEDULE`, `CMD_CLEAR_QUEUE_SCHEDULE`,
-`CMD_SAVE_QUEUE_SETTINGS`, `CMD_MOVE_TASK`. Every one is a member of
-`MUTATING_COMMAND_TYPES` (`src/contracts/sidebar-command-metadata.ts`), so
-every one is primary-host gated, and every one has a host handler under
-`src/ui/sidebar/commands/`. `CMD_REORDER_TASK` still drives both drag-and-drop
-and the up/down arrows *within* a queue; `CMD_MOVE_TASK` is the across-queues
-move.
+Seven queue mutation commands feature 030 removed were reinstated in
+`src/contracts/sidebar-ipc.ts` by feature 092; five still stand —
+`CMD_CREATE_QUEUE`, `CMD_RENAME_QUEUE`, `CMD_DELETE_QUEUE`,
+`CMD_SAVE_QUEUE_SETTINGS`, `CMD_MOVE_TASK`. The other two,
+`CMD_SET_QUEUE_SCHEDULE` and `CMD_CLEAR_QUEUE_SCHEDULE`, were deregistered
+again by feature 097 — not merely hidden — so neither has a
+`MUTATING_COMMAND_REASONS` entry, a validator, or a handler any more. Every
+one of the five standing commands is a member of `MUTATING_COMMAND_TYPES`
+(`src/contracts/sidebar-command-metadata.ts`), so every one is primary-host
+gated, and every one has a host handler under `src/ui/sidebar/commands/`.
+`CMD_REORDER_TASK` still drives both drag-and-drop and the up/down arrows
+*within* a queue; `CMD_MOVE_TASK` is the across-queues move.
 
-All seven now have webview call sites. Feature 092 shipped five of them with
+All five now have webview call sites. Feature 092 shipped them with
 none — handler, validator, refusal codes and audit events on the host, and
 nothing in any tier that posted them — and feature 095 added the controls:
 
@@ -114,12 +117,10 @@ nothing in any tier that posted them — and feature 095 added the controls:
 | `CMD_CREATE_QUEUE` | New Queue | `drilldown/QueuesTier.svelte` |
 | `CMD_RENAME_QUEUE` | Settings | `drilldown/QueueDetailTier.svelte` |
 | `CMD_DELETE_QUEUE` | Delete | `drilldown/QueueDetailTier.svelte` |
-| `CMD_SET_QUEUE_SCHEDULE` | Arm | `drilldown/QueueDetailTier.svelte` |
-| `CMD_CLEAR_QUEUE_SCHEDULE` | Disarm | `drilldown/QueueDetailTier.svelte` |
 | `CMD_SAVE_QUEUE_SETTINGS` | Queue Settings | `QueueConfigModal.svelte` |
 | `CMD_MOVE_TASK` | Move to… | `drilldown/QueueDetailTier.svelte` |
 
-The five feature 095 wired post from **one** module,
+The commands feature 095 wired post from **one** module,
 `webview-ui/src/lib/queue-control-ipc.ts`, on the same correlated-request terms
 as `phase-log-ipc.ts` and `save-general-settings.ts`. The two that already had
 call sites keep them; relocating working code to make the rule uniform would be
@@ -128,18 +129,20 @@ a diff with no requirement behind it.
 queue-command set from `MUTATING_COMMAND_REASONS` and fails the build if any
 member has no non-test call site — the gap is now checked rather than recorded.
 
-Two schedule mechanisms exist and are not the same thing. `CMD_SET_QUEUE_SCHEDULE`
-writes `QueueRegistry.entries[].schedule`, is paired with no lifecycle, and
-surfaces in `QueueDetailTier`; the feature 065 **lifecycle** scheduled start
-writes `QueueState.scheduledStartAt`, is paired with `queueLifecycle ===
-'idle-pending'`, and surfaces in `ScheduledStartIndicator.svelte`. Reading one
-through the other's projection is the mistake to avoid.
+Only one schedule mechanism remains. Feature 092's `CMD_SET_QUEUE_SCHEDULE`
+wrote `QueueRegistry.entries[].schedule`, was paired with no lifecycle, and
+surfaced in `QueueDetailTier` as Arm/Re-arm/Disarm controls; feature 097
+removed it and its controls entirely. The feature 065 **lifecycle** scheduled
+start — which writes `QueueState.scheduledStartAt`, is paired with
+`queueLifecycle === 'idle-pending'`, and surfaces in
+`ScheduledStartIndicator.svelte` (relocated onto tier 2, inside
+`QueueIdlePendingPanel.svelte`, by feature 097) — is now the only way to arm a
+future start.
 
-Per-queue **pause and resume** are not part of the seven: `CMD_PAUSE_QUEUE` /
-`CMD_RESUME_QUEUE` gained an optional `queueId`, and `Dashboard.svelte`
-posts them with **no** second argument when unscoped — argument-identical to
-the pre-feature call, which is what lets the earlier assertions stand
-unedited.
+Per-queue **pause and resume** are not part of the five: `CMD_PAUSE_QUEUE` /
+`CMD_RESUME_QUEUE` take an optional `queueId`. `QueueGlobalActions.svelte`
+posts them unscoped; `drilldown/QueueDetailTier.svelte` posts them scoped to
+its own `queueId`.
 
 ### Per-queue Run projection (spec 093)
 
@@ -200,7 +203,7 @@ after `Operations`). The route ids and their nav labels are declared in
 
 | Route (id) | Nav label | Component | Purpose |
 |---|---|---|---|
-| `operations` | Queues | `components/OperationsSurface.svelte` | The three drill-down tiers (spec 092). `components/Dashboard.svelte` — live queue, phase progression, monitor pill, history, **task-scoped Activity Feed**, phase log feed — is what the Queue Detail tier renders. |
+| `operations` | Queues | `components/OperationsSurface.svelte` | The three drill-down tiers (spec 092). Tier 2 (`drilldown/QueueDetailTier.svelte`) renders the task list, queue controls, an on-demand composer, and the scheduled-start indicator; tier 3 (`drilldown/RunDetailTier.svelte`) renders one run's phase progression, phase log feed, and outputs. Feature 097 deleted `components/Dashboard.svelte`, which tier 2 embedded until then. |
 | `runs` | Runs | `components/RunsSurface.svelte` | Connected composed runs and the Run composer. See "Connected-run surfaces" below. |
 | `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
@@ -214,7 +217,7 @@ Every route but the default is lazily loaded through the `routeLoaders`
 dynamic-import map. `operations` is the exception because it is where the
 dashboard lands, so `OperationsSurface` makes the same bargain one level down:
 tier 1 is synchronous, and tiers 2 and 3 — which between them pull in
-`Dashboard.svelte` and the `WorkflowRun` topology view — are imported on
+the phase log feed and the `WorkflowRun` topology view — are imported on
 descent. An operator who never drills in never loads them.
 
 Single subscription to `snapshotStore` is in `dashboard/App.svelte`
@@ -387,9 +390,11 @@ Feature 030 (US3) removed the multi-queue mutators
 (`CMD_CREATE_QUEUE`, `CMD_RENAME_QUEUE`, `CMD_DELETE_QUEUE`,
 `CMD_MOVE_TASK`, `CMD_SAVE_QUEUE_SETTINGS`, `CMD_SET_QUEUE_SCHEDULE`,
 `CMD_CLEAR_QUEUE_SCHEDULE`) along with the per-queue schedule
-surface. Feature 092 reinstated all seven (see "Per-queue snapshot" above)
-and gave `CMD_PAUSE_QUEUE` / `CMD_RESUME_QUEUE` an optional `queueId`; the
-unscoped call still carries no payload at all.
+surface. Feature 092 reinstated all seven; feature 097 deregistered two of
+them again (`CMD_SET_QUEUE_SCHEDULE`, `CMD_CLEAR_QUEUE_SCHEDULE`), so five
+stand today (see "Per-queue snapshot" above). Feature 092 also gave
+`CMD_PAUSE_QUEUE` / `CMD_RESUME_QUEUE` an optional `queueId`; the unscoped
+call still carries no payload at all.
 
 Feature 022 widens deletion commands:
 
@@ -398,9 +403,11 @@ Feature 022 widens deletion commands:
 - `CMD_REMOVE_TASK_PHASE` requires `{ taskId, phaseId, confirmed: true }` and
   removes a task-scoped phase override without changing the global pipeline.
 
-`Dashboard.svelte` owns the new-task compose box, position selector,
-and the four inline global controls (Pause / Resume / Clear Done /
-Clean) for the unified queue. `QueueItemActions.svelte` owns task
+The new-task compose box and position selector `Dashboard.svelte` used to own
+now live in `drilldown/QueueDetailTier.svelte`'s on-demand composer; its
+per-queue controls (Pause / Resume / Clear Done / Clean All) live in
+`QueueControls.svelte`, mounted in the same tier. `Dashboard.svelte` itself
+was deleted by feature 097. `QueueItemActions.svelte` owns task
 edit/delete confirmation. `QueueItem.svelte` owns the up/down reorder
 arrows in the sidebar list (drag-and-drop + arrows route through the
 shared helper at `webview-ui/src/lib/reorder-task.ts`).
@@ -697,10 +704,12 @@ retry is self-healing at whatever depth it stopped.
 
 ### New built-in pipeline: `speckit-bugfix` (spec 026)
 
-The Dashboard's new-task pipeline selector at
-[`Dashboard.svelte:306-311`](src/components/Dashboard.svelte) now lists
-two built-in pipelines (`speckit-new-feature`, `speckit-bugfix`). The
-default selection remains `speckit-new-feature`. The shortcut form in
+The new-task pipeline selector, relocated by feature 097 to
+[`QueueInputForm.svelte:128-146`](src/components/QueueInputForm.svelte)
+(mounted in `drilldown/QueueDetailTier.svelte`'s on-demand composer; see
+"Feature 017 queue and phase-task IPC" above), lists two built-in
+pipelines (`speckit-new-feature`, `speckit-bugfix`). The default selection
+remains `speckit-new-feature`. The shortcut form in
 [`ControlPanel.svelte`](src/components/ControlPanel.svelte) does NOT
 include the selector and falls back to the controller's default
 pipeline (research Decision 6).

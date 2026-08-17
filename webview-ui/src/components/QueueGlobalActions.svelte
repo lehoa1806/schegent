@@ -28,8 +28,8 @@
     /**
      * Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
      * the `action === 'start'` branch is suppressed so the FR-018 chooser
-     * surface in `QueueListView.svelte` remains the sole dispatcher of
-     * `CMD_START_QUEUE` against an idle-pending queue. Pause/Resume are
+     * surface, now `QueueIdlePendingPanel.svelte`, remains the sole dispatcher
+     * of `CMD_START_QUEUE` against an idle-pending queue. Pause/Resume are
      * unaffected; the suppression is intentionally narrow.
      */
     queueLifecycle?: QueueLifecycle | null;
@@ -55,7 +55,7 @@
   // BUG-003 / FR-012a — tri-state derivation for the contextual button.
   // Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
   // the `start` branch is suppressed (resolves to `idle`) so this surface
-  // does not race with the chooser in QueueListView.
+  // does not race with the chooser, now QueueIdlePendingPanel.
   type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
 
   const action = $derived<QueueAction>(

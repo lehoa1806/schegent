@@ -86,11 +86,6 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
   'webview-ui/src/components/ControlPanel.svelte',
-  // Feature 065 — switches on the `QueueLifecycle` discriminator
-  // (FR-001..FR-005) to render the lifecycle label and dot color. The
-  // literal is the lifecycle union member, not the pinned task-status
-  // projection.
-  'webview-ui/src/components/QueueListView.svelte',
   // Feature 065 — comment-only references to the `running` queue lifecycle
   // describing the chooser dispatch rules. No pinned status literal.
   'webview-ui/src/components/QueueInputForm.svelte',

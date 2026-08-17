@@ -16,8 +16,8 @@
     /**
      * Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
      * the `action === 'start'` branch resolves to `'idle'` so this
-     * dashboard surface does not race with the FR-018 chooser in
-     * `QueueListView.svelte`. Optional for backward compatibility with
+     * dashboard surface does not race with the FR-018 chooser, now
+     * `QueueIdlePendingPanel.svelte`. Optional for backward compatibility with
      * callers that have not yet been threaded with the lifecycle.
      */
     queueLifecycle?: QueueLifecycle | null;
@@ -48,8 +48,9 @@
   //  - 'idle':   nothing pending, nothing in-flight, not paused — hide button
   //
   // Feature 065 BUG-007 / FR-018 — `idle-pending` queues additionally
-  // suppress the `start` branch; the FR-018 chooser in QueueListView is
-  // the sole dispatcher of `CMD_START_QUEUE` for that lifecycle state.
+  // suppress the `start` branch; the FR-018 chooser, now
+  // `QueueIdlePendingPanel`, is the sole dispatcher of `CMD_START_QUEUE`
+  // for that lifecycle state.
   type QueueAction = 'start' | 'pause' | 'resume' | 'idle';
 
   const action = $derived<QueueAction>(

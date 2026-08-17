@@ -1,45 +1,47 @@
 <script lang="ts">
   // Feature 092 (T108, FR-057, FR-064, FR-047, FR-065) — tier 2 of the drill-down.
   //
-  // The tier's own chrome is thin on purpose. Everything the operations route
-  // already renders for a queue — the pause/resume control, the composer, the
-  // active/history tabs, the phase progression — is reused by embedding
-  // `Dashboard` scoped to this queue via its one optional `queueId` prop, so this
-  // component adds only what is genuinely new: the queue's identity, a throughput
-  // reading, a configuration affordance, the row list, and the back step out.
-  //
-  // Embedding rather than replacing also keeps `Dashboard.svelte` mounted, which
-  // `tests/lint/svelte-surface-reachability.test.ts` requires; and the embedded
-  // pane owns the surface's single `<main>` landmark, so this component renders a
-  // `<section>` and never a second one.
+  // Feature 097 gave this tier its own `<main>` landmark and retired the
+  // `Dashboard` embed it used to reuse the operations route's chrome through:
+  // that embed duplicated the Task list already extracted into
+  // `QueueDetailRows.svelte`, kept a composer permanently open, and showed a
+  // "recent runs" tab scoped to the wrong queue. This file now owns
+  // everything the queue detail view renders directly — identity, a
+  // throughput reading, the configuration affordance, and the row list.
   //
   // Mockup: docs/mockup/schegent_mockup.html `view-queue-detail` and
   // `modal-queue-config`.
 
-  // Feature 095 (US1, US2, US4) — the tier gains the three per-queue controls
+  // Feature 095 (US1, US2, US4) — the tier gained three per-queue controls
   // feature 092 registered commands for and never wired up: delete the queue,
   // arm/disarm its scheduled start, and move a pending Task off it. All three
-  // post through `queue-control-ipc.ts` and none of them reaches for a `CMD_`
+  // posted through `queue-control-ipc.ts` and none of them reached for a `CMD_`
   // constant; the workspace-scoped settings live a tier up, in `QueuesTier`.
   //
-  // The third of those, the per-Task move, lives with the row list in
-  // `QueueDetailRows.svelte` — it acts on a Task, not on the queue — and the
-  // list went with it (T040). This file kept the queue-level controls and the
-  // one refusal line they share; the child reports its refusals up to it.
+  // Feature 097 removes the second of those, the scheduled-start control,
+  // along with its command handlers and validators. The third, the per-Task
+  // move, lives with the row list in `QueueDetailRows.svelte` — it acts on a
+  // Task, not on the queue — and the list went with it (T040). This file
+  // kept the one remaining queue-level control (delete) and the refusal line
+  // it shares with the child, which reports its own refusals up to it.
 
-  import Dashboard from '../Dashboard.svelte';
   import QueueDetailRows from './QueueDetailRows.svelte';
+  import QueueInputForm from '../QueueInputForm.svelte';
+  import QueueControls from '../QueueControls.svelte';
+  import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
   import { postCommand } from '../../lib/vscode-api';
-  import { CMD_RENAME_QUEUE } from '../../lib/messages';
+  import {
+    CMD_RENAME_QUEUE,
+    CMD_PAUSE_QUEUE,
+    CMD_RESUME_QUEUE,
+    CMD_CLEAR_COMPLETED,
+    CMD_CLEAR_ALL
+  } from '../../lib/messages';
   import { queueLifecycleLabel } from '../../lib/queue-lifecycle-label';
   import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
-  import {
-    clearQueueSchedule,
-    confirmAndDeleteQueue,
-    refusalText,
-    setQueueSchedule
-  } from '../../lib/queue-control-ipc';
-  import { formatScheduleTarget, queueSchedule } from '../../lib/queue-schedule-view';
+  import { confirmAndDeleteQueue, refusalText } from '../../lib/queue-control-ipc';
+  import { useConfirm } from '../../lib/use-confirm';
+  import { deriveCleanAllContext } from '../../lib/queue-derived';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -77,14 +79,34 @@
   // be a second source of truth for something the rows already say.
   const completedCount = $derived(tasks.filter((task) => task.status === 'completed').length);
   const failedCount = $derived(tasks.filter((task) => task.status === 'failed').length);
+  const canceledCount = $derived(tasks.filter((task) => task.status === 'canceled').length);
   const pendingCount = $derived(runtime?.pendingCount ?? 0);
 
-  // US2 — the queue's registry schedule, read through the one seam. NOT gated on
-  // lifecycle: a queue that is actively draining can be armed, and the target
-  // must still read. The lifecycle-paired `scheduledStartAt` that
-  // `ScheduledStartIndicator` shows is a different mechanism and is left where
-  // it is (plan §R4).
-  const schedule = $derived(queueSchedule(snapshot, queueId));
+  // T012a (FR-017) — `QueueControls`' own props, read from this tier's own
+  // `runtime` rather than `Dashboard.svelte`'s removed `QueueProjection`.
+  // `paused` reads `runtime.lifecycle` rather than `runtime.manualPause`:
+  // `manualPause` is Run-scoped (`queue-runtime-composer.ts`) and stays
+  // `null` for a queue that is operator-paused but owns no in-flight Run,
+  // whereas `lifecycle` and the legacy `QueueProjection.paused` are written
+  // atomically together on every pause/resume transition
+  // (`queue-manager.ts`).
+  const hasInFlight = $derived((runtime?.inFlightRun ?? null) !== null);
+  const paused = $derived(runtime?.lifecycle === 'operator-paused');
+  const clearDoneDisabled = $derived(completedCount === 0);
+  const cleanDisabled = $derived(
+    pendingCount === 0 &&
+      completedCount === 0 &&
+      failedCount === 0 &&
+      canceledCount === 0 &&
+      !hasInFlight &&
+      !paused
+  );
+
+  // T008 (FR-009, data-model.md `ComposerVisibility`) — the add-work
+  // composer's own prop sources, mirroring `Dashboard.svelte`'s prior
+  // derivation byte-for-byte (research.md R3).
+  const availablePipelines = $derived(snapshot.availablePipelines ?? []);
+  const defaultPipelineId = $derived(snapshot.generalSettings?.defaultPipelineId ?? '');
 
   // US1 — the default queue is not deletable. Resolved from the projection the
   // operator can actually change, never from the `'default'` literal.
@@ -92,21 +114,53 @@
 
   let configuring = $state(false);
   let draftName = $state('');
-  let draftSchedule = $state('');
   let refusal = $state<string | null>(null);
   let busy = $state(false);
+
+  // T008 (FR-009) — closed by default, opened on demand. `QueueInputForm`
+  // posts its own submission command internally and exposes no
+  // event-handler props (research.md R3): it is mounted unmodified, so
+  // "successful submission" is observed the only way the parent can — a rise
+  // in this queue's own pending count while the composer is open, which is
+  // exactly what a newly-enqueued Task produces.
+  let composerOpen = $state(false);
+  // The lowest pending count observed since open, not a frozen open-time
+  // snapshot: this queue's own pending count falls on its own whenever a
+  // pending Task starts executing, independent of the composer. Comparing
+  // only against the value at open time would let that fall mask a real
+  // submission's rise (open at 3, drain to 2, submit back to 3 — 3 > 3 is
+  // false). Tracking the lowest point seen and closing on any rise above it
+  // catches the submission regardless of how much unrelated queue activity
+  // happened while the composer was open.
+  let minPendingCountSinceOpen = 0;
+
+  function openComposer(): void {
+    minPendingCountSinceOpen = pendingCount;
+    composerOpen = true;
+  }
+
+  function closeComposer(): void {
+    composerOpen = false;
+  }
+
+  $effect(() => {
+    if (!composerOpen) return;
+    if (pendingCount < minPendingCountSinceOpen) {
+      minPendingCountSinceOpen = pendingCount;
+      return;
+    }
+    if (pendingCount > minPendingCountSinceOpen) composerOpen = false;
+  });
 
   function openConfig(): void {
     configuring = true;
     draftName = queueName;
-    draftSchedule = '';
     refusal = null;
   }
 
   function closeConfig(): void {
     configuring = false;
     draftName = '';
-    draftSchedule = '';
     refusal = null;
   }
 
@@ -140,36 +194,55 @@
     }
   }
 
-  async function armSchedule(): Promise<void> {
-    // Verbatim (FR-007). The webview trims the operator's stray whitespace and
-    // otherwise neither parses the expression nor computes a target instant —
-    // `parseSchedule()` on the host owns the grammar and the arithmetic.
-    const expression = draftSchedule.trim();
-    if (expression.length === 0) return;
-    refusal = null;
-    busy = true;
-    try {
-      const result = await setQueueSchedule(queueId, expression);
-      if (result.status === 'rejected') refusal = refusalText(result.reason);
-      else draftSchedule = '';
-    } finally {
-      busy = false;
-    }
+  // T012a (FR-017) — relocated from `Dashboard.svelte`'s `onPause`/`onResume`/
+  // `onClearDone`/`onClean` (`Dashboard.svelte:281-334`) unmodified in logic.
+  // `Dashboard.svelte`'s `postQueueCommand()` wrapper branched on an optional
+  // `queueId` prop; this tier's `queueId` is required, so that branch is dead
+  // here and the calls are inlined directly.
+  async function onPause(event: MouseEvent): Promise<void> {
+    const ok = await useConfirm('queue.pause', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: {}
+    });
+    if (!ok) return;
+    postCommand(CMD_PAUSE_QUEUE, { queueId });
   }
 
-  async function disarmSchedule(): Promise<void> {
-    refusal = null;
-    busy = true;
-    try {
-      const result = await clearQueueSchedule(queueId);
-      if (result.status === 'rejected') refusal = refusalText(result.reason);
-    } finally {
-      busy = false;
-    }
+  async function onResume(event: MouseEvent): Promise<void> {
+    const ok = await useConfirm('queue.resume', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: {}
+    });
+    if (!ok) return;
+    postCommand(CMD_RESUME_QUEUE, { queueId });
+  }
+
+  async function onClearDone(event: MouseEvent): Promise<void> {
+    if (clearDoneDisabled) return;
+    const ok = await useConfirm('queue.clear-done', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { completedCount }
+    });
+    if (!ok) return;
+    // CMD_CLEAR_COMPLETED carries no queueId — it is workspace-global by
+    // contract (sidebar-ipc.ts), exactly as Dashboard.svelte posted it.
+    postCommand(CMD_CLEAR_COMPLETED);
+  }
+
+  async function onClean(event: MouseEvent): Promise<void> {
+    if (cleanDisabled) return;
+    const ok = await useConfirm('queue.clean-all', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: deriveCleanAllContext(snapshot)
+    });
+    if (!ok) return;
+    // CMD_CLEAR_ALL carries no queueId — it is workspace-global by contract
+    // (sidebar-ipc.ts), exactly as Dashboard.svelte posted it.
+    postCommand(CMD_CLEAR_ALL);
   }
 </script>
 
-<section class="queue-detail-tier" data-testid="queue-detail-tier">
+<main class="queue-detail-tier" data-testid="queue-detail-tier" aria-label="Queue detail">
   <header class="tier-header">
     <button type="button" class="back" data-testid="queue-detail-back" onclick={onBack}>
       &larr; Queues
@@ -187,6 +260,14 @@
     </div>
     {#if isPrimary}
       <div class="actions">
+        {#if !composerOpen}
+          <button
+            type="button"
+            data-testid="queue-composer-open"
+            aria-label="Add work"
+            onclick={openComposer}
+          >Add work</button>
+        {/if}
         {#if !configuring}
           <button
             type="button"
@@ -195,6 +276,19 @@
             onclick={openConfig}
           >Settings</button>
         {/if}
+        <QueueControls
+          {isPrimary}
+          {paused}
+          {pendingCount}
+          {hasInFlight}
+          {clearDoneDisabled}
+          {cleanDisabled}
+          queueLifecycle={runtime?.lifecycle ?? null}
+          {onResume}
+          {onPause}
+          {onClearDone}
+          {onClean}
+        />
         <!--
           FR-003 — the default queue is the one every unrouted Task lands on, so
           deleting it has no coherent outcome. The control stays visible and
@@ -240,40 +334,15 @@
   {/if}
 
   {#if isPrimary}
-    <!--
-      US2 — the queue's registry schedule (FR-006 to FR-009). The armed reading
-      comes from `QueueSummary.schedule`, which the host computed; the expression
-      goes back out untouched.
-    -->
-    <div class="schedule-row" data-testid="queue-schedule">
-      {#if schedule !== null}
-        <p class="armed" data-testid="queue-schedule-armed">
-          <span class="armed-expression">{schedule.expression}</span>
-          <span class="armed-target" data-testid="queue-schedule-target">
-            starts {formatScheduleTarget(schedule.targetAt)}
-          </span>
-        </p>
-        <button
-          type="button"
-          data-testid="queue-schedule-disarm"
-          disabled={busy}
-          onclick={disarmSchedule}
-        >Disarm</button>
-      {/if}
-      <input
-        type="text"
-        data-testid="queue-schedule-expression"
-        aria-label="Schedule expression"
-        placeholder="in 30m"
-        bind:value={draftSchedule}
-      />
-      <button
-        type="button"
-        class="primary"
-        data-testid="queue-schedule-arm"
-        disabled={busy}
-        onclick={armSchedule}
-      >{schedule === null ? 'Arm' : 'Re-arm'}</button>
+    <QueueIdlePendingPanel {snapshot} />
+  {/if}
+
+  {#if isPrimary && composerOpen}
+    <div class="composer-row" data-testid="queue-composer">
+      <QueueInputForm {availablePipelines} {defaultPipelineId} {pendingCount} {queueId} />
+      <button type="button" data-testid="queue-composer-cancel" onclick={closeComposer}>
+        Cancel
+      </button>
     </div>
   {/if}
 
@@ -285,9 +354,7 @@
     {onSelectRun}
     onRefusal={(text) => (refusal = text)}
   />
-
-  <Dashboard {snapshot} {queueId} />
-</section>
+</main>
 
 <style>
   .queue-detail-tier {
@@ -392,16 +459,14 @@
     color: var(--vscode-errorForeground);
   }
 
-  .config-row,
-  .schedule-row {
+  .config-row {
     display: flex;
     gap: 8px;
     align-items: center;
     padding: 0 20px;
   }
 
-  .config-row input,
-  .schedule-row input {
+  .config-row input {
     flex: 1;
     font: inherit;
     padding: 6px 8px;
@@ -411,16 +476,11 @@
     border-radius: 4px;
   }
 
-  .armed {
+  .composer-row {
     display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     gap: 8px;
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    padding: 0 20px;
   }
-
-  .armed-expression {
-    color: var(--vscode-editor-foreground);
-  }
-
 </style>

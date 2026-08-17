@@ -55,10 +55,6 @@ export interface QueueOps {
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
   queueDeletionImpact?(queueId: string): QueueDeletionImpact;
   deleteQueue?(queueId: string): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
-  setQueueSchedule?(
-    queueId: string,
-    expression: string | null
-  ): Promise<{ ok: boolean; reason?: string; queueId?: string }>;
   saveQueueSettings?(params: {
     globalConcurrencyCap: number;
     defaultQueueId: string;

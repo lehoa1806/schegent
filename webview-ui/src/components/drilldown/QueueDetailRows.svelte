@@ -15,8 +15,13 @@
   // control answered.
 
   import { moveTask, refusalText } from '../../lib/queue-control-ipc';
+  import { postMoveItemDown, postMoveItemUp, postReorderTask } from '../../lib/reorder-task';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { buildQueueRunRows, type ConnectedRunRow } from '../../lib/queue-run-rows';
+  import { findTaskPipeline, resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
+  import { deriveTaskPhaseProgress, deriveTaskTiming } from '../../lib/task-row-view';
+  import { formatDuration } from '../../lib/format-duration';
+  import { nowFine } from '../../lib/tick-store';
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -92,6 +97,62 @@
     event.preventDefault();
     selectRow(row);
   }
+
+  // US2/T034 (feature 030) reorder, ported onto the FR-047 collapsed-row list.
+  // One shared id (not a per-row boolean) tracks which handle is pressed,
+  // since every row here is rendered by this single component instance
+  // rather than one `QueueItem` instance per row.
+  let dragArmedTaskId = $state<string | null>(null);
+
+  function onHandleMouseDown(taskId: string): void {
+    dragArmedTaskId = taskId;
+  }
+
+  function onHandleMouseUp(): void {
+    dragArmedTaskId = null;
+  }
+
+  function onDragStart(event: DragEvent, taskId: string): void {
+    if (dragArmedTaskId !== taskId) return;
+    if (event.dataTransfer) {
+      event.dataTransfer.setData('text/plain', taskId);
+      event.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function onDragOver(event: DragEvent): void {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  }
+
+  async function onDrop(
+    event: DragEvent,
+    targetTaskId: string,
+    targetPosition: number
+  ): Promise<void> {
+    event.preventDefault();
+    const sourceId = event.dataTransfer?.getData('text/plain') ?? '';
+    if (sourceId.length === 0 || sourceId === targetTaskId) return;
+    onRefusal(null);
+    const result = await postReorderTask(sourceId, targetPosition);
+    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+  }
+
+  function onDragEnd(): void {
+    dragArmedTaskId = null;
+  }
+
+  async function onMoveUp(taskId: string): Promise<void> {
+    onRefusal(null);
+    const result = await postMoveItemUp(taskId);
+    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+  }
+
+  async function onMoveDown(taskId: string): Promise<void> {
+    onRefusal(null);
+    const result = await postMoveItemDown(taskId);
+    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+  }
 </script>
 
 <div class="rows" data-testid="queue-detail-rows">
@@ -118,7 +179,43 @@
           <span class="row-status">{row.run.status}</span>
         </button>
       {:else}
-        <div class="row-wrap">
+        {@const pipeline = findTaskPipeline(row.task, snapshot.availablePipelines)}
+        {@const pipelineName = resolveTaskPipelineName(row.task, snapshot.availablePipelines)}
+        {@const progress = deriveTaskPhaseProgress(row.task, pipeline)}
+        {@const timing = deriveTaskTiming(row.task, $nowFine)}
+        {@const canReorder = isPrimary && row.task.status === 'pending'}
+        <div
+          class="row-wrap"
+          role="group"
+          aria-label="{row.task.label} row"
+          draggable={canReorder && dragArmedTaskId === row.task.id}
+          ondragstart={(event) => onDragStart(event, row.task.id)}
+          ondragover={canReorder ? onDragOver : undefined}
+          ondrop={canReorder ? (event) => onDrop(event, row.task.id, row.task.position) : undefined}
+          ondragend={onDragEnd}
+        >
+          {#if canReorder}
+            <button
+              type="button"
+              class="drag-handle"
+              data-testid="queue-task-drag-handle-{row.task.id}"
+              aria-label="Drag to reorder"
+              title="Drag to reorder"
+              onmousedown={() => onHandleMouseDown(row.task.id)}
+              onmouseup={onHandleMouseUp}
+            >
+              <svg class="drag-handle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <circle cx="6" cy="3" r="1.2" />
+                <circle cx="6" cy="7" r="1.2" />
+                <circle cx="6" cy="11" r="1.2" />
+                <circle cx="6" cy="15" r="1.2" />
+                <circle cx="10" cy="3" r="1.2" />
+                <circle cx="10" cy="7" r="1.2" />
+                <circle cx="10" cy="11" r="1.2" />
+                <circle cx="10" cy="15" r="1.2" />
+              </svg>
+            </button>
+          {/if}
           <button
             type="button"
             class="row"
@@ -130,17 +227,55 @@
             onkeydown={(event) => onRowKeyDown(event, row)}
           >
             <span class="row-label">{row.task.label}</span>
-            <span class="row-kind">Pipeline</span>
-            <span class="row-progress">{row.task.currentPhase ?? ''}</span>
+            <span class="row-kind" data-testid="queue-task-pipeline-{row.task.id}">
+              {pipelineName}
+            </span>
+            <span class="row-progress" data-testid="queue-task-progress-{row.task.id}">
+              {row.task.currentPhase ?? '—'} ({progress.completed}/{progress.total})
+            </span>
             <span class="row-status">{row.task.status}</span>
+            <span class="row-timing" data-testid="queue-task-timing-{row.task.id}">
+              {timing.kind === 'waiting'
+                ? `Waiting ${formatDuration(timing.value)}`
+                : `${formatDuration(timing.value)} elapsed`}
+            </span>
+            {#if row.task.retryCount > 0}
+              <span class="row-retry" data-testid="queue-task-retry-{row.task.id}">
+                Retried {row.task.retryCount}&times;
+              </span>
+            {/if}
+            {#if row.task.lastErrorSummary !== null}
+              <span class="row-error" data-testid="queue-task-error-{row.task.id}">
+                {row.task.lastErrorSummary}
+              </span>
+            {/if}
           </button>
           <!--
-            FR-015 — only a pending Task moves. A Task that has started is
-            executing against this queue's lease, and a Task that has finished
-            is a record. The select sits beside the row rather than inside it:
-            the row is a `<button>`, and interactive content does not nest.
+            FR-015 / US2 (feature 030) — only a pending Task moves or reorders.
+            A Task that has started is executing against this queue's lease,
+            and a Task that has finished is a record. These controls sit
+            beside the row rather than inside it: the row is a `<button>`,
+            and interactive content does not nest.
           -->
-          {#if isPrimary && row.task.status === 'pending' && moveTargets.length > 0}
+          {#if canReorder}
+            <button
+              type="button"
+              class="reorder-btn"
+              data-testid="queue-task-reorder-up-{row.task.id}"
+              title="Move up"
+              aria-label="Move {row.task.label} up"
+              onclick={() => onMoveUp(row.task.id)}
+            >&#9650;</button>
+            <button
+              type="button"
+              class="reorder-btn"
+              data-testid="queue-task-reorder-down-{row.task.id}"
+              title="Move down"
+              aria-label="Move {row.task.label} down"
+              onclick={() => onMoveDown(row.task.id)}
+            >&#9660;</button>
+          {/if}
+          {#if canReorder && moveTargets.length > 0}
             <select
               class="move"
               data-testid="queue-task-move-{row.task.id}"
@@ -194,6 +329,68 @@
     border-radius: 4px;
   }
 
+  .drag-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    width: 16px;
+    min-width: 16px;
+    min-height: 20px;
+    padding: 0;
+    color: var(--vscode-descriptionForeground);
+    cursor: grab;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .drag-handle:hover {
+    color: var(--vscode-foreground);
+  }
+
+  .drag-handle:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+  }
+
+  .drag-handle-icon {
+    width: 12px;
+    height: 16px;
+    fill: currentColor;
+  }
+
+  .row-wrap[draggable='true']:active .drag-handle {
+    cursor: grabbing;
+  }
+
+  .reorder-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    padding: 0 4px;
+    font: inherit;
+    line-height: 1;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+    border: 1px solid var(--vscode-widget-border, transparent);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .reorder-btn:hover {
+    color: var(--vscode-foreground);
+    background: var(--vscode-toolbar-hoverBackground);
+  }
+
+  .reorder-btn:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+  }
+
   /*
     The tier's generic `button` rule does not reach here — Svelte scopes styles
     per component — so the row reproduces it inline. These declarations are that
@@ -238,5 +435,23 @@
     font-size: 11px;
     text-transform: uppercase;
     color: var(--vscode-descriptionForeground);
+  }
+
+  .row-timing,
+  .row-retry,
+  .row-error {
+    grid-column: 1 / -1;
+    text-align: left;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .row-retry {
+    color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+  }
+
+  .row-error {
+    color: var(--vscode-errorForeground);
+    overflow-wrap: anywhere;
   }
 </style>

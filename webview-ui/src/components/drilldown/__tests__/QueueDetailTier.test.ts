@@ -14,20 +14,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import QueueDetailTier from '../QueueDetailTier.svelte';
 import {
   CMD_ACK,
-  CMD_CLEAR_QUEUE_SCHEDULE,
+  CMD_CLEAR_ALL,
+  CMD_CLEAR_COMPLETED,
   CMD_DELETE_QUEUE,
+  CMD_MOVE_QUEUE_ITEM_DOWN,
+  CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_TASK,
   CMD_PAUSE_QUEUE,
+  CMD_REORDER_TASK,
   CMD_RENAME_QUEUE,
-  CMD_SET_QUEUE_SCHEDULE,
+  CMD_RESUME_QUEUE,
   CMD_START
 } from '../../../lib/messages';
-import { buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
+import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
 import { snapshotStore } from '../../../lib/snapshot-store.svelte';
 import { useConfirm } from '../../../lib/use-confirm';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
+  InFlightRunProjection,
   QueueItem,
   QueueSummary,
   WorkflowSnapshot
@@ -69,19 +74,16 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
   };
 }
 
-function summary(
-  id: string,
-  name: string,
-  position: number,
-  schedule: QueueSummary['schedule'] = null
-): QueueSummary {
+function summary(id: string, name: string, position: number): QueueSummary {
+  // Feature 097 (T012) removed the registry-schedule UI (Mechanism B); the
+  // wire field stays mandatory but dormant — always null here.
   return {
     id,
     name,
     position,
     state: 'active',
     pauseSource: null,
-    schedule,
+    schedule: null,
     taskCount: 0
   };
 }
@@ -116,8 +118,13 @@ function buildSnapshot(
   overrides: {
     readonly lifecycle?: 'running' | 'operator-paused' | 'idle-pending' | 'active-empty';
     readonly connectedRuns?: readonly ConnectedRunProjection[];
-    /** Feature 095 — `q-beta`'s registry schedule, the US2 mechanism. */
-    readonly betaSchedule?: QueueSummary['schedule'];
+    readonly inFlightRun?: InFlightRunProjection | null;
+    /** Feature 097 — override when a test needs more than one phase to tell rows apart. */
+    readonly pipelines?: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly phases: readonly string[];
+    }[];
   } = {}
 ): WorkflowSnapshot {
   return Object.freeze({
@@ -136,6 +143,7 @@ function buildSnapshot(
         name: 'nightly',
         position: 1,
         lifecycle: overrides.lifecycle ?? 'running',
+        inFlightRun: overrides.inFlightRun ?? null,
         pendingCount: betaTasks.filter((item) => item.status === 'pending').length,
         tasks: betaTasks
       })
@@ -147,7 +155,7 @@ function buildSnapshot(
       orderedItems: Object.freeze([task('other-queue-task', { label: 'not mine' })]),
       queues: Object.freeze([
         summary('default', 'Default', 0),
-        summary('q-beta', 'nightly', 1, overrides.betaSchedule ?? null)
+        summary('q-beta', 'nightly', 1)
       ]),
       paused: false
     }),
@@ -158,9 +166,11 @@ function buildSnapshot(
     monitor: null,
     history: Object.freeze([]),
     producedAt: '2026-08-12T00:00:30.000Z',
-    availablePipelines: Object.freeze([
-      Object.freeze({ id: 'standard', name: 'Standard', phases: Object.freeze(['speckit-specify']) })
-    ]),
+    availablePipelines: Object.freeze(
+      overrides.pipelines ?? [
+        Object.freeze({ id: 'standard', name: 'Standard', phases: Object.freeze(['speckit-specify']) })
+      ]
+    ),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }),
     availableBackends: Object.freeze(['claude']),
@@ -221,12 +231,6 @@ const DELETE_IMPACT = {
   boundConnectedRunIds: ['cr-7', 'cr-8']
 };
 
-const ARMED = Object.freeze({
-  expression: 'in 2 hours',
-  kind: 'relative' as const,
-  targetAt: '2026-08-12T02:00:00.000Z'
-});
-
 beforeEach(() => {
   postCommandSpy.mockClear();
   vi.mocked(useConfirm).mockClear();
@@ -277,7 +281,9 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
   it('pauses THIS queue, not the workspace default', async () => {
     const { getByTestId } = mount(
-      buildSnapshot([task('live', { status: 'in-flight' })])
+      buildSnapshot([task('live', { status: 'in-flight' })], {
+        inFlightRun: buildInFlightRun({ runId: 'live' })
+      })
     );
 
     await fireEvent.click(getByTestId('dashboard-queue-action'));
@@ -285,9 +291,90 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_PAUSE_QUEUE, { queueId: 'q-beta' });
   });
 
+  // T012a (FR-017) — the relocated `QueueControls` mount routes all four
+  // handlers through this tier's own `queueId`, not `Dashboard.svelte`'s
+  // removed optional-`queueId` branch. Pause is covered above; these three
+  // cover the remaining handlers the mount wires up.
+  it('resumes THIS queue when it is paused', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('waiting', { position: 0, status: 'pending' })], {
+        lifecycle: 'operator-paused'
+      })
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESUME_QUEUE, { queueId: 'q-beta' });
+  });
+
+  it('clears THIS queue’s completed Tasks', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED);
+  });
+
+  it('cleans all of THIS queue’s finished and pending Tasks', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clean'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_ALL);
+  });
+
+  it('disables Clear Done when this queue has no completed Tasks', () => {
+    const { getByTestId } = mount(buildSnapshot([task('p', { status: 'pending' })]));
+
+    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('enables Clear Done once this queue has a completed Task', () => {
+    const { getByTestId } = mount(buildSnapshot([task('done', { status: 'completed' })]));
+
+    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('disables Clean All only when every reset surface is empty (FR-008 idle gate)', () => {
+    const { getByTestId } = mount(buildSnapshot([]));
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it.each([
+    ['a pending Task', task('p', { status: 'pending' })],
+    ['a failed Task', task('f', { status: 'failed' })],
+    ['a canceled Task', task('c', { status: 'canceled' })]
+  ])('enables Clean All when this queue has %s', (_label, oneTask) => {
+    const { getByTestId } = mount(buildSnapshot([oneTask]));
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('enables Clean All when this queue has an in-flight Task, even with nothing else to reset', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('live', { status: 'in-flight' })], {
+        inFlightRun: buildInFlightRun({ runId: 'live' })
+      })
+    );
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('enables Clean All when this queue is paused, even with an otherwise empty queue', () => {
+    const { getByTestId } = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('enqueues added work onto THIS queue', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
+    await fireEvent.click(getByTestId('queue-composer-open'));
     const textarea = getByTestId('dashboard-queue-input-textarea');
     await fireEvent.input(textarea, { target: { value: 'ship the release' } });
     await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
@@ -296,6 +383,106 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
       CMD_START,
       expect.objectContaining({ description: 'ship the release', queueId: 'q-beta' })
     );
+  });
+});
+
+// Feature 097 (T008, FR-009, data-model.md `ComposerVisibility`) — the add-work
+// composer is closed by default and opened on demand, rather than permanently
+// occupying the view.
+describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
+  it('shows no composer form by default', () => {
+    const { queryByTestId } = mount(buildSnapshot([]));
+
+    expect(queryByTestId('queue-composer')).toBeNull();
+    expect(queryByTestId('dashboard-queue-input-textarea')).toBeNull();
+  });
+
+  it('opens the composer on "Add work" and hides the trigger while it is open', async () => {
+    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
+
+    await fireEvent.click(getByTestId('queue-composer-open'));
+
+    expect(getByTestId('queue-composer')).not.toBeNull();
+    expect(queryByTestId('queue-composer-open')).toBeNull();
+  });
+
+  it('closes the composer once the submitted Task appears in this queue’s pending count', async () => {
+    const { getByTestId, queryByTestId, rerender } = mount(buildSnapshot([]));
+
+    await fireEvent.click(getByTestId('queue-composer-open'));
+    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
+      target: { value: 'ship the release' }
+    });
+    await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
+
+    expect(getByTestId('queue-composer')).not.toBeNull();
+
+    // The host accepted the Task; the next snapshot poll reflects it in this
+    // queue's pending count, which is the only signal the parent has, since
+    // `QueueInputForm` posts its own submission command internally and exposes
+    // no event-handler props (research.md R3).
+    await rerender({ snapshot: buildSnapshot([task('new-task')]) });
+
+    expect(queryByTestId('queue-composer')).toBeNull();
+    expect(queryByTestId('queue-composer-open')).not.toBeNull();
+  });
+
+  it('closes the composer on a submission that lands after unrelated draining lowered the count', async () => {
+    const { getByTestId, queryByTestId, rerender } = mount(
+      buildSnapshot([task('a'), task('b'), task('c')])
+    );
+
+    await fireEvent.click(getByTestId('queue-composer-open'));
+    expect(getByTestId('queue-composer')).not.toBeNull();
+
+    // Unrelated: one of this queue's own pending Tasks starts executing while
+    // the composer is open, independent of anything typed into it.
+    await rerender({
+      snapshot: buildSnapshot([task('a', { status: 'in-flight' }), task('b'), task('c')])
+    });
+    expect(getByTestId('queue-composer')).not.toBeNull();
+
+    // The composer's own submission lands, restoring the pending count to its
+    // open-time value (3) rather than exceeding it. A frozen open-time
+    // baseline would read 3 > 3 as false and leave the composer open;
+    // tracking the lowest point seen since open (2) instead reads 3 > 2 as
+    // true and closes it.
+    await rerender({
+      snapshot: buildSnapshot([
+        task('a', { status: 'in-flight' }),
+        task('b'),
+        task('c'),
+        task('new-task')
+      ])
+    });
+
+    expect(queryByTestId('queue-composer')).toBeNull();
+    expect(queryByTestId('queue-composer-open')).not.toBeNull();
+  });
+
+  it('does not close the composer while this queue’s pending count is unchanged', async () => {
+    const { getByTestId, rerender } = mount(buildSnapshot([]));
+
+    await fireEvent.click(getByTestId('queue-composer-open'));
+    // An unrelated snapshot poll — e.g. a different queue's task count moving —
+    // must not be mistaken for this composer's own submission.
+    await rerender({ snapshot: buildSnapshot([]) });
+
+    expect(getByTestId('queue-composer')).not.toBeNull();
+  });
+
+  it('closes the composer on explicit cancel, without submitting anything', async () => {
+    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
+
+    await fireEvent.click(getByTestId('queue-composer-open'));
+    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
+      target: { value: 'discard me' }
+    });
+    await fireEvent.click(getByTestId('queue-composer-cancel'));
+
+    expect(queryByTestId('queue-composer')).toBeNull();
+    expect(queryByTestId('queue-composer-open')).not.toBeNull();
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_START, expect.anything());
   });
 });
 
@@ -337,6 +524,26 @@ describe('QueueDetailTier — a connected run is one row (FR-047)', () => {
     ).map((node) => node.getAttribute('data-row-key'));
 
     expect(ids).toEqual(['task:solo-first', 'run:cr-1', 'task:solo-last']);
+  });
+
+  it('exposes every row as a single labeled, focusable button — run rows and Task rows alike (BUG-003)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot(
+        [task('solo', { position: 0, status: 'pending' }), task('member', { position: 1 })],
+        { connectedRuns: [connectedRun('cr-1', ['member'])] }
+      )
+    );
+
+    const rows = Array.from(getByTestId('queue-detail-rows').querySelectorAll('[data-row-key]'));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.tagName, `row ${row.getAttribute('data-row-key')} must be its own button`).toBe('BUTTON');
+      expect(row.getAttribute('type')).toBe('button');
+      expect(row.getAttribute('aria-label')).toBeTruthy();
+      // Interactive content does not nest — the pending Task's move <select>
+      // sits beside this button as a sibling, never inside it.
+      expect(row.querySelector('select, button, a')).toBeNull();
+    }
   });
 });
 
@@ -420,10 +627,13 @@ describe('QueueDetailTier — navigating between tiers (FR-060, FR-061)', () => 
     expect(onSelectRun).toHaveBeenCalledWith('solo');
   });
 
-  it('does not render a second <main> landmark — the embedded pane owns it', () => {
-    const { container } = mount(buildSnapshot([]));
+  // Feature 097 (T003, T005) — Dashboard is no longer embedded, so the tier's
+  // own root is now the one <main> landmark rather than a pane it mounts.
+  it('renders exactly one <main> landmark — its own', () => {
+    const { container, getByTestId } = mount(buildSnapshot([]));
 
     expect(container.querySelectorAll('main')).toHaveLength(1);
+    expect(getByTestId('queue-detail-tier').tagName).toBe('MAIN');
   });
 });
 
@@ -510,93 +720,6 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
   });
 });
 
-// Feature 095 (T023, US2, FR-006 to FR-009) — the queue's registry schedule.
-describe('QueueDetailTier — arming a scheduled start (US2)', () => {
-  it('sends the operator’s expression verbatim, with no local parsing (FR-007)', async () => {
-    const { getByTestId } = mount(buildSnapshot([]));
-
-    await fireEvent.input(getByTestId('queue-schedule-expression'), {
-      target: { value: '  every other Tuesday at 14:00  ' }
-    });
-    await fireEvent.click(getByTestId('queue-schedule-arm'));
-
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_SET_QUEUE_SCHEDULE, {
-      queueId: 'q-beta',
-      expression: 'every other Tuesday at 14:00'
-    });
-    // Nothing derived travels with it: no target instant, no parsed kind.
-    const payload = postCommandSpy.mock.calls[0]![1] as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(['expression', 'queueId']);
-  });
-
-  it('renders the armed expression and target for a queue whose lifecycle is running', () => {
-    const { getByTestId } = mount(
-      buildSnapshot([], { lifecycle: 'running', betaSchedule: ARMED })
-    );
-
-    expect(getByTestId('queue-schedule-armed').textContent).toContain('in 2 hours');
-    const target = getByTestId('queue-schedule-target').textContent ?? '';
-    // Formatted, not the raw ISO string the projection carries.
-    expect(target).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
-    expect(target).not.toContain('T02:00:00.000Z');
-  });
-
-  it('renders no armed state and offers no disarm when the queue carries no schedule', () => {
-    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
-
-    expect(queryByTestId('queue-schedule-armed')).toBeNull();
-    expect(queryByTestId('queue-schedule-disarm')).toBeNull();
-    expect(getByTestId('queue-schedule-arm').textContent).toContain('Arm');
-  });
-
-  it('re-arms an armed queue with a plain arm, never a clear-then-set', async () => {
-    const { getByTestId } = mount(buildSnapshot([], { betaSchedule: ARMED }));
-
-    await fireEvent.input(getByTestId('queue-schedule-expression'), {
-      target: { value: 'at 09:00' }
-    });
-    await fireEvent.click(getByTestId('queue-schedule-arm'));
-
-    expect(postCommandSpy).toHaveBeenCalledTimes(1);
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_SET_QUEUE_SCHEDULE, {
-      queueId: 'q-beta',
-      expression: 'at 09:00'
-    });
-  });
-
-  it('disarms an armed queue', async () => {
-    const { getByTestId } = mount(buildSnapshot([], { betaSchedule: ARMED }));
-
-    await fireEvent.click(getByTestId('queue-schedule-disarm'));
-
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE_SCHEDULE, { queueId: 'q-beta' });
-  });
-
-  it('surfaces an unparseable-expression refusal (FR-008)', async () => {
-    const { getByTestId } = mount(buildSnapshot([]));
-
-    await fireEvent.input(getByTestId('queue-schedule-expression'), {
-      target: { value: 'whenever' }
-    });
-    await fireEvent.click(getByTestId('queue-schedule-arm'));
-    // What `parseSchedule` answers for text it cannot match to any form.
-    ack(0, 'rejected', 'unrecognized-format');
-
-    await vi.waitFor(() =>
-      expect(getByTestId('queue-control-refusal').textContent).toMatch(/could not be read/i)
-    );
-  });
-
-  it('posts nothing for an empty expression', async () => {
-    const { getByTestId } = mount(buildSnapshot([]));
-
-    await fireEvent.input(getByTestId('queue-schedule-expression'), { target: { value: '   ' } });
-    await fireEvent.click(getByTestId('queue-schedule-arm'));
-
-    expect(postCommandSpy).not.toHaveBeenCalled();
-  });
-});
-
 // Feature 095 (T034, US4, FR-015, FR-016) — moving a pending Task.
 describe('QueueDetailTier — moving a pending Task (US4)', () => {
   it('posts the Task and its target queue and no position (FR-016)', async () => {
@@ -659,6 +782,232 @@ describe('QueueDetailTier — moving a pending Task (US4)', () => {
   });
 });
 
+// Feature 030 (US2, T034) reorder, restored onto QueueDetailRows after code
+// review found the FR-047 collapsed-row rewrite (features 095/097) carried
+// the move-to-queue select over but dropped the drag handle and the up/down
+// buttons, along with their only mount site (`QueueItem.svelte`, orphaned by
+// the same rewrite). Assertions mirror QueueItem.reorder.test.ts's shape for
+// the same capability, adapted to the fact every row here shares one
+// component instance rather than one `QueueItem` per row.
+describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () => {
+  it('renders a drag handle and up/down buttons for a pending Task', () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+
+    expect(getByTestId('queue-task-drag-handle-waiting')).toBeTruthy();
+    expect(getByTestId('queue-task-reorder-up-waiting')).toBeTruthy();
+    expect(getByTestId('queue-task-reorder-down-waiting')).toBeTruthy();
+  });
+
+  it('omits reorder controls for a Task that is no longer pending', () => {
+    const { queryByTestId } = mount(buildSnapshot([task('live', { status: 'in-flight' })]));
+
+    expect(queryByTestId('queue-task-drag-handle-live')).toBeNull();
+    expect(queryByTestId('queue-task-reorder-up-live')).toBeNull();
+    expect(queryByTestId('queue-task-reorder-down-live')).toBeNull();
+  });
+
+  it('withholds reorder controls in a non-primary window (FR-065)', () => {
+    const { queryByTestId } = mount(buildSnapshot([task('waiting')]), { isPrimary: false });
+
+    expect(queryByTestId('queue-task-drag-handle-waiting')).toBeNull();
+    expect(queryByTestId('queue-task-reorder-up-waiting')).toBeNull();
+    expect(queryByTestId('queue-task-reorder-down-waiting')).toBeNull();
+  });
+
+  it('is not draggable until its handle is pressed, and disarms on release', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+    const handle = getByTestId('queue-task-drag-handle-waiting');
+    const wrap = handle.parentElement as HTMLElement;
+
+    expect(wrap.getAttribute('draggable')).toBe('false');
+
+    await fireEvent.mouseDown(handle);
+    expect(wrap.getAttribute('draggable')).toBe('true');
+
+    await fireEvent.mouseUp(handle);
+    expect(wrap.getAttribute('draggable')).toBe('false');
+  });
+
+  it('disarms on dragend without a release', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+    const handle = getByTestId('queue-task-drag-handle-waiting');
+    const wrap = handle.parentElement as HTMLElement;
+
+    await fireEvent.mouseDown(handle);
+    await fireEvent.dragEnd(wrap);
+
+    expect(wrap.getAttribute('draggable')).toBe('false');
+  });
+
+  it('dropping an armed drag onto another row posts CMD_REORDER_TASK at the target position', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('source', { position: 0 }), task('target', { position: 1 })])
+    );
+
+    const handle = getByTestId('queue-task-drag-handle-source');
+    const targetWrap = getByTestId('queue-task-row-target').parentElement as HTMLElement;
+
+    await fireEvent.mouseDown(handle);
+    await fireEvent.drop(targetWrap, { dataTransfer: { getData: () => 'source' } });
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_REORDER_TASK, {
+      taskId: 'source',
+      newPosition: 1
+    });
+  });
+
+  it('dropping onto its own row is a no-op', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+    const handle = getByTestId('queue-task-drag-handle-waiting');
+    const wrap = handle.parentElement as HTMLElement;
+
+    await fireEvent.mouseDown(handle);
+    await fireEvent.drop(wrap, { dataTransfer: { getData: () => 'waiting' } });
+
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_REORDER_TASK, expect.anything());
+  });
+
+  it('clicking the up arrow posts CMD_MOVE_QUEUE_ITEM_UP for that Task', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+
+    await fireEvent.click(getByTestId('queue-task-reorder-up-waiting'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_UP, { id: 'waiting' });
+  });
+
+  it('clicking the down arrow posts CMD_MOVE_QUEUE_ITEM_DOWN for that Task', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+
+    await fireEvent.click(getByTestId('queue-task-reorder-down-waiting'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_DOWN, { id: 'waiting' });
+  });
+
+  it('surfaces a refusal when the host rejects a reorder', async () => {
+    const { getByTestId } = mount(buildSnapshot([task('waiting')]));
+
+    await fireEvent.click(getByTestId('queue-task-reorder-up-waiting'));
+    ack(0, 'rejected', 'timeout');
+
+    await vi.waitFor(() =>
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/did not answer/i)
+    );
+  });
+});
+
+// Feature 097 (T004, T005, FR-003, FR-004, FR-005/SC-002, FR-010/SC-003) — the
+// Task row surfaces its own Pipeline, phase progress, timing, retry count and
+// last error, each derived from that row's own Task only.
+describe('QueueDetailTier — Task row surfaces its own detail', () => {
+  it('resolves the Task’s Pipeline by name, never by id (FR-010)', () => {
+    const { getByTestId } = mount(buildSnapshot([task('a', { currentPipelineId: 'standard' })]));
+
+    expect(getByTestId('queue-task-pipeline-a').textContent).toContain('Standard');
+  });
+
+  it('falls back to a labeled placeholder for an unresolved Pipeline, never the raw id (FR-010)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('a', { currentPipelineId: 'deleted-pipeline' })])
+    );
+
+    const text = getByTestId('queue-task-pipeline-a').textContent ?? '';
+    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).not.toContain('deleted-pipeline');
+  });
+
+  it('counts phase completion against the Task’s own resolved Pipeline (FR-003)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot(
+        [task('a', { currentPipelineId: 'standard', currentPhase: 'speckit-plan' })],
+        {
+          pipelines: [
+            { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
+          ]
+        }
+      )
+    );
+
+    expect(getByTestId('queue-task-progress-a').textContent).toContain('1/3');
+  });
+
+  it('shows elapsed time once a Task has started, waiting time before then (FR-004)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([
+        task('started', { startedAt: '2026-08-12T00:00:00.000Z' }),
+        task('waiting', { startedAt: null })
+      ])
+    );
+
+    expect(getByTestId('queue-task-timing-started').textContent).toMatch(/elapsed/i);
+    expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
+  });
+
+  it('shows a retry count only once the Task has retried', () => {
+    const { getByTestId, queryByTestId } = mount(
+      buildSnapshot([task('retried', { retryCount: 2 }), task('fresh', { retryCount: 0 })])
+    );
+
+    expect(getByTestId('queue-task-retry-retried').textContent).toContain('2');
+    expect(queryByTestId('queue-task-retry-fresh')).toBeNull();
+  });
+
+  it('shows the last error only once the Task has one', () => {
+    const { getByTestId, queryByTestId } = mount(
+      buildSnapshot([
+        task('failed', { lastErrorSummary: 'exit code 1' }),
+        task('clean', { lastErrorSummary: null })
+      ])
+    );
+
+    expect(getByTestId('queue-task-error-failed').textContent).toContain('exit code 1');
+    expect(queryByTestId('queue-task-error-clean')).toBeNull();
+  });
+
+  it('derives a non-executing row’s progress and timing from its own Task only, never a sibling’s (FR-005, SC-002)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot(
+        [
+          task('live', {
+            position: 0,
+            status: 'in-flight',
+            currentPipelineId: 'standard',
+            currentPhase: 'speckit-tasks',
+            startedAt: '2026-08-12T00:00:00.000Z'
+          }),
+          task('waiting', {
+            position: 1,
+            status: 'pending',
+            currentPipelineId: 'standard',
+            currentPhase: null,
+            startedAt: null
+          })
+        ],
+        {
+          pipelines: [
+            { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
+          ]
+        }
+      )
+    );
+
+    // The executing Task is two phases in; the still-pending Task must read as
+    // having completed none of its own — not the executing Task's count.
+    expect(getByTestId('queue-task-progress-live').textContent).toContain('2/3');
+    expect(getByTestId('queue-task-progress-waiting').textContent).toContain('0/3');
+    expect(getByTestId('queue-task-timing-live').textContent).toMatch(/elapsed/i);
+    expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
+  });
+});
+
+describe('QueueDetailTier — empty queue (Edge Case)', () => {
+  it('renders an empty state rather than stale or placeholder rows', () => {
+    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
+
+    expect(getByTestId('queue-detail-empty').textContent).toContain('no work yet');
+    expect(queryByTestId('queue-task-row-a')).toBeNull();
+  });
+});
+
 describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () => {
   it('withholds the configuration affordance', () => {
     const { queryByTestId } = mount(buildSnapshot([]), { isPrimary: false });
@@ -666,13 +1015,15 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
     expect(queryByTestId('queue-config-open')).toBeNull();
   });
 
-  // Feature 095 — the three new controls are mutations, so they observe the
-  // same rule the pre-existing configuration affordance does.
-  it('withholds the delete, schedule and move controls', () => {
+  // Feature 095 — the delete and move controls are mutations, so they
+  // observe the same rule the pre-existing configuration affordance does.
+  // The registry-schedule control this test used to also cover is gone
+  // (feature 097, T012); the idle-pending affordance that now shares this
+  // tier's chrome has its own isPrimary coverage below.
+  it('withholds the delete and move controls', () => {
     const { queryByTestId } = mount(buildSnapshot([task('waiting')]), { isPrimary: false });
 
     expect(queryByTestId('queue-delete')).toBeNull();
-    expect(queryByTestId('queue-schedule')).toBeNull();
     expect(queryByTestId('queue-task-move-waiting')).toBeNull();
   });
 
@@ -690,5 +1041,32 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
 
     expect(onSelectRun).toHaveBeenCalledWith('solo');
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Feature 097 (T012a) — the idle-pending start affordance now shares this
+// tier's chrome. `QueueIdlePendingPanel` reads the *default* queue's own
+// projection (a pre-existing limitation carried forward unmodified, see the
+// component's own header comment) and carries no isPrimary prop of its own;
+// gating is entirely the mount decision made here.
+describe('QueueDetailTier — mounts the idle-pending affordance (T012a)', () => {
+  function idlePendingSnapshot(): WorkflowSnapshot {
+    const base = buildSnapshot([]);
+    return {
+      ...base,
+      queue: { ...base.queue, lifecycle: 'idle-pending', scheduledStartAt: null }
+    } as WorkflowSnapshot;
+  }
+
+  it('shows the idle-pending start affordance when the default queue is idle-pending', () => {
+    const { getByTestId } = mount(idlePendingSnapshot());
+
+    expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
+  });
+
+  it('withholds the idle-pending affordance in a non-primary window', () => {
+    const { queryByTestId } = mount(idlePendingSnapshot(), { isPrimary: false });
+
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
   });
 });

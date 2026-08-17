@@ -1,18 +1,20 @@
 // Feature 095 (T012, FR-002, FR-007, FR-016) — the queue-control IPC helper.
 //
-// Asserts the correlated-request contract the four existing helpers share
-// (accept, reject-with-reason, timeout, no cross-resolution), plus the two
-// things specific to this module: the two-phase delete's probe branches, and
-// that `moveTask` sends no `position`.
+// Asserts the correlated-request contract `saveQueueSettings` and `moveTask`
+// share (accept, reject-with-reason, timeout, no cross-resolution), plus the
+// two things specific to this module: the two-phase delete's probe branches,
+// and that `moveTask` sends no `position`.
+//
+// Feature 097 removed the module's other two simple helpers,
+// `setQueueSchedule`/`clearQueueSchedule` (FR-013); `saveQueueSettings` and
+// `moveTask` are now this block's only vehicles for the shared contract.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
-  CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_SCHEDULE
+  CMD_SAVE_QUEUE_SETTINGS
 } from '../messages';
 
 type AckListener = (ack: {
@@ -57,11 +59,9 @@ vi.mock('../use-confirm', () => ({
 }));
 
 const {
-  clearQueueSchedule,
   confirmAndDeleteQueue,
   moveTask,
-  saveQueueSettings,
-  setQueueSchedule
+  saveQueueSettings
 } = await import('../queue-control-ipc');
 
 function fireAck(
@@ -94,10 +94,10 @@ afterEach(() => {
 
 describe('correlated-request contract', () => {
   it('marks the correlation id pending and resolves accepted on a matching ack', async () => {
-    const promise = clearQueueSchedule('q-beta');
+    const promise = moveTask('t-1', 'q-beta');
     const { correlationId, type, payload } = posted[0]!;
-    expect(type).toBe(CMD_CLEAR_QUEUE_SCHEDULE);
-    expect(payload).toEqual({ queueId: 'q-beta' });
+    expect(type).toBe(CMD_MOVE_TASK);
+    expect(payload).toEqual({ taskId: 't-1', targetQueueId: 'q-beta' });
     expect(pendingSet.has(correlationId)).toBe(true);
 
     fireAck(correlationId, 'accepted');
@@ -105,28 +105,28 @@ describe('correlated-request contract', () => {
   });
 
   it('carries the host refusal reason through', async () => {
-    const promise = setQueueSchedule('q-beta', 'in 30m');
-    fireAck(posted[0]!.correlationId, 'rejected', 'unrecognized-format');
+    const promise = saveQueueSettings(7, 'q-beta');
+    fireAck(posted[0]!.correlationId, 'rejected', 'invalid-concurrency-cap');
     await expect(promise).resolves.toEqual({
       status: 'rejected',
-      reason: 'unrecognized-format'
+      reason: 'invalid-concurrency-cap'
     });
   });
 
   it('substitutes a generic reason when the host names none', async () => {
-    const promise = clearQueueSchedule('q-beta');
+    const promise = moveTask('t-1', 'q-beta');
     fireAck(posted[0]!.correlationId, 'rejected');
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'rejected' });
   });
 
   it('resolves rejected/timeout after 5 seconds', async () => {
-    const promise = setQueueSchedule('q-beta', 'in 30m');
+    const promise = saveQueueSettings(7, 'q-beta');
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
   });
 
   it('ignores a late ack that arrives after the timeout', async () => {
-    const promise = clearQueueSchedule('q-beta');
+    const promise = moveTask('t-1', 'q-beta');
     const { correlationId } = posted[0]!;
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
@@ -136,15 +136,15 @@ describe('correlated-request contract', () => {
   });
 
   it('never cross-resolves two concurrent calls', async () => {
-    const first = setQueueSchedule('q-alpha', 'in 30m');
-    const second = clearQueueSchedule('q-beta');
+    const first = saveQueueSettings(7, 'q-alpha');
+    const second = moveTask('t-1', 'q-beta');
     const [a, b] = posted;
 
-    fireAck(b!.correlationId, 'rejected', 'not-armed');
+    fireAck(b!.correlationId, 'rejected', 'unknown-task-id');
     fireAck(a!.correlationId, 'accepted');
 
     await expect(first).resolves.toEqual({ status: 'accepted' });
-    await expect(second).resolves.toEqual({ status: 'rejected', reason: 'not-armed' });
+    await expect(second).resolves.toEqual({ status: 'rejected', reason: 'unknown-task-id' });
   });
 });
 

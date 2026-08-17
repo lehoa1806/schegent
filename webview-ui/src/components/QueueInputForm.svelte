@@ -24,8 +24,8 @@
   // the queue and, when the prior lifecycle was `active-empty`, lands
   // the queue in `idle-pending` with `scheduledStartAt = null`. The
   // start-mode chooser is no longer presented at submit-time; it is
-  // reachable exclusively via the queue-level "Start queue" affordance
-  // in `QueueListView` (FR-018).
+  // reachable exclusively via the queue-level "Start queue" affordance,
+  // now `QueueIdlePendingPanel` (FR-018).
   const { availablePipelines, defaultPipelineId, pendingCount, queueId }: Props = $props();
 
   let description = $state('');

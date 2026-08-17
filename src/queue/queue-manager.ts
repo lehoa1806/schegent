@@ -28,7 +28,6 @@ import type { WorkflowRun } from '../state/workflow-run';
 import { resolveBoundQueueId } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
-import { parseSchedule } from '../lib/schedule-parser';
 import {
   createQueue,
   deleteQueue,
@@ -38,8 +37,7 @@ import {
   setQueuePaused,
   setQueueSchedule,
   QueueRegistryViolation,
-  type QueuePauseSource,
-  type QueueSchedule
+  type QueuePauseSource
 } from './queue-registry';
 import {
   type FeatureRequest,
@@ -962,34 +960,6 @@ export class QueueManager {
           taskCount: impact.pendingTaskCount,
           connectedRunCount: terminated
         };
-      } catch (err) {
-        return { ok: false, reason: this.registryErrorReason(err), queueId };
-      }
-    });
-  }
-
-  /**
-   * Feature 092 (T029, US1, FR-018) — arm or disarm a queue's scheduled start.
-   *
-   * `expression` is the operator's raw text; `parseSchedule` owns the grammar
-   * and never throws, so an unparseable expression is a refusal, not an error.
-   */
-  public async setQueueSchedule(
-    queueId: string,
-    expression: string | null
-  ): Promise<QueueMutationDetail> {
-    return this.logMutation('queue-manager.set-queue-schedule', { queueId }, async () => {
-      let schedule: QueueSchedule | null = null;
-      if (expression !== null) {
-        const parsed = parseSchedule(expression);
-        if (!parsed.ok) return { ok: false, reason: parsed.code, queueId };
-        schedule = parsed.schedule;
-      }
-      try {
-        await this.store.setQueueRegistry(
-          setQueueSchedule(this.store.getQueueRegistry(), { id: queueId, schedule, now: Date.now() })
-        );
-        return { ok: true, queueId };
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err), queueId };
       }

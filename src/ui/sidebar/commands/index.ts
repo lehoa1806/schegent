@@ -4,7 +4,6 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CONTINUE_WORKFLOW,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
@@ -51,7 +50,6 @@ import {
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
-  CMD_SET_QUEUE_SCHEDULE,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_PHASE_LOG_TAIL,
@@ -65,7 +63,6 @@ import { handler as clearAll } from './cmd-clear-all';
 import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
-import { handler as clearQueueSchedule } from './cmd-clear-queue-schedule';
 import { handler as continueWorkflow } from './cmd-continue-workflow';
 import { handler as createQueue } from './cmd-create-queue';
 import { handler as deleteQueue } from './cmd-delete-queue';
@@ -112,7 +109,6 @@ import { handler as saveQueueSettings } from './cmd-save-queue-settings';
 import { handler as saveWorkflows } from './cmd-save-workflows';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
-import { handler as setQueueSchedule } from './cmd-set-queue-schedule';
 import { handler as skipPhase } from './cmd-skip-phase';
 import { handler as start } from './cmd-start';
 import { handler as startPhaseLogTail } from './cmd-start-phase-log-tail';
@@ -136,7 +132,6 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
   [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
-  [CMD_CLEAR_QUEUE_SCHEDULE, clearQueueSchedule as CommandHandler],
   [CMD_CONTINUE_WORKFLOW, continueWorkflow as CommandHandler],
   [CMD_CREATE_QUEUE, createQueue as CommandHandler],
   [CMD_DELETE_QUEUE, deleteQueue as CommandHandler],
@@ -183,7 +178,6 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_WORKFLOWS, saveWorkflows as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
-  [CMD_SET_QUEUE_SCHEDULE, setQueueSchedule as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],
   [CMD_START_PHASE_LOG_TAIL, startPhaseLogTail as CommandHandler],

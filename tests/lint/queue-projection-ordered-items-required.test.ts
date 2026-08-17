@@ -5,10 +5,12 @@
 //   webview: repo/webview-ui/src/lib/snapshot-types.ts ──► QueueProjection
 //
 // Both type declarations MUST keep `orderedItems` as a non-optional,
-// `readonly QueueItem[]` field so the dashboard's "Active Queue" panel
-// and the sidebar `QueueListView` always render queue rows from a single
-// authoritative flat projection (no legacy `inFlight`/`pending`/`recent`
-// bucket math). Marking the field optional would let stale snapshot mocks
+// `readonly QueueItem[]` field so the dashboard's `RunsSurface.svelte`
+// always renders queue rows from a single authoritative flat projection
+// (no legacy `inFlight`/`pending`/`recent` bucket math). Feature 097 deletes
+// the sidebar's `QueueListView.svelte`, the field's other original consumer;
+// the drill-down tiers that replace it read the per-queue `QueueRuntime`
+// array instead. Marking the field optional would let stale snapshot mocks
 // silently re-introduce the "task disappears on cancel" regression from
 // `docs/features/round_1/066_queue_ui_layout_bugs.md`.
 //

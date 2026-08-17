@@ -6,8 +6,8 @@
    * the unified single queue is hard-coded at cap=1 with id='default'.
    *
    * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
-   * Dashboard.svelte's Model Catalog section. Sub-tabs: General,
-   * Fatal Signatures.
+   * PipelineBuilderEditors/ModelCatalogEditor.svelte, mounted under the
+   * same PipelineBuilder.svelte. Sub-tabs: General, Fatal Signatures.
    */
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import GeneralSettingsTab from './settings/GeneralSettingsTab.svelte';

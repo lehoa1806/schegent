@@ -16,8 +16,6 @@ import {
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_SCHEDULE,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_MOVE_TASK
 } from '../../src/ui/sidebar/messages';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
@@ -283,7 +281,7 @@ function connectedRunOwning(
 }
 
 describe('reinstated queue commands are refused in a secondary window (T013b, FR-021)', () => {
-  it('rejects all seven with secondary-window-readonly and writes nothing', async () => {
+  it('rejects all five with secondary-window-readonly and writes nothing', async () => {
     const sys = await build();
     const target = await createQueue(sys, 'Docs');
     const task = await sys.queue.enqueue('feature A');
@@ -291,9 +289,9 @@ describe('reinstated queue commands are refused in a secondary window (T013b, FR
 
     sys.isPrimary.value = false;
 
-    // The gate is registration in `MUTATING_COMMANDS`, and only four of the
-    // seven names match a `mutating-command-name-gate` verb pattern. This
-    // exercises all seven behaviourally so the three the lint cannot see
+    // The gate is registration in `MUTATING_COMMANDS`, and only two of the
+    // five names match a `mutating-command-name-gate` verb pattern. This
+    // exercises all five behaviourally so the three the lint cannot see
     // (`CREATE`, `RENAME`, `DELETE`) are covered by something.
     const commands: SidebarCommand[] = [
       { type: CMD_CREATE_QUEUE, correlationId: 's1', payload: { name: 'Nope' } },
@@ -304,12 +302,6 @@ describe('reinstated queue commands are refused in a secondary window (T013b, FR
         correlationId: 's4',
         payload: { globalConcurrencyCap: 3, defaultQueueId: DEFAULT_QUEUE_ID }
       },
-      {
-        type: CMD_SET_QUEUE_SCHEDULE,
-        correlationId: 's5',
-        payload: { queueId: target, expression: 'in 10m' }
-      },
-      { type: CMD_CLEAR_QUEUE_SCHEDULE, correlationId: 's6', payload: { queueId: target } },
       {
         type: CMD_MOVE_TASK,
         correlationId: 's7',

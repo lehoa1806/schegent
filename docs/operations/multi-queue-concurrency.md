@@ -37,13 +37,11 @@ Both are mutating actions, so they work only in the primary window. Travelling b
 
 ## Delete, move, and the workspace settings
 
-Feature 092 reinstated delete, set schedule, clear schedule, save queue settings and move-task-between-queues end to end on the host, but shipped no control for any of them. Feature 095 added the controls. Where each one lives:
+Feature 092 reinstated delete, set schedule, clear schedule, save queue settings and move-task-between-queues end to end on the host, but shipped no control for any of them. Feature 095 added the controls. Feature 097 removed the schedule ones again — set schedule and clear schedule are fully deregistered, not merely hidden — leaving:
 
 | Action | Control | Tier |
 |---|---|---|
 | Delete a queue | **Delete Queue** | Queue Detail |
-| Arm or re-arm a queue schedule | **Arm** / **Re-arm**, beside the schedule field | Queue Detail |
-| Clear a queue schedule | **Disarm** | Queue Detail |
 | Move a pending task to another queue | **Move to…**, beside the task row | Queue Detail |
 | Concurrency cap and default queue | **Queue Settings** | Queues |
 
@@ -57,15 +55,13 @@ All of these are mutating actions, so they work only in the primary window.
 
 ## Scheduled starts
 
-Two different mechanisms can start a queue at a time you choose. They are independent, they are stored separately, and a queue may carry one, both, or neither — so read which one you are looking at before you reason about it.
-
-**Lifecycle scheduled start.** Choose a start mode when you start a queue, and the queue moves into the `idle-pending` lifecycle: it holds its pending tasks and deliberately does not auto-promote until its trigger fires or you start it by hand. This is the one the lifecycle badge reports, and the one the rest of this page means by `idle-pending`.
+One mechanism starts a queue at a time you choose: **lifecycle scheduled start**. Choose a start mode when you start a queue, and the queue moves into the `idle-pending` lifecycle: it holds its pending tasks and deliberately does not auto-promote until its trigger fires or you start it by hand. This is the one the lifecycle badge reports, and the one the rest of this page means by `idle-pending`.
 
 The lockstep is strict, and it is per queue: a queue either has both a scheduled start and the `idle-pending` lifecycle, or neither. You will never see one without the other, and one queue's armed start says nothing about another's lifecycle.
 
-**Queue schedule.** Type an expression into the schedule field on Queue Detail and press **Arm**. This is stored on the queue's registry entry rather than in its lifecycle, so arming it does not move the queue to `idle-pending` and does not show up on the lifecycle badge — the armed reading appears in the schedule row itself, with the target time the host computed. When it comes due, the queue is unpaused and the schedule is cleared. **Disarm** clears it without waiting; **Re-arm** replaces it.
+Each queue's timer is its own — up to twenty queues may be armed at once, and firing or clearing one leaves the rest armed.
 
-Each queue's timers are its own, whichever mechanism they belong to — up to twenty queues may be armed at once, and firing or clearing one leaves the rest armed.
+Feature 097 removed the second, independent **queue schedule** mechanism (the registry-stored expression armed from a schedule field on Queue Detail, with its own Arm/Re-arm/Disarm controls). It did not share the `idle-pending` lockstep above and could sit alongside it unrelated; that surface is gone, and lifecycle scheduled start is now the only way to arm a future start.
 
 ## The concurrency ceiling
 

@@ -30,7 +30,11 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // QueueItem component reorder unit test references the constants
   // through assertions but does not invoke postCommand inline — it
   // calls the shared helper exports.
-  'webview-ui/src/components/__tests__/QueueItem.reorder.test.ts'
+  'webview-ui/src/components/__tests__/QueueItem.reorder.test.ts',
+  // QueueDetailTier's reorder coverage (feature 097 restoration of this
+  // capability onto QueueDetailRows.svelte) asserts the same way: against
+  // the shared helper's dispatched commands, never an inline postCommand.
+  'webview-ui/src/components/drilldown/__tests__/QueueDetailTier.test.ts'
 ]);
 
 function listMatchingFiles(pattern: string): readonly string[] {
