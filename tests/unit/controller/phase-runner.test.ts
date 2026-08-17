@@ -1070,14 +1070,36 @@ describe('PhaseRunner.run', () => {
       }
     });
 
-    it('maps fatal stdout + exit non-zero to failed PhaseOutcome', async () => {
+    it('maps fatal stderr + exit non-zero to failed PhaseOutcome', async () => {
       cliRunner = makeFakeRunner(async () =>
-        makeRawOutput({ stdout: `noise\n${FATAL}\nmore`, exitCode: 1 })
+        makeRawOutput({ stderr: `noise\n${FATAL}\nmore`, exitCode: 1 })
       );
       runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
       const out = await runner.run(baseInputs);
       expect(out.outcome).toBe('failed');
       expect(out.terminationReason).toBe('error');
+    });
+
+    it('does NOT fail on the same text carried on stdout (2026-08-16)', async () => {
+      // `error: unknown option` is an argument-parse diagnostic and is
+      // stderr-scoped. A stdout occurrence is text the CLI was carrying —
+      // a file the agent read — and failing on it cost a 3.6-hour phase.
+      cliRunner = makeFakeRunner(async () =>
+        makeRawOutput({ stdout: `docs quote: ${FATAL}\n`, exitCode: 0 })
+      );
+      runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+      const out = await runner.run(baseInputs);
+      expect(out.outcome).not.toBe('failed');
+    });
+
+    it('does NOT fail on a signature quoted inside a stream-json envelope', async () => {
+      const envelope = `{"type":"user","content":"quoting \\"${FATAL}\\" from a doc"}\n`;
+      cliRunner = makeFakeRunner(async () =>
+        makeRawOutput({ stdout: envelope, stderr: envelope, exitCode: 0 })
+      );
+      runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+      const out = await runner.run(baseInputs);
+      expect(out.outcome).not.toBe('failed');
     });
 
     it('records iteration counter = 1 when fatal fires on iteration 1 (FR-004)', async () => {
