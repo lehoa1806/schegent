@@ -1,0 +1,45 @@
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: speckit-bugfix
+  name: Spec-kit Bugfix
+  version: 1
+spec:
+  phaseIds:
+    - bugfix-report
+    - bugfix-patch
+    - bugfix-verify-pre
+    - bugfix-implement
+    - bugfix-verify-post
+included:
+  phases:
+    - metadata:
+        phaseId: bugfix-report
+        name: Spec-kit Bugfix Report
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-report
+    - metadata:
+        phaseId: bugfix-patch
+        name: Spec-kit Bugfix Patch
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-patch
+    - metadata:
+        phaseId: bugfix-verify-pre
+        name: Spec-kit Bugfix Verify (pre)
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-verify
+    - metadata:
+        phaseId: bugfix-implement
+        name: Spec-kit Implement (bugfix)
+        version: 1
+      spec:
+        instruction: /speckit-implement
+    - metadata:
+        phaseId: bugfix-verify-post
+        name: Spec-kit Bugfix Verify (post)
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-verify
