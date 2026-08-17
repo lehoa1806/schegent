@@ -202,9 +202,21 @@ describe('FR-002 — 15-min backoff on transient_error', () => {
     expect(watchdog.pauseAndPoll).toHaveBeenCalledWith(
       'transient_error',
       expect.objectContaining({
-        durationOverrideMs: TRANSIENT_BACKOFF_MS,
+        durationOverrideMs: expect.any(Number),
         skipStatusCheck: true
       })
+    );
+    // `retry-coordinator.ts` arms the watchdog with `firesAt - now()`, i.e.
+    // the backoff minus however long the intervening work took. Asserting
+    // exact equality made this depend on that elapsed time rounding to 0ms,
+    // which only holds on an idle host. Bound it the way the offset check
+    // above is bounded instead.
+    const transientArgs = watchdog.pauseAndPoll.mock.calls.at(-1)!;
+    const transientOverride =
+      (transientArgs[1] as { durationOverrideMs: number }).durationOverrideMs;
+    expect(transientOverride).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS);
+    expect(transientOverride).toBeGreaterThanOrEqual(
+      TRANSIENT_BACKOFF_MS - (afterMs - beforeMs) - 50
     );
 
     expect(auditWriter.append).toHaveBeenCalledWith(
@@ -231,6 +243,7 @@ describe('FR-003 — 60-min backoff on rate_limited', () => {
     const feature = await queue.enqueue('feature description');
     const beforeMs = Date.now();
     await controller.startNew(feature, null);
+    const afterMs = Date.now();
 
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('paused');
@@ -243,9 +256,18 @@ describe('FR-003 — 60-min backoff on rate_limited', () => {
     expect(watchdog.pauseAndPoll).toHaveBeenCalledWith(
       'rate_limit',
       expect.objectContaining({
-        durationOverrideMs: RATE_LIMIT_BACKOFF_MS,
+        durationOverrideMs: expect.any(Number),
         skipStatusCheck: true
       })
+    );
+    // Same wall-clock dependency as the transient case above: the armed
+    // duration is `firesAt - now()`, not the constant itself.
+    const rateLimitArgs = watchdog.pauseAndPoll.mock.calls.at(-1)!;
+    const rateLimitOverride =
+      (rateLimitArgs[1] as { durationOverrideMs: number }).durationOverrideMs;
+    expect(rateLimitOverride).toBeLessThanOrEqual(RATE_LIMIT_BACKOFF_MS);
+    expect(rateLimitOverride).toBeGreaterThanOrEqual(
+      RATE_LIMIT_BACKOFF_MS - (afterMs - beforeMs) - 50
     );
   });
 });

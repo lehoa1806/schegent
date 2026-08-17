@@ -83,6 +83,38 @@ function buildProjector(workspaceRoot: string): {
   };
 }
 
+/**
+ * Wait until `predicate` holds, polling the macrotask queue.
+ *
+ * The cold-start tail read is real async disk I/O, so waiting a fixed 25ms
+ * for it encodes an assumption about how fast the host is. Under full-suite
+ * parallelism that assumption broke: the read had not finished, no populated
+ * snapshot had been pushed, and the assertion failed on `undefined`
+ * (observed 2026-08-17, once in 8 full-suite runs).
+ *
+ * Polling returns as soon as the condition holds — normally sooner than the
+ * old sleep — and only spends the whole budget when something is genuinely
+ * stuck, where it fails with the condition's name rather than a bare
+ * `expected undefined to be defined`.
+ */
+async function waitUntil(
+  predicate: () => boolean,
+  label: string,
+  timeoutMs = 2000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) {
+      throw new Error(`waitUntil timed out after ${timeoutMs}ms waiting for: ${label}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+const hasPopulatedTail = (snaps: readonly WorkflowSnapshot[]): boolean =>
+  snaps.some((s) => s.auditTail.length > 0);
+
 describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
   let workspaceRoot: string;
   let auditDir: string;
@@ -106,13 +138,13 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     }
     await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
 
-    const { projector, flush } = buildProjector(workspaceRoot);
+    const { projector } = buildProjector(workspaceRoot);
 
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => {
       received.push(s);
     });
-    await flush();
+    await waitUntil(() => hasPopulatedTail(received), 'cold-start populated snapshot push');
     sub.dispose();
     projector.dispose();
 
@@ -136,10 +168,10 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     }
     await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
 
-    const { projector, flush } = buildProjector(workspaceRoot);
+    const { projector } = buildProjector(workspaceRoot);
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => received.push(s));
-    await flush();
+    await waitUntil(() => hasPopulatedTail(received), 'cold-start populated snapshot push');
     sub.dispose();
     projector.dispose();
 
@@ -154,6 +186,10 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     const { projector, flush } = buildProjector(workspaceRoot);
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => received.push(s));
+    // No log on disk, so no snapshot will ever become populated: wait for the
+    // first push, then settle so a late cold-start push would still be caught
+    // by the all-empty assertion below rather than land after dispose.
+    await waitUntil(() => received.length > 0, 'first snapshot push');
     await flush();
     sub.dispose();
     projector.dispose();
@@ -172,7 +208,7 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     ];
     await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
 
-    const { projector, emitLiveEvent, flush } = buildProjector(workspaceRoot);
+    const { projector, emitLiveEvent } = buildProjector(workspaceRoot);
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => received.push(s));
 
@@ -190,7 +226,7 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
       outcome: 'info'
     });
 
-    await flush();
+    await waitUntil(() => hasPopulatedTail(received), 'populated snapshot push after live event');
     sub.dispose();
     projector.dispose();
 
