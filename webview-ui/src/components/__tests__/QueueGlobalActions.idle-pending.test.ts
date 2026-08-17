@@ -1,8 +1,8 @@
 // Feature 065 (T028c, BUG-007 / 2026-05-23) — QueueGlobalActions MUST
 // suppress its `action === 'start'` branch when
-// `queueLifecycle === 'idle-pending'` so the FR-018 chooser surface in
-// `QueueListView.svelte` remains the sole dispatcher of `CMD_START_QUEUE`
-// against an idle-pending queue.
+// `queueLifecycle === 'idle-pending'` so the FR-018 chooser surface, now
+// `QueueIdlePendingPanel.svelte`, remains the sole dispatcher of
+// `CMD_START_QUEUE` against an idle-pending queue.
 //
 // This component is the sidebar cousin of QueueControls. The same
 // suppression invariant applies — both share the same tri-state

@@ -17,27 +17,7 @@ There is no separate scheduler. The drain hook lives in `AutoDrainCoordinator.dr
 
 ## Queue Management UI
 
-The primary place to manage your queue is the Dashboard Webview (see [Dashboard UI/UX Guide](dashboard-ui.md) for full details).
-
-```text
-+-------------------------------------------------------------------------+
-| [ Queue Management Controls ]                                           |
-|  [ ▶ Resume Queue ]  [ ⏸ Pause Queue ]  [ 🧹 Clear Done ]  [ 🗑 Clean ] |
-|                                                                         |
-| [ Active & Pending Queue ]                                              |
-|  1. [ in-flight ] 005-stabilization-refactor               [ Cancel ]   |
-|  2. [ pending   ] 006-telemetry-metrics                    [▲] [▼] [✖]  |
-|  3. [ failed    ] 004-sha256-precheck                      [ ↻ Retry ]  |
-+-------------------------------------------------------------------------+
-```
-
-| Action | Control | What it does |
-|---|---|---|
-| Pause | `[⏸ Pause Queue]` | Pauses the global queue auto-drain. `pausedReason` propagates into the snapshot. |
-| Resume | `[▶ Resume Queue]` | Resumes the queue and re-arms auto-drain. |
-| Retry | `[ ↻ Retry ]` | Re-enqueues a `failed` item back into `pending`. |
-| Reorder | `[▲] [▼]` | Moves a `pending` item up or down in the priority list. |
-| Clean | `[ 🧹 Clear Done ]` / `[ 🗑 Clean ]` | Removes completed or failed items from the visible list. |
+The primary place to manage a queue is the Schegent dashboard's **Queue Detail** tier — open the sidebar's dashboard link, pick a queue on **Queues**, then its card. Pause, resume, retry, and reorder are per-queue controls on that tier, not a single global panel; see [Multiple queues and concurrency](multi-queue-concurrency.md) for delete, move, and workspace-settings controls. The [Dashboard UI/UX Guide](dashboard-ui.md) this section used to point to describes feature 097's now-deleted single-page layout and is retained only for historical reference.
 
 ## Status taxonomy
 

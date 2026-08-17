@@ -1,5 +1,7 @@
 # Schegent Dashboard UI/UX Guide
 
+> **Superseded.** Feature 097 deleted `Dashboard.svelte` and the single-page layout described below in favor of a three-tier drill-down surface — **Queues** → **Queue Detail** → **Run Detail** (`repo/webview-ui/src/components/drilldown/`). Tier 2 (`QueueDetailTier.svelte`) now owns the task list, composer, and scheduled-start indicator; tier 3 (`RunDetailTier.svelte`) owns a single run's phase progression, phase log, and outputs. `QueueControls.svelte` was not deleted — it survives unchanged and is mounted by tier 2 instead of by the removed `Dashboard.svelte`. See [Multiple queues and concurrency](multi-queue-concurrency.md) for the current queue-management surface and `docs/mockup/schegent_mockup.html` (`view-queue-detail`, `view-run-detail`) for the current visual reference. Everything below documents the pre-097 single-page Dashboard, is retained for historical reference only, and has not been rewritten for the new tier UI.
+
 The Schegent Dashboard is a rich Webview that serves as the central control plane for the autonomous workflow. While the sidebar is optimized for passive monitoring, the Dashboard is optimized for active management, queue inspection, and deep audit log review.
 
 ## Visual Anatomy

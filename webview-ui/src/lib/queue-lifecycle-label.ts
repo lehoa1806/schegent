@@ -6,10 +6,10 @@
 // value can be forgotten. Exhaustive over `QueueLifecycle`, so adding a member to
 // the union fails the build here instead of rendering a blank badge.
 //
-// Deliberately NOT shared with the sidebar's `QueueListView.svelte`, which keeps
-// its own shorter strings: that surface shares one header row with the action
-// chips and is bound by width in a way these cards are not. The two are different
-// presentations of the same value, not a duplicated rule.
+// Feature 097 removes the sidebar's `QueueListView.svelte`, which is the
+// surface this module was deliberately NOT shared with (it kept its own
+// shorter strings for a header row bound by width in a way these cards are
+// not). This module is now the drill-down's only lifecycle-label surface.
 //
 // This file is on the `no-running-state-literal` allowlist for the same reason
 // every lifecycle module feature 065 added is: `'running'` here is the

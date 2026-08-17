@@ -32,12 +32,16 @@ const SIDEBAR_REQUIRED_TESTIDS: ReadonlyArray<string> = [
   'sidebar-open-dashboard-button'
 ];
 
+// Feature 097 (T013) deleted Dashboard.svelte and its subtree; these are each
+// original FR-033 zone's direct successor testid in the tier components
+// (QueueControls.svelte, QueueDetailRows.svelte, PhaseLogFeed.svelte), mirroring
+// dashboard-activation.host.test.ts's LAYOUT_ZONE_TESTIDS.
 const DASHBOARD_REQUIRED_TESTIDS: ReadonlyArray<string> = [
   'dashboard-queue-input',
-  'dashboard-queue-management',
-  'dashboard-queue-list',
+  'dashboard-queue-action',
+  'queue-detail-rows',
   'dashboard-phase-progression',
-  'dashboard-activity-audit-feed'
+  'phase-log-feed'
 ];
 
 describe('Webview bundle content audit (T072)', () => {

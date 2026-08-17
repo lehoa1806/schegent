@@ -13,11 +13,9 @@
 // tidiness instinct is a diff with no requirement behind it.
 
 import {
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
-  CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_SCHEDULE
+  CMD_SAVE_QUEUE_SETTINGS
 } from './messages';
 import { snapshotStore } from './snapshot-store.svelte';
 import type { AckResult } from './snapshot-store.svelte';
@@ -123,23 +121,6 @@ function readProbeAck(ack: AckResult): DeleteQueueProbeResult {
 }
 
 /**
- * Arm a queue's scheduled start. `expression` is the operator's raw text and
- * travels verbatim — the grammar is the host's `parseSchedule()` and the webview
- * neither parses it nor computes a target instant (FR-007).
- */
-export function setQueueSchedule(queueId: string, expression: string): Promise<QueueControlResult> {
-  return correlatedRequest(
-    () => postCommand(CMD_SET_QUEUE_SCHEDULE, { queueId, expression }).correlationId
-  );
-}
-
-export function clearQueueSchedule(queueId: string): Promise<QueueControlResult> {
-  return correlatedRequest(
-    () => postCommand(CMD_CLEAR_QUEUE_SCHEDULE, { queueId }).correlationId
-  );
-}
-
-/**
  * Both workspace queue settings under one command. The cap's accepted range is
  * the host validator's and is not restated here (FR-011); an out-of-range value
  * reaches the host and comes back as a refusal.
@@ -187,7 +168,8 @@ export function moveTask(taskId: string, targetQueueId: string): Promise<QueueCo
 //   - `QueueManager.moveTask`, `WorkspaceState.movePendingRequest` and the one
 //     rename in `taskErrorReason` (`task-not-found` → `unknown-task-id`)
 //   - `parseSchedule` (`lib/schedule-parser.ts`) — the five `ScheduleParseError`
-//     codes, passed through by `setQueueSchedule` as `parsed.code`
+//     codes. Feature 097 removed this module's only caller (`setQueueSchedule`,
+//     FR-013); kept dormant rather than deleted in case a caller returns.
 //   - `QueueManager.saveQueueSettings` — the settings refusals
 //   - `commands/constants.ts` and each `cmd-*.ts` guard — transport refusals
 // `timeout` and `unexpected-accept` are the two this module synthesises itself.
@@ -199,7 +181,6 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'missing-payload': 'The request was incomplete and was not sent.',
   'unexpected-payload-fields': 'The request carried unexpected fields and was not sent.',
   'invalid-confirmation': 'The confirmation could not be read. Try the action again.',
-  'invalid-schedule-expression': 'That schedule expression could not be read.',
   'invalid-position': 'That position is not valid for the target queue.',
   // Delete
   'default-queue-undeletable':

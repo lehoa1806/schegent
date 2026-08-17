@@ -66,7 +66,7 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
   ],
   [
     'webview-ui/src/components/LiveActivityHeader.svelte',
-    "Superseded by DashboardActivityPane's header."
+    "Superseded by RunDetailTier's header."
   ],
   [
     'webview-ui/src/components/MonitorPill.svelte',
@@ -78,13 +78,13 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
   ],
   [
     'webview-ui/src/components/PhaseTracker.svelte',
-    "Superseded by DashboardActivityPane's phase list."
+    "Superseded by RunDetailTier's phase list."
   ],
   [
     'webview-ui/src/components/PhaseTile.svelte',
     'Only importer is PhaseTracker, itself unreachable.'
   ],
-  ['webview-ui/src/components/QueueList.svelte', 'Superseded by DashboardQueuePane.'],
+  ['webview-ui/src/components/QueueList.svelte', 'Superseded by QueuesTier.'],
   [
     'webview-ui/src/components/QueueGlobalActions.svelte',
     'Only importer is QueueList. Already documented as an orphan in destructive-actions.lint.test.ts.'

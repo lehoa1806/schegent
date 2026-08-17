@@ -4,7 +4,6 @@ import {
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CONTINUE_WORKFLOW,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
@@ -40,7 +39,6 @@ import {
   CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
-  CMD_SET_QUEUE_SCHEDULE,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_QUEUE,
@@ -113,8 +111,6 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_CREATE_QUEUE]: 'queue registry write',
   [CMD_RENAME_QUEUE]: 'queue registry write',
   [CMD_DELETE_QUEUE]: 'queue registry write',
-  [CMD_SET_QUEUE_SCHEDULE]: 'queue schedule write',
-  [CMD_CLEAR_QUEUE_SCHEDULE]: 'queue schedule write',
   [CMD_SAVE_QUEUE_SETTINGS]: 'queue settings write',
   [CMD_MOVE_TASK]: 'task move between queues'
 } satisfies Partial<Record<CommandType, string>>);

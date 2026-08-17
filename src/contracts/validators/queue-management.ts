@@ -1,38 +1,30 @@
-// Feature 092 (T034, US1) — inbound validators for the seven multi-queue
+// Feature 092 (T034, US1) — inbound validators for the multi-queue
 // management commands feature 030 removed alongside the commands themselves.
+// Five remain today: feature 097 removes the two schedule commands
+// (`CMD_SET_QUEUE_SCHEDULE` / `CMD_CLEAR_QUEUE_SCHEDULE`) and their validators,
+// down from the seven this file originally shipped with.
 //
 // These parse untrusted webview input at the boundary; they do not re-implement
-// any domain rule. Name uniqueness, position compaction, the deletion refusal
-// order and the schedule grammar all stay behind the queue registry and
-// `parseSchedule()`, which remain the single sites that own them. What happens
-// here is type, presence and bound checking only, so a malformed message is
-// refused before `MessageRouter` dispatches it.
+// any domain rule. Name uniqueness, position compaction and the deletion refusal
+// order all stay behind the queue registry, which remains the single site that
+// owns them. What happens here is type, presence and bound checking only, so a
+// malformed message is refused before `MessageRouter` dispatches it.
 
 import {
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
   CMD_RENAME_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_SCHEDULE,
   type SidebarCommand
 } from '../sidebar-ipc';
 import { MAX_QUEUES, MAX_QUEUE_NAME_LENGTH } from '../../queue/queue-registry';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
-/**
- * A generous bound on the operator's raw schedule expression. The grammar is
- * `parseSchedule()`'s alone — this only stops an unbounded string reaching it.
- */
-const SCHEDULE_EXPRESSION_MAX = 64;
-
 type QueueCommandType =
   | typeof CMD_CREATE_QUEUE
   | typeof CMD_RENAME_QUEUE
   | typeof CMD_DELETE_QUEUE
-  | typeof CMD_SET_QUEUE_SCHEDULE
-  | typeof CMD_CLEAR_QUEUE_SCHEDULE
   | typeof CMD_SAVE_QUEUE_SETTINGS
   | typeof CMD_MOVE_TASK;
 
@@ -127,48 +119,6 @@ export function validateDeleteQueue(
     type: CMD_DELETE_QUEUE,
     correlationId,
     payload: { queueId, ...(confirmed === true ? { confirmed: true } : {}) }
-  } as SidebarCommand);
-}
-
-export function validateSetQueueSchedule(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const got = requirePayload(CMD_SET_QUEUE_SCHEDULE, obj, correlationId, ['queueId', 'expression']);
-  if ('failure' in got) return got.failure;
-  const queueId = got.p['queueId'];
-  if (!isValidId(queueId)) {
-    return fail('invalid-queueId', { type: CMD_SET_QUEUE_SCHEDULE, correlationId });
-  }
-  const expression = got.p['expression'];
-  if (
-    typeof expression !== 'string' ||
-    expression.trim().length === 0 ||
-    expression.length > SCHEDULE_EXPRESSION_MAX
-  ) {
-    return fail('invalid-schedule-expression', { type: CMD_SET_QUEUE_SCHEDULE, correlationId });
-  }
-  return ok({
-    type: CMD_SET_QUEUE_SCHEDULE,
-    correlationId,
-    payload: { queueId, expression }
-  } as SidebarCommand);
-}
-
-export function validateClearQueueSchedule(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const got = requirePayload(CMD_CLEAR_QUEUE_SCHEDULE, obj, correlationId, ['queueId']);
-  if ('failure' in got) return got.failure;
-  const queueId = got.p['queueId'];
-  if (!isValidId(queueId)) {
-    return fail('invalid-queueId', { type: CMD_CLEAR_QUEUE_SCHEDULE, correlationId });
-  }
-  return ok({
-    type: CMD_CLEAR_QUEUE_SCHEDULE,
-    correlationId,
-    payload: { queueId }
   } as SidebarCommand);
 }
 

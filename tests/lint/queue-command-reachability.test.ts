@@ -41,13 +41,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const WEBVIEW_SRC = resolve(REPO_ROOT, 'webview-ui', 'src');
 const COMMAND_METADATA = resolve(REPO_ROOT, 'src', 'contracts', 'sidebar-command-metadata.ts');
 
-/** SC-001's "seven queue operations", as feature 092 reinstated them. */
+/**
+ * SC-001's "seven queue operations", as feature 092 reinstated them — five
+ * remain after feature 097 removed the schedule pair.
+ */
 const PINNED_FAMILY: readonly string[] = [
   'CMD_CREATE_QUEUE',
   'CMD_RENAME_QUEUE',
   'CMD_DELETE_QUEUE',
-  'CMD_SET_QUEUE_SCHEDULE',
-  'CMD_CLEAR_QUEUE_SCHEDULE',
   'CMD_SAVE_QUEUE_SETTINGS',
   'CMD_MOVE_TASK'
 ];
@@ -68,23 +69,21 @@ const PINNED_QUEUE_SURFACE: readonly string[] = [
   'CMD_CREATE_QUEUE',
   'CMD_RENAME_QUEUE',
   'CMD_DELETE_QUEUE',
-  'CMD_SET_QUEUE_SCHEDULE',
-  'CMD_CLEAR_QUEUE_SCHEDULE',
   'CMD_SAVE_QUEUE_SETTINGS',
   'CMD_MOVE_TASK'
 ];
 
 /**
- * The five feature 095 added a control for. The other two already had call sites
- * when this feature started — `CMD_CREATE_QUEUE` in `QueuesTier.svelte` and
- * `CMD_RENAME_QUEUE` in `QueueDetailTier.svelte` — and relocating working code
- * into the helper to make the rule uniform would be a diff with no requirement
- * behind it. They are exempt from A2, never from A1.
+ * The three feature 095 added a control for that are still live — feature 097
+ * removed the two it added for the queue schedule. The other two already had
+ * call sites when this feature started — `CMD_CREATE_QUEUE` in
+ * `QueuesTier.svelte` and `CMD_RENAME_QUEUE` in `QueueDetailTier.svelte` —
+ * and relocating working code into the helper to make the rule uniform would
+ * be a diff with no requirement behind it. They are exempt from A2, never
+ * from A1.
  */
 const SINGLE_CALL_SITE_COMMANDS: readonly string[] = [
   'CMD_DELETE_QUEUE',
-  'CMD_SET_QUEUE_SCHEDULE',
-  'CMD_CLEAR_QUEUE_SCHEDULE',
   'CMD_SAVE_QUEUE_SETTINGS',
   'CMD_MOVE_TASK'
 ];
@@ -185,13 +184,13 @@ describe('Feature 095 T035 — every queue command is reachable from the webview
     ).toEqual([...PINNED_QUEUE_SURFACE].sort());
   });
 
-  it('keeps the seven reinstated commands inside that surface', () => {
+  it('keeps the five reinstated commands inside that surface', () => {
     const missing = PINNED_FAMILY.filter((command) => !QUEUE_SURFACE.includes(command));
 
     expect(
       missing,
       `Renamed or unregistered since feature 092: ${missing.join(', ')}. ` +
-        'SC-001 counts these seven; a rename that skips this pin makes the count meaningless.'
+        'SC-001 counts these five; a rename that skips this pin makes the count meaningless.'
     ).toEqual([]);
   });
 

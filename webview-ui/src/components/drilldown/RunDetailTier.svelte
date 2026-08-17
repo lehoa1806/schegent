@@ -20,7 +20,11 @@
   import PhaseProgression from '../PhaseProgression.svelte';
   import QueueItemActions from '../QueueItemActions.svelte';
   import WorkflowRun from '../WorkflowRun/WorkflowRun.svelte';
+  import PhaseLogFeed from '../PhaseLogFeed/PhaseLogFeed.svelte';
+  import RunOutputs from '../RunOutputs.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
+  import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
+  import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -49,6 +53,11 @@
     (snapshot.connectedRuns ?? []).find((run) => run.connectedRunId === runId) ?? null
   );
   const task = $derived(tasks.find((item) => item.id === runId) ?? null);
+  // T010 (FR-010/SC-003) — the same resolver tier 2's row calls, so the two
+  // tiers can never disagree about what a Task's Pipeline is named.
+  const pipelineName = $derived(
+    task !== null ? resolveTaskPipelineName(task, snapshot.availablePipelines ?? []) : ''
+  );
 
   const inFlightRun = $derived(runtime?.inFlightRun ?? null);
   // The feed belongs to this Run only while this Run is the one executing. A
@@ -61,6 +70,33 @@
       ? 'idle'
       : `${liveActivity.summary ?? 'idle'} — ${liveActivity.freshness}`
   );
+  // Same non-borrowing rule as `liveActivity` above: outputs belong to
+  // whichever Run is executing, and a Task that isn't the one executing must
+  // not show a sibling Run's recorded outputs.
+  const outputs = $derived(isExecuting ? inFlightRun?.outputs ?? [] : []);
+
+  // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
+  // removed Dashboard embed, this tier is about one Run, so the store lives
+  // here rather than being shared workspace-wide.
+  const phaseLogStore = createPhaseLogStore();
+  let pinnedTaskKey: string | null = null;
+
+  $effect(() => {
+    if (task === null) return;
+    const key = `${queueId}:${runId}:${task.currentPipelineId}:${task.currentPhase}`;
+    if (key === pinnedTaskKey) return;
+    pinnedTaskKey = key;
+    phaseLogStore.setSelection(
+      {
+        queueId,
+        taskId: runId,
+        pipelineId: task.currentPipelineId ?? null,
+        phaseId: task.currentPhase ?? null,
+        iterationN: null
+      },
+      { origin: 'cascade' }
+    );
+  });
 
   function onBackKeyDown(event: KeyboardEvent): void {
     // jsdom does not synthesise click from Enter/Space on a button; FR-059's
@@ -94,6 +130,7 @@
   {:else if task !== null}
     <section class="run-body">
       <h1 class="run-prompt" data-testid="run-detail-prompt">{task.label}</h1>
+      <p class="run-pipeline" data-testid="run-detail-pipeline">{pipelineName}</p>
       <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
 
       {#if isPrimary}
@@ -123,6 +160,13 @@
         phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
         resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
       />
+
+      <RunOutputs {outputs} />
+
+      <!-- autoFollow={false}: this store is pinned to one Run (the $effect
+           above); PhaseLogFeed's own Live-Mode auto-follow must not
+           redirect it to the default queue's in-flight task. -->
+      <PhaseLogFeed {snapshot} store={phaseLogStore} autoFollow={false} />
     </section>
   {:else}
     <!-- FR-062 — the destination resolved to nothing. Say so; the surface above
@@ -175,6 +219,13 @@
     font-weight: 600;
     color: var(--vscode-editor-foreground);
     overflow-wrap: anywhere;
+  }
+
+  .run-pipeline {
+    margin: 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground);
   }
 
   .live-feed {

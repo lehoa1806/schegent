@@ -1,7 +1,7 @@
 // Feature 065 (T028c, BUG-007 / 2026-05-23) — QueueControls MUST suppress
 // its `action === 'start'` branch when `queueLifecycle === 'idle-pending'`
-// so the FR-018 chooser surface in `QueueListView.svelte` remains the sole
-// dispatcher of `CMD_START_QUEUE` against an idle-pending queue.
+// so the FR-018 chooser surface, now `QueueIdlePendingPanel.svelte`, remains
+// the sole dispatcher of `CMD_START_QUEUE` against an idle-pending queue.
 //
 // Why this test exists: prior to BUG-007 the tri-state derivation read
 // only (paused, hasInFlight, pendingCount). A queue in `idle-pending` with

@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { Component } from 'svelte';
   // Feature 092 (T112, FR-061) — the `operations` route now mounts the
-  // drill-down's location owner rather than `Dashboard` directly. `Dashboard`
-  // is still what tier 2 embeds, scoped to one queue; it is simply no longer
-  // the route's own top-level view.
+  // drill-down's location owner rather than `Dashboard` directly. Feature 097
+  // retires the `Dashboard` embed tier 2 used to reuse for its chrome — see
+  // `QueueDetailTier.svelte`'s own header — so this route no longer touches
+  // `Dashboard` at any depth.
   import OperationsSurface from '../components/OperationsSurface.svelte';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import { snapshotStore } from '../lib/snapshot-store.svelte';

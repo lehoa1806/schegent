@@ -146,7 +146,7 @@ describe('Dashboard render integration (T062)', () => {
     expect(mocks.state.panels[0].viewType).toBe('schegent.dashboard');
   });
 
-  it('(b) dashboard bundle references the FR-033 layout-zone testids', () => {
+  it('(b) dashboard bundle references the operations-surface layout-zone testids', () => {
     const repoRoot = path.resolve(__dirname, '..', '..');
     const bundlePath = path.join(repoRoot, 'dist', 'webview', 'dashboard.js');
     if (!fs.existsSync(bundlePath)) {
@@ -154,9 +154,14 @@ describe('Dashboard render integration (T062)', () => {
       return;
     }
     // The claim is that the zones ship, not which chunk they land in. Feature 092
-    // moved the drill-down tiers behind dynamic imports, so `Dashboard.svelte` and
-    // its zones now emit into `chunks/QueueDetailTier.js` rather than the entry —
-    // a chunking decision the bundler owns and this assertion should not pin.
+    // moved the drill-down tiers behind dynamic imports, so the zones emit into
+    // `chunks/QueueDetailTier.js` rather than the entry — a chunking decision the
+    // bundler owns and this assertion should not pin. Feature 097 (T013) deleted
+    // `Dashboard.svelte` and its subtree outright, so the original FR-033 zone
+    // testids (`dashboard-queue-management`, `dashboard-queue-list`,
+    // `dashboard-activity-audit-feed`) no longer exist anywhere; this list now
+    // names each zone's direct successor in the tier components
+    // (`QueueControls.svelte`, `QueueDetailRows.svelte`, `PhaseLogFeed.svelte`).
     const chunkDir = path.join(repoRoot, 'dist', 'webview', 'chunks');
     const bundleSource = [
       bundlePath,
@@ -170,10 +175,10 @@ describe('Dashboard render integration (T062)', () => {
       .map((file) => fs.readFileSync(file, 'utf8'))
       .join('\n');
     expect(bundleSource).toContain('dashboard-queue-input');
-    expect(bundleSource).toContain('dashboard-queue-management');
-    expect(bundleSource).toContain('dashboard-queue-list');
+    expect(bundleSource).toContain('dashboard-queue-action');
+    expect(bundleSource).toContain('queue-detail-rows');
     expect(bundleSource).toContain('dashboard-phase-progression');
-    expect(bundleSource).toContain('dashboard-activity-audit-feed');
+    expect(bundleSource).toContain('phase-log-feed');
   });
 
   it('(c) dashboard panel HTML carries a Content-Security-Policy meta with nonce', () => {

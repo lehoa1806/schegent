@@ -6,9 +6,16 @@ import MonitorPill from '../MonitorPill.svelte';
 import QueueGlobalActions from '../QueueGlobalActions.svelte';
 import QueueItemActions from '../QueueItemActions.svelte';
 import HistorySection from '../HistorySection.svelte';
-import Dashboard from '../Dashboard.svelte';
-import type { CliMonitorState, HistoryEntry, QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
-import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
+import QueueDetailRows from '../drilldown/QueueDetailRows.svelte';
+import { buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
+import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import type {
+  CliMonitorState,
+  HistoryEntry,
+  QueueItem,
+  QueueSummary,
+  WorkflowSnapshot
+} from '../../lib/snapshot-types';
 
 afterEach(() => cleanup());
 
@@ -49,6 +56,51 @@ function buildQueueItem(): QueueItem {
   });
 }
 
+function buildQueueSummary(id: string, name: string, position: number): QueueSummary {
+  return {
+    id,
+    name,
+    position,
+    state: 'active',
+    pauseSource: null,
+    schedule: null,
+    taskCount: 0
+  };
+}
+
+/** A snapshot with one queue and a second, empty queue — the second gives a
+ * pending Task somewhere to move to, so `QueueDetailRows` renders the move
+ * `<select>` alongside the row buttons. */
+function buildRowsSnapshot(tasks: readonly QueueItem[]): WorkflowSnapshot {
+  return Object.freeze({
+    schemaVersion: 4,
+    isPrimary: true,
+    queues: Object.freeze([buildQueueRuntime({ queueId: 'q1', name: 'Queue one', tasks })]),
+    queue: Object.freeze({
+      inFlight: null,
+      pending: Object.freeze([]),
+      recent: Object.freeze([]),
+      orderedItems: Object.freeze(tasks),
+      queues: Object.freeze([
+        buildQueueSummary('q1', 'Queue one', 0),
+        buildQueueSummary('q2', 'Queue two', 1)
+      ]),
+      paused: false
+    }),
+    auditTail: Object.freeze([]),
+    monitor: null,
+    history: Object.freeze([]),
+    producedAt: '2026-08-18T00:00:00.000Z',
+    availablePipelines: Object.freeze([
+      Object.freeze({ id: 'standard', name: 'Standard', phases: Object.freeze(['speckit-specify']) })
+    ]),
+    availablePhases: Object.freeze([]),
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }),
+    availableBackends: Object.freeze(['claude']),
+    generalSettings: IDLE_GENERAL_SETTINGS
+  }) as unknown as WorkflowSnapshot;
+}
+
 function buildHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return Object.freeze({
     runId: 'rh-1',
@@ -62,41 +114,6 @@ function buildHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry 
     auditLogPointer: 'runId:rh-1',
     ...overrides
   });
-}
-
-function buildSnapshot(): WorkflowSnapshot {
-  const pending = Object.freeze([buildQueueItem()]) as readonly QueueItem[];
-  return Object.freeze({
-    schemaVersion: 4,
-    isPrimary: true,
-    // Feature 092 — the v3 root run singulars now hang off the queue that owns
-    // the Run. `foldLegacyRun` performs that fold, so the call sites below keep
-    // their v3 wording.
-    queues: foldLegacyRun({
-      status: 'running',
-      activeFeature: { id: 'feat-1', label: 'specs/001-x', startedAt: '2026-05-10T00:00:00.000Z' },
-      phases: Object.freeze([]),
-      liveActivity: Object.freeze({
-      summary: null,
-      category: null,
-      lastEventAt: null,
-      freshness: 'idle',
-      staleSeconds: null
-      }),
-      workflowElapsedMs: 0
-    }),
-    queue: Object.freeze({
-      inFlight: null,
-      pending,
-      recent: Object.freeze([]) as readonly QueueItem[],
-      paused: false,
-      orderedItems: pending
-    }),
-    auditTail: Object.freeze([]),
-    monitor: buildMonitor(),
-    history: Object.freeze([buildHistoryEntry()]) as readonly HistoryEntry[],
-    producedAt: '2026-05-10T00:00:00.000Z'
-  } as unknown as WorkflowSnapshot);
 }
 
 describe('Accessibility verification (T070 / FR-022)', () => {
@@ -125,24 +142,6 @@ describe('Accessibility verification (T070 / FR-022)', () => {
       expect(b.getAttribute('type')).toBe('button');
       // Default tabindex is 0 (focusable) — make sure nothing went tabindex=-1
       expect(b.getAttribute('tabindex')).not.toBe('-1');
-    }
-  });
-
-  it('Dashboard queue rows expose labeled action buttons (BUG-003: rows are non-interactive containers; per-item buttons carry a11y)', () => {
-    const { container } = render(Dashboard, { props: { snapshot: buildSnapshot() } });
-    const rows = container.querySelectorAll('li[data-testid^="dashboard-queue-item-"]');
-    expect(rows.length).toBeGreaterThan(0);
-    for (const r of Array.from(rows)) {
-      expect(r.getAttribute('role')).toBeNull();
-      expect(r.getAttribute('tabindex')).toBeNull();
-      const buttons = r.querySelectorAll('button');
-      expect(buttons.length, `row ${r.getAttribute('data-testid')} has no action buttons`).toBeGreaterThan(0);
-      for (const b of Array.from(buttons)) {
-        expect(b.getAttribute('aria-label')).toBeTruthy();
-        expect(b.getAttribute('type')).toBe('button');
-      }
-      const label = r.querySelector('[data-testid*="-label-"]');
-      expect(label?.tagName).toBe('BUTTON');
     }
   });
 
@@ -178,13 +177,50 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     }
   });
 
+  it('QueueDetailRows renders interactive rows as real buttons, not ARIA-faked containers (BUG-003)', () => {
+    // BUG-003 originally guarded Dashboard's `<li>` queue rows: the row itself
+    // had no role/tabindex, and a nested `<button>` carried the interactive
+    // semantics. Feature 097 deleted Dashboard; QueueDetailRows (the surviving
+    // renderer of queue rows) took a different, equally-valid shape — the row
+    // itself IS the `<button>` — so the property worth guarding here is the
+    // same one restated for that shape: the structural list container stays
+    // inert, and every element an operator can act on is a real button with a
+    // label, not a div/li wearing ARIA as a costume.
+    const pending = { ...buildQueueItem(), id: 'row-a', label: 'first task' };
+    const running = {
+      ...buildQueueItem(),
+      id: 'row-b',
+      label: 'second task',
+      status: 'in-flight' as const
+    };
+    const { container } = render(QueueDetailRows, {
+      props: { snapshot: buildRowsSnapshot([pending, running]), queueId: 'q1', isPrimary: true }
+    });
+
+    const list = container.querySelector('[data-testid="queue-detail-rows"]');
+    expect(list?.getAttribute('role')).toBeNull();
+    expect(list?.getAttribute('tabindex')).toBeNull();
+
+    const rows = container.querySelectorAll(
+      '[data-testid^="queue-task-row-"], [data-testid^="queue-run-row-"]'
+    );
+    expect(rows.length).toBe(2);
+    for (const row of Array.from(rows)) {
+      expect(row.tagName).toBe('BUTTON');
+      expect(row.getAttribute('type')).toBe('button');
+      expect(row.getAttribute('aria-label')).toBeTruthy();
+    }
+
+    const moveSelect = container.querySelector('[data-testid^="queue-task-move-"]');
+    expect(moveSelect?.getAttribute('aria-label')).toBeTruthy();
+  });
+
   it('rendered DOM does not embed inline animation/transition CSS that could bypass prefers-reduced-motion', () => {
     const renders = [
       render(MonitorPill, { props: { monitor: { ...buildMonitor(), status: 'stalled' } } }),
       render(QueueGlobalActions, {
         props: { paused: false, isPrimary: true, completedCount: 0, failedCount: 0, pendingCount: 0, hasInFlight: false }
-      }),
-      render(Dashboard, { props: { snapshot: buildSnapshot() } })
+      })
     ];
     for (const r of renders) {
       const all = r.container.querySelectorAll('*');

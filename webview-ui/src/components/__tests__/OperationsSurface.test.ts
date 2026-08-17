@@ -127,9 +127,10 @@ async function drillToRunDetail(view: ReturnType<typeof mount>): Promise<void> {
 }
 
 beforeAll(async () => {
-  // Prime the module graph the two tiers pull in — `Dashboard.svelte` and the
-  // `WorkflowRun` topology view between them — so the first descent in this file
-  // is not also paying Vite's one-off transform cost. Without it the first
+  // Prime the module graph the two tiers pull in — tier 2's own row-list and
+  // controls machinery, and the `WorkflowRun` topology view tier 3 mounts — so
+  // the first descent in this file is not also paying Vite's one-off transform
+  // cost. Without it the first
   // `findByTestId` races that cost against its own timeout under a loaded suite;
   // the tier still arrives through the `{#await}`, which is what is under test.
   await Promise.all([

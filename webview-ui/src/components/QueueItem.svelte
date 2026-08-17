@@ -20,10 +20,11 @@
     item: QueueItem;
     /**
      * BUG-009 (T079) — props added so all queue surfaces (sidebar
-     * `QueueListView`, dashboard "Active Queue" panel) can render via
-     * the shared component. `isSelected` drives the `.activity-selected`
-     * highlight; `onSelect` (when present) makes the id chip clickable
-     * so the Activity Feed can bind to this row.
+     * `QueueListView`, dashboard "Active Queue" panel) could render via
+     * the shared component. Feature 097 deletes `QueueListView.svelte`;
+     * neither named surface renders this component today. `isSelected`
+     * drives the `.activity-selected` highlight; `onSelect` (when present)
+     * makes the id chip clickable so the Activity Feed can bind to this row.
      */
     isSelected?: boolean;
     onSelect?: () => void;

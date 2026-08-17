@@ -51,11 +51,12 @@
   // Tier 1 is what `operations` lands on, and `operations` is the one route
   // `App.svelte` does not lazy-load — so anything tier 2 and tier 3 import would
   // otherwise sit in the startup graph for an operator who never descends.
-  // Between them they pull in the whole of `Dashboard.svelte` and the
-  // `WorkflowRun` topology view, which is most of this surface's weight; loading
-  // them on descent keeps the startup cost to the tier actually shown, the same
-  // bargain `routeLoaders` in `App.svelte` makes for the non-default routes. The
-  // promises are cached per tier so re-rendering a location does not remount it.
+  // Between them they pull in tier 2's own row-list and controls machinery and
+  // the `WorkflowRun` topology view tier 3 mounts, which is most of this
+  // surface's weight; loading them on descent keeps the startup cost to the
+  // tier actually shown, the same bargain `routeLoaders` in `App.svelte` makes
+  // for the non-default routes. The promises are cached per tier so
+  // re-rendering a location does not remount it.
   type QueueDetailTierComponent = typeof import('./drilldown/QueueDetailTier.svelte').default;
   type RunDetailTierComponent = typeof import('./drilldown/RunDetailTier.svelte').default;
 

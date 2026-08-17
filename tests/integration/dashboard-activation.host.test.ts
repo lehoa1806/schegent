@@ -14,18 +14,20 @@ const EXTENSION_ID = 'schegent.schegent';
 // chunks/theme.js, index2.css, dashboard.css). See plan.md "Webview
 // Sanitization Contract" rules 6-7 and the dashboard's BUG-001 patch.
 //
-// BUG-003 (T060) extension: also asserts the FR-033..FR-038 layout-zone
-// testids are baked into the dashboard JS bundle output, proving that the
-// recomposed `Dashboard.svelte` ships the five zones expected at runtime.
-// String-presence in the bundle is a precondition for runtime DOM mount —
-// runtime composition itself is asserted by the unit test at
-// `webview-ui/src/components/__tests__/Dashboard.test.ts` (T058).
-const FR_033_ZONE_TESTIDS = [
+// BUG-003 (T060) extension: also asserts the operations-surface layout-zone
+// testids are baked into the dashboard JS bundle output, proving the tier
+// components ship the zones expected at runtime. String-presence in the
+// bundle is a precondition for runtime DOM mount. Feature 097 (T013) deleted
+// `Dashboard.svelte` and its subtree; this list now names each original
+// FR-033 zone's direct successor in the tier components (`QueueControls.svelte`,
+// `QueueDetailRows.svelte`, `PhaseLogFeed.svelte`) rather than the deleted
+// file's own testids.
+const LAYOUT_ZONE_TESTIDS = [
   'dashboard-queue-input',
-  'dashboard-queue-management',
-  'dashboard-queue-list',
+  'dashboard-queue-action',
+  'queue-detail-rows',
   'dashboard-phase-progression',
-  'dashboard-activity-audit-feed'
+  'phase-log-feed'
 ] as const;
 export async function run(): Promise<void> {
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
@@ -102,13 +104,11 @@ export async function run(): Promise<void> {
     // was passed a duck-typed `{ fsPath }` literal during rewrite.
     panel.webview.html = html;
 
-    // BUG-003 (T060) — assert the FR-033..FR-038 layout-zone testids are
+    // BUG-003 (T060) — assert the operations-surface layout-zone testids are
     // present in the built dashboard JS bundle. The Svelte compiler bakes
     // `data-testid="…"` literals into the emitted module, so a bundle-string
-    // scan reliably proves the recomposed `Dashboard.svelte` shipped the
-    // five expected zones. This test MUST fail against the pre-BUG-003
-    // Dashboard (which renders only `dashboard-active-run`,
-    // `dashboard-phase-timeline`, etc.).
+    // scan reliably proves the tier components shipped the five expected
+    // zones (feature 097 / T013 relocated them out of `Dashboard.svelte`).
     const dashboardJsCandidates: string[] = [
       path.join(bundleDir, 'dashboard.js'),
       path.join(bundleDir, 'chunks', 'dashboard.js')
@@ -128,11 +128,11 @@ export async function run(): Promise<void> {
       }
     }
     if (bundleSource.length > 0) {
-      for (const testid of FR_033_ZONE_TESTIDS) {
+      for (const testid of LAYOUT_ZONE_TESTIDS) {
         assert.ok(
           bundleSource.includes(testid),
-          `dashboard JS bundle is missing FR-033 zone testid '${testid}' — ` +
-            'the recomposed Dashboard.svelte (BUG-003 / T059) did not ship'
+          `dashboard JS bundle is missing layout-zone testid '${testid}' — ` +
+            'the operations surface (BUG-003 / T059, relocated by feature 097) did not ship it'
         );
       }
     }

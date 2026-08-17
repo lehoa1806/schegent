@@ -201,8 +201,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    min-height: 0;
-    flex: 1;
     position: relative;
   }
   .pane-header {
@@ -230,8 +228,12 @@
     margin: 0;
     padding: 0;
     overflow-y: auto;
-    flex: 1;
-    min-height: 0;
+    /* `RunDetailTier` scrolls as a normal, content-sized page (like the tiers
+       above it), not a viewport-bound flex column, so this list cannot rely on
+       flex-grow to inherit a height from an ancestor. It sizes to its own
+       content up to this cap and scrolls internally beyond it — the bound the
+       sticky-at-bottom auto-scroll heuristic above needs to have any effect. */
+    max-height: min(60vh, 480px);
     border: 1px solid var(--schegent-border, transparent);
     border-radius: var(--schegent-radius-sm);
     background: var(--schegent-surface-sunken);

@@ -32,6 +32,20 @@
   interface Props {
     readonly snapshot: WorkflowSnapshot;
     readonly store?: PhaseLogStore;
+    /**
+     * Feature 097 — when `false`, this instance never runs its own
+     * Live-Mode in-flight-follow or cold-start-fallback cascades; the
+     * caller owns the store's selection exclusively. Defaults to `true`
+     * so the workspace-wide auto-follow behavior (Feature 067) is
+     * unchanged for every other embed. `RunDetailTier` is the one caller
+     * that sets this `false`: its `store` is pinned to one Run, and
+     * without this flag the store's own `applyInFlightIdentityChange`
+     * effect would silently redirect that pin to whichever task is
+     * in-flight on the *default* queue whenever Live Mode is on — the
+     * cross-queue bleed FR-051/FR-052 forbid, just reached through this
+     * store's own cascade instead of a workspace-wide read.
+     */
+    readonly autoFollow?: boolean;
     readonly onSelectQueue?: (queueId: string | null) => void;
     readonly onSelectTask?: (taskId: string | null, pipelineId: string | null) => void;
     readonly onSelectPhase?: (phaseId: string | null) => void;
@@ -41,6 +55,7 @@
   let {
     snapshot,
     store = createPhaseLogStore(),
+    autoFollow = true,
     onSelectQueue,
     onSelectTask,
     onSelectPhase,
@@ -140,6 +155,7 @@
   // `jumpToCurrent({ setLiveModeOn: false, origin: 'cascade' })`. When
   // Live Mode is OFF or the tuple is stable, the call is a no-op.
   $effect(() => {
+    if (!autoFollow) return;
     store.applyInFlightIdentityChange(snapshot);
   });
 
@@ -407,9 +423,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    min-height: 0;
-    flex: 1;
-    overflow: hidden;
   }
   .error {
     margin: 0;

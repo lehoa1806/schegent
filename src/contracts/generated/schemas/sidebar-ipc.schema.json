@@ -59,8 +59,6 @@
           "CMD_CREATE_QUEUE",
           "CMD_RENAME_QUEUE",
           "CMD_DELETE_QUEUE",
-          "CMD_SET_QUEUE_SCHEDULE",
-          "CMD_CLEAR_QUEUE_SCHEDULE",
           "CMD_SAVE_QUEUE_SETTINGS",
           "CMD_MOVE_TASK",
           "CMD_MODIFY_TASK",

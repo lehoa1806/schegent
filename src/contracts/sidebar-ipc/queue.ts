@@ -27,13 +27,11 @@
 //     same rule the process-YAML and connected-run families hold.
 
 import type {
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
   CMD_RENAME_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SET_QUEUE_SCHEDULE,
   CommandBase
 } from '../sidebar-ipc';
 
@@ -56,19 +54,6 @@ export interface RenameQueueCommand extends CommandBase<typeof CMD_RENAME_QUEUE>
  */
 export interface DeleteQueueCommand extends CommandBase<typeof CMD_DELETE_QUEUE> {
   readonly payload: { readonly queueId: string; readonly confirmed?: true };
-}
-
-/**
- * Feature 092 (US1, FR-018) — carries the operator's raw expression
- * (`in 30m`, `at 14:00`). The grammar is host-side: `parseSchedule()` owns it
- * and the webview never computes a target timestamp.
- */
-export interface SetQueueScheduleCommand extends CommandBase<typeof CMD_SET_QUEUE_SCHEDULE> {
-  readonly payload: { readonly queueId: string; readonly expression: string };
-}
-
-export interface ClearQueueScheduleCommand extends CommandBase<typeof CMD_CLEAR_QUEUE_SCHEDULE> {
-  readonly payload: { readonly queueId: string };
 }
 
 export interface SaveQueueSettingsCommand extends CommandBase<typeof CMD_SAVE_QUEUE_SETTINGS> {

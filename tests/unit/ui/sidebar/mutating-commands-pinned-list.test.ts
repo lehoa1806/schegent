@@ -62,8 +62,6 @@ import {
   CMD_CREATE_QUEUE,
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
-  CMD_SET_QUEUE_SCHEDULE,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK
 } from '../../../../src/ui/sidebar/messages';
@@ -146,8 +144,6 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   CMD_CREATE_QUEUE,
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
-  CMD_SET_QUEUE_SCHEDULE,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK
 ];
@@ -210,20 +206,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_SAVE_PHASES, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
   });
 });
 

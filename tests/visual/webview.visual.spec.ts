@@ -7,7 +7,6 @@ type ThemeName = 'light' | 'dark' | 'high-contrast';
 type SurfaceName =
   | 'sidebar'
   | 'queues'
-  | 'dashboard'
   | 'pipeline-builder'
   | 'metrics'
   | 'activity-feed';
@@ -273,22 +272,26 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
   }
 
   // Feature 092 (FR-057) turned the operations route into a three-tier
-  // drill-down, so `Dashboard.svelte` — and the activity pane inside it — is no
-  // longer the route's landing view. It is embedded in the Queue Detail tier,
-  // one click in. Both surfaces below still target that pane; only the path to
-  // it changed.
+  // drill-down, so the activity feed is no longer the route's landing view —
+  // it now lives in the Run Detail tier, reached one click past Queue
+  // Detail. Feature 097 (T013) deleted `Dashboard.svelte` outright; the Run
+  // Detail tier renders the feed natively via `PhaseLogFeed.svelte` rather
+  // than embedding a pane, so 'activity-feed' below drills to that tier and
+  // targets the feed's own testid.
   await page.getByTestId(`queue-card-${FIXTURE_QUEUE_ID}`).click();
   await expect(page.getByTestId('queue-detail-tier')).toBeVisible();
 
-  if (surface === 'activity-feed') {
-    const feed = page.getByTestId('dashboard-activity-audit-feed');
-    await expect(page.getByTestId('phase-log-entry').first()).toBeVisible();
-    return feed;
-  }
+  // `visual-task-active` is the fixture's in-flight Task — the one row whose
+  // currentPipelineId/currentPhase are populated, so the Run Detail tier has
+  // a complete selection tuple to load the feed with.
+  await page.getByTestId('queue-task-row-visual-task-active').click();
+  await expect(page.getByTestId('run-detail-tier')).toBeVisible();
 
-  const dashboard = page.getByTestId('dashboard-root');
-  await expect(dashboard).toBeVisible();
-  return dashboard;
+  // 'activity-feed' is the last surface reachable from here — every other
+  // SurfaceName arm returns earlier in this function.
+  const feed = page.getByTestId('phase-log-feed');
+  await expect(page.getByTestId('phase-log-entry').first()).toBeVisible();
+  return feed;
 }
 
 const volatileMasks = (page: Page): readonly Locator[] => [
@@ -303,7 +306,6 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
   for (const surface of [
     'sidebar',
     'queues',
-    'dashboard',
     'pipeline-builder',
     'metrics',
     'activity-feed'

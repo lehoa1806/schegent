@@ -46,8 +46,6 @@ export const CMD_REMOVE_TASK_PHASE = 'CMD_REMOVE_TASK_PHASE' as const;
 export const CMD_CREATE_QUEUE = 'CMD_CREATE_QUEUE' as const;
 export const CMD_RENAME_QUEUE = 'CMD_RENAME_QUEUE' as const;
 export const CMD_DELETE_QUEUE = 'CMD_DELETE_QUEUE' as const;
-export const CMD_SET_QUEUE_SCHEDULE = 'CMD_SET_QUEUE_SCHEDULE' as const;
-export const CMD_CLEAR_QUEUE_SCHEDULE = 'CMD_CLEAR_QUEUE_SCHEDULE' as const;
 export const CMD_SAVE_QUEUE_SETTINGS = 'CMD_SAVE_QUEUE_SETTINGS' as const;
 export const CMD_MOVE_TASK = 'CMD_MOVE_TASK' as const;
 export const CMD_MODIFY_TASK = 'CMD_MODIFY_TASK' as const;
@@ -169,8 +167,6 @@ export const COMMAND_TYPES = [
   CMD_CREATE_QUEUE,
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
-  CMD_SET_QUEUE_SCHEDULE,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK,
   CMD_MODIFY_TASK,
@@ -251,11 +247,11 @@ export type {
 // literal, the SIDEBAR_COMMAND_TYPES entry, this re-export, the SidebarCommand
 // member, and the COMMAND_GUARDS entry.
 import type {
-  ClearQueueScheduleCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand, SetQueueScheduleCommand } from './sidebar-ipc/queue';
+  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
 export type {
-  ClearQueueScheduleCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand, SetQueueScheduleCommand } from './sidebar-ipc/queue';
+  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
 
 export type {
   ReadPhaseLogRequest,
@@ -602,8 +598,6 @@ export type SidebarCommand =
   | CreateQueueCommand
   | RenameQueueCommand
   | DeleteQueueCommand
-  | SetQueueScheduleCommand
-  | ClearQueueScheduleCommand
   | SaveQueueSettingsCommand
   | MoveTaskCommand
   | ModifyTaskCommand
@@ -767,12 +761,6 @@ export function isCmdRenameQueue(value: unknown): value is RenameQueueCommand {
 }
 export function isCmdDeleteQueue(value: unknown): value is DeleteQueueCommand {
   return isObjectWithType(value, CMD_DELETE_QUEUE);
-}
-export function isCmdSetQueueSchedule(value: unknown): value is SetQueueScheduleCommand {
-  return isObjectWithType(value, CMD_SET_QUEUE_SCHEDULE);
-}
-export function isCmdClearQueueSchedule(value: unknown): value is ClearQueueScheduleCommand {
-  return isObjectWithType(value, CMD_CLEAR_QUEUE_SCHEDULE);
 }
 export function isCmdSaveQueueSettings(value: unknown): value is SaveQueueSettingsCommand {
   return isObjectWithType(value, CMD_SAVE_QUEUE_SETTINGS);
@@ -996,8 +984,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_CREATE_QUEUE]: isCmdCreateQueue,
   [CMD_RENAME_QUEUE]: isCmdRenameQueue,
   [CMD_DELETE_QUEUE]: isCmdDeleteQueue,
-  [CMD_SET_QUEUE_SCHEDULE]: isCmdSetQueueSchedule,
-  [CMD_CLEAR_QUEUE_SCHEDULE]: isCmdClearQueueSchedule,
   [CMD_SAVE_QUEUE_SETTINGS]: isCmdSaveQueueSettings,
   [CMD_MOVE_TASK]: isCmdMoveTask,
   [CMD_MODIFY_TASK]: isCmdModifyTask,

@@ -1,9 +1,9 @@
 // Feature 065 (T049a) — shared, session-scoped flag signaling that the
 // queue lifecycle transitioned out from under an open chooser surface
-// (FR-019a). When set, `QueueListView.svelte` surfaces a non-modal,
-// dismissible notice prompting the operator to refresh. The chooser
-// surface (QueueInputForm / ScheduledStartIndicator) sets it on silent
-// close; the notice clears it on dismiss.
+// (FR-019a). When set, `QueueIdlePendingPanel.svelte` surfaces a non-modal,
+// dismissible notice prompting the operator to refresh. `ScheduledStartIndicator`
+// and `QueueIdlePendingPanel` set it on silent close; the notice clears it on
+// dismiss.
 //
 // This is a webview-local UI signal: it never persists across reloads
 // and is independent of any host-state migration.

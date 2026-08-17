@@ -53,8 +53,6 @@ import {
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK,
-  CMD_SET_QUEUE_SCHEDULE,
-  CMD_CLEAR_QUEUE_SCHEDULE,
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
   CMD_RESTART_CANCELED_TASK,
@@ -89,13 +87,11 @@ import { validateLaunchPipeline } from './validators/launch-pipeline';
 import { validateContinueWorkflow, validateLaunchWorkflow } from './validators/workflow-run';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import {
-  validateClearQueueSchedule,
   validateCreateQueue,
   validateDeleteQueue,
   validateMoveTask,
   validateRenameQueue,
-  validateSaveQueueSettings,
-  validateSetQueueSchedule
+  validateSaveQueueSettings
 } from './validators/queue-management';
 import {
   validatePhaseBreakpointPayload,
@@ -208,10 +204,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateRenameQueue(obj, correlationId);
     case CMD_DELETE_QUEUE:
       return validateDeleteQueue(obj, correlationId);
-    case CMD_SET_QUEUE_SCHEDULE:
-      return validateSetQueueSchedule(obj, correlationId);
-    case CMD_CLEAR_QUEUE_SCHEDULE:
-      return validateClearQueueSchedule(obj, correlationId);
     case CMD_SAVE_QUEUE_SETTINGS:
       return validateSaveQueueSettings(obj, correlationId);
     case CMD_MOVE_TASK:
@@ -687,7 +679,7 @@ function validateReorderTask(
   } as SidebarCommand);
 }
 
-// Feature 030 — single-queue mode: validators for CMD_MOVE_TASK,
+// Feature 097 — schedule control removed: validators for
 // CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE removed because the
 // commands no longer exist.
 
