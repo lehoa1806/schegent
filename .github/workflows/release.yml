@@ -21,6 +21,25 @@ jobs:
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run verify:all
       - run: npm run build
+
+      # Feature 098 (REL-03). The tag build publishes the artifact, so it must
+      # be at least as strict as the PR gate that never sees a tag. Both of
+      # these ran on `pr.yml`/`ci.yml` and on the weekly `full-gate.yml`, but
+      # not here — a release could ship content the packaging pin forbids, or
+      # an activation failure the unit suites cannot observe, because nothing
+      # between the last CI run and the tag re-checked either.
+      #
+      # `package:smoke` packages into a temp dir and asserts the VSIX entry
+      # allowlist and size budget; it does not produce the released file, so it
+      # is safe to run ahead of `npm run package` below.
+      - name: Package smoke
+        run: npm run package:smoke
+
+      # Real VS Code via @vscode/test-electron; the runner is headless, so it
+      # needs a display server.
+      - name: Integration tests
+        run: xvfb-run -a npm run test:integration
+
       - run: npm run package
       - name: Generate CycloneDX SBOM
         run: npm sbom --sbom-format cyclonedx > schegent-sbom.cdx.json

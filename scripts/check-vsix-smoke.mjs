@@ -28,13 +28,21 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   // checked. What the pin is really guarding is the *absence* of everything
   // not listed — source maps above all, plus fixtures, dotfiles, and
   // dependency trees — so widening it is a review step, not a rebuild step.
+  //
+  // Feature 098 (REL-03) resynced this block against an actual `vsce package`
+  // after it had gone stale enough to fail on a clean build. Three chunks
+  // (`HistorySection`, `PhaseProgression`, `QueueItem`) and three stylesheets
+  // (`index12`–`index14.css`) were listed but no longer emitted — the
+  // components had been inlined into their parents — and two chunks plus the
+  // two shipped example pipelines were emitted but not listed. A stale pin
+  // fails closed, which is the safe direction, but it also trains a reader to
+  // regenerate the list rather than review it. Regenerating is the *last*
+  // step: confirm each addition names a real module or a file the extension
+  // is meant to ship, and confirm each removal is genuinely no longer built.
   'extension/dist/webview/chunks/HistoryDashboard.js',
-  'extension/dist/webview/chunks/HistorySection.js',
   'extension/dist/webview/chunks/MetricsDashboard.js',
-  'extension/dist/webview/chunks/PhaseProgression.js',
   'extension/dist/webview/chunks/PipelineBuilder.js',
   'extension/dist/webview/chunks/QueueDetailTier.js',
-  'extension/dist/webview/chunks/QueueItem.js',
   'extension/dist/webview/chunks/RunDetailTier.js',
   'extension/dist/webview/chunks/RunsSurface.js',
   'extension/dist/webview/chunks/SettingsSurface.js',
@@ -43,7 +51,9 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/dist/webview/chunks/format-duration.js',
   'extension/dist/webview/chunks/format.js',
   'extension/dist/webview/chunks/i18n.js',
+  'extension/dist/webview/chunks/resolve-pipeline-name.js',
   'extension/dist/webview/chunks/theme.js',
+  'extension/dist/webview/chunks/tick-store.js',
   'extension/dist/webview/dashboard.css',
   'extension/dist/webview/dashboard.html',
   'extension/dist/webview/dashboard.js',
@@ -60,9 +70,12 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/dist/webview/index9.css',
   'extension/dist/webview/index10.css',
   'extension/dist/webview/index11.css',
-  'extension/dist/webview/index12.css',
-  'extension/dist/webview/index13.css',
-  'extension/dist/webview/index14.css'
+  // Operator-facing sample pipelines, shipped so a fresh install has
+  // something to import without network access. These are read as data, never
+  // executed at package time, and they are the only non-code payload outside
+  // `assets/`.
+  'extension/examples/speckit-bugfix.pipeline.yaml',
+  'extension/examples/speckit-new-feature.pipeline.yaml'
 ]);
 
 function findEndOfCentralDirectory(buf, vsixPath) {
