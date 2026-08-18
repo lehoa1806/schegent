@@ -294,7 +294,12 @@ async function makeHarness(
     logger,
     lock,
     { cliPath: 'noop', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 1000, skipProbing: true },
-    { auditWriter: audit, catalog: catalog() }
+    // Feature 098 (PRIV-02) — the manifest default moved to `errors-only`,
+    // under which a run that COMPLETES retains no transcript. This suite
+    // compares transcripts across three paths, so it names the retentive mode
+    // explicitly rather than inheriting whatever the default happens to be;
+    // the parity it asserts is between the three paths, not with a default.
+    { auditWriter: audit, catalog: catalog(), getRawTranscriptMode: () => 'always' }
   );
 
   return {

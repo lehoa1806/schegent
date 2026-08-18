@@ -95,7 +95,8 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.cli.environmentMode': {
     key: 'schegent.cli.environmentMode',
     type: 'enum',
-    default: 'inherit',
+    // Feature 098 (PRIV-02) — `inherit` -> `allowlist`; see package.json.
+    default: 'allowlist',
     scope: 'application',
     enum: ['inherit', 'minimal', 'allowlist'],
     docLabel: 'Backend CLI environment policy mode'
@@ -257,7 +258,8 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.queue.globalConcurrencyCap': {
     key: 'schegent.queue.globalConcurrencyCap',
     type: 'integer',
-    default: 3,
+    // Feature 098 (REL-02) — default 3 -> 1; the RANGE is unchanged.
+    default: 1,
     min: 1,
     max: 20,
     scope: 'resource',
@@ -273,7 +275,8 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.logging.rawTranscriptMode': {
     key: 'schegent.logging.rawTranscriptMode',
     type: 'enum',
-    default: 'always',
+    // Feature 098 (PRIV-02) — `always` -> `errors-only`; see package.json.
+    default: 'errors-only',
     enum: ['always', 'errors-only', 'off'],
     scope: 'resource',
     docLabel: 'Raw transcript retention policy for new runs'

@@ -96,7 +96,9 @@ function safeDisplay(value: unknown): string {
  * `config/general-settings.ts`, `package.json`). The enforcing three derive
  * their ceiling; only the advertising three restate the numbers.
  */
-export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 3;
+// Feature 098 (REL-02) — 3 -> 1. See `config/general-settings.ts` for the
+// reasoning; the ceiling below and the ratification record are unchanged.
+export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 1;
 export const MAX_GLOBAL_CONCURRENCY_CAP = MAX_QUEUES;
 
 /**

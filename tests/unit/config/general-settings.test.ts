@@ -397,14 +397,16 @@ describe('Feature 017 — queue settings validation', () => {
   });
 
   it('projects malformed queue cap to the default cap', () => {
-    // Feature 092 (T055, FR-026/FR-027) — the default moved from 1 to 3. The
-    // projection behaviour is unchanged: an out-of-range *configuration* read
-    // still falls back to the declared default. (`WorkspaceStateStore`'s
-    // persisted-value reader is the one that stopped saturating; these are
-    // different surfaces with different failure modes.)
+    // Feature 092 (T055, FR-026/FR-027) — the default moved from 1 to 3;
+    // feature 098 (REL-02) moved it back to 1 for the shared-worktree
+    // checkpoint reason. The projection behaviour is unchanged across both:
+    // an out-of-range *configuration* read still falls back to the declared
+    // default. (`WorkspaceStateStore`'s persisted-value reader is the one
+    // that stopped saturating; these are different surfaces with different
+    // failure modes.)
     const config = makeConfig({ workspace: { 'queue.globalConcurrencyCap': 100 } });
     const snap = readGeneralSettings(config);
-    expect(snap.queueGlobalConcurrencyCap).toBe(3);
+    expect(snap.queueGlobalConcurrencyCap).toBe(1);
   });
 });
 

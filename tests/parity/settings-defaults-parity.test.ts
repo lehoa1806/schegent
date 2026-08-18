@@ -82,12 +82,21 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     expect(contrib.maximum).toBe(5);
   });
 
-  it('package.json queue.globalConcurrencyCap is pinned to [1, 20] with default 3', () => {
+  // Feature 098 (REL-02) — the RANGE stays [1, 20]; only the DEFAULT moves to
+  // 1. Concurrent Runs share one working tree, and `RunCheckpointService`
+  // declines to snapshot above one in-flight Run precisely because a
+  // `git diff HEAD` of a shared tree cannot be attributed to a single Run.
+  // With a default of 3 that decline was the out-of-the-box behaviour: every
+  // fresh install ran Git-capable phases with no restorable checkpoint and
+  // nothing in the UI saying so. Defaulting to 1 makes checkpoints work by
+  // default and turns parallelism into an informed opt-in. Raising it back is
+  // gated on per-run worktree isolation, not on this line.
+  it('package.json queue.globalConcurrencyCap is pinned to [1, 20] with default 1', () => {
     const pkg = readPackageJson();
     const contrib =
       pkg.contributes.configuration.properties['schegent.queue.globalConcurrencyCap'];
     expect(contrib).toBeDefined();
-    expect(contrib.default).toBe(3);
+    expect(contrib.default).toBe(1);
     expect(contrib.minimum).toBe(1);
     expect(contrib.maximum).toBe(20);
   });
@@ -143,7 +152,10 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
     expect(settings.retryMaxAttempts).toBe(5);
     // Feature 092 (T054/T055/T055a, FR-026/FR-027) — the ceiling's default
     // moved from 1 to 3 when the lock split made concurrency representable.
-    expect(settings.queueGlobalConcurrencyCap).toBe(3);
+    // Feature 098 (REL-02) — and back to 1: concurrent Runs share one
+    // working tree, so recovery checkpoints are declined above one in-flight
+    // Run. The RANGE is still [1, 20]; only the default moved.
+    expect(settings.queueGlobalConcurrencyCap).toBe(1);
     expect(settings.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(settings.runtimeLogMaxGenerations).toBe(3);
   });

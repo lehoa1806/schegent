@@ -870,7 +870,12 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   defaultPipelineId: 'speckit-new-feature',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
-  queueGlobalConcurrencyCap: 3,
+  // Feature 098 (REL-02) — the manifest default moved 3 -> 1. Concurrent
+  // Runs share one working tree, so `RunCheckpointService` declines to
+  // snapshot above one in-flight Run; at a default of 3 that decline was
+  // every fresh install's behaviour. Raising it back is gated on per-run
+  // worktree isolation, not on this line.
+  queueGlobalConcurrencyCap: 1,
   queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',

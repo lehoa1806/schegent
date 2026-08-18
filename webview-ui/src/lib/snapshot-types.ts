@@ -856,7 +856,12 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   // `tests/parity/settings-defaults-parity.test.ts` now derives the expected
   // value from the manifest instead of restating it, so a future raise cannot
   // leave this behind without failing.
-  queueGlobalConcurrencyCap: 3,
+  // Feature 098 (REL-02) — the manifest default moved 3 -> 1. Concurrent
+  // Runs share one working tree, so `RunCheckpointService` declines to
+  // snapshot above one in-flight Run; at a default of 3 that decline was
+  // every fresh install's behaviour. Raising it back is gated on per-run
+  // worktree isolation, not on this line.
+  queueGlobalConcurrencyCap: 1,
   queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',

@@ -171,7 +171,12 @@ async function runOnce(opts: {
       iterationCap: 3,
       timeoutMs: 1000,
       skipProbing: true
-    }
+    },
+    // Feature 098 (PRIV-02) — the manifest default moved to `errors-only`,
+    // which retains no transcript for a run that completes. FR-027 is about
+    // whether raw capture is INDEPENDENT of the verbose-diagnostics flag, so
+    // the retention policy is held fixed at `always` and only `verbose` varies.
+    { getRawTranscriptMode: () => 'always' }
   );
 
   const feature = await queue.enqueue('Spec a thing', {});

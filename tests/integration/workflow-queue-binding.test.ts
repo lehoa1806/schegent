@@ -94,6 +94,11 @@ beforeEach(async () => {
   const created = await harness.queue.createQueue('Release');
   expect(created.ok).toBe(true);
   releaseQueueId = created.queueId as string;
+  // Feature 098 (REL-02) — the manifest default moved to 1. T076 below draws
+  // the distinction between the QUEUE's capacity and the WORKSPACE's, which is
+  // only observable when the workspace admits more than one Run, so the cap is
+  // named here rather than inherited from whatever the default happens to be.
+  await harness.store.setGlobalConcurrencyCap(3);
 });
 
 afterEach(() => {

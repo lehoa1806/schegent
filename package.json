@@ -144,9 +144,9 @@
             "minimal",
             "allowlist"
           ],
-          "default": "inherit",
+          "default": "allowlist",
           "scope": "application",
-          "markdownDescription": "Controls ambient environment forwarding to backend CLIs. `inherit` preserves the extension-host environment for compatibility; `minimal` forwards only Schegent-controlled variables; `allowlist` forwards required bootstrap variables plus the names in `schegent.cli.environmentAllowlist`. The legacy `schegent.cli.inheritEnvironment: false` always forces `minimal`."
+          "markdownDescription": "Controls ambient environment forwarding to backend CLIs. `inherit` preserves the extension-host environment for compatibility; `minimal` forwards only Schegent-controlled variables; `allowlist` forwards required bootstrap variables plus the names in `schegent.cli.environmentAllowlist`. The legacy `schegent.cli.inheritEnvironment: false` always forces `minimal`. Defaults to `allowlist` with an empty list, so backend CLIs receive PATH/home/temp/locale bootstrap variables and nothing else — ambient cloud, registry, and signing credentials in the extension-host environment are not forwarded. If your setup needs `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, or similar, add those **names** to `schegent.cli.environmentAllowlist`; set `inherit` to restore the previous behaviour."
         },
         "schegent.cli.environmentAllowlist": {
           "type": "array",
@@ -842,7 +842,7 @@
         },
         "schegent.queue.globalConcurrencyCap": {
           "type": "integer",
-          "default": 3,
+          "default": 1,
           "minimum": 1,
           "maximum": 20,
           "scope": "resource",
@@ -861,9 +861,9 @@
             "errors-only",
             "off"
           ],
-          "default": "always",
+          "default": "errors-only",
           "scope": "resource",
-          "markdownDescription": "Raw transcript retention policy frozen when each run starts. `always` retains every unredacted transcript; `errors-only` stages it privately and retains it only for failed, canceled, or paused runs; `off` disables raw transcript capture. Structured audit evidence remains enabled."
+          "markdownDescription": "Raw transcript retention policy frozen when each run starts. `always` retains every unredacted transcript; `errors-only` stages it privately and retains it only for failed, canceled, or paused runs; `off` disables raw transcript capture. Structured audit evidence remains enabled. Defaults to `errors-only`: a raw transcript is unredacted operator prompts, source, and model output, so retaining one for every successful run stores far more than diagnosis needs. Set `always` to opt back in."
         },
         "schegent.logging.sessionRetentionMaxAgeDays": {
           "type": "integer",

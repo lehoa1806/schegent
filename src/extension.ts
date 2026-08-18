@@ -285,7 +285,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const cliPath = config.get<string>('cli.path', 'claude');
   const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
     inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
-    mode: config.get<unknown>('cli.environmentMode', 'inherit'),
+    // Feature 098 (PRIV-02) — fallback mirrors the manifest default, which
+    // moved `inherit` -> `allowlist`. An absent contribution must not
+    // silently restore full ambient-environment forwarding.
+    mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
     allowlist: config.get<unknown>('cli.environmentAllowlist', [])
   });
   const iterationCap = config.get<number>('loop.maxIterations', 10);
@@ -594,10 +597,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           : 5;
       },
       getRawTranscriptMode: () => {
+        // Feature 098 (PRIV-02) — both the fallback and the invalid-value
+        // landing spot mirror the manifest default, which moved `always` ->
+        // `errors-only`. A raw transcript is unredacted prompt, source and
+        // model output; an unreadable setting must not resolve to retaining
+        // one for every successful run.
         const value = vscode.workspace
           .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<string>('logging.rawTranscriptMode', 'always');
-        return value === 'errors-only' || value === 'off' ? value : 'always';
+          .get<string>('logging.rawTranscriptMode', 'errors-only');
+        return value === 'always' || value === 'off' ? value : 'errors-only';
       }
     }
   );

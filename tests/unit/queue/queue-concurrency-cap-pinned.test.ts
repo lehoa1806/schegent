@@ -45,7 +45,9 @@ class FakeMemento implements Memento {
 
 /** The ceiling's upper bound tracks `MAX_QUEUES`: no workspace runs more. */
 const CAP_MAX = 20;
-const CAP_DEFAULT = 3;
+// Feature 098 (REL-02) — the DEFAULT moved 3 -> 1; `CAP_MAX` is untouched,
+// so every range assertion below still exercises the full [1, 20] ceiling.
+const CAP_DEFAULT = 1;
 
 describe('feature 092 — global concurrency ceiling over [1, 20]', () => {
   let store: WorkspaceStateStore;

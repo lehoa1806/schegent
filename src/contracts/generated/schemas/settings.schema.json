@@ -199,7 +199,7 @@
         {
           "key": "schegent.cli.environmentMode",
           "type": "enum",
-          "default": "inherit",
+          "default": "allowlist",
           "scope": "application",
           "enum": [
             "inherit",
@@ -287,7 +287,7 @@
         {
           "key": "schegent.logging.rawTranscriptMode",
           "type": "enum",
-          "default": "always",
+          "default": "errors-only",
           "scope": "resource",
           "enum": [
             "always",
@@ -456,7 +456,7 @@
         {
           "key": "schegent.queue.globalConcurrencyCap",
           "type": "integer",
-          "default": 3,
+          "default": 1,
           "scope": "resource",
           "enum": null,
           "minimum": 1,
