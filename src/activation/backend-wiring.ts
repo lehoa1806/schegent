@@ -84,7 +84,15 @@ export function createRuntimeEvidenceWiring(
       if (workspaceRoot) roots.push(workspaceRoot);
       roots.push(context.globalStorageUri.fsPath);
       try { roots.push(os.tmpdir()); } catch { /* unavailable on some embedded hosts */ }
-      try { roots.push(os.homedir()); } catch { /* OS user may have no home */ }
+      // Feature 098 (SEC-03) — the operator's home directory is deliberately
+      // NOT a root. `schegent.logging.runtimeLogFilePath` is workspace-
+      // configurable, so a repository can pre-set it and the sink will append,
+      // truncate, rotate-rename and unlink whatever it names under the
+      // operator's own UID. With `$HOME` allowed that reaches `.zshrc`,
+      // `.gitconfig`, `.ssh/config` and every other dotfile; the three roots
+      // that remain are all Schegent- or OS-owned scratch space. Containment is
+      // lexical (see `runtime-log-path.ts`), so a wide root is not narrowed by
+      // any later check — the root list is the whole control.
       return roots;
     }
   );

@@ -119,6 +119,7 @@ describe('SessionArtifactRetentionService', () => {
       filesystem: {
         readdir: (target, options) => fs.readdir(target, options),
         lstat: (target) => fs.lstat(target),
+        realpath: (target) => fs.realpath(target),
         rm: async () => {
           const error = new Error('secret path must not surface') as NodeJS.ErrnoException;
           error.code = 'ENOSPC';
@@ -134,5 +135,107 @@ describe('SessionArtifactRetentionService', () => {
     expect(JSON.stringify(base.warn.mock.calls)).not.toContain('failed-run');
     expect(JSON.stringify(base.warn.mock.calls)).not.toContain(workspaceRoot);
     expect(JSON.stringify(base.warn.mock.calls)).toContain('ENOSPC');
+  });
+});
+
+describe('SessionArtifactRetentionService — root containment (SEC-01)', () => {
+  let workspaceRoot: string;
+  let outside: string;
+  const now = new Date('2026-08-01T00:00:00.000Z');
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-contain-ws-'));
+    outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-contain-out-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  function service(warn = vi.fn(), append = vi.fn()) {
+    return {
+      warn,
+      append,
+      value: new SessionArtifactRetentionService({
+        workspaceRoot,
+        now: () => now,
+        // Age 0 / bytes 0 makes every discovered group a removal candidate, so
+        // a sweep that is not refused necessarily deletes.
+        policy: () => ({ maxAgeMs: 0, maxBytes: 0 }),
+        logger: { warn },
+        audit: { append } as never
+      })
+    };
+  }
+
+  /** A run-shaped directory the sweep would delete if it ever reached it. */
+  async function seedExternalArtifacts(root: string): Promise<string> {
+    const victim = path.join(root, 'important-external-data');
+    await fs.mkdir(victim, { recursive: true });
+    await fs.writeFile(path.join(victim, 'payroll.csv'), 'do-not-delete');
+    const stamp = new Date(now.getTime() - 400 * 24 * 60 * 60 * 1000);
+    await fs.utimes(path.join(victim, 'payroll.csv'), stamp, stamp);
+    await fs.utimes(victim, stamp, stamp);
+    return victim;
+  }
+
+  it('refuses to sweep when the sessions root itself is a symlink outside the workspace', async () => {
+    const victim = await seedExternalArtifacts(outside);
+    await fs.mkdir(path.join(workspaceRoot, '.schegent'), { recursive: true });
+    await fs.symlink(outside, path.join(workspaceRoot, '.schegent', 'sessions'), 'dir');
+
+    const { value, warn } = service();
+    const result = await value.sweep();
+
+    expect(await fs.stat(victim)).toBeTruthy();
+    expect(await fs.readFile(path.join(victim, 'payroll.csv'), 'utf8')).toBe('do-not-delete');
+    expect(result.removedArtifactCount).toBe(0);
+    expect(result.lastSweepFailures).toBeGreaterThan(0);
+    expect(JSON.stringify(warn.mock.calls)).toContain('root-not-contained');
+  });
+
+  it('refuses to sweep when an intermediate component is a symlink outside the workspace', async () => {
+    const victim = await seedExternalArtifacts(path.join(outside, 'sessions'));
+    await fs.symlink(outside, path.join(workspaceRoot, '.schegent'), 'dir');
+
+    const { value, warn } = service();
+    const result = await value.sweep();
+
+    expect(await fs.stat(victim)).toBeTruthy();
+    expect(result.removedArtifactCount).toBe(0);
+    expect(result.lastSweepFailures).toBeGreaterThan(0);
+    expect(JSON.stringify(warn.mock.calls)).toContain('root-not-contained');
+  });
+
+  it('does not leak the refused path into the warning', async () => {
+    await seedExternalArtifacts(outside);
+    await fs.mkdir(path.join(workspaceRoot, '.schegent'), { recursive: true });
+    await fs.symlink(outside, path.join(workspaceRoot, '.schegent', 'sessions'), 'dir');
+
+    const { value, warn } = service();
+    await value.sweep();
+
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(outside);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(workspaceRoot);
+  });
+
+  it('still sweeps a real directory inside the workspace', async () => {
+    const sessions = path.join(workspaceRoot, '.schegent', 'sessions');
+    await fs.mkdir(path.join(sessions, 'run-a'), { recursive: true });
+    await fs.writeFile(path.join(sessions, 'run-a', 'stream.jsonl'), 'x');
+
+    const { value } = service();
+    const result = await value.sweep();
+
+    expect(result.removedArtifactCount).toBe(1);
+    await expect(fs.stat(path.join(sessions, 'run-a'))).rejects.toThrow();
+  });
+
+  it('reports no failure when the sessions root does not exist yet', async () => {
+    const { value } = service();
+    const result = await value.sweep();
+    expect(result.lastSweepFailures).toBe(0);
+    expect(result.removedArtifactCount).toBe(0);
   });
 });

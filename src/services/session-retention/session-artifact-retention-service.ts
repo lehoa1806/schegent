@@ -40,6 +40,7 @@ interface FsLike {
   readdir(target: string, options: { withFileTypes: true }): Promise<readonly import('node:fs').Dirent[]>;
   lstat(target: string): Promise<import('node:fs').Stats>;
   rm(target: string, options: { recursive: true; force: true }): Promise<void>;
+  realpath(target: string): Promise<string>;
 }
 
 export interface SessionArtifactRetentionDeps {
@@ -71,6 +72,33 @@ function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifa
     maxAgeMs: Number.isFinite(policy.maxAgeMs) ? Math.max(0, policy.maxAgeMs) : 0,
     maxBytes: Number.isSafeInteger(policy.maxBytes) ? Math.max(0, policy.maxBytes) : 0
   };
+}
+
+/**
+ * Feature 098 (SEC-01) — the sweep's root is assembled lexically from operator-
+ * controlled workspace content, and the sweep's terminal operation is a
+ * recursive `rm`. Those two facts together mean the root MUST be proven to sit
+ * inside the workspace *after* symlink resolution, never before: a repository
+ * that ships `.schegent/sessions` — or `.schegent` — as a symlink pointing at
+ * `$HOME` would otherwise have its target enumerated and age-pruned, because
+ * `readdir` follows the path it is given.
+ *
+ * Resolution is what makes the comparison sound. `path.relative` on unresolved
+ * paths is a lexical hop count that a symlink hops straight over, so the check
+ * is `realpath(sessionsRoot)` against `realpath(workspaceRoot)`, and only then
+ * lexical. Entries *inside* the root need no equivalent guard and deliberately
+ * do not get one: `measure()` reaches them through `lstat`, which reports a
+ * symlink as a non-directory and stops the descent, and `fs.rm` on a symlink
+ * unlinks the link rather than its target. The root was the only opening.
+ *
+ * A refusal is not a failed sweep in the "retry harder" sense — it is a
+ * deliberate no-op recorded as a failure so evidence health surfaces it, and no
+ * path is logged, because the path is the thing that would name the operator's
+ * home directory in a diagnostic log.
+ */
+function isContainedIn(candidate: string, root: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /**
@@ -111,9 +139,20 @@ export class SessionArtifactRetentionService {
     let failures = 0;
     const groups = new Map<string, ArtifactGroup>();
 
+    const root = await this.resolveContainedRoot();
+    if (root.status === 'absent') {
+      return this.finish([], policy, protectedRunIds, sweptAt, failures, 0, 0);
+    }
+    if (root.status !== 'ok') {
+      failures += 1;
+      this.warnFailure(root.status, root.error ?? null);
+      return this.finish([], policy, protectedRunIds, sweptAt, failures, 0, 0);
+    }
+    const sessionsRoot = root.path;
+
     let entries: readonly import('node:fs').Dirent[];
     try {
-      entries = await this.fs.readdir(this.sessionsRoot, { withFileTypes: true });
+      entries = await this.fs.readdir(sessionsRoot, { withFileTypes: true });
     } catch (error) {
       if (errnoCode(error) !== 'ENOENT') {
         failures += 1;
@@ -134,7 +173,7 @@ export class SessionArtifactRetentionService {
         scanFailed: false
       };
       groups.set(runId, group);
-      const fullPath = path.join(this.sessionsRoot, entry.name);
+      const fullPath = path.join(sessionsRoot, entry.name);
       try {
         const measured = await this.measure(fullPath);
         group.targets.push(measured);
@@ -183,6 +222,42 @@ export class SessionArtifactRetentionService {
       removed.size,
       removedBytes
     );
+  }
+
+  /**
+   * Resolve the sweep root through every symlink and prove the result still
+   * sits inside the workspace. `absent` is the ordinary pre-first-run state and
+   * is not a failure; `root-not-contained` is a refusal; `resolve-root` is an
+   * I/O fault that leaves containment unproven, which is treated the same way.
+   */
+  private async resolveContainedRoot(): Promise<
+    | { readonly status: 'ok'; readonly path: string }
+    | { readonly status: 'absent' }
+    | { readonly status: 'root-not-contained' | 'resolve-root'; readonly error?: unknown }
+  > {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = await this.fs.realpath(this.sessionsRoot);
+    } catch (error) {
+      // The sessions tree has not been created yet, which is every workspace
+      // before its first run. Nothing to sweep and nothing wrong.
+      if (errnoCode(error) === 'ENOENT') return { status: 'absent' };
+      return { status: 'resolve-root', error };
+    }
+
+    let resolvedWorkspace: string;
+    try {
+      resolvedWorkspace = await this.fs.realpath(this.deps.workspaceRoot);
+    } catch (error) {
+      // Without a resolved workspace there is nothing to compare against, so
+      // containment is unproven and the sweep must not proceed.
+      return { status: 'resolve-root', error };
+    }
+
+    if (!isContainedIn(resolvedRoot, resolvedWorkspace)) {
+      return { status: 'root-not-contained' };
+    }
+    return { status: 'ok', path: resolvedRoot };
   }
 
   private async measure(target: string): Promise<ArtifactTarget> {
@@ -281,7 +356,7 @@ export class SessionArtifactRetentionService {
     }
   }
 
-  private warnFailure(operation: string, error: unknown): void {
+  private warnFailure(operation: string, error: unknown = null): void {
     this.deps.logger.warn(
       `session-retention: ${operation} failed`,
       { errno: errnoCode(error) }

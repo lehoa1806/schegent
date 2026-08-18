@@ -5,6 +5,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
+import { createGitApprovalRequester } from './git-approval';
 import { HistoryRecorder } from '../services/history-recorder';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
@@ -46,12 +47,17 @@ export async function createRunSafetyWiring(input: {
           (run) => !isTerminalRunStatus(run.status)
         ).length
     ),
-    requestGitApproval: async (plan: import('../state/workflow-run').MutationPlanSnapshot) => {
-      const msg = `This run can change Git state in ${plan.gitCapablePhaseIds.length} phase(s): ${plan.gitCapablePhaseIds.join(', ')}.`;
-      input.logger.warn(`pipeline.git-approval-bypassed msg="${msg}" fingerprint=${plan.fingerprint}`);
-      vscode.window.showWarningMessage(msg);
-      return true;
-    },
+    // Feature 098 (SEC-02) — a real, awaited approve/cancel decision bound to
+    // the mutation fingerprint. `showWarningMessage` with `modal: true` adds
+    // its own Cancel button and resolves `undefined` on dismissal, so the only
+    // value that grants is the explicit approve label.
+    requestGitApproval: createGitApprovalRequester({
+      confirm: (message, detail, approveLabel) =>
+        Promise.resolve(
+          vscode.window.showWarningMessage(message, { modal: true, detail }, approveLabel)
+        ),
+      logger: input.logger
+    }),
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {
       await input.rawTranscript.finalizeRun(
         run.id,
