@@ -37,15 +37,15 @@ intentionally touched the surface AND paste a one-line justification on the
 following line. Leave it unticked if you did not. An unchecked box is NOT an
 auto-rejection — it is a signal that the reviewer can move on.
 
-Full hard-rule index: see [CLAUDE.md](../CLAUDE.md).
+Full hard-rule index: see [CLAUDE.md](../../CLAUDE.md).
 -->
 
-- [ ] **Single sanitization SoT** — Touched `SECRET_PATTERNS` or the redaction set in [`src/lib/logger.ts`](../src/lib/logger.ts)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
-- [ ] **Primary-host gate (mutating IPC)** — Added or modified an entry in `MUTATING_COMMANDS` in [`src/ui/sidebar/message-router.ts`](../src/ui/sidebar/message-router.ts)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
-- [ ] **`vscode`-import bans** — Added an import (direct or transitive) of `vscode` from anywhere under [`src/headless/`](../src/headless/) or [`src/telemetry/`](../src/telemetry/)? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
-- [ ] **Lock-release pattern** — Modified [`WorkflowController.driveRun()`](../src/controller/workflow-controller.ts) or any `WorkspaceLockManager` consumer? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
-- [ ] **Append-only audit log** — Added a code path that deletes from `<workspaceRoot>/.schegent/audit.log` or bypasses `appendAudit`? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code) and [docs/security/threat-model.md](../docs/security/threat-model.md).
-- [ ] **`-c` continuation single-append-site** — Added a code path that appends `-c` to the Claude CLI argv outside [`src/runner/claude-cli.ts`](../src/runner/claude-cli.ts)'s strict `request.isContinue === true` gate? See [CLAUDE.md](../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **Single sanitization SoT** — Touched `SECRET_PATTERNS` or the redaction set in [`src/lib/logger.ts`](../src/lib/logger.ts)? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **Primary-host gate (mutating IPC)** — Added or modified an entry in `MUTATING_COMMANDS` in [`src/ui/sidebar/message-router.ts`](../src/ui/sidebar/message-router.ts)? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **`vscode`-import bans** — Added an import (direct or transitive) of `vscode` from anywhere under [`src/headless/`](../src/headless/) or [`src/telemetry/`](../src/telemetry/)? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **Lock-release pattern** — Modified [`WorkflowController.driveRun()`](../src/controller/workflow-controller.ts) or any `WorkspaceLockManager` consumer? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code).
+- [ ] **Append-only audit log** — Added a code path that deletes from `<workspaceRoot>/.schegent/audit.log` or bypasses `appendAudit`? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code) and [docs/security/threat-model.md](../docs/security/threat-model.md).
+- [ ] **`-c` continuation single-append-site** — Added a code path that appends `-c` to the Claude CLI argv outside [`src/runner/claude-cli.ts`](../src/runner/claude-cli.ts)'s strict `request.isContinue === true` gate? See [CLAUDE.md](../../CLAUDE.md#hard-rules-when-changing-host-code).
 
 If you ticked any box above, please add a one-line justification per item below.
 

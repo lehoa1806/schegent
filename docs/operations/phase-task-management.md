@@ -53,7 +53,7 @@ rejected and no tasks move.
 
 Queue settings live under:
 
-- `schegent.queue.globalConcurrencyCap` — integer in `1..20`, default `3`
+- `schegent.queue.globalConcurrencyCap` — integer in `1..20`, default `1`
   (feature 092; formerly pinned to `1..1` by feature 056 Track 4). Since
   feature 093 it bounds how many runs may execute at the same time; each
   queue still runs one Task at a time, so the ceiling is reached by that
@@ -173,7 +173,7 @@ the existing single-sanitization point in `audit-log-writer.ts`:
 - `queue-paused` — now carries `source: 'operator' | 'cascade'`
 - `queue-resumed` — now carries `source: 'operator' | 'cascade'`
 
-See [specs/028-advanced-phase-pausing/quickstart.md](../../specs/028-advanced-phase-pausing/quickstart.md)
+See [specs/028-advanced-phase-pausing/quickstart.md](../../../specs/028-advanced-phase-pausing/quickstart.md)
 for the three end-to-end walkthroughs (US1 cascade pause, US2 future-phase
 breakpoint, US3 visual distinction).
 

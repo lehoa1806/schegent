@@ -96,10 +96,34 @@ See [Verbose Diagnostics](../features/verbose-diagnostics.md).
 
 ## VS Code global storage
 
-Schegent writes nothing to VS Code's `globalStorageUri`. The directory is
-referenced only as an allowed root: a `schegent.logging.runtimeLogFilePath`
-pointed there is accepted, alongside the workspace root, the OS temp directory,
-and your home directory.
+Schegent writes **recovery checkpoints** to VS Code's `globalStorageUri`, and
+nothing else:
+
+```text
+<globalStorageUri>/checkpoints/<runId>/
+├── <timestamp>-<phaseId>.patch          # git diff --binary HEAD, mode 0600
+├── <timestamp>-<phaseId>.json           # metadata for the patch above
+└── <timestamp>-<phaseId>.declined.json  # marker; no patch was taken
+```
+
+Written by `RunCheckpointService` before a Git-capable phase runs. The
+directory is created mode `0700` and each file mode `0600`, because a patch of
+your working tree is as sensitive as the tree. **A `.patch` file is unredacted
+source.**
+
+A `.declined.json` marker with `reason: "concurrent-runs-share-one-worktree"`
+means more than one run was in flight, so a diff of the single shared working
+tree could not be attributed to one run and none was taken. That is a recorded
+decision, not a failure — the phase proceeded. See
+[the queue concurrency cap](settings.md#schegentqueueglobalconcurrencycap).
+
+There is no in-product restore. A checkpoint is applied by hand with
+`git apply`, which is why the declined case writes no patch at all rather than
+writing one and hiding it.
+
+The directory is also referenced as an allowed root for
+`schegent.logging.runtimeLogFilePath`, alongside the workspace root, the OS
+temp directory, and your home directory.
 
 Releases up to and including the Wake-up scheduler's withdrawal wrote a
 `wakeup/` subdirectory there (`workspace-roots.json`, `session.log`,

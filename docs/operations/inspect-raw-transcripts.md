@@ -50,6 +50,14 @@ Timestamp: <ISO-8601>
 
 ## Lifecycle
 
+- **Retention policy**: governed by `schegent.logging.rawTranscriptMode`, whose
+  value is frozen when each run starts. The default is **`errors-only`**: the
+  transcript is staged privately while the run is in flight and kept only if
+  the run ends `failed`, `canceled`, or `paused`. **A run that succeeds leaves
+  no transcript at all**, so an empty `sessions/` directory after a clean run
+  is expected rather than a fault. Set the mode to `always` to keep every
+  transcript, or `off` to capture none. See
+  [the settings reference](../reference/settings.md#schegentloggingrawtranscriptmode).
 - **Creation**: lazy. The directory and file are created on first write of a
   given `runId`.
 - **Append-only**: every invocation appends a new block; nothing is ever

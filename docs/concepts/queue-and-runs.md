@@ -14,7 +14,7 @@ A task that never makes it past `pending` has zero runs. A task that you cancel 
 
 ## Queues
 
-A workspace starts with one queue, id `default`, and you can create up to **20**. Each queue is sequential — it runs at most one Task at a time — and queues are scheduled independently of each other, bounded by `schegent.queue.globalConcurrencyCap` (default `3`). Create, rename, delete and schedule are all available again; see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
+A workspace starts with one queue, id `default`, and you can create up to **20**. Each queue is sequential — it runs at most one Task at a time — and queues are scheduled independently of each other, bounded by `schegent.queue.globalConcurrencyCap` (default `1` — raise it to run queues concurrently). Create, rename, delete and schedule are all available again; see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
 
 Two ceilings, two meanings. A Task that waits because its own queue is busy is **waiting its turn**. A queue that does not start because the workspace ceiling is reached is **blocked** — it will start as soon as a slot frees, without you doing anything.
 

@@ -50,10 +50,12 @@ When the operator clicks Resume, the run continues on the lease it never gave up
 If VS Code crashes, the extension host dies, or you reload the window while a run is mid-flight, the in-memory lease state vanishes. On the next activation the extension:
 
 1. Re-reads the persisted `WorkflowRun` state from `workspaceState`.
-2. If a run is recorded as `in-flight` but has no live subprocess (which is always the case after a reload), the run is recovered into a paused or failed terminal state, depending on its last-known phase outcome.
-3. Primacy is reclaimed by the activating window, and any execution lease the dead window left behind goes stale 15 seconds after its last heartbeat and is reclaimable from then on. A crash cannot strand a queue permanently.
+2. Primacy is reclaimed by the activating window. Any execution lease the dead window left behind goes stale 15 seconds after its last heartbeat and is reclaimable from then on, so a crash cannot strand a queue permanently.
+3. **Every run still recorded as executing is resumed, not failed.** Once primacy is acquired, the activating window walks the per-queue run record and re-drives each such run from its last-known phase. A window that crashed mid-concurrency persisted several runs, and each is re-armed on the queue that owns it. Separately, a run holding a pending delayed-retry deadline has its watchdog re-armed — or resumes immediately if the deadline already elapsed.
 
-You do not have to clear anything by hand after a reload. The recovery path is deterministic.
+If primacy is *not* acquired — another window holds it — nothing is resumed here. The runs stay as persisted and the primary window owns them.
+
+You do not have to clear anything by hand after a reload. The recovery path is deterministic. What it is not is a stop: reloading the window does not pause your work, and a run that was executing before the reload will be executing again shortly after it. Use Pause if that is what you want.
 
 ## What happens with multiple VS Code windows
 

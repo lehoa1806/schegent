@@ -256,3 +256,24 @@ question here.
 What is ratified is the capability as it exists after 093 — not the
 092 description of it, and not anything wider. Every clause of this gate other
 than the concurrency-cap carve-out remains fully in force.
+
+## Status update — feature 098 (2026-08-18)
+
+**The shipped default is now 1.** The 092 and 093 notes above both state a
+default of 3 for `schegent.queue.globalConcurrencyCap`. They are retained as
+written, on the same principle as the rest of this file: each is the record of
+what was true when it was written. As of 2026-08-18 the shipped default is
+**1**, changed under the principal architecture review's REL-02 finding.
+
+**This narrows nothing and widens nothing in this gate.** The range remains
+`[1, 20]`, the ratified shape is unchanged, and concurrent local execution
+remains supported. What changed is which value an operator gets without
+choosing one. The reason is a local trade rather than a boundary question:
+concurrent Runs share one working tree, and a recovery checkpoint taken above
+one in-flight Run cannot be attributed to a single Run, so the previous default
+put a fresh install into the configuration where checkpoints are declined. The
+reasoning and what was deliberately not done are recorded in
+[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md#the-default-moved-to-1-2026-08-18).
+
+Every clause of this gate other than the concurrency-cap carve-out remains
+fully in force.

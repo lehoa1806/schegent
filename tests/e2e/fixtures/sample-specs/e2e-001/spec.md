@@ -1,8 +1,8 @@
 # Sample feature for E2E pipeline test
 
 This minimal spec exists for the deterministic Speckit pipeline E2E test
-([tests/e2e/pipeline.test.ts](../../pipeline.test.ts)). The fake-claude
-stub at [../fake-claude/index.js](../fake-claude/index.js) does not read
+([tests/e2e/pipeline.test.ts](../../../pipeline.test.ts)). The fake-claude
+stub at [fixtures/fake-claude/index.js](../../fake-claude/index.js) does not read
 this file — the test runner inspects its existence only to validate that
 the controller's "feature directory" resolution path is exercised.
 

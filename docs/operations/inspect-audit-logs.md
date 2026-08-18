@@ -141,7 +141,7 @@ If you suspect a leak (a token-shaped string appears in `.schegent/audit.log`):
 
 1. Verify the redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) covers the pattern.
 2. Run `npm run test -- audit/sanitization` to verify the regression suite still passes.
-3. File a security note — see [docs/security/security-note.md](../security/security-note.md).
+3. Report it privately — see the [security policy](../../.github/SECURITY.md). A redaction gap is a vulnerability; do not file a public issue with the sample.
 
 ## Hydration warnings
 
