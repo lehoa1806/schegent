@@ -66,7 +66,7 @@ usage and any contained sweep failures.
 
 For the full operator-facing walkthrough, including the worked
 debugging example, see
-[specs/010-pipeline-resilience/quickstart.md](../../specs/010-pipeline-resilience/quickstart.md)
+[specs/010-pipeline-resilience/quickstart.md](../../../specs/010-pipeline-resilience/quickstart.md)
 §4 and §5.
 
 ## See also

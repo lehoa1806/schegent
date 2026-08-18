@@ -65,7 +65,7 @@ Feature 097 removed the second, independent **queue schedule** mechanism (the re
 
 ## The concurrency ceiling
 
-`schegent.queue.globalConcurrencyCap` bounds how many runs may **execute at once** across the workspace. Default `3`, range `1..20`. See [settings reference](../reference/settings.md).
+`schegent.queue.globalConcurrencyCap` bounds how many runs may **execute at once** across the workspace. Default `1`, range `1..20`. Raising it is how you turn concurrent execution on; the default is `1` because concurrent runs share one working tree, which makes recovery checkpoints unavailable — see [Concurrent runs share one working tree](#concurrent-runs-share-one-working-tree) below and the [settings reference](../reference/settings.md).
 
 - Set it to `1` for single-run behaviour without deleting any queue. At `1` the whole lifecycle — start, streaming, pause, resume, retry, breakpoint, cancel — is indistinguishable from the pre-093 behaviour.
 - A value outside the range is refused, not clamped.

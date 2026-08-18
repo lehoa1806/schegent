@@ -964,7 +964,7 @@ repo-grep regression at
 fails the build on any drift. No new snapshot envelope keys; no
 `AUDIT_SCHEMA_VERSION` or `STATE_SCHEMA_VERSION` bump.
 
-[`MetricsSection.svelte`](src/components/MetricsSection.svelte) renders
+[`MetricsDashboard.svelte`](src/components/MetricsDashboard/MetricsDashboard.svelte) renders
 the tab: summary cards, a sortable/paginated task table with
 expandable per-phase detail, a phase-type analytics table, and an
 inline-SVG cumulative daily-cost chart (no new charting dependency).

@@ -15,6 +15,12 @@ Schegent writes to disk in four distinct places, each with a different purpose, 
 
 `.schegent/audit.log` is the **single canonical record** of what Schegent did. It is the file you read when you want to know "what happened during run X". It is also the file CI systems and operators can grep for cross-run trends.
 
+### What class of evidence this is
+
+**Diagnostic evidence, not tamper-evident compliance evidence.** Schegent's writer is append-only and never rewrites a line it has already written, which is what makes the log trustworthy for reconstructing a run. It is still an ordinary file on your disk: any process running under your account can edit or delete it, and Schegent has no hash chain, signature, or external sink with which to notice. Rotation and retention also prune old archives on a schedule.
+
+So: rely on it to answer "what did this run do", to attach to a bug report, and to grep for trends. Do not rely on it as an immutable record for audit or compliance purposes. A hash-chained or externally-sinked audit is a separate capability Schegent does not have today.
+
 ### Format
 
 JSONL — one event per line. Every event has at least:

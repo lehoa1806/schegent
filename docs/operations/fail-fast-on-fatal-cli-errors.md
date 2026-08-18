@@ -51,7 +51,7 @@ grep '"eventType":"phase-end"' .schegent/audit.log | tail -n 1 | jq .
 ## Canonical reference
 
 For the full operator-facing walkthrough, see
-[specs/010-pipeline-resilience/quickstart.md](../../specs/010-pipeline-resilience/quickstart.md)
+[specs/010-pipeline-resilience/quickstart.md](../../../specs/010-pipeline-resilience/quickstart.md)
 §2.
 
 ## Trust boundary

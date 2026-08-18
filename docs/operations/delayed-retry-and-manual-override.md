@@ -61,7 +61,7 @@ classifier the parser uses, see
 ## Configuration
 
 The constants are compile-time per
-[spec.md](../../specs/011-webui-config-editor/spec.md) Assumptions and
+[spec.md](../../../specs/011-webui-config-editor/spec.md) Assumptions and
 live in [src/controller/retry-constants.ts](../../src/controller/retry-constants.ts):
 
 | Constant | Value | Purpose |

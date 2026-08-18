@@ -89,7 +89,7 @@ gated work as done; it records that the run continued without it.
 
 For the full DSL grammar, supported / unsupported constructs, prompt
 authoring guidance, and the cap-exhausted lifecycle, see
-[specs/010-pipeline-resilience/quickstart.md](../../specs/010-pipeline-resilience/quickstart.md)
+[specs/010-pipeline-resilience/quickstart.md](../../../specs/010-pipeline-resilience/quickstart.md)
 §3.
 
 ## See also

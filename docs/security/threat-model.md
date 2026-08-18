@@ -271,7 +271,7 @@ The host does not detect or block injection. This is a property of the model and
 
 ## The hard rules
 
-The extension's CLAUDE.md ([CLAUDE.md](../../CLAUDE.md)) contains a long list of "never" rules that codify the threat model in code-review terms. Some of the most operator-visible:
+The extension's CLAUDE.md ([CLAUDE.md](../../../CLAUDE.md)) contains a long list of "never" rules that codify the threat model in code-review terms. Some of the most operator-visible:
 
 - Never weaken the redaction set.
 - Never route untrusted strings to the UI without sanitization.

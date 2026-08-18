@@ -37,8 +37,11 @@ exist.
 **Ratify.** Concurrent execution of Runs across separate local queues in one
 canonical workspace, by one local operator, in one host process, is an accepted
 part of the supported local product as of 2026-08-15. The concurrency cap
-`schegent.queue.globalConcurrencyCap` may take values in `[1, 20]` with a
-default of 3.
+`schegent.queue.globalConcurrencyCap` may take values in `[1, 20]`. The
+shipped default was 3 at ratification and is **1** as of 2026-08-18 — see
+[The default moved to 1](#the-default-moved-to-1-2026-08-18), which changes
+what an operator gets without choosing and changes nothing about what is
+ratified.
 
 The reasoning that selected ratification over the alternatives:
 
@@ -92,7 +95,7 @@ This ratification authorises exactly the following shape, stated positively:
 | Filesystem owners | one |
 | Network surface for command or state access | none |
 | Concurrent queues | up to `MAX_QUEUES` (20) |
-| `schegent.queue.globalConcurrencyCap` | range `[1, 20]`, default 3 |
+| `schegent.queue.globalConcurrencyCap` | range `[1, 20]`, default 1 (was 3 at ratification) |
 | Working trees shared by concurrent Runs | one |
 | Window-primacy lease holders per workspace | one |
 
@@ -230,16 +233,48 @@ names each site. A reader arriving from either direction reaches the other.
 
 | Site | Role | How it holds the bound |
 |---|---|---|
-| `src/state/workspace-state.ts` | enforces (store) | `DEFAULT_GLOBAL_CONCURRENCY_CAP = 3`; ceiling derived from `MAX_QUEUES` |
+| `src/state/workspace-state.ts` | enforces (store) | `DEFAULT_GLOBAL_CONCURRENCY_CAP = 1`; ceiling derived from `MAX_QUEUES` |
 | `src/queue/queue-manager.ts` | enforces (save path) | range check on save; ceiling derived from `MAX_GLOBAL_CONCURRENCY_CAP` |
 | `src/contracts/validators/queue-management.ts` | enforces (IPC boundary) | range check on the inbound command; ceiling derived from `MAX_QUEUES` |
-| `src/config/settings-schema.ts` | advertises (schema) | `default: 3, min: 1, max: 20`, restated |
-| `src/config/general-settings.ts` | advertises (descriptor) | `defaultValue: 3, min: 1, max: 20`, restated |
-| `package.json` | advertises (manifest) | `default: 3, minimum: 1, maximum: 20`, restated |
+| `src/config/settings-schema.ts` | advertises (schema) | `default: 1, min: 1, max: 20`, restated |
+| `src/config/general-settings.ts` | advertises (descriptor) | `defaultValue: 1, min: 1, max: 20`, restated |
+| `package.json` | advertises (manifest) | `default: 1, minimum: 1, maximum: 20`, restated |
 
 The distinguishing test is whether a site would still be consulted if every
 other were deleted: an enforcing site would still refuse an out-of-range value;
 an advertising site would still tell an operator what the range is.
+
+Two further sites carry the default without enforcing or advertising the range:
+`src/ui/sidebar/snapshot.ts` and `webview-ui/src/lib/snapshot-types.ts` each
+seed `queueGlobalConcurrencyCap` for a snapshot taken before the store answers.
+They are not in the table because neither states a bound — but a default change
+has to reach them, and feature 098 found them by changing one and watching the
+parity test fail.
+
+### The default moved to 1 (2026-08-18)
+
+The principal architecture review of 2026-08-18 recorded, as REL-02, that a
+fresh install ran three Runs concurrently by default, and that this is the
+configuration in which recovery checkpoints are unavailable. That is not a
+defect in the checkpoint service: a checkpoint is a `git diff --binary HEAD` of
+the one shared working tree, this project forbids `git worktree`, and above one
+in-flight Run the diff necessarily contains a sibling's uncommitted work. So
+`RunCheckpointService` declines and writes a `.declined.json` marker instead of
+an unattributable patch — correct behaviour, reached by default, for a reason
+the operator never chose.
+
+The default is now **1**. What changed is the value an operator gets without
+deciding; what did not change is the range, the enforcement, the scheduler, or
+anything this record ratifies. Concurrent execution remains a supported,
+shipped capability in exactly the authorised shape above — one setting away,
+with the checkpoint trade-off now something the operator opts into rather than
+discovers.
+
+Deliberately *not* done: narrowing the range, gating the setting behind a
+confirmation, or making the checkpoint service tolerate concurrency. The first
+two would walk back the ratification through the back door. The third is the
+real fix and is a design problem — per-Run isolation — filed as a round-3
+backlog item rather than approximated here.
 
 ### Why this record enumerates rather than summarises
 

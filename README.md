@@ -45,8 +45,8 @@ strings the phases together inside an orchestrator that handles:
 - **Queueing and concurrency** — up to 20 independent queues, each
   running one task at a time, with a visible queue of pending tasks.
   Runs on different queues execute in parallel up to
-  `schegent.queue.globalConcurrencyCap` (default `3`); they share one
-  working tree, so partition the work by area. See
+  `schegent.queue.globalConcurrencyCap` (default `1` — raise it to opt in);
+  they share one working tree, so partition the work by area. See
   [multiple queues and concurrency](docs/operations/multi-queue-concurrency.md).
 - **Pausing and resuming** — pause mid-phase, inspect the audit log,
   and resume from where you stopped.
@@ -152,7 +152,7 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 
 | Feature | Summary |
 |---|---|
-| **Two built-in pipelines** | `speckit-new-feature` (7 phases) and `speckit-bugfix` (5 phases). |
+| **Three built-in pipelines** | `speckit-new-feature` (9 phases), `dev-new-feature` (7 phases), and `speckit-bugfix` (5 phases). |
 | **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — merged across four precedence layers. |
 | **Custom phases & pipelines** | Define your own phases through `schegent.phases` / `schegent.pipelines`; they run through the same audit path as the built-ins. |
 | **Phase breakpoints** | Pause a run before a named phase to review state and intervene; consumed on fire. |
@@ -178,7 +178,7 @@ By topic:
 
 - **Concepts** — [pipelines & phases](docs/concepts/pipeline-and-phases.md), [the queue, tasks, and runs](docs/concepts/queue-and-runs.md), [the workspace lock](docs/concepts/workspace-lock.md), [sessions, logs, and audit evidence](docs/concepts/sessions-and-logs.md), [local-first versus offline](docs/concepts/local-first-not-offline.md).
 - **Architecture decisions** — [remote, multi-user, and parallel execution expansion gate](docs/architecture/remote-multi-user-expansion-gate.md).
-- **Features** — [phase overrides](docs/features/round_1/phase-overrides.md), [custom phases](docs/features/round_1/custom-phases.md), [phase breakpoints](docs/features/round_1/phase-breakpoints.md), [verbose diagnostics](docs/features/round_1/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/round_1/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
+- **Features** — [phase overrides](docs/features/phase-overrides.md), [custom phases](docs/features/custom-phases.md), [phase breakpoints](docs/features/phase-breakpoints.md), [verbose diagnostics](docs/features/verbose-diagnostics.md), [rate-limit handling](docs/features/rate-limit-handling.md), [fatal signatures](docs/features/fatal-signatures.md), [runtime logging](docs/features/runtime-logging.md).
 - **Reference** — [settings](docs/reference/settings.md), [commands](docs/reference/commands.md), [audit events](docs/reference/audit-events.md), [file layout](docs/reference/file-layout.md).
 - **Operations** — [intervention playbook](docs/operations/intervention.md), [troubleshooting](docs/operations/troubleshooting.md), [inspect audit logs](docs/operations/inspect-audit-logs.md), [backends](docs/operations/backends.md), [configuration](docs/operations/configuration.md).
 - **Security** — [operator threat model](docs/security/threat-model.md).
@@ -226,13 +226,13 @@ Frequently used keys:
 |---|---|---|---|
 | `schegent.cli.path` | string | `"claude"` | Path to the Claude CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | `true` | Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables. |
-| `schegent.cli.environmentMode` | string | `"inherit"` | Choose full inheritance, strict minimal mode, or required bootstrap plus a names-only allowlist. |
+| `schegent.cli.environmentMode` | string | `"allowlist"` | Choose full inheritance, strict minimal mode, or required bootstrap plus a names-only allowlist. |
 | `schegent.cli.environmentAllowlist` | string[] | `[]` | Ambient variable names forwarded in allowlist mode; values are never stored in settings. |
 | `schegent.backend.runner` | enum | `"claude"` | `claude`, `codex`, or `agy`. |
 | `schegent.codex.path` | string | `"codex"` | Path to the Codex CLI binary. |
 | `schegent.agy.path` | string | `"agy"` | Path to the Agy CLI binary. |
 | `schegent.loop.maxIterations` | number | `10` | Max iterations per loopable phase (1–50). |
-| `schegent.invocation.timeoutSeconds` | number | `1800` | Per-phase wall-clock timeout. |
+| `schegent.invocation.timeoutSeconds` | number | `5400` | Per-phase **idle** timeout; the timer resets on every stdout/stderr chunk. |
 | `schegent.watchdog.pollIntervalMinutes` | number | `30` | Watchdog cadence during paused runs. |
 | `schegent.retry.maxAttempts` | number | `5` | Delayed-retry cap (1–5). |
 | `schegent.audit.rotation.sizeMB` | number | `5` | Audit log rotation threshold. |

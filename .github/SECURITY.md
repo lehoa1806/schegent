@@ -4,7 +4,7 @@ Schegent is a VS Code extension that orchestrates the Claude Code CLI headlessly
 
 ## Reporting a Vulnerability
 
-The primary disclosure channel is **private GitHub Security Advisories**. From the repository, open the Security tab and click [Report a vulnerability](/security/advisories/new) to submit a private advisory that only the maintainers can read. Use this channel by default — it gives the maintainers a private workspace for the fix and assigns a CVE if one is warranted.
+The primary disclosure channel is **private GitHub Security Advisories**. From the repository, open the Security tab and click [Report a vulnerability](https://github.com/lehoa1806/schegent/security/advisories/new) to submit a private advisory that only the maintainers can read. Use this channel by default — it gives the maintainers a private workspace for the fix and assigns a CVE if one is warranted.
 
 If you do not have a GitHub account, or your situation prevents you from using GitHub Security Advisories, you may instead email the maintainer alias at [hoalee1806@gmail.com](mailto:hoalee1806@gmail.com). Include the same information you would put in a private advisory: a description of the vulnerability, reproduction steps, and the affected version or commit. Email is the only sanctioned non-GitHub channel; please do not use it for non-security questions.
 

@@ -124,13 +124,18 @@ notifications, command dispatch, file reveal, scheduler, and lifecycle
 disposal. `vscode-host-services.ts` is the current adapter and delegates
 canonical root selection through `src/state/workspace-folder-picker.ts`.
 
-`src/engine/` defines the shared workflow control boundary that both the VS
-Code extension and future desktop release will target. It enumerates queue,
-workflow, phase, settings, log, cancellation, event-stream,
-host-dependency, and storage responsibilities, plus parity fixtures for
-cross-host certification. `CurrentExtensionEngineAdapter` wraps current
-TypeScript handlers with typed acknowledgements and rejects unwired commands
-as `engine-command-unavailable`; this is not yet the default controller path.
+**`src/engine/` no longer exists.** Earlier revisions of this document
+described it as a shared workflow control boundary that a future Rust desktop
+host would target, with a `CurrentExtensionEngineAdapter` wrapping the
+TypeScript handlers and rejecting unwired commands as
+`engine-command-unavailable`. It never became the controller path and was
+removed along with the Rust contracts; `tests/unit/build/release-qualification.test.ts`
+now asserts `src/engine/index.ts` is **absent**, so it cannot come back by
+accident. The description is recorded here as removed rather than deleted
+outright because it survived in this file long enough to be built against.
+
+`src/host-services/` above is the boundary that actually exists. It carries
+the vscode-free contract; there is no second abstraction layer beneath it.
 
 ## Primary Flow
 
@@ -253,7 +258,7 @@ delegates per-phase work to:
 
 Feature 057 will further decompose `phase-runner.ts` into sidecar reader,
 prompt assembler, and continue-gate coordinator; see
-[specs/057-phase-runner-decomposition/plan.md](../../specs/057-phase-runner-decomposition/plan.md).
+[specs/057-phase-runner-decomposition/plan.md](../specs/057-phase-runner-decomposition/plan.md).
 
 ### Runner (`src/runner/`)
 

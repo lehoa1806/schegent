@@ -46,7 +46,7 @@ the `minimal` policy even if `schegent.cli.environmentMode` says otherwise.
 ### `schegent.cli.environmentMode`
 
 - **Type:** `string`
-- **Default:** `"inherit"`
+- **Default:** `"allowlist"`
 - **Scope:** `application`
 - **Enum:** `inherit` | `minimal` | `allowlist`
 
@@ -54,8 +54,8 @@ Controls which ambient environment variables reach every backend invocation,
 including startup probes and Claude pre-compaction calls:
 
 - `inherit` forwards the full VS Code extension-host environment, then applies
-  Schegent-controlled variables. This compatibility default emits one
-  sanitized warning per workspace activation.
+  Schegent-controlled variables. Emits one sanitized warning per workspace
+  activation.
 - `minimal` forwards only Schegent-controlled variables. Use absolute backend
   paths and backend-native credential storage.
 - `allowlist` forwards required executable/home/temp/locale/Windows-runtime
@@ -64,8 +64,24 @@ including startup probes and Claude pre-compaction calls:
   variables last.
 
 Changing this application-scoped setting requires reloading the extension host.
-A future default change requires a major-version migration note; `inherit`
-remains the compatibility default in this release.
+
+**Default changed to `allowlist` in feature 098.** `inherit` was the
+compatibility default through 0.2.x, and it hands a subprocess the extension
+host's entire environment — every credential VS Code was launched with,
+whether or not the backend has any use for it. `allowlist` is the smallest
+default that still spawns a working CLI: it forwards the bootstrap set
+(`PATH`, `HOME`, `TMPDIR`, locale, and the Windows runtime variables) and
+nothing else. `minimal` is not the default because it forwards no `PATH`
+either, so any backend resolved by name fails to spawn at all.
+
+If a backend stops working after upgrading, the variable it needs is one you
+now name explicitly in `schegent.cli.environmentAllowlist`. The common ones
+are `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` behind a corporate proxy,
+`NODE_EXTRA_CA_CERTS` behind TLS interception, and a vendor token such as
+`ANTHROPIC_API_KEY` where the backend is not using its own credential store.
+Schegent does not forward these implicitly: a proxy URL can carry embedded
+credentials, so the decision to hand one to a subprocess is the operator's to
+make by name.
 
 ### `schegent.cli.environmentAllowlist`
 
@@ -424,7 +440,7 @@ The advertised maximum was reduced from `20` to `5` in feature 056 to match the 
 ### `schegent.queue.globalConcurrencyCap`
 
 - **Type:** `integer`
-- **Default:** `3`
+- **Default:** `1`
 - **Scope:** `resource`
 - **Range:** `1` to `20`
 
@@ -435,6 +451,17 @@ A value outside the range is refused, not clamped: an out-of-range setting is re
 The cap gates starts only. Lowering it below the number of runs already executing terminates none of them; the excess drains as they finish. A paused run keeps its slot, so pausing does not free capacity and resuming is never refused for want of one.
 
 Feature 092 unpinned this knob. It was fixed at `1` while a single workspace lock made concurrency unrepresentable; the lock split (window primacy vs per-queue execution lease) removed that constraint. Between 092 and 093 it bounded eligible queues rather than executing runs, because the run engine still drove one run at a time; feature 093 made it a real ceiling on concurrent execution. Raising it does **not** widen the remote or multi-user boundary — see [the expansion gate](../architecture/remote-multi-user-expansion-gate.md). It does mean more Claude processes against one working tree — see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#concurrent-runs-share-one-working-tree).
+
+**Default changed from `3` to `1` in feature 098.** The range is unchanged and
+nothing about concurrent execution was removed — only which behaviour you get
+without choosing. Concurrent runs share one working tree, and the recovery
+checkpoint is a `git diff --binary HEAD` of that tree, so above one in-flight
+run a checkpoint cannot be attributed to a single run and
+`RunCheckpointService` declines to take one. A default of `3` meant a fresh
+install ran, by default, in the configuration where recovery snapshots are
+unavailable. Raising it is a deliberate trade the operator can now make
+knowingly — see [the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
+for the analysis behind the change.
 
 ## Logging and diagnostics
 
@@ -482,6 +509,38 @@ Number of rotated runtime log generations to keep (`<path>.1` through `<path>.N`
 When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose`. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` as `debug.json`, `stream.jsonl`, and `verbose.log`. **The captured files are unredacted.** Toggle off to return to standard headless mode. The setting is re-read at the entry of every phase invocation — mid-run toggling applies on the *next* phase.
 
 See [Verbose Diagnostics](../features/verbose-diagnostics.md).
+
+### `schegent.logging.rawTranscriptMode`
+
+- **Type:** `string`
+- **Default:** `"errors-only"`
+- **Scope:** `resource`
+- **Enum:** `always` | `errors-only` | `off`
+
+Raw transcript retention policy. A raw transcript is the backend CLI's
+unredacted output for a run — operator prompts, source the model read, and the
+model's replies verbatim — written under the session tree alongside the
+diagnostics described above.
+
+- `always` retains every transcript.
+- `errors-only` stages the transcript privately while the run is in flight and
+  retains it only if the run ends `failed`, `canceled`, or `paused`. A run that
+  succeeds leaves none behind.
+- `off` captures no raw transcript at all.
+
+Structured audit evidence in `.schegent/audit.log` is unaffected by every value
+— it is redacted through `SECRET_PATTERNS` and always written.
+
+The value is **frozen when a run starts**, so changing the setting never
+retargets a transcript already being captured; the next run picks up the new
+policy. Whatever is retained is still subject to
+`sessionRetentionMaxAgeDays` and `sessionRetentionMaxBytes` below.
+
+**Default changed from `always` to `errors-only` in feature 098.** Retaining an
+unredacted transcript for a run that succeeded stores considerably more than
+diagnosis needs, on disk, indefinitely until a retention sweep reaches it. Set
+`always` to opt back in — for a backend you are actively debugging, or where an
+external policy requires a complete record.
 
 ### `schegent.logging.sessionRetentionMaxAgeDays`
 
@@ -550,7 +609,7 @@ For quick lookup, the full list of keys:
 |---|---|---|
 | `schegent.cli.path` | application | `"claude"` |
 | `schegent.cli.inheritEnvironment` | application | `true` |
-| `schegent.cli.environmentMode` | application | `"inherit"` |
+| `schegent.cli.environmentMode` | application | `"allowlist"` |
 | `schegent.cli.environmentAllowlist` | application | `[]` |
 | `schegent.backend.runner` | application | `"claude"` |
 | `schegent.backend.probeTimeoutSeconds` | application | `5` |
@@ -567,12 +626,13 @@ For quick lookup, the full list of keys:
 | `schegent.workflows` | resource | `[]` |
 | `schegent.models` | resource | `[]` |
 | `schegent.retry.maxAttempts` | resource | `5` |
-| `schegent.queue.globalConcurrencyCap` | resource | `3` |
+| `schegent.queue.globalConcurrencyCap` | resource | `1` |
 | `schegent.logging.runtimeLogLevel` | resource | `"INFO"` |
 | `schegent.logging.runtimeLogFilePath` | resource | `""` |
 | `schegent.logging.runtimeLogMaxBytes` | resource | `5242880` |
 | `schegent.logging.runtimeLogMaxGenerations` | resource | `3` |
 | `schegent.logging.verbose` | resource | `false` |
+| `schegent.logging.rawTranscriptMode` | resource | `"errors-only"` |
 | `schegent.logging.sessionRetentionMaxAgeDays` | resource | `30` |
 | `schegent.logging.sessionRetentionMaxBytes` | resource | `536870912` |
 | `schegent.fatalSignatures` | resource | `[]` |

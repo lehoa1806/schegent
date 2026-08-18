@@ -48,9 +48,11 @@ The single biggest implication for you: **operator-controllable strings (feature
 Schegent splits its persisted information into two kinds:
 
 - **State** lives in VS Code's `workspaceState` key-value store. This is the queue, the runs, the phase overrides, the breakpoints. State is *mutable* — pause flips a flag, resume flips it back. State has a schema version (`STATE_SCHEMA_VERSION`) and migrates forward across extension upgrades. State is the source of truth for *what should happen next*.
-- **Evidence** is append-only structured data written to disk under `.schegent/`. It is the audit log, the per-run session tree, and (when you enable it) the verbose diagnostic files. Evidence is *immutable* once written — deleting a task does not erase its audit trail. Evidence has its own schema version (`AUDIT_SCHEMA_VERSION`). Evidence is the source of truth for *what already happened*.
+- **Evidence** is append-only structured data written to disk under `.schegent/`. It is the audit log, the per-run session tree, and (when you enable it) the verbose diagnostic files. Schegent never rewrites evidence it has already written — deleting a task does not erase its audit trail. Evidence has its own schema version (`AUDIT_SCHEMA_VERSION`). Evidence is the source of truth for *what already happened*.
 
 Pause/resume changes state. Skipping a phase changes state. Reviewing what Claude did yesterday reads evidence.
+
+**"Append-only" describes Schegent's writer, not the file's durability.** The audit log is an ordinary file in your workspace. Any process running as you — you, another extension, a script — can edit or delete it, and nothing in Schegent detects that. Treat it as **diagnostic evidence**: excellent for reconstructing what a run did, and not a tamper-evident compliance record. Hash-chained or externally-sinked audit is a separate capability Schegent does not have today.
 
 ## The pipeline at runtime
 

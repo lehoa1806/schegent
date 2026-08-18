@@ -107,9 +107,10 @@ dependency-refresh sprint.
    summarizing operator-visible changes.
 4. Tag the release: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
 5. Push the tag: `git push origin vX.Y.Z`.
-6. The marketplace publish step is currently manual; see
-   [`docs/operations/marketplace.md`](docs/operations/marketplace.md) if
-   that flow has been automated by a later feature.
+6. The marketplace publish step is manual: download the tagged
+   `schegent-release-artifacts` bundle from the release workflow run,
+   verify it against `SHA256SUMS`, and publish the `.vsix` with
+   `vsce publish --packagePath <file>`. There is no automated publish job.
 
 ## Rollback
 

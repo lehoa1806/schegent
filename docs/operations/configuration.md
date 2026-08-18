@@ -54,7 +54,7 @@ through VS Code settings and read at activation.
 |---|---|---|
 | `schegent.cli.path` | string | Path to the `claude` CLI binary. |
 | `schegent.cli.inheritEnvironment` | boolean | Defaults to `true`. Set to `false` to spawn backend CLIs with only Schegent-controlled environment variables; use absolute CLI paths and backend-native auth first. |
-| `schegent.cli.environmentMode` | enum (`inherit`, `minimal`, `allowlist`) | Compatibility default is `inherit`. `minimal` passes only Schegent variables; `allowlist` adds required bootstrap variables and approved names. The legacy boolean `false` always forces `minimal`. |
+| `schegent.cli.environmentMode` | enum (`inherit`, `minimal`, `allowlist`) | Defaults to `allowlist`: required bootstrap variables (`PATH`, `HOME`, `TMPDIR`, locale, Windows runtime) plus the names in `environmentAllowlist`. `inherit` forwards the whole extension-host environment; `minimal` passes only Schegent variables and forwards no `PATH`. The legacy boolean `false` always forces `minimal`. Changed from `inherit` in feature 098. |
 | `schegent.cli.environmentAllowlist` | string[] | Names only; used in `allowlist` mode. Never store `NAME=value` or a secret value here. |
 | `schegent.backend.runner` | enum (`claude`, `codex`, `agy`) | Selects the default `BackendRunner` adapter. Default `claude`; a phase-level runner override wins. See [Backend Runners](backends.md). |
 | `schegent.backend.probeTimeoutSeconds` | integer (`1..30`) | Bounds backend availability/model discovery; default 5 seconds. Path or timeout changes trigger a background rescan. |
