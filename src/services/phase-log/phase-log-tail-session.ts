@@ -10,10 +10,16 @@
 //   - Body strings ARE sanitized at the IPC boundary (here) before
 //     `pushToWebview`. On-disk bytes are NEVER altered.
 //   - Entries are projected via `projectStreamJsonlLine`, then
-//     truncated via `truncateDisplayEntryBody`, then sanitized
-//     field-by-field via the injected `sanitize` callback. Order
-//     matters: projection first (drops framing), then truncation
-//     (bounds size), then sanitization (final boundary scrub).
+//     truncated via `truncateDisplayEntryBody`, then sanitized via
+//     `sanitizeDisplayEntryBody`. Order matters: projection first
+//     (drops framing), then truncation (bounds size), then sanitization
+//     (final boundary scrub).
+//   - Feature 098 (PRIV-01): that last step is the SHARED sanitizer,
+//     not a local field loop. This session held its own five-field list
+//     that omitted `toolName`, `systemSubtype` and the nested
+//     `toolArguments` subtree the reader already scrubbed, so a secret
+//     was masked on reopen and shipped in the clear while live. Do not
+//     reintroduce a local copy — see `phase-log-sanitizer.ts`.
 //   - `entrySeq` is monotonic per session, starting at 1.
 //   - `tick()` is idempotent if no new bytes have arrived.
 //   - After `dispose()`, further `tick()` calls are no-ops and no
@@ -28,6 +34,7 @@ import type {
 } from './types';
 import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
 import { projectStreamJsonlLine } from './phase-log-display-projector';
+import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
 
 export type TailEndedReason = 'webview-stop' | 'webview-dispose' | 'phase-complete';
@@ -46,14 +53,6 @@ export interface PhaseLogTailSessionDeps {
   readonly sanitize: (s: string) => string;
   readonly caps: { readonly perFieldBytes: number };
 }
-
-const CAPPED_FIELDS = [
-  'text',
-  'toolInput',
-  'toolResult',
-  'systemSummary',
-  'resultSummary'
-] as const;
 
 export class PhaseLogTailSession {
   readonly sessionId: string;
@@ -129,7 +128,7 @@ export class PhaseLogTailSession {
           const projected = projectStreamJsonlLine(line);
           if (!projected) continue; // framing kinds dropped
           const truncated = truncateDisplayEntryBody(projected, this.caps);
-          const sanitized = this.sanitizeBody(truncated);
+          const sanitized = sanitizeDisplayEntryBody(truncated, this.sanitize);
           this.seq += 1;
           const stamped: PhaseLogDisplayEntry = { ...sanitized, seq: this.seq };
           this.pushToWebview({
@@ -166,19 +165,5 @@ export class PhaseLogTailSession {
       entrySeq: this.seq,
       entry: final
     });
-  }
-
-  private sanitizeBody(entry: PhaseLogDisplayEntry): PhaseLogDisplayEntry {
-    const body = { ...entry.body } as { [k: string]: unknown };
-    for (const field of CAPPED_FIELDS) {
-      const raw = body[field];
-      if (typeof raw === 'string') {
-        body[field] = this.sanitize(raw);
-      }
-    }
-    return {
-      ...entry,
-      body: body as PhaseLogDisplayEntry['body']
-    };
   }
 }
