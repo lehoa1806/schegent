@@ -84,7 +84,7 @@ export class WorkflowRunFactory {
       id: randomUUID(), featureId: feature.id, featureDir: featureDir ?? '',
       status: 'running', currentPhase: startPhase, currentIteration: 0,
       startedAt: now, lastTransitionAt: now, phasesCompleted: [], lastError: null,
-      rawTranscriptMode: this.deps.getRawTranscriptMode?.() ?? 'always',
+      rawTranscriptMode: this.deps.getRawTranscriptMode?.() ?? 'errors-only',
       mutationPlan,
       ...(mutationPlan.gitCapablePhaseIds.length > 0 ? { gitApprovalReceipt: {
         approvedAt: now, planFingerprint: mutationPlan.fingerprint,

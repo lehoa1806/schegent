@@ -203,16 +203,16 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
     // 056 Track 4 (FR-018..FR-022) because one workspace lock meant one run.
     // US2 split that lock into window primacy plus a per-queue execution
-    // lease, so the range opens to [1, 20] with a default of 3;
-    // `settings-schema-parity.test.ts` fails unless the advertising sites agree.
+    // lease, so the RANGE opened to [1, 20]; `settings-schema-parity.test.ts`
+    // fails unless the advertising sites agree. Feature 098 (REL-02) moved the
+    // DEFAULT back to 1 — range untouched — as concurrent Runs share a tree.
     //
-    // Feature 094 — this comment used to claim the bound lived in "three
-    // agreeing sites … and a fourth". It is six: three advertise (this one,
-    // `settings-schema.ts`, package.json) and three enforce, the half the old
-    // count omitted. All six, and the authority for a range wider than one
-    // (the 092 note above is only the mechanism), are enumerated in
+    // Feature 094 — the bound lives in six sites, not the "three and a fourth"
+    // this comment used to claim: three advertise (this one,
+    // `settings-schema.ts`, package.json) and three enforce. All six, the
+    // authority for a range wider than one, and the 098 default's reasoning:
     // `docs/architecture/local-queue-parallelism-ratification.md`.
-    defaultValue: 3,
+    defaultValue: 1,
     min: 1,
     max: 20
   },
