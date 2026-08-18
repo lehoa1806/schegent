@@ -29,11 +29,15 @@ Tracked as of 2026-08-18. Findings not listed here are open.
 | Doc Drift (all rows) | Pipelines/phases, `src/engine`, global storage, reload recovery, broken links | **Fixed.** See the errata note on the link scan below for counts. |
 | CTO-009 | Audit is diagnostic evidence, not tamper-evident compliance evidence | **Fixed (docs half).** `docs/concepts/sessions-and-logs.md` and `docs/concepts/architecture-overview.md` now state the classification and why: the writer is append-only, the file is ordinary, and Schegent has no hash chain, signature, or external sink to detect edits. The word "immutable" is gone from the evidence definition. The stronger sink the directive names as an enterprise requirement remains unbuilt and unscheduled. |
 | FUNC-01, FUNC-02, REL-01, CTO-007 | ExecutionEnvelope, mandatory queue identity, fenced ownership, coordinated reset | **Open — filed as round-3 backlog items.** Each is an architectural change spanning several seams, not a contained fix. |
-| CTO-001, CTO-010 | Stop release / pilot activity; freeze architectural expansion | **Open — decisions for the release owner, not code changes.** Recorded here rather than filed as backlog items. |
+| CTO-001, CTO-010 | Stop release / pilot activity; freeze architectural expansion | **Decided.** Both are accepted as one posture decision: engineering-preview label, no external distribution, and an expansion freeze until eight stated exit criteria hold. Six of the eight are the round-3 items below; the seventh is `npm run ci` observed end to end; the eighth is a repeat of this review by someone who did not perform the remediation. Remediation, tests, and docs are explicitly not frozen. |
 
 Round-3 backlog items are in [`docs/features/round_3/`](../../../docs/features/round_3/) at the
 workspace root: FR-R3-001 (FUNC-01), FR-R3-002 (FUNC-02), FR-R3-003 (REL-01),
 FR-R3-004 (REL-02 residual), FR-R3-005 (SEC-01 residual), FR-R3-006 (CTO-007).
+The CTO-001 / CTO-010 posture decision is recorded at
+[`docs/architecture/release-posture-engineering-preview.md`](../../../docs/architecture/release-posture-engineering-preview.md),
+also at the workspace root; it carries the exit criteria and the review
+cadence, and is the record that gets updated as they are met.
 
 ## Executive assessment
 
