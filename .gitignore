@@ -38,3 +38,6 @@ Thumbs.db
 # Local scratch
 scratch/
 empty/
+# Per-run test temp root created by tests/global-temp-root.ts. Anchored for the
+# same reason `/build/` above is: an unanchored pattern matches at every depth.
+/.tmp/

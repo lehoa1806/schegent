@@ -30,6 +30,10 @@ export default defineConfig({
       'tests/integration/index.ts'
     ],
     environment: 'node',
+    // Gives the run its own temp root rather than the shared system one, so a
+    // saturated `$TMPDIR` cannot turn filesystem-heavy suites into timeouts.
+    // Reasoning in the file.
+    globalSetup: ['./tests/global-temp-root.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
