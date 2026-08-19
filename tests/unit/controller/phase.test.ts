@@ -3,9 +3,14 @@ import {
   transition,
   isLoopPhase,
   nextSuccessor,
-  FORCE_CONTINUE_NOTIFY_TAG
+  FORCE_CONTINUE_NOTIFY_TAG,
+  type TransitionInput
 } from '../../../src/controller/phase';
-import { FIXTURE_PHASES } from '../../fixtures/process-catalog-fixture';
+import {
+  FIXTURE_PHASES,
+  FIXTURE_PHASE_FIRST,
+  FIXTURE_PHASE_SECOND
+} from '../../fixtures/process-catalog-fixture';
 
 // Feature 098 (T080) — `lists the nine invocable phases` stood at the head of this
 // describe. It asserted the contents of `INVOCABLE_PHASES`, which T038 deleted:
@@ -188,6 +193,120 @@ describe('Phase enum and transitions', () => {
     it('isLoopPhase consults the PhaseDef.retryCondition when supplied', () => {
       expect(isLoopPhase('foo', { id: 'foo', retryCondition: 'open_questions > 0' })).toBe(true);
       expect(isLoopPhase('foo', { id: 'foo', retryCondition: undefined })).toBe(false);
+      // Blank is not a condition. `transition()` consults the condition only
+      // when it is non-empty after trimming, so a whitespace-only string must
+      // not make the phase a loop phase to this predicate either — otherwise it
+      // loops on `issues_remain` through the legacy branch with nothing to
+      // evaluate and nothing to end it.
+      expect(isLoopPhase('foo', { id: 'foo', retryCondition: '   ' })).toBe(false);
+      expect(isLoopPhase('foo', { id: 'foo', retryCondition: '' })).toBe(false);
+    });
+
+    // The successor's starting iteration is read off the successor's own
+    // definition, not off its id.
+    //
+    // `transition()` returned `nextIteration: isLoopPhase(next) ? 1 : 0` with no
+    // definition at six sites, so the answer came from `LOOP_PHASES` — four
+    // hardcoded speckit ids. On an imported catalog that is an off-by-one on the
+    // operator's own bound: a loop phase entered at iteration 0 runs at 0,1,…,cap
+    // before `iteration >= iterationCap` bites, which is cap+1 invocations of a
+    // phase the frozen `maxPhaseInvocations` weighted at cap.
+    describe('the successor enters at the iteration its own definition implies', () => {
+      const advance = (from: string) =>
+        transition({
+          phase: from,
+          outcome: 'clean',
+          iteration: 1,
+          iterationCap: 5,
+          pipeline,
+          phaseDef: FIXTURE_PHASES.find((phase) => phase.id === from)
+        });
+
+      it('enters a looping successor at 1, though its id is in no hardcoded set', () => {
+        const result = advance(first.id);
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase, 'the looping fixture phase').toBe(second.id);
+        expect(result.nextIteration).toBe(1);
+      });
+
+      it('enters a non-looping successor at 0', () => {
+        const result = advance(second.id);
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase).toBe(third.id);
+        expect(result.nextIteration).toBe(0);
+      });
+
+      it('does not read the successor id against the legacy loop set', () => {
+        // A pipeline whose successor is *named* `speckit-clarify` but declares no
+        // condition. The id is in `LOOP_PHASES`; the phase does not loop, so it
+        // must enter at 0. The legacy set may only answer when there is no
+        // pipeline to ask.
+        const named = {
+          phases: [{ id: 'lead' }, { id: 'speckit-clarify' }]
+        };
+        const result = transition({
+          phase: 'lead', outcome: 'clean', iteration: 1, iterationCap: 5, pipeline: named
+        });
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase).toBe('speckit-clarify');
+        expect(result.nextIteration).toBe(0);
+      });
+
+      it('still answers from the legacy set when no pipeline is supplied', () => {
+        // The no-pipeline fallback is unchanged: a caller with no plan to consult
+        // gets the hardcoded chain and the hardcoded loop set, together.
+        const result = transition({
+          phase: 'speckit-specify', outcome: 'clean', iteration: 1, iterationCap: 5
+        });
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase).toBe('speckit-clarify');
+        expect(result.nextIteration).toBe(1);
+      });
+
+      it('enters the looping successor at 1 on every path that advances', () => {
+        // All six sites, not just the clean one: skipped, optional-failure,
+        // condition-falsy, forced-continue-at-cap, legacy-cap force-advance, and
+        // the final fall-through. Each returns the successor's own entry
+        // iteration or none of them can be trusted.
+        const toSecond = { phase: first.id, iterationCap: 5, pipeline };
+        const def = FIXTURE_PHASE_FIRST;
+        const paths: ReadonlyArray<readonly [string, TransitionInput]> = [
+          ['skipped', { ...toSecond, outcome: 'skipped', iteration: 1 }],
+          ['optional failure', {
+            ...toSecond, outcome: 'failed', iteration: 1,
+            phaseDef: { ...def, isRequired: false }
+          }],
+          ['condition falsy', {
+            ...toSecond, outcome: 'clean', iteration: 1,
+            phaseDef: { ...def, retryCondition: 'pending_tasks > 0' }, metrics: { pending_tasks: 0 }
+          }],
+          ['forced continue at cap', {
+            ...toSecond, outcome: 'issues_remain', iteration: 5,
+            phaseDef: { ...def, retryCondition: 'pending_tasks > 0', forceContinueOnRetryCap: true },
+            metrics: { pending_tasks: 2 }
+          }],
+          // The legacy branch: no `phaseDef`, so `speckit-clarify` loops from
+          // `LOOP_PHASES`, hits the cap, and force-advances into the fixture
+          // phase that does declare a condition.
+          ['legacy cap force-advance', {
+            phase: 'speckit-clarify', outcome: 'issues_remain', iteration: 5, iterationCap: 5,
+            pipeline: { phases: [{ id: 'speckit-clarify' }, FIXTURE_PHASE_SECOND] }
+          }],
+          ['fall-through', { ...toSecond, outcome: 'issues_remain', iteration: 1 }]
+        ];
+
+        for (const [name, input] of paths) {
+          const result = transition(input);
+          expect(result.kind, `${name} advances`).toBe('advance');
+          if (result.kind !== 'advance') continue;
+          expect(result.nextPhase, `${name} reaches the looping phase`).toBe(second.id);
+          expect(result.nextIteration, `${name} enters at 1`).toBe(1);
+        }
+      });
     });
   });
 

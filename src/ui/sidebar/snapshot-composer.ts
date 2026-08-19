@@ -120,7 +120,13 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       run,
       status,
       phases,
-      activePipeline: run.pipeline && run.pipeline.id !== 'standard'
+      // Feature 098 (FR-008) — every Run that froze a Pipeline names it. The
+      // `&& run.pipeline.id !== 'standard'` that stood here suppressed the name
+      // of one particular id, back when that id belonged to a built-in Pipeline
+      // whose name told the operator nothing they had not already been shown.
+      // The catalog is runtime-only now: `standard` is whatever an operator
+      // called a document they imported, and hiding its name hides theirs.
+      activePipeline: run.pipeline
         ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
         : null,
       liveActivity: bookkeeping.liveActivity(status),

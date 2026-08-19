@@ -1,3 +1,4 @@
+import { isLoopPhase } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
 import type { PhaseOverride, RunPlannedTotal, WorkflowRun } from '../state/workflow-run';
 
@@ -40,8 +41,18 @@ export const MAX_ITERATION_CAP = 50;
  */
 const SETTLED_OUTCOMES: ReadonlySet<string> = new Set(['clean', 'skipped']);
 
-/** A phase, as the plan arithmetic needs to see one. */
-export type PlannedPhase = Pick<PhaseDef, 'id'> & { readonly loopable?: boolean };
+/**
+ * A phase, as the plan arithmetic needs to see one.
+ *
+ * `retryCondition` is what decides the loop weight, because it is what decides
+ * the loop: `transition()` re-runs a phase when its condition is non-empty and
+ * truthy. `loopable` stays in the shape only so a caller holding a `PhaseDef`
+ * that still carries the deprecated flag type-checks — nothing here reads it.
+ */
+export type PlannedPhase = Pick<PhaseDef, 'id'> & {
+  readonly retryCondition?: string;
+  readonly loopable?: boolean;
+};
 
 /**
  * Clamp an operator-supplied loop bound to the schema's range before freezing it.
@@ -88,6 +99,15 @@ export function excludedPhaseIds(
  * `maxPhaseInvocations` counts **positions**, each weighted by the loop bound,
  * because a second position genuinely is a second CLI invocation. It is a
  * ceiling and not a forecast — a loop that converges early uses fewer.
+ *
+ * The weight asks the controller's own `isLoopPhase` which positions can
+ * repeat, rather than restating the rule. It used to read `loopable === true`,
+ * a field `transition()` has never consulted when it is handed a phase
+ * definition — which is always, on the production path. On a runtime-imported
+ * catalog that was wrong in both directions: a Phase declaring `retryCondition`
+ * and no `loopable` (the only shape the YAML writer emits) was weighted 1 while
+ * it could run the cap, and a Phase declaring the deprecated flag alone was
+ * weighted the cap while it could only ever run once.
  */
 export function computePlannedTotal(args: {
   readonly phases: readonly PlannedPhase[] | undefined;
@@ -101,7 +121,7 @@ export function computePlannedTotal(args: {
   for (const phase of args.phases ?? []) {
     if (excluded.has(phase.id)) continue;
     counted.add(phase.id);
-    maxPhaseInvocations += phase.loopable === true ? iterationCap : 1;
+    maxPhaseInvocations += isLoopPhase(phase.id, phase) ? iterationCap : 1;
   }
   return Object.freeze({
     phaseCount: counted.size,

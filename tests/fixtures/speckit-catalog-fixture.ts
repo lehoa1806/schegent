@@ -186,8 +186,10 @@ export const SPECKIT_PIPELINE_DEFS: readonly PipelineDef[] = Object.freeze([
  * a Run with no snapshot projects zero tiles, so a projection test that wants a
  * phase strip has to freeze one, exactly as `createRun()` does in production.
  * The Spec Kit ids rather than the neutral ones for the reason this whole file
- * exists — `isRecursivePhase` still keys on `speckit-clarify` / `speckit-analyze`
- * and the sub-progress cases turn on it.
+ * exists: these are the ids the example documents carry, so a projection test
+ * reads the same rows the operator would import. The sub-progress cases no
+ * longer depend on the names — the iteration bar keys on each Phase's
+ * `retryCondition`, which this fixture declares alongside them.
  */
 export const SPECKIT_RUN_PIPELINE: WorkflowRunPipeline = Object.freeze({
   id: SPECKIT_PIPELINE_ID,
