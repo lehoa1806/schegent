@@ -15,6 +15,19 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // property accessor used by the Clean All probe loop), not the pinned
   // status discriminator literal "running".
   'src/commands/clear-all.ts',
+  // Feature FR-R3-006 — operator-facing confirmation and refusal copy ("Any
+  // running phase is cancelled first", "a phase is still running"), plus one
+  // comment. Same reason `webview-ui/src/lib/action-copy.ts` is here, and this
+  // is that entry's host-side twin: the word appears in a sentence an operator
+  // reads, never as the pinned per-task status discriminator, which this file
+  // neither reads nor writes.
+  'src/commands/reset.ts',
+  // Feature FR-R3-006 — reads `controller.running`, the boolean accessor that
+  // reports whether any driver is mid-drive, to bound the reset's quiesce wait.
+  // Same reason `src/commands/clear-all.ts` and
+  // `src/services/auto-drain-coordinator.ts` are here: a property name that
+  // shares the substring, never the status literal.
+  'src/commands/reset-wiring.ts',
   // Feature 065 — comment-only references to `queueLifecycle === 'running'`
   // describing the lifecycle target after a coerce / convert-to-now path.
   'src/commands/retry-active-run.ts',
@@ -26,6 +39,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/backend-runner.ts',
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/state.schema.json',
+  // Operator-command extraction — reads `driver.running`, the boolean accessor
+  // that reports whether this queue's session is mid-drive, to refuse a manual
+  // retry that is already under way. Same reason `src/controller/run-session.ts`
+  // and `src/commands/clear-all.ts` are here: a property name that shares the
+  // substring, never the pinned per-task status discriminator. Moved verbatim
+  // out of `src/controller/workflow-controller.ts`, which is already listed.
+  'src/controller/manual-retry-override.ts',
   // P4 extraction — owns phase mutation policy and therefore transitions a
   // resumed/restarted phase back to the canonical running workflow status.
   'src/controller/phase-control-service.ts',
@@ -37,6 +57,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // per-task status discriminator. The terminal statuses this module *does*
   // compare against come from `isTerminalRunStatus`, so it names none of them.
   'src/controller/run-session.ts',
+  // Operator-command extraction — this one IS the pinned per-task status
+  // discriminator: `run.status === 'running'` guards whether deleting a Task
+  // must cancel the Run that owns it. It is a read, never a write, and it moved
+  // verbatim out of `src/controller/workflow-controller.ts`, which is already
+  // listed for the same comparison. Recorded as a distinct entry from
+  // `manual-retry-override.ts` above because the two are here for different
+  // reasons and a single shared comment would misdescribe one of them.
+  'src/controller/task-deletion.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
   'src/monitor/claude-cli-monitor.ts',

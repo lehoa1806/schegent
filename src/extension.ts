@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { WorkspaceLockManager } from './state/lock';
 import { ExecutionLeaseManager } from './state/execution-lease';
+import { createDiskOwnershipFs } from './state/ownership-fs';
 import {
   getCanonicalWorkspaceRoot,
   disposeWorkspaceFolderPicker
@@ -12,6 +13,7 @@ import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
+import { DEFAULT_QUEUE_ID } from './queue/queue-registry';
 import { resolveBackendKind } from './runner/backend-runner-factory';
 import { BackendRunnerRegistry } from './runner/backend-runner-registry';
 import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
@@ -36,7 +38,12 @@ import { SchegentOutputChannel } from './ui/output-channel';
 import { SchegentStatusBar } from './ui/status-bar';
 import { Notifier } from './ui/notifications';
 import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
-import { runReset } from './commands/reset';
+import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
+import {
+  completeInterruptedResetOnActivation,
+  createResetStageSupport,
+  recordCompletedInterruptedReset
+} from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
 import { createWorkflowPipelineRefReader } from './ui/sidebar/workflow-pipeline-ref-source';
 import {
@@ -52,6 +59,8 @@ import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { MessageRouter } from './ui/sidebar/message-router';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
+import { createCliTransportSink } from './monitor/cli-transport-sink';
+import type { RunActivityObservation } from './monitor/activity-coalescer';
 import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
 import { psShellOut } from './telemetry/platform/platform-ps';
 import { windowsShellOut } from './telemetry/platform/platform-windows';
@@ -69,22 +78,20 @@ import { createWorkflowConfigReader } from './activation/workflow-config-reader'
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
-import {
-  createPhaseLogService,
-  PhaseLogTailRegistry,
-  type PhaseLogTailSubscriptionToken,
-  type PhaseLogTailRegistryAuditEvent
-} from './services/phase-log';
-import type {
-  PhaseLogEntryPushMessage,
-  StartPhaseLogTailRequest,
-  StartPhaseLogTailResponse,
-  StopPhaseLogTailRequest,
-  StopPhaseLogTailResponse
-} from './contracts/sidebar-ipc';
+import { AuditPointerResolver } from './services/history/audit-pointer-resolver';
+import { HistoryEvidenceService } from './services/history/history-evidence-service';
+import { createPhaseLogService } from './services/phase-log';
+import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
+  /**
+   * Feature FR-R3-006 — the two reset capabilities that only exist once stage 2
+   * is up. Carried on the wiring rather than reached for through a module-level
+   * reference, so a reset that runs across a teardown/reload cycle necessarily
+   * talks to whichever stage 2 is current.
+   */
+  readonly reset: ResetStageSupport;
   dispose(): Promise<void>;
 }
 
@@ -118,12 +125,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     get: <T>(key: string) => context.workspaceState.get<T>(key),
     update: (key, value) => context.workspaceState.update(key, value)
   }, logger);
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('schegent.reset', () =>
-      runReset({ store, logger })
-    )
-  );
 
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
@@ -177,6 +178,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activeOutput = null;
     await previous.dispose();
   };
+
+  // Feature FR-R3-006 — the reset transaction's host seam. Registered here
+  // rather than immediately after the store because it needs `ensureStage2` and
+  // `tearDownStage2`, and reset composes with that existing lifecycle instead of
+  // adding a second stop/start path. Every member reads `stage2` at call time,
+  // so the audit append after a reload reaches the *new* wiring's writer rather
+  // than the disposed one it started with.
+  const resetHost: ResetHost = {
+    support: () => stage2?.reset ?? null,
+    stopProducers: tearDownStage2,
+    reload: ensureStage2
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('schegent.reset', () =>
+      runReset({ store, logger, host: resetHost })
+    )
+  );
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
@@ -244,6 +263,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   disposables.push(channel);
   const output = new SchegentOutputChannel(channel, logger);
 
+  // Feature FR-R3-006 (T346) — finish a reset the previous host did not survive,
+  // *before* `initialize()`, so the migration chain sees the state the operator
+  // asked for rather than a half-cleared one. Reasoning in `reset-wiring.ts`.
+  const completedResetGeneration = await completeInterruptedResetOnActivation(store, logger);
+
   // Feature 030 — `initialize()` returns the v5 → v6 migration audit events;
   // they are forwarded through `auditWriter.append` once the writer exists
   // (constructed below). Empty array when no migration occurred.
@@ -254,12 +278,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // contract, and destructured here rather than left on the result object,
   // which is how feature 092's v10 events went unaudited.
   let v11MigrationEvents: readonly import('./state/run-state-migrator').RunStateMigrationAuditEvent[] = [];
+  // FR-R3-010 — v11 → v12 per-queue history partition; same forwarding contract,
+  // and destructured here for the same reason.
+  let v12MigrationEvents: readonly import('./state/history-state-migrator').HistoryStateMigrationAuditEvent[] = [];
   let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
   try {
     const initResult = await store.initialize();
     v6MigrationEvents = initResult.v6MigrationEvents;
     v7MigrationEvents = initResult.v7MigrationEvents;
     v11MigrationEvents = initResult.v11MigrationEvents;
+    v12MigrationEvents = initResult.v12MigrationEvents;
     runRepairEvents = initResult.runRepairEvents;
   } catch (err) {
     void vscode.window.showErrorMessage(
@@ -305,6 +333,18 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   let activePhaseCatalog = initialLoad.phaseCatalog;
   let activePipelineCatalog = initialLoad.pipelineCatalog;
   let activeWorkflowCatalog = initialLoad.workflowCatalog;
+  // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
+  // can both see, now that the workspace root is known. Until this call the store
+  // arbitrates through a `Memento`-backed adapter, which is correct for one host
+  // and is exactly the assumption finding REL-01 was about. `.schegent/` is
+  // covered by its own `.gitignore` (`*`), and an ownership record carries owner
+  // ids and timestamps only — never a workspace path.
+  // Feature FR-R3-005 (T330) — one expression, read twice: the adapter's
+  // containment root and the registry's directory are the same path by
+  // construction, so they cannot drift into a guard that proves membership of
+  // a tree the registry does not write to.
+  const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
+  store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir), ownershipDir);
   const lock = new WorkspaceLockManager(store, ownerId);
   // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
   // owner id as the workspace lock so a crash strands both together, but a
@@ -343,14 +383,26 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     evidenceHealth
   );
 
-  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11,
+  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11, v11→v12,
   // workflow-run repair) through the sanitized audit writer. Helper preserves
   // the append-error best-effort semantics — never blocks activation.
   await forwardMigrationAuditEvents(
-    { v6MigrationEvents, v7MigrationEvents, v11MigrationEvents, runRepairEvents },
+    {
+      v6MigrationEvents,
+      v7MigrationEvents,
+      v11MigrationEvents,
+      v12MigrationEvents,
+      runRepairEvents
+    },
     auditWriter,
     logger
   );
+
+  // Feature FR-R3-006 (T346, T348) — record the interrupted reset this
+  // activation finished, now that there is a writer to record it with.
+  if (completedResetGeneration !== null) {
+    await recordCompletedInterruptedReset(auditWriter, logger, completedResetGeneration);
+  }
 
   const sessionRetention = new SessionArtifactRetentionService({
     workspaceRoot,
@@ -402,6 +454,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     notifier
   });
+  // FR-R3-008 (T377) — the monitor observes activity long before the controller
+  // that persists it exists, so the recorder is late-bound in the same shape as
+  // `telemetryProjector` below. Until the controller is constructed there is no
+  // Run to stamp, and a dropped observation costs at most one coalescing
+  // interval of resolution.
+  let livenessRecorder: { recordRunActivity: (o: RunActivityObservation) => void } | null = null;
   const monitor = new ClaudeCliMonitor({
     stallThresholdMs: 90_000,
     rateLimitMatchers: RATE_LIMIT_MATCHERS,
@@ -411,6 +469,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     },
     now: () => new Date(),
     audit: auditWriter,
+    // Feature FR-R3-007 — CLI output goes to the bounded sink, not `audit.log`.
+    // The root is re-read per emit rather than closed over: a host outlives one
+    // folder, and the destination and its containment root are derived together
+    // so the two cannot disagree.
+    transport: createCliTransportSink(
+      () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
+      logger
+    ),
+    activity: {
+      record: (observation) => {
+        livenessRecorder?.recordRunActivity(observation);
+      }
+    },
     logger
   });
   // Sampler is created before its late-bound projector and runner hooks.
@@ -540,7 +611,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger,
     rawTranscript,
     sessionRetention,
-    protectedSessionRunIds
+    protectedSessionRunIds,
+    evidenceHealth
   });
 
   const controller = new SchegentWorkflowController(
@@ -610,6 +682,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     }
   );
 
+  // FR-R3-008 (T377) — close the late binding opened above the monitor.
+  livenessRecorder = controller;
+
   const guardedRunService = new GuardedRunService({
     lock,
     queue,
@@ -627,12 +702,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // immediately. `onFire` clears the persisted schedule fields and invokes
   // the existing auto-drain path so promotion goes through the normal
   // lock-acquire route.
-  const scheduledStartCoordinator = new ScheduledStartCoordinator({
-    store,
-    auditWriter,
-    logger,
-    onFire: async (_queueId: string) => {
-      await store.updateQueue((queueState) => ({
+  // FR-R3-002 (T282/T285) — the one promotion path a scheduled start takes,
+  // addressed by queue. Both the coordinator's `onFire` and the watchdog's
+  // recovery sweep call this, so there is exactly one place that clears a
+  // queue's schedule fields and exactly one that asks the drain gate to
+  // promote it. The watchdog does not become a second idle-pending gate;
+  // `AutoDrainCoordinator.drainIfIdle(queueId)` stays the only enforcement
+  // site and this hop is how the watchdog *asks* it.
+  const promoteScheduledQueue = async (queueId: string): Promise<void> => {
+    await store.updateQueue(
+      (queueState) => ({
         queue: {
           ...queueState,
           queueLifecycle: 'active-empty',
@@ -641,9 +720,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           updatedAt: Date.now()
         },
         result: undefined
-      }));
-      await controller.drainQueuedWork();
-    },
+      }),
+      queueId
+    );
+    await controller.drainQueuedWork(queueId);
+  };
+
+  const scheduledStartCoordinator = new ScheduledStartCoordinator({
+    store,
+    auditWriter,
+    logger,
+    onFire: promoteScheduledQueue,
     // Feature 065 (T049b) — surface the transient FR-017a / SC-009 hint
     // on the status bar when a scheduled start fires. 4000 ms is the
     // mid-point of the 3000..5000 ms window mandated by FR-017a.
@@ -653,8 +740,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // Feature 065 (T053 / FR-014) — at fire time, probe whether the
     // workspace lock is held by a competing process. When true, the
     // coordinator emits `scheduled-start-superseded { lock-unavailable }`
-    // and clears the schedule. The next normal auto-drain heartbeat will
-    // retry promotion under the existing rule; operator is NOT prompted.
+    // and leaves the armed deadline persisted; `QueueScheduleWatchdog` below
+    // retries it once this window is primary. The operator is NOT prompted.
     isForeignLockHeld: () => lock.isForeignLockHeld()
   });
   try {
@@ -726,9 +813,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   controller.setGuardedRunService(guardedRunService);
 
   const queueScheduleWatchdog = new QueueScheduleWatchdog({
-    getRegistry: () => store.getQueueRegistry(),
-    queue,
-    drain: () => controller.drainQueuedWork(),
+    getQueueStates: () => store.getQueueStates(),
+    hasArmedTimer: (queueId) => scheduledStartCoordinator.hasActiveTimer(queueId),
+    promote: promoteScheduledQueue,
     isPrimary: () => lock.isHeld(),
     logger,
     audit: auditWriter
@@ -829,9 +916,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           event.affectsConfiguration('schegent.phases') ||
           event.affectsConfiguration('schegent.pipelines') ||
           event.affectsConfiguration('schegent.defaultPipelineId') ||
-          // Feature 083 — a Workflow layer edit re-resolves the whole catalog;
-          // a Phase or Pipeline edit does too, since a Workflow is validated
-          // against the effective Pipeline catalog those edits move.
+          event.affectsConfiguration('schegent.models') || // 096 — reload models
+          // Feature 083 — a Workflow layer edit re-resolves the whole catalog.
           event.affectsConfiguration('schegent.workflows')
         ) {
           const reload = loadAndReportCatalog(catalogReader, logger, workflowConfigReader);
@@ -859,130 +945,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     );
   }
 
-  // Feature 020 — phase-log tail wiring (T049).
-  //
-  // The PhaseLogTailRegistry owns the cap-of-1 invariant per host and the
-  // watcher mechanism (fs.watch vs polling) chosen at start time. Three
-  // dispose paths converge here:
-  //   1. webview-stop      — explicit CMD_STOP_PHASE_LOG_TAIL (handled in router)
-  //   2. webview-dispose   — extension teardown via `disposables` below
-  //   3. phase-complete    — the in-flight task transitioned out
-  //
-  // Path (3) is derived from a projector subscription that watches
-  // `queue.inFlight.id` transitions and fires every registered
-  // listener exactly once with the leaving runId.
-  let previousInFlightTaskId: string | null =
-    projector.getCurrentSnapshot().queue.inFlight?.id ?? null;
-  const taskLeaveListeners = new Set<(runId: string) => void>();
-  const taskLeaveProjectorSub = projector.subscribe((snapshot) => {
-    const nextId = snapshot.queue.inFlight?.id ?? null;
-    if (previousInFlightTaskId !== null && previousInFlightTaskId !== nextId) {
-      const leavingId = previousInFlightTaskId;
-      for (const listener of taskLeaveListeners) {
-        try {
-          listener(leavingId);
-        } catch (err) {
-          logger.debug(
-            `phase-log-tail: task-leave listener threw: ${(err as Error).message}`
-          );
-        }
-      }
-    }
-    previousInFlightTaskId = nextId;
+  // Feature 020 — phase-log tail wiring (T049). Registry, task-leave
+  // subscription and snapshot-validating adapter all live in the wiring module;
+  // the reasoning for each is recorded there.
+  const phaseLogTail = createPhaseLogTailWiring({
+    workspaceRoot,
+    projector,
+    queue,
+    auditWriter,
+    logger
   });
-  disposables.push({ dispose: () => taskLeaveProjectorSub.dispose() });
-
-  // Forward reference: the registry pushes through `dashboardBridge`,
-  // which is constructed AFTER the router. The thunk resolves the
-  // bridge at call time; pushes before the bridge exists are silently
-  // dropped (the dashboard cannot be open yet).
-  let dashboardBridgeRef: ReturnType<typeof registerStage2Ui>['dashboardBridge'] | null = null;
-  const phaseLogTailRegistry = new PhaseLogTailRegistry({
-    pushToWebview: (envelope) => {
-      const bridge = dashboardBridgeRef;
-      if (bridge === null) return;
-      bridge.postPhaseLogEntry(envelope as PhaseLogEntryPushMessage);
-    },
-    sanitize: (s) => logger.sanitize(s),
-    appendAudit: async (event: PhaseLogTailRegistryAuditEvent) => {
-      const p = event.payload;
-      const auditPayload: Record<string, unknown> = {
-        sessionId: p.sessionId,
-        queueId: p.queueId,
-        taskId: p.taskId,
-        pipelineId: p.pipelineId,
-        phaseId: p.phaseId,
-        iterationN: p.iterationN,
-        outcome: p.outcome
-      };
-      if (p.mechanism !== undefined) auditPayload.mechanism = p.mechanism;
-      if (p.reason !== undefined) auditPayload.reason = p.reason;
-      try {
-        await auditWriter.append({
-          runId: p.taskId,
-          phase: p.phaseId,
-          iteration: typeof p.iterationN === 'number' ? p.iterationN : 0,
-          eventType: event.type,
-          payload: auditPayload,
-          outcome: p.outcome === 'success' ? 'success' : 'failure'
-        });
-      } catch (err) {
-        logger.warn(
-          `phase-log-tail: audit append failed: ${(err as Error).message}`
-        );
-      }
-    },
-    onTaskNoLongerInFlight: (cb): PhaseLogTailSubscriptionToken => {
-      taskLeaveListeners.add(cb);
-      return {
-        dispose: () => {
-          taskLeaveListeners.delete(cb);
-        }
-      };
-    },
-    caps: { perFieldBytes: 65536 }
-  });
-  disposables.push({
-    dispose: () => {
-      void phaseLogTailRegistry.disposeAll('webview-dispose');
-    }
-  });
-
-  // Adapter: validate the selection against the current snapshot before
-  // delegating to the registry. The "not-in-flight" failure surfaces a
-  // typed wire-format reason so the webview can show the right empty
-  // state instead of a generic internal-error.
-  const phaseLogTailService = {
-    start: async (
-      req: StartPhaseLogTailRequest
-    ): Promise<StartPhaseLogTailResponse> => {
-      const snap = projector.getCurrentSnapshot();
-      const inFlight = snap.queue.inFlight;
-      if (inFlight === null || inFlight.id !== req.selection.taskId) {
-        return { outcome: 'failure', reason: 'not-in-flight' };
-      }
-      if (inFlight.currentPhase !== req.selection.phaseId) {
-        return { outcome: 'failure', reason: 'not-in-flight' };
-      }
-      return phaseLogTailRegistry.start({
-        workspaceRoot,
-        selection: {
-          queueId: req.selection.queueId,
-          // Feature 020 BUG-001 — same runId resolution as the read
-          // path. The tail registry resolves filesystem paths from
-          // taskId, so we substitute the actual session directory UUID.
-          taskId: queue.findById(req.selection.taskId)?.runId ?? req.selection.taskId,
-          pipelineId: req.selection.pipelineId,
-          phaseId: req.selection.phaseId,
-          iterationN: req.selection.iterationN
-        }
-      });
-    },
-    stop: async (
-      req: StopPhaseLogTailRequest
-    ): Promise<StopPhaseLogTailResponse> =>
-      phaseLogTailRegistry.stop(req.sessionId, 'webview-stop')
-  };
+  disposables.push(phaseLogTail);
 
   // Feature 073 — constructed once per activation so its lifetime matches
   // "session" per contracts/metrics-view-opened-event.md.
@@ -993,7 +966,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     queueRemover: queue,
     queueOps: queue,
     phaseOps: controller,
-    isPrimary: () => !lock.isForeignLockHeld(),
+    // Feature FR-R3-003 (T300) — the fenced record, not the mirror. `Memento` is
+    // per extension host, so `!isForeignLockHeld()` could only ever read a lock
+    // this window wrote: a reclaimed window kept answering `true` and kept
+    // admitting mutating commands. `hasPrimacy()` carries the fencing token
+    // issued at acquisition and fails closed.
+    isPrimary: () => lock.hasPrimacy(),
     // Workspace-trust gate (defense-in-depth alongside the primary-host
     // gate). Mutating IPC is rejected when VS Code reports the workspace
     // is not trusted, blocking malicious workspaces from triggering
@@ -1088,12 +1066,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       projector.kick();
     },
     dismissMigrationNotice: async () => {
+      // FR-R3-002 (T280) — named explicitly. `composeWorkflowSnapshot` reads
+      // `migrationNotice` off the Default queue, so the dismissal has to write
+      // the entry the notice is rendered from or the banner never clears.
       const changed = await store.updateQueue((cur) => ({
         queue: cur.migrationNotice === 'pending'
           ? { ...cur, migrationNotice: 'dismissed', updatedAt: Date.now() }
           : cur,
         result: cur.migrationNotice === 'pending'
-      }));
+      }), DEFAULT_QUEUE_ID);
       if (!changed) return;
       projector.kick();
     },
@@ -1121,7 +1102,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // Feature 020 — phase-log tail adapter (T049). Validates the
     // selection against the current snapshot (`not-in-flight` if the
     // task or phase has moved on) before delegating to the registry.
-    phaseLogTailService,
+    phaseLogTailService: phaseLogTail.phaseLogTailService,
     // Feature 084 — Phase export adapter (FR-018, FR-019, research R3).
     // Mirrors `src/commands/export-audit.ts`: the host owns the dialog and the
     // write, so no location crosses the IPC boundary in either direction. The
@@ -1181,6 +1162,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     metricsService: {
       read: (req) => readMetrics(workspaceRoot, req, logger)
     },
+    // FR-R3-010 — history evidence drill-down. Same shape as the metrics
+    // adapter above and for the same reason: the workspace root reaches the
+    // corpus reader through this closure and nowhere else.
+    historyEvidenceService: new HistoryEvidenceService({
+      historyStore,
+      resolver: new AuditPointerResolver({ workspaceRoot, logger }),
+      evidenceHealth
+    }),
     // Feature 073 — existing session-scoped correlation id, reused (not
     // newly minted) for the metrics-view-opened audit payload
     // (contracts/metrics-view-opened-event.md).
@@ -1206,7 +1195,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     historyStore,
     getWorkspaceFolders: () => vscode.workspace.workspaceFolders
   });
-  dashboardBridgeRef = uiWiring.dashboardBridge;
+  phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
   await watchdog.reattachOnActivation();
@@ -1252,8 +1241,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     await lock.release();
   };
 
+  // Feature FR-R3-006 (T342, T344, T345, T348) — the reset transaction's
+  // stage-2 half. `dispose()` above is the rest of it.
+  const resetSupport: ResetStageSupport = createResetStageSupport({
+    controller,
+    auditWriter,
+    logger
+  });
+
   return {
-    stage2: { disposables, dispose },
+    stage2: { disposables, reset: resetSupport, dispose },
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     output

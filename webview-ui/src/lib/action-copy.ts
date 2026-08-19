@@ -162,10 +162,17 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     confirmLabel: 'Rerun',
     severity: 'caution'
   },
+  // FR-R3-006 — the body names all three things an operator needs before
+  // deciding: what stops, what goes, what stays. The previous text named only
+  // the middle one, so an operator could not tell that a running phase would be
+  // cancelled, nor that their audit log and transcripts would survive.
   'workspace.reset': {
     title: 'Reset Workspace — wipe all state?',
     bodyTemplate:
-      'Wipes all Schegent state for this workspace — queue, run history, prompt suppressions, and project-level UI preferences. This cannot be undone.',
+      'Cancels any running phase, then wipes all Schegent state for this workspace — ' +
+      'queues, runs, history, leases, schedules, prompt suppressions, and project-level ' +
+      'UI preferences. The audit log and per-run transcripts are preserved. ' +
+      'This cannot be undone.',
     confirmLabel: 'Reset Workspace',
     severity: 'destructive'
   },
