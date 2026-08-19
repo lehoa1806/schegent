@@ -10,6 +10,12 @@ import type { InvocationOutputSink } from '../runner/invocation-result';
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 import { ensureSchegentGitignore } from './schegent-gitignore';
 import {
+  resolveContainedForWrite,
+  resolveContainedLink,
+  resolveContainedTarget,
+  type ContainmentRefusal
+} from '../lib/path-containment';
+import {
   normalizeEvidenceFailureCause,
   type EvidenceHealthReporter
 } from '../services/evidence-health/evidence-health-monitor';
@@ -17,6 +23,35 @@ import {
 const SESSION_START = '========== SESSION START ==========';
 const SESSION_END = '========== SESSION END ==========';
 const RAW_SPOOL_PREFIX = 'schegent-raw-spool-';
+
+/**
+ * Feature FR-R3-005 (T328) — this file mutates in two separate trees and each
+ * has its own root, so a guard here cannot be written against "the workspace"
+ * alone. Spools live under `spoolRoot` (the OS temp area by default) because
+ * they hold unredacted bytes and must not be strandable inside `.schegent`;
+ * transcripts live under `<workspaceRoot>/.schegent/sessions`. A removal is
+ * checked against the root of the tree it claims to be in, so a spool path
+ * that resolves into the workspace is refused just as firmly as a transcript
+ * path that resolves out of it.
+ */
+type SpoolRemoval = 'removed' | ContainmentRefusal;
+
+/**
+ * Prove containment, then remove. `resolveContainedTarget` rather than the link
+ * form: a spool directory that is really a symlink elsewhere is not this
+ * host's to delete through, and an `absent` target is already the outcome
+ * `force: true` produces.
+ */
+async function removeIfContained(
+  target: string,
+  roots: readonly string[]
+): Promise<SpoolRemoval> {
+  const verdict = await resolveContainedTarget(target, roots);
+  if (verdict.outcome === 'refused') return verdict.reason;
+  if (verdict.outcome === 'absent') return 'removed';
+  await fs.rm(verdict.resolved, { recursive: true, force: true });
+  return 'removed';
+}
 
 export interface RawTranscriptStartInput {
   runId: string;
@@ -54,7 +89,9 @@ class FileRawTranscriptCapture implements RawTranscriptCapture {
   constructor(
     private readonly spoolDirectory: string,
     private readonly paths: Record<'stdout' | 'stderr', string>,
-    private readonly onFailure: (err: Error) => void
+    private readonly onFailure: (err: Error) => void,
+    private readonly spoolRoot: string,
+    private readonly onRefusal: (reason: ContainmentRefusal) => void
   ) {
     this.streams = {
       stdout: createWriteStream(paths.stdout, { flags: 'wx', mode: 0o600 }),
@@ -139,7 +176,11 @@ class FileRawTranscriptCapture implements RawTranscriptCapture {
     if (this.disposed) return;
     this.disposed = true;
     await this.finish();
-    await fs.rm(this.spoolDirectory, { recursive: true, force: true });
+    // Still marked disposed on a refusal: the spool is the host's to leave
+    // alone, not to keep retrying. The OS temp sweep is the backstop, and the
+    // refusal is what tells an operator why the directory is still there.
+    const outcome = await removeIfContained(this.spoolDirectory, [this.spoolRoot]);
+    if (outcome !== 'removed') this.onRefusal(outcome);
   }
 
   private finishStream(stream: WriteStream): Promise<void> {
@@ -227,12 +268,15 @@ export class RawTranscriptWriter {
           stdout: path.join(spoolDirectory, 'stdout'),
           stderr: path.join(spoolDirectory, 'stderr')
         },
-        (err) => this.warnStreamFailure(runId, err)
+        (err) => this.warnStreamFailure(runId, err),
+        this.spoolRoot,
+        (reason) => this.warnContainmentRefusal('spool-dispose', reason)
       );
     } catch (err) {
       if (spoolDirectory) {
         try {
-          await fs.rm(spoolDirectory, { recursive: true, force: true });
+          const outcome = await removeIfContained(spoolDirectory, [this.spoolRoot]);
+          if (outcome !== 'removed') this.warnContainmentRefusal('spool-cleanup', outcome);
         } catch {
           this.warnCleanupFailure();
         }
@@ -270,16 +314,33 @@ export class RawTranscriptWriter {
       const retained = this.filePathFor(runId, 'always');
       try {
         if (mode === 'off' || status === 'completed') {
-          await Promise.all([
-            fs.rm(pending, { force: true }),
-            fs.rm(retained, { force: true })
+          const outcomes = await Promise.all([
+            this.removeTranscript(pending),
+            this.removeTranscript(retained)
           ]);
+          const refused = outcomes.find((outcome) => outcome !== 'removed');
+          if (refused) this.warnContainmentRefusal('transcript-discard', refused);
         } else if (status === 'failed' || status === 'canceled' || status === 'paused') {
           await fs.mkdir(path.dirname(retained), { recursive: true, mode: 0o700 });
-          try {
-            await fs.rename(pending, retained);
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          // Both ends through the link form: `rename` acts on the directory
+          // entries and follows neither, so resolving the leaves would refuse
+          // a promotion that never touches whatever they point at.
+          const ends = await Promise.all([
+            resolveContainedLink(pending, [this.workspaceRoot]),
+            resolveContainedLink(retained, [this.workspaceRoot])
+          ]);
+          const refused = ends.find((verdict) => verdict.outcome === 'refused');
+          if (refused && refused.outcome === 'refused') {
+            // The pending transcript stays where it is rather than being
+            // promoted. It is the evidence for a run that did not complete, so
+            // leaving it is the conservative half of the refusal.
+            this.warnContainmentRefusal('transcript-promote', refused.reason);
+          } else {
+            try {
+              await fs.rename(pending, retained);
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+            }
           }
         }
       } catch (err) {
@@ -297,6 +358,35 @@ export class RawTranscriptWriter {
       : path.join(sessions, `raw-${runId}.log`);
   }
 
+  /**
+   * Remove one transcript file, contained against the workspace. Keeps
+   * `{ force: true }` and no `recursive` so the call is what it has always
+   * been; the resolution in front of it is the only difference.
+   */
+  private async removeTranscript(target: string): Promise<SpoolRemoval> {
+    const verdict = await resolveContainedTarget(target, [this.workspaceRoot]);
+    if (verdict.outcome === 'refused') return verdict.reason;
+    if (verdict.outcome === 'absent') return 'removed';
+    await fs.rm(verdict.resolved, { force: true });
+    return 'removed';
+  }
+
+  /**
+   * The path to append to, or `null` when containment could not be proven.
+   * `resolveContainedForWrite` rather than the target form: the first write of
+   * a run creates the file, and a leaf that does not exist yet still has an
+   * ancestry worth resolving.
+   */
+  private async containedWriteTarget(
+    target: string,
+    operation: string
+  ): Promise<string | null> {
+    const verdict = await resolveContainedForWrite(target, [this.workspaceRoot]);
+    if (verdict.outcome === 'contained') return verdict.resolved;
+    if (verdict.outcome === 'refused') this.warnContainmentRefusal(operation, verdict.reason);
+    return null;
+  }
+
   private enqueue(runId: string, content: string, mode: RawTranscriptMode): Promise<void> {
     const previous = this.chains.get(runId) ?? Promise.resolve();
     const next = previous.then(() => this.doWrite(runId, content, mode));
@@ -309,7 +399,9 @@ export class RawTranscriptWriter {
     try {
       await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await this.ensureRuntimeGitignore();
-      await fs.appendFile(target, content, { encoding: 'utf8', mode: 0o600 });
+      const contained = await this.containedWriteTarget(target, 'transcript-append');
+      if (!contained) return;
+      await fs.appendFile(contained, content, { encoding: 'utf8', mode: 0o600 });
     } catch (err) {
       this.warnWriteFailure(runId, err as Error);
     }
@@ -321,7 +413,12 @@ export class RawTranscriptWriter {
       await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await this.ensureRuntimeGitignore();
 
-      const handle = await fs.open(target, 'a', 0o600);
+      // Containment is established here, once, for the handle. The rewind in
+      // `appendCapturedOrBuffered` truncates that already-open handle and names
+      // no path of its own, so it inherits this proof rather than repeating it.
+      const contained = await this.containedWriteTarget(target, 'transcript-write');
+      if (!contained) return;
+      const handle = await fs.open(contained, 'a', 0o600);
       try {
         await handle.write('[STDOUT]\n');
         const stdoutComplete = await appendCapturedOrBuffered(handle, input.capture, 'stdout', input.stdout);
@@ -375,6 +472,24 @@ export class RawTranscriptWriter {
     );
   }
 
+  /**
+   * Feature FR-R3-005 (T328). Its own line, distinct from a cleanup failure:
+   * an operator reading `spool cleanup failed` goes looking for a full disk,
+   * and this is the opposite finding — the I/O never ran because the path did
+   * not lead where it claimed. `operation` and `reason` are both bounded
+   * literals, so the line names no location.
+   */
+  private warnContainmentRefusal(operation: string, reason: ContainmentRefusal): void {
+    const shouldWarn = this.evidenceHealth?.reportFailure(
+      'rawTranscript',
+      'cleanup-failed'
+    ) ?? true;
+    if (!shouldWarn) return;
+    this.logger.warn(
+      `raw transcript ${operation} refused: containment ${reason}; workflow continues with degraded raw evidence`
+    );
+  }
+
   private warnCleanupFailure(): void {
     const shouldWarn = this.evidenceHealth?.reportFailure(
       'rawTranscript',
@@ -393,7 +508,9 @@ export class RawTranscriptWriter {
   }
 
   private ensureSpoolRoot(): Promise<void> {
-    this.spoolScavenge ??= scavengeAbandonedSpools(this.spoolRoot).catch(() => {
+    this.spoolScavenge ??= scavengeAbandonedSpools(this.spoolRoot, (reason) =>
+      this.warnContainmentRefusal('spool-scavenge', reason)
+    ).catch(() => {
       this.warnCleanupFailure();
     });
     return this.spoolScavenge;
@@ -406,7 +523,10 @@ export class RawTranscriptWriter {
   }
 }
 
-async function scavengeAbandonedSpools(spoolRoot: string): Promise<void> {
+async function scavengeAbandonedSpools(
+  spoolRoot: string,
+  onRefusal: (reason: ContainmentRefusal) => void
+): Promise<void> {
   await fs.mkdir(spoolRoot, { recursive: true, mode: 0o700 });
   const entries = await fs.readdir(spoolRoot, { withFileTypes: true });
   for (const entry of entries) {
@@ -415,7 +535,13 @@ async function scavengeAbandonedSpools(spoolRoot: string): Promise<void> {
     if (!match) continue;
     const ownerPid = Number(match[1]);
     if (ownerPid === process.pid || isProcessAlive(ownerPid)) continue;
-    await fs.rm(path.join(spoolRoot, entry.name), { recursive: true, force: true });
+    // The `isDirectory()` filter already drops a symlinked entry — a `Dirent`
+    // for a link reports neither file nor directory — but that is a property
+    // of the enumeration, not a containment check, and it says nothing about
+    // the components above it. This sweep runs over a shared OS temp area, so
+    // it is the one removal here an unrelated process can arrange the shape of.
+    const outcome = await removeIfContained(path.join(spoolRoot, entry.name), [spoolRoot]);
+    if (outcome !== 'removed') onRefusal(outcome);
   }
 }
 

@@ -22,10 +22,25 @@
 // File writes use `fs.promises.appendFile`. POSIX guarantees atomicity
 // up to PIPE_BUF (≥ 512 bytes) for a single line; cross-platform we
 // rely on the OS-level append-mode write being last-writer-safe.
+//
+// Feature FR-R3-005 (T329) — every mutation below is contained at the point
+// of effect. Feature 098's SEC-03 narrowed the allowed roots to workspace,
+// `globalStorageUri` and OS temp, and `runtime-log-path.ts` compares them
+// lexically; a lexical comparison cannot see a symlink, so the narrowed list
+// bounds the blast radius but does not establish containment. This file is
+// where the syscalls are, so this is where the oracle is consulted. The roots
+// arrive through `containmentRoots` and are NOT re-derived here — the accessor
+// and the sink must agree on what "allowed" means or one of them is enforcing
+// a different policy from the other.
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import {
+  resolveContainedForWrite,
+  resolveContainedLink,
+  type ContainmentVerdict
+} from '../path-containment';
 import type { LogSink, SanitizedLogger } from '../logger';
 import {
   isRuntimeLogLevel,
@@ -42,7 +57,20 @@ type SuppressionCause =
   | 'EROFS'
   | 'ENOSPC'
   | 'EIO'
-  | 'unknown';
+  | 'unknown'
+  // Feature FR-R3-005 (T329) — a refused path belongs in the suppression map
+  // for the same reason a permission failure does: retrying it every emit
+  // achieves nothing, and an operator's correction to the setting is what
+  // should unlock it. The two are reported apart, though, because they mean
+  // opposite things — one says the write failed, the other says it never ran.
+  | 'not-contained'
+  | 'resolve-failed';
+
+/** The refusal causes, so the WARN text can distinguish them from failures. */
+const CONTAINMENT_CAUSES: ReadonlySet<SuppressionCause> = new Set([
+  'not-contained',
+  'resolve-failed'
+]);
 
 interface AppendFn {
   (target: string, data: string): Promise<void>;
@@ -81,6 +109,24 @@ export interface RuntimeLogSinkDeps {
   readonly writeFile?: WriteFileFn;
   readonly readdir?: ReaddirFn;
   readonly evidenceHealth?: EvidenceHealthReporter;
+  /**
+   * Feature FR-R3-005 (T329) — the roots this sink may mutate inside, read
+   * fresh on every check because the workspace root can change under a host
+   * that outlives one folder.
+   *
+   * Optional so the sink's existing unit tests, which drive rotation against
+   * injected doubles rather than a real filesystem, keep constructing it with
+   * two arguments. Omitting it means "no containment layer", which is what
+   * those tests already had; production MUST supply it, and
+   * `tests/lint/destructive-fs-requires-containment.test.ts` fails the build
+   * if `backend-wiring.ts` stops doing so. An empty array is not the same
+   * thing — the oracle refuses everything against it, which is the correct
+   * fail-closed reading of "nothing is allowed" and the wrong reading of
+   * "this is a test double".
+   */
+  readonly containmentRoots?: () => readonly string[];
+  /** The oracle's own seam, on the same optional terms. */
+  readonly realpath?: (target: string) => Promise<string>;
 }
 
 /**
@@ -143,6 +189,30 @@ export class RuntimeLogSink implements LogSink {
   private readonly bytesOnDisk: Map<string, number> = new Map();
   private readonly bytesSeeded: Set<string> = new Set();
 
+  private readonly containmentRoots?: () => readonly string[];
+  private readonly containmentFs: { realpath(target: string): Promise<string> };
+
+  /**
+   * Feature FR-R3-005 (T329) — the append path's verdict, cached per target
+   * path.
+   *
+   * The append path is the ~10⁴-emits-per-run hot path the module header
+   * describes, and an uncached check adds a `realpath` syscall to every line.
+   * The cache is dropped by `clearSuppression` / `clearAllSuppression`, which
+   * is exactly when the target can have changed by any route the sink knows
+   * about: an operator editing the path, the level, or the rotation policy.
+   *
+   * Rotation's renames and unlinks are deliberately NOT cached. They are the
+   * destructive half, they run once per rollover rather than once per line, so
+   * the syscall does not matter, and each names a different generation file
+   * from the one the append proved.
+   *
+   * This is risk reduction, not a guarantee: a target replaced mid-run with no
+   * accompanying settings change keeps its cached verdict until the next
+   * clear. Shrinking that window further means paying `realpath` per line.
+   */
+  private readonly containmentCache: Map<string, ContainmentVerdict> = new Map();
+
   constructor(deps: RuntimeLogSinkDeps) {
     this.accessor = deps.accessor;
     this.fallback = deps.fallbackLogger;
@@ -159,6 +229,8 @@ export class RuntimeLogSink implements LogSink {
       return fs.readdir(target);
     });
     this.evidenceHealth = deps.evidenceHealth;
+    this.containmentRoots = deps.containmentRoots;
+    this.containmentFs = { realpath: deps.realpath ?? fs.realpath };
   }
 
   /**
@@ -177,6 +249,10 @@ export class RuntimeLogSink implements LogSink {
     this.suppressed.delete(targetPath);
     this.bytesOnDisk.delete(targetPath);
     this.bytesSeeded.delete(targetPath);
+    // Feature FR-R3-005 (T329) — the cached containment verdict goes with the
+    // byte seed, and for the same reason: the operator may have just repointed
+    // the path at something else.
+    this.containmentCache.delete(targetPath);
   }
 
   /**
@@ -190,6 +266,7 @@ export class RuntimeLogSink implements LogSink {
     this.suppressed.clear();
     this.bytesOnDisk.clear();
     this.bytesSeeded.clear();
+    this.containmentCache.clear();
   }
 
   /** Read-only view used by tests. */
@@ -247,12 +324,68 @@ export class RuntimeLogSink implements LogSink {
     }
   }
 
+  /**
+   * The containment layer, or `null` when this sink was built without one.
+   * Returning `null` rather than a permissive verdict keeps the two states
+   * distinguishable at every call site: "proven contained" and "never asked"
+   * must not collapse into one branch.
+   */
+  private roots(): readonly string[] | null {
+    return this.containmentRoots ? this.containmentRoots() : null;
+  }
+
+  /**
+   * Prove the append target, once per path until the next suppression clear.
+   * Records the refusal and returns false so the caller drops the line.
+   */
+  private async appendTargetIsContained(targetPath: string): Promise<boolean> {
+    const roots = this.roots();
+    if (!roots) return true;
+    let verdict = this.containmentCache.get(targetPath);
+    if (!verdict) {
+      verdict = await resolveContainedForWrite(targetPath, roots, this.containmentFs);
+      this.containmentCache.set(targetPath, verdict);
+    }
+    if (verdict.outcome === 'contained') return true;
+    if (verdict.outcome === 'refused') {
+      this.recordSuppressionDirect(targetPath, verdict.reason);
+    }
+    return false;
+  }
+
+  /**
+   * Prove a generation file this rotation is about to rename or unlink.
+   * Uncached and link-form: `rename` and `unlink` act on the directory entry
+   * and follow neither end, so resolving the leaf would refuse the removal of
+   * a link the host itself put there.
+   */
+  private async rotationPathIsContained(
+    targetPath: string,
+    generation: string
+  ): Promise<boolean> {
+    const roots = this.roots();
+    if (!roots) return true;
+    const verdict = await resolveContainedLink(generation, roots, this.containmentFs);
+    if (verdict.outcome === 'contained') return true;
+    if (verdict.outcome === 'refused') {
+      // Suppressed against the live path, not the generation file: the live
+      // path is the one the operator configured and the one the next emit
+      // will consult, and a rotation that cannot be proven safe must not be
+      // retried on every subsequent line.
+      this.recordSuppressionDirect(targetPath, verdict.reason);
+    }
+    return false;
+  }
+
   private async tryWrite(
     targetPath: string,
     line: string,
     maxBytes: number,
     maxGenerations: number
   ): Promise<void> {
+    // Before the stat, so a refused path costs one resolution and not a
+    // syscall against a location the host was never allowed to look at.
+    if (!(await this.appendTargetIsContained(targetPath))) return;
     const data = `${line}\n`;
     // Why the ASCII fast path: the module header documents this as a
     // ~10^4-emits-per-long-run hot path, and SanitizedLogger output is
@@ -497,8 +630,12 @@ export class RuntimeLogSink implements LogSink {
       if (!/^\d+$/.test(suffix)) continue;
       const n = Number(suffix);
       if (!Number.isInteger(n) || n <= maxGenerations) continue;
+      const victim = path.join(dir, name);
+      // The sweep runs over whatever `readdir` returned, so its entries were
+      // never named by the operator and never proved by the append check.
+      if (!(await this.rotationPathIsContained(targetPath, victim))) continue;
       try {
-        await this.unlink(path.join(dir, name));
+        await this.unlink(victim);
       } catch {
         // Best-effort — the next rotation will retry.
       }
@@ -514,6 +651,11 @@ export class RuntimeLogSink implements LogSink {
     from: string,
     to: string
   ): Promise<boolean> {
+    // Both ends. A rename whose source is contained and whose destination is
+    // not moves a file out of the allowed roots just as surely as the reverse
+    // moves one in.
+    if (!(await this.rotationPathIsContained(targetPath, from))) return false;
+    if (!(await this.rotationPathIsContained(targetPath, to))) return false;
     try {
       await this.rename(from, to);
       return true;
@@ -530,9 +672,10 @@ export class RuntimeLogSink implements LogSink {
    * errors — the oldest generation is best-effort cleanup.
    */
   private async tolerantUnlink(
-    _targetPath: string,
+    targetPath: string,
     victim: string
   ): Promise<void> {
+    if (!(await this.rotationPathIsContained(targetPath, victim))) return;
     try {
       await this.unlink(victim);
     } catch (err) {
@@ -560,10 +703,18 @@ export class RuntimeLogSink implements LogSink {
     if (set.has(cause)) return;
     set.add(cause);
     const shouldWarn = this.evidenceHealth?.reportFailure('runtimeLog', cause) ?? true;
-    // One WARN per (path, cause) pair via the fallback logger.
+    // One WARN per (path, cause) pair via the fallback logger. The refusal
+    // causes get their own sentence: "append failed" sends an operator looking
+    // at permissions, and the finding here is that the configured path does
+    // not resolve where it claims to, which is a different thing to fix. The
+    // path itself is never in the line — the cause is bounded, and a refused
+    // path is precisely the string that would name a location outside the
+    // allowed roots.
     if (shouldWarn) {
       this.fallback.warn(
-        `runtime-log-sink: append failed for path (${cause}); suppressing until settings change.`
+        CONTAINMENT_CAUSES.has(cause)
+          ? `runtime-log-sink: refused to write outside the allowed roots (${cause}); suppressing until settings change.`
+          : `runtime-log-sink: append failed for path (${cause}); suppressing until settings change.`
       );
     }
   }

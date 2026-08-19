@@ -10,6 +10,10 @@ import {
 } from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
 import {
+  resolveContainedLink,
+  type ContainmentRefusal
+} from '../lib/path-containment';
+import {
   normalizeEvidenceFailureCause,
   type EvidenceHealthReporter
 } from '../services/evidence-health/evidence-health-monitor';
@@ -253,6 +257,20 @@ export class AuditLogWriter {
     const milliseconds = String(rotationTime.getUTCMilliseconds()).padStart(3, '0');
     const stamp = `${formatStamp(rotationTime)}-${milliseconds}-${randomUUID().slice(0, 8)}`;
     const archive = `${this.logPath}.${stamp}`;
+    // Feature FR-R3-005 — both ends, link form. `rename` acts on the directory
+    // entries and follows neither, and the archive does not exist yet, so the
+    // check that matters is the one on the directory they share. A refusal
+    // leaves the live log where it is: an unrotated audit log is a large file,
+    // and moving one out of the workspace is not the recovery.
+    const ends = await Promise.all([
+      resolveContainedLink(this.logPath, [this.config.workspaceRoot]),
+      resolveContainedLink(archive, [this.config.workspaceRoot])
+    ]);
+    const refused = ends.find((verdict) => verdict.outcome === 'refused');
+    if (refused && refused.outcome === 'refused') {
+      this.warnContainmentRefusal('rotation', refused.reason);
+      return;
+    }
     try {
       await fs.rename(this.logPath, archive);
     } catch (err) {
@@ -315,6 +333,14 @@ export class AuditLogWriter {
     }
     for (const entry of archives) {
       if (keep.has(entry.fullPath)) continue;
+      // Feature FR-R3-005 — the archive list came out of `readdir`, so these
+      // names were never configured by anyone and the enumeration says nothing
+      // about where they lead.
+      const verdict = await resolveContainedLink(entry.fullPath, [this.config.workspaceRoot]);
+      if (verdict.outcome === 'refused') {
+        this.warnContainmentRefusal('retention', verdict.reason);
+        continue;
+      }
       try {
         await fs.unlink(entry.fullPath);
       } catch (err) {
@@ -323,6 +349,15 @@ export class AuditLogWriter {
         );
       }
     }
+  }
+
+  /**
+   * Feature FR-R3-005 — bounded, path-free. Distinct from the failure warnings
+   * above, which quote an errno message: those say the operation was attempted
+   * and did not work, and this says it was never attempted.
+   */
+  private warnContainmentRefusal(operation: string, reason: ContainmentRefusal): void {
+    this.logger.warn(`audit log ${operation} refused: containment ${reason}`);
   }
 }
 

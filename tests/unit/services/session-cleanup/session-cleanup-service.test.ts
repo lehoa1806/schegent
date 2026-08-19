@@ -2,19 +2,29 @@
 // See specs/034-task-deletion-cleanup/contracts/session-cleanup.md.
 //
 // Invariants under test:
-//   - never throws — every error scenario resolves a boolean.
-//   - present targets → true (both gone after).
-//   - absent targets → true (force: true converts ENOENT to success).
-//   - dir rm throws → false, exactly one logger.warn line.
-//   - file rm throws → false, exactly one logger.warn line.
-//   - both throw → false, exactly one warn line (aggregated, not two).
+//   - never throws — every error scenario resolves a SessionCleanupOutcome.
+//   - present targets → cleaned: true (both gone after).
+//   - absent targets → cleaned: true (force: true converts ENOENT to success).
+//   - dir rm throws → cleaned: false, exactly one logger.warn line.
+//   - file rm throws → cleaned: false, exactly one logger.warn line.
+//   - both throw → cleaned: false, exactly one warn line (aggregated, not two).
 //   - sanitization happens via SanitizedLogger.warn (single point).
+//
+// Feature FR-R3-005 (T326) widened the return from a bare boolean to
+// `{ cleaned, refusal? }`. The I/O contract below is unchanged: a target that
+// is absent still reaches `rm`, because `force: true` has always converted
+// ENOENT to success and the containment resolution is meant to be the only
+// difference on the normal path. The refusal arm has its own file —
+// `containment-refusal.test.ts`.
 
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanupSessionArtifacts } from '../../../../src/services/session-cleanup/session-cleanup-service';
+import {
+  cleanupSessionArtifacts,
+  type SessionCleanupOutcome
+} from '../../../../src/services/session-cleanup/session-cleanup-service';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 
 function makeLogger() {
@@ -35,7 +45,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
     await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined);
   });
 
-  it('present targets — removes both, resolves true, no warn', async () => {
+  it('present targets — removes both, resolves cleaned: true, no warn', async () => {
     const sessionDir = path.join(tmpRoot, '.schegent', 'sessions', runId);
     const nested = path.join(sessionDir, 'diagnostics', 'p', 'q', 'iter-1');
     await fs.mkdir(nested, { recursive: true });
@@ -50,24 +60,24 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
       logger
     });
 
-    expect(result).toBe(true);
+    expect(result).toEqual({ cleaned: true });
     expect(warnSpy).not.toHaveBeenCalled();
     await expect(fs.access(sessionDir)).rejects.toBeDefined();
     await expect(fs.access(rawFile)).rejects.toBeDefined();
   });
 
-  it('absent targets — resolves true, no warn (force: true converts ENOENT)', async () => {
+  it('absent targets — resolves cleaned: true, no warn (force: true converts ENOENT)', async () => {
     const { logger, warnSpy } = makeLogger();
     const result = await cleanupSessionArtifacts({
       workspaceRoot: tmpRoot,
       runId,
       logger
     });
-    expect(result).toBe(true);
+    expect(result).toEqual({ cleaned: true });
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('dir rm throws — resolves false, exactly one warn, raw rm still attempted', async () => {
+  it('dir rm throws — resolves cleaned: false, exactly one warn, raw rm still attempted', async () => {
     const { logger, warnSpy } = makeLogger();
     const calls: string[] = [];
     const fsRm = vi
@@ -84,15 +94,17 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
       logger,
       fsRm
     });
-    expect(result).toBe(false);
+    expect(result).toEqual({ cleaned: false });
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    // Containment resolution does not cost a call: an absent target is still
+    // handed to `rm`, so both sub-ops reach the seam exactly as before.
     expect(fsRm).toHaveBeenCalledTimes(2);
     // Proves no short-circuit on first failure
     expect(calls.some((c) => c.endsWith(runId))).toBe(true);
     expect(calls.some((c) => c.endsWith(`raw-${runId}.log`))).toBe(true);
   });
 
-  it('file rm throws — resolves false, exactly one warn', async () => {
+  it('file rm throws — resolves cleaned: false, exactly one warn', async () => {
     const { logger, warnSpy } = makeLogger();
     const fsRm = vi
       .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
@@ -106,11 +118,11 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
       logger,
       fsRm
     });
-    expect(result).toBe(false);
+    expect(result).toEqual({ cleaned: false });
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('both throw — resolves false, exactly one aggregated warn (not two)', async () => {
+  it('both throw — resolves cleaned: false, exactly one aggregated warn (not two)', async () => {
     const { logger, warnSpy } = makeLogger();
     const fsRm = vi
       .fn<(p: string, opts: { recursive: true; force: true }) => Promise<void>>()
@@ -123,11 +135,11 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
       logger,
       fsRm
     });
-    expect(result).toBe(false);
+    expect(result).toEqual({ cleaned: false });
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('never throws — every error scenario returns a boolean', async () => {
+  it('never throws — every error scenario returns an outcome', async () => {
     const { logger } = makeLogger();
     // A throwy fsRm that also rejects with a non-Error value.
     const fsRm = vi
@@ -136,7 +148,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
         throw 'not-an-error-object';
       });
     let threw = false;
-    let result: boolean | undefined;
+    let result: SessionCleanupOutcome | undefined;
     try {
       result = await cleanupSessionArtifacts({
         workspaceRoot: tmpRoot,
@@ -148,8 +160,8 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
       threw = true;
     }
     expect(threw).toBe(false);
-    expect(typeof result).toBe('boolean');
-    expect(result).toBe(false);
+    expect(typeof result?.cleaned).toBe('boolean');
+    expect(result).toEqual({ cleaned: false });
   });
 
   it('sanitization — the warn body passes through SanitizedLogger.warn once', async () => {
