@@ -927,7 +927,7 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
       )
     );
 
-    expect(getByTestId('queue-task-progress-a').textContent).toContain('1/3');
+    expect(getByTestId('queue-task-progress-a').textContent).toContain('1 of 3');
   });
 
   it('shows elapsed time once a Task has started, waiting time before then (FR-004)', () => {
@@ -938,7 +938,7 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
       ])
     );
 
-    expect(getByTestId('queue-task-timing-started').textContent).toMatch(/elapsed/i);
+    expect(getByTestId('queue-task-timing-started').textContent).toMatch(/\d+[smh]/i);
     expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
   });
 
@@ -992,9 +992,9 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
 
     // The executing Task is two phases in; the still-pending Task must read as
     // having completed none of its own — not the executing Task's count.
-    expect(getByTestId('queue-task-progress-live').textContent).toContain('2/3');
-    expect(getByTestId('queue-task-progress-waiting').textContent).toContain('0/3');
-    expect(getByTestId('queue-task-timing-live').textContent).toMatch(/elapsed/i);
+    expect(getByTestId('queue-task-progress-live').textContent).toContain('2 of 3');
+    expect(getByTestId('queue-task-progress-waiting').textContent).toContain('0 of 3');
+    expect(getByTestId('queue-task-timing-live').textContent).toMatch(/\d+[smh]/i);
     expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
   });
 });

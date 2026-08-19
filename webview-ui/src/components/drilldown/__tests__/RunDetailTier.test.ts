@@ -260,7 +260,10 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
     expect(getByTestId('dashboard-phase-progression')).not.toBeNull();
   });
 
-  it('shows this queue’s live feed, not the workspace’s', () => {
+  // Feature 097 moved the live feed and the liveness pair onto the Context tab.
+  // The tab is activated first so these still assert the feed's content rather
+  // than which tab happens to open by default.
+  it('shows this queue’s live feed, not the workspace’s', async () => {
     const { getByTestId } = mount(
       buildSnapshot({
         tasks: [task('r-1', { status: 'in-flight' })],
@@ -268,12 +271,14 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
         liveSummary: 'nightly-phase-2'
       })
     );
+    await fireEvent.click(getByTestId('run-tab-context'));
 
     expect(getByTestId('run-detail-live-feed').textContent).toContain('nightly-phase-2');
   });
 
-  it('reports an idle feed when this queue has no Run executing', () => {
+  it('reports an idle feed when this queue has no Run executing', async () => {
     const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    await fireEvent.click(getByTestId('run-tab-context'));
 
     expect(getByTestId('run-detail-live-feed').textContent).toMatch(/idle/i);
   });
@@ -458,7 +463,10 @@ describe('RunDetailTier — Activity Feed and outputs (T006, FR-007)', () => {
     expect(queryByTestId('phase-log-feed')).toBeNull();
   });
 
-  it('shows this Run’s recorded outputs once it is the one executing', () => {
+  // Feature 097 moved the outputs section onto its own tab. Every test below
+  // opens that tab — including the two negative ones, which would otherwise
+  // pass merely because the tab was closed rather than because nothing rendered.
+  it('shows this Run’s recorded outputs once it is the one executing', async () => {
     const { getByTestId } = mount(
       buildSnapshot({
         tasks: [task('r-1', { status: 'in-flight' })],
@@ -466,28 +474,31 @@ describe('RunDetailTier — Activity Feed and outputs (T006, FR-007)', () => {
         outputs: [{ name: 'summary', status: 'resolved', reference: 'out/summary.md' }]
       })
     );
+    await fireEvent.click(getByTestId('run-tab-outputs'));
 
     expect(getByTestId('run-outputs').textContent).toContain('summary');
   });
 
-  it('shows no outputs section when the Run has recorded none', () => {
-    const { queryByTestId } = mount(
+  it('shows no outputs section when the Run has recorded none', async () => {
+    const { getByTestId, queryByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
     );
+    await fireEvent.click(getByTestId('run-tab-outputs'));
 
     expect(queryByTestId('run-outputs')).toBeNull();
   });
 
-  it('does not show outputs recorded by a different Run executing on this queue', () => {
+  it('does not show outputs recorded by a different Run executing on this queue', async () => {
     // Same non-borrowing guarantee as the disabled phase controls above: a Task
     // that is not the one executing must not surface a sibling Run's outputs.
-    const { queryByTestId } = mount(
+    const { getByTestId, queryByTestId } = mount(
       buildSnapshot({
         tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
         inFlightTaskId: 'sibling',
         outputs: [{ name: 'summary', status: 'resolved', reference: 'out/summary.md' }]
       })
     );
+    await fireEvent.click(getByTestId('run-tab-outputs'));
 
     expect(queryByTestId('run-outputs')).toBeNull();
   });

@@ -107,7 +107,7 @@
   {/if}
   <button
     type="button"
-    class="btn btn-ghost"
+    class="btn btn-secondary"
     data-testid="dashboard-queue-clear-done"
     onclick={onClearDone}
     disabled={clearDoneDisabled || !isPrimary}
@@ -129,9 +129,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin: 0 calc(var(--schegent-space-2) * -1) var(--schegent-space-2);
-    padding: 0 var(--schegent-space-2) var(--schegent-space-2);
-    border-bottom: 1px solid var(--schegent-divider);
   }
 
   .btn {
@@ -155,8 +152,6 @@
   .btn-primary { background: var(--schegent-color-active); color: var(--vscode-button-foreground); }
   .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
   .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
   .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
   .btn-destructive:hover:not(:disabled) { background: var(--schegent-color-error); color: var(--vscode-button-foreground); }
 </style>

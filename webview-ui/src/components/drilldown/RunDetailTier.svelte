@@ -23,6 +23,8 @@
   import PhaseLogFeed from '../PhaseLogFeed/PhaseLogFeed.svelte';
   import RunOutputs from '../RunOutputs.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
+  import { formatDuration } from '../../lib/format-duration';
+  import type { QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
   import { deriveRunLivenessView, deriveRunProgressView } from '../../lib/run-liveness-view';
@@ -65,7 +67,11 @@
   // The feed belongs to this Run only while this Run is the one executing. A
   // pending Task's detail view reports idle rather than borrowing the reading of
   // whichever Run the queue happens to be working.
-  const isExecuting = $derived(inFlightRun !== null && inFlightRun.feature?.id === runId);
+  const isExecuting = $derived(
+    inFlightRun !== null &&
+    inFlightRun.feature?.id === runId &&
+    (task?.status === 'in-flight')
+  );
   const liveActivity = $derived(isExecuting ? inFlightRun?.liveActivity ?? null : null);
   const feedText = $derived(
     liveActivity === null
@@ -89,6 +95,41 @@
   const progress = $derived(isExecuting ? inFlightRun?.progress ?? null : null);
   const livenessView = $derived(deriveRunLivenessView(liveness, $nowCoarse));
   const progressView = $derived(deriveRunProgressView(progress));
+
+  // ── Meta line derivations ──────────────────────────────────────────
+  const STATUS_LABELS: Record<QueueItemStatus, string> = {
+    'pending': 'Pending',
+    'in-flight': 'Running',
+    'paused': 'Paused',
+    'completed': 'Completed',
+    'canceled': 'Canceled',
+    'failed': 'Failed'
+  };
+  function statusLabel(s: QueueItemStatus): string {
+    return STATUS_LABELS[s] ?? s;
+  }
+
+  const elapsedLabel = $derived(
+    inFlightRun?.elapsedMs != null && inFlightRun.elapsedMs > 0
+      ? formatDuration(inFlightRun.elapsedMs)
+      : null
+  );
+
+  const phases = $derived(runtime?.phases ?? []);
+  const activePhaseIndex = $derived(
+    phases.findIndex((p) => p.state === 'active')
+  );
+  const phaseOfTotal = $derived(
+    phases.length > 0
+      ? `phase ${(activePhaseIndex >= 0 ? activePhaseIndex + 1 : phases.length)} of ${phases.length}`
+      : null
+  );
+  const currentIteration = $derived(
+    activePhaseIndex >= 0 ? phases[activePhaseIndex].iteration : 1
+  );
+
+  // ── Tab state ──────────────────────────────────────────────────────
+  let activeTab = $state<'log' | 'outputs' | 'context'>('log');
 
   // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
   // removed Dashboard embed, this tier is about one Run, so the store lives
@@ -143,67 +184,137 @@
       pipelines={snapshot.availablePipelines ?? []}
     />
   {:else if task !== null}
-    <section class="run-body">
-      <h1 class="run-prompt" data-testid="run-detail-prompt">{task.label}</h1>
-      <p class="run-pipeline" data-testid="run-detail-pipeline">{pipelineName}</p>
-      <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
+    <!-- Header block: title + meta line + action buttons -->
+    <div class="run-header-block">
+      <div class="run-header-top">
+        <h1
+          class="run-prompt"
+          data-testid="run-detail-prompt"
+          title={task.label}
+        >{task.label.length > 64 ? task.label.slice(0, 64) + '…' : task.label}</h1>
+        {#if isPrimary}
+          <div class="header-actions" data-testid="run-detail-controls">
+            <QueueItemActions item={task} {isPrimary} />
+          </div>
+        {/if}
+      </div>
 
-      <!-- FR-R3-008 (T380) — the same two questions the live feed answers from
-           memory, answered from the persisted record so they survive a window
-           reload. Both read `unknown` on a Run written before the feature; see
-           `run-liveness-view.ts` for why that is not zero. -->
-      <dl class="run-liveness" data-testid="run-detail-liveness">
-        <dt>Activity</dt>
-        <dd data-testid="run-detail-last-activity" data-known={livenessView.known}>
-          {livenessView.label}
-          {#if livenessView.detail !== ''}
-            <span class="detail">{livenessView.detail}</span>
-          {/if}
-        </dd>
-        <dt>Progress</dt>
-        <dd data-testid="run-detail-progress" data-known={progressView.known}>
-          {progressView.label}
-          {#if progressView.detail !== ''}
-            <span class="detail">{progressView.detail}</span>
-          {/if}
-        </dd>
-      </dl>
+      <p class="run-meta" data-testid="run-detail-meta">
+        <span class="meta-id">{task.id.length > 10 ? task.id.slice(0, 10) : task.id}</span>
+        <span class="meta-sep">&middot;</span>
+        <span class="meta-pipeline" data-testid="run-detail-pipeline">{pipelineName}</span>
+        <span class="meta-sep">&middot;</span>
+        <span
+          class="meta-status status-{task.status}"
+          data-testid="run-detail-status"
+        >{statusLabel(task.status)}</span>
+        {#if elapsedLabel !== null}
+          <span class="meta-sep">&middot;</span>
+          <span class="meta-elapsed">{elapsedLabel}</span>
+        {/if}
+        {#if phaseOfTotal !== null}
+          <span class="meta-sep">&middot;</span>
+          <span class="meta-phase-of">{phaseOfTotal}</span>
+        {/if}
+        {#if currentIteration > 1}
+          <span class="meta-sep">&middot;</span>
+          <span class="meta-iteration">iteration {currentIteration}</span>
+        {/if}
+      </p>
+    </div>
 
-      {#if isPrimary}
-        <div class="controls" data-testid="run-detail-controls">
-          <QueueItemActions item={task} {isPrimary} />
+    <!-- Two-column body: phases left, content right -->
+    <div class="run-columns">
+      <!-- Left panel: Phase Progression -->
+      <aside class="run-left-panel">
+        <PhaseProgression
+          phases={phases}
+          activeTaskId={isExecuting ? runId : null}
+          activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
+          {queueId}
+          targetsSubjectRun={isExecuting}
+          {isPrimary}
+          manualPauseAt={runtime?.manualPause?.at ?? null}
+          manualPauseCause={runtime?.manualPause?.cause ?? null}
+          phaseOverrides={runtime?.phaseOverrides ?? []}
+          phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
+          resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
+        />
+      </aside>
+
+      <!-- Right panel: Tabbed content -->
+      <div class="run-right-panel">
+        <div class="tab-bar" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            class="tab-btn"
+            class:active={activeTab === 'log'}
+            aria-selected={activeTab === 'log'}
+            data-testid="run-tab-log"
+            onclick={() => activeTab = 'log'}
+          >&Sigma; Phase log</button>
+          <button
+            type="button"
+            role="tab"
+            class="tab-btn"
+            class:active={activeTab === 'outputs'}
+            aria-selected={activeTab === 'outputs'}
+            data-testid="run-tab-outputs"
+            onclick={() => activeTab = 'outputs'}
+          >&#128196; Run outputs</button>
+          <button
+            type="button"
+            role="tab"
+            class="tab-btn"
+            class:active={activeTab === 'context'}
+            aria-selected={activeTab === 'context'}
+            data-testid="run-tab-context"
+            onclick={() => activeTab = 'context'}
+          >&#128196; Context</button>
+
+          {#if isExecuting}
+            <span class="streaming-badge" data-testid="run-streaming-badge">
+              <span class="streaming-dot"></span>
+              STREAMING
+            </span>
+          {/if}
         </div>
-      {/if}
 
-      <!-- Off-target phase controls — `phases` is the *runtime's* strip, so for
-           a Task that is not the one executing, this tier draws the executing
-           Run's phases under the selected Task's title, and the queue-addressed
-           controls in the strip's menu act on that executing Run.
-           `targetsSubjectRun` is the same
-           `isExecuting` conjunct the live feed above already applies, for the
-           same reason: this tier is about one Run, and it borrows nothing from
-           whichever Run the queue happens to be working. -->
-      <PhaseProgression
-        phases={runtime?.phases ?? []}
-        activeTaskId={isExecuting ? runId : null}
-        activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
-        {queueId}
-        targetsSubjectRun={isExecuting}
-        {isPrimary}
-        manualPauseAt={runtime?.manualPause?.at ?? null}
-        manualPauseCause={runtime?.manualPause?.cause ?? null}
-        phaseOverrides={runtime?.phaseOverrides ?? []}
-        phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
-        resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
-      />
-
-      <RunOutputs {outputs} />
-
-      <!-- autoFollow={false}: this store is pinned to one Run (the $effect
-           above); PhaseLogFeed's own Live-Mode auto-follow must not
-           redirect it to the default queue's in-flight task. -->
-      <PhaseLogFeed {snapshot} store={phaseLogStore} autoFollow={false} />
-    </section>
+        <div class="tab-panel" role="tabpanel">
+          {#if activeTab === 'log'}
+            <!-- autoFollow={false}: this store is pinned to one Run (the $effect
+                 above); PhaseLogFeed's own Live-Mode auto-follow must not
+                 redirect it to the default queue's in-flight task. -->
+            <PhaseLogFeed {snapshot} store={phaseLogStore} autoFollow={false} />
+          {:else if activeTab === 'outputs'}
+            <RunOutputs {outputs} />
+          {:else}
+            <!-- FR-R3-008 (T380) — the same two questions the live feed answers from
+                 memory, answered from the persisted record so they survive a window
+                 reload. Both read `unknown` on a Run written before the feature; see
+                 `run-liveness-view.ts` for why that is not zero. -->
+            <dl class="run-liveness" data-testid="run-detail-liveness">
+              <dt>Activity</dt>
+              <dd data-testid="run-detail-last-activity" data-known={livenessView.known}>
+                {livenessView.label}
+                {#if livenessView.detail !== ''}
+                  <span class="detail">{livenessView.detail}</span>
+                {/if}
+              </dd>
+              <dt>Progress</dt>
+              <dd data-testid="run-detail-progress" data-known={progressView.known}>
+                {progressView.label}
+                {#if progressView.detail !== ''}
+                  <span class="detail">{progressView.detail}</span>
+                {/if}
+              </dd>
+            </dl>
+            <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
+          {/if}
+        </div>
+      </div>
+    </div>
   {:else}
     <!-- FR-062 — the destination resolved to nothing. Say so; the surface above
          decides whether to fall back, and this view must not look merely empty. -->
@@ -214,100 +325,54 @@
 </main>
 
 <style>
-  .run-detail-tier {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px 20px;
-    min-height: 0;
-    overflow-y: auto;
+  .run-detail-tier { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; height: 100%; min-height: 0; overflow: hidden; }
+  .tier-header { display: flex; align-items: center; }
+  .back { font: inherit; padding: 2px 0; border: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
+  .back:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+
+  .run-header-block { display: flex; flex-direction: column; gap: 6px; }
+  .run-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .run-prompt { margin: 0; font-size: 18px; font-weight: 600; color: var(--vscode-editor-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+  .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .run-meta { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+  .meta-id { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .meta-sep { color: var(--vscode-descriptionForeground); opacity: 0.5; }
+  .meta-pipeline { font-size: 12px; padding: 1px 7px; border-radius: 4px; background: color-mix(in srgb, var(--vscode-descriptionForeground) 12%, transparent); }
+  .meta-status { font-size: 11px; font-weight: 600; text-transform: uppercase; padding: 1px 8px; border-radius: 4px; }
+  /* Same status-to-token mapping the Queue Detail rows use, so one status
+     reads the same colour in both tiers. FR-021 — theme variables only. */
+  .meta-status.status-in-flight { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); }
+  .meta-status.status-completed { background: color-mix(in srgb, var(--schegent-color-completed) 18%, transparent); color: var(--schegent-color-completed); }
+  .meta-status.status-pending { background: transparent; color: var(--vscode-descriptionForeground); }
+  .meta-status.status-paused { background: color-mix(in srgb, var(--schegent-color-warning) 18%, transparent); color: var(--schegent-color-warning); }
+  .meta-status.status-failed { background: color-mix(in srgb, var(--schegent-color-error) 18%, transparent); color: var(--schegent-color-error); }
+  .meta-status.status-canceled { background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.7; }
+  .meta-elapsed, .meta-phase-of, .meta-iteration { font-variant-numeric: tabular-nums; }
+
+  .run-columns { display: flex; gap: 0; flex: 1 1 0; min-height: 0; overflow: hidden; }
+  .run-left-panel { flex: 0 0 260px; border-right: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-right: 14px; overflow-y: auto; }
+  .run-right-panel { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+
+  .tab-bar { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-left: 14px; flex-shrink: 0; }
+  .tab-btn { font: inherit; font-size: 12px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; white-space: nowrap; }
+  .tab-btn:hover { color: var(--vscode-editor-foreground); }
+  .tab-btn.active { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-focusBorder); }
+
+  .streaming-badge { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--schegent-color-active); padding-right: 8px; }
+  .streaming-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); animation: pulse-stream 1.8s ease-in-out infinite; }
+  @keyframes pulse-stream {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.3); }
   }
 
-  .tier-header {
-    display: flex;
-    align-items: center;
-  }
+  .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-left: 14px; padding-top: 8px; height: 100%; }
 
-  .back {
-    font: inherit;
-    padding: 2px 0;
-    border: 0;
-    background: transparent;
-    color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-  }
-
-  .back:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 2px;
-  }
-
-  .run-body {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .run-prompt {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--vscode-editor-foreground);
-    overflow-wrap: anywhere;
-  }
-
-  .run-pipeline {
-    margin: 0;
-    font-size: 11px;
-    text-transform: uppercase;
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .live-feed {
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .run-liveness {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 2px 10px;
-    margin: 0;
-    font-size: 12px;
-  }
-
-  .run-liveness dt {
-    color: var(--vscode-descriptionForeground);
-    text-transform: uppercase;
-    font-size: 11px;
-  }
-
-  .run-liveness dd {
-    margin: 0;
-    color: var(--vscode-editor-foreground);
-    overflow-wrap: anywhere;
-  }
-
-  /* An unknown reading is deliberately quieter than a real one, so it does not
-     read as a measurement. */
-  .run-liveness dd[data-known='false'] {
-    color: var(--vscode-descriptionForeground);
-    font-style: italic;
-  }
-
-  .run-liveness .detail {
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .controls {
-    display: flex;
-  }
-
-  .missing {
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
+  .run-liveness { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
+  .run-liveness dt { color: var(--vscode-descriptionForeground); text-transform: uppercase; font-size: 11px; }
+  .run-liveness dd { margin: 0; color: var(--vscode-editor-foreground); overflow-wrap: anywhere; }
+  .run-liveness dd[data-known='false'] { color: var(--vscode-descriptionForeground); font-style: italic; }
+  .run-liveness .detail { color: var(--vscode-descriptionForeground); }
+  .live-feed { margin: 12px 0 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
+  .missing { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
 </style>
