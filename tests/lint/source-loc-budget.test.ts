@@ -129,7 +129,23 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // this site, per the FR-R3-007 entry's reasoning: a gate is what makes the
   // refusal reach an operator who is not looking at a webview, so the wiring is
   // the behaviour. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_311 },
+  //
+  // Feature 098 residual (FR-031a, the gate's second reader) — 1,311 → 1,318,
+  // against a ceiling the entry above set to exactly what the file measured.
+  // Same gate, second consumer, and the second is the one that made the first
+  // incomplete: `refuseOnEmptyCatalog` leaves a queue `idle-pending` with its
+  // deadline persisted and its timer dropped, which is precisely the state the
+  // schedule watchdog's sweep exists to re-arm, so a coordinator that refuses
+  // and a watchdog that does not know it refused undo each other on the next
+  // tick. The decision is still not here — src/controller/schedule-watchdog.ts
+  // owns the skip and the line it logs. What lands here is the one closure only
+  // this file can write, for the reason the entry above gives: `activeCatalog`
+  // is a local of `wireStage2`, and it is read on every probe rather than
+  // captured so that an import lifts the hold. Six of the seven lines are the
+  // comment saying which of the two gates this is, and they earn their place —
+  // a reader who takes this for a copy of the coordinator's binding deletes it.
+  // Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_318 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -416,7 +432,22 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // and it was right — so there was no line to absorb it into short of
   // reflowing unrelated code, which would hide the growth rather than record
   // it. Raised to exactly what the file now measures, per D7.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 302 },
+  // Feature 098 residual (FR-008) — 302 → 308, and every one of the six lines
+  // is comment. The code half is a *deletion*: the projection read
+  // `run.pipeline && run.pipeline.id !== 'standard'`, suppressing the name of
+  // any Run whose Pipeline happened to be called that. It was defensible while
+  // `standard` was a built-in id whose name told the operator nothing they had
+  // not already been shown; with the catalog runtime-only, `standard` is
+  // whatever an operator called a document they imported, and hiding its name
+  // hides theirs. The comment stays at the site because the deleted condition
+  // is the kind a reader re-adds — a blank header on one Pipeline looks like a
+  // projection bug, and the id it keyed on is still a plausible-looking
+  // built-in. Trimming it to fit was measured and does not: at two lines the
+  // file still reads 304. Nothing was extracted because nothing was added, and
+  // the alternative to recording this is a ceiling that quietly absorbs
+  // explanation, which is the opposite of what the entries above are for. Set
+  // to exactly what the file measures.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 308 },
   { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched

@@ -25,6 +25,19 @@ export interface QueueScheduleWatchdogDeps {
    */
   readonly promote: (queueId: string) => Promise<void> | void;
   readonly isPrimary: () => boolean;
+  /**
+   * Whether the active Process catalog holds no Pipeline. Feature 098 (FR-031a)
+   * made an empty catalog a refusal at fire time:
+   * `ScheduledStartCoordinator.refuseOnEmptyCatalog()` drops the timer, tells
+   * the operator once, and leaves the queue `idle-pending` with its deadline
+   * still persisted — which is exactly the shape `tick()` reads as due and
+   * unowned. Without this the sweep re-fires the refused start on its next pass,
+   * so the gate belongs on the same predicate the coordinator gates on.
+   *
+   * Optional so a host that has no catalog to consult (and every test that is
+   * not about this gate) behaves as before: absent means "not empty".
+   */
+  readonly isCatalogEmpty?: () => boolean;
   readonly logger: Pick<SanitizedLogger, 'warn' | 'info'>;
   readonly audit?: {
     append(entry: {
@@ -116,9 +129,14 @@ export class QueueScheduleWatchdog {
    * accumulated behind a foreign lock is released in the order the operator
    * scheduled it. Each promotion is wrapped individually: one queue that
    * cannot promote must not skip the queues behind it.
+   *
+   * An empty Process catalog holds the whole sweep, silently: the coordinator
+   * already refused these deadlines once and said so, and restating that once a
+   * minute for as long as the deadline stands is noise, not information.
    */
   public async tick(): Promise<readonly string[]> {
     if (this.disposed || !this.deps.isPrimary()) return [];
+    if (this.deps.isCatalogEmpty?.() === true) return [];
     const now = this.now();
     const due = Object.entries(this.deps.getQueueStates())
       .filter(

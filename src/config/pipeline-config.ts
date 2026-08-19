@@ -23,7 +23,7 @@ import {
   type PipelineOutputPort
 } from '../contracts/pipeline-definitions';
 import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
-import { validatePhaseDefinition } from './process-definition-validator';
+import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
 import { validatePipelineDefinition } from './pipeline-definition-validator';
 export interface PhaseDef {
   readonly id: string;
@@ -182,22 +182,22 @@ export function equalsBuiltInPipelines(payload: readonly unknown[]): boolean {
   return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PIPELINES);
 }
 
-export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'name',
-  'description',
-  'version',
-  'instruction',
-  'skill',
-  'model',
-  'effort',
-  'timeoutSeconds',
-  'loopable',
-  'retryCondition',
-  'isRequired',
-  'forceContinueOnRetryCap',
-  'runner'
-]);
+/**
+ * The authored fields `validateCatalog` keeps when it strips a resolved
+ * `PhaseDef` back down to what an operator wrote, before handing it to the
+ * portable validator.
+ *
+ * Derived from `AUTHORED_PHASE_FIELDS` rather than restated. It was a hand-kept
+ * copy, and it fell two behind: feature 098 added `sideEffects` and
+ * `evidencePolicy` to the authored set, so this filter discarded both before
+ * `validatePhaseRaw` could reach its own enum checks for them — the one oracle
+ * whose job is to catch a bad containment class could not see the field. Only
+ * `phaseId` is dropped, the YAML spelling of `id` that a `schegent.phases` row
+ * never carries.
+ */
+export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set(
+  Array.from(AUTHORED_PHASE_FIELDS).filter((field) => field !== 'phaseId')
+);
 
 const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
   'id',

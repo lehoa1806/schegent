@@ -55,6 +55,7 @@ function makeWatchdog(opts: {
   primary?: boolean;
   armed?: readonly string[];
   promote?: (queueId: string) => Promise<void> | void;
+  catalogEmpty?: () => boolean;
 }) {
   const promoted: string[] = [];
   const promote = vi.fn(async (queueId: string) => {
@@ -70,7 +71,8 @@ function makeWatchdog(opts: {
     isPrimary: () => opts.primary ?? true,
     logger,
     audit,
-    now: () => opts.now ?? NOW
+    now: () => opts.now ?? NOW,
+    ...(opts.catalogEmpty ? { isCatalogEmpty: opts.catalogEmpty } : {})
   });
   return { watchdog, promote, promoted, audit, logger };
 }
@@ -201,6 +203,59 @@ describe('QueueScheduleWatchdog.tick — per-queue schedule scan (FR-R3-002)', (
     // No description, feature dir, or other operator-authored text.
     const serialized = JSON.stringify(entry.payload);
     expect(serialized).not.toMatch(/description|featureDir|prompt/i);
+  });
+
+  it('does not promote a due queue while the Process catalog is empty', async () => {
+    // Feature 098 (FR-031a): `ScheduledStartCoordinator.refuseOnEmptyCatalog()`
+    // drops the timer and leaves the queue in `idle-pending` with its deadline
+    // still persisted — which is bit-for-bit the state this tick calls "due and
+    // unowned". Without this gate the watchdog undoes the refusal on its next
+    // sweep, so an operator with no importable Pipeline gets a run started for
+    // them within a tick of being told the catalog is empty.
+    const h = makeWatchdog({
+      states: { alpha: due(NOW - 1) },
+      now: NOW,
+      catalogEmpty: () => true
+    });
+    await expect(h.watchdog.tick()).resolves.toEqual([]);
+    expect(h.promote).not.toHaveBeenCalled();
+  });
+
+  it('emits no audit event and no warning for a queue the empty catalog holds back', async () => {
+    // The refusal is already on the record — the coordinator told the operator
+    // once, at fire time. A per-tick audit row or toast would be the same
+    // refusal restated every 60 seconds for as long as the deadline stands.
+    const h = makeWatchdog({
+      states: { alpha: due(NOW - 1), beta: due(NOW - 2) },
+      now: NOW,
+      catalogEmpty: () => true
+    });
+    await h.watchdog.tick();
+    expect(h.audit.append).not.toHaveBeenCalled();
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('promotes normally once the catalog holds something', async () => {
+    // The gate's polarity, pinned: a gate wired backwards would make the
+    // watchdog dead in exactly the configuration it exists for.
+    const h = makeWatchdog({
+      states: { alpha: due(NOW - 1) },
+      now: NOW,
+      catalogEmpty: () => false
+    });
+    await expect(h.watchdog.tick()).resolves.toEqual(['alpha']);
+    expect(h.promote).toHaveBeenCalledExactlyOnceWith('alpha');
+  });
+
+  it('asks whether the catalog is empty once per tick, not once per due queue', async () => {
+    const catalogEmpty = vi.fn(() => false);
+    const h = makeWatchdog({
+      states: { alpha: due(NOW - 1), beta: due(NOW - 2), gamma: due(NOW - 3) },
+      now: NOW,
+      catalogEmpty
+    });
+    await h.watchdog.tick();
+    expect(catalogEmpty).toHaveBeenCalledOnce();
   });
 
   it('does not fire from a secondary host', async () => {

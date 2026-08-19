@@ -959,6 +959,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   })
 });
 
-export function isRecursivePhase(name: PhaseName): boolean {
-  return name === 'speckit-clarify' || name === 'speckit-analyze';
-}
+// Feature 098 (FR-008) — `isRecursivePhase` stood here, answering "does this
+// Phase loop?" from two hardcoded Spec Kit ids. Its sole caller, the sidebar's
+// sub-progress bar, now asks the tile's own frozen definition through the
+// controller's `isLoopPhase`, so the host holds one loop predicate rather than
+// two that could disagree. See `phase-projector.ts`.
