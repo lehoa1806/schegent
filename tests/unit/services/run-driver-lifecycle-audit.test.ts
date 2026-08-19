@@ -238,8 +238,13 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       } as any);
     }
 
-    function declaring(outputs: readonly unknown[]): void {
-      (deps.queue as any).findById = vi.fn(() => ({ runPlan: { outputs } }));
+    // FR-R3-001 (T266) — the declaration lives on the Run's frozen envelope, not
+    // on the queue row. This used to stub `queue.findById` to hand back a plan;
+    // the driver no longer looks there, and it must not, because the row can be
+    // edited or removed while the Run it describes is still executing.
+    async function declaring(outputs: readonly unknown[]): Promise<void> {
+      const seeded = store.getRun(DEFAULT_QUEUE_ID)!;
+      await store.setRun(DEFAULT_QUEUE_ID, { ...seeded, envelope: { outputs } } as any);
     }
 
     function cleanPhase(): void {
@@ -270,7 +275,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     it('records one entry per declared output, in declared order (W1, W2)', async () => {
       await seedRunningRun('run-outputs-1');
-      declaring(DECLARED);
+      await declaring(DECLARED);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -290,7 +295,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       driver = new RunDriver(deps);
 
       await seedRunningRun('run-outputs-2');
-      declaring(DECLARED);
+      await declaring(DECLARED);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -302,7 +307,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     it('records nothing for a Run that ends failed (FR-008)', async () => {
       await seedRunningRun('run-outputs-3');
-      declaring(DECLARED);
+      await declaring(DECLARED);
       failingPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -313,7 +318,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     it('records nothing when the plan declared no outputs (FR-008)', async () => {
       await seedRunningRun('run-outputs-4');
-      declaring([]);
+      await declaring([]);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -322,10 +327,12 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       expect(store.getRun(DEFAULT_QUEUE_ID)?.runOutputs).toBeUndefined();
     });
 
-    it('records nothing when the queue row or its plan is absent', async () => {
-      // Not a failure: a Run with no frozen plan declared no outputs.
+    it('records nothing when the Run carries no envelope', async () => {
+      // Not a failure: a Run started outside the composed path declared no
+      // outputs. Under FR-R3-001 that is read off the Run itself, so the seeded
+      // Run — which has no envelope — is already the case under test, and the
+      // queue is not consulted at all.
       await seedRunningRun('run-outputs-5');
-      (deps.queue as any).findById = vi.fn(() => null);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -336,7 +343,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     it('adds no audit event type and puts no location in any audit payload (W9)', async () => {
       await seedRunningRun('run-outputs-6');
-      declaring(DECLARED);
+      await declaring(DECLARED);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');
@@ -354,7 +361,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       // Neither declared artifact exists under the test cwd, so both resolve
       // unresolved — and the Run still completes.
       await seedRunningRun('run-outputs-7');
-      declaring(DECLARED);
+      await declaring(DECLARED);
       cleanPhase();
 
       await driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'Test description');

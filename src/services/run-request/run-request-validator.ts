@@ -1,12 +1,19 @@
 // Feature 087 (T016-T020, T026, T032, US1/US2) — Run Request validation, and
-// the only place a `FrozenRunPlan` is constructed.
+// the only place an `ExecutionEnvelope` is constructed.
 //
 // "Parse, don't validate": this returns the more precise type rather than a
-// boolean, so a `FrozenRunPlan` cannot exist without having been checked, and
+// boolean, so an envelope cannot exist without having been checked, and
 // there is no `isValid` flag a later edit can leave stale. The enqueue path
-// accepts nothing but a `FrozenRunPlan`, which is what makes "validation is the
+// accepts nothing else, which is what makes "validation is the
 // only thing that creates durable state for a Run" structural rather than a
 // convention someone has to remember.
+//
+// FR-R3-001 (T257) widened what rests on that: the envelope is no longer only
+// what the queue persists, it is what the prompt, the runner, and the output
+// probe read. So this module exports exactly one thing that can produce one —
+// `validateRunRequest()` — and no builder, factory, defaulter, or `Partial`
+// widener beside it. `tests/lint/no-envelope-reconstruction.test.ts` fails the
+// build if a second one appears anywhere under `src/`.
 //
 // Two rules shape the whole file:
 //
@@ -434,15 +441,6 @@ function refuseOutputsWithoutRoot(
 }
 
 /**
- * Validate `request` against the Pipeline snapshot in `context` and, on
- * success, produce the plan the enqueue path will freeze.
- *
- * This is the only construction site of a `FrozenRunPlan` in the codebase.
- * Asynchronous because the local-reference and output-target gates reach the
- * filesystem through their ports; a failure is always a returned
- * `{ ok: false }`, never a rejection.
- */
-/**
  * The FR-030 freeze: the complete expanded Pipeline-plus-Phases definition, in
  * one object, produced by the same two helpers the drain path has always used —
  * so a plan-carrying Run and a legacy resolve-at-drain Run produce byte-identical
@@ -461,6 +459,16 @@ function freezePipeline(source: EffectivePipelineSource): WorkflowRunPipeline {
   );
 }
 
+/**
+ * Validate `request` against the Pipeline snapshot in `context` and, on
+ * success, produce the `ExecutionEnvelope` the enqueue path persists and the
+ * execution path runs from.
+ *
+ * This is the only construction site of an envelope in the codebase (T257).
+ * Asynchronous because the local-reference and output-target gates reach the
+ * filesystem through their ports; a failure is always a returned
+ * `{ ok: false }`, never a rejection.
+ */
 export async function validateRunRequest(
   request: RunRequest,
   context: RunRequestValidationContext
@@ -493,6 +501,9 @@ export async function validateRunRequest(
 
   if (errors.length > 0) return { ok: false, errors };
 
+  // The single envelope literal in `src/`. The lint gate anchors on this
+  // object's `frozenAt` key, so moving or renaming it fails the build rather
+  // than silently emptying the scan.
   return {
     ok: true,
     plan: {

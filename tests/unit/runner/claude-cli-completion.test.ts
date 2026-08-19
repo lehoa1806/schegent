@@ -128,12 +128,23 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
   it('does not treat replay events before an old result as a fresh resumed turn', async () => {
     const child = makeFakeChild(true);
     const spawnFn: SpawnFn = () => {
+      // BUG-004 (T077) — fixture corrected, assertions untouched. This test
+      // was authored with `init` ahead of the replayed result, which asserts
+      // that a replaying CLI emits history on the *far* side of the envelope.
+      // FR-029 records the opposite as its premise, and T075 settled it: on
+      // CLI 2.1.233 `init` is the first line of every invocation with zero
+      // lines before it, so a resumed `init` followed by a result is a live
+      // turn, not a replay — the exact shape BUG-004 reported as a 90-minute
+      // stall. The two readings cannot both hold, so the replayed result moves
+      // to the near side of the boundary where FR-029 puts it. What this test
+      // pins is unchanged: replay events preceding an old result are not a
+      // fresh resumed turn.
       setTimeout(
         () => child.stdout.emit(
           'data',
-          '{"type":"system","subtype":"init"}\n' +
-            COMPLETE_OUTPUT +
-            '{"type":"result","subtype":"success"}\n'
+          COMPLETE_OUTPUT +
+            '{"type":"result","subtype":"success"}\n' +
+            '{"type":"system","subtype":"init"}\n'
         ),
         10
       );
@@ -306,6 +317,193 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     await vi.advanceTimersByTimeAsync(90 * 60_000);
     const raw = await p;
     expect(raw.timedOut).toBe(true);
+  });
+
+  // Feature 030 BUG-004 (T076, T077) — the consequence of BUG-003's patch. The
+  // replay suppression FR-026 added is purely wall-clock, so it cannot tell a
+  // replayed terminal result from a live one and discards both: a resumed
+  // invocation that genuinely finishes inside the window never arms the marker,
+  // and a CLI that then lingers is held for the full 90-minute idle window.
+  // That is BUG-002's stall, reintroduced on the resumed path. FR-029 replaces
+  // the wall-clock decision with the `system`/`init` boundary; SC-015 is the
+  // first test below.
+
+  it('grace-terminates a resumed invocation whose own result arrives inside the replay window', async () => {
+    // SC-015. The result at 4s follows this invocation's own `init`, so it
+    // belongs to the current turn however early it lands. Against the
+    // wall-clock guard the marker never armed and no kill occurred for 90
+    // minutes; the only difference from the control below is the resume
+    // fields, which must not change completion semantics.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(() => child.stdout.emit('data', '{"type":"system","subtype":"init"}\n'), 10);
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+        ),
+        4_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const raw = await p;
+    expect(child.kill).toHaveBeenCalled();
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+    expect(raw.killed).toBe(false);
+  });
+
+  it('grace-terminates a fresh invocation on the same timeline (resume-field control)', async () => {
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(() => child.stdout.emit('data', '{"type":"system","subtype":"init"}\n'), 10);
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+        ),
+        4_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const raw = await p;
+    expect(child.kill).toHaveBeenCalled();
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+  });
+
+  it('does not arm the marker from a terminal result that precedes the init envelope', async () => {
+    // T077 — the suppressing half of the boundary, stated positively. T068's
+    // fixture emits no `init` at all, so under a structural rule it would pass
+    // for the wrong reason: the marker fails to arm because no boundary was
+    // ever crossed. Here the boundary IS crossed, after the replayed result,
+    // which is the shape FR-029's premise attributes to a replaying CLI.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        1_000
+      );
+      setTimeout(() => child.stdout.emit('data', '{"type":"system","subtype":"init"}\n'), 20_000);
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    // Well past the settle window with only the pre-init result seen. A marker
+    // armed here would have grace-terminated a process that has not started
+    // the current turn.
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // The boundary arrives, nothing follows it, and the stall backstop — not
+    // the settle window — is what ends the invocation.
+    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(90 * 60_000);
+    const raw = await p;
+    expect(raw.timedOut).toBe(true);
+    expect(raw.completedAwaitingExit).toBeFalsy();
+  });
+
+  it('arms the marker from a terminal result that follows the init envelope', async () => {
+    // T077 — the arming half. Same invocation shape as the test above with the
+    // result moved to the far side of the boundary, so the boundary is what
+    // decides and the pair is non-vacuous.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(() => child.stdout.emit('data', '{"type":"system","subtype":"init"}\n'), 1_000);
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        2_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const raw = await p;
+    expect(child.kill).toHaveBeenCalled();
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
+  });
+
+  it('suppresses at most one terminal result per resumed invocation (fallback bound)', async () => {
+    // FR-029's fallback bound, pinned on its own. T075 established that no
+    // reachable CLI configuration replays, so the boundary alone always arms
+    // and this path is unreachable in production — which is exactly why it
+    // needs its own test rather than relying on incidental coverage. Neither
+    // T068's nor T072's fixture exercises it: both deliver their second result
+    // past the 60s window, where the window expiry arms them regardless.
+    const child = makeFakeChild(true);
+    const spawnFn: SpawnFn = () => {
+      setTimeout(
+        () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+        1_000
+      );
+      setTimeout(
+        () => child.stdout.emit(
+          'data',
+          COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+        ),
+        2_000
+      );
+      return child as unknown as ChildProcess;
+    };
+    const runner = new ClaudeCliRunner(spawnFn);
+    const p = runner.invoke({
+      ...baseReq,
+      timeoutMs: 90 * 60_000,
+      completionMarker: AUDIT_LOG_CLOSE_MARKER,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    // Both results land inside the 60s window and no `init` ever arrives, so
+    // only the bound can arm the second one.
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const raw = await p;
+    expect(child.kill).toHaveBeenCalled();
+    expect(raw.completedAwaitingExit).toBe(true);
+    expect(raw.timedOut).toBe(false);
   });
 
   it('still trips the idle timeout when no output and no marker arrive (stall backstop)', async () => {

@@ -3,6 +3,7 @@ import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
 import type { PromptBuilder } from '../runner/prompt-builder';
+import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { projectAuditPayload } from '../audit/audit-payload';
 import type { AuditEntry } from '../audit/audit-entry';
@@ -107,6 +108,16 @@ export interface PhaseRunInputs {
    * When set, bypasses standard prompt generation.
    */
   resumePrompt?: string;
+  /**
+   * FR-R3-001 (T260) — the accepted request, forwarded whole to the prompt seam.
+   *
+   * Deliberately one field rather than four. The phase runner does not read the
+   * envelope's members and must not start: it is a carrier here, so a field
+   * added to the envelope reaches the prompt without touching this file. Absent
+   * for a Run started outside the composed path, which is the legacy prompt
+   * unchanged.
+   */
+  envelope?: ExecutionEnvelope;
 }
 
 export interface PhaseRunOutput {
@@ -313,7 +324,8 @@ export class PhaseRunner {
           featureDir: inputs.featureDir,
           carriedIssues: inputs.carriedIssues,
           phaseMessagePath: inputs.phaseMessagePath ?? null,
-          previousPhaseMessage: inputs.previousPhaseMessage ?? null
+          previousPhaseMessage: inputs.previousPhaseMessage ?? null,
+          envelope: inputs.envelope
         });
     // Feature 074 — resolve the effective runner kind for audit attribution.
     const effectiveRunnerKind = inputs.phaseDef?.runner
