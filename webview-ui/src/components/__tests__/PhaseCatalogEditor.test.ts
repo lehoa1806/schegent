@@ -86,6 +86,52 @@ describe('Phase catalog source editor states', () => {
       .toContain('missing-model (Unavailable)');
   });
 
+  // The dropdown read `availableModels` alone until Claude and Codex started
+  // reporting none — neither CLI can enumerate its models — which left a
+  // Claude phase with nothing to pick but Inherit, including the ids the
+  // operator had just imported into `schegent.models`.
+  it('offers the operator-configured models for a backend that detects none', () => {
+    const snapshot = {
+      ...SNAPSHOT,
+      availableModels: { claude: [], codex: [], agy: [] },
+      configuredModels: { claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] }
+    } as unknown as WorkflowSnapshot;
+    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0, snapshot });
+
+    const options = Array.from(
+      container.querySelectorAll('[data-testid="phases-model-custom"] option')
+    ).map((option) => (option as HTMLOptionElement).value);
+    expect(options).toEqual(['', 'claude-opus-5', 'claude-sonnet-5']);
+  });
+
+  it('offers configured and detected models together, configured first and deduped', () => {
+    const snapshot = {
+      ...SNAPSHOT,
+      availableModels: { claude: [], codex: [], agy: ['gemini-3.7-flash-high', 'gemini-3.7-pro'] },
+      configuredModels: { claude: [], codex: [], agy: ['my-own-id', 'gemini-3.7-pro'] }
+    } as unknown as WorkflowSnapshot;
+    const phase = { ...WORKSPACE_PHASE, runner: 'agy' as const };
+    const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
+
+    const options = Array.from(
+      container.querySelectorAll('[data-testid="phases-model-custom"] option')
+    ).map((option) => (option as HTMLOptionElement).value);
+    expect(options).toEqual(['', 'my-own-id', 'gemini-3.7-pro', 'gemini-3.7-flash-high']);
+  });
+
+  it('still marks a model in neither list as unavailable', () => {
+    const snapshot = {
+      ...SNAPSHOT,
+      availableModels: { claude: [], codex: [], agy: [] },
+      configuredModels: { claude: ['claude-opus-5'], codex: [], agy: [] }
+    } as unknown as WorkflowSnapshot;
+    const phase = { ...WORKSPACE_PHASE, model: 'retired-model' };
+    const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
+
+    expect(container.querySelector('[data-testid="phases-model-custom"]')?.textContent)
+      .toContain('retired-model (Unavailable)');
+  });
+
   it('keeps built-in author fields read-only and hides removal', () => {
     const builtIn: MutablePhase = {
       ...WORKSPACE_PHASE,
@@ -177,8 +223,10 @@ describe('Phase catalog source editor states', () => {
 // decisions themselves are pinned in process-exchange-entry.test.ts; what is
 // asserted here is that the surface is wired to them.
 describe('Phase catalog exchange entry points', () => {
-  it('offers Export per row and Import once for the catalog', () => {
-    const { container } = mount({ phases: [WORKSPACE_PHASE] });
+  // Export moved from the sidebar row to the editor header, so it is offered for
+  // the selected Phase rather than once per row; Import stays with the catalog.
+  it('offers Export for the selected Phase and Import once for the catalog', () => {
+    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0 });
     expect(container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
   });
@@ -186,7 +234,7 @@ describe('Phase catalog exchange entry points', () => {
   it('keeps Export enabled where every other row control is closed', () => {
     // Export writes a file the operator names and changes no catalog state, so a
     // pending mutation is not a reason to withhold it.
-    const { container } = mount({ phases: [WORKSPACE_PHASE], mutationActive: true });
+    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0, mutationActive: true });
     expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
       .disabled).toBe(false);
     expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
@@ -195,7 +243,7 @@ describe('Phase catalog exchange entry points', () => {
 
   it('refuses to export an unsaved draft, and says why (FR-015, FR-057)', () => {
     const draft = { ...WORKSPACE_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
-    const { container } = mount({ phases: [draft] });
+    const { container } = mount({ phases: [draft], selectedIndex: 0 });
     expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
       .disabled).toBe(true);
     expect(container.querySelector('[data-testid="process-export-disabled-reason"]')?.textContent)

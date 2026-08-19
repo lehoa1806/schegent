@@ -79,6 +79,7 @@ export class PlaceholderProjector implements ProjectorHandle {
       availablePipelines: Object.freeze([]),
       availablePhases: Object.freeze([]),
       availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+      configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
       availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
       backendPingState: Object.freeze({ status: 'idle' as const }),
       generalSettings: IDLE_GENERAL_SETTINGS,

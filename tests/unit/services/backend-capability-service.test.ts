@@ -111,7 +111,15 @@ describe('BackendCapabilityService', () => {
     }
   });
 
-  it('preserves the existing code-resident Claude and Codex model registries', async () => {
+  // Neither CLI can enumerate models: `claude` and `codex` expose no
+  // model-listing subcommand (only a `--model` that TAKES a value), so the
+  // lists this service used to publish for them were code-resident
+  // constants, not discovered facts. Publishing an invented list is worse
+  // than publishing none — it drove the Models editor's seed and the
+  // `modelAvailable` advisory, both of which then disagreed with the
+  // operator's actual `schegent.models` catalog. Availability is still
+  // probed for both; only the model list is empty.
+  it('reports no models for Claude and Codex, which cannot enumerate them', async () => {
     const spawnFn = vi.fn(() => {
       const child = makeChild();
       queueMicrotask(() => emitClose(child, 0));
@@ -121,12 +129,25 @@ describe('BackendCapabilityService', () => {
 
     const snapshot = await service.scan();
 
-    expect(snapshot.availableModels.claude).toEqual([
-      'claude-3-5-sonnet-20241022',
-      'claude-3-5-haiku-20241022',
-      'claude-3-opus-20240229'
-    ]);
-    expect(snapshot.availableModels.codex).toEqual(['codex-default']);
+    expect(snapshot.availableModels.claude).toEqual([]);
+    expect(snapshot.availableModels.codex).toEqual([]);
+    // Availability is unaffected — both probed and both answered.
+    expect(snapshot.availableBackends).toEqual(['claude', 'codex']);
+  });
+
+  it('never spawns a model-enumeration command for Claude or Codex', async () => {
+    const calls: Array<readonly string[]> = [];
+    const spawnFn = vi.fn((_command: string, args: readonly string[]) => {
+      calls.push(args);
+      const child = makeChild();
+      queueMicrotask(() => emitClose(child, 0));
+      return child;
+    });
+    const service = makeService({ spawnFn, backendKinds: ['claude', 'codex'] });
+
+    await service.scan();
+
+    expect(calls).toEqual([['--help'], ['--help']]);
   });
 
   it('projects unavailable backends with an empty model list', async () => {
@@ -262,5 +283,51 @@ describe('parseAgyModels', () => {
     expect(models.slice(0, 3)).toEqual(['first', 'model-0', 'model-1']);
     expect(models).not.toContain('x'.repeat(129));
     expect(Object.isFrozen(models)).toBe(true);
+  });
+
+  // `agy models` writes `<id>\t<Display Name>` rows, so keeping the whole
+  // line made every detected id unusable — it could never match a model an
+  // operator or a Phase actually names.
+  it('takes the id from a tab-separated id/display-name row', () => {
+    const models = parseAgyModels(
+      'gemini-3.7-flash-high\tGemini 3.7 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)'
+    );
+
+    expect(models).toEqual(['gemini-3.7-flash-high', 'claude-sonnet-4-6']);
+  });
+
+  // The same command prints a status line to stdout before the rows. A model
+  // id carries no whitespace, which is what separates a row from prose —
+  // and is why the id is taken before the length and duplicate guards run.
+  it('drops the status line the command prints before its rows', () => {
+    const models = parseAgyModels(
+      'Fetching available models...\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)'
+    );
+
+    expect(models).toEqual(['gemini-3.1-pro-high']);
+  });
+
+  it('deduplicates on the extracted id, not on the whole row', () => {
+    const models = parseAgyModels('a-model\tFirst Label\na-model\tSecond Label');
+
+    expect(models).toEqual(['a-model']);
+  });
+
+  it('reads a recorded `agy models` transcript to exactly its model ids', () => {
+    const transcript = [
+      'Fetching available models...',
+      'gemini-3.7-flash-high\tGemini 3.7 Flash (High)',
+      'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)',
+      'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)',
+      'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+      ''
+    ].join('\n');
+
+    expect(parseAgyModels(transcript)).toEqual([
+      'gemini-3.7-flash-high',
+      'gemini-3.7-flash-medium',
+      'claude-opus-4-6-thinking',
+      'gpt-oss-120b-medium'
+    ]);
   });
 });

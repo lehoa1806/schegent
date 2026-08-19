@@ -2,7 +2,9 @@
   import { exportModelCatalogYaml } from '../../lib/process-yaml-ipc';
 
   interface Props {
+    /** What each backend's CLI reported when probed — a live fact, not the catalog. */
     availableModels: Record<string, readonly string[]>;
+    /** The editable catalog, seeded from `schegent.models`. What Save writes. */
     models: Record<string, string[]>;
     newModelInput: Record<string, string>;
     onnewmodelinput: (backend: string, value: string) => void;
@@ -10,6 +12,7 @@
     onadd: (backend: string) => void;
     onremove: (backend: string, index: number) => void;
     onsave: () => void;
+    ondetect: (backend: string) => void;
   }
 
   const {
@@ -20,10 +23,44 @@
     onmodelchange,
     onadd,
     onremove,
-    onsave
+    onsave,
+    ondetect
   }: Props = $props();
 
-  const backends = $derived(Object.keys(availableModels || {}));
+  /**
+   * Every backend either list knows about, configured first.
+   *
+   * This read `availableModels` alone until Claude and Codex started
+   * reporting no models — neither CLI can enumerate them — at which point
+   * deriving from it collapsed the very sections the operator types into.
+   * A backend is shown because it is editable, not because something was
+   * detected for it.
+   */
+  const backends = $derived([
+    ...new Set([...Object.keys(models || {}), ...Object.keys(availableModels || {})])
+  ]);
+
+  function detectedFor(backend: string): readonly string[] {
+    return availableModels?.[backend] ?? [];
+  }
+
+  /**
+   * `disabled` is the browser's gate and this is the component's, on the same
+   * reasoning as `onAddSubmit` below: nothing reaches the parent that the
+   * control's own state says should not. A synthetic click, or an environment
+   * that dispatches past `disabled`, gets the same answer the operator sees.
+   */
+  function onDetectClick(backend: string): void {
+    if (detectedFor(backend).length === 0) return;
+    ondetect(backend);
+  }
+
+  function detectTitle(backend: string): string {
+    const detected = detectedFor(backend);
+    return detected.length === 0
+      ? `The ${backend} CLI cannot list its models — type an id above to add one.`
+      : `Add the ${detected.length} model(s) ${backend} reported, skipping any already listed.`;
+  }
 
   /**
    * No resourceId and no disabled state, unlike the per-row Phase/Pipeline/
@@ -91,6 +128,15 @@
           />
           <button class="btn btn-secondary" type="submit">Add Model</button>
         </form>
+        <button
+          type="button"
+          class="btn btn-secondary"
+          style="margin-left: 12px;"
+          aria-label={`Detect ${backend} models`}
+          title={detectTitle(backend)}
+          disabled={detectedFor(backend).length === 0}
+          onclick={() => onDetectClick(backend)}
+        >Detect</button>
       </div>
       <div class="models-list">
         {#if !models[backend] || models[backend].length === 0}
