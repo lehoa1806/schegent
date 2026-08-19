@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
+import type { CliTransportRecord } from '../../../src/monitor/cli-transport-sink';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 
 interface FakeTimer {
@@ -55,6 +56,18 @@ class FakeLogger {
   public warn = (_msg: string): void => { /* swallow */ };
 }
 
+/**
+ * Feature FR-R3-007 — the destination the per-line audit writer was replaced by.
+ * One method, no filesystem: what these tests care about is which Run a line was
+ * attributed to, which is the property the audit entry used to carry.
+ */
+class FakeTransport {
+  public records: CliTransportRecord[] = [];
+  public record = (entry: CliTransportRecord): void => {
+    this.records.push(entry);
+  };
+}
+
 const RATE_LIMIT_MATCHERS = [
   { regex: /429.*too many requests/i, cause: 'rate-limit-429' }
 ];
@@ -64,18 +77,22 @@ function makeMonitor(): {
   clock: FakeClock;
   fakeTimer: FakeSetTimeout;
   audit: FakeAudit;
+  transport: FakeTransport;
   advance: (ms: number) => void;
 } {
   const clock = new FakeClock();
   const fakeTimer = new FakeSetTimeout(clock);
   const audit = new FakeAudit();
   const logger = new FakeLogger();
+  const transport = new FakeTransport();
   const monitor = new ClaudeCliMonitor({
     stallThresholdMs: 90_000,
     rateLimitMatchers: RATE_LIMIT_MATCHERS,
     monotonicNow: () => clock.now(),
     now: () => new Date('2026-05-10T12:00:00.000Z'),
     audit,
+    transport,
+    activity: { record: () => {} },
     logger,
     setTimeout: fakeTimer.setTimeoutFn,
     clearTimeout: fakeTimer.clearTimeoutFn,
@@ -85,7 +102,7 @@ function makeMonitor(): {
     clock.advance(ms);
     fakeTimer.fireDue();
   };
-  return { monitor, clock, fakeTimer, audit, advance };
+  return { monitor, clock, fakeTimer, audit, transport, advance };
 }
 
 describe('ClaudeCliMonitor state machine', () => {
@@ -267,14 +284,23 @@ describe('ClaudeCliMonitor per-Run isolation (Feature 093 FR-024)', () => {
     expect(mc.monitor.getCurrentState('run-b')!.stdoutLines).toBe(1);
   });
 
-  it('stamps each audit line with the emitting Run', () => {
+  /**
+   * Feature FR-R3-007 (T358) — this assertion used to read the
+   * `monitor-stdout-line` audit entry, which no longer exists. The property it
+   * protects is feature 093's, not the destination's: a line must be attributed
+   * to the Run that produced it and not to the latest starter. So it follows the
+   * content to the transport sink rather than being deleted with the writer.
+   */
+  it('stamps each transported line with the emitting Run', () => {
     mc.monitor.onStart('run-a', 'speckit-specify', 11);
     mc.monitor.onStart('run-b', 'speckit-plan', 22);
     mc.monitor.onStdoutChunk('run-a', 'from-a\n');
 
-    const line = mc.audit.entries.find((e) => e.eventType === 'monitor-stdout-line');
-    expect(line?.runId).toBe('run-a');
-    expect(line?.phase).toBe('speckit-specify');
+    expect(mc.transport.records).toHaveLength(1);
+    expect(mc.transport.records[0]?.runId).toBe('run-a');
+    expect(mc.transport.records[0]?.phase).toBe('speckit-specify');
+    expect(mc.transport.records[0]?.stream).toBe('stdout');
+    expect(mc.transport.records[0]?.line).toBe('from-a');
   });
 
   it("a sibling's start does not destroy an already-armed stall detector", () => {
@@ -338,6 +364,10 @@ describe('ClaudeCliMonitor per-Run isolation (Feature 093 FR-024)', () => {
     mc.monitor.onStdoutChunk(null, 'orphan\n');
 
     expect(mc.monitor.getCurrentState('run-a')!.stdoutLines).toBe(0);
+    // Feature FR-R3-007 — asserted against the sink, because after the writer's
+    // removal the old audit-entry assertion passes for the wrong reason: there
+    // is no such entry for any Run. The unattributed line must reach neither.
+    expect(mc.transport.records).toHaveLength(0);
     expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-stdout-line')).toHaveLength(0);
   });
 

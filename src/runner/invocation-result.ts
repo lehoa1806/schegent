@@ -195,13 +195,22 @@ export interface RawInvocationOutput {
   diagnosticWarnings?: ReadonlyArray<string>;
   /**
    * Feature 068 — the assembled CLI command (cliPath + argv) that the
-   * runner spawned. Returned so the controller can emit a single
-   * `cli-invocation` audit event whose `payload.command` mirrors the
-   * exact argv (after redaction via the audit writer's sanitizer). The
-   * prompt body is INCLUDED only when the runner chose the legacy
-   * `-p` transport (otherwise the argv carries a temp-file path or
-   * `--prompt-stdin` placeholder). `undefined` from a non-runner
-   * fixture is equivalent to "no command captured".
+   * runner spawned. Its **content is never persisted**. Audit schema v3
+   * (2026-08-02) made `cli-invocation` payloads metadata-only, so
+   * `payload.command` no longer exists and `phase-runner`'s `onCommand`
+   * handler deliberately takes no argument — it emits runner, operation,
+   * permission mode and the continuation booleans, and drops this string.
+   * What the field still carries is *presence*: a non-empty value is the
+   * compactor's signal that a spawn happened and an audit event is due.
+   *
+   * Do NOT route it into an audit payload. It contains `cliPath`,
+   * `--debug-file` targets and prompt temp-file paths, so persisting it
+   * would breach the v3 projection — which fails the append on residual
+   * paths rather than redacting them — and the standing rule against
+   * serializing workspace paths into the audit log. The prompt body is
+   * additionally INCLUDED when the runner chose the legacy `-p`
+   * transport. `undefined` from a non-runner fixture is equivalent to
+   * "no command captured".
    */
   command?: string;
   /**
