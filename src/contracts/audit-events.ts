@@ -1,6 +1,12 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { TerminationReason } from '../state/workflow-run';
 import type { PhaseDefinitionScope } from './process-definitions';
+// Feature FR-R3-006 — the reset transaction's phase and refusal literals are
+// declared once, in a module that imports nothing, and the audit payload reuses
+// them rather than restating them. A restated copy is a second source of truth
+// for a closed union, and the way it goes wrong is that the audit records a
+// phase name the transaction can no longer reach.
+import type { ResetPhase, ResetRefusalReason } from '../state/reset-transaction';
 
 // Wake-up withdrawal — the `wakeup-runner-invocation` and
 // `wakeup-daemon-*` event types were removed with the capability that
@@ -79,6 +85,24 @@ export const LIFECYCLE_EVENT_TYPES = [
 
 export const MONITOR_EVENT_TYPES = [
   'monitor-invocation-started',
+  // Feature FR-R3-007 (T360) — READ-ONLY. Nothing writes these two any more.
+  //
+  // `monitor-stdout-line` was one entry per line of CLI stdout and accounted
+  // for 93.2% of `audit.log`'s bytes while being read by nothing, which capped
+  // the metrics horizon at roughly forty runs. Both writers were removed from
+  // `src/monitor/claude-cli-monitor.ts`; the line content now goes to the
+  // bounded sink in `src/monitor/cli-transport-sink.ts` and the volume is
+  // carried once per invocation by `monitor-invocation-summary`.
+  //
+  // They stay in this list forever, and that is not politeness toward old
+  // files — it is the warn-and-preserve rule. Live logs and archives on
+  // operator disks hold thousands of these entries (1,839 in the workspace
+  // that produced the measurement), and a type absent from the registry is a
+  // type the parser reports as unknown on every cold-start scan. Removing
+  // either name would turn a clean read of an existing archive into a stream
+  // of `audit-schema-warning`s, which is exactly the outcome the rule forbids.
+  // `AUDIT_SCHEMA_VERSION` did not bump for the same reason: removing a writer
+  // is not an envelope change.
   'monitor-stdout-line',
   'monitor-stderr-line',
   'monitor-progress',
@@ -239,6 +263,22 @@ export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
 // contracts/cmd-clear-all.md §Idempotency).
 export const QUEUE_FULL_RESET_EVENT_TYPES = ['queue-cleared-all'] as const;
 
+// Feature FR-R3-006 (T348) — the workspace-state reset transaction, recorded
+// once per attempt. Deliberately one event rather than one per phase: a reset
+// either happened or it did not, and six entries describing the same operator
+// action would make the audit longer without making it more answerable.
+//
+// The event is emitted for a refusal and a failure as well as a success, which
+// is the point — before this feature a reset that quietly did nothing left the
+// same trace as one that did everything, namely none. It is also the event the
+// audit log itself survives: reset never touches `.schegent/audit.log`, so the
+// entry sits directly after the state it describes clearing.
+//
+// Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 058 / 059 / 063
+// precedent). Historical records lack the event entirely, which the
+// warn-and-preserve parser discipline already handles.
+export const RESET_TRANSACTION_EVENT_TYPES = ['workspace-state-reset'] as const;
+
 // Feature 065 — scheduled-start lifecycle and idle-pending transition events.
 // Emitted by `ScheduledStartCoordinator`, the sidebar message router (intent
 // validation), and `GuardedRunService` (horizon rejection / past-timestamp
@@ -291,6 +331,29 @@ export const MIGRATION_V11_EVENT_TYPES = [
   'state-migrated-v10-to-v11',
   'run-reassigned-to-default-queue',
   'run-record-repaired'
+] as const;
+
+// FR-R3-010 — emitted by `WorkspaceStateStore.initialize()` (via
+// `migration-audit-forwarder.ts`) when the v11 → v12 reshape partitions the flat
+// `KEYS.history` array into the per-queue map. Same three-shape structure as the
+// v11 family above and for the same reason: the reshape is what an auditor
+// correlates on, and entries that could not be attributed to a queue are a
+// separate fact about that reshape rather than a count buried in its payload.
+//
+// `history-record-repaired` is deliberately a distinct type from v11's
+// `run-record-repaired` — the two migrations repair different keys, and one type
+// covering both would make "which record was unreadable" a question the payload
+// could not answer.
+//
+// Every payload is queue identifiers, counts and closed reason codes. A history
+// entry carries a task description, an error summary and a feature id; none of
+// the three reaches the log, so `SECRET_PATTERNS` is unchanged. Additive — no
+// `AUDIT_SCHEMA_VERSION` bump, following the 030 / 065 / 093 migration-event
+// precedent.
+export const MIGRATION_V12_EVENT_TYPES = [
+  'state-migrated-v11-to-v12',
+  'history-entries-unattributed',
+  'history-record-repaired'
 ] as const;
 
 // Feature 072 — task-level execution lifecycle events. Bridges the gap
@@ -385,9 +448,11 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
   ...TRUST_GATE_EVENT_TYPES,
   ...QUEUE_FULL_RESET_EVENT_TYPES,
+  ...RESET_TRANSACTION_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
   ...MIGRATION_V11_EVENT_TYPES,
+  ...MIGRATION_V12_EVENT_TYPES,
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
@@ -416,9 +481,11 @@ export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[numbe
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
+export type ResetTransactionEventType = (typeof RESET_TRANSACTION_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
 export type MigrationV11EventType = (typeof MIGRATION_V11_EVENT_TYPES)[number];
+export type MigrationV12EventType = (typeof MIGRATION_V12_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
@@ -605,6 +672,34 @@ export interface QueueClearedAllPayload {
   readonly watchdogBackoffCleared: boolean;
 }
 
+// Feature FR-R3-006 (T348) — payload for `workspace-state-reset`. Five fields,
+// every one of them either a counter this build produced or a literal from a
+// closed union declared in `reset-transaction.ts`. Nothing operator-authored
+// can reach it, which is how the "no paths, no task descriptions" constraint is
+// kept: the envelope has nowhere to put either.
+//
+// `phaseReached` is the interesting field on a failure. The six phases exist in
+// one order for a reason, so naming the one the transaction stopped at says
+// what did and did not happen — a stop at `quiesce` cleared nothing and left
+// the wiring up, a stop at `clear` means producers were already torn down and
+// the marker is `in-progress`. A boolean success flag could not distinguish
+// those, and they need different operator responses.
+//
+// `generation` is null only when the transaction never reached the mark, so a
+// refusal reads as "no reset happened" rather than as generation 0.
+export interface WorkspaceStateResetPayload {
+  readonly outcome: 'completed' | 'refused' | 'failed';
+  readonly phaseReached: ResetPhase;
+  readonly generation: number | null;
+  /** Null on success; one of the closed refusal reasons otherwise. */
+  readonly refusalReason: ResetRefusalReason | null;
+  /**
+   * How many Runs the quiesce phase cancelled. A count, never an id — which
+   * Run it was is a task-scoped fact and this is a workspace-scoped event.
+   */
+  readonly canceledRunCount: number;
+}
+
 export interface RetryEvaluatedPayload {
   readonly pipelineId: string;
   readonly phaseId: string;
@@ -743,6 +838,11 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated',
     'workflow-run-repaired',
     'state-migrated-v6-to-v7',
+    // Feature FR-R3-006 — the reset transaction. System-scoped without
+    // qualification: it is the one event whose subject is the whole workspace
+    // state rather than any Run, and it carries no runId to resolve against a
+    // Run that, by the time the entry lands, no longer exists.
+    'workspace-state-reset',
     // Feature 093 — the v10 → v11 reshape and its repairs. System-scoped even
     // though `run-reassigned-to-default-queue` names a Run: it is emitted before
     // any Run is driven, so the runId it carries has no reachable Run behind it
@@ -750,6 +850,13 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated-v10-to-v11',
     'run-reassigned-to-default-queue',
     'run-record-repaired',
+    // FR-R3-010 — the v11 → v12 history partition and its repairs. System-scoped
+    // on the same reasoning: emitted before any Run is driven, and the entries it
+    // reshapes belong to Runs that have already ended, so there is no live Run for
+    // an Activity Feed entry to hang off.
+    'state-migrated-v11-to-v12',
+    'history-entries-unattributed',
+    'history-record-repaired',
     // Feature 065 — scheduled-start lifecycle / idle-pending transitions
     'scheduled-start-armed',
     'scheduled-start-fired',
