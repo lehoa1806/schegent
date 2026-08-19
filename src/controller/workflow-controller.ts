@@ -9,11 +9,14 @@ import { RunSessionRegistry, type RunSession } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
 import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
 import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
+import type { RunActivityObservation } from '../monitor/activity-coalescer';
+import { recordRunLiveness } from './run-liveness-recorder';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { HistoryRecorder } from '../services/history-recorder';
+import { HistoryDescriptionStore } from '../services/history/history-description-store';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
@@ -30,6 +33,12 @@ import { RunDriver } from '../services/run-driver';
 import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
+import {
+  deleteTaskWithSessionCleanup,
+  type SessionCleanupRunner,
+  type TaskDeletionOutcome
+} from './task-deletion';
+import { applyManualRetryOverride } from './manual-retry-override';
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import { resolvePinnedRunnerKind } from '../config/pipeline-snapshot';
 import { PhaseControlService, type MutationResult } from './phase-control-service';
@@ -40,6 +49,7 @@ import type { TerminalTransitionCoordinator } from '../services/terminal-transit
 import { buildMutationPlan, mutationPlanIsApproved } from '../services/mutation-plan';
 import type { MutationPlanSnapshot } from '../state/workflow-run';
 import type { RunCheckpointService } from '../services/run-checkpoint-service';
+import type { RunMutationLedger } from '../services/run-mutation-ledger';
 import { WorkflowRunFactory } from '../services/workflow-run-factory';
 
 export interface WorkflowControllerOptions {
@@ -58,16 +68,8 @@ export interface WorkflowControllerOptions {
 }
 
 export type { DelayedRetryWatchdog } from './retry-handler';
-/**
- * Pluggable cleanup seam invoked after task deletion resolves a run ID.
- * Production uses `cleanupSessionArtifacts`; tests inject a deterministic
- * replacement without spying on non-configurable `fs.rm`.
- */
-export type SessionCleanupRunner = (input: {
-  workspaceRoot: string;
-  runId: string;
-  logger: SanitizedLogger;
-}) => Promise<boolean>;
+/** Re-exported so the seam keeps the import path its consumers already use. */
+export type { SessionCleanupRunner } from './task-deletion';
 
 export interface WorkflowControllerDeps {
   monitor?: Pick<ClaudeCliMonitor, 'onStart'> | null;
@@ -91,6 +93,14 @@ export interface WorkflowControllerDeps {
   terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
   requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
   checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
+  /**
+   * FR-R3-004 — passed straight to the driver, which brackets every phase
+   * dispatch with it so `checkpoints` can attribute a patch to one Run. Carried
+   * beside `checkpoints` rather than folded into it because the two answer to
+   * different lifetimes: one records continuously, the other only at a
+   * Git-capable phase.
+   */
+  mutationLedger?: Pick<RunMutationLedger, 'observeBeforePhase' | 'observeAfterPhase'>;
   /**
    * Feature 092 (T051) — the per-queue execution lease the auto-drain claims at
    * step 6. Optional so the many tests that build a controller without one keep
@@ -173,11 +183,26 @@ export class SchegentWorkflowController {
       defaultRunnerKind: options.defaultRunnerKind,
       getRawTranscriptMode: deps.getRawTranscriptMode,
       requestGitApproval: deps.requestGitApproval,
+      // FR-R3-008 (T373) — the same cap the driver enforces, frozen onto the Run
+      // so the progress denominator cannot move under it. `options.iterationCap`
+      // is read at activation and is not refreshed on configuration change, so a
+      // Run created after a settings edit still freezes the value this host is
+      // actually running with rather than one the operator has since typed.
+      getIterationCap: () => options.iterationCap,
       logger
     });
     this.historyRecorder = new HistoryRecorder({
       historyStore: deps.historyStore ?? null,
-      logger
+      logger,
+      // FR-R3-010 (T405) — the strict resolver, not `queueIdForTask`. See the
+      // pair's documentation in `queue-manager.ts`: a record files under the
+      // queue that produced it or under the unattributed partition, never under
+      // a guess.
+      queueIdForTask: (taskId) => queue.queueIdForExistingTask(taskId),
+      descriptions: new HistoryDescriptionStore({
+        workspaceRoot: options.cwd,
+        logger
+      })
     });
     // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
     // tenure: the drain claims at step 6, the terminal transition releases.
@@ -243,6 +268,7 @@ export class SchegentWorkflowController {
       onRunTerminal: deps.onRunTerminal,
       terminalTransitions: deps.terminalTransitions,
       checkpoints: deps.checkpoints,
+      mutationLedger: deps.mutationLedger,
       scheduleAutoDrain: () => this.scheduleAutoDrain(),
       releaseExecutionLease: (run) => this.releaseExecutionLeaseForRun(run)
     }), (queueId) => store.getRun(queueId));
@@ -684,6 +710,25 @@ export class SchegentWorkflowController {
         `workflow-run.migrated runId=${run.id} fromSchema=pre-009 toPipeline=${BUILT_IN_PIPELINE_ID}`
       );
     }
+    // FR-R3-001 — a composed Run that was already in flight when this feature
+    // landed carries no `envelope`, because the field did not exist when it was
+    // created. `resolveRunOutputs` reads the envelope and nothing else, so
+    // without this the operator's declared targets would be probed not at all
+    // and the Run would record no outputs — the silent semantic loss this
+    // feature exists to remove, reintroduced at exactly one seam.
+    //
+    // `feature.runPlan` is not a second source: it is the same envelope
+    // `validateRunRequest()` froze for this Run, aliased rather than rebuilt.
+    // Nothing under `src/` writes `runPlan` after enqueue, so the row cannot
+    // have drifted from what the Run was created against. This is the same
+    // shape as the `pipeline` backfill above and, like it, is guarded on the
+    // field's absence — a Run created after this feature already has an
+    // envelope and never reaches the right-hand side, so the execution path is
+    // still the only reader and the queue row is still never consulted there.
+    const envelope = run.envelope ?? feature.runPlan;
+    if (!run.envelope && envelope) {
+      this.logger.info(`workflow-run.envelope-backfilled runId=${run.id}`);
+    }
     const mutationPlan = run.mutationPlan ?? buildMutationPlan(pipeline);
     let gitApprovalReceipt = run.gitApprovalReceipt;
     if (
@@ -705,6 +750,9 @@ export class SchegentWorkflowController {
       pipeline,
       defaultRunnerKind,
       mutationPlan,
+      // Absent stays absent: a Run with no plan on either side adds no key and
+      // serializes exactly as it did before this feature (T267).
+      ...(envelope ? { envelope } : {}),
       ...(gitApprovalReceipt ? { gitApprovalReceipt } : {}),
       pendingRetryAt: null,
       pendingRetryCause: null,
@@ -727,6 +775,16 @@ export class SchegentWorkflowController {
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
     // is handed back rather than awaited (T049a).
     return { resumed: true, completed: this.driveSession(queueId, next, feature.description) };
+  }
+
+  /**
+   * FR-R3-008 (T377) — persist a coalesced liveness observation. The rule lives
+   * in `recordRunLiveness`, which is where its four guards are recorded; this is
+   * the seam the monitor's late-bound recorder is bound to, and it exists because
+   * the store is a private field of this class.
+   */
+  public recordRunActivity(observation: RunActivityObservation): void {
+    recordRunLiveness({ store: this.store, logger: this.logger }, observation);
   }
 
   /**
@@ -792,74 +850,24 @@ export class SchegentWorkflowController {
       this.phaseControlService.clearPhaseBreakpoint(q, runId, phaseId)
     );
   }
-  public async deleteTask(taskId: string): Promise<{
-    ok: boolean;
-    reason?: string;
-    queueId?: string;
-    taskId?: string;
-    priorStatus?: string;
-    runId?: string | null;
-    /**
-     * Feature 034 — additive field. Always populated on `ok: true`
-     * (`true` iff the cleanup succeeded for both targets; `false` when
-     * `runId` was null OR at least one sub-op failed). Omitted on
-     * `ok: false` because the rejection path bypasses cleanup entirely.
-     */
-    sessionCleaned?: boolean;
-  }> {
-    this.logger.info(`Workflow operation triggered: deleteTask`, { taskId });
-    const feature = this.queue.findById(taskId);
-    if (feature?.status === 'in-flight') {
-      // Feature 093 (T023) — pattern B. Reading ambiently asked whether the one
-      // workspace Run happened to be this Task's; in a window running several it
-      // would have cancelled a bystander's Run whenever it was not. The queue
-      // answers *which* Run, and the `featureId` comparison below is left for
-      // T040 to retire, so this phase changes addressing and nothing else.
-      const queueId = this.queue.queueIdForTask(taskId);
-      const run = this.store.getRun(queueId);
-      if (run?.featureId === feature.id && run.status === 'running') {
-        // Feature 093 (T042) — addressed. Cancelling ambiently here would have
-        // aborted every Run in the window because one Task was deleted.
-        this.cancelActive(queueId);
-        const canceled: WorkflowRun = {
-          ...run,
-          status: 'canceled',
-          lastTransitionAt: Date.now()
-        };
-        await this.store.setRun(queueId, canceled);
-        // Feature 093 (T068b, FR-028) — no window-primacy release here either.
-        // Deleting one Task cancelled one queue's Run; primacy is the window's
-        // and its siblings are still executing under it.
-        //
-        // Feature 092 (T133, FR-033a) — the second terminal path: a Run
-        // canceled out from under itself by the removal of its own Task. It
-        // never reaches the driver's terminal funnel, so it returns its queue
-        // here. MUST precede `removeTask` below — once the row is gone the
-        // queue is no longer resolvable, and the helper correctly declines to
-        // guess.
-        await this.releaseExecutionLeaseForRun(canceled);
-      }
-    }
-    const removed = await this.queue.removeTask(taskId);
-    if (!removed.ok) {
-      // Rejection branch — bypass cleanup; do NOT set sessionCleaned.
-      return removed;
-    }
-    // Feature 034 — best-effort cleanup of the per-runId session tree
-    // and the sibling raw transcript file. The cleanup is awaited but
-    // ALWAYS resolves; an I/O failure surfaces as `sessionCleaned: false`
-    // (with exactly one sanitized warn) and NEVER rolls back the queue
-    // removal. See specs/034-task-deletion-cleanup/contracts/session-
-    // cleanup.md.
-    let sessionCleaned = false;
-    if (typeof removed.runId === 'string' && removed.runId.length > 0) {
-      sessionCleaned = await this.sessionCleanup({
-        workspaceRoot: this.options.cwd,
-        runId: removed.runId,
-        logger: this.logger
-      });
-    }
-    return { ...removed, sessionCleaned };
+  /**
+   * The ordering constraints and their reasoning live in `task-deletion.ts`.
+   * `cancelActive` is one of this class's own methods and the lease release a
+   * bound field, so both are handed over as seams.
+   */
+  public async deleteTask(taskId: string): Promise<TaskDeletionOutcome> {
+    return deleteTaskWithSessionCleanup(
+      {
+        logger: this.logger,
+        queue: this.queue,
+        store: this.store,
+        cancelActive: (queueId) => this.cancelActive(queueId),
+        releaseExecutionLeaseForRun: this.releaseExecutionLeaseForRun,
+        sessionCleanup: this.sessionCleanup,
+        workspaceRoot: this.options.cwd
+      },
+      taskId
+    );
   }
 
   public async removeTaskPhase(
@@ -875,73 +883,19 @@ export class SchegentWorkflowController {
       phaseId
     );
   }
-  /**
-   * Feature 011 — manual override for an active delayed-retry run.
-   * Wired to `CMD_RETRY_PHASE_NOW` from the webview and the
-   * `schegent.retryPhaseNow` command. Per contracts/delayed-retry.md
-   * §Manual override.
-   */
+  /** The transaction and its reasoning live in `manual-retry-override.ts`. */
   public async retryPhaseNow(queueId?: string): Promise<MutationResult> {
-    this.logger.info(`Workflow operation triggered: retryPhaseNow`);
-    const target = resolveControlTarget(queueId, this.store.getRunMap());
-    if (!target.ok) {
-      // Preserve this control's own vocabulary: it answered `no-active-run`
-      // before the queue existed, and an operator-facing reason string is not
-      // the place to leak the addressing change.
-      return { ok: false, reason: target.reason === 'no-run-in-flight' ? 'no-active-run' : target.reason };
-    }
-    const run = this.store.getRun(target.queueId);
-    if (!run) return { ok: false, reason: 'no-active-run' };
-    if (run.pendingRetryAt === null || run.pendingRetryCause === null) {
-      return { ok: false, reason: 'not-pending-retry' };
-    }
-    if (this.sessions.peek(target.queueId)?.driver.running === true) {
-      return { ok: false, reason: 'already-retrying' };
-    }
-
-    // Feature 032 — manual override of a delayed retry is a continuation
-    // (same semantics as the watchdog-fired retry). Arm the gate before
-    // clearing `pendingRetryCause` below so `RunDriver.drive()` consumes it.
-    // Feature 093 (T042) — on this queue's session: a shared gate would append
-    // `-c` to whichever conversation drove next, not to the one being retried.
-    this.sessions.acquire(target.queueId).isContinueGate.arm();
-    // Feature 093 (T045) — retrying this queue now drops this queue's armed
-    // deadline and no other's; a sibling still counting down keeps counting.
-    this.retryCoordinator.cancelPendingTimer(target.queueId);
-
-    const queueState = this.store.getQueue(target.queueId);
-    const expectedReason = `retry-cap-exhausted:${run.id}`;
-    const queueUnpaused = queueState.paused && queueState.pausedReason === expectedReason;
-    if (queueUnpaused) {
-      await this.queue.setQueuePausedState(false, target.queueId, null);
-    }
-
-    const priorCount = run.delayedRetryCount;
-    const updated: WorkflowRun = {
-      ...run,
-      delayedRetryCount: 0,
-      pendingRetryAt: null,
-      pendingRetryCause: null
-    };
-    await this.store.setRun(target.queueId, updated);
-    await this.retryCoordinator.appendManualRetryAudit({
-      runId: run.id,
-      phase: run.currentPhase,
-      iteration: run.currentIteration,
-      payload: {
-        runId: run.id,
-        phaseId: run.currentPhase,
-        prevDelayedRetryCount: priorCount,
-        queueUnpaused
-      }
-    });
-
-    setImmediate(() => {
-      void this.resumeExisting(target.queueId).catch((err) =>
-        this.logger.warn(`retryPhaseNow resume failed: ${(err as Error).message}`)
-      );
-    });
-    return { ok: true };
+    return applyManualRetryOverride(
+      {
+        logger: this.logger,
+        store: this.store,
+        queue: this.queue,
+        sessions: this.sessions,
+        retryCoordinator: this.retryCoordinator,
+        resumeExisting: (q) => this.resumeExisting(q)
+      },
+      queueId
+    );
   }
 
   /**

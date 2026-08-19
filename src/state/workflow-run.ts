@@ -9,7 +9,7 @@ import type {
 // Feature 087 — type-only, and deliberately so: `contracts/run-request` imports
 // `WorkflowRunPipeline` from this file, so a value import either way would be a
 // real cycle. Both directions are erased at compile time.
-import type { FrozenInputBinding } from '../contracts/run-request';
+import type { ExecutionEnvelope, FrozenInputBinding } from '../contracts/run-request';
 import type { RunOutputRecord } from '../contracts/run-results';
 
 export interface WorkflowRunPipeline {
@@ -224,6 +224,83 @@ export interface PhaseBreakpoint {
   readonly actor: 'operator' | 'system';
 }
 
+/**
+ * FR-R3-008 (T370) — the persisted answer to "is this Run working or hung".
+ *
+ * `ClaudeCliMonitor` already knew this, and only in memory: a window reload
+ * dropped every `CliMonitorState` and left the record it reloaded from with
+ * nothing that distinguishes a phase streaming productively for three hours
+ * from one dead for three hours. Both look identical through
+ * `lastTransitionAt`, which by design does not move while a phase runs.
+ *
+ * `lastActivityAt` is UTC ms of the most recent stdout or stderr chunk the
+ * monitor observed for this Run, as of the last coalesced write — **not** as of
+ * process exit. Nothing flushes at `onExit`, deliberately (see
+ * `ActivityCoalescer`), so on a finished phase this stamp trails the true last
+ * output by up to one coalesce interval and the counters trail the true totals.
+ * Exact per-invocation totals are in the `monitor-invocation-summary` audit
+ * event; this field exists to answer a liveness question, not an accounting one.
+ *
+ * The counters are the monitor's per-phase line counts, which `onStart` resets
+ * to zero for each invocation — that reset is what bounds them. They are counts
+ * only: no line content, no paths, nothing an operator or the CLI authored ever
+ * reaches this field, which is what makes it safe to persist in a medium that
+ * has no rotation.
+ *
+ * Absence means "unknown", never "zero" — a Run written before this feature has
+ * no liveness field, and a projector MUST render that as unknown rather than as
+ * a stale or zeroed stamp.
+ */
+export interface RunLiveness {
+  readonly lastActivityAt: number;
+  readonly stdoutLines: number;
+  readonly stderrLines: number;
+}
+
+/**
+ * FR-R3-008 (T372) — the frozen denominator for progress, sibling to the
+ * pipeline snapshot and frozen for the same reason.
+ *
+ * `currentPhase` and `phasesCompleted` give a numerator; before this feature
+ * there was no stable denominator to divide it by. The plan's phase list is
+ * fixed by the snapshot, but the number of *invocations* it implies was not:
+ * a `loopable` phase repeats up to the live `schegent.loop.maxIterations`
+ * setting, so an operator changing that setting mid-run silently moved the
+ * denominator under a run already in flight. `iterationCap` is therefore
+ * captured at creation and read from here forever after — never re-read from
+ * settings, not even when this record is recomputed.
+ *
+ * `phaseCount` counts the plan's **distinct** phase ids minus the ones this Run
+ * has overridden (`skipped` / `disabled` / `removed`) — distinct, because a plan
+ * may list one phase twice and both positions record completions under a single
+ * id. It is a *recorded* total, adjusted explicitly in the same write that
+ * changes `phaseOverrides` (T378) rather than estimated on read: the driver
+ * appends an overridden phase to `phasesCompleted` with `result: 'skipped'`, so
+ * a denominator that excluded overrides while the numerator counted their skip
+ * records would let progress exceed 100%. Both sides exclude the same set, which
+ * is why the recorded total cannot go stale, and why overriding a phase that has
+ * not run yet makes progress rise rather than fall. Overriding one that already
+ * completed removes it from both sides — the operator took it out of the
+ * process, so neither its slot nor its completion counts.
+ *
+ * `maxPhaseInvocations` is the upper bound on CLI invocations —
+ * `Σ (phase.loopable ? iterationCap : 1)` over the non-overridden **positions**,
+ * since a repeated position is genuinely a further invocation. It is a ceiling,
+ * not a forecast: a loop that converges early uses fewer.
+ *
+ * `run-planned-total.ts` owns every one of these computations, for the factory,
+ * the override write, and the projector alike.
+ *
+ * Absence means "legacy record" and nothing else. Every Run created after this
+ * feature carries one, including a Run with no pipeline snapshot, so a
+ * projector treats absence as unknown progress rather than as zero of zero.
+ */
+export interface RunPlannedTotal {
+  readonly phaseCount: number;
+  readonly iterationCap: number;
+  readonly maxPhaseInvocations: number;
+}
+
 export interface WorkflowRun {
   id: string;
   featureId: string;
@@ -232,7 +309,29 @@ export interface WorkflowRun {
   currentPhase: Phase;
   currentIteration: number;
   startedAt: number;
+  /**
+   * UTC ms of the last *status* transition, and nothing else.
+   *
+   * FR-R3-008 (T371) — this is not a heartbeat and MUST NOT become one. Every
+   * existing reader measures "how long has this Run been in its current state":
+   * the lifecycle auditor's phase and run durations, the staleness reclaim, the
+   * projections that render time-in-status. Moving it on stdout activity would
+   * change what all of them measure, silently — a long phase would report a
+   * short duration because its own output kept resetting the clock, and a hung
+   * phase would be the only one whose duration stayed honest.
+   *
+   * Liveness has its own field, `liveness.lastActivityAt`, precisely so the two
+   * questions stay separable: this one is answered by transitions, that one by
+   * output. A reader that wants "working or hung" reads that field; a reader
+   * that wants "how long in this state" reads this one.
+   */
   lastTransitionAt: number;
+  /**
+   * FR-R3-008 (T370) — most recent CLI output observed for this Run, coalesced.
+   * Absent on legacy records and on a Run that has not produced output yet;
+   * absence is unknown, not zero. See `RunLiveness`.
+   */
+  liveness?: RunLiveness;
   phasesCompleted: PhaseResult[];
   lastError: SanitizedError | null;
   /** Frozen at run creation; legacy records migrate to `always`. */
@@ -242,6 +341,12 @@ export interface WorkflowRun {
   /** Present only after an operator approved the matching frozen plan. */
   gitApprovalReceipt?: GitApprovalReceipt;
   pipeline?: WorkflowRunPipeline;
+  /**
+   * FR-R3-008 (T372) — the frozen progress denominator, captured at creation
+   * beside the pipeline snapshot above and adjusted only by an override write.
+   * Absent on legacy records; absence is unknown progress. See `RunPlannedTotal`.
+   */
+  plannedTotal?: RunPlannedTotal;
   /**
    * Effective global backend captured when the run is created. Phases in new
    * snapshots also persist their effective runner, but this run-level value is
@@ -336,6 +441,23 @@ export interface WorkflowRun {
    */
   resumePrompt?: string;
   /**
+   * FR-R3-001 (T259) — the accepted request, whole, as the execution path reads
+   * it. Present only on a composed Run; a Run started from any other path
+   * carries none and takes the legacy path byte for byte (T267).
+   *
+   * This is the Run's copy of what `validateRunRequest()` froze, and it is what
+   * the prompt builder and the output probe read. Carrying the whole envelope
+   * rather than the two or three fields today's consumers happen to want is the
+   * point of the feature: the next field added to the envelope reaches the
+   * backend without an edit here.
+   *
+   * `envelope.pipeline` and `pipeline` above are the same snapshot and serialize
+   * twice. That is the accepted cost of consuming the envelope by reference —
+   * storing a de-duplicated projection instead would put a second, partial copy
+   * of the contract in the record, which is the shape this feature removed.
+   */
+  envelope?: ExecutionEnvelope;
+  /**
    * Feature 087 (T035, US4) — the bindings this Run executed with, frozen at
    * submission. Present only on a composed Run; a Run started from any other
    * path carries none.
@@ -343,6 +465,11 @@ export interface WorkflowRun {
    * The Pipeline snapshot above already pins *what* runs. This pins *what it
    * was given*, which is the other half of reproducing the Run: the same
    * definition with different inputs is a different execution.
+   *
+   * Superseded by `envelope.inputs` as of FR-R3-001 and retained as a legacy
+   * projection: records written before that feature carry this and no envelope,
+   * and dropping the field would make them unreadable rather than merely older.
+   * Nothing under `src/` reads it — new consumers read the envelope.
    */
   runInputs?: readonly FrozenInputBinding[];
   /**
@@ -353,6 +480,32 @@ export interface WorkflowRun {
    * Absent until the Run completes, and on every Run that declared no outputs.
    */
   runOutputs?: readonly RunOutputRecord[];
+}
+
+export interface RunPhaseStats {
+  readonly phasesTotal: number;
+  readonly phasesCompleted: number;
+  readonly phasesSkipped: number;
+}
+
+/**
+ * The phase counters a terminal Run reports, on the same reasoning as
+ * `TERMINAL_RUN_STATUSES` above: one rule about one shape, read from the shape's
+ * own module rather than copied.
+ *
+ * FR-R3-009 needs the identical three numbers the `task-execution-ended` audit
+ * payload carries, because the durable rollup and the audit fold are unioned and
+ * deduplicated by run id — a run counted through one path must produce the same
+ * figures as the same run counted through the other, or a cumulative total would
+ * depend on which range the run happened to fall in. A second implementation
+ * that merely agreed today is exactly how that drifts.
+ */
+export function computeRunPhaseStats(run: WorkflowRun): RunPhaseStats {
+  return {
+    phasesTotal: run.pipeline?.phases?.length ?? 0,
+    phasesCompleted: run.phasesCompleted.filter((p) => p.result === 'clean').length,
+    phasesSkipped: run.phasesCompleted.filter((p) => p.result === 'skipped').length
+  };
 }
 
 export interface WorkflowRunSummary {

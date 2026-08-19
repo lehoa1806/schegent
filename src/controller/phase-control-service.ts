@@ -3,8 +3,9 @@ import { getOperatorActor } from '../lib/operator-attribution';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
+import type { PhaseOverride, WorkflowRun } from '../state/workflow-run';
 import type { RetryCoordinator } from '../services/retry-coordinator';
+import { plannedTotalPatch } from '../services/run-planned-total';
 
 export type MutationResult = { ok: true } | { ok: false; reason: string };
 
@@ -178,6 +179,9 @@ export class PhaseControlService {
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
     this.deps.retryCoordinator.cancelPendingTimer(queueId);
     const hadPendingRetry = run.pendingRetryAt !== null;
+    const nextOverrides = run.phaseOverrides.filter(
+      (override) => override.phaseId !== run.currentPhase
+    );
     const updated: WorkflowRun = {
       ...run,
       status: 'running',
@@ -188,9 +192,12 @@ export class PhaseControlService {
       pendingRetryAt: null,
       pendingRetryCause: null,
       delayedRetryCount: 0,
-      phaseOverrides: run.phaseOverrides.filter(
-        (override) => override.phaseId !== run.currentPhase
-      ),
+      phaseOverrides: nextOverrides,
+      // FR-R3-008 (T378) — restarting the active phase clears its override, so
+      // the phase is back in the plan and the recorded denominator has to say so
+      // in this write. Deriving it later from `phaseOverrides` would be a second
+      // rule for the same number.
+      ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
     await this.deps.store.setRun(queueId, updated);
@@ -201,7 +208,9 @@ export class PhaseControlService {
       // queue's pause reason.
       const queueState = this.deps.store.getQueue(queueId);
       const expectedReason = `retry-cap-exhausted:${run.id}`;
-      if (queueState.paused && queueState.pausedReason === expectedReason) {
+      // FR-R3-011 — pausedness reads from the one persisted value; the reason
+      // string is a live field on the same record and is matched as before.
+      if (queueState.queueLifecycle === 'operator-paused' && queueState.pausedReason === expectedReason) {
         await this.deps.queue.setQueuePausedState(false, queueId, null);
       }
     }
@@ -278,9 +287,14 @@ export class PhaseControlService {
     if (!run.phaseOverrides.some((override) => override.phaseId === phaseId)) {
       return { ok: false, reason: 'no-override-to-clear' };
     }
+    const nextOverrides = run.phaseOverrides.filter((override) => override.phaseId !== phaseId);
     const updated: WorkflowRun = {
       ...run,
-      phaseOverrides: run.phaseOverrides.filter((override) => override.phaseId !== phaseId),
+      phaseOverrides: nextOverrides,
+      // FR-R3-008 (T378) — re-enabling a phase puts work back into the plan, so
+      // the total grows in the same write and reported progress falls. That is
+      // honest: there is more left to do than there was a moment ago.
+      ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
     await this.deps.store.setRun(queueId, updated);
@@ -390,18 +404,24 @@ export class PhaseControlService {
       return { ok: false, reason: 'phase-already-removed' };
     }
     const priorPhaseState = this.describePhaseState(run, phaseId);
+    const nextOverrides: PhaseOverride[] = [
+      ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
+      {
+        phaseId,
+        action: 'removed',
+        setAt: Date.now(),
+        actor: getOperatorActor(),
+        priorPhaseState
+      }
+    ];
     const updated: WorkflowRun = {
       ...run,
-      phaseOverrides: [
-        ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
-        {
-          phaseId,
-          action: 'removed',
-          setAt: Date.now(),
-          actor: getOperatorActor(),
-          priorPhaseState
-        }
-      ],
+      phaseOverrides: nextOverrides,
+      // FR-R3-008 (T378) — a removed phase leaves the plan, so it leaves the
+      // denominator in the same write. Both sides of the progress fraction
+      // exclude the same override set, which is what keeps the driver's later
+      // `result: 'skipped'` record from pushing progress past 100%.
+      ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
     await this.deps.store.setRun(queueId, updated);
@@ -430,12 +450,18 @@ export class PhaseControlService {
       actor: getOperatorActor()
     };
     const hadBreakpoint = run.phaseBreakpoints.some((entry) => entry.phaseId === phaseId);
+    const nextOverrides: PhaseOverride[] = [
+      ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
+      override
+    ];
     const updated: WorkflowRun = {
       ...run,
-      phaseOverrides: [
-        ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
-        override
-      ],
+      phaseOverrides: nextOverrides,
+      // FR-R3-008 (T378) — skip and disable both narrow the plan, so both narrow
+      // the recorded total here. This is the write the acceptance criterion names:
+      // overriding a phase that has not run yet raises reported progress, because
+      // the numerator is unchanged and there is less left to do.
+      ...plannedTotalPatch(run, nextOverrides),
       phaseBreakpoints: run.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
       lastTransitionAt: Date.now()
     };

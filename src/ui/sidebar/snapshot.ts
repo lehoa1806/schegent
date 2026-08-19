@@ -446,6 +446,47 @@ export interface DelayedRetryState {
 }
 
 /**
+ * FR-R3-008 (T379) — the persisted liveness stamp, as the webview sees it.
+ *
+ * Distinct from `LiveActivity` above, which is derived from the audit tail and
+ * from in-memory monitor state, and therefore says nothing after a window
+ * reload. This one comes from the Run record, so it survives one — that is the
+ * whole point of the field.
+ *
+ * `null` on the Run projection means **unknown**: a record written before the
+ * feature, or a Run whose phase has not produced output yet. It never means
+ * "no activity", which is why the shape is nullable rather than zero-filled.
+ */
+export interface RunLivenessProjection {
+  /** ISO-8601, converted at this boundary from the record's epoch ms. */
+  readonly lastActivityAt: string;
+  readonly stdoutLines: number;
+  readonly stderrLines: number;
+}
+
+/**
+ * FR-R3-008 (T379) — determinate progress against the Run's frozen total.
+ *
+ * `phasesCompleted` and `phaseCount` exclude the same override set, so the
+ * fraction cannot exceed one; `percent` is that fraction, rounded and clamped
+ * once here rather than at each renderer. `iterationCap` and
+ * `maxPhaseInvocations` are carried for context — the cap is the number the Run
+ * froze at creation, so an operator who has since changed the setting can see
+ * which one this Run is actually running with.
+ *
+ * `null` means unknown, for a Run with no recorded total. A renderer must show
+ * that as unknown, never as 0%.
+ */
+export interface RunProgressProjection {
+  readonly phasesCompleted: number;
+  readonly phaseCount: number;
+  readonly iterationCap: number;
+  readonly maxPhaseInvocations: number;
+  /** 0..100, integer. `100` when the plan has no phases left to run. */
+  readonly percent: number;
+}
+
+/**
  * Feature 092 (T090, US4) — the per-queue Run projection, and the whole of what
  * v3 published at the root about "the" Run.
  *
@@ -471,6 +512,16 @@ export interface InFlightRunProjection {
   readonly pipeline: ActivePipelineSummary | null;
   readonly elapsedMs: number | null;
   readonly liveActivity: LiveActivity;
+  /**
+   * FR-R3-008 (T379) — last CLI output observed for this Run, from the persisted
+   * record. `null` is unknown, not silence; see `RunLivenessProjection`.
+   */
+  readonly liveness: RunLivenessProjection | null;
+  /**
+   * FR-R3-008 (T379) — progress against the frozen total. `null` on a Run with no
+   * recorded total; see `RunProgressProjection`.
+   */
+  readonly progress: RunProgressProjection | null;
   /**
    * Feature 011 — delayed-retry state. Always present; fields are null/0 when
    * no retry is pending. The webview reads `pendingRetryAt !== null` to gate
@@ -592,7 +643,28 @@ export interface WorkflowSnapshot {
   readonly producedAt: string;
   readonly availablePipelines: readonly PipelineDef[];
   readonly availablePhases: readonly PhaseDef[];
+  /**
+   * Model ids each backend was DISCOVERED to offer, for the advisory
+   * `modelAvailable` cue only. A live backend fact, re-read every snapshot
+   * from the capability service — never the operator's catalog, and never a
+   * value to save back. Empty for `claude` and `codex`, whose CLIs expose no
+   * way to enumerate models; only `agy` reports a real list.
+   */
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  /**
+   * The operator's Model Catalog — `schegent.models`, merged user over
+   * workspace — which is what the Models editor loads, edits, saves, and
+   * exports, and what a Model Catalog import writes.
+   *
+   * Separate from `availableModels` above because the two answer different
+   * questions and moved for different reasons: this changes when the operator
+   * or an import edits configuration, that changes when a backend is probed.
+   * The Models editor read `availableModels` until this field existed, so a
+   * confirmed import wrote `schegent.models` and the page went on showing the
+   * capability service's list — and "Save All Models" would then persist that
+   * list back over the imported catalog.
+   */
+  readonly configuredModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPingState: BackendPingState;
   /**
@@ -816,6 +888,7 @@ export function buildIdleSnapshot(opts: {
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
+    configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
     backendPingState: Object.freeze({ status: 'idle' as const }),
     generalSettings: IDLE_GENERAL_SETTINGS,

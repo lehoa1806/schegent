@@ -159,6 +159,16 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
       ? buildMutationPlan(rec.pipeline as WorkflowRun['pipeline'] as NonNullable<WorkflowRun['pipeline']>)
       : undefined;
 
+  // FR-R3-008 (T374) — both fields are optional and both are absent on every
+  // record written before the feature. They are named in the `Omit` below and
+  // re-added conditionally rather than left to the spread, for two reasons: the
+  // spread would pass a malformed value straight through to a projector that
+  // divides by it, and a defaulted `0` would be indistinguishable from a Run
+  // that genuinely has no activity yet. Absence in, absence out — the projector
+  // renders that as unknown.
+  const liveness = sanitizeLiveness(rec.liveness);
+  const plannedTotal = sanitizePlannedTotal(rec.plannedTotal);
+
   return {
     ...(rec as Omit<
       WorkflowRun,
@@ -172,6 +182,8 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
       | 'resumeTargetPhaseId'
       | 'status'
       | 'rawTranscriptMode'
+      | 'liveness'
+      | 'plannedTotal'
     >),
     status,
     delayedRetryCount: rawCount,
@@ -183,8 +195,58 @@ export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
     phaseBreakpoints: rawBreakpoints,
     resumeTargetPhaseId,
     rawTranscriptMode,
-    ...(mutationPlan ? { mutationPlan } : {})
+    ...(mutationPlan ? { mutationPlan } : {}),
+    ...(liveness ? { liveness } : {}),
+    ...(plannedTotal ? { plannedTotal } : {})
   };
+}
+
+/** Non-negative integer, or `null` when the value cannot be read as one. */
+function readCounter(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  const whole = Math.floor(raw);
+  return whole < 0 ? null : whole;
+}
+
+/**
+ * FR-R3-008 (T374) — read a persisted liveness stamp, or nothing.
+ *
+ * All three fields are required together: a timestamp with no counters, or
+ * counters with no timestamp, is a record half-written by something that is not
+ * this feature, and a projector reading it would report activity at the epoch or
+ * silence on a Run that is talking. Partial means absent.
+ */
+function sanitizeLiveness(raw: unknown): WorkflowRun['liveness'] {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const rec = raw as Record<string, unknown>;
+  const lastActivityAt = readCounter(rec.lastActivityAt);
+  const stdoutLines = readCounter(rec.stdoutLines);
+  const stderrLines = readCounter(rec.stderrLines);
+  if (lastActivityAt === null || stdoutLines === null || stderrLines === null) return undefined;
+  if (lastActivityAt === 0) return undefined;
+  return { lastActivityAt, stdoutLines, stderrLines };
+}
+
+/**
+ * FR-R3-008 (T374) — read a persisted progress denominator, or nothing.
+ *
+ * A zero `phaseCount` is accepted: a Run whose every phase is overridden really
+ * has none left, and the projector renders that as complete rather than
+ * dividing. A zero `iterationCap` or `maxPhaseInvocations` is not — the first
+ * would claim a loop phase never runs and the second contradicts any non-empty
+ * plan, so such a record is treated as carrying no total at all rather than
+ * repaired into a number the Run never froze.
+ */
+function sanitizePlannedTotal(raw: unknown): WorkflowRun['plannedTotal'] {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const rec = raw as Record<string, unknown>;
+  const phaseCount = readCounter(rec.phaseCount);
+  const iterationCap = readCounter(rec.iterationCap);
+  const maxPhaseInvocations = readCounter(rec.maxPhaseInvocations);
+  if (phaseCount === null || iterationCap === null || maxPhaseInvocations === null) return undefined;
+  if (iterationCap === 0) return undefined;
+  if (phaseCount > 0 && maxPhaseInvocations < phaseCount) return undefined;
+  return { phaseCount, iterationCap, maxPhaseInvocations };
 }
 
 /** v7 -> v8 forward migration. Idempotent on v8 records. */
@@ -280,6 +342,22 @@ export function migrateV4ToV5(legacy: unknown): WorkflowRun | null {
  *
  * Idempotent: passes an already-v5 record through unchanged. Returns a
  * shallow-cloned array; non-array input becomes `[]`.
+ *
+ * FR-R3-011 (T423) — **the result is migration input, never persisted state.**
+ * `state` and `pauseSource` are no longer fields of `QueueRegistryEntry`; a
+ * queue's pause and its attribution live in that queue's `QueueState`, and the
+ * registry's view of both is derived on read by `projectQueueRegistry()`. So
+ * this lift no longer has a destination field to fill, and writing its output
+ * back would re-add the mirror `migrateV12ToV13()` exists to remove — on every
+ * activation, since the collapse would strip it again on the next load.
+ *
+ * The rule it encodes is not lost, it moved: `legacyRegistryPause()` in
+ * `src/state/queue-state-migrator.ts` reads a legacy entry with exactly this
+ * defaulting — `manually-paused` with no recorded source attributes to
+ * `'operator'` — and feeds the answer into the single value. Same rule, applied
+ * where the surviving representation is written rather than into a field that
+ * no longer exists. The function stays exported because a v4 workspace's shape
+ * is still the thing being read, and its unit tests are what pin that reading.
  */
 export function migrateQueueRegistryV4ToV5(legacy: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(legacy)) return [];

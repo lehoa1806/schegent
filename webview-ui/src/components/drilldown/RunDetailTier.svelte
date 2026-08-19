@@ -25,6 +25,8 @@
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
+  import { deriveRunLivenessView, deriveRunProgressView } from '../../lib/run-liveness-view';
+  import { nowCoarse } from '../../lib/tick-store';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -74,6 +76,19 @@
   // whichever Run is executing, and a Task that isn't the one executing must
   // not show a sibling Run's recorded outputs.
   const outputs = $derived(isExecuting ? inFlightRun?.outputs ?? [] : []);
+
+  // FR-R3-008 (T380) — the reload-durable pair, under the same non-borrowing
+  // rule as everything above: a Task that is not the one executing reads
+  // `null`, which renders as unknown rather than as a sibling Run's stamp.
+  //
+  // `$nowCoarse` is the shared 1-minute tick, not a second interval. A minute is
+  // the right cadence for "how long has this been silent": the operator question
+  // is whether a phase has stalled, and the host only writes the stamp every 15 s
+  // anyway, so a per-second re-render would refresh a number that had not moved.
+  const liveness = $derived(isExecuting ? inFlightRun?.liveness ?? null : null);
+  const progress = $derived(isExecuting ? inFlightRun?.progress ?? null : null);
+  const livenessView = $derived(deriveRunLivenessView(liveness, $nowCoarse));
+  const progressView = $derived(deriveRunProgressView(progress));
 
   // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
   // removed Dashboard embed, this tier is about one Run, so the store lives
@@ -132,6 +147,27 @@
       <h1 class="run-prompt" data-testid="run-detail-prompt">{task.label}</h1>
       <p class="run-pipeline" data-testid="run-detail-pipeline">{pipelineName}</p>
       <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
+
+      <!-- FR-R3-008 (T380) — the same two questions the live feed answers from
+           memory, answered from the persisted record so they survive a window
+           reload. Both read `unknown` on a Run written before the feature; see
+           `run-liveness-view.ts` for why that is not zero. -->
+      <dl class="run-liveness" data-testid="run-detail-liveness">
+        <dt>Activity</dt>
+        <dd data-testid="run-detail-last-activity" data-known={livenessView.known}>
+          {livenessView.label}
+          {#if livenessView.detail !== ''}
+            <span class="detail">{livenessView.detail}</span>
+          {/if}
+        </dd>
+        <dt>Progress</dt>
+        <dd data-testid="run-detail-progress" data-known={progressView.known}>
+          {progressView.label}
+          {#if progressView.detail !== ''}
+            <span class="detail">{progressView.detail}</span>
+          {/if}
+        </dd>
+      </dl>
 
       {#if isPrimary}
         <div class="controls" data-testid="run-detail-controls">
@@ -231,6 +267,37 @@
   .live-feed {
     margin: 0;
     font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+  }
+
+  .run-liveness {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 2px 10px;
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .run-liveness dt {
+    color: var(--vscode-descriptionForeground);
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+
+  .run-liveness dd {
+    margin: 0;
+    color: var(--vscode-editor-foreground);
+    overflow-wrap: anywhere;
+  }
+
+  /* An unknown reading is deliberately quieter than a real one, so it does not
+     read as a measurement. */
+  .run-liveness dd[data-known='false'] {
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+  }
+
+  .run-liveness .detail {
     color: var(--vscode-descriptionForeground);
   }
 

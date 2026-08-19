@@ -4,6 +4,9 @@ import type { Phase } from '../controller/phase';
 import type { PhaseName } from '../ui/sidebar/snapshot';
 import type { SanitizedLogger } from '../lib/logger';
 import type { CliMonitorState, MonitorStatus } from './monitor-state';
+import { projectTransportAggregate } from './monitor-state';
+import type { CliTransportRecorder } from './cli-transport-sink';
+import { ActivityCoalescer, type ActivityRecorder } from './activity-coalescer';
 import { StallDetector, type ClearTimeoutFn, type SetTimeoutFn } from './stall-detector';
 
 export type RateLimitMatcher = { regex: RegExp; cause: string };
@@ -20,10 +23,38 @@ export interface ClaudeCliMonitorOptions {
   readonly monotonicNow: () => number;
   readonly now: () => Date;
   readonly audit: Pick<AuditLogWriter, 'append'>;
+  /**
+   * Feature FR-R3-007 (T358, T359) — where a line of CLI output goes now that
+   * it no longer goes to `audit.log`.
+   *
+   * Required, not optional. An optional recorder would make the one production
+   * wiring line load-bearing in the way `ownership-registry-wiring.test.ts`
+   * describes: omit it and every test still passes while the host silently
+   * captures nothing, which is indistinguishable from the silent loss this
+   * feature exists to avoid. Two construction sites exist, so requiring it
+   * costs nothing and `npm run typecheck` enforces it.
+   */
+  readonly transport: CliTransportRecorder;
+  /**
+   * FR-R3-008 (T376) — where the persisted liveness stamp comes from.
+   *
+   * Required for the same reason `transport` above is: the monitor is the only
+   * thing that knows a phase is still producing output, and an optional recorder
+   * would let the one production wiring line go missing while every test still
+   * passed and every reloaded window silently reported an unknown liveness — the
+   * exact state this feature exists to end.
+   *
+   * The monitor hands over counters and a timestamp; it does not decide when to
+   * write. `ActivityCoalescer` bounds the rate and the controller performs the
+   * write.
+   */
+  readonly activity: ActivityRecorder;
   readonly logger: Pick<SanitizedLogger, 'sanitize' | 'warn'>;
   readonly setTimeout?: SetTimeoutFn;
   readonly clearTimeout?: ClearTimeoutFn;
   readonly rateLimitClusterMs?: number;
+  /** Test seam: shortens the liveness coalescing window. Production uses the default. */
+  readonly activityCoalesceMs?: number;
 }
 
 export type StateChangeListener = (state: CliMonitorState | null) => void;
@@ -40,6 +71,16 @@ interface InternalState {
   lastStderrAt: string | null;
   lastStderrMonotonic: number | null;
   lastProgressAt: string | null;
+  /**
+   * Feature FR-R3-007 (T353) — when either stream first produced anything.
+   *
+   * Stamped once and never overwritten, so it survives a stall-and-resume that
+   * moves `lastStdoutAt` repeatedly. `startedAt` is not a substitute: it records
+   * when the process was spawned, and the interval between the two is the CLI's
+   * own startup, which is what `docs/operations/performance.md` tells operators
+   * to measure.
+   */
+  firstOutputAt: string | null;
   stdoutLines: number;
   stderrLines: number;
   exitCode: number | null;
@@ -78,16 +119,28 @@ export class ClaudeCliMonitor {
   private readonly opts: ClaudeCliMonitorOptions;
   private readonly listeners = new Set<StateChangeListener>();
   private readonly rateLimitClusterMs: number;
+  /** FR-R3-008 (T376) — per-Run rate limiter in front of the liveness write. */
+  private readonly activity: ActivityCoalescer;
 
   constructor(opts: ClaudeCliMonitorOptions) {
     this.opts = opts;
     this.rateLimitClusterMs = opts.rateLimitClusterMs ?? DEFAULT_RATE_LIMIT_CLUSTER_MS;
+    this.activity = new ActivityCoalescer({
+      monotonicNow: opts.monotonicNow,
+      recorder: opts.activity,
+      ...(opts.activityCoalesceMs === undefined ? {} : { intervalMs: opts.activityCoalesceMs })
+    });
   }
 
   public onStart(runId: string, phase: PhaseName, pid: number | null): void {
     // Feature 093 (T046) — dispose only THIS Run's detector. Restarting a Run
     // still replaces its own state and timer; a sibling's are untouched.
     this.disposeDetector(runId);
+    // FR-R3-008 (T376) — a new invocation resets the counters below, so it must
+    // be able to flush on its first chunk. Inheriting the previous phase's window
+    // would leave the persisted counters showing that phase's higher totals for
+    // up to a full interval into this one.
+    this.activity.forget(runId);
     const nowDate = this.opts.now();
     const monotonic = this.opts.monotonicNow();
     const state: InternalState = {
@@ -102,6 +155,7 @@ export class ClaudeCliMonitor {
       lastStderrAt: null,
       lastStderrMonotonic: null,
       lastProgressAt: null,
+      firstOutputAt: null,
       stdoutLines: 0,
       stderrLines: 0,
       exitCode: null,
@@ -148,16 +202,29 @@ export class ClaudeCliMonitor {
       state.status = 'running';
     }
     const monotonic = this.opts.monotonicNow();
-    const now = this.opts.now().toISOString();
+    const nowDate = this.opts.now();
+    const now = nowDate.toISOString();
     state.lastStdoutAt = now;
     state.lastStdoutMonotonic = monotonic;
+    if (state.firstOutputAt === null) state.firstOutputAt = now;
     const lines = this.splitLines(state.stdoutBuffer + chunk, 'stdout');
     state.stdoutBuffer = lines.remainder;
     state.stdoutLines += lines.complete.length;
     for (const line of lines.complete) {
-      this.appendAudit(state.runId, 'monitor-stdout-line', { line: this.opts.logger.sanitize(line) }, 'info');
+      // Feature FR-R3-007 (T358) — transport, not an audit event. This loop
+      // used to `appendAudit('monitor-stdout-line', …)` once per line, which was
+      // 93.2% of `audit.log` and read by nothing; the count that replaced it is
+      // in `monitor-invocation-summary`, and the content is in the bounded sink.
+      // The sink sanitizes, so the raw line is handed over deliberately.
+      this.opts.transport.record({
+        runId: state.runId,
+        phase: state.phase,
+        stream: 'stdout',
+        line
+      });
     }
     detector?.noteStdoutChunk();
+    this.noteActivity(state, nowDate);
     this.notify();
   }
 
@@ -170,17 +237,28 @@ export class ClaudeCliMonitor {
       detector?.start();
     }
     const monotonic = this.opts.monotonicNow();
-    const now = this.opts.now().toISOString();
+    const nowDate = this.opts.now();
+    const now = nowDate.toISOString();
     state.lastStderrAt = now;
     state.lastStderrMonotonic = monotonic;
+    if (state.firstOutputAt === null) state.firstOutputAt = now;
     const lines = this.splitLines(state.stderrBuffer + chunk, 'stderr');
     state.stderrBuffer = lines.remainder;
     state.stderrLines += lines.complete.length;
     for (const line of lines.complete) {
-      const sanitized = this.opts.logger.sanitize(line);
-      this.appendAudit(state.runId, 'monitor-stderr-line', { line: sanitized }, 'info');
+      // Feature FR-R3-007 (T359) — the stderr half of the same move. The
+      // rate-limit scan stays here and stays on the raw line: it is a judgement
+      // Schegent makes about the invocation, so `monitor-rate-limited` remains
+      // an audit event while the line that triggered it is transport.
+      this.opts.transport.record({
+        runId: state.runId,
+        phase: state.phase,
+        stream: 'stderr',
+        line
+      });
       this.checkRateLimit(state, line, monotonic);
     }
+    this.noteActivity(state, nowDate);
     this.notify();
   }
 
@@ -191,6 +269,11 @@ export class ClaudeCliMonitor {
     const state = this.resolve(runId);
     if (!state || state.terminal) return;
     this.disposeDetector(state.runId);
+    // FR-R3-008 (T376) — release the coalescing window without flushing a final
+    // observation. A flush here would race the driver's own terminal `setRun`,
+    // and it would make the write count depend on invocation count rather than on
+    // elapsed time; the exact end-of-phase totals are in the summary event below.
+    this.activity.forget(state.runId);
     state.terminal = true;
     state.exitCode = args.exitCode;
     state.signal = args.signal;
@@ -231,8 +314,10 @@ export class ClaudeCliMonitor {
         durationMs,
         exitCode: args.exitCode,
         signal: args.signal,
-        stdoutLines: state.stdoutLines,
-        stderrLines: state.stderrLines,
+        // Feature FR-R3-007 (T353) — the same aggregate the UI reads. With the
+        // per-line events gone this is the audit's only record of the CLI's
+        // output volume, so it is built by one function rather than restated.
+        ...projectTransportAggregate(state),
         detectedIssues: state.detectedIssues.slice()
       },
       nextStatus === 'completed' ? 'success' : 'info'
@@ -312,8 +397,7 @@ export class ClaudeCliMonitor {
       lastStdoutAt: state.lastStdoutAt,
       lastStderrAt: state.lastStderrAt,
       lastProgressAt: state.lastProgressAt,
-      stdoutLines: state.stdoutLines,
-      stderrLines: state.stderrLines,
+      ...projectTransportAggregate(state),
       exitCode: state.exitCode,
       signal: state.signal,
       detectedIssues: Object.freeze(state.detectedIssues.slice()) as ReadonlyArray<'rate_limited' | 'stall'>,
@@ -360,7 +444,27 @@ export class ClaudeCliMonitor {
     this.detectors.clear();
     this.listeners.clear();
     this.states.clear();
+    this.activity.dispose();
     this.latestRunId = null;
+  }
+
+  /**
+   * FR-R3-008 (T376) — hand the coalescer a chunk-level observation.
+   *
+   * Called on every chunk of either stream, including one that carries no
+   * complete line: a partial line is still evidence the CLI is alive, which is
+   * the same reason `firstOutputAt` and `lastOutputAt` are chunk-stamped rather
+   * than derived from the counters. What crosses is the wall-clock stamp and the
+   * two counts — never the chunk, so there is no content to sanitize and no path
+   * to leak into the state tier.
+   */
+  private noteActivity(state: InternalState, at: Date): void {
+    this.activity.note({
+      runId: state.runId,
+      at: at.getTime(),
+      stdoutLines: state.stdoutLines,
+      stderrLines: state.stderrLines
+    });
   }
 
   private disposeDetector(runId: string): void {

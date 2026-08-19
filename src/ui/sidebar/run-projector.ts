@@ -4,10 +4,13 @@
 import type { WorkflowRun, WorkspaceLock } from '../../state/workflow-run';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import { STALENESS_THRESHOLD_MS } from '../../state/lock';
+import { countCompletedInPlan } from '../../services/run-planned-total';
 import {
   IDLE_DELAYED_RETRY,
   type ActiveFeatureSummary,
   type DelayedRetryState,
+  type RunLivenessProjection,
+  type RunProgressProjection,
   type WorkflowStatus
 } from './snapshot';
 
@@ -61,6 +64,54 @@ export function projectDelayedRetry(run: WorkflowRun | null): DelayedRetryState 
     pendingRetryAt: pendingAt !== null ? new Date(pendingAt).toISOString() : null,
     pendingRetryCause: cause,
     delayedRetryCount: count
+  });
+}
+
+/**
+ * FR-R3-008 (T379) — publish the persisted liveness stamp, or `null`.
+ *
+ * `null` for a Run that carries no `liveness`, which is every Run written before
+ * the feature and every Run whose phase has not spoken yet. The distinction
+ * between those two and "silent for three hours" is exactly what the caller
+ * needs, so absence is never filled in with a zero or with `startedAt`.
+ */
+export function projectRunLiveness(run: WorkflowRun | null): RunLivenessProjection | null {
+  const liveness = run?.liveness;
+  if (!liveness) return null;
+  return Object.freeze({
+    lastActivityAt: new Date(liveness.lastActivityAt).toISOString(),
+    stdoutLines: liveness.stdoutLines,
+    stderrLines: liveness.stderrLines
+  });
+}
+
+/**
+ * FR-R3-008 (T379) — divide the numerator by the Run's frozen denominator.
+ *
+ * The clamp is here, once, rather than in each renderer: the two sides are kept
+ * consistent by `run-planned-total.ts` and by the override write, so a value
+ * above 100 would be a bug rather than a display problem — but a UI that
+ * rendered a 130%-wide bar would hide it, so it is bounded at the boundary and
+ * the invariant is asserted by the unit tests instead.
+ *
+ * A plan with nothing left to run reports 100 rather than dividing by zero: a
+ * Run whose every phase is overridden has, correctly, nothing outstanding.
+ */
+export function projectRunProgress(run: WorkflowRun | null): RunProgressProjection | null {
+  if (!run) return null;
+  const total = run.plannedTotal;
+  if (!total) return null;
+  const completed = countCompletedInPlan(run);
+  const percent =
+    total.phaseCount === 0
+      ? 100
+      : Math.min(100, Math.max(0, Math.round((completed / total.phaseCount) * 100)));
+  return Object.freeze({
+    phasesCompleted: completed,
+    phaseCount: total.phaseCount,
+    iterationCap: total.iterationCap,
+    maxPhaseInvocations: total.maxPhaseInvocations,
+    percent
   });
 }
 
