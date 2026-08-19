@@ -1,6 +1,6 @@
 # Execution Evidence Health
 
-Schegent projects one workspace-scoped health state for its three execution
+Schegent projects one workspace-scoped health state for its four execution
 evidence sinks. The state appears in the sidebar/dashboard health strip and in
 the VS Code status bar, so an operator does not need to correlate separate I/O
 warnings.
@@ -12,15 +12,26 @@ warnings.
 | Structured audit (`.schegent/audit.log`) | `healthy` | `unavailable` | **Fail closed.** The active run becomes failed before further CLI work and automatic queue drain stops. |
 | Raw transcript (`.schegent/sessions/raw-<runId>.log`) | `healthy` | `degraded` | Continue. The bounded parser capture remains available, but verbatim evidence may be incomplete. |
 | Runtime log (`.schegent/syslog`) | `healthy` | `degraded` | Continue. Output-channel and workflow operation remain available. |
+| Metrics rollup (`.schegent/metrics-rollup.jsonl`) | `healthy` | `degraded` | Continue. The run executes and completes normally; only its durable contribution to cumulative totals is at risk. See [Metrics coverage and the rollup](metrics.md). |
 
 The overall state is `unavailable` when structured audit is unavailable,
-otherwise `degraded` when either optional sink is degraded, and `healthy` only
-when all three sinks are healthy.
+otherwise `degraded` when any optional sink is degraded, and `healthy` only
+when all four sinks are healthy.
 
 Health is intentionally sticky for the lifetime of the workspace host. A
 successful write after an I/O failure does not prove that the missing evidence
 was recovered. Resolve the cause and reload the VS Code window before resuming
 or starting more work.
+
+The metrics rollup is listed as a sink because its failure is otherwise
+invisible. A run whose rollup append failed still executes, still completes, and
+still appears in the dashboard — but it is then held only by its audit evidence,
+so it stops being counted once rotation prunes the archive containing it, and
+the cumulative totals regress at that point rather than at the time of the
+failure. Schegent does not backfill the missed record from the log, because a
+rebuild from a corpus that may already be incomplete reintroduces the defect the
+rollup exists to remove. Treat the degraded badge as a warning about a *future*
+regression in reported totals, not a current one.
 
 ## What is projected
 

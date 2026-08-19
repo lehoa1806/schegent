@@ -132,7 +132,7 @@ ceiling; there is no out-of-host execution path.
 The `-c` flag is appended only when `request.isContinue === true` is set
 by the runner gate (CLAUDE.md hard rule).
 
-**2. Local disk writes.** Three sinks, each with a documented redaction
+**2. Local disk writes.** Four sinks, each with a documented redaction
 posture:
 
 - **Audit log** at `.schegent/audit.log`. Append-only, written via the
@@ -155,6 +155,16 @@ posture:
   on, not where the bytes landed. For the sink details and how to grep
   / tail the sanitized output channel, see
   [`operations/runtime-log.md`](../operations/runtime-log.md).
+- **CLI transport capture** at `.schegent/cli-transport.log`. The lines the
+  CLI emitted, one per record, through the same `SECRET_PATTERNS` set as the
+  audit log. This is the one sanitized sink that does **not** apply the
+  paths-free discipline — CLI output routinely names files, and stripping
+  those names would leave the record useless — so it is sanitized but
+  path-bearing. Bounded in code at 5 MiB plus three rotated generations,
+  and best-effort: a write failure warns once and never affects a phase.
+  It exists because this content used to be written as one audit event per
+  line, which spent the audit log's retention budget on CLI transport; see
+  [`reference/file-layout.md`](../reference/file-layout.md#cli-transportlog).
 
 **3. No network.** The extension host makes no outbound network calls.
 The webview's Content Security Policy pins `connect-src 'none'`

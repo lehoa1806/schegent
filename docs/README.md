@@ -83,7 +83,8 @@ Authoritative lookup tables, derived from the running extension's contributions 
 Day-2 playbooks for monitoring active work and intervening when something is wrong.
 
 - [Monitoring a Run](operations/monitoring.md) — sidebar, status bar, dashboard, and the verbose-diagnostics sink — when to look at which.
-- [Execution Evidence Health](operations/evidence-health.md) — unified audit/raw/runtime health, fail-closed rules, and the recovery playbook.
+- [Execution Evidence Health](operations/evidence-health.md) — unified audit/raw/runtime/rollup health, fail-closed rules, and the recovery playbook.
+- [Metrics Coverage and the Rollup](operations/metrics.md) — why all-time totals and per-run detail have different horizons, and how to report from the rollup file directly.
 - [Intervention Playbook](operations/intervention.md) — pause, resume, retry-now, skip-phase, cancel, and what each action actually does to the in-flight state.
 - [Troubleshooting](operations/troubleshooting.md) — symptoms, causes, and concrete fixes for the most common operator-facing failure modes.
 - [Trust Scopes](operations/trust-scopes.md) — per-capability trust scopes that narrow Workspace Trust for custom phases, retry-conditions, and pipeline overrides.

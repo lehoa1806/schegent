@@ -5,8 +5,11 @@ A consolidated reference for Schegent's performance budgets, retention defaults,
 ## CLI startup cost (per phase)
 
 Every phase invocation spawns a fresh subprocess for its effective backend.
-There is no warm pool. Startup is measured by the time between
-`monitor-invocation-started` and the first `monitor-stdout-line`.
+There is no warm pool. Startup is the interval between the invocation's start and
+its first output — read it off one `monitor-invocation-summary` entry, whose
+`firstOutputAt` field exists for exactly this measurement. (Earlier releases
+required pairing `monitor-invocation-started` with the first
+`monitor-stdout-line`; per-line events are no longer written.)
 
 | Phase | Approximate startup | Notes |
 |---|---|---|
@@ -98,6 +101,20 @@ and raw hashes are intentionally excluded from the uploaded report.
 | `schegent.logging.runtimeLogMaxGenerations` | `3` (range 0–10) | Number of rotated files (`<path>.1` … `<path>.<maxGens>`) kept on disk. `0` disables rotation (truncate-in-place). Worst-case disk usage ≈ `(maxGens + 1) × maxBytes`. |
 
 Rotation walks `<path> → <path>.1 → <path>.2 → … → <path>.<maxGens>` and drops files beyond `<path>.<maxGens>`. Both settings are read on every emit (no caching), so a mid-run change takes effect at the next log line. See [runtime-log.md](runtime-log.md) for the full operator workflow.
+
+## CLI transport capture retention
+
+| Bound (compile-time) | Default | What it does |
+|---|---|---|
+| `CLI_TRANSPORT_MAX_BYTES` | `5_242_880` (5 MiB) | Active-file size threshold for `.schegent/cli-transport.log`. |
+| `CLI_TRANSPORT_MAX_GENERATIONS` | `3` | Rotated files kept behind the live one, so the whole capture is bounded at 20 MiB per workspace. |
+
+These are deliberately **not** settings. Raising one would let captured CLI output
+compete with the audit log's retention budget, which is the coupling this sink
+exists to remove — before it, per-line audit entries were 93.2% of `audit.log`
+and held the metrics horizon at roughly forty runs. Capture is best-effort: a
+write failure warns once per cause in the runtime log and never affects the
+phase. See [file layout](../reference/file-layout.md#cli-transportlog).
 
 ## Audit archive retention
 

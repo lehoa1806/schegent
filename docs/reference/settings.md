@@ -454,14 +454,21 @@ Feature 092 unpinned this knob. It was fixed at `1` while a single workspace loc
 
 **Default changed from `3` to `1` in feature 098.** The range is unchanged and
 nothing about concurrent execution was removed — only which behaviour you get
-without choosing. Concurrent runs share one working tree, and the recovery
-checkpoint is a `git diff --binary HEAD` of that tree, so above one in-flight
-run a checkpoint cannot be attributed to a single run and
-`RunCheckpointService` declines to take one. A default of `3` meant a fresh
-install ran, by default, in the configuration where recovery snapshots are
-unavailable. Raising it is a deliberate trade the operator can now make
-knowingly — see [the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
+without choosing. Concurrent runs share one working tree, and Schegent does not
+resolve their file contention for you: two runs that edit the same file
+interleave their edits, and reconciling that is yours. A default of `3` meant a
+fresh install did that unasked. Raising it is a deliberate trade the operator can
+now make knowingly — see
+[the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
 for the analysis behind the change.
+
+The original reason for the change was narrower and no longer applies: a recovery
+checkpoint is a `git diff --binary HEAD` of the shared tree, and at the time
+`RunCheckpointService` declined to take one whenever a second run was live.
+FR-R3-004 replaced that blanket refusal — each phase's audit record declares what
+it wrote, and the patch is scoped to one run's declaration — so raising the cap
+no longer costs you recovery evidence. It still costs you a shared tree. See
+[Recovery checkpoints](../operations/recovery-checkpoints.md).
 
 ## Logging and diagnostics
 

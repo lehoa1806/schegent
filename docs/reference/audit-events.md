@@ -122,13 +122,26 @@ The monitor is the per-invocation watcher that runs in parallel with each phase.
 
 Carries the PID of the spawned CLI process.
 
-### `monitor-stdout-line`
+### `monitor-stdout-line` (retired — no longer written)
 
-A sanitized stdout line from the CLI. One event per line emitted by the CLI.
+A sanitized stdout line from the CLI, one event per line. **Nothing writes this
+event any more.** It measured 93.2% of `audit.log` and no part of the product
+read it back, so the line content moved to
+[`.schegent/cli-transport.log`](file-layout.md#cli-transportlog) and the counts
+to `monitor-invocation-summary` below.
 
-### `monitor-stderr-line`
+The event type stays registered and stays parseable, permanently: rotated
+archives are full of these entries, and dropping the type would turn one archive
+read into a stream of `unknown eventType` warnings. If you are looking at a log
+written by an older release, expect to find them; if you are looking at a fresh
+one, expect not to.
 
-A sanitized stderr line.
+### `monitor-stderr-line` (retired — no longer written)
+
+A sanitized stderr line. Retired on the same terms as `monitor-stdout-line`
+above. Note that the *judgement* the host makes about a stderr line is still an
+audit event — a rate-limit indicator still produces `monitor-rate-limited` — it
+is only the transported line itself that moved.
 
 ### `monitor-progress`
 
@@ -156,7 +169,22 @@ The CLI was killed by the operator or a parent control flow.
 
 ### `monitor-invocation-summary`
 
-End-of-invocation summary record with totals (stdout bytes, stderr bytes, elapsed ms, exit code).
+End-of-invocation summary record, and with the per-line events retired this is
+the audit log's whole account of how much the CLI emitted:
+
+| Field | Meaning |
+|---|---|
+| `status` | Terminal monitor status — `completed`, `failed`, `timed_out`, `canceled` |
+| `durationMs` | Elapsed time, excluding any interval the run spent paused |
+| `exitCode`, `signal` | How the process ended |
+| `stdoutLines`, `stderrLines` | Complete lines seen on each stream |
+| `firstOutputAt` | When either stream first produced anything. The gap between this and the invocation start is the CLI's own startup cost |
+| `lastOutputAt` | The later of the two most recent stream timestamps |
+| `detectedIssues` | `rate_limited` and/or `stall`, if either fired |
+
+`firstOutputAt` and `lastOutputAt` are new alongside the retirement above: they
+are the interval over which the line counts accumulated, which the per-line
+timestamps used to be the only record of.
 
 ## Audit pipeline
 

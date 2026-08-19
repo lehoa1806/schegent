@@ -26,10 +26,26 @@ grep '"correlationId":"<runId>"' .schegent/audit.log | jq -c .
 Order matters — the entries are time-ordered. Look for:
 
 - The most recent `phase-start` (the phase the run is on).
-- The most recent `monitor-stdout-line` or `monitor-stderr-line` (the last line the CLI emitted).
 - A `monitor-stall` entry (the monitor's own detection signal).
 
-If the most recent monitor line is older than `schegent.invocation.timeoutSeconds` (default 5400s), the per-phase idle timeout would normally have fired. The timer resets on every CLI output chunk, so the gap between "now" and the last monitor line is the right thing to compare. If you don't see a `phase-end` with `outcome: failure`, something prevented the timeout from firing — note the `phase` and `correlationId` and continue.
+The last line the CLI emitted is **not** in `audit.log` — it is in the CLI
+transport capture, which is where per-line output goes now
+([file layout](../reference/file-layout.md#cli-transportlog)). For a run that is
+still in flight, that file is the one to tail:
+
+```bash
+tail -n 40 .schegent/cli-transport.log | cut -f1,4,5
+```
+
+Filter it to one run with `awk -F'\t' '$2 == "<runId>"'`. Older archived logs
+still carry `monitor-stdout-line` / `monitor-stderr-line` entries inline, so on a
+log written by an earlier release the `grep` above finds them.
+
+If the last captured line is older than `schegent.invocation.timeoutSeconds` (default 5400s), the per-phase idle timeout would normally have fired. The timer resets on every CLI output chunk, so the gap between "now" and that line is the right thing to compare. If you don't see a `phase-end` with `outcome: failure`, something prevented the timeout from firing — note the `phase` and `correlationId` and continue.
+
+For a phase that has already ended, `monitor-invocation-summary` carries the same
+interval without leaving `audit.log`: `firstOutputAt`, `lastOutputAt`, and the
+`stdoutLines` / `stderrLines` counts.
 
 ## Step 3 — Check the workspace lock
 
