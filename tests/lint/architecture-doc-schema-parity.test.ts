@@ -211,8 +211,9 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
       Number((documented as RegExpMatchArray)[1]),
       `${ARCH_REL} documents a default of ${(documented as RegExpMatchArray)[1]} for ` +
         `\`schegent.queue.globalConcurrencyCap\`; the shipped default is ` +
-        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`. Feature 098 (REL-02) lowered it. ` +
-        `Edit ${ARCH_REL}.`
+        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`. The 2026-08-18 defaults change ` +
+        'lowered it under review finding REL-02 — not feature 098, which is the ' +
+        `runtime-only catalog. Edit ${ARCH_REL}.`
     ).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
   });
 
