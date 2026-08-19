@@ -432,12 +432,20 @@ describe('Feature 093 (T066, SC-015) — an unattributable snapshot is still dec
     await promisify(execFile)('git', ['add', 'stray.txt'], { cwd: tmpRoot });
 
     const runRoot = path.join(tmpRoot, '.checkpoint-storage', 'checkpoints', a.runId);
-    // Measured as a delta, because Run A's first Git-capable phase ran while it
-    // was the only Run in flight and legitimately snapshotted — that patch is
-    // restorable and SC-015 does not forbid it. What SC-015 forbids is a patch
-    // whose partition is undecidable, so the assertion is about what this next
-    // call adds, not about what the directory holds.
-    const before = new Set(await fs.readdir(runRoot));
+    // Measured as a delta, because Run A's first Git-capable phase may have run
+    // while it was the only Run in flight and legitimately snapshotted — that
+    // patch is restorable and SC-015 does not forbid it. What SC-015 forbids is a
+    // patch whose partition is undecidable, so the assertion is about what this
+    // next call adds, not about what the directory holds.
+    //
+    // Feature 098 T017 — "may have" rather than "did". The driver gates a
+    // checkpoint on the phase's declared `sideEffects`, and the built-in rows
+    // driving this fixture declare nothing, so they now freeze `workspace` and
+    // Run A reaches no Git-capable phase at all. That makes the directory absent
+    // rather than merely empty, which is a distinction with no bearing on the
+    // claim: the delta is measured off whatever is already there, up to and
+    // including nothing.
+    const before = new Set(await fs.readdir(runRoot).catch(() => []));
 
     // The probe is the production one, reading the real record: two Runs are
     // genuinely in flight, so this is the count the service sees in the field.

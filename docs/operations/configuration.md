@@ -69,14 +69,16 @@ through VS Code settings and read at activation.
 | `schegent.watchdog.pollIntervalMinutes` | number (minimum 1) | Watchdog re-check cadence during a paused run. |
 | `schegent.audit.rotation.sizeMB` | number (minimum 1) | Audit log size threshold for rotation. |
 | `schegent.audit.rotation.maxAgeDays` | number (minimum 1) | Retention for rotated audit log files. |
-| `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. |
+| `schegent.defaultPipelineId` | string | Pipeline used when `/speckit.auto` runs without an explicit selection. Ships empty; a launch that falls through to an empty value is refused rather than defaulted. |
 | `schegent.fatalSignatures` | string[] | Operator-additive fatal-signature substrings; managed via the **Settings → Fatal Signatures** sub-tab. |
 
-The default backend does not override Git capability requirements. The
-`speckit-specify`, `specify-brainstorm`, `superpowers-implement`, `finalize`,
-and `superpowers-review-close` built-ins are pinned to Claude, and
-their phase overrides must explicitly select `claude` or `agy`; Codex's
-`workspace-write` sandbox cannot update `.git`.
+The default backend does not override Git capability requirements. A Phase that
+declares `sideEffects: git` is pinned to a Git-capable runner: its overrides
+must explicitly select `claude` or `agy`, because Codex's `workspace-write`
+sandbox cannot update `.git`. The rule reads the declaration, not the id — the
+list of five pinned built-in ids it replaced was deleted with the built-in
+layer's contents and has no successor. See
+[Backends](backends.md#per-phase-runner-selection-and-probing).
 
 The withdrawn key `schegent.rules.injectPerPhase` is ignored if it remains in
 an operator-owned settings file. Schegent does not rewrite external settings
@@ -100,12 +102,14 @@ and **Model** dropdowns alongside the existing per-phase fields. Both
 fields default to **Inherit** (no override). Each row identifies its user,
 workspace, or built-in source. Workspace wins over user, which wins over
 built-in, but invalid higher rows are quarantined and the next valid source
-becomes effective. User-layer rows remain independently editable while
-shadowed.
+becomes effective. The built-in rank is retained and permanently empty, so in
+practice every row you see is a workspace or user row. User-layer rows remain
+independently editable while shadowed.
 
 **Effort** accepts one of `low`, `medium`, `high`, `xhigh`, `max`.
-**Model** accepts any identifier from the merged model catalog (built-in
-permitted models plus operator-defined entries). The two fields are
+**Model** accepts any identifier from the model catalog, which is itself
+imported — `examples/model-catalog.yaml` is the document that ships with the
+extension. The two fields are
 orthogonal — clearing one back to Inherit does NOT clear the other.
 
 When a run starts, the effective per-phase Effort + Model are captured

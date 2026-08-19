@@ -14,20 +14,11 @@ export type BackendPingState =
   | { readonly status: 'success'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number }
   | { readonly status: 'failure'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number; readonly cause: BackendPingFailureCause; readonly exitCode?: number };
 
-export const BUILT_IN_PHASE_NAMES = [
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-analyze',
-  'speckit-implement',
-  'finalize'
-] as const;
-
-export const PHASE_NAMES = BUILT_IN_PHASE_NAMES;
-
-export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
-
+// Feature 098 (T040, FR-020) — the webview's half of the deleted literal pair.
+// `BUILT_IN_PHASE_NAMES`, `PHASE_NAMES` and `BuiltInPhaseName` mirrored
+// `src/ui/sidebar/snapshot.ts` name-for-name (T039), which is the parity this
+// file exists to hold; with no built-in Phases there is nothing to mirror.
+// `PhaseName` stays `string` on both sides, and that parity still holds.
 export type PhaseName = string;
 
 export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
@@ -881,12 +872,14 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
-  // Feature 056 Track 3 (FR-013) — host default and package
-  // contribution default both point at the built-in
-  // `speckit-new-feature` pipeline; the webview idle snapshot must
-  // agree so a fresh workspace shows a consistent value before the
-  // first projection lands.
-  defaultPipelineId: 'speckit-new-feature',
+  // Feature 056 Track 3 (FR-013) — host default, package contribution
+  // default and this idle snapshot must agree, so a fresh workspace shows
+  // a consistent value before the first projection lands.
+  // Feature 098 (T048, FR-033/FR-033a) — and the value they agree on is
+  // unset. It named the built-in `speckit-new-feature` Pipeline, which no
+  // installation has any more. The type stays `string`: the empty string is
+  // how "no default" is spelled across the boundary, not a missing field.
+  defaultPipelineId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   // Feature 094 (T032, FR-017) — must equal the manifest's contributed

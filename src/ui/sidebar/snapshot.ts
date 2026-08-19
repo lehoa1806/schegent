@@ -29,20 +29,13 @@ export { IDLE_EVIDENCE_HEALTH };
 
 export const SCHEMA_VERSION = 4 as const;
 
-export const BUILT_IN_PHASE_NAMES = [
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-analyze',
-  'speckit-implement',
-  'finalize'
-] as const;
-
-export const PHASE_NAMES = BUILT_IN_PHASE_NAMES;
-
-export type BuiltInPhaseName = (typeof BUILT_IN_PHASE_NAMES)[number];
-
+// Feature 098 (T039, FR-020) — `BUILT_IN_PHASE_NAMES`, its `PHASE_NAMES` alias
+// and the `BuiltInPhaseName` union it derived are gone, together with the
+// mirrored copy in `webview-ui/src/lib/snapshot-types.ts` (T040) that they were
+// kept literal-for-literal in step with. A snapshot carries whatever Phase names
+// the resolved catalog produced, so a fixed union of seven could only ever be
+// wrong about an operator's catalog; `PhaseName` was already `string` for that
+// reason, and it is the type the wire has always actually used.
 export type PhaseName = string;
 
 export interface PhaseCatalogFieldErrorProjection {
@@ -812,29 +805,6 @@ export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
   staleSeconds: null
 });
 
-const BUILT_IN_DISPLAY_NAMES: Record<string, string> = {
-  'speckit-specify': 'Spec-kit Specify',
-  'speckit-clarify': 'Spec-kit Clarify',
-  'speckit-plan': 'Spec-kit Plan',
-  'speckit-tasks': 'Spec-kit Tasks',
-  'speckit-analyze': 'Spec-kit Analyze',
-  'speckit-implement': 'Spec-kit Implement',
-  finalize: 'Finalize'
-};
-
-export function buildEmptyPhases(): readonly PhaseTile[] {
-  return BUILT_IN_PHASE_NAMES.map((name, idx) => ({
-    name,
-    displayName: BUILT_IN_DISPLAY_NAMES[name],
-    order: idx + 1,
-    state: 'not-started' as const,
-    iteration: 0,
-    lastResult: null,
-    elapsedMs: 0,
-    subProgress: null
-  }));
-}
-
 /**
  * Feature 092 (T096, FR-054) — the read-side join, spelled once for the host.
  *
@@ -940,7 +910,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
-  defaultPipelineId: 'speckit-new-feature',
+  // Feature 098 (T048, FR-033) — unset, matching the manifest, the settings
+  // schema and the webview idle snapshot. `settings-defaults-parity` compares
+  // this object against the manifest, so the four have to move together.
+  defaultPipelineId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
   // Feature 098 (REL-02) — the manifest default moved 3 -> 1. Concurrent
@@ -988,8 +961,4 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
 
 export function isRecursivePhase(name: PhaseName): boolean {
   return name === 'speckit-clarify' || name === 'speckit-analyze';
-}
-
-export function isBuiltInPhase(name: string): name is BuiltInPhaseName {
-  return (BUILT_IN_PHASE_NAMES as readonly string[]).includes(name);
 }

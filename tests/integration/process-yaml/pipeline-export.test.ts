@@ -20,7 +20,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { CMD_EXPORT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -246,15 +245,11 @@ describe('Feature 085 — export one Pipeline, references-only (US1, FR-011..FR-
     expect(h.audits[0]!.payload).toMatchObject({ scope: 'workspace' });
   });
 
-  it('exports a built-in Pipeline no layer overrides', async () => {
-    const builtIn = BUILT_IN_PIPELINES[0]!;
-    const h = buildHarness();
-    await exportHandler(h.ctx, command(builtIn.id));
-
-    expect(h.saved).toHaveLength(1);
-    expect(h.saved[0]!.text).toContain(`  id: ${builtIn.id}`);
-    expect(h.audits[0]!.payload).toMatchObject({ scope: 'built-in' });
-  });
+  // Feature 098 (T036, FR-010) — a case here exported a Pipeline no layer
+  // overrides, straight out of the built-in scope, and asserted the audit payload
+  // recorded `scope: 'built-in'`. There is no such row to export any more: every
+  // Pipeline reaches the catalog through a configured layer, and the case above
+  // covers the scope the export actually reports.
 
   it('is deterministic — ten exports of an unchanged Pipeline are byte-identical', async () => {
     const texts: string[] = [];

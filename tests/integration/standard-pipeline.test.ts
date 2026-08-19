@@ -4,6 +4,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+// Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
+// so a test that drives Phases supplies one. See the fixture header for why the
+// ids here are the real Spec Kit ones.
+import { buildSpeckitCatalog, EXAMPLE_MODEL } from '../fixtures/speckit-catalog-fixture';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
@@ -130,7 +134,8 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
       notifier,
       logger,
       makeLock(),
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, skipProbing: true }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000, skipProbing: true },
+      { catalog: buildSpeckitCatalog() }
     );
 
     const feature = await queue.enqueue('Add login');
@@ -151,7 +156,13 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     for (const entry of starts) {
       expect(entry.payload.pipelineId).toBe('speckit-new-feature');
       expect(typeof entry.payload.phaseId).toBe('string');
-      expect(entry.payload).toHaveProperty('model', 'claude-opus-5');
+      // Feature 098 (T080) — the assertion is that the audit payload reports the
+      // Phase's declared model, so it reads the value off the same fixture the
+      // catalog was built from rather than repeating a literal. The literal was
+      // `claude-opus-5`, which is what the deleted built-ins declared;
+      // `repo/examples/` declares `claude-sonnet-5`, and the examples are now
+      // where the process content lives.
+      expect(entry.payload).toHaveProperty('model', EXAMPLE_MODEL);
       expect(entry.payload).not.toHaveProperty('effort');
       expect(entry.payload).not.toHaveProperty('timeoutMs');
     }

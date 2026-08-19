@@ -1,8 +1,7 @@
 import {
-  BUILT_IN_CATALOG,
   BUILT_IN_PHASES,
   BUILT_IN_PIPELINES,
-  BUILT_IN_PIPELINE_ID,
+  EMPTY_CATALOG,
   buildCatalog,
   mergeCatalog,
   validateCatalog,
@@ -125,11 +124,18 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     workspace: []
   });
   if (!reader) {
+    // Feature 098 (T027, US3, FR-027) — a host with no configuration reader has
+    // nothing to report, and this used to answer `BUILT_IN_CATALOG` by constant.
+    // That was the one substitution layer resolution could not reach: emptying the
+    // built-in layer would leave this branch handing back seventeen Phases and
+    // three Pipelines regardless. The honest catalog is the empty one, and with no
+    // Pipelines there is no default to name. `models` is untouched — the built-in
+    // model layer is already empty and this feature does not widen it.
     return {
-      catalog: BUILT_IN_CATALOG,
+      catalog: EMPTY_CATALOG,
       errors: [],
       warnings: [],
-      defaultPipelineId: BUILT_IN_PIPELINE_ID,
+      defaultPipelineId: '',
       usedFallback: false,
       builtInPhases: BUILT_IN_PHASES,
       userPhases: [],
@@ -185,7 +191,9 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       phases: phaseCatalog.effectivePhaseDefs,
       pipelines: pipelineCatalog.effectivePipelineDefs,
       models: [],
-      defaultPipelineId: BUILT_IN_PIPELINE_ID
+      // Feature 098 — the built-in layer names no default, so the merge base
+      // contributes none and a user or workspace default wins on its own terms.
+      defaultPipelineId: ''
     },
     { pipelines: [], models: userModels, defaultPipelineId: userDefault },
     { pipelines: [], models: workspaceModels, defaultPipelineId: workspaceDefault }
@@ -208,18 +216,28 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     ...report.warnings
   ];
 
+  // Feature 098 (T028, US3, FR-026) — a whole-catalog validation failure used to
+  // fall back to `BUILT_IN_PIPELINES` under `BUILT_IN_PIPELINE_ID`, so a host whose
+  // settings did not validate came up offering Pipelines the operator had not
+  // configured, with the errors reported alongside. The errors are still reported;
+  // what is no longer reported is a substituted set to execute in the meantime.
+  //
+  // Reachability, recorded because it bears on how this is tested: nothing driving
+  // `loadCatalog` can reach this branch today. `resolvePhaseCatalog` and
+  // `resolvePipelineCatalog` quarantine per row *before* `validateCatalog` sees the
+  // merge, so `report.errors` is empty for every input — six adversarial readers
+  // (a Pipeline naming an unknown Phase, an empty phase list, an out-of-range
+  // timeout, an id with spaces, a default naming nothing, a duplicated Phase) each
+  // produced `errors: []`. The branch is kept and corrected rather than deleted:
+  // `validateCatalog` is a separate oracle whose reachability is a property of
+  // upstream quarantine, and a substituting fallback sitting behind it would be a
+  // live defect the moment that changes.
   if (report.errors.length > 0) {
-    const fallbackCatalog = buildCatalog(
-      phaseCatalog.effectivePhaseDefs,
-      BUILT_IN_PIPELINES,
-      merge.catalog.models,
-      BUILT_IN_PIPELINE_ID
-    );
     return {
-      catalog: fallbackCatalog,
+      catalog: EMPTY_CATALOG,
       errors: report.errors,
       warnings: allWarnings,
-      defaultPipelineId: BUILT_IN_PIPELINE_ID,
+      defaultPipelineId: '',
       usedFallback: true,
       builtInPhases: BUILT_IN_PHASES,
       userPhases,
@@ -229,9 +247,15 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
     };
   }
 
+  // Feature 098 (T027/T028, FR-027, FR-033) — a configured default that names no
+  // effective Pipeline re-anchored to `BUILT_IN_PIPELINE_ID`, which is the same
+  // substitution the two branches above just lost, applied to the default rather
+  // than to the catalog. `''` means "no default" throughout this feature, and it is
+  // also what makes T081's deletion of the constant possible: this expression and
+  // the merge base below were the loader's two remaining readers of it.
   let resolvedDefaultId = merge.catalog.defaultPipelineId;
   if (!merge.catalog.pipelines.some((p) => p.id === resolvedDefaultId)) {
-    resolvedDefaultId = BUILT_IN_PIPELINE_ID;
+    resolvedDefaultId = '';
   }
 
   const catalog = buildCatalog(

@@ -19,6 +19,8 @@ import type {
   PhaseDefinition,
   PhaseDefinitionEffort,
   PhaseDefinitionScope,
+  PhaseEvidencePolicy,
+  PhaseSideEffects,
   PhaseSourceStatus
 } from '../../contracts/process-definitions';
 import type {
@@ -80,11 +82,20 @@ export interface PhaseYamlMetadata {
 }
 
 interface PhaseYamlSpecBase {
-  // The document carries text, but these two fields are only ever populated
-  // from the catalog's own enums — by the mapper on the way out and by the
+  // The document carries text, but these fields are only ever populated from
+  // the catalog's own enums — by the mapper on the way out and by the
   // validator on the way in. Typing them as `string` here would push a cast
   // into both directions of the mapper for no gain (FR-008).
   readonly runner?: BackendRunnerKind;
+  /**
+   * Feature 098 — the containment class the Phase's author declared. Optional in
+   * the format and absent when undeclared, because the FR-005 default belongs to
+   * the run-time freeze; writing a resolved value here would make an omission
+   * indistinguishable from a declaration on the way back out.
+   */
+  readonly sideEffects?: PhaseSideEffects;
+  /** Feature 098 — the evidence policy the author declared. Same optionality rule. */
+  readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly model?: string;
   readonly effort?: PhaseDefinitionEffort;
   readonly timeoutSeconds?: number;

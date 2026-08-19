@@ -42,6 +42,7 @@ import {
   serializePhaseDocument
 } from '../../../src/services/process-yaml/yaml-serializer';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
+import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
 import {
   PHASE_YAML_API_VERSION,
   PHASE_YAML_INDENT,
@@ -81,10 +82,16 @@ describe('yaml-serializer — property order (FR-017)', () => {
   it('exports the order as a constant rather than relying on object keys', () => {
     expect(DOCUMENT_KEY_ORDER).toEqual(['apiVersion', 'kind', 'metadata', 'spec']);
     expect(METADATA_KEY_ORDER).toEqual(['phaseId', 'name', 'version', 'description']);
+    // Feature 098 T012 admitted the two containment fields here, and this one
+    // constant is where the admission happens: the validator's `SPEC_KEYS` and
+    // the mapper's `PORTABLE_PHASE_FIELDS` are both derived from it, so the
+    // literal below is the whole authored spec surface in one place.
     expect(SPEC_KEY_ORDER).toEqual([
       'instruction',
       'skill',
       'runner',
+      'sideEffects',
+      'evidencePolicy',
       'model',
       'effort',
       'timeoutSeconds',
@@ -296,6 +303,93 @@ describe('yaml-serializer — fixpoint (SC-003, QS-37)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Feature 098 T007 — the containment fields survive the round trip (FR-003).
+//
+// This is the one place in this file that routes through `validatePhaseDocument`
+// rather than the local structural inverse above, and deliberately so. The
+// fixpoint corpus asserts a property of the emitter and the parser; what FR-003
+// asks is narrower and different — that the *reader the product actually uses*
+// gives back what the writer wrote. A structural inverse would pass even if the
+// validator refused both keys, which is exactly the state this file was in
+// before T012.
+//
+// The second half is the half that is easy to lose. An exporter that resolved
+// the fields before writing would also round-trip cleanly: `undefined` would
+// come back as `workspace`, every document would look complete, and the
+// distinction between "the author declared workspace" and "the author declared
+// nothing and the host defaulted" would be gone from the file — which is the
+// distinction the whole containment design rests on. So absence is asserted as
+// absence, in the bytes and in the re-read document.
+// ---------------------------------------------------------------------------
+
+describe('yaml-serializer — containment fields round-trip (FR-003)', () => {
+  const reread = (doc: PhaseYamlDocument): PhaseYamlDocument => {
+    const result = validatePhaseDocument(parsed(serializePhaseDocument(doc)));
+    if (!result.ok) {
+      const detail =
+        result.kind === 'document'
+          ? result.refusal.message
+          : result.defects.map((d) => `${d.field}:${d.code}`).join(', ');
+      throw new Error(`emitted document did not re-import: ${detail}`);
+    }
+    return result.document;
+  };
+
+  it.each([
+    ['none', 'required'],
+    ['workspace', 'required'],
+    ['git', 'best-effort'],
+    ['unrestricted', 'none']
+  ] as const)('carries sideEffects: %s / evidencePolicy: %s through export and import', (
+    sideEffects,
+    evidencePolicy
+  ) => {
+    const document = instructionDoc({ spec: { sideEffects, evidencePolicy } });
+    const text = serializePhaseDocument(document);
+    expect(text).toContain(`  sideEffects: ${sideEffects}`);
+    expect(text).toContain(`  evidencePolicy: ${evidencePolicy}`);
+
+    const back = reread(document);
+    expect(back.spec.sideEffects).toBe(sideEffects);
+    expect(back.spec.evidencePolicy).toBe(evidencePolicy);
+  });
+
+  it('emits them after runner, in the declared order', () => {
+    const text = serializePhaseDocument(
+      instructionDoc({
+        spec: { runner: 'claude', model: 'opus', sideEffects: 'git', evidencePolicy: 'none' }
+      })
+    );
+    const keys = text
+      .split('\n')
+      .map((line) => /^ {2}(\w+):/.exec(line)?.[1])
+      .filter((key): key is string => key !== undefined);
+    expect(keys.indexOf('sideEffects')).toBeGreaterThan(keys.indexOf('runner'));
+    expect(keys.indexOf('evidencePolicy')).toBe(keys.indexOf('sideEffects') + 1);
+  });
+
+  it('writes nothing for a field the author omitted, rather than a resolved default', () => {
+    const text = serializePhaseDocument(instructionDoc());
+    expect(text).not.toContain('sideEffects');
+    expect(text).not.toContain('evidencePolicy');
+
+    const back = reread(instructionDoc());
+    expect(back.spec.sideEffects).toBeUndefined();
+    expect(back.spec.evidencePolicy).toBeUndefined();
+  });
+
+  it('keeps one declared field from filling in the other', () => {
+    const text = serializePhaseDocument(instructionDoc({ spec: { sideEffects: 'git' } }));
+    expect(text).toContain('  sideEffects: git');
+    expect(text).not.toContain('evidencePolicy');
+
+    const back = reread(instructionDoc({ spec: { sideEffects: 'git' } }));
+    expect(back.spec.sideEffects).toBe('git');
+    expect(back.spec.evidencePolicy).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Feature 085 T010 — sequence emission.
 // specs/085-pipeline-package-exchange/data-model.md §2, research R3.
 //
@@ -331,7 +425,9 @@ function textAt(node: YamlNode, path: readonly (string | number)[]): string {
   return found.value;
 }
 
-function parsed(text: string): YamlNode {
+// Returns the parser's own `YamlMappingNode` rather than widening to `YamlNode`:
+// a document root is always a mapping, and `validatePhaseDocument` takes one.
+function parsed(text: string): YamlMappingNode {
   const result = parseDocumentText(text);
   if (!result.ok) {
     throw new Error(`expected a parse, got ${result.refusal.code}: ${result.refusal.message}`);

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { PromptBuilder } from '../../../src/runner/prompt-builder';
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
+// Feature 098 (T080) — these rows came from `BUILT_IN_PHASES`, which is empty
+// now; the fixture supplies the same definitions under the same ids. See its
+// header for why the ids are the real Spec Kit ones.
+import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 
 describe('PromptBuilder.build', () => {
   const builder = new PromptBuilder();
@@ -130,8 +133,8 @@ describe('PromptBuilder.build', () => {
   });
 
   describe('catalog-driven instruction', () => {
-    it('built-in specify phase prompt contains the verbatim move-from-switch substring', () => {
-      const specifyDef = BUILT_IN_PHASES.find((p) => p.id === 'speckit-specify');
+    it('an imported specify Phase prompt contains the verbatim move-from-switch substring', () => {
+      const specifyDef = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'speckit-specify');
       expect(specifyDef).toBeTruthy();
       const prompt = builder.build({
         phase: 'speckit-specify',

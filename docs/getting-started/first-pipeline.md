@@ -9,6 +9,7 @@ Confirm the prerequisites in [Installation](installation.md):
 - The Claude CLI is installed and authenticated.
 - A VS Code workspace is open and trusted.
 - The Schegent sidebar shows **CLI ready**.
+- **You have imported a pipeline.** Schegent ships an empty catalog, so a fresh install has nothing to run. Import `examples/speckit-new-feature.pipeline.yaml` from the extension package first — see step 2 of the [Quickstart](quickstart.md#2-importing-a-process-document). The rest of this page assumes you did.
 
 For your first run, pick a small feature. "Add a dark-mode toggle to the settings page" is a good shape; "Rewrite the data layer" is not. The pipeline is generic, but smaller features finish faster and let you observe the whole loop in one sitting.
 
@@ -17,7 +18,7 @@ For your first run, pick a small feature. "Add a dark-mode toggle to the setting
 In the Schegent sidebar, click **Enqueue Feature**. A modal opens with three fields:
 
 - **Description** — a one- or two-sentence statement of what you want built. This is what the `speckit-specify` phase will read.
-- **Pipeline** — leave as the default `speckit-new-feature` for a regular feature.
+- **Pipeline** — pick `speckit-new-feature`, the pipeline you imported. There is no shipped default: `schegent.defaultPipelineId` is empty until you set it, and a launch that resolves no pipeline is refused rather than defaulted.
 - **Phase overrides** *(optional)* — open the disclosure if you want to override the model or effort of a specific phase for this task only. Most of the time you do not need to.
 
 Click **Enqueue**.
@@ -52,16 +53,19 @@ The header above the feed shows the current phase id, the elapsed time, and a li
 
 ## Step 4: Watch the phases advance
 
-The Spec Driven Development workflow pipeline walks through eight phases in order. For each, you should see roughly this rhythm:
+The Spec Driven Development pipeline you imported walks through nine phases in order. For each, you should see roughly this rhythm:
 
 - **`speckit-specify`** — a fresh spec file appears under `specs/<NNN-name>/spec.md`. The phase ends and the spec is committed to the workspace.
 - **`speckit-clarify`** — the phase may loop a few times as Claude resolves ambiguity markers. The sidebar shows iteration counts when it loops.
 - **`speckit-plan`** — `plan.md` appears in the same spec directory.
 - **`speckit-tasks`** — `tasks.md` appears.
+- **`speckit-checklist`** — a requirements-quality checklist appears under `checklists/`. This phase is non-blocking: a missing checklist warns and the run advances.
 - **`speckit-analyze`** — a consistency audit runs. If issues are found, the phase loops; if none, it advances.
 - **`speckit-implement`** — the longest phase. Claude executes the task list, writing code and tests. Expect minutes to tens of minutes here for non-trivial features.
+- **`speckit-review`** — finishes any task left incomplete, then loops code review and security review until both report zero findings.
 - **`finalize`** — a verification pass. Builds, tests, regenerates derived docs.
-- **`done`** — the closing sentinel. The task moves from **In-flight** to **Completed** in the history.
+
+After the last phase the run reaches the terminal `done` state and the task moves from **In-flight** to **Completed** in the history. `done` is not one of the pipeline's phases — the host supplies it as the successor to whatever the pipeline names last, so a pipeline never has to declare a sentinel of its own.
 
 At every phase boundary, the audit log gets a `phase-start` and `phase-end` event. If you ever want to know what happened during phase X, the `phase-end` payload is your starting point — it carries the outcome, the metrics, the cause of failure (if any), and the duration.
 
@@ -108,7 +112,7 @@ In one run you exercised every major piece of Schegent:
 - The **queue** moved a task from pending to in-flight via the drainer.
 - The **workspace lock** held throughout the run, preventing concurrent runs from racing.
 - The **pipeline snapshot** froze the phase sequence and per-phase settings the moment the run started.
-- The **phase runner** invoked the Claude CLI eight times, each with sanitized argv composition and stdout parsing.
+- The **phase runner** invoked the Claude CLI once per phase — nine times, plus one more for each loop iteration — each with sanitized argv composition and stdout parsing.
 - The **audit pipeline** wrote a structured, sanitized record of every event to `.schegent/audit.log`.
 - The **raw transcript** captured the unredacted scrollback to `.schegent/sessions/raw-<runId>.log` for local debug.
 - The **state store** persisted the run's progress at every phase boundary so a crash or reload would recover cleanly.

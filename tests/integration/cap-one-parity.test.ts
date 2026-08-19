@@ -45,6 +45,10 @@ import * as path from 'path';
 import * as os from 'os';
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+// Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
+// so a test that drives Phases supplies one. See the fixture header for why the
+// ids here are the real Spec Kit ones.
+import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
@@ -249,6 +253,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   // going to write. History is stubbed because this file makes no claim about
   // the history store.
   const deps: WorkflowControllerDeps = {
+    catalog: buildSpeckitCatalog(),
     auditWriter: audit,
     watchdog,
     terminalTransitions: new TerminalTransitionCoordinator(

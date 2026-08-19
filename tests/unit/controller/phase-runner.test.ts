@@ -1342,12 +1342,42 @@ describe('PhaseRunner.run', () => {
         null,
         { isVerboseDiagnosticsEnabled: () => state.verboseFlag }
       );
-      await runner.run(baseInputs);
+      // Feature 098 (T045, FR-034) — the Pipeline id is supplied explicitly. It
+      // is a directory segment in the diagnostics path, and the runner no
+      // longer substitutes a built-in id for an absent one, so an invocation
+      // that carries none has no path to compose and declines the opt-in. That
+      // is the case below; this one is about the setting being re-read.
+      const withPipeline = { ...baseInputs, pipelineId: 'security' };
+      await runner.run(withPipeline);
       expect(seenRequests[0].verboseDiagnostics).toBeUndefined();
 
       state.verboseFlag = true;
-      await runner.run({ ...baseInputs, iteration: 2 });
+      await runner.run({ ...withPipeline, iteration: 2 });
       expect(seenRequests[1].verboseDiagnostics).toBeDefined();
+    });
+
+    it('declines the opt-in when the invocation supplied no Pipeline id (098 T045, FR-034)', async () => {
+      // A path segment cannot be omitted the way a payload key can, so the
+      // whole target is. Filing an unattributed Run's diagnostics under an
+      // invented Pipeline directory is worse than not writing them: it is a
+      // claim about which Pipeline produced them.
+      const seenRequests: InvocationRequest[] = [];
+      cliRunner = makeFakeRunner(async (req) => {
+        seenRequests.push(req);
+        return makeRawOutput();
+      });
+      runner = new PhaseRunner(
+        cliRunner,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger(),
+        null,
+        { isVerboseDiagnosticsEnabled: () => true }
+      );
+
+      await runner.run(baseInputs);
+
+      expect(seenRequests[0].verboseDiagnostics).toBeUndefined();
     });
 
     it('folds diagnostic-write warnings into the audit entry (FR-025)', async () => {
@@ -1584,6 +1614,12 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
         phaseDef: {
           id: 'finalize',
           name: 'Finalize',
+          // Feature 098 T018 — the declaration is what the rule reads now, not
+          // the id. This is the shape only the launch site can refuse: the Phase
+          // declares `git` and names no runner of its own, so both save gates
+          // returned early and the effective runner (`codex`, from the global
+          // default above) is resolved here, one line before the assertion.
+          sideEffects: 'git',
           instruction: 'Commit and merge the work.'
         }
       })

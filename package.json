@@ -343,6 +343,27 @@
                   "agy"
                 ],
                 "markdownDescription": "Optional backend override for this phase. When omitted, `schegent.backend.runner` is used."
+              },
+              "sideEffects": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "workspace",
+                  "git",
+                  "unrestricted"
+                ],
+                "default": "workspace",
+                "markdownDescription": "Containment class declaring what this phase is permitted to write. Omitted, it is `workspace`; nothing is inferred from the id. Declaring `git` requires a Git-capable `runner` (`claude` or `agy`) — the save is refused with `codex`, whose workspace-write sandbox keeps `.git` read-only."
+              },
+              "evidencePolicy": {
+                "type": "string",
+                "enum": [
+                  "required",
+                  "best-effort",
+                  "none"
+                ],
+                "default": "required",
+                "markdownDescription": "How strictly evidence is enforced for this phase. Omitted, it is `required`."
               }
             }
           }
@@ -351,7 +372,7 @@
           "type": "array",
           "default": [],
           "scope": "resource",
-          "markdownDescription": "Custom pipeline definitions. A pipeline is an ordered chain of phase ids. The id `speckit-new-feature` is reserved for the built-in pipeline.",
+          "markdownDescription": "Custom pipeline definitions. A pipeline is an ordered chain of phase ids. No id is reserved: the extension ships no pipelines of its own, so every id here is yours.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -821,10 +842,10 @@
         },
         "schegent.defaultPipelineId": {
           "type": "string",
-          "default": "speckit-new-feature",
+          "default": "",
           "scope": "resource",
-          "pattern": "^[a-z][a-z0-9-]{0,63}$",
-          "markdownDescription": "Pipeline id used when a feature is enqueued without an explicit selection. Defaults to the built-in `speckit-new-feature` pipeline."
+          "pattern": "^$|^[a-z][a-z0-9-]{0,63}$",
+          "markdownDescription": "Pipeline id used when a feature is enqueued without an explicit selection. Empty means no default: the extension ships no pipelines, so until you import one there is nothing for this to name. Set it to the id of a pipeline you have imported."
         },
         "schegent.retry.maxAttempts": {
           "type": "integer",

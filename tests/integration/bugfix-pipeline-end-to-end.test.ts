@@ -45,10 +45,15 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
+// Feature 098 (T080) — the bugfix Pipeline and its Phases come from the test
+// fixture rather than from a compiled-in catalog, which no longer holds any. The
+// ids are the real ones because `phase-sequencer.ts` and
+// `workflow-run-migrator.ts` still key on them; see the fixture header.
 import {
-  BUILT_IN_BUGFIX_PIPELINE_ID,
-  BUILT_IN_CATALOG
-} from '../../src/config/pipeline-config';
+  buildSpeckitCatalog,
+  BUGFIX_PHASE_IDS,
+  SPECKIT_BUGFIX_PIPELINE_ID
+} from '../fixtures/speckit-catalog-fixture';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
@@ -67,14 +72,6 @@ class FakeMemento implements Memento {
     return Promise.resolve();
   }
 }
-
-const BUGFIX_PHASES = [
-  'bugfix-report',
-  'bugfix-patch',
-  'bugfix-verify-pre',
-  'bugfix-implement',
-  'bugfix-verify-post'
-] as const;
 
 const cleanStdout = (phase: string): string =>
   [
@@ -181,7 +178,7 @@ async function buildHarness(opts: HarnessOpts): Promise<{
       iterationCap: 5,
       timeoutMs: 1000,
     },
-    { catalog: BUILT_IN_CATALOG, auditWriter: audit }
+    { catalog: buildSpeckitCatalog(), auditWriter: audit }
   );
 
   return { controller, store, queue, invocations };
@@ -213,26 +210,26 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     });
 
     const feature = await queue.enqueue('Fix the login bug', {
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: SPECKIT_BUGFIX_PIPELINE_ID });
 
     // (a) Completed status — the controller transitions to 'completed' after
     // sweeping through `done`.
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
-    expect(run.pipeline?.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
+    expect(run.pipeline?.id).toBe(SPECKIT_BUGFIX_PIPELINE_ID);
 
     // (c) Immutable pipeline snapshot equals the canonical 5-phase list +
     // the auto-appended `done` terminator (the controller appends `done`
     // when it isn't already present in the pipeline's declared phases).
     const snapshotIds = (run.pipeline?.phases ?? []).map((p) => p.id);
-    expect(snapshotIds.slice(0, BUGFIX_PHASES.length)).toEqual([...BUGFIX_PHASES]);
+    expect(snapshotIds.slice(0, BUGFIX_PHASE_IDS.length)).toEqual([...BUGFIX_PHASE_IDS]);
     expect(snapshotIds.length).toBe(5);
 
     // CLI invocation order matches the 5 bugfix phases in declaration order.
-    expect(invocations.map((i) => i.phase)).toEqual([...BUGFIX_PHASES]);
+    expect(invocations.map((i) => i.phase)).toEqual([...BUGFIX_PHASE_IDS]);
 
     // (b) 5 phase-start + 5 phase-end audit events in the canonical order.
     const auditLog = await readAuditLog(tmpRoot);
@@ -240,10 +237,10 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     const ends = auditLog.filter((e) => e.eventType === 'phase-end');
     expect(starts.length).toBe(5);
     expect(ends.length).toBe(5);
-    expect(starts.map((e) => e.payload.phaseId)).toEqual([...BUGFIX_PHASES]);
-    expect(ends.map((e) => e.phase)).toEqual([...BUGFIX_PHASES]);
+    expect(starts.map((e) => e.payload.phaseId)).toEqual([...BUGFIX_PHASE_IDS]);
+    expect(ends.map((e) => e.phase)).toEqual([...BUGFIX_PHASE_IDS]);
     for (const evt of starts) {
-      expect(evt.payload.pipelineId).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
+      expect(evt.payload.pipelineId).toBe(SPECKIT_BUGFIX_PIPELINE_ID);
     }
     for (const evt of ends) {
       expect(evt.payload).not.toHaveProperty('pipelineId');
@@ -258,9 +255,9 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     });
 
     const feature = await queue.enqueue('Bug-X', {
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: SPECKIT_BUGFIX_PIPELINE_ID });
 
     const snapshot = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     const phaseIdsBefore = (snapshot?.phases ?? []).map((p) => p.id);
@@ -269,10 +266,14 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
     // existing run's snapshot stays pinned to its enqueue-time pipeline.
     // Build a degenerate catalog with the bugfix pipeline reduced to a
     // single `done` step — the persisted run snapshot must not adopt it.
-    const tamperedCatalog = BUILT_IN_CATALOG; // identity for clarity; the
-    // assertion below is that store.getRun().pipeline is structurally identical
-    // to what was captured at startNew(), regardless of catalog reloads.
-    controller.setCatalog(tamperedCatalog);
+    //
+    // Feature 098 (T080) — this was `BUILT_IN_CATALOG`, the same object the
+    // harness had already installed, so the swap was a literal no-op described
+    // as "identity for clarity". A freshly built catalog is a different object
+    // holding structurally equal rows, which is what a settings reload actually
+    // produces, so the assertion below now has something to survive.
+    const reloadedCatalog = buildSpeckitCatalog();
+    controller.setCatalog(reloadedCatalog);
 
     const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     expect(snapshotAfter).toBe(snapshot);
@@ -318,9 +319,9 @@ describe('Feature 026 T020 — speckit-bugfix verify-fail at bugfix-verify-pre',
     });
 
     const feature = await queue.enqueue('Verify-fail bug', {
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: SPECKIT_BUGFIX_PIPELINE_ID });
 
     // (a) Run paused with currentPhase pinned to the failing verify phase.
     const pausedRun = store.getRun(DEFAULT_QUEUE_ID)!;

@@ -4,7 +4,7 @@ import type { Phase } from './phase';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { AuditEntryFields } from '../audit/audit-entry';
 import type { SanitizedLogger } from '../lib/logger';
-import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
+import type { PhaseDef } from '../config/pipeline-config';
 
 /**
  * Single source of truth for the canonical `phase-message.env` sidecar
@@ -63,16 +63,20 @@ export class PhaseSidecarReader {
    * Feature 056 Track 2 — compute the canonical host-computed sidecar
    * path. Mirrors the verbose-diagnostic iter-N directory composition
    * so a single source of truth governs both diagnostic and sidecar
-   * paths. Returns `null` when required inputs (runId, iteration) are
-   * absent — exists only to keep legacy test fixtures working.
+   * paths. Returns `null` when required inputs (runId, iteration,
+   * pipelineId) are absent — exists only to keep legacy test fixtures working.
+   *
+   * Feature 098 (T045, FR-034) — the Pipeline id joined that list. As a path
+   * segment, a substituted id did not merely mislabel the record: it decided
+   * where on disk the sidecar was looked for, so the whole path is absent.
    */
   public canonicalSidecarPath(inputs: PhaseSidecarInputs): string | null {
     if (inputs.phaseMessagePath) return path.resolve(inputs.phaseMessagePath);
-    if (!inputs.runId || !inputs.iteration) return null;
+    if (!inputs.runId || !inputs.iteration || !inputs.pipelineId) return null;
     return composePhaseMessagePath({
       cwd: inputs.cwd,
       runId: inputs.runId,
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      pipelineId: inputs.pipelineId,
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       iteration: inputs.iteration
     });
@@ -366,7 +370,8 @@ export class PhaseSidecarReader {
 
   private pipelineMeta(inputs: PhaseSidecarInputs): Record<string, unknown> {
     const meta: Record<string, unknown> = {
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      // Feature 098 (T045, FR-034) — omitted, not substituted; see above.
+      ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase
     };
     if (inputs.phaseDef?.model) meta.model = inputs.phaseDef.model;

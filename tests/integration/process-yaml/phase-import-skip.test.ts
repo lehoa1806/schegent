@@ -28,6 +28,8 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import type { PhaseDefinitionScope, PhaseSourceStatus } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 interface Layers {
   readonly user: readonly unknown[];
@@ -131,7 +133,7 @@ const VALID_ROW = Object.freeze({
 const INVALID_ROW = Object.freeze({ id: STORED_ID, name: 'Half Repaired', version: 2 });
 
 /** The built-in whose id a valid user row shadows in the QS-16 case. */
-const SHADOWED_BUILT_IN_ID = 'speckit-specify';
+const SHADOWED_ID = 'speckit-specify';
 
 interface SkipCase {
   readonly title: string;
@@ -154,23 +156,33 @@ const CASES: readonly SkipCase[] = [
   },
   {
     title: 'QS-16 a shadowed id skips and says which row claimed it',
-    // A valid user row wins over the built-in of the same id, which leaves the
-    // built-in record `shadowed`. The presence scan reports the built-in first,
-    // so the reported claimant is a row that is NOT what the installation runs —
-    // presence is a gate, not a routing decision.
+    // Feature 098 (T036) — the shadowed row used to be the built-in of this id,
+    // with a user row winning over it. The built-in layer holds nothing to shadow,
+    // so the same arrangement is expressed one layer up: the workspace row wins
+    // and the user row is left `shadowed`. The property is untouched — the
+    // presence scan reports the lower-precedence row first, so the claimant it
+    // names is NOT what the installation runs. Presence is a gate, not a routing
+    // decision.
     layers: {
       user: [
         {
-          id: SHADOWED_BUILT_IN_ID,
+          id: SHADOWED_ID,
+          name: 'User Specify',
+          version: 1,
+          instruction: 'Use the shipped house style.'
+        }
+      ],
+      workspace: [
+        {
+          id: SHADOWED_ID,
           name: 'Locally Overridden Specify',
           version: 2,
           instruction: 'Use the local house style.'
         }
-      ],
-      workspace: []
+      ]
     },
-    phaseId: SHADOWED_BUILT_IN_ID,
-    presentIn: 'built-in',
+    phaseId: SHADOWED_ID,
+    presentIn: 'user',
     presentRowStatus: 'shadowed',
     target: 'workspace'
   },
@@ -279,5 +291,97 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
       presentRowStatus: 'effective'
     });
     expect(JSON.stringify(layers.workspace)).toBe(JSON.stringify([VALID_ROW]));
+  });
+});
+
+describe('Feature 098 (T033) — importing the same document twice writes once', () => {
+  // SC-004, on the document the VSIX ships. The first import is represented by its
+  // outcome — the ten rows sitting in the WORKSPACE layer, which is where a
+  // workspace-scoped import puts them — and the assertion is about the second run:
+  // every row skips, every row names `workspace` as the claimant, and nothing is
+  // written.
+  //
+  // The claimant matters as much as the count. Before this feature the same document
+  // also produced an all-skip plan, but citing `built-in` — an operator who had never
+  // imported anything was told their own ids were taken. `workspace` is a claim the
+  // operator made, and it is the one an idempotent re-import should report.
+  const EXAMPLE = readFileSync(
+    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
+    'utf8'
+  );
+
+  const IMPORTED_PHASE_IDS = Object.freeze([
+    'speckit-specify',
+    'speckit-clarify',
+    'speckit-plan',
+    'speckit-tasks',
+    'speckit-checklist',
+    'speckit-analyze',
+    'speckit-implement',
+    'speckit-review',
+    'finalize'
+  ]);
+
+  /**
+   * What the workspace layer holds after the first import. The stored rows
+   * deliberately do NOT match the document — different names, a raised version — so
+   * an overwrite or a merge on the second run would be visible in the layer rather
+   * than hidden behind identical content.
+   */
+  function importedWorkspacePhases(): readonly unknown[] {
+    return IMPORTED_PHASE_IDS.map((id) => ({
+      id,
+      name: `Already Imported ${id}`,
+      version: 7,
+      instruction: `Stored instruction for ${id}.`
+    }));
+  }
+
+  function importedWorkspacePipelines(): readonly unknown[] {
+    return [
+      {
+        id: 'speckit-new-feature',
+        name: 'Already Imported Pipeline',
+        version: 7,
+        phases: [...IMPORTED_PHASE_IDS]
+      }
+    ];
+  }
+
+  function buildPackageHarness(): Harness & { readonly writePipelineConfig: ReturnType<typeof vi.fn> } {
+    const phases = importedWorkspacePhases();
+    const pipelines = importedWorkspacePipelines();
+    const base = buildHarness({ user: [], workspace: phases }, EXAMPLE);
+    const writePipelineConfig = vi.fn();
+    base.ctx.deps.readPipelineConfig = () => ({ user: [], workspace: pipelines });
+    base.ctx.deps.writePipelineConfig = writePipelineConfig;
+    return { ...base, writePipelineConfig };
+  }
+
+  it('plans ten skip rows, every one citing the workspace layer', async () => {
+    const h = buildPackageHarness();
+    await preflightHandler(h.ctx, COMMAND);
+
+    const result = h.acks[0]!.result as PreflightProcessYamlResult;
+    expect(result.outcome).toBe('planned');
+    if (result.outcome !== 'planned') return;
+
+    expect(result.plan.counts).toEqual({ import: 0, skip: 10, invalid: 0, blocked: 0 });
+    for (const row of result.plan.rows) {
+      expect(row.outcome).toBe('skip');
+      if (row.outcome !== 'skip' || row.resourceKind === 'modelCatalog') continue;
+      expect(row.presentIn).toBe('workspace');
+      expect(row.presentRowStatus).toBe('effective');
+    }
+  });
+
+  it('writes nothing on the second run', async () => {
+    const h = buildPackageHarness();
+    await preflightHandler(h.ctx, COMMAND);
+
+    expect(h.writePhaseConfig).not.toHaveBeenCalled();
+    expect(h.writePipelineConfig).not.toHaveBeenCalled();
+    expect(h.updateConfig).not.toHaveBeenCalled();
+    expect(h.audits).toEqual([]);
   });
 });

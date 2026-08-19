@@ -216,9 +216,15 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
-    default: 'speckit-new-feature',
+    // Feature 098 (T047, FR-033/FR-033a) — unset, spelled as the empty string.
+    // The extension ships no Pipelines, so a default naming one was a default
+    // naming nothing. The pattern admits the empty string alongside a real id:
+    // it is the value the manifest now contributes, and an operator who clears
+    // the field writes it back explicitly, so a grammar that rejected it would
+    // report the unset state as drift.
+    default: '',
     scope: 'resource',
-    pattern: '^[a-z][a-z0-9-]{0,63}$',
+    pattern: '^$|^[a-z][a-z0-9-]{0,63}$',
     docLabel: 'Default pipeline id'
   },
   'schegent.retry.maxAttempts': {

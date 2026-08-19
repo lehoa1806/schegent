@@ -9,9 +9,13 @@
 //   * `retryCondition` is inert text. This module does not import the DSL in
 //     either direction, so it cannot normalize or reject an expression the
 //     catalog would have accepted (FR-012).
-//   * Host-resolved fields — `sideEffects`, `evidencePolicy`, `promptVersion`,
-//     `sourceScope` — have no place to go, because the document type has no key
-//     for them (FR-009).
+//   * Host-resolved fields — `promptVersion`, `sourceScope` — have no place to
+//     go, because the document type has no key for them (FR-009). Feature 098
+//     moved `sideEffects` and `evidencePolicy` out of that list: they are the
+//     author's declaration, not the host's resolution, and both directions carry
+//     them below. The comment is narrowed rather than deleted because the
+//     remaining two are what the closed-format rule is still refusing, and a
+//     reader looking for why needs to find it here.
 
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { PhaseYamlDocument, PhaseYamlSpec } from './types';
@@ -31,6 +35,10 @@ export const PORTABLE_PHASE_FIELDS: ReadonlySet<string> = Object.freeze(
 export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseYamlDocument {
   const common = {
     ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
+    ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    ...(definition.evidencePolicy !== undefined
+      ? { evidencePolicy: definition.evidencePolicy }
+      : {}),
     ...(definition.model !== undefined ? { model: definition.model } : {}),
     ...(definition.effort !== undefined ? { effort: definition.effort } : {}),
     ...(definition.timeoutSeconds !== undefined
@@ -85,7 +93,9 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: spec.forceContinueOnRetryCap }
       : {}),
-    ...(spec.runner !== undefined ? { runner: spec.runner } : {})
+    ...(spec.runner !== undefined ? { runner: spec.runner } : {}),
+    ...(spec.sideEffects !== undefined ? { sideEffects: spec.sideEffects } : {}),
+    ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

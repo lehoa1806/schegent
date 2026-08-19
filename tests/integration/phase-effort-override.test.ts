@@ -39,16 +39,23 @@ import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { phaseLayerRevision } from '../../src/config/process-catalog';
 import {
-  BUILT_IN_BUGFIX_PIPELINE_ID,
-  BUILT_IN_CATALOG,
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINES,
-  BUILT_IN_PIPELINE_ID,
   buildCatalog,
   mergeCatalog,
   type PhaseDef,
   type PipelineDef
 } from '../../src/config/pipeline-config';
+// Feature 098 (T080) — the base layer these tests override comes from the test
+// fixture rather than from a compiled-in catalog, which no longer holds any. The
+// Spec Kit and bugfix ids are the real ones because the tests are about
+// per-Phase overrides landing on named Phases, and because several host branches
+// still key on those literals; see the fixture header.
+import {
+  buildSpeckitCatalog,
+  SPECKIT_ALL_PHASE_DEFS,
+  SPECKIT_BUGFIX_PIPELINE_ID,
+  SPECKIT_PIPELINE_DEFS,
+  SPECKIT_PIPELINE_ID
+} from '../fixtures/speckit-catalog-fixture';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import { CMD_SAVE_PHASES, type SidebarCommand, type CommandAckMessage } from '../../src/ui/sidebar/messages';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
@@ -176,11 +183,17 @@ async function runHarness(opts: HarnessOpts): Promise<{
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
 }> {
-  // Compose the merged catalog the same way the host does (built-in →
-  // user → workspace). Built-in pipelines include both
-  // `speckit-new-feature` and `speckit-bugfix` (Feature 026 Phase 2).
+  // Compose the merged catalog the same way the host does (base → user →
+  // workspace). The base layer holds both `speckit-new-feature` and
+  // `speckit-bugfix` (Feature 026 Phase 2), which is what makes a
+  // per-Phase override on either Pipeline observable.
+  //
+  // Feature 098 (T080) — the base was `BUILT_IN_PHASES` / `BUILT_IN_PIPELINES`,
+  // i.e. the product's own rows. Both are empty now, so the fixture supplies the
+  // same content under the same ids. The layer *precedence* under test is
+  // untouched: user still beats base, workspace still beats user.
   const merge = mergeCatalog(
-    { phases: BUILT_IN_PHASES, pipelines: BUILT_IN_PIPELINES, defaultPipelineId: BUILT_IN_PIPELINE_ID },
+    { phases: SPECKIT_ALL_PHASE_DEFS, pipelines: SPECKIT_PIPELINE_DEFS, defaultPipelineId: SPECKIT_PIPELINE_ID },
     { phases: opts.userPhases },
     {
       phases: opts.workspacePhases ?? [],
@@ -191,7 +204,7 @@ async function runHarness(opts: HarnessOpts): Promise<{
     merge.catalog.phases,
     merge.catalog.pipelines,
     merge.catalog.models,
-    BUILT_IN_PIPELINE_ID
+    SPECKIT_PIPELINE_ID
   );
 
   const logger = new SanitizedLogger();
@@ -224,7 +237,7 @@ async function runHarness(opts: HarnessOpts): Promise<{
     { catalog }
   );
 
-  const pipelineId = opts.pipelineId ?? BUILT_IN_PIPELINE_ID;
+  const pipelineId = opts.pipelineId ?? SPECKIT_PIPELINE_ID;
   const feature = await queue.enqueue('Audit thing', { pipelineId });
   await controller.startNew(feature, null, { pipelineId });
 
@@ -382,7 +395,7 @@ describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
       userPhases: [userBugfixImplement],
       workspacePhases: [workspaceBugfixImplement],
       workspaceRoot: tmpRoot,
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
     const implementStarts = auditLog.filter(
       (e) => e.eventType === 'phase-start' && e.payload.phaseId === 'bugfix-implement'
@@ -404,7 +417,7 @@ describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
       userPhases: [], // user layer entry removed
       workspacePhases: [workspaceBugfixImplement],
       workspaceRoot: tmpRoot,
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
     const implementStarts = auditLog.filter(
       (e) => e.eventType === 'phase-start' && e.payload.phaseId === 'bugfix-implement'
@@ -477,11 +490,11 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
 
     // (d) The immutable WorkflowRun.pipeline snapshot is unaffected by
     // post-enqueue catalog mutations. After completing the run, swap the
-    // controller's catalog back to BUILT_IN_CATALOG (which has neither
+    // controller's catalog back to the base layer alone (which has neither
     // the workspace-mix pipeline NOR the workspace-step-* phases) and
     // confirm the persisted snapshot still references the workspace
     // catalog state captured at enqueue time.
-    controller.setCatalog(BUILT_IN_CATALOG);
+    controller.setCatalog(buildSpeckitCatalog());
     const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)?.pipeline;
     expect(snapshotAfter).toBe(storedRunPipeline);
     expect((snapshotAfter?.phases ?? []).map((p) => p.id)).toEqual(snapshotIds);

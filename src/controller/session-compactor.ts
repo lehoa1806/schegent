@@ -64,6 +64,15 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       cancellationSignal: inputs.cancellationSignal,
       sessionReuse: true,
       resumeSessionId: inputs.resumeSessionId,
+      // Feature 098 (T051, FR-036) — this pin survives the emptying of the
+      // Model catalog, because it is not catalog content. The catalog holds the
+      // Models an operator chooses between for their own Phases; this one names
+      // the Model the host uses to compact a session on its own behalf, and no
+      // Phase, Pipeline or Workflow can reach it. Emptying the built-in layers
+      // removes the definitions the product shipped *for the operator*, not the
+      // host's internal operational policy. Retained deliberately: an unpinned
+      // compaction would run on whatever the CLI defaults to, making the cost
+      // and latency of a maintenance task vary with an unrelated default.
       model: 'claude-haiku-4-6'
     }, capture ?? undefined);
   } catch (err) {

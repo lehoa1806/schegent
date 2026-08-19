@@ -134,8 +134,14 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
 
   it('requires a Git-capable runner on a custom row that shadows a protected built-in id', async () => {
     const { ctx, acks, writes } = harness();
+    // Feature 098 T018 — the save gate reads the row's declared `sideEffects`,
+    // so the row declares it. The id is retained only to keep the case
+    // recognisable; FR-008 leaves no id list for it to be on.
     await handler(ctx, command([
-      { id: 'speckit-specify', name: 'Custom Specify', instruction: 'Run safely.', runner: 'codex' }
+      {
+        id: 'speckit-specify', name: 'Custom Specify', instruction: 'Run safely.',
+        runner: 'codex', sideEffects: 'git'
+      }
     ], 'speckit-specify'));
     expect(errors(acks[0])).toContainEqual(expect.objectContaining({
       phaseId: 'speckit-specify', field: 'runner', code: 'git-metadata-write-required'
@@ -154,7 +160,10 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
   it.each(['claude', 'agy'] as const)('accepts protected built-in shadows using %s', async (runner) => {
     const { ctx, acks } = harness();
     await handler(ctx, command([
-      { id: 'finalize', name: 'Custom Finalize', instruction: 'Commit safely.', runner }
+      {
+        id: 'finalize', name: 'Custom Finalize', instruction: 'Commit safely.',
+        runner, sideEffects: 'git'
+      }
     ], 'finalize'));
     expect(acks[0].status).toBe('accepted');
   });

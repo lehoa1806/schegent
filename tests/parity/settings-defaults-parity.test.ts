@@ -70,7 +70,10 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     const pkg = readPackageJson();
     const contrib = pkg.contributes.configuration.properties['schegent.defaultPipelineId'];
     expect(contrib).toBeDefined();
-    expect(contrib.default).toBe('speckit-new-feature');
+    // Feature 098 (T046/T047/T048, FR-033) — the shared default is unset. It
+    // named the built-in Pipeline; the built-in layer is empty, so all four
+    // declarations now ship the empty string and this gate keeps them together.
+    expect(contrib.default).toBe('');
   });
 
   it('package.json retry.maxAttempts has maximum 5 (effective cap)', () => {
@@ -148,7 +151,7 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
       }
     };
     const settings = mod.readGeneralSettings(fakeConfig);
-    expect(settings.defaultPipelineId).toBe('speckit-new-feature');
+    expect(settings.defaultPipelineId).toBe('');
     expect(settings.retryMaxAttempts).toBe(5);
     // Feature 092 (T054/T055/T055a, FR-026/FR-027) — the ceiling's default
     // moved from 1 to 3 when the lock split made concurrency representable.
@@ -190,7 +193,7 @@ function manifestDefaultFor(settingKey: string): number {
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
   it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../src/ui/sidebar/snapshot.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
       manifestDefaultFor('schegent.queue.globalConcurrencyCap')
@@ -201,7 +204,7 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
 
   it('webview IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
-    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('speckit-new-feature');
+    expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
     expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
       manifestDefaultFor('schegent.queue.globalConcurrencyCap')

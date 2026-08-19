@@ -39,6 +39,7 @@ import { handler as savePipelinesHandler } from '../../../../../src/ui/sidebar/c
 import { CMD_SAVE_PIPELINES } from '../../../../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SavePipelinesCommand } from '../../../../../src/ui/sidebar/messages';
 import { pipelineLayerRevision } from '../../../../../src/config/pipeline-catalog';
+import { SPECKIT_PHASE_DEFS } from '../../../../fixtures/speckit-catalog-fixture';
 import type {
   PipelineCatalogMutation,
   PipelineFieldError
@@ -51,7 +52,12 @@ interface PhaseLayers {
 
 function buildCtx(
   current: readonly unknown[] = [],
-  phaseLayers: PhaseLayers = { user: [], workspace: [] }
+  // Feature 098 (T080) — the default workspace layer used to be empty, because the
+  // Phases these payloads name resolved out of the built-in layer. That layer is
+  // empty now, so the default carries the rows instead; a caller that passes its
+  // own layers is testing resolution and supplies what it means to. See the fixture
+  // header for why the ids are the real Spec Kit ones.
+  phaseLayers: PhaseLayers = { user: [], workspace: SPECKIT_PHASE_DEFS }
 ): {
   ctx: Parameters<typeof savePipelinesHandler>[0];
   acks: CommandAckMessage[];
@@ -312,8 +318,12 @@ describe('cmd-save-pipelines cross-reference validation (082, gates 5-6)', () =>
   });
 
   it('resolves a Phase supplied only by a configured layer (Edge Case 1)', async () => {
+    // Feature 098 (T080) — `speckit-specify` moves to the user layer rather than
+    // joining `workspace-only`: the case is that a Phase resolves from whichever
+    // configured layer supplies it, and keeping the two rows in different scopes
+    // is what still makes that visible now that neither comes from the host.
     const { ctx, acks, updateConfigCalls } = buildCtx([], {
-      user: [],
+      user: SPECKIT_PHASE_DEFS,
       workspace: [authoredPhase('workspace-only', 'Workspace Only')]
     });
     await savePipelinesHandler(ctx, makeCmd([

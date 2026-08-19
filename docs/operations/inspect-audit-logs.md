@@ -71,13 +71,14 @@ The single source of truth for `eventType` values is [src/contracts/audit-events
 
 | Field | Type | When present |
 |---|---|---|
-| `pipelineId` | `string` | Always — `'speckit-new-feature'` for the built-in zero-config flow. |
+| `pipelineId` | `string` | Always — the id of the Pipeline the run was launched from. Every Pipeline is one you imported or authored; the extension ships none, so there is no zero-config id to expect here. |
 | `phaseId` | `string` | Always — the active phase id (matches the entry's `phase`). |
 | `model` | `string` | Only when the active `PhaseDef.model` is set. |
 | `effort` | `'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | Only when the active `PhaseDef.effort` is set. |
 | `timeoutMs` | `integer` | Only when the active `PhaseDef.timeoutSeconds` is set. |
 
-Filter by pipeline:
+Filter by pipeline — substitute one of your own ids (`speckit-new-feature` is
+the id the shipped example document happens to use):
 
 ```bash
 jq -c 'select(.payload.pipelineId == "speckit-new-feature")' .schegent/audit.log

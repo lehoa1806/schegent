@@ -54,8 +54,22 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
     present: ['queues-tier', `queue-card-${FIXTURE_QUEUE_ID}`, 'queue-create'],
     absent: ['queues-empty']
   },
+  // Feature 098 (T067, FR-043) — `pipelines-discard` is here because the
+  // fixture's two Pipelines used to claim `scope: 'built-in'`, a state no
+  // installation can now reach: the built-in layer holds no rows, so every
+  // Pipeline an operator has is one they imported into `user` or `workspace`.
+  // The fixture now says `workspace`, and this landmark is what holds it there
+  // — the control renders only for a scope that is not `built-in`. The scope
+  // also appears twice in the photograph itself (a badge in the list, and the
+  // testid of each list row), so a regression would show up as a pixel diff;
+  // this fails with the landmark's name instead.
   'pipeline-builder': {
-    present: ['pipeline-builder-root', 'pipelines-save-all', 'pipelines-sequence-status'],
+    present: [
+      'pipeline-builder-root',
+      'pipelines-save-all',
+      'pipelines-sequence-status',
+      'pipelines-discard'
+    ],
     absent: [
       'pipeline-catalog-error',
       'pipeline-catalog-loading',

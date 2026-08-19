@@ -3,26 +3,16 @@ import {
   transition,
   isLoopPhase,
   nextSuccessor,
-  INVOCABLE_PHASES,
   FORCE_CONTINUE_NOTIFY_TAG
 } from '../../../src/controller/phase';
-import { BUILT_IN_PIPELINE, BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
+import { FIXTURE_PHASES } from '../../fixtures/process-catalog-fixture';
 
+// Feature 098 (T080) — `lists the nine invocable phases` stood at the head of this
+// describe. It asserted the contents of `INVOCABLE_PHASES`, which T038 deleted:
+// there is no fixed set of Phase ids the host can invoke, because an operator's
+// Phase id is data. The hardcoded successor chain below is the module's own
+// no-pipeline fallback and is asserted as such, not as a vocabulary.
 describe('Phase enum and transitions', () => {
-  it('lists the nine invocable phases', () => {
-    expect(INVOCABLE_PHASES).toEqual([
-      'speckit-specify',
-      'speckit-clarify',
-      'speckit-plan',
-      'speckit-tasks',
-      'speckit-checklist',
-      'speckit-analyze',
-      'speckit-implement',
-      'speckit-review',
-      'finalize'
-    ]);
-  });
-
   it('marks clarify, analyze, implement, and review as loop phases', () => {
     expect(isLoopPhase('speckit-clarify')).toBe(true);
     expect(isLoopPhase('speckit-analyze')).toBe(true);
@@ -170,24 +160,25 @@ describe('Phase enum and transitions', () => {
   });
 
   describe('catalog-driven dispatch', () => {
-    const pipeline = {
-      phases: BUILT_IN_PIPELINE.phases.map(
-        (id) =>
-          BUILT_IN_PHASES.find((p) => p.id === id) ?? {
-            id,
-            name: id,
-            instruction: '',
-            loopable: false
-          }
-      )
-    };
+    // Feature 098 (T080) — the pipeline under test was assembled from
+    // `BUILT_IN_PIPELINE.phases` resolved against `BUILT_IN_PHASES`, so the
+    // successor assertions read as facts about the speckit sequence when what
+    // they establish is that `nextSuccessor` walks whatever sequence it is
+    // handed. The fixture rows carry ids the product does not recognise, which is
+    // the point: the walk cannot be coming from anywhere but the argument.
+    const pipeline = { phases: FIXTURE_PHASES };
+    const [first, second, third] = FIXTURE_PHASES;
+    const last = FIXTURE_PHASES[FIXTURE_PHASES.length - 1];
 
-    it('nextSuccessor walks the built-in pipeline when provided', () => {
-      expect(nextSuccessor('speckit-specify', pipeline)).toBe('speckit-clarify');
-      expect(nextSuccessor('speckit-clarify', pipeline)).toBe('speckit-plan');
-      expect(nextSuccessor('speckit-analyze', pipeline)).toBe('speckit-implement');
-      expect(nextSuccessor('finalize', pipeline)).toBe('done');
+    it('nextSuccessor walks the pipeline it is given', () => {
+      expect(nextSuccessor(first.id, pipeline)).toBe(second.id);
+      expect(nextSuccessor(second.id, pipeline)).toBe(third.id);
+      expect(nextSuccessor(last.id, pipeline)).toBe('done');
       expect(nextSuccessor('done', pipeline)).toBe('done');
+      // The hardcoded fallback chain does not leak in: `speckit-specify` is not a
+      // member of this pipeline, so it terminates rather than advancing to
+      // `speckit-clarify`.
+      expect(nextSuccessor('speckit-specify', pipeline)).toBe('done');
     });
 
     it('nextSuccessor returns done for unknown phase id within a pipeline', () => {

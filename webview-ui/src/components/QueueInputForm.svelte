@@ -40,6 +40,12 @@
     | null
   >(null);
 
+  // Feature 098 (T049, FR-033a) — `defaultPipelineId` is the empty string when
+  // no default is set, which is what a fresh install ships now that no Pipeline
+  // is built in. The membership test already answers that correctly: `''` names
+  // no Pipeline, so the first available one is preselected rather than an id
+  // the operator cannot see in the list. Recorded rather than changed, so a
+  // later edit does not "simplify" the test into a truthiness check.
   const defaultSelectedPipelineId = $derived<string | undefined>(
     availablePipelines.length === 0
       ? undefined

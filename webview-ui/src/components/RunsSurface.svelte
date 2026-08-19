@@ -21,11 +21,22 @@
   //     when there is something to pick. A live compose control over an empty
   //     catalog is a control whose only outcome is a refusal.
   //
+  // Feature 098 (T057, FR-030a) revises the second of those in one direction
+  // and leaves it standing in the other. The picker still appears only when
+  // there is something to pick — but the zone around it now stays mounted with
+  // nothing imported, showing the guidance in place of the choices. Hiding the
+  // whole zone was right when an empty catalog was a transient state of a
+  // product that shipped Pipelines; it is wrong now that it is the state every
+  // install starts in, because it leaves the operator no visible route from an
+  // empty catalog to a non-empty one and leaves `RunLauncher.svelte` reachable
+  // from nowhere.
+  //
   // Operator-authored strings — Pipeline names, run and workflow identifiers —
   // are interpolated with `{}`, which escapes. Nothing here uses `{@html}`.
 
   import WorkflowRun from './WorkflowRun/WorkflowRun.svelte';
   import RunLauncher from './RunLauncher/RunLauncher.svelte';
+  import { emptyCatalogGuidance } from '../../../src/contracts/empty-catalog-guidance';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
 
   interface Props {
@@ -51,6 +62,14 @@
     composing ? pipelines.find((pipeline) => pipeline.id === selectedPipelineId) : undefined
   );
 
+  /**
+   * Feature 098 (T057, FR-030a / FR-032) — the same text the sidebar's phase
+   * tracker shows, not a second wording of it. Imported from the one shared
+   * source rather than restated here, which is what makes "the two surfaces
+   * cannot drift apart" a property of the code rather than a convention.
+   */
+  const guidance = $derived(emptyCatalogGuidance(pipelines.length));
+
   function onCompose(): void {
     if (selectedPipelineId === null) return;
     composing = true;
@@ -75,9 +94,14 @@
     {/if}
   </section>
 
-  {#if pipelines.length > 0}
-    <section class="compose-zone">
-      <header class="zone-title">Start a Run</header>
+  <section class="compose-zone" data-testid="runs-surface-compose-zone">
+    <header class="zone-title">Start a Run</header>
+    {#if guidance}
+      <div class="empty-catalog" data-testid="runs-surface-empty-catalog">
+        <p class="empty-catalog-headline">{guidance.headline}</p>
+        <p class="empty">{guidance.body}</p>
+      </div>
+    {:else}
       <div class="compose-controls">
         <label class="compose-label" for="runs-surface-pipeline-select">Pipeline</label>
         <select
@@ -105,8 +129,8 @@
       {#if composePipeline}
         <RunLauncher pipeline={composePipeline} onClose={() => (composing = false)} />
       {/if}
-    </section>
-  {/if}
+    {/if}
+  </section>
 </main>
 
 <style>
@@ -180,5 +204,16 @@
   .compose-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  .empty-catalog {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .empty-catalog-headline {
+    margin: 0;
+    font-size: 0.9em;
+    font-weight: 600;
   }
 </style>

@@ -25,6 +25,7 @@ import type { Phase } from '../../../../src/controller/phase';
 import type { FeatureRequest } from '../../../../src/queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
+import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 
 /** A second registry entry needs a real v4 id — `isValidQueueId` enforces it. */
 const QUEUE_B = '11111111-1111-4111-8111-111111111111';
@@ -89,10 +90,17 @@ function inFlightRequest(id: string, runId: string, queueId: string): FeatureReq
   };
 }
 
+// Feature 098 (T055) — the frozen Pipeline is what gives a Run its phase strip.
+// The projector used to fall back to a built-in list for a Run without one, so
+// this fixture never needed to declare it; it projects an empty strip now, and
+// "each queue gets the strip of its own Run" has nothing to compare. Both queues
+// freeze the same Pipeline on purpose — the claim under test is that the two
+// strips differ by *Run state*, not by definition.
 function runFor(overrides: Partial<WorkflowRun> & Pick<WorkflowRun, 'id' | 'featureId'>): WorkflowRun {
   return {
     featureDir: `specs/${overrides.featureId}`,
     status: 'running',
+    pipeline: SPECKIT_RUN_PIPELINE,
     currentPhase: 'speckit-plan',
     currentIteration: 0,
     startedAt: 1_700_000_000_000,

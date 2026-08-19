@@ -143,7 +143,13 @@ describe('phase-yaml-validator — closed key set (FR-001)', () => {
   // T017 — FR-009. Each of these is a host-resolved field on the runtime
   // definition and none is portable. The closed-format rule is what refuses
   // them; there is no per-field denial list to keep in sync.
-  it.each(['sideEffects', 'evidencePolicy', 'promptVersion', 'sourceScope'])(
+  //
+  // Narrowed by feature 098 (FR-003): `sideEffects` and `evidencePolicy` are
+  // authored intent, not host state, and are portable from this feature on —
+  // their acceptance and their closed sets are asserted in the containment
+  // describe below. The two that remain describe the host's own state (which
+  // prompt build ran, which layer a row resolved from) and stay unwritable.
+  it.each(['promptVersion', 'sourceScope'])(
     'refuses the non-portable field %s',
     (field) => {
       const found = defects(doc({ spec: ['instruction: i', `${field}: something`] }));
@@ -305,6 +311,96 @@ describe('phase-yaml-validator — portable behavior fields (FR-008)', () => {
     expect(found).toContainEqual(
       expect.objectContaining({ field: 'retryCondition', code: 'non-empty-required' })
     );
+  });
+});
+
+// Feature 098 T006 — the two containment fields, one case per row of the
+// refusal table in `contracts/phase-document-fields.md`.
+//
+// The fields are validated by membership against a frozen literal set, in the
+// shape `runner` and `effort` already use, and nothing here checks a
+// cross-field rule: `sideEffects: git` under a Git-incapable runner is refused
+// by the catalog-side save gate, and a second enforcement site would be two
+// places that can disagree.
+describe('phase-yaml-validator — containment fields (FR-001, FR-002)', () => {
+  it.each(['none', 'workspace', 'git', 'unrestricted'])('accepts sideEffects: %s', (value) => {
+    const document = accepted(doc({ spec: ['instruction: i', `sideEffects: ${value}`] }));
+    expect(document.spec.sideEffects).toBe(value);
+  });
+
+  it.each(['required', 'best-effort', 'none'])('accepts evidencePolicy: %s', (value) => {
+    const document = accepted(doc({ spec: ['instruction: i', `evidencePolicy: ${value}`] }));
+    expect(document.spec.evidencePolicy).toBe(value);
+  });
+
+  it('accepts both fields alongside the rest of the spec', () => {
+    const document = accepted(
+      doc({
+        spec: [
+          'instruction: i',
+          'runner: claude',
+          'sideEffects: git',
+          'evidencePolicy: best-effort'
+        ]
+      })
+    );
+    expect(document.spec).toEqual({
+      instruction: 'i',
+      runner: 'claude',
+      sideEffects: 'git',
+      evidencePolicy: 'best-effort'
+    });
+  });
+
+  it('refuses a sideEffects value outside the closed set', () => {
+    const found = defects(doc({ spec: ['instruction: i', 'sideEffects: readonly'] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({
+        field: 'sideEffects',
+        code: 'invalid-enum',
+        message: 'Phase sideEffects must be one of none, workspace, git, unrestricted'
+      })
+    );
+  });
+
+  it('refuses an evidencePolicy value outside the closed set', () => {
+    const found = defects(doc({ spec: ['instruction: i', 'evidencePolicy: maybe'] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({
+        field: 'evidencePolicy',
+        code: 'invalid-enum',
+        message: 'Phase evidencePolicy must be one of required, best-effort, none'
+      })
+    );
+  });
+
+  // A key with nothing after it parses as an empty mapping, so the empty and
+  // the non-scalar rows of the refusal table reach the same shared path. Both
+  // are asserted because the table lists both, and because a future reader
+  // hitting one of them should find the case here rather than infer it. The
+  // non-scalar case is written as a nested block mapping because a flow
+  // collection never reaches the validator — the scanner refuses it outright.
+  it.each([
+    ['empty', ['sideEffects:']],
+    ['a mapping', ['sideEffects:', '  a: b']]
+  ])('refuses sideEffects that is %s', (_label, lines) => {
+    const found = defects(doc({ spec: ['instruction: i', ...lines] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({ field: 'sideEffects', code: 'scalar-required' })
+    );
+  });
+
+  it('refuses a wrong-case key as an unknown key rather than reading it', () => {
+    const found = defects(doc({ spec: ['instruction: i', 'SideEffects: git'] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({ field: 'SideEffects', code: 'unknown-field' })
+    );
+  });
+
+  it('accepts a document declaring neither field', () => {
+    const document = accepted(doc({ spec: ['instruction: i'] }));
+    expect(document.spec.sideEffects).toBeUndefined();
+    expect(document.spec.evidencePolicy).toBeUndefined();
   });
 });
 

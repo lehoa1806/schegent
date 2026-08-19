@@ -22,6 +22,27 @@ one-scope, three-scope, and four-scope cases in order.
 An **export** is a read. It needs no trust scope and asks for no
 confirmation.
 
+## The first import
+
+On a fresh install the catalog is empty — no Phases, no Pipelines, no
+Workflows, no Models — and import is the only way anything gets into it.
+Nothing runs until you do one; a launch against an empty catalog is
+refused with `catalog-empty` rather than started against something you
+never chose.
+
+The extension ships process documents under `examples/` for exactly this:
+
+| Document | Supplies |
+|---|---|
+| `speckit-new-feature.pipeline.yaml` | one Pipeline and the nine Phases it names |
+| `speckit-bugfix.pipeline.yaml` | one Pipeline and the five Phases it names |
+| `model-catalog.yaml` | per-backend model identifiers |
+
+They are ordinary documents with no privileged status. Importing one
+produces `import` rows on a fresh catalog and `skip` rows on a second
+run, exactly as any document you wrote would — the built-in layer is
+permanently empty, so it claims no id and forces no skips.
+
 ## Import a document
 
 ### 1. Open the preview
