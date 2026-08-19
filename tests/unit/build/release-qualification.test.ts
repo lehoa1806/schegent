@@ -63,16 +63,17 @@ describe('release qualification', () => {
     expect(existsSync('src/commands/export-audit.ts')).toBe(true);
   });
 
-  it('ships state v11 recovery controls without the dead Rust engine', () => {
+  it('ships state v13 recovery controls without the dead Rust engine', () => {
     expect(manifest.contributes.configuration.properties['schegent.logging.rawTranscriptMode'])
       .toBeTruthy();
     // Pinned to the version the build actually ships, and moved deliberately
     // with each forward-only migration — v10 was feature 092's per-queue
-    // `KEYS.queue` step, v11 is feature 093's per-queue `KEYS.run` step. The pin
-    // is the point: a version that changed without anyone editing this line is a
-    // migration nobody wrote.
+    // `KEYS.queue` step, v11 is feature 093's per-queue `KEYS.run` step, v12 is
+    // FR-R3-010's per-queue history reshape and v13 FR-R3-011's queue-pause
+    // collapse. The pin is the point: a version that changed without anyone
+    // editing this line is a migration nobody wrote.
     expect(readFileSync('src/contracts/state-schema.ts', 'utf8'))
-      .toContain('STATE_SCHEMA_VERSION = 11');
+      .toContain('STATE_SCHEMA_VERSION = 13');
     expect(existsSync('src/services/terminal-transition-coordinator.ts')).toBe(true);
     expect(existsSync('Cargo.toml')).toBe(false);
     expect(existsSync('src/engine/index.ts')).toBe(false);

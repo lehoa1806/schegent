@@ -21,6 +21,7 @@ import {
   MAX_QUEUES,
   QueueRegistryViolation,
   makeDefaultRegistry,
+  projectQueueRegistry,
   validateQueueRegistry,
   type QueueRegistry,
   type QueueRegistryEntry,
@@ -39,8 +40,6 @@ function entry(overrides: Partial<QueueRegistryEntry> = {}): QueueRegistryEntry 
     id: DEFAULT_QUEUE_ID,
     name: 'Default queue',
     position: 0,
-    state: 'active',
-    pauseSource: null,
     schedule: null,
     createdAt: NOW,
     updatedAt: NOW,
@@ -193,43 +192,66 @@ describe('queue-registry — feature 092, content rules unchanged under N entrie
     expect(violationCode(registry)).not.toBeNull();
   });
 
-  it('keeps the pause-source pairing invariant on every entry, not just the first', () => {
-    const missing = registryOf([
-      entry(),
-      entry({
-        id: fixtureQueueId(2),
-        name: 'Paused',
-        position: 1,
-        state: 'manually-paused',
-        pauseSource: null
-      })
-    ]);
-    expect(() => validateQueueRegistry(missing)).toThrowError(/invalid pauseSource/);
+  // FR-R3-011 — the two tests that stood here asserted `validateQueueRegistry`
+  // rejects an entry whose `state` and `pauseSource` disagree. The validator no
+  // longer makes that check because the record no longer holds either field;
+  // the pairing moved to `projectQueueRegistry`, where it is established rather
+  // than checked. The multi-entry half of what they protected — "on every
+  // entry, not just the first" — is what the two tests below carry forward.
 
-    const spurious = registryOf([
-      entry(),
-      entry({
-        id: fixtureQueueId(2),
-        name: 'Active',
-        position: 1,
-        state: 'active',
-        pauseSource: 'operator' as never
-      })
-    ]);
-    expect(() => validateQueueRegistry(spurious)).toThrowError(/non-null pauseSource/);
-  });
-
-  it('accepts a manually-paused entry with a pause source', () => {
+  it('projects the pause pairing on every entry, not just the first', () => {
     const registry = registryOf([
       entry(),
-      entry({
-        id: fixtureQueueId(2),
-        name: 'Paused lane',
-        position: 1,
-        state: 'manually-paused',
-        pauseSource: 'operator'
-      })
+      entry({ id: fixtureQueueId(2), name: 'Paused lane', position: 1 }),
+      entry({ id: fixtureQueueId(3), name: 'Active lane', position: 2 })
     ]);
-    expect(() => validateQueueRegistry(registry)).not.toThrow();
+    const projected = projectQueueRegistry(
+      registry,
+      new Map([
+        [DEFAULT_QUEUE_ID, { paused: false, pauseSource: null }],
+        [fixtureQueueId(2), { paused: true, pauseSource: 'operator' as const }],
+        [fixtureQueueId(3), { paused: false, pauseSource: null }]
+      ])
+    );
+
+    expect(projected.entries.map((e) => [e.state, e.pauseSource])).toEqual([
+      ['active', null],
+      ['manually-paused', 'operator'],
+      ['active', null]
+    ]);
+    for (const projectedEntry of projected.entries) {
+      expect(projectedEntry.pauseSource === null).toBe(projectedEntry.state !== 'manually-paused');
+    }
+  });
+
+  it('cannot project either half of the disagreement the validator used to refuse', () => {
+    // The two rejected shapes were `manually-paused` with a null source and
+    // `active` with a non-null one. Neither is reachable now: the state is read
+    // off `paused`, and the source is forced to null on the same branch that
+    // makes the state 'active'. Feeding the projection the inputs that produced
+    // them shows what it does instead of throwing.
+    const registry = registryOf([
+      entry(),
+      entry({ id: fixtureQueueId(2), name: 'Second lane', position: 1 })
+    ]);
+
+    // Paused with no recorded source — defaulted to 'operator' rather than left
+    // null, which is the feature-028 rule the collapse kept.
+    const pausedWithoutSource = projectQueueRegistry(
+      registry,
+      new Map([[fixtureQueueId(2), { paused: true, pauseSource: null }]])
+    );
+    expect(pausedWithoutSource.entries[1]).toMatchObject({
+      state: 'manually-paused',
+      pauseSource: 'operator'
+    });
+
+    // Not paused but carrying a stale source — the source is dropped, so the
+    // pair cannot disagree.
+    const activeWithSource = projectQueueRegistry(
+      registry,
+      new Map([[fixtureQueueId(2), { paused: false, pauseSource: 'cascade' as const }]])
+    );
+    expect(activeWithSource.entries[1]).toMatchObject({ state: 'active', pauseSource: null });
   });
 });

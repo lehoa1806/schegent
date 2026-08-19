@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -29,6 +30,13 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   'src/services/auto-drain-coordinator.ts',
   'src/services/guarded-run-service.ts',
   'src/state/queue-state-migrator.ts',
+  // FR-R3-011 (T421) — narrowed, not removed. This file held two lifecycle
+  // emission sites: the legacy-shape lift in `deriveLifecycleFromLegacyShape`,
+  // and `reconcileQueuePauseStateIfDivergent()`, which re-derived a lifecycle
+  // from `(inFlightId, paused, pendingCount)` on every load to repair a split
+  // between two memento keys. The collapse to one persisted value removed the
+  // split, so the reconciler is deleted and the lift is the only emission left.
+  // The test below pins that: one occurrence, and no reconciler.
   'src/state/workspace-state.ts',
   'src/ui/sidebar/snapshot.ts',
   'src/ui/sidebar/state-projector.ts',
@@ -81,6 +89,11 @@ function lifecycleLiteralReferences(): readonly string[] {
   );
 }
 
+/** Removes block and line comments so a scan reads code, not prose about it. */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
 describe('Feature 065 — QueueLifecycle running-literal allowlist', () => {
   it('documents the lifecycle allowlist as a non-empty set', () => {
     expect(LIFECYCLE_ALLOWLIST.size).toBeGreaterThan(0);
@@ -93,6 +106,22 @@ describe('Feature 065 — QueueLifecycle running-literal allowlist', () => {
       // grep returns silently for missing paths above.
       expect(typeof abs).toBe('string');
     }
+  });
+
+  it('FR-R3-011 — workspace-state.ts emits the lifecycle literal once, from the legacy lift', () => {
+    // Comments are stripped first, deliberately. The replacement method's doc
+    // comment names the retired reconciler on purpose — that is where someone
+    // looking for it will look — so a raw text scan would read the tombstone as
+    // the thing itself, and the literal count would drift with prose.
+    const source = stripComments(
+      readFileSync(resolve(REPO_ROOT, 'src', 'state', 'workspace-state.ts'), 'utf8')
+    );
+    // The reconciler was the second emission site and the fourth writer of the
+    // discriminator. Its absence is the shrink; the count is what keeps a
+    // replacement from being added back under another name.
+    expect(source).not.toContain('reconcileQueuePauseStateIfDivergent');
+    const occurrences = source.split("'running'").length - 1;
+    expect(occurrences).toBe(1);
   });
 
   it('captures at least one lifecycle literal reference (smoke check)', () => {

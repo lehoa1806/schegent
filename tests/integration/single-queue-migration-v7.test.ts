@@ -143,7 +143,7 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     expect(initResult.migrated).toBe(true);
     expect(initResult.v7MigrationEvents.length).toBe(1);
 
-    const migrated = store.getQueue();
+    const migrated = store.getQueue(DEFAULT_QUEUE_ID);
     expect(migrated.queueLifecycle).toBe('running');
     expect(migrated.scheduledStartAt).toBeNull();
     expect(migrated.scheduledStartSource).toBeNull();
@@ -172,11 +172,15 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
 
-    const migrated = store.getQueue();
+    const migrated = store.getQueue(DEFAULT_QUEUE_ID);
     expect(migrated.queueLifecycle).toBe('operator-paused');
     expect(migrated.scheduledStartAt).toBeNull();
     expect(migrated.scheduledStartSource).toBeNull();
-    expect(migrated.paused).toBe(true);
+    // FR-R3-011 — the v13 collapse runs after this one, so the record the store
+    // hands back carries the lifecycle above and no `paused` mirror. Asserting
+    // its absence rather than deleting the line keeps the v6 → v7 pause claim
+    // paired with the fact that only one representation survives the chain.
+    expect('paused' in migrated).toBe(false);
   });
 
   it('(c) non-empty pending + no in-flight + not paused → idle-pending, scheduledStartSource: migration-default, scheduledStartAt: null', async () => {
@@ -194,7 +198,7 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
 
-    const migrated = store.getQueue();
+    const migrated = store.getQueue(DEFAULT_QUEUE_ID);
     expect(migrated.queueLifecycle).toBe('idle-pending');
     expect(migrated.scheduledStartAt).toBeNull();
     expect(migrated.scheduledStartSource).toBe('migration-default');
@@ -256,7 +260,7 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
 
-    const migrated = store.getQueue();
+    const migrated = store.getQueue(DEFAULT_QUEUE_ID);
     const migratedPending = migrated.requests.filter((r) => r.status === 'pending');
     expect(migratedPending.length).toBe(2);
     // Byte-for-byte preservation: id, description, enqueuedAt, createdAt,
@@ -284,7 +288,7 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     await store.initialize();
 
     // Pre-condition: migration left scheduledStartSource as 'migration-default'.
-    const pre = store.getQueue();
+    const pre = store.getQueue(DEFAULT_QUEUE_ID);
     expect(pre.scheduledStartSource).toBe('migration-default');
 
     // Operator explicit start: model by setting the lifecycle to 'running'
@@ -293,12 +297,13 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     await store.setQueue({
       ...pre,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       updatedAt: NOW + 1000
     });
 
-    const post = store.getQueue();
+    const post = store.getQueue(DEFAULT_QUEUE_ID);
     expect(post.queueLifecycle).toBe('running');
     expect(post.scheduledStartSource).toBeNull();
   });

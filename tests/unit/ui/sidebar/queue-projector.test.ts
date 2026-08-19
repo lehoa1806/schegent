@@ -48,6 +48,7 @@ function makeQueue(overrides: Partial<QueueState>): QueueState {
     pausedReason: null,
     updatedAt: 1_000,
     queueLifecycle: 'running',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null,
     ...overrides
@@ -69,6 +70,7 @@ describe('queue-projector — paused-task composition (T069 / BUG-006)', () => {
       requests: [paused],
       inFlightId: 'task-a',
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: 99_999,
       scheduledStartSource: 'system-rate-limit-recovery'
     });
@@ -103,6 +105,7 @@ describe('queue-projector — paused-task composition (T069 / BUG-006)', () => {
       // Operator pause clears inFlightId.
       inFlightId: null,
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       paused: true
     });
 
@@ -132,6 +135,7 @@ describe('queue-projector — paused-task composition (T069 / BUG-006)', () => {
       requests: [pendingTask, pausedTask],
       inFlightId: null,
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       paused: true
     });
 
@@ -181,6 +185,7 @@ describe('queue-projector — paused-task composition (T069 / BUG-006)', () => {
       requests: [paused],
       inFlightId: 'task-c',
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       paused: true
     });
 

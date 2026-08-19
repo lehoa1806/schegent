@@ -57,8 +57,6 @@ beforeEach(async () => {
         id: QUEUE_B,
         name: 'Second queue',
         position: 1,
-        state: 'active',
-        pauseSource: null,
         schedule: null,
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_000
@@ -140,8 +138,7 @@ async function seedRun(
       ...current,
       requests: [...current.requests, inFlightRequest(run.featureId, run.id, queueId)],
       inFlightId: run.featureId,
-      queueLifecycle: 'running'
-    },
+      queueLifecycle: 'running'},
     queueId
   );
   await store.setRun(queueId, run);

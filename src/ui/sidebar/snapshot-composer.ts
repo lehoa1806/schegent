@@ -18,7 +18,9 @@ import {
   computeIsPrimary,
   mapRunStatus,
   projectDelayedRetry,
-  projectRunOutputs
+  projectRunLiveness,
+  projectRunOutputs,
+  projectRunProgress
 } from './run-projector';
 import type { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
@@ -42,12 +44,23 @@ import {
   type QueueRunProjection
 } from './queue-runtime-composer';
 
+/**
+ * The shape both model fields fall back to when their source is absent.
+ * Empty means "nothing known", which every consumer already handles; an
+ * invented entry would be indistinguishable from a real one downstream.
+ */
+const EMPTY_MODELS_BY_BACKEND: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
+  claude: Object.freeze([]),
+  codex: Object.freeze([]),
+  agy: Object.freeze([])
+});
+
 type ProjectorStore = Pick<
   WorkspaceStateStore,
   'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
 > & Partial<Pick<
   WorkspaceStateStore,
-  'getQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
+  'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
 >>;
 
 export interface SnapshotComposerContext {
@@ -76,8 +89,17 @@ export interface SnapshotComposerContext {
 /** Composes the immutable wire snapshot from focused domain projections. */
 export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowSnapshot {
   const { deps, store } = ctx;
-  const queue = store.getQueue();
-  const registry = store.getQueueRegistry?.();
+  // FR-R3-002 (T281) — named explicitly. The projections this feeds are
+  // already keyed to `DEFAULT_QUEUE_ID` below (the single-queue lifecycle,
+  // pause state and `migrationNotice` the sidebar renders), so pinning the
+  // read states what the composer already meant rather than changing it.
+  const queue = store.getQueue(DEFAULT_QUEUE_ID);
+  // FR-R3-011 — the projected registry. Pause state is no longer persisted on
+  // a registry entry; `getProjectedQueueRegistry()` fills it in from each
+  // queue's `QueueState`, which is the same value the drain gate reads. The
+  // composer takes the projection rather than re-deriving one so there is one
+  // derivation site, not a second copy of the rule in the UI layer.
+  const registry = store.getProjectedQueueRegistry?.();
   const lock = store.getLock();
   const confirmSuppression = store.getConfirmSuppression?.();
   const confirmationsEnabled = deps.getConfirmationsEnabled?.();
@@ -102,6 +124,11 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
         ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
         : null,
       liveActivity: bookkeeping.liveActivity(status),
+      // FR-R3-008 (T379) — the reload-durable half of the same question
+      // `liveActivity` answers from memory, plus progress against the total the
+      // Run froze. Both are `null` when the record predates the feature.
+      liveness: projectRunLiveness(run),
+      progress: projectRunProgress(run),
       elapsedMs: bookkeeping.workflowElapsedMs(status),
       delayedRetry: projectDelayedRetry(run),
       outputs: projectRunOutputs(run, sanitize).runOutputs ?? [],
@@ -149,14 +176,24 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       ? { requestsOf: (queueId: string) => store.getRequestsForQueue!(queueId) }
       : {})
   });
-  const catalog = deps.getCatalog?.() ?? { phases: [], pipelines: [], models: [] };
+  const catalog = deps.getCatalog?.() ?? {
+    phases: [],
+    pipelines: [],
+    models: EMPTY_MODELS_BY_BACKEND
+  };
   const phasePrecedence = deps.getPhasePrecedence?.();
   const phaseCatalog = deps.getPhaseCatalog?.();
-  const availableModels = deps.getAvailableModels?.() ?? {
-    claude: catalog.models,
-    codex: ['codex-default'],
-    agy: ['Gemini 3.1 Pro (High)']
-  } as Record<BackendRunnerKind, readonly string[]>;
+  // Absent means "availability is unknown", which every consumer already reads
+  // as "warn about nothing" — so the fallback is empty rather than a guess.
+  // It used to invent one (`codex-default`, a Gemini DISPLAY name), which is
+  // the same mistake the capability service made for `claude`/`codex`: a
+  // fabricated list is indistinguishable from a discovered one downstream.
+  const availableModels = deps.getAvailableModels?.() ?? EMPTY_MODELS_BY_BACKEND;
+  // The operator's catalog, straight off the resolved configuration — no
+  // separate dep, so it cannot drift from the catalog every other projection
+  // reads, and it refreshes on the `schegent.models` reload already wired in
+  // `extension.ts`.
+  const configuredModels = catalog.models;
   const phaseCatalogProjection = composePhaseCatalogProjection(phaseCatalog, {
     sanitize,
     availableModels,
@@ -222,7 +259,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       recent: Object.freeze(queueProjection.recent.slice()),
       orderedItems: Object.freeze(queueProjection.orderedItems.slice()),
       queues: Object.freeze(queueProjection.queues.slice()),
-      paused: queue.paused,
+      // FR-R3-011 — derived, not read. The wire field stays a boolean because
+      // the webview renders one; the persisted mirror behind it is gone.
+      paused: queue.queueLifecycle === 'operator-paused',
       pausedReason: sanitizeAndCap(queue.pausedReason, sanitize),
       lifecycle: queue.queueLifecycle,
       scheduledStartAt: queue.scheduledStartAt,
@@ -238,6 +277,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availablePhases: Object.freeze([...catalog.phases]),
     availablePipelines: Object.freeze([...catalog.pipelines]),
     availableModels: Object.freeze(availableModels),
+    configuredModels: Object.freeze(configuredModels),
     availableBackends: Object.freeze(
       deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
     ),

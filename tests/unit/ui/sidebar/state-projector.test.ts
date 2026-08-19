@@ -10,7 +10,7 @@ import { STALENESS_THRESHOLD_MS } from '../../../../src/state/lock';
 import type { WorkflowRun, WorkspaceLock } from '../../../../src/state/workflow-run';
 import type { QueueState, FeatureRequest } from '../../../../src/queue/feature-request';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
-import { DEFAULT_QUEUE_ID, setQueuePaused } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 
@@ -64,6 +64,7 @@ function emptyQueue(): QueueState {
     pausedReason: null,
     updatedAt: 0,
     queueLifecycle: 'active-empty',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null
   };
@@ -116,13 +117,12 @@ function sampleLock(ownerId = 'this-window'): WorkspaceLock {
  * it, so the queue-projection fixtures below keep their own rows.
  */
 async function ownRun(featureId = 'feat-1'): Promise<void> {
-  const current = store.getQueue();
+  const current = store.getQueue(DEFAULT_QUEUE_ID);
   await store.setQueue({
     ...current,
     requests: [...current.requests, inFlightRequest(featureId, 'owning task')],
     inFlightId: featureId,
-    queueLifecycle: 'running'
-  });
+    queueLifecycle: 'running'});
 }
 
 function sampleRun(): WorkflowRun {
@@ -243,7 +243,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
         pausedReason: null
       }
     ];
-    const queue: QueueState = { requests, inFlightId: 'q-active', paused: false, pausedReason: null, updatedAt: 0, queueLifecycle: 'running', scheduledStartAt: null, scheduledStartSource: null };
+    const queue: QueueState = { requests, inFlightId: 'q-active', pausedReason: null, updatedAt: 0, queueLifecycle: 'running', pauseSource: null, scheduledStartAt: null, scheduledStartSource: null };
     await store.setQueue(queue);
     const p = makeProjector();
     p.start();
@@ -262,14 +262,16 @@ describe('StateProjector.getCurrentSnapshot', () => {
     // queue-paused derivation still applies and surfaces in the
     // projected `pauseCause` on pending requests when the default
     // queue is manually paused.
-    const registry = setQueuePaused(store.getQueueRegistry(), {
-      id: DEFAULT_QUEUE_ID,
-      paused: true,
-      now: 1_700_000_000_001
-    });
-    await store.setQueueRegistry(registry);
+    //
+    // FR-R3-011 — the pause is now set on the queue record. `setQueuePaused`
+    // wrote it onto the registry entry, which no longer holds one; the
+    // projector reads the pause through `getProjectedQueueRegistry()`, which
+    // derives it from exactly the record written here.
     await store.setQueue({
       ...emptyQueue(),
+      queueLifecycle: 'operator-paused',
+      pauseSource: 'operator',
+      updatedAt: 1_700_000_000_001,
       requests: [{ ...pendingRequest('q-1', 'first', 0), queueId: DEFAULT_QUEUE_ID }]
     });
 
@@ -366,6 +368,7 @@ describe('StateProjector.getCurrentSnapshot — queue.orderedItems (BUG-010 / FR
       pausedReason: null,
       updatedAt: 0,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -394,6 +397,7 @@ describe('StateProjector.getCurrentSnapshot — queue.orderedItems (BUG-010 / FR
       pausedReason: 'rate-limit',
       updatedAt: 0,
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -756,6 +760,7 @@ describe('StateProjector monitor projection (T023)', () => {
     runId: string; phase: string; status: string; pid: number | null;
     startedAt: string; lastStdoutAt: string | null; lastStderrAt: string | null;
     lastProgressAt: string | null; stdoutLines: number; stderrLines: number;
+    firstOutputAt: string | null; lastOutputAt: string | null;
     exitCode: number | null; signal: string | null;
     detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
     msSinceLastStdout: number | null; msSinceLastStderr: number | null;
@@ -771,6 +776,9 @@ describe('StateProjector monitor projection (T023)', () => {
       lastProgressAt: overrides.lastProgressAt ?? null,
       stdoutLines: overrides.stdoutLines ?? 0,
       stderrLines: overrides.stderrLines ?? 0,
+      // Feature FR-R3-007 (T353) — the transport aggregate the summary carries.
+      firstOutputAt: overrides.firstOutputAt ?? null,
+      lastOutputAt: overrides.lastOutputAt ?? null,
       exitCode: overrides.exitCode ?? null,
       signal: overrides.signal ?? null,
       detectedIssues: overrides.detectedIssues ?? ([] as ReadonlyArray<'rate_limited' | 'stall'>),
@@ -936,6 +944,7 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       pausedReason: null,
       updatedAt: 0,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -977,6 +986,7 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       pausedReason: null,
       updatedAt: 0,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     });
@@ -1038,6 +1048,7 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       pausedReason: null,
       updatedAt: 0,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     });
@@ -1058,6 +1069,7 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       pausedReason: null,
       updatedAt: 0,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     });

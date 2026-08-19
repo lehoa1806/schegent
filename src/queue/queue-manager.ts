@@ -34,7 +34,6 @@ import {
   DEFAULT_QUEUE_ID,
   findQueue,
   renameQueue,
-  setQueuePaused,
   setQueueSchedule,
   QueueRegistryViolation,
   type QueuePauseSource
@@ -115,6 +114,12 @@ export interface QueueMutationDetail extends MutationResult {
    * production code paths always populate it on `ok: true`.
    */
   sessionCleaned?: boolean;
+  /**
+   * Feature FR-R3-005 (T327) — present only when the cleanup was refused
+   * because containment could not be proven, which is a different operator
+   * action from a cleanup that ran and failed. Bounded and path-free.
+   */
+  sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
 }
 
 /**
@@ -243,9 +248,13 @@ export class QueueManager {
    * that a write is not free to disagree on.
    */
   public peekNextPending(queueId: string = DEFAULT_QUEUE_ID): FeatureRequest | null {
-    const entry = findQueue(this.store.getQueueRegistry(), queueId);
-    if (!entry || entry.state !== 'active') return null;
-    const requests = this.store.getQueue(queueId).requests;
+    if (!findQueue(this.store.getQueueRegistry(), queueId)) return null;
+    // FR-R3-011 — pausedness is read from the queue's own record, not from a
+    // registry entry that used to carry a copy of it. The registry lookup above
+    // stays: it answers a different question — whether the queue exists at all.
+    const queue = this.store.getQueue(queueId);
+    if (queue.queueLifecycle === 'operator-paused') return null;
+    const requests = queue.requests;
     let best: FeatureRequest | null = null;
     for (const r of requests) {
       if (r.status !== 'pending') continue;
@@ -538,13 +547,20 @@ export class QueueManager {
     }
   }
 
-  // Feature 030 — single-queue mode: multi-queue management methods removed;
-  // canonical queue is always 'default' (v6 registry shape).
-  // Canonical single-writer for the unified queue's pause state (BUG-001
-  // FR-020/FR-021): atomic dual-write of registry state + pauseSource and
-  // the legacy `QueueState.paused` boolean. `pauseSource` defaults to
-  // 'operator'; pass 'cascade' from `cascadedPause` and 'retry-cap' from
-  // the retry-handler. On clear, all sources are uniformly cleared.
+  // Canonical single-writer for a queue's pause state.
+  //
+  // FR-R3-011 — one write to one key. This method used to perform an atomic
+  // *dual*-write: `QueueRegistryEntry.state` + `pauseSource` in
+  // `KEYS.queueRegistry`, then `queueLifecycle` + the legacy `paused` mirror in
+  // `KEYS.queue`. A `Memento` has no multi-key transaction, so "atomic" was
+  // aspirational — the two writes had a window between them, and a window
+  // disposed inside it left the pair split. `queueLifecycle` and `pauseSource`
+  // now live in one entry of one key, so the whole fact moves together and a
+  // split pair is unrepresentable.
+  //
+  // `pauseSource` defaults to 'operator'; pass 'cascade' from `cascadedPause`
+  // and 'retry-cap' from the retry-handler. On clear, all sources are uniformly
+  // cleared.
   public async setQueuePausedState(
     paused: boolean,
     queueId?: string,
@@ -560,58 +576,28 @@ export class QueueManager {
       try {
         const resolvedQueueId = queueId ?? this.store.getDefaultQueueId();
         const registry = this.store.getQueueRegistry();
-        const existing = findQueue(registry, resolvedQueueId);
-        if (!existing) return { ok: false, reason: 'unknown-queue-id' };
-        const alreadyPaused = existing.state === 'manually-paused';
+        if (!findQueue(registry, resolvedQueueId)) {
+          return { ok: false, reason: 'unknown-queue-id' };
+        }
+        const queue = this.store.getQueue(resolvedQueueId);
+        const alreadyPaused = queue.queueLifecycle === 'operator-paused';
         // Idempotency: paused-true is a no-op only when the source matches.
         // Distinct sources (cascade → operator, etc.) overwrite attribution
         // so the resume side knows what to clear.
-        if (paused && alreadyPaused && existing.pauseSource === pauseSource) {
+        if (paused && alreadyPaused && queue.pauseSource === pauseSource) {
           return { ok: false, reason: 'already-paused' };
         }
         if (!paused && !alreadyPaused) {
-          // BUG-001 self-heal: registry already active but legacy boolean
-          // stale (set by a pre-fix writer). Heal so operator Resume visibly
-          // recovers the queue instead of being a confusing noop.
-          //
-          // Feature 092 (T027, FR-007) — the former
-          // `resolvedQueueId === DEFAULT_QUEUE_ID` guard is gone. It was not a
-          // policy; it was the shape: before v10 only the reserved queue had a
-          // `QueueState` to heal, so any other id had nothing to address. Every
-          // queue now owns one, and leaving the guard would make the self-heal
-          // silently unavailable on exactly the queues an operator created.
-          const queue = this.store.getQueue(resolvedQueueId);
-          if (queue.paused === true) {
-            await this.store.updateQueue(
-              (current) => ({
-                queue: { ...current, paused: false, pausedReason: null },
-                result: undefined
-              }),
-              resolvedQueueId
-            );
-            return { ok: true, queueId: resolvedQueueId };
-          }
+          // FR-R3-011 — the BUG-001 self-heal that stood here is gone with the
+          // divergence it healed. It existed because the registry could read
+          // `active` while the legacy `QueueState.paused` boolean still read
+          // `true`, leaving an operator's Resume a confusing no-op; there is one
+          // value now, so a queue that reads not-paused *is* not paused and
+          // saying so is the whole answer.
           return { ok: false, reason: 'not-paused' };
         }
 
         const now = Date.now();
-        await this.store.setQueueRegistry(
-          setQueuePaused(registry, {
-            id: resolvedQueueId,
-            paused,
-            pauseSource,
-            now
-          })
-        );
-        // Feature 092 (T027, FR-007) — the lifecycle half now runs for whichever
-        // queue was addressed. It was fenced behind
-        // `resolvedQueueId === DEFAULT_QUEUE_ID` for the same reason as the
-        // self-heal above: under v6..v9 there was one `QueueState`, so a pause
-        // on any other id had no lifecycle to write. Fencing it now would leave
-        // an operator-created queue's registry entry `manually-paused` while its
-        // own `queueLifecycle` still read `running` — the exact divergence
-        // `reconcileQueuePauseStateIfDivergent` exists to repair.
-        const queue = this.store.getQueue(resolvedQueueId);
         // Feature 065 (T036/T037) — lifecycle transition + scheduled-start
         // cancellation rules. On pause: if entering from idle-pending with
         // an armed schedule, cancel the in-process timer and clear the
@@ -634,9 +620,9 @@ export class QueueManager {
             (current) => ({
               queue: {
                 ...current,
-                paused,
-                pausedReason,
                 queueLifecycle: 'operator-paused',
+                pauseSource,
+                pausedReason,
                 scheduledStartAt: null,
                 scheduledStartSource: null
               },
@@ -668,9 +654,9 @@ export class QueueManager {
             (current) => ({
               queue: {
                 ...current,
-                paused,
-                pausedReason,
                 queueLifecycle: nextLifecycle,
+                pauseSource: null,
+                pausedReason: null,
                 scheduledStartAt: null,
                 scheduledStartSource: null
               },
@@ -716,28 +702,27 @@ export class QueueManager {
   public async cascadedPause(queueId: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.cascade-pause', { queueId }, async () => {
       try {
-        const registry = this.store.getQueueRegistry();
-        const existing = findQueue(registry, queueId);
-        if (!existing) return { ok: false, reason: 'unknown-queue-id' };
-        if (existing.state === 'manually-paused') {
-          // Either already cascade (idempotent) or operator-pause-wins.
+        if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+          return { ok: false, reason: 'unknown-queue-id' };
+        }
+        // FR-R3-011 — the precedence this method exists to enforce is now read
+        // from the queue's own record. It is the same test as before, against
+        // one value instead of a registry copy of it: already paused means
+        // either already cascade (idempotent) or operator-pause-wins, and both
+        // are a no-op.
+        if (this.store.getQueue(queueId).queueLifecycle === 'operator-paused') {
           return { ok: true, queueId };
         }
-        const now = Date.now();
-        await this.store.setQueueRegistry(
-          setQueuePaused(registry, {
-            id: queueId,
-            paused: true,
-            pauseSource: 'cascade',
-            now
-          })
-        );
-        // Feature 092 (T027) — per queue, for the reason given in
-        // `setQueuePausedState`: the legacy `paused` mirror lives on the
-        // addressed queue's own state now, not on a workspace singleton.
         await this.store.updateQueue(
           (queue) => ({
-            queue: { ...queue, paused: true, pausedReason: null },
+            queue: {
+              ...queue,
+              queueLifecycle: 'operator-paused',
+              pauseSource: 'cascade',
+              pausedReason: null,
+              scheduledStartAt: null,
+              scheduledStartSource: null
+            },
             result: undefined
           }),
           queueId
@@ -758,19 +743,31 @@ export class QueueManager {
   public async cascadedResume(queueId: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.cascade-resume', { queueId }, async () => {
       try {
-        const registry = this.store.getQueueRegistry();
-        const existing = findQueue(registry, queueId);
-        if (!existing) return { ok: false, reason: 'unknown-queue-id' };
-        if (existing.state !== 'manually-paused' || existing.pauseSource !== 'cascade') {
+        if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+          return { ok: false, reason: 'unknown-queue-id' };
+        }
+        const existing = this.store.getQueue(queueId);
+        // FR-R3-011 — both halves of the test read one record. An operator pause
+        // and an already-active queue are equally a no-op, which is what leaves
+        // an operator's pause standing when the phase that cascaded resumes.
+        if (
+          existing.queueLifecycle !== 'operator-paused'
+          || existing.pauseSource !== 'cascade'
+        ) {
           return { ok: true, queueId };
         }
-        const now = Date.now();
-        await this.store.setQueueRegistry(
-          setQueuePaused(registry, { id: queueId, paused: false, now })
-        );
+        const hasInFlight = existing.inFlightId !== null;
+        const hasPending = existing.requests.some((r) => r.status === 'pending');
         await this.store.updateQueue(
           (queue) => ({
-            queue: { ...queue, paused: false, pausedReason: null },
+            queue: {
+              ...queue,
+              queueLifecycle: hasInFlight ? 'running' : hasPending ? 'idle-pending' : 'active-empty',
+              pauseSource: null,
+              pausedReason: null,
+              scheduledStartAt: null,
+              scheduledStartSource: null
+            },
             result: undefined
           }),
           queueId
@@ -1295,10 +1292,36 @@ export class QueueManager {
     if (due.length === 0) return [];
     let next = registry;
     for (const entry of due) {
-      next = setQueuePaused(next, { id: entry.id, paused: false, now });
       next = setQueueSchedule(next, { id: entry.id, schedule: null, now });
     }
     await this.store.setQueueRegistry(next);
+    // FR-R3-011 — the unpause half moved to the queue record, and moving it is
+    // what makes a fired schedule actually resume the queue. This loop used to
+    // call `setQueuePaused(next, { paused: false })` on the registry alone,
+    // which cleared the registry's copy and left `queueLifecycle` reading
+    // `operator-paused` — so the queue looked active and still refused to
+    // drain. That was one concrete instance of the divergence this feature
+    // removes, not a separate defect.
+    for (const entry of due) {
+      const queue = this.store.getQueue(entry.id);
+      if (queue.queueLifecycle !== 'operator-paused') continue;
+      const hasInFlight = queue.inFlightId !== null;
+      const hasPending = queue.requests.some((r) => r.status === 'pending');
+      await this.store.updateQueue(
+        (current) => ({
+          queue: {
+            ...current,
+            queueLifecycle: hasInFlight ? 'running' : hasPending ? 'idle-pending' : 'active-empty',
+            pauseSource: null,
+            pausedReason: null,
+            scheduledStartAt: null,
+            scheduledStartSource: null
+          },
+          result: undefined
+        }),
+        entry.id
+      );
+    }
     return due.map((entry) => entry.id);
   }
 
@@ -1416,26 +1439,25 @@ export class QueueManager {
       (queue) =>
         queue.inFlightId !== null || queue.requests.some((r) => r.status === 'in-flight')
     );
-    const pausedQueueIdsBefore = queueIdsBefore.filter((id) => queuesBefore[id].paused);
+    const pausedQueueIdsBefore = queueIdsBefore.filter(
+      (id) => queuesBefore[id].queueLifecycle === 'operator-paused'
+    );
     const pauseBefore = pausedQueueIdsBefore.length > 0;
-    // Read pauseSource from the canonical registry entry (single source
-    // of truth — the legacy `queue.paused` boolean only mirrors it).
-    //
     // Feature 092 — `CleanAllResult.pauseSource` is one nullable field and N
     // queues may each carry their own, so it reports the reserved queue's
     // source when that queue was paused and otherwise the first paused entry's.
     // On a single-queue workspace — every workspace before this feature — the
     // two branches coincide and the reported value is byte-identical to what
     // the pre-feature reader produced.
-    const registryBefore = this.store.getQueueRegistry();
-    const pauseSourceEntry =
-      (pausedQueueIdsBefore.includes(DEFAULT_QUEUE_ID)
-        ? registryBefore.entries.find((e) => e.id === DEFAULT_QUEUE_ID)
-        : undefined) ??
-      registryBefore.entries.find((e) => pausedQueueIdsBefore.includes(e.id));
+    // FR-R3-011 — the source is read off the paused queue's own record. The
+    // selection rule is unchanged: the reserved queue's source when that queue
+    // was paused, otherwise the first paused queue's.
+    const pauseSourceQueueId = pausedQueueIdsBefore.includes(DEFAULT_QUEUE_ID)
+      ? DEFAULT_QUEUE_ID
+      : pausedQueueIdsBefore[0];
     const pauseSourceBefore: CleanAllResult['pauseSource'] =
-      pauseSourceEntry && pauseSourceEntry.pauseSource
-        ? (pauseSourceEntry.pauseSource as CleanAllResult['pauseSource'])
+      pauseSourceQueueId !== undefined
+        ? (queuesBefore[pauseSourceQueueId].pauseSource as CleanAllResult['pauseSource']) ?? null
         : null;
     const activeRunBefore = runQueueIdsBefore.length > 0;
     const watchdogActiveBefore =
@@ -1472,7 +1494,10 @@ export class QueueManager {
             ...queue,
             requests: [],
             inFlightId: null,
-            paused: false,
+            // FR-R3-011 — `paused: false` used to be written here too. It is not
+            // a second way of saying what step 2 says; it was the retired mirror,
+            // and writing it back would put a record on disk that the v13
+            // collapse then has to lift again on the next activation.
             pausedReason: null,
             updatedAt: Date.now()
           },
@@ -1482,9 +1507,11 @@ export class QueueManager {
       );
     }
 
-    // 2. Clear pause state via the canonical single-writer so the
-    //    registry's `pauseSource` is cleared in lock-step with the
-    //    legacy boolean (BUG-001 invariant retained).
+    // 2. Clear pause state via the canonical single-writer, which after
+    //    FR-R3-011 writes one field pair on one record. There is no longer a
+    //    registry half to keep in lock-step — the registry's pause view is
+    //    derived on read — so this loop is the whole of the clear, and
+    //    `schegent.queues.registry` is untouched by `clearAll`.
     for (const queueId of pausedQueueIdsBefore) {
       await this.setQueuePausedState(false, queueId, null, 'operator');
     }
@@ -1583,6 +1610,26 @@ export class QueueManager {
     return this.store.getRequest(taskId)?.queueId ?? DEFAULT_QUEUE_ID;
   }
 
+  /**
+   * FR-R3-010 (T405) — the same question, refusing to guess.
+   *
+   * The lenient sibling above is right for a caller that has to put a mutation
+   * somewhere and will correctly find nothing on a removed Task. It is wrong
+   * for a caller recording a fact, which is what history does: a guessed queue
+   * files one queue's record under another queue's name, and an operator asking
+   * "what has this queue done" is given an answer that is wrong rather than
+   * incomplete. `null` says so, and the caller routes to the documented
+   * unattributed partition.
+   *
+   * A row that exists but predates queue stamping still resolves to
+   * `DEFAULT_QUEUE_ID` — that is the queue it is on, not a guess about a row
+   * nobody can find.
+   */
+  public queueIdForExistingTask(taskId: string): string | null {
+    const request = this.store.getRequest(taskId);
+    return request === null ? null : request.queueId ?? DEFAULT_QUEUE_ID;
+  }
+
   // Feature 065 BUG-009 T078 (FR-030) — arrow-driven move operates in the
   // global `orderedItems` index space and routes through the unified
   // reorder helper so the writer applies the same global → pending-array
@@ -1639,7 +1686,15 @@ export class QueueManager {
     // releases *this* queue's pause because *this* queue's work was cleared;
     // a sibling's in-flight Task is not a reason to keep it stranded, and a
     // sibling's pause is not this call's to release.
-    if (!this.hasInFlight(queueId) && this.store.getQueue(queueId).paused) {
+    //
+    // FR-R3-011 — the pause is read off `queueLifecycle`. Reading the retired
+    // `paused` mirror made the escape hatch a no-op on every record written
+    // after the v13 collapse, which is precisely the stranding it exists to
+    // undo.
+    if (
+      !this.hasInFlight(queueId)
+      && this.store.getQueue(queueId).queueLifecycle === 'operator-paused'
+    ) {
       await this.setQueuePausedState(false, queueId, null, 'operator');
     }
     return { removed };

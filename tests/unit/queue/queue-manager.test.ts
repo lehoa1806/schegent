@@ -146,18 +146,18 @@ describe('QueueManager.cancel', () => {
 describe('QueueManager.setQueuePausedState', () => {
   it('toggles the paused flag', async () => {
     await queue.setQueuePausedState(true);
-    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     await queue.setQueuePausedState(false);
-    expect(store.getQueue().paused).toBe(false);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
   });
 
   it('is a no-op when state already matches', async () => {
     await queue.enqueue('feature A');
     await queue.setQueuePausedState(true);
-    const before = store.getQueue().updatedAt;
+    const before = store.getQueue(DEFAULT_QUEUE_ID).updatedAt;
     await new Promise((r) => setTimeout(r, 5));
     await queue.setQueuePausedState(true);
-    expect(store.getQueue().updatedAt).toBe(before);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).updatedAt).toBe(before);
   });
 });
 
@@ -283,33 +283,62 @@ describe('QueueManager.finish extended fields', () => {
 describe('QueueManager.setQueuePausedState extended', () => {
   it('records pausedReason', async () => {
     await queue.setQueuePausedState(true, undefined, 'credit-recovery');
-    expect(store.getQueue().pausedReason).toBe('credit-recovery');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('credit-recovery');
     await queue.setQueuePausedState(false, undefined, null);
-    expect(store.getQueue().pausedReason).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
   });
 });
 
 describe('QueueManager.setQueuePausedState BUG-001 self-heal', () => {
-  it('resume heals a stale legacy paused=true when registry is already active', async () => {
-    // Simulate the BUG-001 divergent state: legacy boolean stuck `true`
-    // (e.g. from a pre-fix retry-cap-exhausted write) while the registry
-    // entry is already 'active'. Resume must visibly succeed and clear the
-    // legacy boolean so the dispatcher and submit gate recover.
-    const initialQueue = store.getQueue();
-    await (store as unknown as { memento: { update: (k: string, v: unknown) => Promise<void> } }).memento.update(
-      'schegent.queue',
-      { ...initialQueue, paused: true, pausedReason: 'retry-cap-exhausted:r-old' }
-    );
-    expect(store.getQueue().paused).toBe(true);
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+  it('resume clears a stale legacy paused=true, which now reads as one paused queue', async () => {
+    // BUG-001 was a divergent state: the legacy boolean stuck `true` (from a
+    // pre-fix retry-cap-exhausted write) while the registry entry read
+    // 'active', so the dispatcher and the submit gate disagreed about whether
+    // work could start. FR-R3-011 removed the divergence rather than the
+    // symptom — the registry no longer stores a pause at all, it projects one
+    // from this queue record — so the half of the original scenario that set
+    // the two sides against each other is unrepresentable, and this test now
+    // asserts what is left of it:
+    //
+    //   the legacy boolean is lifted to `operator-paused` on read,
+    //   the projection agrees because it is derived from that same read, and
+    //   resume visibly succeeds and clears it.
+    //
+    // Keeping the legacy write is the point: an operator's disk still holds
+    // records in that shape, and resume has to work on them.
+    //
+    // The record is seeded and then *reopened*, because the lift happens at
+    // activation. `getQueue` normalises a record that has no `queueLifecycle`
+    // at all, but it will not overrule one that disagrees with the mirror —
+    // resolving that disagreement is `migrateV12ToV13()`'s job and it runs
+    // once, in `initialize()`. Writing the legacy pair mid-session and reading
+    // it back would test a path no workspace takes.
+    const memento = new FakeMemento();
+    const seedStore = new WorkspaceStateStore(memento);
+    await seedStore.initialize();
+    const initialQueue = seedStore.getQueue(DEFAULT_QUEUE_ID);
+    await memento.update('schegent.queue', {
+      [DEFAULT_QUEUE_ID]: {
+        ...initialQueue,
+        paused: true,
+        pausedReason: 'retry-cap-exhausted:r-old'
+      }
+    });
+
+    const store = new WorkspaceStateStore(memento);
+    await store.initialize();
+    const queue = new QueueManager(store);
+
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('manually-paused');
 
     const result = await queue.setQueuePausedState(false, undefined, null, 'operator');
 
     expect(result.ok).toBe(true);
     expect(result.queueId).toBe(DEFAULT_QUEUE_ID);
-    expect(store.getQueue().paused).toBe(false);
-    expect(store.getQueue().pausedReason).toBeNull();
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('active');
   });
 
   it('returns not-paused when both legacy and registry are already consistent-active', async () => {
@@ -476,13 +505,13 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
     await queue.finish(a.id, 'completed');
     // Simulate a lingering retry-cap pause whose originating run is gone.
     await queue.setQueuePausedState(true, undefined, 'retry-cap-exhausted:r-a', 'retry-cap');
-    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     const result = await queue.clearCompleted();
     expect(result.removed).toBe(1);
-    expect(store.getQueue().paused).toBe(false);
-    expect(store.getQueue().pausedReason).toBeNull();
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
-    expect(store.getQueueRegistry().entries[0]?.pauseSource).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('active');
+    expect(store.getProjectedQueueRegistry().entries[0]?.pauseSource).toBeNull();
   });
 
   it('clearFailed also clears a lingering pause when no in-flight remains', async () => {
@@ -492,8 +521,8 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
     await queue.setQueuePausedState(true, undefined, 'retry-cap-exhausted:r-a', 'retry-cap');
     const result = await queue.clearFailed();
     expect(result.removed).toBe(1);
-    expect(store.getQueue().paused).toBe(false);
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('active');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('active');
   });
 
   it('clear preserves the pause state when an in-flight task remains', async () => {
@@ -507,10 +536,10 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
     await queue.markInFlight(b.id, 'r-b');
     // b is in-flight; pause the queue.
     await queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
-    expect(store.getQueue().paused).toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     await queue.clearCompleted();
-    expect(store.getQueue().paused).toBe(true);
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('manually-paused');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('manually-paused');
   });
 
   it('clear is a no-op on pause state when nothing was removed', async () => {
@@ -518,8 +547,8 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
     // No completed/failed items present.
     const result = await queue.clearCompleted();
     expect(result.removed).toBe(0);
-    expect(store.getQueue().paused).toBe(true);
-    expect(store.getQueueRegistry().entries[0]?.state).toBe('manually-paused');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getProjectedQueueRegistry().entries[0]?.state).toBe('manually-paused');
   });
 });
 

@@ -32,7 +32,17 @@ const NOW = 1_700_000_000_000;
 const UUID_A = '11111111-2222-4333-8444-555555555555';
 const UUID_B = '99999999-8888-4777-9666-555555555555';
 
-function entry(overrides: Partial<QueueRegistryEntry>): QueueRegistryEntry {
+/**
+ * A v5 registry entry, with the `state` / `pauseSource` pair FR-R3-011 retired.
+ * The seed has to keep them: they are what a v5 workspace has on disk and what
+ * the v5 → v6 pause inheritance reads.
+ */
+type LegacyRegistryEntry = QueueRegistryEntry & {
+  readonly state?: 'active' | 'manually-paused';
+  readonly pauseSource?: 'operator' | 'cascade' | 'retry-cap' | null;
+};
+
+function entry(overrides: Partial<LegacyRegistryEntry>): QueueRegistryEntry {
   return {
     id: DEFAULT_QUEUE_ID,
     name: 'Default queue',
@@ -100,6 +110,7 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       pausedReason: null,
       updatedAt: 400,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -124,14 +135,18 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
     const persistedRegistry = memento.get<QueueRegistry>(KEYS.queueRegistry);
     expect(persistedRegistry?.entries).toHaveLength(1);
     expect(persistedRegistry?.entries[0].id).toBe(DEFAULT_QUEUE_ID);
-    expect(persistedRegistry?.entries[0].state).toBe('manually-paused');
-    expect(persistedRegistry?.entries[0].pauseSource).toBe('operator');
     expect(persistedRegistry?.entries[0].schedule).toBeNull();
     // The persisted queue state's requests are all on the unified queue.
     // Feature 092 — the v5 → v6 coalesce still produces exactly one queue's
     // worth of state; the v9 → v10 lift then files it under `'default'`, so
     // the record is read out of the map rather than off the key directly.
     const persistedQueue = memento.get<Record<string, QueueState>>(KEYS.queue)?.[DEFAULT_QUEUE_ID];
+    // FR-R3-011 — the inherited pause is asserted here rather than on the
+    // registry entry above, because after the v13 collapse the persisted entry
+    // carries no pause: this record is the only place one is stored.
+    expect(persistedQueue?.queueLifecycle).toBe('operator-paused');
+    expect(persistedQueue?.pauseSource).toBe('operator');
+    expect('paused' in (persistedQueue as object)).toBe(false);
     expect(persistedQueue?.requests.every((r) => r.queueId === DEFAULT_QUEUE_ID)).toBe(true);
     expect(persistedQueue?.requests.map((r) => r.id)).toEqual(['r1', 'r2', 'r3']);
     // Numeric schema version is now 6.
@@ -156,6 +171,7 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       pausedReason: null,
       updatedAt: 100,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -192,6 +208,7 @@ describe('WorkspaceStateStore — v6 roundtrip (030 T008/T009)', () => {
       pausedReason: null,
       updatedAt: 200,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     } satisfies QueueState);

@@ -40,7 +40,7 @@ export interface StateProjectorDeps {
   readonly store?: Pick<
     WorkspaceStateStore,
     'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
-  > & Partial<Pick<WorkspaceStateStore, 'getQueueRegistry' | 'getConfirmSuppression'>>;
+  > & Partial<Pick<WorkspaceStateStore, 'getProjectedQueueRegistry' | 'getConfirmSuppression'>>;
   readonly audit?: Pick<AuditLogWriter, 'subscribe' | 'logPath' | 'workspaceRoot'>;
   readonly ownerId?: string;
   readonly isPrimary?: boolean;

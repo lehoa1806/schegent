@@ -1,4 +1,5 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
+import type { QueuePauseSource } from './queue-registry';
 
 export type FeatureRequestStatus =
   | 'pending'
@@ -92,13 +93,73 @@ export interface FeatureRequest {
 export interface QueueState {
   requests: FeatureRequest[];
   inFlightId: string | null;
-  paused: boolean;
+  /**
+   * FR-R3-011 — **migration input only.** Not written by live code, not read
+   * by live logic, not the answer to "is this queue paused".
+   *
+   * It was one of three persisted representations of pausedness across two
+   * memento keys, with an invariant stated in a comment
+   * (`paused === (queueLifecycle === 'operator-paused')`) that no type
+   * enforced and no transaction preserved — the memento has no multi-key
+   * write, so every operator pause was two writes with a window between them.
+   * A window disposed inside that gap left the pair split, which is what
+   * `reconcileQueuePauseStateIfDivergent()` was written to repair and why its
+   * existence was the proof the three could disagree.
+   *
+   * **Optional, and that is the shape gate.** `migrateV12ToV13()` drops it from
+   * every entry it writes, so a record that still carries `paused` is a record
+   * that has not been collapsed yet. Migrations in this repo are gated on record
+   * shape rather than on the persisted version number, and this is that shape.
+   * `tests/lint/no-legacy-pause-mirror-write.test.ts` fails the build on a live
+   * write.
+   *
+   * @deprecated Migration input only. Read `queueLifecycle` / `pauseSource`.
+   */
+  paused?: boolean;
+  /**
+   * Why this queue was paused, in words — the `retry-cap-exhausted:<runId>`
+   * marker the controller matches on, or an operator-facing sentence.
+   *
+   * **Live, and deliberately not collapsed.** It survived FR-R3-011 while
+   * `paused` did not, because it is not a second representation of anything:
+   * `paused` duplicated a boolean `queueLifecycle` already carried, whereas this
+   * carries information no other field holds. It is written in the same
+   * `updateQueue` call as `queueLifecycle` and `pauseSource`, so the three move
+   * together and cannot disagree.
+   *
+   * Invariant: `null` whenever `queueLifecycle !== 'operator-paused'`.
+   */
   pausedReason: string | null;
   updatedAt: number;
   // ─── v7 additive fields (feature 065) ──────────────────────────
-  // `paused` and `pausedReason` are retained as legacy mirrors:
-  //   paused === (queueLifecycle === 'operator-paused')
+  /**
+   * FR-R3-011 — **the** persisted answer to whether this queue is paused, and
+   * the only one. `queueLifecycle === 'operator-paused'` iff the queue is
+   * paused; every other surface derives its view from this field.
+   *
+   * `KEYS.queue` is a `Record<queueId, QueueState>`, so the discriminator, its
+   * attribution (`pauseSource` below) and the armed-restore pairing
+   * (`scheduledStartAt` ⟷ `idle-pending`) all live in **one** record and move
+   * in **one** write. That is the whole mechanism: there is no second key to
+   * interleave with, so a split pair is unrepresentable rather than repaired.
+   */
   queueLifecycle: QueueLifecycle;
+  /**
+   * FR-R3-011 — why this queue is paused, or `null` when it is not.
+   *
+   * Carried here rather than dropped because `queueLifecycle` alone cannot
+   * express a distinction the cascade paths depend on: an operator pause must
+   * outrank a cascade pause and must never be demoted to one, and a cascade
+   * resume must leave an operator pause standing. That precedence used to live
+   * in `QueueRegistryEntry.pauseSource`, in the other key — so collapsing to
+   * `queueLifecycle` without it would have been a behaviour regression, not a
+   * simplification.
+   *
+   * Invariant, enforced in one place by construction rather than asserted
+   * across two records: `pauseSource === null` iff
+   * `queueLifecycle !== 'operator-paused'`.
+   */
+  pauseSource: QueuePauseSource;
   scheduledStartAt: number | null;
   scheduledStartSource: ScheduledStartSource | null;
   /**
