@@ -43,12 +43,18 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
   if (evidenceHealth.overall === 'degraded') {
     const degraded = [
       evidenceHealth.rawTranscript.status === 'degraded' ? 'raw transcript' : null,
-      evidenceHealth.runtimeLog.status === 'degraded' ? 'runtime log' : null
+      evidenceHealth.runtimeLog.status === 'degraded' ? 'runtime log' : null,
+      // FR-R3-009 — the rollup is named here for the same reason the other two
+      // are: its failure is silent in the product until totals regress.
+      evidenceHealth.metricsRollup?.status === 'degraded' ? 'metrics rollup' : null,
+      // FR-R3-010 — an unreadable audit corpus does not stop a run, but it does
+      // mean completed runs' evidence cannot be reached from history.
+      evidenceHealth.historyPointer?.status === 'degraded' ? 'history evidence' : null
     ].filter((name): name is string => name !== null);
     return {
       level: 'attention',
       label: 'evidence degraded',
-      title: `${degraded.join(' and ')} evidence is incomplete; workflow execution remains available`
+      title: `${joinNames(degraded)} evidence is incomplete; workflow execution remains available`
     };
   }
 
@@ -92,6 +98,13 @@ export function deriveOperatorHealth(snapshot: WorkflowSnapshot | null): Operato
     label: 'health ok',
     title: 'Queue, retry, and live-activity indicators are normal'
   };
+}
+
+// Two names read as "a and b"; three or more as "a, b and c". A single name
+// passes through unchanged, which is the pre-FR-R3-009 wording.
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 2) return names.join(' and ');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function queueItems(snapshot: WorkflowSnapshot): QueueItem[] {

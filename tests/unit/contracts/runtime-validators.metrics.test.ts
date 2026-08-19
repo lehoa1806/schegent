@@ -7,7 +7,13 @@
 import { describe, expect, it } from 'vitest';
 import { isValidReadMetricsResponse, validateInboundMessage } from '../../../src/contracts/runtime-validators';
 import { CMD_READ_METRICS, isCmdReadMetrics } from '../../../src/contracts/sidebar-ipc';
+import { buildMetricsCoverage, EMPTY_CUMULATIVE_TOTALS } from '../../../src/metrics/metrics-rollup';
 
+// FR-R3-009 (T394) added `cumulative` and `coverage` as required members of the
+// envelope, so the base fixture builds them the way the host does rather than
+// hand-writing a literal — a hand-written one drifts silently the next time a
+// counter is added, and the drift would show up as this file passing while the
+// real response failed validation.
 function validResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     tasks: [],
@@ -16,6 +22,8 @@ function validResponse(overrides: Record<string, unknown> = {}): Record<string, 
     meta: { includesArchives: false,
     totalScannedEntries: 0,
     parseWarnings: 0 },
+    cumulative: EMPTY_CUMULATIVE_TOTALS,
+    coverage: buildMetricsCoverage({ rollupAvailable: false, rollupRuns: 0, includesArchives: false }),
     ...overrides
   };
 }
@@ -37,7 +45,17 @@ describe('isValidReadMetricsResponse (Feature 073, T004)', () => {
             includesArchives: false,
             totalScannedEntries: 42,
             parseWarnings: 2
-          }
+          },
+          cumulative: { ...EMPTY_CUMULATIVE_TOTALS, runs: 9, completedRuns: 7, costUsd: 12.5, costUsdIsPartial: true },
+          coverage: buildMetricsCoverage({
+            rollupAvailable: true,
+            rollupRuns: 9,
+            rollupEarliest: '2026-01-01T00:00:00.000Z',
+            rollupLatest: '2026-07-01T00:00:00.000Z',
+            logEarliest: '2026-05-01T00:00:00.000Z',
+            logLatest: '2026-07-01T00:00:00.000Z',
+            includesArchives: false
+          })
         })
       )
     ).toBe(true);
@@ -76,6 +94,58 @@ describe('isValidReadMetricsResponse (Feature 073, T004)', () => {
 
   it('rejects a non-numeric parseWarnings', () => {
     expect(isValidReadMetricsResponse(validResponse({ meta: { includesArchives: false, totalScannedEntries: 0, parseWarnings: null } }))).toBe(false);
+  });
+
+  // FR-R3-009 (T394) — cumulative totals and coverage are figures an operator
+  // may quote out of the UI, so a missing or malformed one must fail the guard
+  // rather than render as a zero the webview invented.
+  it('rejects a missing cumulative block', () => {
+    expect(isValidReadMetricsResponse(validResponse({ cumulative: undefined }))).toBe(false);
+  });
+
+  it('rejects a cumulative block missing a counter', () => {
+    const { backendInvocations: _dropped, ...partial } = EMPTY_CUMULATIVE_TOTALS;
+    expect(isValidReadMetricsResponse(validResponse({ cumulative: partial }))).toBe(false);
+  });
+
+  it('rejects a non-finite cumulative counter', () => {
+    expect(
+      isValidReadMetricsResponse(validResponse({ cumulative: { ...EMPTY_CUMULATIVE_TOTALS, costUsd: Number.NaN } }))
+    ).toBe(false);
+  });
+
+  it('rejects a non-boolean costUsdIsPartial', () => {
+    expect(
+      isValidReadMetricsResponse(validResponse({ cumulative: { ...EMPTY_CUMULATIVE_TOTALS, costUsdIsPartial: 'no' } }))
+    ).toBe(false);
+  });
+
+  it('rejects a missing coverage block', () => {
+    expect(isValidReadMetricsResponse(validResponse({ coverage: undefined }))).toBe(false);
+  });
+
+  it('rejects a coverage block with no detail window', () => {
+    expect(
+      isValidReadMetricsResponse(validResponse({ coverage: { totals: { available: false, runs: 0 } } }))
+    ).toBe(false);
+  });
+
+  it('rejects a non-boolean coverage.totals.available', () => {
+    expect(
+      isValidReadMetricsResponse(
+        validResponse({ coverage: { totals: { available: 'yes', runs: 0 }, detail: { includesArchives: false } } })
+      )
+    ).toBe(false);
+  });
+
+  it('rejects a non-string coverage window bound', () => {
+    expect(
+      isValidReadMetricsResponse(
+        validResponse({
+          coverage: { totals: { available: true, runs: 1, earliest: 17 }, detail: { includesArchives: false } }
+        })
+      )
+    ).toBe(false);
   });
 });
 

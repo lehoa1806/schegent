@@ -17,12 +17,23 @@ import type {
   ReadMetricsResponse,
   TaskRecord
 } from '../../../src/contracts/sidebar-ipc';
+import {
+  buildMetricsCoverage,
+  EMPTY_CUMULATIVE_TOTALS
+} from '../../../src/metrics/metrics-rollup';
 
 const SAMPLE_RESPONSE: ReadMetricsResponse = {
   tasks: [],
   phaseTypeAggregates: [],
   costTimeline: [],
   oldestIncludedTimestamp: undefined,
+  // FR-R3-009 — cumulative totals and the stated coverage windows.
+  cumulative: EMPTY_CUMULATIVE_TOTALS,
+  coverage: buildMetricsCoverage({
+    rollupAvailable: false,
+    rollupRuns: 0,
+    includesArchives: false
+  }),
   meta: {
     includesArchives: false,
     totalScannedEntries: 0,

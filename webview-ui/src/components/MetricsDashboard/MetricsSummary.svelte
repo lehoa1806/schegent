@@ -15,7 +15,10 @@
   }
 </script>
 
-<dl class="summary-strip" data-testid="metrics-summary-cards" aria-label="Workflow totals">
+<!-- FR-R3-009 — these figures cover only the runs the retained audit corpus
+     still holds, which is why the label names that scope: the all-time
+     cumulative strip above carries its own, wider window. -->
+<dl class="summary-strip" data-testid="metrics-summary-cards" aria-label="Retained run detail totals">
   <div class="summary-item">
     <dt class="summary-label">Tasks Completed</dt>
     <dd class="summary-value" data-testid="metrics-summary-tasks-completed">{tasksCompleted}</dd>

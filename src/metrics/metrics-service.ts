@@ -24,6 +24,8 @@ import type {
   TaskRecord
 } from '../contracts/sidebar-ipc';
 import type { SanitizedLogger } from '../lib/logger';
+import { buildMetricsCoverage, composeCumulativeTotals } from './metrics-rollup';
+import { readMetricsRollup } from './metrics-rollup-reader';
 
 export interface ReadMetricsOptions {
   readonly includeArchives?: boolean;
@@ -47,6 +49,9 @@ interface ScanState {
   totalScannedEntries: number;
   parseWarnings: number;
   oldestTimestamp: { readonly ms: number; readonly raw: string } | undefined;
+  // FR-R3-009 (T394): the retained corpus's upper bound, so the response can
+  // state the detail window's range and not only where it starts.
+  newestTimestamp: { readonly ms: number; readonly raw: string } | undefined;
   readonly taskStarted: Map<string, AuditEntry[]>;
   readonly taskEnded: Map<string, AuditEntry[]>;
   readonly phaseGroups: Map<string, PhaseGroup>;
@@ -90,6 +95,7 @@ export async function readMetrics(
     totalScannedEntries: 0,
     parseWarnings: 0,
     oldestTimestamp: undefined,
+    newestTimestamp: undefined,
     taskStarted: new Map(),
     taskEnded: new Map(),
     phaseGroups: new Map()
@@ -106,14 +112,37 @@ export async function readMetrics(
   const tasks = buildTaskRecords(state, phasesByRunId);
   tasks.sort((a, b) => Date.parse(b.startTime) - Date.parse(a.startTime));
 
+  // FR-R3-009 (T392/T393) — cumulative totals are composed from the durable
+  // rollup unioned with the terminal runs the retained corpus still shows,
+  // deduplicated by run id so an overlapping range is counted once. The
+  // per-phase detail above is untouched: it stays a pure fold over the retained
+  // corpus, and the rollup is used only for totals. Nothing here writes to the
+  // rollup or reconstructs a record for a day the corpus no longer covers —
+  // there is no backfill path to take.
+  const rollup = await readMetricsRollup(workspaceRoot, logger);
+  const composed = composeCumulativeTotals(rollup.records, tasks);
+
   return {
     tasks,
     phaseTypeAggregates: buildPhaseTypeAggregates(allPhases),
     costTimeline: buildCostTimeline(allPhases),
     oldestIncludedTimestamp: state.oldestTimestamp?.raw,
+    cumulative: composed.totals,
+    coverage: buildMetricsCoverage({
+      rollupAvailable: rollup.available,
+      rollupRuns: composed.rollupRuns,
+      rollupEarliest: composed.rollupEarliest,
+      rollupLatest: composed.rollupLatest,
+      logEarliest: state.oldestTimestamp?.raw,
+      logLatest: state.newestTimestamp?.raw,
+      includesArchives: archivedScanSucceeded
+    }),
     meta: {
       includesArchives: archivedScanSucceeded,
       totalScannedEntries: state.totalScannedEntries,
+      // Kept scoped to the audit corpus. An unreadable rollup line is warned by
+      // the reader instead of folded in here: an operator reading a nonzero
+      // count needs to know which file to look at.
       parseWarnings: state.parseWarnings
     }
   };
@@ -262,6 +291,9 @@ function trackOldestTimestamp(raw: string, state: ScanState): void {
   if (Number.isNaN(ms)) return;
   if (state.oldestTimestamp === undefined || ms < state.oldestTimestamp.ms) {
     state.oldestTimestamp = { ms, raw };
+  }
+  if (state.newestTimestamp === undefined || ms > state.newestTimestamp.ms) {
+    state.newestTimestamp = { ms, raw };
   }
 }
 

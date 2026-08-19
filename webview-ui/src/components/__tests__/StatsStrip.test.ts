@@ -174,6 +174,14 @@ describe('StatsStrip', () => {
         runtimeLog: {
           status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
           lastFailureAt: null, cause: null
+        },
+        metricsRollup: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        historyPointer: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
         }
       }
     }));
