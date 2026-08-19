@@ -196,7 +196,7 @@
         },
         {
           "name": "paused",
-          "optional": false,
+          "optional": true,
           "type": "boolean"
         },
         {
@@ -213,6 +213,11 @@
           "name": "queueLifecycle",
           "optional": false,
           "type": "QueueLifecycle"
+        },
+        {
+          "name": "pauseSource",
+          "optional": false,
+          "type": "QueuePauseSource"
         },
         {
           "name": "scheduledStartAt",
