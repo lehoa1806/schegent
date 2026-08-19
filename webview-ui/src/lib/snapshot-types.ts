@@ -766,6 +766,46 @@ export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
 });
 
 /**
+ * FR-R3-008 (T379) — webview mirror of `RunLivenessProjection` in
+ * src/ui/sidebar/snapshot.ts.
+ *
+ * Distinct from `LiveActivity`, which the host derives from the audit tail and
+ * from in-memory monitor state and which therefore says nothing after a window
+ * reload. This one comes from the persisted Run record, so it survives one.
+ *
+ * `null` on the Run projection means **unknown** — a record written before the
+ * feature, or a Run whose phase has not produced output yet — and a renderer
+ * must show that as unknown rather than as a zero or as the start time.
+ */
+export interface RunLivenessProjection {
+  /** ISO-8601, converted host-side from the record's epoch ms. */
+  readonly lastActivityAt: string;
+  readonly stdoutLines: number;
+  readonly stderrLines: number;
+}
+
+/**
+ * FR-R3-008 (T379) — webview mirror of `RunProgressProjection` in
+ * src/ui/sidebar/snapshot.ts.
+ *
+ * `percent` is already rounded and clamped to 0..100 by the host, so no renderer
+ * recomputes the fraction: `phasesCompleted` and `phaseCount` exclude the same
+ * override set host-side, and dividing them again here is how the two sides come
+ * to disagree. `iterationCap` is the bound this Run froze at creation, which an
+ * operator who has since changed `loop.maxIterations` needs to see.
+ *
+ * `null` means unknown; render it as unknown, never as 0%.
+ */
+export interface RunProgressProjection {
+  readonly phasesCompleted: number;
+  readonly phaseCount: number;
+  readonly iterationCap: number;
+  readonly maxPhaseInvocations: number;
+  /** 0..100, integer. `100` when the plan has no phases left to run. */
+  readonly percent: number;
+}
+
+/**
  * Feature 011 — webview mirror of `GeneralSettings` in
  * src/config/general-settings.ts. Each scalar `schegent.*` key is
  * surfaced as a typed field; the `scopes` map indicates the source
@@ -934,6 +974,15 @@ export interface InFlightRunProjection {
   readonly pipeline: ActivePipelineSummary | null;
   readonly elapsedMs: number | null;
   readonly liveActivity: LiveActivity;
+  /**
+   * FR-R3-008 (T379) — the reload-durable half of the question `liveActivity`
+   * answers from memory. Optional as well as nullable: a host running an older
+   * bundle omits the key entirely, and both absence and `null` must render as
+   * unknown, so no consumer may treat one as different from the other.
+   */
+  readonly liveness?: RunLivenessProjection | null;
+  /** FR-R3-008 (T379) — progress against the Run's frozen total; absent or `null` is unknown. */
+  readonly progress?: RunProgressProjection | null;
   readonly delayedRetry: DelayedRetryState;
   readonly resumeTargetPhaseId: string | null;
   readonly outputs: readonly RunOutputRecord[];
@@ -995,7 +1044,19 @@ export interface WorkflowSnapshot {
   readonly producedAt: string;
   readonly availablePipelines: readonly PipelineDefinition[];
   readonly availablePhases: readonly PhaseDefinition[];
+  /**
+   * Model ids each backend was DISCOVERED to offer — an advisory, live
+   * backend fact, not the operator's catalog and never a value to save back.
+   * Empty for `claude` and `codex`, whose CLIs cannot enumerate models; only
+   * `agy` reports a real list.
+   */
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  /**
+   * The operator's Model Catalog (`schegent.models`) — what the Models editor
+   * loads, edits, saves, and exports, and what an import writes. Optional for
+   * legacy-tolerance: an older host bundle may not send it.
+   */
+  readonly configuredModels?: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPingState?: BackendPingState;
   /**
@@ -1115,6 +1176,16 @@ export interface EvidenceHealthProjection {
   readonly audit: EvidenceSinkHealthProjection;
   readonly rawTranscript: EvidenceSinkHealthProjection;
   readonly runtimeLog: EvidenceSinkHealthProjection;
+  // FR-R3-009 — the durable metrics rollup is a fourth continue-degraded sink.
+  // A run whose rollup append failed still executes, but its contribution to
+  // cumulative totals lasts only as long as its audit evidence, so a degraded
+  // rollup is the operator's warning that totals may regress after rotation.
+  readonly metricsRollup: EvidenceSinkHealthProjection;
+  // FR-R3-010 — the fifth continue-degraded sink: whether a completed Run's
+  // recorded evidence can still be located. Degraded only on an unreadable
+  // corpus; an expired or legacy pointer is a fact about one record, not a
+  // condition of the sink.
+  readonly historyPointer: EvidenceSinkHealthProjection;
 }
 
 const HEALTHY_REQUIRED_EVIDENCE: EvidenceSinkHealthProjection = Object.freeze({
@@ -1134,7 +1205,9 @@ export const IDLE_EVIDENCE_HEALTH: EvidenceHealthProjection = Object.freeze({
   overall: 'healthy',
   audit: HEALTHY_REQUIRED_EVIDENCE,
   rawTranscript: HEALTHY_OPTIONAL_EVIDENCE,
-  runtimeLog: HEALTHY_OPTIONAL_EVIDENCE
+  runtimeLog: HEALTHY_OPTIONAL_EVIDENCE,
+  metricsRollup: HEALTHY_OPTIONAL_EVIDENCE,
+  historyPointer: HEALTHY_OPTIONAL_EVIDENCE
 });
 
 export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze({

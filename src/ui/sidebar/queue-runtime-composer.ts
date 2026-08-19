@@ -30,6 +30,8 @@ import type {
   QueueLifecycle,
   QueueRuntime,
   QueueSummary,
+  RunLivenessProjection,
+  RunProgressProjection,
   WorkflowStatus
 } from './snapshot';
 
@@ -49,6 +51,15 @@ export interface QueueRunProjection {
   readonly phases: readonly PhaseTile[];
   readonly activePipeline: ActivePipelineSummary | null;
   readonly liveActivity: LiveActivity;
+  /**
+   * FR-R3-008 (T379) — the persisted liveness stamp, and progress against the
+   * frozen total. Handed in like every other reading above rather than derived
+   * here: `run-planned-total.ts` owns the plan arithmetic, and a second
+   * computation at this seam is precisely how a numerator and a denominator come
+   * to disagree. `null` on either means unknown.
+   */
+  readonly liveness: RunLivenessProjection | null;
+  readonly progress: RunProgressProjection | null;
   readonly elapsedMs: number | null;
   readonly delayedRetry: DelayedRetryState;
   readonly outputs: readonly RunOutputRecord[];
@@ -107,6 +118,8 @@ function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjecti
     pipeline: projection.activePipeline,
     elapsedMs: projection.elapsedMs,
     liveActivity: projection.liveActivity,
+    liveness: projection.liveness,
+    progress: projection.progress,
     delayedRetry: projection.delayedRetry,
     resumeTargetPhaseId: projection.run.resumeTargetPhaseId ?? null,
     outputs: Object.freeze(projection.outputs.slice())

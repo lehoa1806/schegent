@@ -16,12 +16,21 @@ import type {
   WorkflowRunPipeline
 } from '../state/workflow-run';
 import { buildMutationPlan } from './mutation-plan';
+import { computePlannedTotal, DEFAULT_ITERATION_CAP } from './run-planned-total';
 
 export interface WorkflowRunFactoryDeps {
   readonly getCatalog: () => PipelineCatalog;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly getRawTranscriptMode?: () => RawTranscriptMode;
   readonly requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
+  /**
+   * FR-R3-008 (T373) — the effective `loop.maxIterations` at creation, read once
+   * and frozen into `plannedTotal`. Optional so the six existing construction
+   * sites keep compiling; omitting it freezes `DEFAULT_ITERATION_CAP`, which is
+   * the manifest default, so the field is present either way and its absence on
+   * a record still means "written before this feature".
+   */
+  readonly getIterationCap?: () => number;
   readonly logger: SanitizedLogger;
 }
 
@@ -91,9 +100,28 @@ export class WorkflowRunFactory {
         approvedPhaseIds: mutationPlan.gitCapablePhaseIds
       } } : {}),
       pipeline,
-      // Written only for a composed Run, so a Run created from any other path
-      // serializes exactly as it did before this feature (T035).
-      ...(plan ? { runInputs: plan.inputs } : {}),
+      // FR-R3-008 (T373) — freeze the progress denominator beside the snapshot
+      // that pins the phase list. The loop bound is read here, once, and every
+      // later consumer reads it back off the record: `loop.maxIterations` is a
+      // live setting, so re-deriving the total later would move the denominator
+      // under a Run already in flight. A new Run has no overrides yet, so this is
+      // the whole plan; `PhaseControlService` narrows it when one is recorded.
+      plannedTotal: computePlannedTotal({
+        phases: pipeline.phases,
+        overrides: [],
+        iterationCap: this.deps.getIterationCap?.() ?? DEFAULT_ITERATION_CAP
+      }),
+      // FR-R3-001 (T259/T267) — the composed branch attaches the envelope whole,
+      // by reference. It is not rebuilt, re-derived, or narrowed here: this
+      // factory is the seam where feature 087's plan used to lose four of its
+      // five fields, and the fix is that the seam now copies nothing.
+      //
+      // Both spreads are conditioned on the same `plan`, so the plan-less branch
+      // adds no key and a Run created from any other path serializes exactly as
+      // it did before either feature (T035, T267). The two paths are a
+      // discriminated choice — there is no merge and no fallback in either
+      // direction.
+      ...(plan ? { envelope: plan, runInputs: plan.inputs } : {}),
       defaultRunnerKind: this.deps.defaultRunnerKind ?? DEFAULT_BACKEND,
       delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null,
       phaseOverrides: [], manualPauseAt: null, manualPauseCause: null,
