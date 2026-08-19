@@ -826,6 +826,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     hasArmedTimer: (queueId) => scheduledStartCoordinator.hasActiveTimer(queueId),
     promote: promoteScheduledQueue,
     isPrimary: () => lock.isHeld(),
+    // Feature 098 (FR-031a) — the same gate the coordinator's `emptyCatalogGate`
+    // reads, for the same reason. `refuseOnEmptyCatalog` leaves the queue
+    // `idle-pending` with its deadline persisted and its timer dropped, which is
+    // precisely what this sweep recovers; without the gate here the watchdog
+    // would undo that refusal on its next tick. Read through `activeCatalog`
+    // rather than captured, so an import lifts the hold.
+    isCatalogEmpty: () => activeCatalog.pipelinesById.size === 0,
     logger,
     audit: auditWriter
   });

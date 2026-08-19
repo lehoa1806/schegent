@@ -1155,6 +1155,31 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
     p.dispose();
   });
 
+  // Feature 098 (FR-008) — the projection carried `run.pipeline.id !== 'standard'`,
+  // suppressing the name of any Run whose Pipeline happened to be called that.
+  // `standard` was a built-in id; with the catalog runtime-only it is an ordinary
+  // string an operator may put on an ordinary Pipeline, and suppressing its name
+  // leaves the header blank for no reason the operator can see.
+  it('names an imported pipeline even when the operator called it "standard"', async () => {
+    const run: WorkflowRun = {
+      ...sampleRun(),
+      pipeline: {
+        id: 'standard',
+        name: 'Standard Review',
+        phases: [makePhaseDef('speckit-specify'), makePhaseDef('finalize')]
+      }
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await ownRun();
+    const p = makeProjector();
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(runOf(snap)?.pipeline).toBeDefined();
+    expect(runOf(snap)?.pipeline!.id).toBe('standard');
+    expect(runOf(snap)?.pipeline!.name).toBe('Standard Review');
+    p.dispose();
+  });
+
   it('omits activePipeline (or marks built-in) when run.pipeline.id === "speckit-new-feature" (T046)', async () => {
     const standardPhases = [
       'speckit-specify',

@@ -56,6 +56,28 @@ describe('parseAuditLogBlock', () => {
     expect(result.warnings.some((w) => /missing fields/i.test(w))).toBe(true);
   });
 
+  // Feature 098 (FR-008) — the entry used to be built with
+  // `phase: map.get('phase') ?? 'speckit-specify'`. The fallback was unreachable
+  // (`phase` is required, and a block without it returns above), but it named an
+  // id the extension no longer ships, and a reachable version of it would have
+  // filed one Phase's record under another's name.
+  it('carries the phase the block names, whatever the operator called it', () => {
+    const stdout = validBlock.replace('phase: speckit-specify', 'phase: refine');
+
+    expect(parseAuditLogBlock(stdout).entry).toMatchObject({ phase: 'refine' });
+  });
+
+  it('refuses a block that names no phase rather than choosing one', () => {
+    const stdout = validBlock
+      .split('\n')
+      .filter((line) => !line.startsWith('phase:'))
+      .join('\n');
+    const result = parseAuditLogBlock(stdout);
+
+    expect(result.entry).toBeNull();
+    expect(result.warnings.some((w) => /missing fields: phase/i.test(w))).toBe(true);
+  });
+
   it('parses multi-element list values with quoted entries', () => {
     const stdout = [
       '=== SCHEGENT AUDIT LOG ===',

@@ -335,6 +335,10 @@
                 "default": true,
                 "markdownDescription": "Whether terminal failure stops the workflow. Missing or true is required. An explicitly optional phase (`false`) still exhausts normal retry policy, records its failed/timed-out result, and then continues."
               },
+              "forceContinueOnRetryCap": {
+                "type": "boolean",
+                "markdownDescription": "Advance to the next phase instead of failing the run when this phase's `retryCondition` is **still truthy** after its last permitted iteration, and write a `[notify] forced-continue` line to the runtime log. Overrides the workspace default `schegent.retry.forceContinueOnCap`, in both directions: an explicit `false` here wins over a workspace default of `true`. **Whatever the condition gates is left unverified**, so the log line is the record that it was skipped. Does not apply to `failed` or `timeout` outcomes, which are terminal and never consult `retryCondition`."
+              },
               "runner": {
                 "type": "string",
                 "enum": [

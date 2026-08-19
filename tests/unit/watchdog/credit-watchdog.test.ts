@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
-import { CreditWatchdog } from '../../../src/watchdog/credit-watchdog';
+import { CREDIT_POLL_PHASE_LABEL, CreditWatchdog } from '../../../src/watchdog/credit-watchdog';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { Memento } from '../../../src/state/workspace-state';
@@ -128,6 +128,30 @@ describe('CreditWatchdog poll behavior', () => {
     expect(onResume).toHaveBeenCalled();
     expect(store.getWatchdog().paused).toBe(false);
     expect(store.getWatchdog().lastStatusOk).toBe(true);
+    watchdog.dispose();
+  });
+
+  // Feature 098 (FR-008) — the poll invoked the CLI under `phase: 'finalize'`,
+  // borrowing a built-in Phase id for something that is not a Phase at all. The
+  // field reaches the runner's log lines (`phase=… iteration=…`) and nothing
+  // else, so the cost was a log that named the wrong thing — and once the
+  // catalog is runtime-only, `finalize` may be a Phase an operator imported,
+  // which makes the line not merely vague but false.
+  it('polls under a label that names the watchdog, not a Phase', async () => {
+    const runner = makeRunner(async () => makeRawOutput({ stdout: 'status: ok' }));
+    const watchdog = new CreditWatchdog(
+      runner, store, makeStatusBar(), new SanitizedLogger(), watchdogOpts, async () => {}
+    );
+
+    await watchdog.pauseAndPoll('rate-limit');
+    await vi.advanceTimersByTimeAsync(watchdogOpts.pollIntervalMs + 100);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(runner.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: CREDIT_POLL_PHASE_LABEL, prompt: '/status' })
+    );
+    expect(CREDIT_POLL_PHASE_LABEL).not.toBe('finalize');
     watchdog.dispose();
   });
 

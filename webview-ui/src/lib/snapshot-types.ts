@@ -1218,6 +1218,8 @@ export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
   staleSeconds: null
 });
 
-export function isRecursivePhase(name: PhaseName): boolean {
-  return name === 'speckit-clarify' || name === 'speckit-analyze';
-}
+// Feature 098 (FR-008) — the mirror of the host's `isRecursivePhase` stood here
+// and no webview module ever called it: the sub-progress bar arrives already
+// projected on the snapshot, so this side never had to decide whether a Phase
+// loops. It is gone on both sides — the host's copy because a Phase loops by its
+// `retryCondition` rather than by its id, and this one because it was dead.

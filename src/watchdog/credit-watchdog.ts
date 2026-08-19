@@ -13,6 +13,21 @@ export interface WatchdogOptions {
 
 export type ResumeCallback = () => Promise<void>;
 
+/**
+ * What the `/status` poll calls itself in the runner's logs.
+ *
+ * Feature 098 (FR-008) — the poll passed `phase: 'finalize'`, a built-in Phase
+ * id standing in for something that is not a Phase: no Run owns this
+ * invocation, no plan lists it, and no iteration counts it. The field reaches
+ * exactly two runner log lines (`phase=… iteration=…`) and nothing that
+ * dispatches, so borrowing an id only ever mislabelled them — and with the
+ * catalog runtime-only, `finalize` is a name an operator may have given a real
+ * Phase, which turns a vague line into a wrong one.
+ *
+ * Not a catalog id, and deliberately not shaped like one.
+ */
+export const CREDIT_POLL_PHASE_LABEL = '(credit-watchdog)';
+
 export class CreditWatchdog {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private polling = false;
@@ -161,7 +176,7 @@ export class CreditWatchdog {
       }
       this.logger.info('watchdog: polling /status');
       const raw = await this.runner.invoke({
-        phase: 'finalize',
+        phase: CREDIT_POLL_PHASE_LABEL,
         iteration: 0,
         prompt: '/status',
         timeoutMs: this.options.timeoutMs,

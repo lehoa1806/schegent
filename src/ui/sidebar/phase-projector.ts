@@ -17,27 +17,23 @@
 // `emptyCatalogGuidance(pipelines.length)` there. Threading it through the
 // projection instead would put it on the snapshot, across the IPC boundary and
 // into the parity tests, to deliver a constant both ends can already import.
-import type { Phase, PhaseOutcome } from '../../controller/phase';
+import { isLoopPhase, type Phase, type PhaseOutcome } from '../../controller/phase';
+import { DEFAULT_ITERATION_CAP } from '../../services/run-planned-total';
 import type { WorkflowRun } from '../../state/workflow-run';
 import {
-  isRecursivePhase,
   type PhaseName,
   type PhaseResultState,
   type PhaseTile,
   type SubProgress
 } from './snapshot';
 
-const RECURSIVE_PHASE_MAX_ITERATIONS = 10;
-
-export const BUILT_IN_PHASE_INDEX = new Map<PhaseName, number>([
-  ['speckit-specify', 0],
-  ['speckit-clarify', 1],
-  ['speckit-plan', 2],
-  ['speckit-tasks', 3],
-  ['speckit-analyze', 4],
-  ['speckit-implement', 5],
-  ['finalize', 6]
-]);
+// Feature 098 (FR-008, FR-019) — `BUILT_IN_PHASE_INDEX` stood here: a seven-id
+// Spec Kit ordering consulted by `phaseIndex` when no order was passed. It was
+// already unreachable (all three call sites derive the order from the Run's own
+// frozen plan) and already wrong (it omitted `speckit-checklist` and
+// `speckit-review`, so those two phases mapped to -1 while `finalize` claimed
+// index 6 of a nine-phase pipeline). A tile position is a fact about the plan
+// the Run froze, so the order is now a required argument.
 
 export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   type MutableTile = {
@@ -127,14 +123,18 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
 }
 
 
-export function phaseIndex(phase: Phase, phaseOrder?: Map<PhaseName, number>): number {
+/**
+ * The tile position of a phase within one Run's plan, or -1 if the plan does
+ * not list it.
+ *
+ * `phaseOrder` is required: the plan is the only thing that knows where a phase
+ * sits, and a phase it does not list has no position — including `'done'`,
+ * which is a terminal state of the state machine rather than a tile.
+ */
+export function phaseIndex(phase: Phase, phaseOrder: ReadonlyMap<PhaseName, number>): number {
   if (phase === 'done') return -1;
-  if (phaseOrder) {
-    const idx = phaseOrder.get(phase as PhaseName);
-    if (typeof idx === 'number') return idx;
-    return -1;
-  }
-  return BUILT_IN_PHASE_INDEX.get(phase as PhaseName) ?? -1;
+  const idx = phaseOrder.get(phase as PhaseName);
+  return typeof idx === 'number' ? idx : -1;
 }
 
 export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null {
@@ -155,25 +155,46 @@ export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null 
   }
 }
 
+/**
+ * The bar under one Phase tile: counted tasks if any were observed, otherwise
+ * the iteration count if the Phase is one that loops, otherwise nothing.
+ *
+ * Feature 098 (FR-008) — both halves of the iteration branch used to be
+ * hardcoded. `isRecursivePhase` recognised exactly `speckit-clarify` and
+ * `speckit-analyze`, two ids of a built-in catalog that no longer exists, so an
+ * imported looping Phase showed no bar and a Phase merely *named* one of those
+ * two showed one it had not earned. And its denominator was a local literal 10,
+ * standing where the Run has already frozen the cap the controller will enforce.
+ * Both now read the Run: the tile's own definition says whether it loops (the
+ * same `retryCondition` `transition()` consults), and `plannedTotal` says how far.
+ *
+ * The task/iteration order is the other half of that change. Re-keying brings
+ * every looping Phase into a branch that two ids used to have to themselves —
+ * including the implement Phase of the example pipeline, which is the one that
+ * reports task counts. Counted tasks measure the same work more finely, so they
+ * take precedence, and the iteration bar is what a looping Phase falls back to.
+ */
 export function computeSubProgressForTile(
   tile: PhaseTile,
   run: WorkflowRun | null,
   observed: { current: number; total: number } | undefined
 ): SubProgress | null {
   if (tile.state !== 'active' || !run) return null;
-  if (isRecursivePhase(tile.name)) {
-    const current = run.currentIteration;
-    if (!Number.isFinite(current) || current <= 0) return null;
+  if (observed) {
     return Object.freeze({
-      current: Math.min(Math.floor(current), RECURSIVE_PHASE_MAX_ITERATIONS),
-      total: RECURSIVE_PHASE_MAX_ITERATIONS,
-      label: 'iteration' as const
+      current: observed.current,
+      total: observed.total,
+      label: 'task' as const
     });
   }
-  if (!observed) return null;
+  const phaseDef = run.pipeline?.phases.find((def) => def.id === tile.name);
+  if (!isLoopPhase(tile.name, phaseDef)) return null;
+  const current = run.currentIteration;
+  if (!Number.isFinite(current) || current <= 0) return null;
+  const cap = run.plannedTotal?.iterationCap ?? DEFAULT_ITERATION_CAP;
   return Object.freeze({
-    current: observed.current,
-    total: observed.total,
-    label: 'task' as const
+    current: Math.min(Math.floor(current), cap),
+    total: cap,
+    label: 'iteration' as const
   });
 }

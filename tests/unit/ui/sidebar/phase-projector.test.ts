@@ -23,8 +23,14 @@ import {
   EXAMPLES_DIRECTORY,
   emptyCatalogGuidance
 } from '../../../../src/contracts/empty-catalog-guidance';
+import { DEFAULT_ITERATION_CAP } from '../../../../src/services/run-planned-total';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
-import { buildPhasesFromRun } from '../../../../src/ui/sidebar/phase-projector';
+import {
+  buildPhasesFromRun,
+  computeSubProgressForTile,
+  phaseIndex
+} from '../../../../src/ui/sidebar/phase-projector';
+import type { PhaseTile } from '../../../../src/ui/sidebar/snapshot';
 
 /**
  * A Run over a Pipeline the operator imported. The ids are deliberately not
@@ -113,5 +119,161 @@ describe('Feature 098 (T052) — a non-empty catalog projects the operator defin
     const run = { ...makeImportedRun(), pipeline: null } as unknown as WorkflowRun;
 
     expect(buildPhasesFromRun(run)).toEqual([]);
+  });
+
+  // `phaseIndex` kept a second, hardcoded answer for the case where no order was
+  // passed: a seven-id Spec Kit map. No call site took that branch, and the map
+  // disagreed with the pipeline it claimed to describe — `speckit-checklist` and
+  // `speckit-review` were absent, so both resolved to -1 while `finalize` claimed
+  // index 6. The order is now required, and the plan is the only thing that
+  // answers.
+  describe('a phase has the position its own plan gives it, and no other', () => {
+    const order = new Map([['draft', 0], ['ship', 1]]);
+
+    it('answers from the supplied order', () => {
+      expect(phaseIndex('draft', order)).toBe(0);
+      expect(phaseIndex('ship', order)).toBe(1);
+    });
+
+    it('gives a phase the plan does not list no position', () => {
+      // Every id the deleted map claimed, against a plan that lists none of them.
+      for (const id of [
+        'speckit-specify', 'speckit-clarify', 'speckit-plan', 'speckit-tasks',
+        'speckit-analyze', 'speckit-implement', 'finalize'
+      ]) {
+        expect(phaseIndex(id, order), `${id} is not in this plan`).toBe(-1);
+      }
+    });
+
+    it('gives the terminal state no position even if a plan names it', () => {
+      expect(phaseIndex('done', new Map([['done', 0]]))).toBe(-1);
+    });
+  });
+});
+
+/**
+ * A Run whose middle Phase declares a retry condition, under a plan that froze a
+ * cap of 4.
+ *
+ * The looping Phase is `refine`, an id no built-in layer ever claimed: a
+ * sub-progress bar that still keyed on the Spec Kit names would leave it bare.
+ */
+function makeLoopingRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    ...makeImportedRun(),
+    currentPhase: 'refine',
+    currentIteration: 2,
+    plannedTotal: { phaseCount: 3, iterationCap: 4, maxPhaseInvocations: 6 },
+    pipeline: {
+      id: 'operator-flow',
+      name: 'Operator Flow',
+      phases: [
+        { id: 'draft', name: 'Draft', instruction: 'Draft it.' },
+        {
+          id: 'refine',
+          name: 'Refine',
+          instruction: 'Refine it.',
+          retryCondition: 'open_items > 0'
+        },
+        { id: 'ship', name: 'Ship', instruction: 'Ship it.' }
+      ]
+    },
+    ...overrides
+  };
+}
+
+/** The one tile the Run is sitting on, projected the way production projects it. */
+function activeTile(run: WorkflowRun): PhaseTile {
+  const tile = buildPhasesFromRun(run).find((candidate) => candidate.state === 'active');
+  expect(tile, 'the fixture must project an active tile').toBeDefined();
+  return tile!;
+}
+
+// Feature 098 (FR-008) — the iteration bar used to appear for exactly two ids,
+// `speckit-clarify` and `speckit-analyze`, through a hardcoded `isRecursivePhase`.
+// Whether a Phase loops is a fact about its `retryCondition`, which is what the
+// controller's own `transition()` reads, so the bar now asks the tile's frozen
+// definition. Its denominator moves the same way: it was a local literal 10,
+// where the Run has already frozen the cap the controller will actually enforce.
+describe('the iteration bar follows the definition that makes a phase loop', () => {
+  it('gives an imported looping phase an iteration bar against the frozen cap', () => {
+    const run = makeLoopingRun();
+
+    expect(computeSubProgressForTile(activeTile(run), run, undefined)).toEqual({
+      current: 2,
+      total: 4,
+      label: 'iteration'
+    });
+  });
+
+  it('gives a phase no iteration bar when its own definition declares no condition', () => {
+    // The id spells one of the two names the deleted predicate recognised, and
+    // the definition under it says the phase does not loop. The definition wins.
+    const run = makeLoopingRun({
+      currentPhase: 'speckit-clarify',
+      pipeline: {
+        id: 'operator-flow',
+        name: 'Operator Flow',
+        phases: [{ id: 'speckit-clarify', name: 'Clarify', instruction: 'Clarify it.' }]
+      }
+    });
+
+    expect(computeSubProgressForTile(activeTile(run), run, undefined)).toBeNull();
+  });
+
+  it('clamps the current iteration to the frozen cap', () => {
+    const run = makeLoopingRun({ currentIteration: 9 });
+
+    expect(computeSubProgressForTile(activeTile(run), run, undefined)).toMatchObject({
+      current: 4,
+      total: 4
+    });
+  });
+
+  it('falls back to the default cap for a Run that froze no planned total', () => {
+    const run = makeLoopingRun({ plannedTotal: undefined });
+
+    expect(computeSubProgressForTile(activeTile(run), run, undefined)).toMatchObject({
+      current: 2,
+      total: DEFAULT_ITERATION_CAP
+    });
+  });
+
+  it('shows no bar before the first iteration', () => {
+    const run = makeLoopingRun({ currentIteration: 0 });
+
+    expect(computeSubProgressForTile(activeTile(run), run, undefined)).toBeNull();
+  });
+
+  it('shows no bar for a tile that is not the active one', () => {
+    const run = makeLoopingRun();
+    const idle = buildPhasesFromRun(run).find((tile) => tile.name === 'ship')!;
+
+    expect(computeSubProgressForTile(idle, run, { current: 1, total: 2 })).toBeNull();
+  });
+
+  // Every looping phase now reaches the branch that used to be reserved for two
+  // ids, and one of them — the implement phase of the example pipeline — is the
+  // phase that reports task counts. Counted tasks are the finer measure of the
+  // same work, so they win; the iteration bar is what a looping phase shows when
+  // nothing finer has been observed.
+  it('prefers observed task counts over the iteration bar', () => {
+    const run = makeLoopingRun();
+
+    expect(computeSubProgressForTile(activeTile(run), run, { current: 3, total: 12 })).toEqual({
+      current: 3,
+      total: 12,
+      label: 'task'
+    });
+  });
+
+  it('still shows task counts for a phase that does not loop', () => {
+    const run = makeLoopingRun({ currentPhase: 'ship' });
+
+    expect(computeSubProgressForTile(activeTile(run), run, { current: 1, total: 2 })).toEqual({
+      current: 1,
+      total: 2,
+      label: 'task'
+    });
   });
 });

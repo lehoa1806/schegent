@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   IDLE_LIVE_ACTIVITY,
   SCHEMA_VERSION,
-  buildIdleSnapshot,
-  isRecursivePhase
+  buildIdleSnapshot
 } from '../../../../src/ui/sidebar/snapshot';
 
 // Feature 098 (T083) — the seven-placeholder-tile case is gone, with
@@ -70,17 +69,11 @@ describe('snapshot builders', () => {
     expect(snap.availablePipelines).toEqual([]);
   });
 
-  // Feature 098 (T080) — this case used to sweep the exported `PHASE_NAMES` and
-  // recompute the predicate for each entry, which meant it agreed with
-  // `isRecursivePhase` by construction. With that list gone the two ids it
-  // recognises are named outright, and a Phase id the operator imported stands as
-  // the negative case that matters: the predicate answers on the id alone, and
-  // there is no longer a fixed vocabulary for it to consult.
-  it('isRecursivePhase identifies clarify and analyze only', () => {
-    expect(isRecursivePhase('speckit-clarify')).toBe(true);
-    expect(isRecursivePhase('speckit-analyze')).toBe(true);
-    for (const name of ['speckit-specify', 'speckit-implement', 'finalize', 'fixture-first']) {
-      expect(isRecursivePhase(name)).toBe(false);
-    }
-  });
+  // Feature 098 (FR-008) — `isRecursivePhase identifies clarify and analyze only`
+  // stood here, and by the end of the feature that was the defect rather than the
+  // contract: the predicate answered on the id alone, in a product where an id
+  // carries no authority. It is deleted along with the function; the question it
+  // answered is now asked of the Phase's own definition, and the cases live in
+  // `phase-projector.test.ts` under `the iteration bar follows the definition
+  // that makes a phase loop`.
 });
