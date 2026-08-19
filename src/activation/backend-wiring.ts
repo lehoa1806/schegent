@@ -74,33 +74,46 @@ export function createRuntimeEvidenceWiring(
   context: vscode.ExtensionContext,
   logger: SanitizedLogger
 ): RuntimeEvidenceWiring {
+  // Feature FR-R3-005 (T329) — one root list, read by both the accessor that
+  // decides whether a configured path is admissible and the sink that performs
+  // the syscalls. Deriving it twice would let the two drift into enforcing
+  // different policies, which is the failure mode where a path passes
+  // admission and is then refused at the point of effect, or worse, the other
+  // way around.
+  const allowedRuntimeLogRoots = (): readonly string[] => {
+    const roots: string[] = [];
+    const workspaceRoot = getCanonicalWorkspaceRoot()?.uri.fsPath;
+    if (workspaceRoot) roots.push(workspaceRoot);
+    roots.push(context.globalStorageUri.fsPath);
+    try { roots.push(os.tmpdir()); } catch { /* unavailable on some embedded hosts */ }
+    // Feature 098 (SEC-03) — the operator's home directory is deliberately
+    // NOT a root. `schegent.logging.runtimeLogFilePath` is workspace-
+    // configurable, so a repository can pre-set it and the sink will append,
+    // truncate, rotate-rename and unlink whatever it names under the
+    // operator's own UID. With `$HOME` allowed that reaches `.zshrc`,
+    // `.gitconfig`, `.ssh/config` and every other dotfile; the three roots
+    // that remain are all Schegent- or OS-owned scratch space.
+    //
+    // Feature FR-R3-005 (T329) added symlink-resistant containment at the
+    // sink's own syscalls, which is why `runtime-log-path.ts` being lexical is
+    // no longer the whole story. It is emphatically NOT a licence to widen
+    // this list back: containment at the point of effect is additional to the
+    // narrowed roots, and a re-added `$HOME` would be a root the oracle
+    // faithfully proves paths into.
+    return roots;
+  };
   const runtimeLogAccessor = createRuntimeLogAccessor(
     () => vscode.workspace.getConfiguration('schegent'),
     () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
     logger,
-    () => {
-      const roots: string[] = [];
-      const workspaceRoot = getCanonicalWorkspaceRoot()?.uri.fsPath;
-      if (workspaceRoot) roots.push(workspaceRoot);
-      roots.push(context.globalStorageUri.fsPath);
-      try { roots.push(os.tmpdir()); } catch { /* unavailable on some embedded hosts */ }
-      // Feature 098 (SEC-03) — the operator's home directory is deliberately
-      // NOT a root. `schegent.logging.runtimeLogFilePath` is workspace-
-      // configurable, so a repository can pre-set it and the sink will append,
-      // truncate, rotate-rename and unlink whatever it names under the
-      // operator's own UID. With `$HOME` allowed that reaches `.zshrc`,
-      // `.gitconfig`, `.ssh/config` and every other dotfile; the three roots
-      // that remain are all Schegent- or OS-owned scratch space. Containment is
-      // lexical (see `runtime-log-path.ts`), so a wide root is not narrowed by
-      // any later check — the root list is the whole control.
-      return roots;
-    }
+    allowedRuntimeLogRoots
   );
   const evidenceHealth = new EvidenceHealthMonitor();
   const runtimeLogSink = new RuntimeLogSink({
     accessor: runtimeLogAccessor,
     fallbackLogger: logger,
-    evidenceHealth
+    evidenceHealth,
+    containmentRoots: allowedRuntimeLogRoots
   });
   const webviewLogSink = new WebviewLogSink();
   logger.addSink(runtimeLogSink);

@@ -3,6 +3,10 @@ import * as path from 'node:path';
 
 import type { AuditLogWriter } from '../../audit/audit-log-writer';
 import type { SanitizedLogger } from '../../lib/logger';
+import {
+  resolveContainedTarget,
+  type ContainmentRefusal
+} from '../../lib/path-containment';
 
 export interface SessionArtifactRetentionPolicy {
   readonly maxAgeMs: number;
@@ -83,23 +87,25 @@ function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifa
  * `$HOME` would otherwise have its target enumerated and age-pruned, because
  * `readdir` follows the path it is given.
  *
- * Resolution is what makes the comparison sound. `path.relative` on unresolved
- * paths is a lexical hop count that a symlink hops straight over, so the check
- * is `realpath(sessionsRoot)` against `realpath(workspaceRoot)`, and only then
- * lexical. Entries *inside* the root need no equivalent guard and deliberately
- * do not get one: `measure()` reaches them through `lstat`, which reports a
- * symlink as a non-directory and stops the descent, and `fs.rm` on a symlink
- * unlinks the link rather than its target. The root was the only opening.
+ * Feature FR-R3-005 (T324/T325) moved the comparison itself into
+ * `src/lib/path-containment.ts` and extended it to every candidate.
+ *
+ * The argument this file used to make — that entries *inside* the root need no
+ * guard, because `measure()` reaches them through `lstat` and `fs.rm` on a
+ * symlink unlinks the link rather than its target — was true about what `rm`
+ * does and wrong about what the sweep should do. A run directory that is a
+ * symlink out of the workspace is not the host's to remove even when removing
+ * it is harmless to the target, and the operator gets no signal that their
+ * evidence was silently dropped from the sweep. Under FR-R3-005 each candidate
+ * is resolved through the oracle before it is removed: contained candidates are
+ * pruned exactly as before, a candidate that resolves out is skipped and
+ * recorded, and its siblings still prune.
  *
  * A refusal is not a failed sweep in the "retry harder" sense — it is a
  * deliberate no-op recorded as a failure so evidence health surfaces it, and no
  * path is logged, because the path is the thing that would name the operator's
  * home directory in a diagnostic log.
  */
-function isContainedIn(candidate: string, root: string): boolean {
-  const rel = path.relative(root, candidate);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
 
 /**
  * Owns lifecycle enforcement for unredacted raw transcripts and verbose
@@ -112,6 +118,13 @@ export class SessionArtifactRetentionService {
   private readonly now: () => Date;
   private usage: SessionArtifactUsage = EMPTY_USAGE;
   private sweepTail: Promise<void> = Promise.resolve();
+
+  /**
+   * Containment refusals seen during the sweep in progress. Reset per sweep and
+   * safe as instance state because `sweepTail` serializes sweeps. Two closed
+   * values at most, and neither is a path — this is what reaches the audit log.
+   */
+  private refusals = new Set<ContainmentRefusal>();
 
   constructor(private readonly deps: SessionArtifactRetentionDeps) {
     this.sessionsRoot = path.join(deps.workspaceRoot, '.schegent', 'sessions');
@@ -138,6 +151,7 @@ export class SessionArtifactRetentionService {
     const sweptAt = this.now();
     let failures = 0;
     const groups = new Map<string, ArtifactGroup>();
+    this.refusals = new Set();
 
     const root = await this.resolveContainedRoot();
     if (root.status === 'absent') {
@@ -145,7 +159,13 @@ export class SessionArtifactRetentionService {
     }
     if (root.status !== 'ok') {
       failures += 1;
-      this.warnFailure(root.status, root.error ?? null);
+      this.refusals.add(
+        root.status === 'root-not-contained' ? 'not-contained' : 'resolve-failed'
+      );
+      this.deps.logger.warn(
+        `session-retention: ${root.status} failed`,
+        { errno: root.errno }
+      );
       return this.finish([], policy, protectedRunIds, sweptAt, failures, 0, 0);
     }
     const sessionsRoot = root.path;
@@ -162,8 +182,18 @@ export class SessionArtifactRetentionService {
     }
 
     for (const entry of entries) {
-      const rawMatch = entry.isFile() ? /^raw-(.+)\.log$/.exec(entry.name) : null;
-      const runId = rawMatch?.[1] ?? (entry.isDirectory() ? entry.name : null);
+      // FR-R3-005 (T325) — `readdir` reports a symlink as neither file nor
+      // directory, so an entry that is one used to drop out of this
+      // enumeration entirely: silently skipped, which is the opposite of
+      // "skipped and recorded", and no way for an operator to learn their
+      // sessions directory had an entry retention would never touch. It is
+      // admitted as a candidate now and the oracle decides — a link that stays
+      // inside the sessions root is pruned like any other entry (`rm` unlinks
+      // the link, not its target), one that leaves is refused and recorded.
+      const named = entry.isFile() || entry.isSymbolicLink();
+      const rawMatch = named ? /^raw-(.+)\.log$/.exec(entry.name) : null;
+      const runId = rawMatch?.[1]
+        ?? (entry.isDirectory() || entry.isSymbolicLink() ? entry.name : null);
       if (!runId || runId === '.' || runId === '..') continue;
       const group = groups.get(runId) ?? {
         runId,
@@ -194,7 +224,7 @@ export class SessionArtifactRetentionService {
 
     for (const group of candidates) {
       if (sweptAt.getTime() - group.mtimeMs <= policy.maxAgeMs) continue;
-      const outcome = await this.removeGroup(group);
+      const outcome = await this.removeGroup(group, sessionsRoot);
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
       if (outcome.complete) removed.add(group.runId);
@@ -206,7 +236,7 @@ export class SessionArtifactRetentionService {
     for (const group of candidates) {
       if (retainedBytes <= policy.maxBytes) break;
       if (removed.has(group.runId)) continue;
-      const outcome = await this.removeGroup(group);
+      const outcome = await this.removeGroup(group, sessionsRoot);
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
       retainedBytes = Math.max(0, retainedBytes - outcome.removedBytes);
@@ -229,35 +259,49 @@ export class SessionArtifactRetentionService {
    * sits inside the workspace. `absent` is the ordinary pre-first-run state and
    * is not a failure; `root-not-contained` is a refusal; `resolve-root` is an
    * I/O fault that leaves containment unproven, which is treated the same way.
+   *
+   * The status names predate the shared oracle and are kept: they are what the
+   * runtime log has said since feature 098, and an operator matching a warning
+   * against a runbook should not have to learn a second vocabulary for the same
+   * event.
    */
   private async resolveContainedRoot(): Promise<
     | { readonly status: 'ok'; readonly path: string }
     | { readonly status: 'absent' }
-    | { readonly status: 'root-not-contained' | 'resolve-root'; readonly error?: unknown }
+    | { readonly status: 'root-not-contained' | 'resolve-root'; readonly errno: string }
   > {
-    let resolvedRoot: string;
-    try {
-      resolvedRoot = await this.fs.realpath(this.sessionsRoot);
-    } catch (error) {
-      // The sessions tree has not been created yet, which is every workspace
-      // before its first run. Nothing to sweep and nothing wrong.
-      if (errnoCode(error) === 'ENOENT') return { status: 'absent' };
-      return { status: 'resolve-root', error };
-    }
+    const verdict = await resolveContainedTarget(
+      this.sessionsRoot,
+      [this.deps.workspaceRoot],
+      this.fs
+    );
+    // The sessions tree has not been created yet, which is every workspace
+    // before its first run. Nothing to sweep and nothing wrong.
+    if (verdict.outcome === 'absent') return { status: 'absent' };
+    if (verdict.outcome === 'contained') return { status: 'ok', path: verdict.resolved };
+    return {
+      status: verdict.reason === 'not-contained' ? 'root-not-contained' : 'resolve-root',
+      errno: verdict.errno
+    };
+  }
 
-    let resolvedWorkspace: string;
-    try {
-      resolvedWorkspace = await this.fs.realpath(this.deps.workspaceRoot);
-    } catch (error) {
-      // Without a resolved workspace there is nothing to compare against, so
-      // containment is unproven and the sweep must not proceed.
-      return { status: 'resolve-root', error };
-    }
-
-    if (!isContainedIn(resolvedRoot, resolvedWorkspace)) {
-      return { status: 'root-not-contained' };
-    }
-    return { status: 'ok', path: resolvedRoot };
+  /**
+   * Prove one candidate is still inside the resolved sweep root before it is
+   * removed (FR-R3-005 T325).
+   *
+   * The root check above cannot answer this. It establishes where the *root*
+   * leads; a run directory placed inside that root as a symlink out of the
+   * workspace is a separate path with a separate answer, and `readdir` reports
+   * it with a name indistinguishable from a real one.
+   */
+  private async candidateContainmentVerdict(
+    fullPath: string,
+    sessionsRoot: string
+  ): Promise<'remove' | 'gone' | ContainmentRefusal> {
+    const verdict = await resolveContainedTarget(fullPath, [sessionsRoot], this.fs);
+    if (verdict.outcome === 'contained') return 'remove';
+    if (verdict.outcome === 'absent') return 'gone';
+    return verdict.reason;
   }
 
   private async measure(target: string): Promise<ArtifactTarget> {
@@ -276,7 +320,10 @@ export class SessionArtifactRetentionService {
     return { fullPath: target, size, mtimeMs };
   }
 
-  private async removeGroup(group: ArtifactGroup): Promise<{
+  private async removeGroup(
+    group: ArtifactGroup,
+    sessionsRoot: string
+  ): Promise<{
     readonly complete: boolean;
     readonly failures: number;
     readonly removedBytes: number;
@@ -284,6 +331,21 @@ export class SessionArtifactRetentionService {
     let failures = 0;
     let removedBytes = 0;
     for (const target of group.targets) {
+      const verdict = await this.candidateContainmentVerdict(target.fullPath, sessionsRoot);
+      if (verdict !== 'remove' && verdict !== 'gone') {
+        // Skipped and recorded. The group stays incomplete, so it is not
+        // reported as pruned, and every sibling in the sweep still runs.
+        failures += 1;
+        this.refusals.add(verdict);
+        this.warnRefusal('remove-artifact', verdict);
+        continue;
+      }
+      if (verdict === 'gone') {
+        // Vanished between the measure and the removal. `rm` with `force`
+        // treated this as success before the guard existed, and it still is.
+        removedBytes += target.size;
+        continue;
+      }
       try {
         await this.fs.rm(target.fullPath, { recursive: true, force: true });
         removedBytes += target.size;
@@ -348,7 +410,11 @@ export class SessionArtifactRetentionService {
           protectedArtifactCount: result.protectedArtifactCount,
           failures: result.lastSweepFailures,
           maxAgeMs: policy.maxAgeMs,
-          maxBytes: policy.maxBytes
+          maxBytes: policy.maxBytes,
+          // FR-R3-005 — bounded reason codes, never the refused path. At most
+          // the two members of `ContainmentRefusal`, sorted so the payload is
+          // stable across sweeps that hit them in a different order.
+          containmentRefusals: [...this.refusals].sort()
         }
       });
     } catch (error) {
@@ -360,6 +426,20 @@ export class SessionArtifactRetentionService {
     this.deps.logger.warn(
       `session-retention: ${operation} failed`,
       { errno: errnoCode(error) }
+    );
+  }
+
+  /**
+   * A containment refusal is reported as its own thing, not folded into
+   * `warnFailure`. An operator reading `remove-artifact failed / ENOENT` is
+   * looking for a disk problem; `remove-artifact refused / not-contained` is a
+   * statement about the shape of their workspace, and the two lead to
+   * different next steps.
+   */
+  private warnRefusal(operation: string, reason: ContainmentRefusal): void {
+    this.deps.logger.warn(
+      `session-retention: ${operation} refused`,
+      { reason }
     );
   }
 }

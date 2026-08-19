@@ -24,6 +24,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import type { SessionCleanupRunner } from '../../../src/controller/workflow-controller';
+import type { SessionCleanupOutcome } from '../../../src/services/session-cleanup/session-cleanup-service';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
@@ -154,7 +155,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
         workspaceRoot: string;
         runId: string;
         logger: SanitizedLogger;
-      }) => Promise<boolean>
+      }) => Promise<SessionCleanupOutcome>
     >();
     const controller = makeController(cleanupSpy);
     const result = await controller.deleteTask(feature.id);
@@ -170,7 +171,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     const { taskId } = await seedTerminalTask(runId);
     await seedSessionArtifacts(runId);
 
-    const cleanupSpy = vi.fn(async () => false);
+    const cleanupSpy = vi.fn(async () => ({ cleaned: false }));
     const controller = makeController(cleanupSpy);
     const result = await controller.deleteTask(taskId);
 
@@ -190,7 +191,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
   });
 
   it('unknown task id → ok:false; cleanup NOT invoked', async () => {
-    const cleanupSpy = vi.fn(async () => true);
+    const cleanupSpy = vi.fn(async () => ({ cleaned: true }));
     const controller = makeController(cleanupSpy);
     const result = await controller.deleteTask('does-not-exist');
 
@@ -238,7 +239,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     const order: string[] = [];
     const cleanupSpy = vi.fn(async () => {
       order.push('cleanup');
-      return true;
+      return { cleaned: true };
     });
 
     const controller = makeController(cleanupSpy);

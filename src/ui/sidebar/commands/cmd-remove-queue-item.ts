@@ -22,7 +22,13 @@ export const handler: CommandHandler<RemoveQueueItemCommand> = async (ctx, comma
         priorStatus: result.priorStatus ?? null,
         runId: result.runId ?? null,
         cause: 'operator',
-        sessionCleaned: result.sessionCleaned ?? false
+        sessionCleaned: result.sessionCleaned ?? false,
+        // Feature FR-R3-005 (T327) — `sessionCleaned: false` says the evidence
+        // is still on disk; this says the host declined to reach for it, which
+        // is the operator's cue to look at what `.schegent` points at. Bounded
+        // code only: the payload stays paths-free, and the refused path
+        // appears in the sanitized runtime log alone.
+        sessionCleanupRefusal: result.sessionCleanupRefusal ?? null
       });
     } else {
       const reason = result.reason ?? 'not-found';
@@ -40,7 +46,10 @@ export const handler: CommandHandler<RemoveQueueItemCommand> = async (ctx, comma
       queueId: null,
       priorStatus: null,
       cause: 'operator',
-      sessionCleaned: false
+      sessionCleaned: false,
+      // The boolean-remover fallback runs no cleanup at all, so there is
+      // nothing to have refused.
+      sessionCleanupRefusal: null
     });
   } else {
     await handleIllegalState(
