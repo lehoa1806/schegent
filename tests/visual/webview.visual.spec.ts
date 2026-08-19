@@ -14,6 +14,87 @@ type SurfaceName =
 /** The one queue `fixtures/workflow-snapshot.json` registers. */
 const FIXTURE_QUEUE_ID = 'default';
 
+interface SurfaceContract {
+  /** Content landmarks that together make up what the screenshot photographs. */
+  readonly present: readonly string[];
+  /** Empty/loading/error fallbacks that would stand in for that content. */
+  readonly absent: readonly string[];
+}
+
+/**
+ * The structural contract each surface must satisfy before it is photographed.
+ *
+ * The `absent` half carries most of the value, and it exists because of a real
+ * failure: making `cumulative` and `coverage` required on `ReadMetricsResponse`
+ * invalidated `fixtures/metrics-response.json`, so `isValidReadMetricsResponse`
+ * rejected it, `fetchMetrics()` returned early, and the dashboard rendered an
+ * empty table. An empty state is a perfectly stable thing to photograph — it
+ * would have been adopted by the next `--update-snapshots` run without comment.
+ * Pixel comparison cannot distinguish "renders correctly" from "renders a
+ * plausible fallback"; a named testid can, and it fails with the landmark's name
+ * instead of a diff ratio.
+ *
+ * These are landmarks, not an inventory. Add a row when a surface grows a
+ * section a reader would notice the absence of, not for every element.
+ */
+const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
+  // `app-root` is the wrapper on both arms of App.svelte's `{#if ready}`, so it
+  // stays visible when the snapshot never arrives and the whole sidebar falls
+  // back to "Connecting". These four are the ready arm.
+  sidebar: {
+    present: [
+      'sidebar-status-row',
+      'sidebar-stats-strip',
+      'sidebar-current-task',
+      'sidebar-open-dashboard-button'
+    ],
+    absent: ['empty-state']
+  },
+  queues: {
+    present: ['queues-tier', `queue-card-${FIXTURE_QUEUE_ID}`, 'queue-create'],
+    absent: ['queues-empty']
+  },
+  'pipeline-builder': {
+    present: ['pipeline-builder-root', 'pipelines-save-all', 'pipelines-sequence-status'],
+    absent: [
+      'pipeline-catalog-error',
+      'pipeline-catalog-loading',
+      'pipelines-no-phases',
+      'save-error-banner'
+    ]
+  },
+  metrics: {
+    present: [
+      'metrics-toolbar',
+      'metrics-summary-cards',
+      'metrics-task-table',
+      'metrics-cumulative',
+      'metrics-phase-analytics-table',
+      'metrics-cost-trend-svg'
+    ],
+    absent: ['metrics-empty', 'metrics-loading']
+  },
+  'activity-feed': {
+    present: ['phase-log-selectors', 'phase-log-reading-pane', 'phase-log-entry-list'],
+    absent: ['phase-log-loading', 'run-detail-missing']
+  }
+};
+
+async function assertSurfaceContract(page: Page, surface: SurfaceName): Promise<void> {
+  for (const testId of SURFACE_CONTRACTS[surface].present) {
+    await expect(
+      page.getByTestId(testId),
+      `${surface}: landmark '${testId}' did not render, so the screenshot is not of this surface`
+    ).toBeVisible();
+  }
+  for (const testId of SURFACE_CONTRACTS[surface].absent) {
+    await expect(
+      page.getByTestId(testId),
+      `${surface}: fallback '${testId}' rendered — the screenshot would capture an empty state`
+    ).toHaveCount(0);
+  }
+}
+
 interface ThemePalette {
   readonly foreground: string;
   readonly background: string;
@@ -249,7 +330,7 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
   if (surface === 'metrics') {
     await page.getByTestId('dashboard-route-metrics').click();
     const metrics = page.getByTestId('metrics-section');
-    await expect(page.getByTestId('metrics-task-table')).toBeVisible();
+    await expect(metrics).toBeVisible();
     return metrics;
   }
 
@@ -312,6 +393,10 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
   ] as const) {
     test(`${surface} remains visually stable in ${theme}`, async ({ page }) => {
       const target = await openSurface(page, surface, theme);
+      // Structural gate before the pixel gate: prove the surface rendered its
+      // own content, so a green screenshot cannot mean "photographed a
+      // fallback" or "photographed a baseline nobody re-generated".
+      await assertSurfaceContract(page, surface);
       await expect(target).toHaveScreenshot(`${surface}-${theme}.png`, {
         mask: [...volatileMasks(page)],
         maskColor: theme === 'light' ? '#e5e7eb' : '#334155'
