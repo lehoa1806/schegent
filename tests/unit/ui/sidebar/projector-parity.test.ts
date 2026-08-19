@@ -79,6 +79,7 @@ describe('projector decomposition — cross-module parity (T095)', () => {
       pausedReason: null,
       updatedAt: 1_700_000_002_000,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -122,6 +123,9 @@ describe('projector decomposition — cross-module parity (T095)', () => {
         runId: 'r-1',
         featureId: 'f-1',
         descriptionPreview: 'short',
+        // FR-R3-010 — `HistoryStore` stamps the partition on every row it
+        // hands back, so a fixture standing in for one carries it too.
+        queueId: 'default',
         originalDescription: 'short',
         terminalStatus: 'completed' as const,
         startedAt: '2026-05-10T00:00:00.000Z',

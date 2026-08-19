@@ -1,9 +1,10 @@
 // Forward state-migration audit events through the sanitized audit
 // writer. Extracted from extension.ts to keep the host registration
-// site below its LOC budget. Four migration kinds are forwarded:
+// site below its LOC budget. Five migration kinds are forwarded:
 //   - v5 → v6 single-queue migration (Feature 030)
 //   - v6 → v7 enqueue/start-separation lift (Feature 065)
 //   - v10 → v11 per-queue Run-record reshape (Feature 093)
+//   - v11 → v12 per-queue history partition (FR-R3-010)
 //   - workflow-run repair events (legacy)
 //
 // Each forwarding loop swallows append errors and logs a sanitized
@@ -14,6 +15,7 @@ import type {
   StateMigratedV6ToV7AuditEvent
 } from './queue-state-migrator';
 import type { RunStateMigrationAuditEvent } from './run-state-migrator';
+import type { HistoryStateMigrationAuditEvent } from './history-state-migrator';
 import type { WorkflowRunRepairedAuditEvent } from './workflow-run-migrator';
 import type { SanitizedLogger } from '../lib/logger';
 
@@ -28,6 +30,12 @@ export interface MigrationAuditEvents {
   // this field exists at the same time as the events that fill it rather than
   // a release later.
   readonly v11MigrationEvents: readonly RunStateMigrationAuditEvent[];
+  // FR-R3-010 — the v11 → v12 history reshape, plus the entries it could not
+  // attribute. Same contract as `v11MigrationEvents`: the store collects them
+  // during `initialize()` and hands them here rather than writing them itself,
+  // because a migrator that reaches the audit writer is a migrator that can fail
+  // activation on an I/O error.
+  readonly v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
   readonly runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
 
@@ -58,6 +66,37 @@ function runMigrationPayload(event: RunStateMigrationAuditEvent): Record<string,
         reason: event.reason
       };
     case 'run-record-repaired':
+      return { occurredAt: event.occurredAt, reason: event.reason };
+  }
+}
+
+/**
+ * The audit payload for one v11 → v12 event.
+ *
+ * Built per type for the same reason as `runMigrationPayload` above: the three
+ * shapes are disjoint, and spreading the event would make the safety of the
+ * payload depend on nobody ever adding a field to the migrator's event types. A
+ * history entry carries a task description and an error summary, so this is the
+ * one migration family where a spread would have somewhere unsafe to reach.
+ */
+function historyMigrationPayload(event: HistoryStateMigrationAuditEvent): Record<string, unknown> {
+  switch (event.type) {
+    case 'state-migrated-v11-to-v12':
+      return {
+        fromVersion: event.fromVersion,
+        toVersion: event.toVersion,
+        occurredAt: event.occurredAt,
+        queueIds: event.queueIds,
+        entryCount: event.entryCount
+      };
+    case 'history-entries-unattributed':
+      return {
+        occurredAt: event.occurredAt,
+        queueId: event.queueId,
+        entryCount: event.entryCount,
+        reason: event.reason
+      };
+    case 'history-record-repaired':
       return { occurredAt: event.occurredAt, reason: event.reason };
   }
 }
@@ -125,6 +164,23 @@ export async function forwardMigrationAuditEvents(
       });
     } catch (err) {
       logger.warn(`state-migrated-v10-to-v11 audit append failed: ${(err as Error).message}`);
+    }
+  }
+  for (const event of events.v12MigrationEvents) {
+    try {
+      await auditWriter.append({
+        // No runId, on the same reasoning as the reshape above and one more
+        // besides: a history entry describes a Run that has already ended, so
+        // there is no Run for the correlation key to reach even in principle.
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: historyMigrationPayload(event),
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`state-migrated-v11-to-v12 audit append failed: ${(err as Error).message}`);
     }
   }
   for (const event of events.runRepairEvents) {

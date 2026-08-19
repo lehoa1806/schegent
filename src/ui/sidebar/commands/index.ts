@@ -34,6 +34,7 @@ import {
   CMD_REORDER_TASK,
   CMD_RERUN_FROM_HISTORY,
   CMD_RESET,
+  CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESTART_CANCELED_TASK,
   CMD_RESTART_PHASE,
   CMD_RESUME,
@@ -93,6 +94,7 @@ import { handler as renameQueue } from './cmd-rename-queue';
 import { handler as reorderTask } from './cmd-reorder-task';
 import { handler as rerunFromHistory } from './cmd-rerun-from-history';
 import { handler as reset } from './cmd-reset';
+import { handler as resolveAuditPointer } from './cmd-resolve-audit-pointer';
 import { handler as restartCanceledTask } from './cmd-restart-canceled-task';
 import { handler as restartPhase } from './cmd-restart-phase';
 import { handler as resume } from './cmd-resume';
@@ -162,6 +164,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_REORDER_TASK, reorderTask as CommandHandler],
   [CMD_RERUN_FROM_HISTORY, rerunFromHistory as CommandHandler],
   [CMD_RESET, reset as CommandHandler],
+  [CMD_RESOLVE_AUDIT_POINTER, resolveAuditPointer as CommandHandler],
   [CMD_RESTART_CANCELED_TASK, restartCanceledTask as CommandHandler],
   [CMD_RESTART_PHASE, restartPhase as CommandHandler],
   [CMD_RESUME, resume as CommandHandler],

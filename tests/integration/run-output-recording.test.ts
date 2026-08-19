@@ -167,15 +167,27 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
       handleDelayedRetry: vi.fn(),
       maybeEmitRetryRecovered: vi.fn().mockImplementation(async (run) => run)
     } as any,
-    // The queue row carries the frozen plan, exactly as the drain path leaves it.
+    // FR-R3-001 (T266) — the queue row no longer answers "what did this Run
+    // declare?". The Run's own envelope does, attached below exactly as
+    // `WorkflowRunFactory.create()` attaches it. `findById` is left returning
+    // nothing so a regression that re-reads the row here fails rather than
+    // silently reading a second copy that happens to agree.
     queue: {
       finish: vi.fn(),
       pause: vi.fn(),
-      findById: vi.fn(() => ({ runPlan: plan }))
+      findById: vi.fn(() => null)
     } as any,
     notifier: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
     statusBar: { update: vi.fn(), dispose: vi.fn() } as any,
-    historyRecorder: new HistoryRecorder({ historyStore: history, logger: new SanitizedLogger([]) }),
+    historyRecorder: new HistoryRecorder({
+      historyStore: history,
+      logger: new SanitizedLogger([]),
+      // FR-R3-010 — these cases are about `runOutputs` reaching the entry. The
+      // partition is fixed and the description store is inert so nothing here
+      // touches the filesystem.
+      queueIdForTask: () => DEFAULT_QUEUE_ID,
+      descriptions: { write: async () => null, remove: async () => undefined }
+    }),
     emitRunEndedBreakpointAudit: vi.fn(),
     emitTaskLifecycleAudit: vi.fn(),
     emitOptionalPhaseFailureContinued: vi.fn(),
@@ -213,7 +225,8 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     manualPauseCause: null,
     phaseBreakpoints: [],
     phaseOverrides: [],
-    resumeTargetPhaseId: null
+    resumeTargetPhaseId: null,
+    envelope: plan
   } as any);
 
   await new RunDriver(deps).drive(store.getRun(DEFAULT_QUEUE_ID)!, 'produce the report');

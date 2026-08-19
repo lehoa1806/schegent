@@ -4,9 +4,38 @@ import { tick } from 'svelte';
 import HistorySection from '../HistorySection.svelte';
 import type { HistoryEntry } from '../../lib/snapshot-types';
 
+type AckListener = (ack: {
+  status: 'accepted' | 'rejected';
+  reason?: string;
+  result?: unknown;
+}) => void;
+
+const ackListeners = new Map<string, AckListener>();
+let nextCorrelationId = 0;
+
 const postCommandSpy = vi.fn();
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: (...args: unknown[]) => postCommandSpy(...args)
+  postCommand: (...args: unknown[]) => {
+    postCommandSpy(...args);
+    // The real `postCommand` returns the id it minted, and FR-R3-010's
+    // `resolveAuditPointer` reads `.correlationId` off it synchronously. A spy
+    // returning `undefined` throws inside a promise executor, which surfaces as
+    // an unhandled rejection rather than as this file's failure.
+    return { correlationId: `c${++nextCorrelationId}` };
+  }
+}));
+
+// Only `history-evidence-ipc.ts` reaches for the store in this component tree,
+// and only for these two methods, so the stub is the whole surface rather than a
+// partial mock of a module the rest of the file also depends on.
+vi.mock('../../lib/snapshot-store.svelte', () => ({
+  snapshotStore: {
+    markPending(): void {},
+    onceAck(id: string, fn: AckListener): () => void {
+      ackListeners.set(id, fn);
+      return () => ackListeners.delete(id);
+    }
+  }
 }));
 
 // Feature 063 (T036) — Rerun now gates through the shared useConfirm
@@ -19,11 +48,14 @@ vi.mock('../../lib/use-confirm', () => ({
 import {
   CMD_RERUN_FROM_HISTORY,
   CMD_OPEN_AUDIT_LOG,
-  CMD_OPEN_HISTORY_ITEM_DETAILS
+  CMD_OPEN_HISTORY_ITEM_DETAILS,
+  CMD_RESOLVE_AUDIT_POINTER
 } from '../../lib/messages';
 
 beforeEach(() => {
   postCommandSpy.mockReset();
+  ackListeners.clear();
+  nextCorrelationId = 0;
 });
 afterEach(() => cleanup());
 
@@ -104,12 +136,63 @@ describe('HistorySection', () => {
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
 
-  it('clicking Open Audit Log emits CMD_OPEN_AUDIT_LOG (no payload)', async () => {
+  // FR-R3-010 (T411) turned this button into two steps. It resolves the run's
+  // audit pointer first and opens the log only when that resolves, because
+  // opening it on an expired pointer drops the operator into a file that cannot
+  // contain what they asked for, with nothing to say why. The three "no
+  // evidence" outcomes are acked `accepted`, so the second step is gated on the
+  // outcome rather than on the ack status.
+  it('clicking Open Audit Log resolves the pointer first, then opens the log', async () => {
     const { getByTestId } = render(HistorySection, {
       props: { history: [entry()], isPrimary: true }
     });
     await fireEvent.click(getByTestId('history-item-open-audit-r-1'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESOLVE_AUDIT_POINTER, { runId: 'r-1' });
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_OPEN_AUDIT_LOG);
+
+    // Shaped to satisfy `isValidResolveAuditPointerResponse`. An under-specified
+    // fixture is projected to `failure`/`internal-error`, which also does not
+    // open the log — so a loose one would pass this test's negative half while
+    // never exercising the positive branch at all.
+    ackListeners.get('c1')?.({
+      status: 'accepted',
+      result: {
+        outcome: 'resolved',
+        runId: 'r-1',
+        truncated: false,
+        parseWarnings: 0,
+        entries: [
+          {
+            id: 'e-1',
+            timestamp: '2026-05-10T12:00:42.000Z',
+            eventType: 'run-completed',
+            phase: 'implement',
+            iteration: 1,
+            outcome: 'success'
+          }
+        ]
+      }
+    });
+    await tick();
+
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_OPEN_AUDIT_LOG);
+  });
+
+  it('clicking Open Audit Log does NOT open the log when the pointer expired', async () => {
+    const { getByTestId } = render(HistorySection, {
+      props: { history: [entry()], isPrimary: true }
+    });
+    await fireEvent.click(getByTestId('history-item-open-audit-r-1'));
+
+    ackListeners.get('c1')?.({
+      status: 'accepted',
+      result: { outcome: 'evidence-expired', runId: 'r-1' }
+    });
+    await tick();
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_RESOLVE_AUDIT_POINTER, { runId: 'r-1' });
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_OPEN_AUDIT_LOG);
   });
 
   it('clicking Open Details emits CMD_OPEN_HISTORY_ITEM_DETAILS with the runId', async () => {

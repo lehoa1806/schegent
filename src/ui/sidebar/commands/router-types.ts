@@ -1,6 +1,7 @@
 import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
+import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
 import type { WritablePhaseDefinitionScope } from '../../../contracts/process-definitions';
 import type { WorkflowDefinitionScope } from '../../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
@@ -78,6 +79,7 @@ export interface QueueOps {
     priorStatus?: string;
     runId?: string | null;
     sessionCleaned?: boolean;
+    sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
   reorderTask?(
     taskId: string,
@@ -123,6 +125,7 @@ export interface PhaseOps {
     priorStatus?: string;
     runId?: string | null;
     sessionCleaned?: boolean;
+    sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
   removeTaskPhase?(
     taskId: string,
@@ -197,7 +200,17 @@ export interface RouterDeps {
   readonly queueRemover: QueueRemover;
   readonly queueOps?: QueueOps;
   readonly phaseOps?: PhaseOps;
-  readonly isPrimary?: () => boolean;
+  /**
+   * Whether this window may perform mutating work.
+   *
+   * Feature FR-R3-003 (T300) widened the return to admit a promise, because the
+   * authoritative answer is a read of the fenced ownership record rather than of
+   * a `Memento` mirror: the mirror is per extension host, so a window whose claim
+   * was reclaimed by a rival would keep reading its own stale `true`. The host
+   * wires `lock.hasPrimacy()`, which carries the fencing token issued at
+   * acquisition and fails closed.
+   */
+  readonly isPrimary?: () => boolean | Promise<boolean>;
   /**
    * Reports whether the current workspace is trusted (VS Code Workspace Trust).
    * When the callback returns `false`, mutating commands are rejected before
@@ -380,6 +393,16 @@ export interface RouterDeps {
   >;
   readonly metricsService?: {
     read(req: ReadMetricsRequest): Promise<ReadMetricsResponse>;
+  };
+  /**
+   * FR-R3-010 — the history evidence drill-down seam. Constructed once at
+   * activation with a resolved workspace root, for the same reason
+   * `metricsService` is: `cmd-resolve-audit-pointer.ts` reads the audit corpus
+   * from disk and there is no route by which a handler may learn a workspace
+   * root of its own.
+   */
+  readonly historyEvidenceService?: {
+    resolve(runId: string): Promise<HistoryEvidenceResolution>;
   };
   readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**

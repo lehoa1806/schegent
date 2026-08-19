@@ -107,6 +107,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'trust.capability-denied': 'system',
   // Queue full reset (system)
   'queue-cleared-all': 'system',
+  // Feature FR-R3-006 — the workspace-state reset transaction (system). Its
+  // subject is the whole workspace state rather than any one Run, and it carries
+  // no runId, so there is nothing for the Activity Feed to attach it to.
+  'workspace-state-reset': 'system',
   // Feature 065 — scheduled-start lifecycle / idle-pending (system)
   'scheduled-start-armed': 'system',
   'scheduled-start-fired': 'system',
@@ -130,6 +134,13 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'state-migrated-v10-to-v11': 'system',
   'run-reassigned-to-default-queue': 'system',
   'run-record-repaired': 'system',
+  // FR-R3-010 — v11 → v12 history partition and its repairs (system). Same
+  // reasoning as the reshape above, plus one more: a history entry describes a
+  // Run that has already ended, so there is no live Run to hang it off even
+  // after activation finishes.
+  'state-migrated-v11-to-v12': 'system',
+  'history-entries-unattributed': 'system',
+  'history-record-repaired': 'system',
   // Feature 072 — task-level execution lifecycle (task)
   'task-execution-started': 'task',
   'task-execution-ended': 'task',
@@ -285,6 +296,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'multi-root.warning-shown':
         case 'trust.capability-denied':
         case 'queue-cleared-all':
+        case 'workspace-state-reset':
         case 'scheduled-start-armed':
         case 'scheduled-start-fired':
         case 'scheduled-start-canceled':
@@ -300,6 +312,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'state-migrated-v10-to-v11':
         case 'run-reassigned-to-default-queue':
         case 'run-record-repaired':
+        case 'state-migrated-v11-to-v12':
+        case 'history-entries-unattributed':
+        case 'history-record-repaired':
         case 'task-execution-started':
         case 'task-execution-ended':
         case 'task-execution-paused':

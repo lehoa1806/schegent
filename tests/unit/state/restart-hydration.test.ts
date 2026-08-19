@@ -17,7 +17,7 @@ import {
   type Memento
 } from '../../../src/state/workspace-state';
 import { HistoryStore } from '../../../src/state/history-store';
-import { buildHistoryEntry } from '../../../src/state/history-entry';
+import { buildHistoryEntry, withDescriptionRef } from '../../../src/state/history-entry';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { parseAuditLogLine } from '../../../src/parser/audit-log-parser';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
@@ -100,6 +100,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
       pausedReason: null,
       updatedAt: 1,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     });
@@ -110,6 +111,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
       heartbeatAt: acquiredAtMs
     });
     await queue.append(
+      DEFAULT_QUEUE_ID,
       buildHistoryEntry({
         runId,
         featureId: 'feat-1',
@@ -118,7 +120,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
         startedAt: 1_700_000_000_000,
         completedAt: 1_700_000_001_000,
         logger
-      })
+      }).entry
     );
 
     // Snapshot the disk-equivalent state
@@ -134,7 +136,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
 
     // run, queue, lock, history all hydrated with shared runId
     const rehydratedRun = reborn.getRun(DEFAULT_QUEUE_ID);
-    const rehydratedQueue = reborn.getQueue();
+    const rehydratedQueue = reborn.getQueue(DEFAULT_QUEUE_ID);
     const rehydratedLock = reborn.getLock();
     const rehydratedHistory = new HistoryStore(reborn).list();
 
@@ -153,22 +155,31 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
     expect(rehydratedLock?.ownerId).toBe('win-A');
   });
 
-  it('history originalDescription survives the restart round-trip', async () => {
+  it('the description reference survives the restart round-trip', async () => {
+    // FR-029 asked that a rerun replay the original input byte-identically, and
+    // that is unchanged. FR-R3-010 (T405) changed only where the text lives: it
+    // is on disk beside the run's other evidence, which is restart-durable by
+    // construction, and the memento keeps the reference that reaches it. So
+    // what this round trip has to preserve is the reference and the length —
+    // the retrieval itself is covered end-to-end in the pointer-resolution
+    // integration test.
     const store = new WorkspaceStateStore(pre);
     await store.initialize();
     const fullDescription =
       'Long original description preserved across host restarts so rerun stays faithful.';
     const history = new HistoryStore(store);
+    const built = buildHistoryEntry({
+      runId: 'run-orig',
+      featureId: 'feat-orig',
+      description: fullDescription,
+      terminalStatus: 'completed',
+      startedAt: 0,
+      completedAt: 100,
+      logger
+    });
     await history.append(
-      buildHistoryEntry({
-        runId: 'run-orig',
-        featureId: 'feat-orig',
-        description: fullDescription,
-        terminalStatus: 'completed',
-        startedAt: 0,
-        completedAt: 100,
-        logger
-      })
+      DEFAULT_QUEUE_ID,
+      withDescriptionRef(built.entry, '.schegent/history/run-orig.txt')
     );
 
     const persisted = pre.snapshot();
@@ -178,7 +189,9 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
     await reborn.initialize();
     const rehydrated = new HistoryStore(reborn).list();
     expect(rehydrated).toHaveLength(1);
-    expect(rehydrated[0].originalDescription).toBe(fullDescription);
+    expect(rehydrated[0].descriptionRef).toBe('.schegent/history/run-orig.txt');
+    expect(rehydrated[0].descriptionLength).toBe(fullDescription.length);
+    expect(rehydrated[0].queueId).toBe(DEFAULT_QUEUE_ID);
   });
 
   it('audit log JSONL entries hydrate correlationId across the parser boundary', () => {

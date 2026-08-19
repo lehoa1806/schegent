@@ -73,6 +73,7 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       inFlightId: null,
       updatedAt: 0,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       requests: [
@@ -150,7 +151,7 @@ describe('Sanitization audit (T069 / FR-014)', () => {
   });
 
   it('history descriptionPreview is redacted via buildHistoryEntry', () => {
-    const entry = buildHistoryEntry({
+    const { entry, fullDescription } = buildHistoryEntry({
       runId: 'run-h',
       featureId: 'feat-h',
       description: `Feature with ${SECRETS.apiKey} and ${SECRETS.jwt}`,
@@ -162,6 +163,10 @@ describe('Sanitization audit (T069 / FR-014)', () => {
     });
     expect(entry.descriptionPreview).toContain('[REDACTED]');
     assertNoSecrets(entry.descriptionPreview);
+    // FR-R3-010 — the full text now goes to disk instead of into the entry, so
+    // the same sanitization has to hold on the value handed to the store. It is
+    // produced by the same single sanitize call, and this pins that.
+    assertNoSecrets(fullDescription);
   });
 
   it('end-to-end snapshot serialization contains no secret patterns when secrets are seeded everywhere', async () => {
@@ -171,6 +176,7 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       inFlightId: null,
       updatedAt: 0,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       requests: [

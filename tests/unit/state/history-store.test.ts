@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  HISTORY_CAP,
+  HISTORY_CAP_PER_QUEUE,
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
@@ -35,6 +35,13 @@ function makeEntry(seq: number, terminalStatus: HistoryEntry['terminalStatus'] =
   };
 }
 
+/**
+ * FR-R3-010 (T402) — every append names its partition. These cases exercise one
+ * queue, so they share a constant; the cross-partition behaviour has its own
+ * file in `history-partition.test.ts`.
+ */
+const QUEUE = 'default';
+
 let memento: FakeMemento;
 let store: WorkspaceStateStore;
 let history: HistoryStore;
@@ -47,24 +54,37 @@ beforeEach(async () => {
 });
 
 describe('HistoryStore', () => {
-  it('append rolls oldest at cap of 50', async () => {
-    expect(HISTORY_CAP).toBe(50);
-    for (let i = 0; i < HISTORY_CAP + 5; i++) {
-      await history.append(makeEntry(i));
+  it('append rolls oldest at cap of 50 per queue', async () => {
+    expect(HISTORY_CAP_PER_QUEUE).toBe(50);
+    for (let i = 0; i < HISTORY_CAP_PER_QUEUE + 5; i++) {
+      await history.append(QUEUE, makeEntry(i));
     }
     const list = history.list();
-    expect(list).toHaveLength(HISTORY_CAP);
+    expect(list).toHaveLength(HISTORY_CAP_PER_QUEUE);
     const ids = list.map((e) => e.runId);
     expect(ids).not.toContain('run-0');
     expect(ids).not.toContain('run-4');
     expect(ids).toContain('run-5');
-    expect(ids).toContain(`run-${HISTORY_CAP + 4}`);
+    expect(ids).toContain(`run-${HISTORY_CAP_PER_QUEUE + 4}`);
+  });
+
+  it('append returns what the cap evicted, so the caller can clean up after it', async () => {
+    // The evicted rows are how `HistoryRecorder` knows which description files
+    // to remove. Without them the on-disk set grows for the life of the
+    // workspace while the memento stays bounded — the same amplification this
+    // feature removed, one layer down.
+    for (let i = 0; i < HISTORY_CAP_PER_QUEUE; i++) {
+      expect(await history.append(QUEUE, makeEntry(i))).toEqual([]);
+    }
+    const evicted = await history.append(QUEUE, makeEntry(HISTORY_CAP_PER_QUEUE));
+    expect(evicted).toHaveLength(1);
+    expect((evicted[0] as { runId: string }).runId).toBe('run-0');
   });
 
   it('list() is reverse-chronological (newest first)', async () => {
-    await history.append(makeEntry(1));
-    await history.append(makeEntry(2));
-    await history.append(makeEntry(3));
+    await history.append(QUEUE, makeEntry(1));
+    await history.append(QUEUE, makeEntry(2));
+    await history.append(QUEUE, makeEntry(3));
     const list = history.list();
     expect(list.map((e) => e.runId)).toEqual(['run-3', 'run-2', 'run-1']);
   });
@@ -74,15 +94,15 @@ describe('HistoryStore', () => {
     const sub = history.subscribe(() => {
       calls++;
     });
-    await history.append(makeEntry(1));
-    await history.append(makeEntry(2));
+    await history.append(QUEUE, makeEntry(1));
+    await history.append(QUEUE, makeEntry(2));
     expect(calls).toBe(2);
     sub.dispose();
   });
 
   it('rehydrates persisted entries on a fresh store instance', async () => {
-    await history.append(makeEntry(1));
-    await history.append(makeEntry(2));
+    await history.append(QUEUE, makeEntry(1));
+    await history.append(QUEUE, makeEntry(2));
     const reborn = new WorkspaceStateStore(memento);
     await reborn.initialize();
     const reHistory = new HistoryStore(reborn);

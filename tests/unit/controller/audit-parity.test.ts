@@ -8,8 +8,11 @@
 // This test runs a known fixture through the post-Wave-7 controller
 // composition and asserts:
 //   1. history-store.append fires EXACTLY ONCE per terminal transition,
-//      with the expected `terminalStatus` and the FULL sanitized
-//      `originalDescription` (Wave 6 contract).
+//      with the expected `terminalStatus` and the sanitized description
+//      (Wave 6 contract). FR-R3-010 moved the full text out of the entry into
+//      a sidecar file addressed by `descriptionRef`, so what the entry is
+//      asserted to carry is the bounded `descriptionPreview` and that
+//      reference — the parity claim is unchanged, only where the text lives.
 //   2. The controller emits NO retry-* audit events on a clean run.
 //   3. The 7 phase-runner invocations and `historyStore.append`
 //      ordering are: all phases run → then `append` (not before).
@@ -148,10 +151,23 @@ describe('Audit/history-emit parity post-Wave-7 (T103)', () => {
     await controller.startNew(feature, null);
 
     expect(historyStore.append).toHaveBeenCalledTimes(1);
-    const entry = historyStore.append.mock.calls[0][0] as HistoryEntry;
+    // FR-R3-010 — `append` names the partition: arg 0 is the queue id, arg 1 the entry.
+    const entry = historyStore.append.mock.calls[0][1] as HistoryEntry;
     expect(entry.terminalStatus).toBe('completed');
     expect(entry.featureId).toBe(feature.id);
-    expect(entry.originalDescription).toBe('investigate auth flow');
+    // FR-R3-010 — the full text left the entry for the sidecar description
+    // store, so what the entry carries is the bounded preview and the full
+    // length. This description is under `DESCRIPTION_PREVIEW_MAX`, so the two
+    // together still pin the exact input the run was given.
+    //
+    // `descriptionRef` is deliberately not asserted here: the reference is a
+    // claim that the file was written, this fixture's `cwd` is the non-existent
+    // `/repo`, and the recorder is specified to record the entry without a
+    // reference when the write does not happen. Pinning it would make this
+    // parity test fail on a filesystem condition it is not about; the ref's own
+    // contract is covered by the description store's tests.
+    expect(entry.descriptionPreview).toBe('investigate auth flow');
+    expect(entry.descriptionLength).toBe('investigate auth flow'.length);
     expect(entry.lastErrorSummary).toBeNull();
 
     // No retry-* events on a clean run.
@@ -193,7 +209,8 @@ describe('Audit/history-emit parity post-Wave-7 (T103)', () => {
     await controller.startNew(feature, null);
 
     expect(historyStore.append).toHaveBeenCalledTimes(1);
-    const entry = historyStore.append.mock.calls[0][0] as HistoryEntry;
+    // FR-R3-010 — `append` names the partition: arg 0 is the queue id, arg 1 the entry.
+    const entry = historyStore.append.mock.calls[0][1] as HistoryEntry;
     expect(entry.terminalStatus).toBe('failed');
     expect(entry.lastErrorSummary).not.toBeNull();
   });
@@ -209,7 +226,8 @@ describe('Audit/history-emit parity post-Wave-7 (T103)', () => {
     await controller.startNew(feature, null);
 
     expect(historyStore.append).toHaveBeenCalledTimes(1);
-    const entry = historyStore.append.mock.calls[0][0] as HistoryEntry;
+    // FR-R3-010 — `append` names the partition: arg 0 is the queue id, arg 1 the entry.
+    const entry = historyStore.append.mock.calls[0][1] as HistoryEntry;
     expect(entry.terminalStatus).toBe('canceled');
   });
 

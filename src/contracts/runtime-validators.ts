@@ -59,6 +59,7 @@ import {
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
+  CMD_RESOLVE_AUDIT_POINTER,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
@@ -79,6 +80,7 @@ import {
   validateStopPhaseLogTail
 } from './validators/phase-log';
 import { validateReadMetrics } from './validators/metrics';
+import { validateResolveAuditPointer } from './validators/history-evidence';
 import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
@@ -112,6 +114,7 @@ import {
 } from './validators/shared';
 
 export { isValidReadMetricsResponse } from './validators/metrics';
+export { isValidResolveAuditPointerResponse } from './validators/history-evidence';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
 const DESCRIPTION_MAX = 4096;
@@ -236,6 +239,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateStopPhaseLogTail(obj, correlationId);
     case CMD_OPEN_VERBOSE_SETTING:
       return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
+    case CMD_RESOLVE_AUDIT_POINTER:
+      return validateResolveAuditPointer(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:
@@ -587,7 +592,20 @@ function validateSaveModels(obj: Record<string, unknown>, correlationId: string)
       }
     }
   }
-  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: { models: p.models as Record<string, readonly string[]> } } as unknown as SidebarCommand);
+  // Feature 096 — forward `expectedRevision` and `mutation` when present so the
+  // import-confirm gated path in cmd-save-models.ts is reachable. The manual
+  // add/remove call site omits both; the import-confirm call site sends both.
+  const forwarded: Record<string, unknown> = { models: p.models };
+  if (typeof p.expectedRevision === 'string') {
+    forwarded.expectedRevision = p.expectedRevision;
+  }
+  if (p.mutation !== undefined && p.mutation !== null && typeof p.mutation === 'object') {
+    const kind = (p.mutation as { kind?: unknown }).kind;
+    if (kind === 'manual-edit' || kind === 'import-package') {
+      forwarded.mutation = p.mutation;
+    }
+  }
+  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: forwarded } as unknown as SidebarCommand);
 }
 
 // Feature 011 — CMD_SAVE_GENERAL_SETTINGS payload contract.
