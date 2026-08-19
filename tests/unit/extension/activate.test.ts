@@ -118,6 +118,14 @@ import { disposeWorkspaceFolderPicker } from '../../../src/state/workspace-folde
 // Feature 058 — the activation guard is one-shot per activation; reset it
 // so each test case exercises the predicate independently.
 import { resetMultiRootWarningGuardForTest } from '../../../src/state/multi-root-warning';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { createDiskOwnershipFs } from '../../../src/state/ownership-fs';
+import { OwnershipRegistry, PRIMACY_RESOURCE } from '../../../src/state/ownership-registry';
+import { STALENESS_THRESHOLD_MS } from '../../../src/state/lock';
+
+/** The workspace every activation in this file opens. */
+const WORKSPACE_ROOT = '/tmp/ws';
 
 interface MockMemento {
   get<T>(key: string): T | undefined;
@@ -158,7 +166,7 @@ function buildContext(overrides: { mementoStore?: Map<string, unknown> } = {}): 
   return { context, subscriptions, store };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   mocks.state.registerWebviewViewProvider.mockClear();
   mocks.state.registerCommand.mockClear();
   mocks.state.showErrorMessage.mockClear();
@@ -169,6 +177,16 @@ beforeEach(() => {
   mocks.state.workspaceFolders = undefined;
   disposeWorkspaceFolderPicker();
   resetMultiRootWarningGuardForTest();
+  // Feature FR-R3-003 — ownership records live on disk under the workspace, not
+  // in the `Memento`, so unlike every other line above they outlive the process.
+  // Each `activate()` below is a separate simulated window that never reaches
+  // `dispose()`, so its primacy claim stays validly held: without this, the
+  // second activation in the file is correctly refused, and the file's outcome
+  // would depend on its own history and on whether 15 s of staleness had elapsed.
+  await fs.rm(path.join(WORKSPACE_ROOT, '.schegent', 'ownership'), {
+    recursive: true,
+    force: true
+  });
 });
 
 describe('activate() — BUG-001 activation invariant', () => {
@@ -286,9 +304,21 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
   });
 
   it('does not reclaim when another window holds a fresh workspace lock', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    // Feature FR-R3-003 — the incumbent is seeded where primacy is now decided:
+    // the fenced record under the workspace, not `schegent.lock`. Seeding only
+    // the `Memento` no longer expresses "another window holds it", because a
+    // `Memento` is a per-extension-host cache — the other window's entry would
+    // never appear in this one's, which is the finding this feature closes. The
+    // mirror is seeded too, so the assertion can show it was left untouched.
+    mocks.state.workspaceFolders = [{ uri: { fsPath: WORKSPACE_ROOT } }];
     const fresh = Date.now() - 1_000; // well within the 15s threshold
     const otherOwner = 'schegent-other-pid-cafebabe';
+    const ownershipDir = path.join(WORKSPACE_ROOT, '.schegent', 'ownership');
+    const incumbent = new OwnershipRegistry(createDiskOwnershipFs(ownershipDir), ownershipDir);
+    expect(
+      (await incumbent.acquire(PRIMACY_RESOURCE, otherOwner, fresh, STALENESS_THRESHOLD_MS))
+        .outcome
+    ).toBe('acquired');
     const store = new Map<string, unknown>([
       ['schegent.schemaVersion', '1.0.0'],
       ['schegent.lock', { ownerId: otherOwner, acquiredAt: fresh, heartbeatAt: fresh }]
@@ -300,5 +330,8 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
     const lock = store.get('schegent.lock') as { ownerId: string } | null;
     expect(lock).not.toBeNull();
     expect(lock!.ownerId).toBe(otherOwner);
+    // And the incumbent still holds the record it was granted.
+    const record = await incumbent.read(PRIMACY_RESOURCE);
+    expect(record?.holder?.ownerId).toBe(otherOwner);
   });
 });

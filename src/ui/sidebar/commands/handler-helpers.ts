@@ -93,10 +93,10 @@ export function requireOps(ctx: HandlerContext): QueueOps | null {
   return null;
 }
 
-export function checkPrimary(ctx: HandlerContext): boolean {
+export async function checkPrimary(ctx: HandlerContext): Promise<boolean> {
   if (!ctx.deps.isPrimary) return true;
   try {
-    return ctx.deps.isPrimary();
+    return await ctx.deps.isPrimary();
   } catch {
     return false;
   }

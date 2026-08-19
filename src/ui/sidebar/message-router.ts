@@ -80,7 +80,7 @@ export class MessageRouter {
         await ack(ctx, 'rejected', UNTRUSTED_REJECT);
         return;
       }
-      if (!this.checkPrimary()) {
+      if (!(await this.checkPrimary())) {
         // Feature 019 BUG-001 (FR-021) — WARN BEFORE the ack so the
         // runtime-log line lands even if the ack-post throws. WARN (not
         // DEBUG) because this is the operator's only diagnostic surface
@@ -113,10 +113,17 @@ export class MessageRouter {
     return MUTATING_COMMANDS.has(type);
   }
 
-  private checkPrimary(): boolean {
+  /**
+   * Feature FR-R3-003 (T300) — awaited, because the answer is now a read of the
+   * fenced ownership record rather than of the `Memento` mirror. Fail-closed on
+   * both a throw and a rejection: a window that cannot prove it holds primacy is
+   * treated as not holding it, which is the same posture the acquisition path
+   * takes.
+   */
+  private async checkPrimary(): Promise<boolean> {
     if (!this.deps.isPrimary) return true;
     try {
-      return this.deps.isPrimary();
+      return await this.deps.isPrimary();
     } catch {
       return false;
     }

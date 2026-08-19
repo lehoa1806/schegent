@@ -34,6 +34,18 @@ import type { SanitizedLogger } from '../lib/logger';
 export interface ExecutionLeasePort {
   tryAcquire(queueId: string): Promise<{ acquired: boolean; ownerId: string }>;
   release(queueId: string): Promise<void> | void;
+  /**
+   * Feature FR-R3-003 (T301) — the point-of-effect check on the fencing token
+   * step 6 was granted, read from the arbitrated record rather than the mirror.
+   *
+   * Optional so the doubles that predate the feature keep working; when it is
+   * absent the drain admits on step 6's outcome alone, which is what it did
+   * before. When it is present and answers `false`, the queue is given back and
+   * nothing starts — a claim that cannot be proved at the moment of effect is not
+   * a claim, and on a shared working tree the cost of admitting anyway is two
+   * windows' Runs in one tree.
+   */
+  hasLease?(queueId: string): Promise<boolean>;
 }
 
 /**
@@ -303,8 +315,12 @@ export class AutoDrainCoordinator {
     // single enforcement site.
     const queueState = this.store.getQueue(queueId);
     if (queueState.queueLifecycle === 'idle-pending') return false;
-    // Step 2 — paused by the operator or by a system pause.
-    if (queueState.paused) return false;
+    // Step 2 — paused by the operator or by a system pause. FR-R3-011 — read
+    // off the discriminator, the same field step 1 reads. This used to read the
+    // legacy `paused` mirror, which the v13 collapse retired to migration input:
+    // a record written after the collapse carries no `paused`, so the old read
+    // was `undefined` on every queue and this step stopped refusing anything.
+    if (queueState.queueLifecycle === 'operator-paused') return false;
     // Step 3 — this queue is busy. One limit, two readings, on the same terms as
     // step 4 below: neither subsumes the other, so a start needs both.
     //
@@ -398,6 +414,16 @@ export class AutoDrainCoordinator {
     // window is draining this queue right now.
     const acquired = await this.executionLease.tryAcquire(queueId);
     if (!acquired.acquired) return false;
+    // Feature FR-R3-003 (T301) — re-check the token between the claim and the
+    // start. Step 6 and step 7 are two awaits apart, and the interval is exactly
+    // where a stalled window used to be reclaimed and then start anyway.
+    if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
+      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      this.logger?.warn(
+        `auto-drain: execution lease for queue ${queueId} could not be verified at start; not admitting`
+      );
+      return false;
+    }
     // Step 7 — start.
     try {
       // If the pending task still carries a runId (preserved by the
