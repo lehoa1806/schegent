@@ -1,0 +1,506 @@
+// Feature FR-R3-007 (T363) — the transport sink's two load-bearing properties:
+// it is bounded, and it is sanitized.
+//
+// Run against a real temporary directory rather than a filesystem double. The
+// sink proves containment through `resolveContainedForWrite` /
+// `resolveContainedLink`, both of which call `realpath`, so a double would have
+// to model symlink resolution to answer them — and a double that answers
+// "contained" unconditionally would make every containment assertion below
+// vacuous while looking green. A real tree resolves naturally, and the rotation
+// assertions become directory listings, which is the form an operator would
+// check them in.
+//
+// `maxBytes` is set low deliberately. The production ceiling is 5 MiB, and
+// writing 20 MiB to assert a rollover would trade the whole point of the bound
+// for a slow test; the bound's *logic* is size-independent, so the fixture picks
+// sizes where a rollover is one or two records away.
+//
+// Sanitization is checked with the real `SanitizedLogger`, not a stub. The rule
+// this feature must not break is that `SECRET_PATTERNS` stays the single source
+// of truth — a stub sanitizer would pass whatever this file decided to assert,
+// including nothing, so the redaction assertion is only worth making against the
+// set the host actually uses.
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import {
+  CliTransportSink,
+  CLI_TRANSPORT_DIRECTORY,
+  CLI_TRANSPORT_FILE_NAME,
+  CLI_TRANSPORT_MAX_BYTES,
+  CLI_TRANSPORT_MAX_GENERATIONS,
+  createCliTransportSettingsAccessor,
+  type CliTransportSettings,
+  type CliTransportSettingsAccessor
+} from '../../../src/monitor/cli-transport-sink';
+import { SanitizedLogger } from '../../../src/lib/logger';
+
+let workspaceRoot = '';
+let warnings: string[] = [];
+
+const logger = { warn: (message: string) => warnings.push(message) };
+const realLogger = new SanitizedLogger([]);
+
+function livePath(root = workspaceRoot): string {
+  return path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME);
+}
+
+/**
+ * A settings accessor with a call counter, so "read per emit, never cached" is
+ * an assertion rather than a claim about the source.
+ */
+function countingAccessor(
+  overrides: Partial<CliTransportSettings> = {}
+): CliTransportSettingsAccessor & { reads: number } {
+  const accessor = {
+    reads: 0,
+    read: (): CliTransportSettings => {
+      accessor.reads += 1;
+      return {
+        root: workspaceRoot,
+        path: livePath(),
+        maxBytes: CLI_TRANSPORT_MAX_BYTES,
+        maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS,
+        ...overrides
+      };
+    }
+  };
+  return accessor;
+}
+
+function makeSink(
+  settings: CliTransportSettingsAccessor,
+  sanitize: (line: string) => string = (line) => line
+): CliTransportSink {
+  return new CliTransportSink({
+    settings,
+    sanitize,
+    logger,
+    now: () => new Date('2026-05-10T12:00:00.000Z')
+  });
+}
+
+async function listTransportFiles(): Promise<readonly string[]> {
+  const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
+  try {
+    return (await fs.readdir(directory)).filter((n) => n.startsWith(CLI_TRANSPORT_FILE_NAME)).sort();
+  } catch {
+    return [];
+  }
+}
+
+async function readLive(): Promise<string> {
+  return fs.readFile(livePath(), 'utf8');
+}
+
+beforeEach(async () => {
+  workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-'));
+  warnings = [];
+});
+
+afterEach(async () => {
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+describe('CliTransportSink — the record it writes', () => {
+  it('creates the .schegent directory on the first record', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'hello' });
+    await sink.flushPendingWrites();
+
+    expect(await readLive()).toBe(
+      '2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\thello\n'
+    );
+    expect(warnings, 'a missing parent is recovered, not reported').toEqual([]);
+  });
+
+  it('puts the content last, so cut -f5- recovers the CLI’s own bytes', async () => {
+    const sink = makeSink(countingAccessor());
+    // A stream-json line: tabs inside it must survive, because the content field
+    // is terminal and cannot shift a column.
+    const jsonLine = '{"type":"tool_result","text":"a\tb\tc"}';
+    sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line: jsonLine });
+    await sink.flushPendingWrites();
+
+    const record = (await readLive()).trimEnd();
+    const fields = record.split('\t');
+    expect(fields.slice(0, 4)).toEqual([
+      '2026-05-10T12:00:00.000Z',
+      'run-1',
+      'speckit-implement',
+      'stdout'
+    ]);
+    expect(fields.slice(4).join('\t')).toBe(jsonLine);
+  });
+
+  it('flattens tabs in the attribution fields but never in the line', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'a\tb', phase: 'c\nd', stream: 'stderr', line: 'kept\there' });
+    await sink.flushPendingWrites();
+
+    const fields = (await readLive()).trimEnd().split('\t');
+    expect(fields[1]).toBe('a b');
+    expect(fields[2]).toBe('c d');
+    expect(fields.slice(4).join('\t')).toBe('kept\there');
+  });
+
+  it('writes one physical line per record, in call order', async () => {
+    const sink = makeSink(countingAccessor());
+    for (const line of ['one', 'two', 'three']) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    const lines = (await readLive()).split('\n').filter((l) => l.length > 0);
+    expect(lines).toHaveLength(3);
+    expect(lines.map((l) => l.split('\t')[4])).toEqual(['one', 'two', 'three']);
+  });
+
+  it('does not truncate a long line — the bound is the file, not the record', async () => {
+    // The audit payload's 640-char string cap cost one run 7046 of 7452 lines.
+    // Trading that for a file-level bound is the whole design, so a line well
+    // past any per-string cap has to arrive whole.
+    const sink = makeSink(countingAccessor());
+    const long = 'x'.repeat(20_000);
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: long });
+    await sink.flushPendingWrites();
+
+    expect((await readLive()).trimEnd().split('\t')[4]).toBe(long);
+    expect(await readLive()).not.toContain('truncated');
+  });
+});
+
+describe('CliTransportSink — sanitization', () => {
+  it('redacts through the host’s own SECRET_PATTERNS set', async () => {
+    const sink = makeSink(countingAccessor(), (line) => realLogger.sanitize(line));
+    const secret = `sk-ant-${'A'.repeat(40)}`;
+    sink.record({
+      runId: 'run-1',
+      phase: 'speckit-implement',
+      stream: 'stderr',
+      line: `auth failed for ${secret}`
+    });
+    await sink.flushPendingWrites();
+
+    const written = await readLive();
+    expect(written).not.toContain(secret);
+    expect(written).toContain('[REDACTED]');
+  });
+
+  it('sanitizes every line, not just the first', async () => {
+    const seen: string[] = [];
+    const sink = makeSink(countingAccessor(), (line) => {
+      seen.push(line);
+      return line.replace(/hunter2/g, '[REDACTED]');
+    });
+    for (const line of ['pw=hunter2', 'ok', 'again hunter2']) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    expect(seen, 'the sink sanitizes, so a caller cannot forget to').toEqual([
+      'pw=hunter2',
+      'ok',
+      'again hunter2'
+    ]);
+    expect(await readLive()).not.toContain('hunter2');
+  });
+});
+
+describe('CliTransportSink — bounded by rotation', () => {
+  /** A record is 5 attribution/format bytes plus the line; keep the arithmetic visible. */
+  function recordBytes(line: string): number {
+    return Buffer.byteLength(
+      `2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\t${line}\n`,
+      'utf8'
+    );
+  }
+
+  it('rotates the live file to .1 once the next record would exceed the bound', async () => {
+    const line = 'a'.repeat(50);
+    const size = recordBytes(line);
+    // Two records fit exactly; the third must roll over.
+    const sink = makeSink(countingAccessor({ maxBytes: size * 2, maxGenerations: 3 }));
+    for (let index = 0; index < 3; index += 1) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    expect(await listTransportFiles()).toEqual([
+      CLI_TRANSPORT_FILE_NAME,
+      `${CLI_TRANSPORT_FILE_NAME}.1`
+    ]);
+    expect(
+      (await readLive()).split('\n').filter((l) => l.length > 0),
+      'the record that triggered rotation starts the new file'
+    ).toHaveLength(1);
+    expect(
+      (await fs.readFile(`${livePath()}.1`, 'utf8')).split('\n').filter((l) => l.length > 0)
+    ).toHaveLength(2);
+  });
+
+  it('fills up to maxBytes inclusively before rolling', async () => {
+    const line = 'b'.repeat(30);
+    const size = recordBytes(line);
+    const sink = makeSink(countingAccessor({ maxBytes: size, maxGenerations: 2 }));
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    await sink.flushPendingWrites();
+
+    expect(
+      await listTransportFiles(),
+      'a file exactly at the bound has not exceeded it'
+    ).toEqual([CLI_TRANSPORT_FILE_NAME]);
+  });
+
+  it('never retains more than maxGenerations behind the live file', async () => {
+    const line = 'c'.repeat(40);
+    const sink = makeSink(
+      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
+    );
+    // Ten rollovers against a two-generation cap: if the shift leaked, the
+    // directory would grow with the number of records rather than stay bounded.
+    for (let index = 0; index < 10; index += 1) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    expect(await listTransportFiles()).toEqual([
+      CLI_TRANSPORT_FILE_NAME,
+      `${CLI_TRANSPORT_FILE_NAME}.1`,
+      `${CLI_TRANSPORT_FILE_NAME}.2`
+    ]);
+  });
+
+  it('shifts oldest-first, so the newest generation is .1', async () => {
+    const line = 'd'.repeat(40);
+    const sink = makeSink(
+      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
+    );
+    for (const marker of ['first', 'second', 'third']) {
+      sink.record({
+        runId: 'run-1',
+        phase: 'speckit-plan',
+        stream: 'stdout',
+        line: `${marker}${'d'.repeat(40 - marker.length)}`
+      });
+      await sink.flushPendingWrites();
+    }
+
+    expect(await fs.readFile(`${livePath()}.1`, 'utf8')).toContain('second');
+    expect(await fs.readFile(`${livePath()}.2`, 'utf8')).toContain('first');
+    expect(await readLive()).toContain('third');
+  });
+
+  it('truncates in place when no generations are retained', async () => {
+    const line = 'e'.repeat(40);
+    const sink = makeSink(
+      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 0 })
+    );
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `keep${line}` });
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `next${line}` });
+    await sink.flushPendingWrites();
+
+    expect(await listTransportFiles()).toEqual([CLI_TRANSPORT_FILE_NAME]);
+    const written = await readLive();
+    expect(written).toContain('next');
+    expect(written, 'nothing to roll into, so the old content goes').not.toContain('keep');
+  });
+
+  it('sweeps generations orphaned above a lowered cap', async () => {
+    // The cap is code-resident, so this is what a release that lowers it leaves
+    // behind: slots the shift loop never visits.
+    const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(`${livePath()}.7`, 'orphan\n', 'utf8');
+    await fs.writeFile(`${livePath()}.keep-me`, 'operator file\n', 'utf8');
+
+    const line = 'f'.repeat(40);
+    const sink = makeSink(
+      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
+    );
+    for (let index = 0; index < 3; index += 1) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    const files = await listTransportFiles();
+    expect(files, 'a numeric suffix above the cap is swept').not.toContain(
+      `${CLI_TRANSPORT_FILE_NAME}.7`
+    );
+    expect(files, 'a non-numeric suffix belongs to the operator').toContain(
+      `${CLI_TRANSPORT_FILE_NAME}.keep-me`
+    );
+  });
+
+  it('seeds its byte tally from a file an earlier session left behind', async () => {
+    const line = 'g'.repeat(40);
+    const size = recordBytes(line);
+    const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(livePath(), 'x'.repeat(size), 'utf8');
+
+    const sink = makeSink(countingAccessor({ maxBytes: size, maxGenerations: 1 }));
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+    await sink.flushPendingWrites();
+
+    expect(
+      await listTransportFiles(),
+      'a new session that assumed zero bytes would grow the file without bound'
+    ).toEqual([CLI_TRANSPORT_FILE_NAME, `${CLI_TRANSPORT_FILE_NAME}.1`]);
+  });
+});
+
+describe('CliTransportSink — settings and destination', () => {
+  it('reads its settings once per record and holds nothing', async () => {
+    const accessor = countingAccessor();
+    const sink = makeSink(accessor);
+    for (let index = 0; index < 4; index += 1) {
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `l${index}` });
+    }
+    await sink.flushPendingWrites();
+
+    expect(accessor.reads, 'a cached settings object is the defect this shape prevents').toBe(4);
+  });
+
+  it('follows the workspace root when it changes mid-session', async () => {
+    const second = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-second-'));
+    try {
+      const sink = makeSink(createCliTransportSettingsAccessor(() => workspaceRoot));
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'in-first' });
+      await sink.flushPendingWrites();
+
+      const first = workspaceRoot;
+      workspaceRoot = second;
+      sink.record({ runId: 'run-2', phase: 'speckit-plan', stream: 'stdout', line: 'in-second' });
+      await sink.flushPendingWrites();
+
+      expect(await fs.readFile(livePath(first), 'utf8')).toContain('in-first');
+      expect(await fs.readFile(livePath(second), 'utf8')).toContain('in-second');
+      expect(await fs.readFile(livePath(first), 'utf8')).not.toContain('in-second');
+    } finally {
+      workspaceRoot = second;
+      await fs.rm(second, { recursive: true, force: true });
+      workspaceRoot = '';
+    }
+  });
+
+  it('drops the line when there is no workspace folder', async () => {
+    const sink = makeSink({ read: () => null });
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'nowhere' });
+    await sink.flushPendingWrites();
+
+    expect(await listTransportFiles(), 'no destination is not a guessed destination').toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('exposes a bounded ceiling that does not depend on the audit log', () => {
+    // The finding was a shared budget, so the numbers are asserted here: a
+    // change to either would otherwise be invisible outside a rotation test.
+    expect(CLI_TRANSPORT_MAX_BYTES).toBe(5 * 1024 * 1024);
+    expect(CLI_TRANSPORT_MAX_GENERATIONS).toBe(3);
+    expect(
+      CLI_TRANSPORT_MAX_BYTES * (CLI_TRANSPORT_MAX_GENERATIONS + 1),
+      'four files of 5 MiB — a fixed 20 MiB per workspace'
+    ).toBe(20 * 1024 * 1024);
+  });
+});
+
+describe('CliTransportSink — containment', () => {
+  it('refuses a destination outside the root, writes nothing, and warns once', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-out-'));
+    try {
+      const escapePath = path.join(outside, 'stolen.log');
+      const sink = makeSink({
+        read: () => ({
+          root: workspaceRoot,
+          path: escapePath,
+          maxBytes: CLI_TRANSPORT_MAX_BYTES,
+          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
+        })
+      });
+      for (let index = 0; index < 5; index += 1) {
+        sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'escape' });
+      }
+      await sink.flushPendingWrites();
+
+      await expect(fs.readFile(escapePath, 'utf8')).rejects.toThrow();
+      expect(warnings, 'one WARN for five refused lines').toHaveLength(1);
+      expect(warnings[0]).toContain('refused to write outside the workspace root');
+      expect(
+        warnings[0],
+        'a path outside the root is exactly the string that must not reach a log'
+      ).not.toContain(outside);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a live file symlinked out of the workspace', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-link-'));
+    try {
+      const decoy = path.join(outside, 'decoy.log');
+      await fs.writeFile(decoy, '', 'utf8');
+      await fs.mkdir(path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY), { recursive: true });
+      await fs.symlink(decoy, livePath());
+
+      const sink = makeSink(countingAccessor());
+      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'through-link' });
+      await sink.flushPendingWrites();
+
+      expect(
+        await fs.readFile(decoy, 'utf8'),
+        'a replaced destination is refused, not written through'
+      ).toBe('');
+      expect(warnings).toHaveLength(1);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('stops asking after a refusal — the answer does not change per line', async () => {
+    // Measured against a one-record baseline rather than a fixed number: the
+    // oracle walks to the nearest existing ancestor, so how many `realpath`
+    // calls one resolution costs depends on the temp tree's depth. The property
+    // is that twenty records cost the same as one, not what that cost is.
+    const escapePath = path.join(workspaceRoot, '..', 'escaped.log');
+    const makeCountingSink = (): { sink: CliTransportSink; calls: () => number } => {
+      let realpathCalls = 0;
+      const sink = new CliTransportSink({
+        settings: {
+          read: () => ({
+            root: workspaceRoot,
+            path: escapePath,
+            maxBytes: CLI_TRANSPORT_MAX_BYTES,
+            maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
+          })
+        },
+        sanitize: (line) => line,
+        logger,
+        realpath: async (target: string) => {
+          realpathCalls += 1;
+          return fs.realpath(target);
+        }
+      });
+      return { sink, calls: () => realpathCalls };
+    };
+
+    const baseline = makeCountingSink();
+    baseline.sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'x' });
+    await baseline.sink.flushPendingWrites();
+    expect(baseline.calls(), 'one record must resolve at least once').toBeGreaterThan(0);
+
+    const many = makeCountingSink();
+    for (let index = 0; index < 20; index += 1) {
+      many.sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'x' });
+    }
+    await many.sink.flushPendingWrites();
+
+    expect(
+      many.calls(),
+      'a per-line realpath on a refused path is a syscall per line of CLI output'
+    ).toBe(baseline.calls());
+  });
+});

@@ -72,6 +72,34 @@ export interface PhaseEndPayloadV3 {
   readonly omittedWarningCount?: number;
 }
 
+/**
+ * Feature FR-R3-007 (T354) — the invocation's transport aggregate.
+ *
+ * This event was always written; what changes is that it is now the ONLY thing
+ * in `audit.log` that says how much the CLI emitted, because the per-line
+ * `monitor-stdout-line` writer is gone. That promotion is why it gets a
+ * projection of its own instead of riding the generic `projectValue` path: the
+ * four aggregate fields are now load-bearing, and a bespoke projection is what
+ * makes their presence a typed contract rather than whatever the emitter
+ * happened to pass.
+ *
+ * The two timestamps are the interval the volume covers. Without them
+ * `stdoutLines: 365` is unanchored — 365 lines over four seconds and 365 over
+ * forty minutes are different runs — and the interval used to be recoverable by
+ * reading the first and last per-line entry's own timestamps.
+ */
+export interface MonitorInvocationSummaryPayloadV3 {
+  readonly status: string;
+  readonly durationMs: number;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly stdoutLines: number;
+  readonly stderrLines: number;
+  readonly firstOutputAt: string | null;
+  readonly lastOutputAt: string | null;
+  readonly detectedIssues: ReadonlyArray<string>;
+}
+
 export interface MetricsViewOpenedPayloadV3 {
   /** Ephemeral UI-session correlation identifier; never a backend conversation ID. */
   readonly sessionId: string;
@@ -333,6 +361,56 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   });
 }
 
+/**
+ * An ISO-8601 UTC instant as `Date.prototype.toISOString` writes one. The
+ * monitor is the only emitter and always formats through that method, so the
+ * pattern is a shape assertion on a code-resident format rather than a parser
+ * for operator input.
+ */
+const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+
+/**
+ * Anything that is not that shape becomes `null` rather than throwing.
+ *
+ * The trade is deliberate and it runs the opposite way from `cli-invocation`'s
+ * validation: with the per-line events gone this summary is the invocation's
+ * only volume record, so refusing the whole entry over a malformed timestamp
+ * would lose the counts too. A missing interval degrades the record; a rejected
+ * payload erases it.
+ */
+function projectActivityStamp(value: unknown): string | null {
+  return typeof value === 'string' && ISO_INSTANT_RE.test(value) ? value : null;
+}
+
+function projectMonitorInvocationSummary(
+  payload: Record<string, unknown>
+): MonitorInvocationSummaryPayloadV3 {
+  const issues = Array.isArray(payload.detectedIssues) ? payload.detectedIssues : [];
+  if (issues.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) {
+    throw new AuditPayloadValidationError('array-too-long');
+  }
+  return Object.freeze({
+    status: boundedMetadataString(payload.status, 'unknown'),
+    durationMs: numberValue(payload.durationMs),
+    exitCode:
+      payload.exitCode === null || payload.exitCode === undefined
+        ? null
+        : numberValue(payload.exitCode, 0),
+    signal: typeof payload.signal === 'string'
+      ? boundedMetadataString(payload.signal, 'unknown')
+      : null,
+    stdoutLines: numberValue(payload.stdoutLines),
+    stderrLines: numberValue(payload.stderrLines),
+    firstOutputAt: projectActivityStamp(payload.firstOutputAt),
+    lastOutputAt: projectActivityStamp(payload.lastOutputAt),
+    detectedIssues: Object.freeze(
+      issues
+        .filter((issue): issue is string => typeof issue === 'string')
+        .map((issue) => boundedMetadataString(issue, 'unknown'))
+    )
+  });
+}
+
 function projectMetricsViewOpened(
   payload: Record<string, unknown>
 ): MetricsViewOpenedPayloadV3 {
@@ -356,6 +434,8 @@ export function projectAuditPayload(
     projected = projectCliInvocation(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'phase-end') {
     projected = projectPhaseEnd(payload) as unknown as Record<string, unknown>;
+  } else if (eventType === 'monitor-invocation-summary') {
+    projected = projectMonitorInvocationSummary(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'metrics-view-opened') {
     projected = projectMetricsViewOpened(payload) as unknown as Record<string, unknown>;
   } else {
