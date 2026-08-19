@@ -56,8 +56,8 @@ describe('queue auto-drain prerequisites (US1 / T028)', () => {
 
   it('queue exposes pausedReason in pause state (T030)', async () => {
     await queue.setQueuePausedState(true, undefined, 'rate-limit cooldown', 'operator');
-    const state = store.getQueue();
-    expect(state.paused).toBe(true);
+    const state = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(state.queueLifecycle).toBe('operator-paused');
     expect(state.pausedReason).toBe('rate-limit cooldown');
   });
 
@@ -114,11 +114,16 @@ function makeCoordinator(
     | 'lease',
   queueId: string = DEFAULT_QUEUE_ID
 ): { coord: AutoDrainCoordinator; spies: StepSpies } {
-  const lifecycle: QueueLifecycle = stopAt === 'lifecycle' ? 'idle-pending' : 'active-empty';
+  // FR-R3-011 — both stop conditions are now the same field. `'paused'` used to
+  // be seeded through the legacy `paused` mirror while the lifecycle stayed
+  // `active-empty`; step 2 reads `queueLifecycle` like step 1 does, so the
+  // scenario has to say `operator-paused` or it seeds nothing at all.
+  const lifecycle: QueueLifecycle =
+    stopAt === 'lifecycle' ? 'idle-pending' : stopAt === 'paused' ? 'operator-paused' : 'active-empty';
   const spies: StepSpies = {
     getQueue: vi.fn(() => ({
       queueLifecycle: lifecycle,
-      paused: stopAt === 'paused',
+      pauseSource: stopAt === 'paused' ? 'operator' : null,
       inFlightId: null
     })),
     // BUG-003 — step 3's second reading. A paused Run holds its queue's one Run
@@ -278,6 +283,7 @@ describe('drainAll() keeps the idle-pending gate a single enforcement site (T037
     const ids = Object.keys(lifecycles);
     const getQueue = vi.fn((queueId: string) => ({
       queueLifecycle: lifecycles[queueId],
+      pauseSource: null,
       paused: false,
       inFlightId: null
     }));

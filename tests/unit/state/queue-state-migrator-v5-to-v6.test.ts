@@ -8,7 +8,21 @@ const NOW = 1_700_000_000_000;
 const UUID_HIGH = '11111111-2222-4333-8444-555555555555';
 const UUID_BG = '99999999-8888-4777-9666-555555555555';
 
-function entry(overrides: Partial<QueueRegistryEntry>): QueueRegistryEntry {
+/**
+ * A v5 registry entry, which carried the pause the migration inherits.
+ *
+ * FR-R3-011 removed `state` and `pauseSource` from `QueueRegistryEntry`, so the
+ * fixture type re-adds them: the v5 *input* still has them on disk, and reading
+ * the inherited pause off them is what this migration does. The v6 *output* no
+ * longer carries them — the inherited pause lands on the queue record — which
+ * is why the assertions below read `result.state.queueState`.
+ */
+type LegacyRegistryEntry = QueueRegistryEntry & {
+  readonly state?: 'active' | 'manually-paused';
+  readonly pauseSource?: 'operator' | 'cascade' | 'retry-cap' | null;
+};
+
+function entry(overrides: Partial<LegacyRegistryEntry>): QueueRegistryEntry {
   return {
     id: DEFAULT_QUEUE_ID,
     name: 'Default queue',
@@ -73,6 +87,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 400,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -82,8 +97,10 @@ describe('migrateV5ToV6 (030)', () => {
     expect(result.state.schemaVersion).toBe(6);
     expect(result.state.queueRegistry.entries).toHaveLength(1);
     expect(result.state.queueRegistry.entries[0].id).toBe(DEFAULT_QUEUE_ID);
-    expect(result.state.queueRegistry.entries[0].state).toBe('active');
-    expect(result.state.queueRegistry.entries[0].pauseSource).toBeNull();
+    // The unified queue is born unpaused, read off the queue record: FR-R3-011
+    // moved the pause there, so the output entry carries no pause at all.
+    expect(result.state.queueState.paused).toBe(false);
+    expect(result.state.queueState.pauseSource).toBeNull();
     expect(result.state.queueRegistry.entries[0].schedule).toBeNull();
     expect(result.state.queueRegistry.entries[0].createdAt).toBe(100);
 
@@ -135,12 +152,12 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 400,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
     const result = migrateV5ToV6(v5({ registry, queue }), NOW);
-    expect(result.state.queueRegistry.entries[0].state).toBe('manually-paused');
-    expect(result.state.queueRegistry.entries[0].pauseSource).toBe('operator');
+    expect(result.state.queueState.pauseSource).toBe('operator');
     expect(result.state.queueState.paused).toBe(true);
     expect(result.auditEvents[0].inheritedPausedState).toBe(true);
   });
@@ -166,6 +183,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 100,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -200,6 +218,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 400,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -222,6 +241,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: NOW,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -243,7 +263,7 @@ describe('migrateV5ToV6 (030)', () => {
     expect(result.migrated).toBe(true);
     expect(result.state.queueRegistry.entries).toHaveLength(1);
     expect(result.state.queueRegistry.entries[0].id).toBe(DEFAULT_QUEUE_ID);
-    expect(result.state.queueRegistry.entries[0].state).toBe('active');
+    expect(result.state.queueState.paused).toBe(false);
     expect(result.state.queueState.requests).toEqual([]);
     expect(result.state.queueState.inFlightId).toBeNull();
     expect(result.auditEvents[0]).toMatchObject({
@@ -272,6 +292,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 300,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -304,6 +325,7 @@ describe('migrateV5ToV6 (030)', () => {
       pausedReason: null,
       updatedAt: 300,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };

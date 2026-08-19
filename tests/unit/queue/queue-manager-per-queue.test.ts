@@ -30,7 +30,7 @@ import {
 } from '../../../src/state/workspace-state';
 import { createQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../../../src/queue/feature-request';
-import type { QueueRegistryEntry } from '../../../src/queue/queue-registry';
+import type { ProjectedQueueRegistryEntry } from '../../../src/queue/queue-registry';
 
 const QUEUE_B_ID = '11111111-2222-4333-8444-555555555555';
 
@@ -50,9 +50,17 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
   let store: WorkspaceStateStore;
   let queue: QueueManager;
 
-  /** The registry entry for `queueId`, which every assertion below addresses by id. */
-  function entryFor(queueId: string): QueueRegistryEntry {
-    const found = store.getQueueRegistry().entries.find((e) => e.id === queueId);
+  /**
+   * The registry entry for `queueId`, which every assertion below addresses by id.
+   *
+   * FR-R3-011 — the **projected** entry. Pause state is no longer stored on a
+   * registry entry; it is filled in on read from that queue's `QueueState`,
+   * which is the same value the drain gate reads. Every assertion in this file
+   * about `state` and `pauseSource` therefore now checks the projection of the
+   * one persisted answer rather than a second copy of it.
+   */
+  function entryFor(queueId: string): ProjectedQueueRegistryEntry {
+    const found = store.getProjectedQueueRegistry().entries.find((e) => e.id === queueId);
     if (!found) throw new Error(`registry has no entry for ${queueId}`);
     return found;
   }
@@ -63,7 +71,7 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
    * wrong one would still leave the addressed entry self-consistent.
    */
   function expectPauseSourceInvariant(): void {
-    for (const e of store.getQueueRegistry().entries) {
+    for (const e of store.getProjectedQueueRegistry().entries) {
       expect(
         e.state === 'manually-paused' ? e.pauseSource !== null : e.pauseSource === null,
         `entry ${e.id} violates the pauseSource invariant (state=${e.state}, pauseSource=${String(e.pauseSource)})`
@@ -187,13 +195,13 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
       const result = await queue.setQueuePausedState(true, QUEUE_B_ID);
       expect(result.ok).toBe(true);
 
-      expect(store.getQueue(QUEUE_B_ID).paused).toBe(true);
+      expect(store.getQueue(QUEUE_B_ID).queueLifecycle === 'operator-paused').toBe(true);
       expect(store.getQueue(QUEUE_B_ID).queueLifecycle).toBe('operator-paused');
       // The registry entry and the queue's own lifecycle agree — the
       // divergence `reconcileQueuePauseStateIfDivergent` exists to repair.
       expect(entryFor(QUEUE_B_ID).state).toBe('manually-paused');
 
-      expect(store.getQueue(DEFAULT_QUEUE_ID).paused).toBe(false);
+      expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
       expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).not.toBe('operator-paused');
       expectPauseSourceInvariant();
     });
@@ -208,7 +216,7 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
       // B has a pending Task of its own, so it resumes to idle-pending —
       // derived from B's rows, not from the workspace's.
       expect(store.getQueue(QUEUE_B_ID).queueLifecycle).toBe('idle-pending');
-      expect(store.getQueue(QUEUE_B_ID).paused).toBe(false);
+      expect(store.getQueue(QUEUE_B_ID).queueLifecycle === 'operator-paused').toBe(false);
       expect(entryFor(QUEUE_B_ID).state).toBe('active');
       expectPauseSourceInvariant();
     });
@@ -231,7 +239,7 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
       await queue.setQueuePausedState(true, QUEUE_B_ID);
 
       for (const queueId of [DEFAULT_QUEUE_ID, QUEUE_B_ID]) {
-        expect(store.getQueue(queueId).paused, `${queueId} paused`).toBe(true);
+        expect(store.getQueue(queueId).queueLifecycle === 'operator-paused', `${queueId} paused`).toBe(true);
         expect(store.getQueue(queueId).queueLifecycle, `${queueId} lifecycle`).toBe(
           'operator-paused'
         );
@@ -260,10 +268,10 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
 
       expect(entryFor(QUEUE_B_ID).state).toBe('manually-paused');
       expect(entryFor(QUEUE_B_ID).pauseSource).toBe('cascade');
-      expect(store.getQueue(QUEUE_B_ID).paused).toBe(true);
+      expect(store.getQueue(QUEUE_B_ID).queueLifecycle === 'operator-paused').toBe(true);
       // The sibling is untouched by a cascade that was not addressed to it.
       expect(entryFor(DEFAULT_QUEUE_ID).state).toBe('active');
-      expect(store.getQueue(DEFAULT_QUEUE_ID).paused).toBe(false);
+      expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
       expectPauseSourceInvariant();
     });
 
@@ -274,7 +282,7 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
 
       expect(entryFor(QUEUE_B_ID).state).toBe('active');
       expect(entryFor(QUEUE_B_ID).pauseSource).toBeNull();
-      expect(store.getQueue(QUEUE_B_ID).paused).toBe(false);
+      expect(store.getQueue(QUEUE_B_ID).queueLifecycle === 'operator-paused').toBe(false);
       expectPauseSourceInvariant();
     });
 
@@ -289,7 +297,7 @@ describe('queue-manager — feature 092 per-queue behavior (T013)', () => {
 
       expect(entryFor(QUEUE_B_ID).state).toBe('manually-paused');
       expect(entryFor(QUEUE_B_ID).pauseSource).toBe('operator');
-      expect(store.getQueue(QUEUE_B_ID).paused).toBe(true);
+      expect(store.getQueue(QUEUE_B_ID).queueLifecycle === 'operator-paused').toBe(true);
       expectPauseSourceInvariant();
     });
 

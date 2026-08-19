@@ -11,8 +11,6 @@ import {
   isValidQueueName,
   makeDefaultRegistry,
   renameQueue,
-  setQueuePaused,
-  setQueueState,
   setQueueSchedule,
   validateQueueRegistry
 } from '../../../src/queue/queue-registry';
@@ -46,8 +44,12 @@ describe('queue-registry (017 T008; multi-queue restored by 092 T008/T009/T033a)
       expect(r.entries[0].id).toBe(DEFAULT_QUEUE_ID);
       expect(r.entries[0].name).toBe('Default queue');
       expect(r.entries[0].position).toBe(0);
-      expect(r.entries[0].state).toBe('active');
       expect(r.entries[0].schedule).toBeNull();
+      // FR-R3-011 — a stored entry carries no pause fields at all. `state` and
+      // `pauseSource` are projected on read from the queue's own record, and
+      // `projectQueueRegistry` has its own tests.
+      expect('state' in r.entries[0]).toBe(false);
+      expect('pauseSource' in r.entries[0]).toBe(false);
     });
   });
 
@@ -93,10 +95,9 @@ describe('queue-registry (017 T008; multi-queue restored by 092 T008/T009/T033a)
         id: UUID_A,
         name: 'Critical',
         position: 1,
-        state: 'active',
-        pauseSource: null,
         schedule: null
       });
+      expect('state' in r1.entries[1]).toBe(false);
       expect(() => validateQueueRegistry(r1)).not.toThrow();
     });
 
@@ -205,29 +206,11 @@ describe('queue-registry (017 T008; multi-queue restored by 092 T008/T009/T033a)
     });
   });
 
-  describe('setQueuePaused / setQueueState', () => {
-    it('transitions between active and manually-paused', () => {
-      const r0 = makeDefaultRegistry(NOW);
-      const r1 = setQueuePaused(r0, {
-        id: DEFAULT_QUEUE_ID,
-        paused: true,
-        now: NOW + 1
-      });
-      expect(findQueue(r1, DEFAULT_QUEUE_ID)?.state).toBe('manually-paused');
-      const r2 = setQueuePaused(r1, {
-        id: DEFAULT_QUEUE_ID,
-        paused: false,
-        now: NOW + 2
-      });
-      expect(findQueue(r2, DEFAULT_QUEUE_ID)?.state).toBe('active');
-      const r3 = setQueueState(r2, {
-        id: DEFAULT_QUEUE_ID,
-        state: 'manually-paused',
-        now: NOW + 3
-      });
-      expect(findQueue(r3, DEFAULT_QUEUE_ID)?.state).toBe('manually-paused');
-    });
-  });
+  // FR-R3-011 — the `setQueuePaused` / `setQueueState` block that stood here is
+  // gone with the functions. Pausing a queue is a write to that queue's
+  // `QueueState`, exercised by `queue-registry-pause-source.test.ts` (projection)
+  // and `tests/integration/queue-pause/single-representation.test.ts` (end to
+  // end). Nothing in this module transitions a pause any more.
 
   describe('setQueueSchedule', () => {
     it('attaches and clears schedule', () => {

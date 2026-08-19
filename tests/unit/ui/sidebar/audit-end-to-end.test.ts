@@ -91,7 +91,7 @@ describe('audit -> projector end-to-end (T060)', () => {
         outcome: 'success',
         payload: { summary: 'invoked claude' }
       }),
-      store.setQueue({ requests: [], inFlightId: null, paused: false, pausedReason: null, updatedAt: Date.now(), queueLifecycle: 'active-empty', scheduledStartAt: null, scheduledStartSource: null })
+      store.setQueue({ requests: [], inFlightId: null, paused: false, pausedReason: null, updatedAt: Date.now(), queueLifecycle: 'active-empty', pauseSource: null, scheduledStartAt: null, scheduledStartSource: null })
     ]);
 
     await waitMs(150 + FLUSH_PAD_MS);

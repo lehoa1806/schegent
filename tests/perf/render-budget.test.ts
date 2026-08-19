@@ -149,6 +149,7 @@ describe('Render budget regression (SC-006)', () => {
       inFlightId: null,
       updatedAt: 1_700_000_000_000,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       requests: queueRequests

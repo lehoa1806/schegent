@@ -91,10 +91,18 @@ function seedV10Workspace(memento: FakeMemento, run: WorkflowRun): void {
   const registry = buildQueueRegistry({ count: 2, defaultAtPosition: 0 });
   const queueMap: Record<string, QueueState> = {};
   for (const entry of registry.entries) {
-    const state = buildV9QueueState({ pendingCount: 1 });
+    // FR-R3-011 — the seeded record is already collapsed: `buildV9QueueState`
+    // still writes the legacy `paused` mirror, and leaving it here would make
+    // the v12 → v13 collapse rewrite `KEYS.queue` during the same
+    // `initialize()`. That rewrite is correct, but it is not v11's, and the
+    // guarantee this file pins is that **v11** leaves the key byte-identical.
+    // Dropping the mirror from the fixture makes v13 a no-op so the assertion
+    // still observes only the migration it names.
+    const { paused: _collapsedMirror, ...state } = buildV9QueueState({ pendingCount: 1 });
     queueMap[entry.id] = {
       ...state,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       requests: state.requests.map((request) => ({
         ...request,
         id: taskIdFor(entry.id),

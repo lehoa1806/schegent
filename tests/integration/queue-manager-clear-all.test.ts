@@ -127,10 +127,10 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(result.activeRunCleared).toBe(true);
     expect(result.watchdogCleared).toBe(true);
 
-    const afterQueue = store.getQueue();
+    const afterQueue = store.getQueue(DEFAULT_QUEUE_ID);
     expect(afterQueue.requests).toEqual([]);
     expect(afterQueue.inFlightId).toBeNull();
-    expect(afterQueue.paused).toBe(false);
+    expect(afterQueue.queueLifecycle).not.toBe('operator-paused');
     expect(afterQueue.pausedReason).toBeNull();
 
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
@@ -150,13 +150,12 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     await queue.clearAll();
 
     // KEYS we expect to be touched in the clearAll path:
-    //   - schegent.queue              (queue items + paused + pausedReason)
-    //   - schegent.queueRegistry      (via setQueuePausedState)
-    //   - schegent.queue              (mirrored via setQueuePausedState)
+    //   - schegent.queue              (queue items + pausedReason + the pause)
     //   - schegent.run                (cleared)
     //   - schegent.watchdog           (cleared)
     //
     // We do NOT expect writes to:
+    //   - schegent.queues.registry
     //   - schegent.ui.confirmSuppression
     //   - schegent.history
     //   - schegent.queueRegistry.migrationQuarantine
@@ -170,9 +169,16 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(touched.has('schegent.queue.defaultQueueId')).toBe(false);
     expect(touched.has('schegent.queue.globalConcurrencyCap')).toBe(false);
     expect(touched.has('schegent.lock')).toBe(false);
+    // FR-R3-011 — the registry moved from "written by clearAll" to "not written
+    // by clearAll", and the assertion moved with it rather than being dropped.
+    // `setQueuePausedState` wrote the registry only to clear the entry's
+    // `state` / `pauseSource` pair; that pair is now derived on read, so there
+    // is nothing on the registry for a pause clear to change. What the registry
+    // does hold — queue identity, names, positions — `clearAll` has always
+    // preserved, and a write here would be the first chance to disturb it.
+    expect(touched.has('schegent.queues.registry')).toBe(false);
 
     expect(touched.has('schegent.queue')).toBe(true);
-    expect(touched.has('schegent.queues.registry')).toBe(true);
     expect(touched.has('schegent.run')).toBe(true);
     expect(touched.has('schegent.watchdog')).toBe(true);
   });
@@ -211,7 +217,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     expect(result.runnerAcked).toBe(false);
     expect(result.inflightAborted).toBe(true);
     // State is still fully cleared — runner ack is post-persistence:
-    expect(store.getQueue().requests).toEqual([]);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual([]);
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
   });
 
@@ -222,7 +228,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     };
     const result = await queue.clearAll(probe);
     expect(result.runnerAcked).toBe(false);
-    expect(store.getQueue().requests).toEqual([]);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual([]);
   });
 
   // BUG-003 (T079) — the probe tests above return true/false/throw without
@@ -274,7 +280,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     );
     expect(result.runnerAcked).toBe(false);
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
-    expect(store.getQueue().requests).toEqual([]);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual([]);
   });
 
   it('skips the runner-ack probe when nothing was in-flight', async () => {

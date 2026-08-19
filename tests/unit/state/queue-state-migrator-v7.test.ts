@@ -46,6 +46,7 @@ function v6State(opts: Partial<QueueState>): QueueState {
     // v7 fields are intentionally NOT provided on a true v6 record; the
     // migrator detects this via the absence of `queueLifecycle`.
     queueLifecycle: undefined as unknown as QueueState['queueLifecycle'],
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null,
     ...opts
@@ -149,6 +150,7 @@ describe('Feature 065 — migrateV6ToV7 result shape', () => {
       pausedReason: null,
       updatedAt: 1_700_000_005_000,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: 'migration-default',
       migrationNotice: 'pending'

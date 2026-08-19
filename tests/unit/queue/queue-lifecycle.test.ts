@@ -34,6 +34,7 @@ function makeState(partial: Partial<QueueState>): QueueState {
     pausedReason: null,
     updatedAt: 0,
     queueLifecycle: 'active-empty',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null,
     ...partial
@@ -91,6 +92,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           inFlightId: t.pendingId
@@ -106,6 +108,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'idle-pending',
+          pauseSource: null,
           scheduledStartAt: t.scheduledStartAt,
           scheduledStartSource: t.source
         }
@@ -123,6 +126,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'idle-pending',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null
         }
@@ -137,6 +141,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           inFlightId: 'r-test'
@@ -152,6 +157,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'running',
+          pauseSource: null,
           inFlightId: t.inFlightId,
           scheduledStartAt: null,
           scheduledStartSource: null
@@ -167,6 +173,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'operator-paused',
+          pauseSource: null,
           paused: true,
           pausedReason: 'operator',
           // scheduledStartAt is preserved on pause (per data-model: it
@@ -185,6 +192,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'running',
+          pauseSource: null,
           paused: false,
           pausedReason: null,
           inFlightId: t.inFlightId,
@@ -202,6 +210,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'active-empty',
+          pauseSource: null,
           paused: false,
           pausedReason: null,
           scheduledStartAt: null,
@@ -215,7 +224,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
       }
       return {
         kind: 'ok',
-        state: { ...state, queueLifecycle: 'running', inFlightId: t.nextInFlightId }
+        state: { ...state, queueLifecycle: 'running', pauseSource: null, inFlightId: t.nextInFlightId }
       };
     }
     case 'in-flight-terminate-empty': {
@@ -229,6 +238,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
         state: {
           ...state,
           queueLifecycle: 'active-empty',
+          pauseSource: null,
           inFlightId: null,
           scheduledStartAt: null,
           scheduledStartSource: null
@@ -249,7 +259,7 @@ function transition(state: QueueState, t: Transition): TransitionResult {
 
 describe('Feature 065 — QueueLifecycle transitions', () => {
   it('active-empty → idle-pending via enqueue-no-intent', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty' });
+    const s0 = makeState({ queueLifecycle: 'active-empty'});
     const r = transition(s0, { kind: 'enqueue-no-intent', pendingId: 'r-1' });
     if (r.kind !== 'ok') throw new Error('expected ok');
     expect(r.state.queueLifecycle).toBe('idle-pending');
@@ -257,7 +267,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   });
 
   it('active-empty → idle-pending via enqueue-scheduled and persists scheduledStartAt', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty' });
+    const s0 = makeState({ queueLifecycle: 'active-empty'});
     const r = transition(s0, {
       kind: 'enqueue-scheduled',
       pendingId: 'r-1',
@@ -272,7 +282,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   });
 
   it('active-empty → running via enqueue-now (skips idle-pending)', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty' });
+    const s0 = makeState({ queueLifecycle: 'active-empty'});
     const r = transition(s0, { kind: 'enqueue-now', pendingId: 'r-1' });
     if (r.kind !== 'ok') throw new Error('expected ok');
     expect(r.state.queueLifecycle).toBe('running');
@@ -283,6 +293,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   it('idle-pending → running via start-now-from-idle-pending and clears scheduledStartAt', () => {
     const s0 = makeState({
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: 1_700_000_000_000,
       scheduledStartSource: 'operator-chooser'
     });
@@ -295,7 +306,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   });
 
   it('running → operator-paused → running (with pending)', () => {
-    const sRun = makeState({ queueLifecycle: 'running', inFlightId: 'r-1' });
+    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
     const pauseResult = transition(sRun, { kind: 'pause' });
     if (pauseResult.kind !== 'ok') throw new Error('expected ok');
     expect(pauseResult.state.queueLifecycle).toBe('operator-paused');
@@ -314,6 +325,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   it('operator-paused → active-empty on resume without pending', () => {
     const sPaused = makeState({
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       paused: true,
       pausedReason: 'operator'
     });
@@ -325,7 +337,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   });
 
   it('FR-005 carve-out: running → active-empty when in-flight terminates with empty pending', () => {
-    const sRun = makeState({ queueLifecycle: 'running', inFlightId: 'r-1' });
+    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
     const r = transition(sRun, { kind: 'in-flight-terminate-empty' });
     if (r.kind !== 'ok') throw new Error('expected ok');
     expect(r.state.queueLifecycle).toBe('active-empty');
@@ -334,7 +346,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   });
 
   it('FR-005 carve-out: running → running when in-flight terminates with non-empty pending', () => {
-    const sRun = makeState({ queueLifecycle: 'running', inFlightId: 'r-1' });
+    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
     const r = transition(sRun, {
       kind: 'in-flight-terminate-nonempty',
       nextInFlightId: 'r-2'
@@ -348,6 +360,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
   it('cancel-schedule clears scheduledStartAt but leaves queue in idle-pending', () => {
     const s0 = makeState({
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: 1_700_000_000_000,
       scheduledStartSource: 'operator-chooser'
     });
@@ -361,30 +374,30 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
 
   it('rejects illegal transitions', () => {
     // start-now-from-idle-pending on active-empty
-    const r1 = transition(makeState({ queueLifecycle: 'active-empty' }), {
+    const r1 = transition(makeState({ queueLifecycle: 'active-empty'}), {
       kind: 'start-now-from-idle-pending'
     });
     expect(r1.kind).toBe('illegal');
     // enqueue-scheduled on operator-paused
     const r2 = transition(
-      makeState({ queueLifecycle: 'operator-paused', paused: true, pausedReason: 'operator' }),
+      makeState({ queueLifecycle: 'operator-paused', pauseSource: null, paused: true, pausedReason: 'operator' }),
       { kind: 'enqueue-scheduled', pendingId: 'r-1', scheduledStartAt: 1, source: 'operator-chooser' }
     );
     expect(r2.kind).toBe('illegal');
     // pause on operator-paused
     const r3 = transition(
-      makeState({ queueLifecycle: 'operator-paused', paused: true, pausedReason: 'operator' }),
+      makeState({ queueLifecycle: 'operator-paused', pauseSource: null, paused: true, pausedReason: 'operator' }),
       { kind: 'pause' }
     );
     expect(r3.kind).toBe('illegal');
     // resume-with-pending on running
-    const r4 = transition(makeState({ queueLifecycle: 'running', inFlightId: 'r-1' }), {
+    const r4 = transition(makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' }), {
       kind: 'resume-with-pending',
       inFlightId: 'r-2'
     });
     expect(r4.kind).toBe('illegal');
     // cancel-schedule on active-empty
-    const r5 = transition(makeState({ queueLifecycle: 'active-empty' }), {
+    const r5 = transition(makeState({ queueLifecycle: 'active-empty'}), {
       kind: 'cancel-schedule'
     });
     expect(r5.kind).toBe('illegal');
@@ -400,6 +413,7 @@ describe('Feature 065 — QueueLifecycle transitions', () => {
     for (const lc of lifecycles) {
       const state = makeState({
         queueLifecycle: lc,
+        pauseSource: null,
         paused: lc === 'operator-paused',
         pausedReason: lc === 'operator-paused' ? 'operator' : null,
         inFlightId: lc === 'running' ? 'r-1' : null,

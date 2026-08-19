@@ -273,9 +273,12 @@ describe('a refused submission audits the refusal, never the content', () => {
     const harness = await makeHarness({ initialNow: NOW, catalog: catalog() });
     try {
       await harness.store.updateQueue((queue) => ({
-        queue: { ...queue, paused: true },
+        // FR-R3-011 — the pause is seeded on the single representation. Setting
+        // the retired `paused` mirror here left the queue running, so the
+        // submission was accepted and there was no refusal to audit.
+        queue: { ...queue, queueLifecycle: 'operator-paused' as const, pauseSource: 'operator' as const },
         result: undefined
-      }));
+      }), 'default');
 
       await submit(harness, LOADED);
 

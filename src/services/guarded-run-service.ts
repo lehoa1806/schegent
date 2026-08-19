@@ -161,7 +161,12 @@ export class GuardedRunService {
 
     // Feature 092 (T060, FR-034) — addressed. A paused sibling queue must not
     // reject a schedule aimed at a different one.
-    if (this.deps.store.getQueue(req.queueId ?? 'default').paused) {
+    //
+    // FR-R3-011 — the pause is read off `queueLifecycle`, the single persisted
+    // representation. The retired `paused` mirror is absent from every record
+    // written after the v13 collapse, so reading it here admitted schedules onto
+    // a paused queue rather than rejecting them.
+    if (this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle === 'operator-paused') {
       const reason = 'queue-paused';
       await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
       return { outcome: 'rejected-paused', reason };

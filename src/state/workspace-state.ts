@@ -10,8 +10,13 @@ import {
   MAX_QUEUES,
   findQueue,
   makeDefaultRegistry,
+  projectQueueRegistry,
   validateQueueRegistry,
-  type QueueRegistry
+  type ProjectedQueueRegistry,
+  type QueuePauseSource,
+  type QueuePauseView,
+  type QueueRegistry,
+  type QueueRegistryEntry
 } from '../queue/queue-registry';
 import type {
   TerminalTransitionIntent,
@@ -22,7 +27,6 @@ import type {
 import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../contracts/state-schema';
 import {
   migrateLegacyRun,
-  migrateQueueRegistryV4ToV5,
   repairLegacyRunSnapshot,
   type WorkflowRunRepairedAuditEvent
 } from './workflow-run-migrator';
@@ -32,6 +36,8 @@ import {
   migrateV5ToV6,
   migrateV6ToV7,
   migrateV9ToV10,
+  migrateV12ToV13,
+  type QueuePauseCollapseAuditEvent,
   type QueueStateMap,
   type StateMigratedV5ToV6AuditEvent,
   type StateMigratedV6ToV7AuditEvent,
@@ -45,12 +51,28 @@ import {
   type RunStateMigrationAuditEvent
 } from './run-state-migrator';
 import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from './history-entry';
+import {
+  migrateV11ToV12,
+  type HistoryStateMigrationAuditEvent
+} from './history-state-migrator';
 import type { SanitizedLogger } from '../lib/logger';
 
 export const SCHEMA_VERSION = '1.0.0';
 export { STATE_SCHEMA_VERSION };
 
 export type PersistedHistoryEntry = object;
+
+/**
+ * FR-R3-010 (T402) — the v12 persisted shape of `KEYS.history`: one array of
+ * terminal-run records per queue, keyed by queue id.
+ *
+ * A queue with no history has no key. Absence is the empty state, never a
+ * stored `[]`, on the same reasoning as the v11 run map: a stored empty value
+ * is a value, and it would survive a reset's `undefined` clear as a re-created
+ * key on the next read.
+ */
+export type PersistedHistoryMap = Record<string, PersistedHistoryEntry[]>;
 
 /**
  * Render an arbitrary persisted-value shape for diagnostic logs without
@@ -158,17 +180,47 @@ function ensureExtendedQueueShape(persisted: QueueState): QueueState {
     (persisted as QueueState).scheduledStartSource ?? null
   );
   const migrationNotice = (persisted as QueueState).migrationNotice;
+  // FR-R3-011 — the legacy `paused` / `pausedReason` mirrors are read above (as
+  // migration input, to derive a lifecycle for a record that predates the
+  // discriminator) and are **not** written back. Normalising them forward would
+  // reinstate the second representation on every read, which is the one thing
+  // the collapse must not leave a way to do.
+  const pauseSource = normalizePauseSource(persisted, queueLifecycle, paused);
   return {
-    paused,
-    pausedReason: (persisted as QueueState).pausedReason ?? null,
     inFlightId,
     updatedAt: persisted.updatedAt ?? Date.now(),
     requests: normalizedRequests,
     queueLifecycle,
+    pauseSource,
+    // Kept, unlike `paused` above: the reason string is held nowhere else, and
+    // the controller matches its `retry-cap-exhausted:<runId>` marker. Cleared
+    // when the queue is not paused, which is the field's own invariant.
+    pausedReason: pauseSource === null ? null : persisted.pausedReason ?? null,
     scheduledStartAt: queueLifecycle === 'idle-pending' ? scheduledStartAt : null,
     scheduledStartSource: queueLifecycle === 'idle-pending' ? scheduledStartSource : null,
     ...(migrationNotice ? { migrationNotice } : {})
   };
+}
+
+/**
+ * FR-R3-011 — the pause attribution for a normalised queue record.
+ *
+ * A record written by this build carries its own `pauseSource` and it is
+ * returned verbatim. A record that predates the collapse carries none, so a
+ * queue that reads as paused is attributed `'operator'` — the conservative
+ * reading, because an operator pause outranks a cascade one and must never be
+ * demoted to it.
+ *
+ * The pairing is established here rather than asserted afterwards: a queue that
+ * is not paused has no source, in one expression, from one input.
+ */
+function normalizePauseSource(
+  persisted: QueueState,
+  queueLifecycle: QueueState['queueLifecycle'],
+  legacyPaused: boolean
+): QueuePauseSource {
+  if (queueLifecycle !== 'operator-paused' && !legacyPaused) return null;
+  return persisted.pauseSource ?? 'operator';
 }
 
 function deriveLifecycleFromLegacyShape(
@@ -216,8 +268,60 @@ export const KEYS = {
   // dismissal. It is also NOT `QueueState.migrationNotice` (feature 065), which
   // is per queue, fires on a different trigger, and carries different text —
   // one shared field would make dismissing either dismiss both.
-  concurrencyNotice: 'schegent.ui.concurrencyNotice'
+  concurrencyNotice: 'schegent.ui.concurrencyNotice',
+  // Feature FR-R3-006 (T337, T341) — the reset generation marker.
+  //
+  // In `KEYS` and on `RESET_EXEMPT_KEYS` below, which is not a contradiction:
+  // it belongs here because the completeness test enumerates this map and a key
+  // reset does not clear has to be an accounted-for decision rather than an
+  // omission, and it is exempt because it is the one record that must survive
+  // the clear it describes. Clearing it would erase the evidence that a reset
+  // was underway at exactly the moment that evidence matters.
+  resetMarker: 'schegent.reset.marker'
 } as const;
+
+/**
+ * Feature FR-R3-006 (T338) — the keys `reset()` deliberately does not clear.
+ *
+ * Every other entry in `KEYS` is cleared. This list is the complement, and
+ * `tests/unit/state/reset-covers-every-key.test.ts` asserts the two partition
+ * `KEYS` exactly — so a key added to neither fails the build rather than being
+ * silently missed, which is how `executionLeases` and `concurrencyNotice` came
+ * to survive a reset for two features.
+ *
+ * The reason strings are the point of the structure. A bare list would record
+ * that a key is exempt without recording why, and the next person to read it
+ * cannot tell a decision from an oversight.
+ */
+export const RESET_EXEMPT_KEYS: Readonly<Record<string, string>> = {
+  [KEYS.schemaVersion]:
+    'Reset re-stamps the version rather than clearing it. Clearing would make a ' +
+    'reset workspace indistinguishable from one that has never been opened, so ' +
+    'the next activation would take the unversioned branch and run the whole ' +
+    'forward-migration chain against empty state.',
+  [KEYS.schemaVersionNumeric]:
+    'Same as the version string above, and for the same reason: reset writes ' +
+    'STATE_SCHEMA_VERSION here so the cleared state is correctly labelled as ' +
+    'current rather than as unknown.',
+  [KEYS.resetMarker]:
+    'The marker records that a reset is underway. A reset that cleared its own ' +
+    'marker could not be detected as interrupted, which is the whole reason the ' +
+    'marker exists.'
+} as const;
+
+/**
+ * Feature FR-R3-006 (T339) — the keys a reset clears, derived rather than
+ * listed.
+ *
+ * Derivation is the fix. The list this replaces was maintained by hand, so a key
+ * was cleared only if someone remembered to add it, and two were not: feature
+ * 092's `executionLeases` and `concurrencyNotice` both shipped into `KEYS` and
+ * neither reached the clear. Deriving makes the default "cleared" and turns
+ * exemption into the thing that has to be written down.
+ */
+export const RESET_CLEARED_KEYS: readonly string[] = Object.values(KEYS).filter(
+  (key) => !(key in RESET_EXEMPT_KEYS)
+);
 
 import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
 export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
@@ -226,8 +330,67 @@ import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './conne
 // Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
 // so a value import here would close a cycle the type import cannot.
 import type { ExecutionLease } from './execution-lease';
+import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
+import {
+  isResetInterrupted,
+  isResetMarker,
+  nextResetGeneration,
+  type ResetMarker
+} from './reset-transaction';
+import {
+  MEMENTO_OWNERSHIP_DIR,
+  OwnershipRegistry,
+  type FenceCheck
+} from './ownership-registry';
 
-export const HISTORY_CAP = 50;
+/**
+ * FR-R3-010 (T403) — retained terminal runs **per queue**.
+ *
+ * The number is unchanged from the flat cap it replaces; its denominator is
+ * not. 50 used to be the whole workspace's history divided across up to
+ * `MAX_QUEUES` queues, so a fully populated workspace kept an average of 2.5
+ * runs each and one busy queue evicted everyone else's. It is now 50 for each
+ * queue, applied at the write site and nowhere else.
+ *
+ * Raising it is now a bounded decision rather than the compounding one it used
+ * to be: with the description moved out of the entry (T405) a record is a few
+ * hundred bytes of counters and identifiers, so depth costs bytes linearly
+ * instead of multiplying a 32 KB field by the cap on every completion.
+ */
+export const HISTORY_CAP_PER_QUEUE = 50;
+
+/**
+ * Feature FR-R3-003 (T302) — one window's claim on one arbitrated resource, as a
+ * guarded operation carries it.
+ *
+ * `resource` is `PRIMACY_RESOURCE` or `queueResource(queueId)`; the two have
+ * independent generation counters, so a fence is only meaningful against the
+ * resource it was issued for. Passing them together as one value is what keeps a
+ * caller from pairing a primacy token with a queue.
+ */
+export interface OwnershipClaim {
+  readonly resource: string;
+  readonly ownerId: string;
+  readonly fence: number;
+}
+
+/**
+ * The outcome of a guarded write (T302).
+ *
+ * `rejected` is the arm the fencing token exists to produce: the write did not
+ * happen, and the caller is told which generation superseded it and who holds the
+ * resource now. `unavailable` means storage could not answer — the claim may well
+ * still be good — and is kept separate for that reason.
+ */
+export type GuardedWriteOutcome =
+  | { readonly outcome: 'written' }
+  | {
+      readonly outcome: 'rejected';
+      readonly reason: 'stale-fence' | 'not-holder';
+      readonly currentFence: number;
+      readonly ownerOfRecord: string | null;
+    }
+  | { readonly outcome: 'unavailable' };
 
 /**
  * Feature 092 (T065, FR-037) — the answer to the shared-working-tree notice.
@@ -455,6 +618,19 @@ export interface InitializeResult {
   // `v6MigrationEvents` above, and unlike `v10MigrationEvents` it is actually
   // consumed — see the D2 wiring in `extension.ts`.
   v11MigrationEvents: readonly RunStateMigrationAuditEvent[];
+  // FR-R3-010 — emitted by the v11 → v12 migrator when it partitioned the flat
+  // history array by queue, plus one summary event when entries could not be
+  // attributed. Same forwarding contract as `v11MigrationEvents` above.
+  v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
+  // FR-R3-011 — emitted by the v12 → v13 pause collapse, plus one event per
+  // queue whose three representations disagreed. Same forwarding contract as
+  // `v12MigrationEvents` above.
+  //
+  // The divergence events are the durable record that replaces the retired
+  // reconciler's `logger.warn`. A warn line is neither durable nor
+  // correlatable, and an operator asking why a queue came back paused after an
+  // upgrade needs to see which representation said so.
+  v13MigrationEvents: readonly QueuePauseCollapseAuditEvent[];
   // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
   runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
@@ -468,9 +644,114 @@ export class WorkspaceStateStore {
   // live here: the reader no longer saturates, so there is no silent coercion
   // left to warn about.
 
+  // Feature FR-R3-003 (T295) — the compare-and-swap seam the two ownership
+  // leases acquire through. It is not a `KEYS` entry, because a `Memento` cannot
+  // answer the question either lease asks: `update` is unconditional and its
+  // cross-process visibility is undocumented, so two extension hosts reading
+  // this store's other keys would each elect themselves. Mutable because the
+  // store is constructed in activation stage 1, before a workspace folder is
+  // known, and the authoritative storage is rooted inside that folder.
+  private ownershipRegistry: OwnershipRegistry;
+
   constructor(memento: Memento, logger?: SanitizedLogger) {
     this.memento = memento;
     this.logger = logger ?? null;
+    this.ownershipRegistry = new OwnershipRegistry(
+      createMementoOwnershipFs(memento),
+      MEMENTO_OWNERSHIP_DIR
+    );
+  }
+
+  /**
+   * The registry both leases arbitrate through. Read at call time rather than
+   * captured, so a manager built before `useOwnershipStorage()` still lands on
+   * the authoritative storage.
+   */
+  public get ownership(): OwnershipRegistry {
+    return this.ownershipRegistry;
+  }
+
+  /**
+   * Point ownership arbitration at storage two extension hosts can both see.
+   *
+   * Called once, from activation stage 2, with `<workspaceRoot>/.schegent/ownership`
+   * — the earliest point at which the workspace root is known. Until then the
+   * store falls back to a `Memento`-backed adapter, which is correct for a single
+   * host and is the reason this call is not optional in production;
+   * `tests/lint/ownership-registry-wiring.test.ts` pins it.
+   */
+  public useOwnershipStorage(fs: OwnershipFs, dir: string): void {
+    this.ownershipRegistry = new OwnershipRegistry(fs, dir);
+  }
+
+  /**
+   * Feature FR-R3-003 (T302) — is this claim still good?
+   *
+   * The store's own view of a fencing token, so a caller asking "am I still the
+   * holder" does not reach past it into the registry. `rejected` carries the
+   * generation that superseded the claim and the owner of record, because a
+   * caller that has just been told it is not the holder is entitled to know who
+   * is — that is the half of the acceptance criterion the token exists for.
+   */
+  public verifyClaim(claim: OwnershipClaim): Promise<FenceCheck> {
+    return this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence);
+  }
+
+  /**
+   * Feature FR-R3-003 (T302) — perform `write` only while `claim` is still the
+   * current generation's holder, and report a typed rejection when it is not.
+   *
+   * This is the point-of-effect check the fencing token exists for. A host whose
+   * claim went stale, was reclaimed, and then revived still carries the token it
+   * was issued, and every path it can take to a write goes through here, so the
+   * write is *rejected* rather than merely late. The refusal is a value and not
+   * an exception: the caller decides whether to re-acquire (primacy, whose tenure
+   * has not ended) or to stand down (an execution lease, which now belongs to
+   * whoever reclaimed it), and neither of those is a failure to log.
+   *
+   * `refreshHeartbeatAt` folds the claim's own heartbeat into the same check, so
+   * a holder refreshing its liveness and writing the state that depends on it
+   * costs one storage round trip rather than two. Omit it for a write that must
+   * not extend the claim's tenure.
+   *
+   * `unavailable` means storage could not answer, and is deliberately not
+   * conflated with `rejected`: the first is transient and the claim may well
+   * still be ours, the second is a decision that has already been taken
+   * elsewhere. A caller that treats them alike surrenders a live claim on a
+   * failed read.
+   */
+  public async writeGuarded(
+    claim: OwnershipClaim,
+    write: () => Promise<void>,
+    options: { readonly refreshHeartbeatAt?: number } = {}
+  ): Promise<GuardedWriteOutcome> {
+    const verdict =
+      options.refreshHeartbeatAt === undefined
+        ? await this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence)
+        : await this.ownershipRegistry.heartbeat(
+            claim.resource,
+            claim.ownerId,
+            claim.fence,
+            options.refreshHeartbeatAt
+          );
+    if (verdict.outcome === 'unavailable') return { outcome: 'unavailable' };
+    if (verdict.outcome === 'rejected') {
+      return {
+        outcome: 'rejected',
+        reason: verdict.reason,
+        currentFence: verdict.currentFence,
+        ownerOfRecord: verdict.ownerOfRecord
+      };
+    }
+    try {
+      await write();
+    } catch {
+      // The claim was good and the write was not. Reported as `unavailable` for
+      // the same reason a failed read is: it says nothing about who holds the
+      // resource, and a caller must not read it as having lost one.
+      return { outcome: 'unavailable' };
+    }
+    return { outcome: 'written' };
   }
 
   public subscribe(listener: StoreChangeListener): Disposable {
@@ -526,7 +807,8 @@ export class WorkspaceStateStore {
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
       const v11Events = await this.migrateV10ToV11IfNeeded();
-      await this.reconcileQueuePauseStateIfDivergent();
+      const v12Events = await this.migrateV11ToV12IfNeeded();
+      const v13Events = await this.migrateV12ToV13IfNeeded();
       await this.stampVersion(true);
       return {
         migrated: true,
@@ -534,6 +816,8 @@ export class WorkspaceStateStore {
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
         v11MigrationEvents: v11Events,
+        v12MigrationEvents: v12Events,
+        v13MigrationEvents: v13Events,
         runRepairEvents
       };
     }
@@ -549,7 +833,8 @@ export class WorkspaceStateStore {
         const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
         const v10Events = await this.migrateV9ToV10IfNeeded();
         const v11Events = await this.migrateV10ToV11IfNeeded();
-        await this.reconcileQueuePauseStateIfDivergent();
+        const v12Events = await this.migrateV11ToV12IfNeeded();
+        const v13Events = await this.migrateV12ToV13IfNeeded();
         await this.stampVersion(false);
         return {
           migrated: true,
@@ -557,6 +842,8 @@ export class WorkspaceStateStore {
           v7MigrationEvents: v7Events,
           v10MigrationEvents: v10Events,
           v11MigrationEvents: v11Events,
+          v12MigrationEvents: v12Events,
+          v13MigrationEvents: v13Events,
           runRepairEvents
         };
       }
@@ -566,19 +853,23 @@ export class WorkspaceStateStore {
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
       const v11Events = await this.migrateV10ToV11IfNeeded();
-      const reconciled = await this.reconcileQueuePauseStateIfDivergent();
+      const v12Events = await this.migrateV11ToV12IfNeeded();
+      const v13Events = await this.migrateV12ToV13IfNeeded();
       return {
         migrated:
           v6Events.length > 0
           || v7Events.length > 0
           || v10Events.length > 0
           || v11Events.length > 0
-          || runRepairEvents.length > 0
-          || reconciled,
+          || v12Events.length > 0
+          || v13Events.length > 0
+          || runRepairEvents.length > 0,
         v6MigrationEvents: v6Events,
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
         v11MigrationEvents: v11Events,
+        v12MigrationEvents: v12Events,
+        v13MigrationEvents: v13Events,
         runRepairEvents
       };
     }
@@ -593,7 +884,8 @@ export class WorkspaceStateStore {
       const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
       const v10Events = await this.migrateV9ToV10IfNeeded();
       const v11Events = await this.migrateV10ToV11IfNeeded();
-      await this.reconcileQueuePauseStateIfDivergent();
+      const v12Events = await this.migrateV11ToV12IfNeeded();
+      const v13Events = await this.migrateV12ToV13IfNeeded();
       await this.stampVersion(true);
       return {
         migrated: true,
@@ -601,6 +893,8 @@ export class WorkspaceStateStore {
         v7MigrationEvents: v7Events,
         v10MigrationEvents: v10Events,
         v11MigrationEvents: v11Events,
+        v12MigrationEvents: v12Events,
+        v13MigrationEvents: v13Events,
         runRepairEvents
       };
     }
@@ -717,6 +1011,32 @@ export class WorkspaceStateStore {
   }
 
   /**
+   * FR-R3-010 (T406) — the v11 → v12 forward migration.
+   *
+   * Runs after `migrateV10ToV11IfNeeded()` for the same reason that one runs
+   * after the v9 → v10 lift: it shares the task → queue resolver, which reads a
+   * `KEYS.queue` the earlier step has already put in map shape. It owns exactly
+   * one `update()` and performs it only when the migrator reports a change, so
+   * `KEYS.history` is the only key it touches and a rejected write leaves valid
+   * v11 state behind for the next open to re-attempt.
+   *
+   * Keyed on the **shape** of the record, never on the persisted version
+   * number, on the same reasoning as its v11 sibling: the two live in separate
+   * memento keys with separate writes, so a workspace whose version key moved
+   * but whose record did not must still be repaired the next time it is opened.
+   */
+  private async migrateV11ToV12IfNeeded(): Promise<readonly HistoryStateMigrationAuditEvent[]> {
+    const result = migrateV11ToV12(
+      this.memento.get<unknown>(KEYS.history),
+      (taskId) => this.queueIdForPersistedTask(taskId),
+      Date.now()
+    );
+    if (!result.changed) return [];
+    await this.memento.update(KEYS.history, result.history);
+    return result.events;
+  }
+
+  /**
    * The queue a persisted Task belongs to, or `null` when no queue holds it.
    *
    * `QueueManager.queueIdForTask()` answers the same question but falls back to
@@ -732,46 +1052,44 @@ export class WorkspaceStateStore {
     return null;
   }
 
-  // BUG-001 self-heal: pre-fix persisted v6 state may have a stale legacy
-  // `QueueState.paused` diverging from the authoritative
-  // `QueueRegistry.entries[0].state`. Reconcile legacy → registry per FR-020.
-  private async reconcileQueuePauseStateIfDivergent(): Promise<boolean> {
-    const persistedQueue = this.readLegacySingularQueue();
-    const persistedRegistry = this.memento.get<QueueRegistry>(KEYS.queueRegistry);
-    if (!persistedQueue || !persistedRegistry) return false;
-    const defaultEntry = persistedRegistry.entries.find((e) => e.id === DEFAULT_QUEUE_ID);
-    if (!defaultEntry) return false;
-    const legacyPaused = persistedQueue.paused === true;
-    const registryPaused = defaultEntry.state === 'manually-paused';
-    if (legacyPaused === registryPaused) return false;
-    const correctedReason = registryPaused ? persistedQueue.pausedReason ?? null : null;
-    const inFlight = persistedQueue.inFlightId ?? null;
-    const pendingCount = (persistedQueue.requests ?? []).filter((r) => r.status === 'pending').length;
-    const correctedLifecycle: QueueState['queueLifecycle'] =
-      inFlight !== null
-        ? 'running'
-        : registryPaused
-        ? 'operator-paused'
-        : pendingCount > 0
-        ? 'idle-pending'
-        : 'active-empty';
-    await this.writeLegacySingularQueue({
-      ...persistedQueue,
-      paused: registryPaused,
-      pausedReason: correctedReason,
-      queueLifecycle: correctedLifecycle,
-      scheduledStartAt: correctedLifecycle === 'idle-pending' ? persistedQueue.scheduledStartAt ?? null : null,
-      scheduledStartSource:
-        correctedLifecycle === 'idle-pending'
-          ? coerceRetiredStartSource(persistedQueue.scheduledStartSource ?? null)
-          : null,
-      updatedAt: Date.now()
-    });
-    this.logger?.warn(
-      `workspace-state: reconciled divergent queue pause state (legacy=${legacyPaused} registry=${registryPaused}) → registry`
-    );
+  /**
+   * FR-R3-011 (T419/T420) — the v12 → v13 pause collapse.
+   *
+   * This method **replaces** `reconcileQueuePauseStateIfDivergent()`, the
+   * BUG-001 startup repair pass that used to sit here. That pass compared the
+   * legacy `QueueState.paused` mirror against `QueueRegistryEntry.state` and, on
+   * disagreement, re-derived `queueLifecycle` from `(inFlightId, registryPaused,
+   * pendingCount)` — which made it a fourth writer of the discriminator, free to
+   * overwrite a legitimately held `idle-pending` or `active-empty` on the
+   * strength of a disagreement between two fields that were not the
+   * discriminator. It is deleted rather than tightened: a repair pass is a
+   * repair for a state that should be unrepresentable, and after the collapse
+   * there is one persisted value, so there is nothing left to reconcile.
+   *
+   * Runs last in the chain, after `migrateV11ToV12IfNeeded()`, because it reads
+   * a `KEYS.queue` the v9 → v10 lift has already put in map shape. Keyed on the
+   * **shape** of the record, never on the persisted version number, on the same
+   * reasoning as its v11 and v12 siblings.
+   *
+   * Two writes, and the ordering is the guarantee. `KEYS.queue` carries the
+   * authoritative value and is written first; `KEYS.queueRegistry` only has the
+   * now-derived copy removed from it. A window lost between them leaves a
+   * registry holding inert leftovers that `projectQueueRegistry()` overwrites on
+   * every read — never a queue whose authority has been erased. The registry
+   * write is skipped entirely when nothing on it changed.
+   */
+  private async migrateV12ToV13IfNeeded(): Promise<readonly QueuePauseCollapseAuditEvent[]> {
+    const queueStates = this.readQueueMap();
+    const registry = this.memento.get<QueueRegistry>(KEYS.queueRegistry) ?? makeDefaultRegistry();
+    const result = migrateV12ToV13(queueStates, registry, Date.now());
+    if (!result.changed) return [];
+    await this.memento.update(KEYS.queue, result.queueStates);
+    if (JSON.stringify(result.registry) !== JSON.stringify(registry)) {
+      await this.memento.update(KEYS.queueRegistry, result.registry);
+      this.notify(KEYS.queueRegistry);
+    }
     this.notify(KEYS.queue);
-    return true;
+    return result.auditEvents;
   }
 
   /**
@@ -845,22 +1163,17 @@ export class WorkspaceStateStore {
   private async migrateQueueRegistryIfNeeded(): Promise<void> {
     const existingRegistry = this.memento.get<QueueRegistry>(KEYS.queueRegistry);
     if (existingRegistry !== undefined && existingRegistry !== null) {
-      // Feature 028 v4 → v5: backfill `pauseSource` on existing entries.
-      // Idempotent — entries already carrying a valid pauseSource pass through.
-      const migrated = migrateQueueRegistryV4ToV5(existingRegistry.entries);
-      const needsUpdate = migrated.some((entry, i) => {
-        const original = existingRegistry.entries[i];
-        return (
-          !original ||
-          (original as unknown as { pauseSource?: unknown }).pauseSource !== entry.pauseSource
-        );
-      });
-      if (needsUpdate) {
-        await this.memento.update(KEYS.queueRegistry, {
-          entries: migrated,
-          updatedAt: existingRegistry.updatedAt
-        });
-      }
+      // FR-R3-011 (T423) — the feature-028 v4 → v5 `pauseSource` backfill used
+      // to write here. It is gone, and deliberately not replaced: `pauseSource`
+      // is no longer a field of a registry entry, so the backfill had no
+      // destination left, and persisting it anyway would re-add on every
+      // activation the mirror `migrateV12ToV13()` strips on every load — two
+      // writes per open, churning against each other forever.
+      //
+      // A legacy entry that still carries `state`/`pauseSource` is read by
+      // `legacyRegistryPause()` during the collapse, with the same
+      // `manually-paused` ⇒ `'operator'` defaulting feature 028 applied. The
+      // rule moved to the surviving representation; it was not dropped.
       return;
     }
     const lifted = migrateLegacyQueueState(this.readLegacySingularQueue());
@@ -994,25 +1307,31 @@ export class WorkspaceStateStore {
     return {
       requests: [],
       inFlightId: null,
-      paused: false,
-      pausedReason: null,
       updatedAt: Date.now(),
       queueLifecycle: 'active-empty',
+      pauseSource: null,
+      pausedReason: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
   }
 
   /**
-   * One queue's execution state. `queueId` defaults to the reserved queue so
-   * every pre-092 caller keeps its meaning unchanged.
+   * One queue's execution state. `queueId` is **required** (FR-R3-002, T281).
+   * It used to default to `DEFAULT_QUEUE_ID` "so every pre-092 caller keeps its
+   * meaning unchanged", and that is exactly how three production seams came to
+   * read the Default queue while believing they had read the caller's: a
+   * default parameter turns "the caller forgot" into "the caller meant Default",
+   * silently and at the wrong layer. Deleting the default makes
+   * `npm run typecheck` the exhaustive call-site worklist, the same mechanism
+   * feature 093 used when it deleted the ambient `getRun()`.
    *
    * An unknown id returns a born-empty `QueueState` and persists **nothing**
    * (FR-007). Reading is not a way to create a queue — the registry is the
    * only thing that decides which queues exist, and a read that fabricated an
    * entry would let a typo'd id quietly become a real one.
    */
-  public getQueue(queueId: string = DEFAULT_QUEUE_ID): QueueState {
+  public getQueue(queueId: string): QueueState {
     const persisted = this.readQueueMap()[queueId];
     if (!persisted) return WorkspaceStateStore.bornEmptyQueue();
     return ensureExtendedQueueShape(persisted);
@@ -1079,10 +1398,16 @@ export class WorkspaceStateStore {
    * concurrent read/modify/write cycles on different queues would still clobber
    * each other's sibling entries. Per-queue concurrency is a property of what
    * runs, not of how the record is written.
+   *
+   * FR-R3-002 (T280) — `queueId` is **required**, for the reason given on
+   * `getQueue()` above and with one extra edge here: a write that silently
+   * lands on Default does not read as a missing write, it reads as a *sibling's*
+   * write. A scheduled start armed on queue B cleared queue A's lifecycle
+   * fields for exactly this reason.
    */
   public updateQueue<T>(
     mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T },
-    queueId: string = DEFAULT_QUEUE_ID
+    queueId: string
   ): Promise<T> {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
@@ -1156,10 +1481,56 @@ export class WorkspaceStateStore {
     return registry;
   }
 
+  /**
+   * FR-R3-011 — the registry with each entry's pause view filled in from the
+   * queue that owns it.
+   *
+   * This is the read every surface that used to consult
+   * `entry.state === 'manually-paused'` now makes. The persisted registry names,
+   * orders and schedules queues; whether one is paused lives in its own
+   * `QueueState` and is projected here, from one record, on every read. There is
+   * no second copy to go stale, so there is nothing to reconcile at startup.
+   */
+  public getProjectedQueueRegistry(): ProjectedQueueRegistry {
+    const queueStates = this.readQueueMap();
+    const pauseByQueueId = new Map<string, QueuePauseView>(
+      Object.entries(queueStates).map(([queueId, state]) => [
+        queueId,
+        {
+          paused: state.queueLifecycle === 'operator-paused',
+          pauseSource: state.pauseSource ?? null
+        }
+      ])
+    );
+    return projectQueueRegistry(this.getQueueRegistry(), pauseByQueueId);
+  }
+
+  /**
+   * Persist the registry, minus anything derived.
+   *
+   * The strip is the write-side half of the collapse and it is defensive on
+   * purpose: a caller that spreads a `ProjectedQueueRegistryEntry` into an edit
+   * — a rename, a reorder — would otherwise persist the projected `state` and
+   * `pauseSource` back onto the record they were derived from, quietly
+   * recreating the second representation this feature removed. Stripping here
+   * means every write goes through one normaliser rather than every call site
+   * having to remember. `tests/lint/no-legacy-pause-mirror-write.test.ts` is the
+   * other half.
+   */
   public setQueueRegistry(registry: QueueRegistry): Promise<void> {
     validateQueueRegistry(registry);
+    const normalized: QueueRegistry = {
+      entries: registry.entries.map((entry) => {
+        const { state: _state, pauseSource: _pauseSource, ...rest } = entry as QueueRegistryEntry & {
+          state?: unknown;
+          pauseSource?: unknown;
+        };
+        return rest;
+      }),
+      updatedAt: registry.updatedAt
+    };
     return this.serialize(KEYS.queueRegistry, () =>
-      this.memento.update(KEYS.queueRegistry, registry)
+      this.memento.update(KEYS.queueRegistry, normalized)
     ).then(() => {
       this.notify(KEYS.queueRegistry);
     });
@@ -1623,6 +1994,25 @@ export class WorkspaceStateStore {
   }
 
   /**
+   * FR-R3-008 (T377) — the Run with this id, together with the queue it is on.
+   *
+   * Sibling to `findRunByTask` above and exact for the same reason it is: the
+   * monitor identifies its subprocess by run id and nothing else, so the write
+   * that stamps that Run's liveness has to name a queue it did not receive.
+   * Both halves or neither — a `setRun` with a guessed queue id would overwrite
+   * a sibling Run's record, and run ids are `randomUUID()`, so this matches at
+   * most one entry.
+   */
+  public findRunById(
+    runId: string
+  ): { readonly queueId: string; readonly run: WorkflowRun } | null {
+    for (const [queueId, run] of Object.entries(this.readRunMap())) {
+      if (run.id === runId) return { queueId, run };
+    }
+    return null;
+  }
+
+  /**
    * Write or clear one queue's active Run.
    *
    * `null` **removes** the key rather than storing a null under it (G-5), so
@@ -1747,13 +2137,84 @@ export class WorkspaceStateStore {
     return this.serialize(KEYS.watchdog, () => this.memento.update(KEYS.watchdog, state));
   }
 
-  public getHistory(): PersistedHistoryEntry[] {
-    return this.memento.get<PersistedHistoryEntry[]>(KEYS.history) ?? [];
+  /**
+   * FR-R3-010 (T402) — every queue's history, keyed by queue id.
+   *
+   * Tolerates a legacy flat array on the same terms `readRunMap()` tolerates a
+   * single `WorkflowRun`: the migration is what converts it, but a read taken
+   * before `initialize()` has written must still answer, and answering `{}`
+   * would make a workspace with history read as empty on one path.
+   *
+   * A legacy array folds into `HISTORY_UNATTRIBUTED_QUEUE_ID` rather than into
+   * `DEFAULT_QUEUE_ID`, because at this level there is nothing to attribute
+   * *with* — the queue map is a different key and this function does not read
+   * it. The migrator does, and it is the one that files entries under the
+   * queues that actually own them.
+   */
+  private readHistoryMap(): PersistedHistoryMap {
+    const raw = this.memento.get<unknown>(KEYS.history);
+    if (raw === undefined || raw === null) return {};
+    if (Array.isArray(raw)) {
+      return raw.length > 0 ? { [HISTORY_UNATTRIBUTED_QUEUE_ID]: raw } : {};
+    }
+    if (typeof raw !== 'object') return {};
+    const map: PersistedHistoryMap = {};
+    for (const [queueId, entries] of Object.entries(raw as Record<string, unknown>)) {
+      if (Array.isArray(entries)) map[queueId] = entries;
+    }
+    return map;
   }
 
-  public appendHistory(entry: PersistedHistoryEntry): Promise<void> {
-    return this.serialize(KEYS.history, async () => {
-      const existing = this.getHistory();
+  public getHistoryMap(): Readonly<PersistedHistoryMap> {
+    return { ...this.readHistoryMap() };
+  }
+
+  /**
+   * Every queue's entries in one array, oldest first.
+   *
+   * An aggregate read, and named as one. It exists because the history pane
+   * shows the workspace's history rather than one queue's, so folding is the
+   * ordinary case rather than an escape hatch — the opposite of `KEYS.run`,
+   * where an ambient read picks a Run the operator was not looking at. Folding
+   * history picks nothing; it returns all of it.
+   */
+  public getHistory(): PersistedHistoryEntry[] {
+    return Object.values(this.readHistoryMap()).flat();
+  }
+
+  /**
+   * FR-R3-010 (T403) — append one entry to one queue's partition.
+   *
+   * Three things changed from the flat implementation this replaces:
+   *
+   * **The cap is per partition.** 50 entries used to be the workspace's whole
+   * history across up to 20 queues — an average of 2.5 runs each, and a single
+   * busy queue evicted every other queue's record of itself. It is now 50 per
+   * queue, which is the depth the constant always claimed to describe.
+   *
+   * **The dedupe scan is per partition too.** It was O(total history); it is
+   * now O(one queue's history), and it answers the same question — the same run
+   * id cannot terminate twice on two different queues.
+   *
+   * **The write is still a whole-map read-modify-write on this key's serialize
+   * chain.** Partitioning reduces the bytes a write carries; it does not add a
+   * second writer. A targeted per-partition write would need a facility the
+   * `Memento` does not have, and hand-rolling one is how two queues completing
+   * at the same moment drop each other's entry.
+   *
+   * Returns the entries the cap evicted, so the caller can clean up whatever it
+   * stored beside them. Eviction is the only moment an entry stops being
+   * reachable, and the store cannot do the cleanup itself without reaching for
+   * the filesystem from the persistence boundary.
+   */
+  public async appendHistory(
+    queueId: string,
+    entry: PersistedHistoryEntry
+  ): Promise<readonly PersistedHistoryEntry[]> {
+    let evicted: readonly PersistedHistoryEntry[] = [];
+    await this.serialize(KEYS.history, async () => {
+      const map = this.readHistoryMap();
+      const existing = map[queueId] ?? [];
       const incoming = entry as { runId?: unknown; terminalStatus?: unknown };
       if (
         typeof incoming.runId === 'string' &&
@@ -1763,11 +2224,13 @@ export class WorkspaceStateStore {
         })
       ) return;
       const next = [...existing, entry];
-      const trimmed = next.length > HISTORY_CAP ? next.slice(next.length - HISTORY_CAP) : next;
-      await this.memento.update(KEYS.history, trimmed);
-    }).then(() => {
-      this.notify(KEYS.history);
+      const overflow = next.length - HISTORY_CAP_PER_QUEUE;
+      const trimmed = overflow > 0 ? next.slice(overflow) : next;
+      evicted = overflow > 0 ? next.slice(0, overflow) : [];
+      await this.memento.update(KEYS.history, { ...map, [queueId]: trimmed });
     });
+    this.notify(KEYS.history);
+    return evicted;
   }
 
   // Feature 063 (FR-021) — suppression memento accessors. Narrowing and
@@ -1880,28 +2343,128 @@ export class WorkspaceStateStore {
     return removed;
   }
 
-  public async reset(): Promise<void> {
-    await Promise.all([
-      this.memento.update(KEYS.queue, undefined),
-      this.memento.update(KEYS.queueRegistry, undefined),
-      this.memento.update(KEYS.queueMigrationQuarantine, undefined),
-      this.memento.update(KEYS.queueDefaultId, undefined),
-      this.memento.update(KEYS.queueGlobalConcurrencyCap, undefined),
-      // Feature 093 (T020) — still `undefined`, not an empty map. Reset clears
-      // keys, and `readRunMap()` reads an absent key as no queue running, so
-      // writing `{}` would only make the cleared state a stored value instead
-      // of an absent one.
-      this.memento.update(KEYS.run, undefined),
-      this.memento.update(KEYS.lock, undefined),
-      this.memento.update(KEYS.watchdog, undefined),
-      this.memento.update(KEYS.history, undefined),
-      this.memento.update(KEYS.terminalTransitionIntent, undefined),
-      this.memento.update(KEYS.connectedRuns, undefined),
-      // Feature 063 (FR-022a) — Reset Workspace clears the suppression
-      // set so reopened operators always see confirmation prompts again.
-      this.memento.update(KEYS.confirmSuppression, undefined),
-      this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION)
-    ]);
+  /** The marker as persisted, or `null` when absent or unreadable. */
+  public getResetMarker(): ResetMarker | null {
+    const raw = this.memento.get<unknown>(KEYS.resetMarker);
+    return isResetMarker(raw) ? raw : null;
+  }
+
+  /**
+   * Feature FR-R3-006 (T339, T340, T341) — the clear, as a transaction.
+   *
+   * Three things changed and each closes a distinct defect:
+   *
+   * **It goes through the serialize chain.** The old implementation was a bare
+   * `Promise.all` of `memento.update` calls, which is the one write path in this
+   * store that does not queue behind the per-key chain. A `setRun` or
+   * `updateQueue` already in flight could therefore land *after* its key was
+   * cleared, recreating it. `serializeAcrossKeys` takes every affected chain, so
+   * a concurrent write either completes wholly before the clear or queues behind
+   * it — never inside it.
+   *
+   * **It clears every key.** `RESET_CLEARED_KEYS` is derived from `KEYS` minus
+   * `RESET_EXEMPT_KEYS` rather than hand-listed, so a key added to `KEYS` is
+   * cleared by construction. The hand-maintained list this replaces had missed
+   * `executionLeases` and `concurrencyNotice` — the first of which is precisely
+   * the state an operator reaches for reset to clear.
+   *
+   * **It is bracketed by the marker.** The marker is advanced to `in-progress`
+   * before the first clear and to `complete` after the last, so a host that dies
+   * mid-clear leaves a workspace that says so. Both marker writes are inside the
+   * same serialized section as the clear, because a marker that could interleave
+   * with the clear it brackets would describe the wrong thing.
+   *
+   * Cleared to `undefined`, never to an empty value: feature 093's note on
+   * `KEYS.run` generalizes, and `{}` would make the cleared state a stored value
+   * rather than an absent one.
+   *
+   * Returns the generation it committed, which is what the command layer puts in
+   * the audit event (T348). A generation number is safe there in a way nothing
+   * else about a reset is: it is a counter this build produced, not a path, a
+   * task description, or anything the operator wrote.
+   */
+  public async reset(): Promise<number> {
+    const generation = nextResetGeneration(this.getResetMarker());
+    await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
+      await this.memento.update(KEYS.resetMarker, {
+        generation,
+        status: 'in-progress'
+      } satisfies ResetMarker);
+      for (const key of RESET_CLEARED_KEYS) {
+        await this.memento.update(key, undefined);
+      }
+      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
+      await this.memento.update(KEYS.resetMarker, {
+        generation,
+        status: 'complete'
+      } satisfies ResetMarker);
+    });
+    return generation;
+  }
+
+  /**
+   * Feature FR-R3-006 (T346) — finish a reset the host did not survive.
+   *
+   * Called from the activation path when the persisted marker still reads
+   * `in-progress`. It re-runs the clear at the *same* generation rather than
+   * claiming a new one, because this is the completion of one reset and not a
+   * second: advancing would make the generation count how many times a reset was
+   * attempted rather than how many the workspace has had.
+   *
+   * Re-running is safe because clearing is idempotent — every key is set to
+   * `undefined` whether or not the first attempt reached it — and re-running is
+   * the *only* safe response, since a partial clear is indistinguishable from a
+   * complete one by inspection. Reporting without finishing would leave the
+   * workspace in the state this feature exists to make impossible.
+   *
+   * Returns the generation it completed, or `null` when there was nothing to
+   * finish, so the caller can decide whether to audit.
+   */
+  public async completeInterruptedReset(): Promise<number | null> {
+    const marker = this.getResetMarker();
+    if (!isResetInterrupted(marker)) return null;
+    const generation = marker!.generation;
+    await this.serializeAcrossKeys([...RESET_CLEARED_KEYS, KEYS.resetMarker], async () => {
+      for (const key of RESET_CLEARED_KEYS) {
+        await this.memento.update(key, undefined);
+      }
+      await this.memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
+      await this.memento.update(KEYS.resetMarker, {
+        generation,
+        status: 'complete'
+      } satisfies ResetMarker);
+    });
+    return generation;
+  }
+
+  /**
+   * Feature FR-R3-006 (T340) — `serialize`, widened to a set of keys.
+   *
+   * `serialize` orders writes against one key's chain, which is right for every
+   * ordinary write because each touches one key. Reset touches all of them at
+   * once, and ordering it against any single chain would leave the other keys
+   * unguarded — the same hole as not serializing at all, just narrower.
+   *
+   * So it waits on every named chain and then installs itself as every named
+   * chain. `Promise.all` over the predecessors is not a barrier being added
+   * where a pipeline would do: it is the definition of "after everything already
+   * queued", which is exactly what a clear has to mean.
+   *
+   * Failures are swallowed into the stored chain and rethrown to the caller,
+   * matching `serialize` — a failed reset must not wedge every subsequent write
+   * on a rejected promise.
+   */
+  private serializeAcrossKeys(
+    keys: readonly string[],
+    op: () => Thenable<void> | Promise<void>
+  ): Promise<void> {
+    const predecessors = keys.map((key) => this.chains.get(key) ?? Promise.resolve());
+    const next = Promise.all(predecessors).then(() =>
+      Promise.resolve(op()).then(() => undefined)
+    );
+    const stored = next.catch(() => undefined);
+    for (const key of keys) this.chains.set(key, stored);
+    return next;
   }
 
   private serialize(key: string, op: () => Thenable<void> | Promise<void>): Promise<void> {

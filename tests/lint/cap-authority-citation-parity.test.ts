@@ -206,7 +206,16 @@ describe('re-evaluation trigger premises still hold', () => {
         /export const STATE_SCHEMA_VERSION\s*=\s*(\d+)/.exec(
           fs.readFileSync(path.join(REPO_ROOT, 'src/contracts/state-schema.ts'), 'utf8')
         )?.[1],
-      expected: '11',
+      // Moved 11 → 12 by FR-R3-010's per-queue history reshape and 12 → 13 by
+      // FR-R3-011's queue-pause collapse, each after the re-evaluation this
+      // trigger demands. Criterion 3 is the disposition that reasons from this
+      // number, and it survived both: its downgrade refusal compares against the
+      // runtime `STATE_SCHEMA_VERSION` rather than a literal, v12 is another
+      // forward-only per-queue reshape, and v13 is narrower still — a
+      // forward-only rewrite *within* each queue record, not a reshape of the
+      // record map — so the shape of the argument is unchanged. The record's
+      // criterion 3 now cites all three migrations and says so.
+      expected: '13',
     },
   ];
 
@@ -229,6 +238,6 @@ describe('re-evaluation trigger premises still hold', () => {
     expect(text).toContain('| 5 | `MAX_QUEUES` | 20 |');
     expect(text).toContain('`src/queue/queue-registry.ts` (declared)');
     expect(text).toContain("| 6 | The cap's maximum | 20 |");
-    expect(text).toContain('| 10 | State schema version | 11');
+    expect(text).toContain('| 10 | State schema version | 13');
   });
 });

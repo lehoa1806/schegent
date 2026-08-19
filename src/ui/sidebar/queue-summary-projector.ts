@@ -11,11 +11,15 @@
 // This projection is UI-only and never persisted.
 
 import type { FeatureRequest } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID, type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { QueueSummary } from './snapshot';
 
 export function projectQueues(
-  registry: QueueRegistry | undefined,
+  // FR-R3-011 — the **projected** registry, not the persisted one. `state` and
+  // `pauseSource` are no longer stored on an entry; they are filled in on read
+  // from the owning `QueueState`, so a summary reads the same single value the
+  // drain gate does instead of a copy that could disagree with it.
+  registry: ProjectedQueueRegistry | undefined,
   requests: readonly FeatureRequest[],
   requestsOf: ((queueId: string) => readonly FeatureRequest[]) | undefined
 ): QueueSummary[] {
@@ -41,7 +45,8 @@ export function projectQueues(
         state: entry.state,
         // Feature 028 — surface the queue's pause source so the dashboard
         // can render a "cascaded" badge alongside the manually-paused
-        // indicator. Read directly from the registry.
+        // indicator. FR-R3-011 — projected from `QueueState.pauseSource`; the
+        // registry entry no longer stores one.
         pauseSource: entry.pauseSource,
         schedule: projectSchedule(entry),
         taskCount: rows.filter(
@@ -55,7 +60,7 @@ export function projectQueues(
  * Feature 092 (FR-011) — a queue's own schedule, which feature 030 pinned to
  * `null` because a single default queue could not carry one.
  */
-function projectSchedule(entry: QueueRegistry['entries'][number]): QueueSummary['schedule'] {
+function projectSchedule(entry: ProjectedQueueRegistry['entries'][number]): QueueSummary['schedule'] {
   const schedule = entry.schedule;
   if (!schedule) return null;
   return {

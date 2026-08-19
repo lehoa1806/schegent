@@ -131,6 +131,7 @@ export function buildV9QueueState(options: V9QueueStateOptions = {}): QueueState
     pausedReason: paused ? 'operator' : null,
     updatedAt: FIXTURE_NOW,
     queueLifecycle: options.queueLifecycle ?? deriveLifecycle(paused, requests),
+    pauseSource: null,
     scheduledStartAt: options.scheduledStartAt ?? null,
     scheduledStartSource: options.scheduledStartSource ?? null,
     migrationNotice: options.migrationNotice ?? 'dismissed'
@@ -220,8 +221,6 @@ export function buildQueueRegistry(options: QueueRegistryOptions = {}): QueueReg
       id: isDefault ? DEFAULT_QUEUE_ID : fixtureQueueId(position + 1),
       name: isDefault ? 'Default queue' : `Queue ${position + 1}`,
       position,
-      state: 'active',
-      pauseSource: null,
       schedule: isDefault ? null : (options.schedule ?? null),
       createdAt: FIXTURE_NOW,
       updatedAt: FIXTURE_NOW

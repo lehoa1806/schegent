@@ -41,7 +41,10 @@ describe('migrateLegacyQueueState (017, T009)', () => {
     expect(r.queueState.pausedReason).toBe('manual');
     expect(r.queueState.updatedAt).toBe(NOW - 100);
     expect(r.registry.entries[0].id).toBe(DEFAULT_QUEUE_ID);
-    expect(r.registry.entries[0].state).toBe('manually-paused');
+    // FR-R3-011 — the lifted pause is attributed on the queue record, not on
+    // the registry entry, which no longer carries a pause at all. The
+    // `paused` assertion above is the other half of the same fact.
+    expect(r.queueState.pauseSource).toBe('operator');
     expect(r.auditEvents).toContainEqual({
       type: 'queue-state-migrated',
       taskCount: 2,

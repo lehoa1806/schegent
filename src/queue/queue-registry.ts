@@ -22,9 +22,11 @@
  *   - Names are unique after trim, case-insensitively, and each is non-empty
  *     after trim and ≤ `MAX_QUEUE_NAME_LENGTH` (64).
  *   - Positions are unique and contiguous from 0.
- *   - Pause-source invariant retained from v5, applied to every entry:
- *     `pauseSource === null` iff `state !== 'manually-paused'`.
  *   - Any entry may carry a schedule.
+ *
+ * Pause state is **not** here (FR-R3-011). A registry entry names, orders and
+ * schedules a queue; whether it is paused lives in that queue's `QueueState`
+ * and is filled in on read by `projectQueueRegistry`.
  *
  * Down-migration is unsupported. Schedule semantics live in
  * `src/lib/schedule-parser.ts`; this module only stores the parsed shape.
@@ -75,17 +77,30 @@ export type QueueRegistryState = 'active' | 'manually-paused';
  *     restart-active-phase / manual delayed-retry paths.
  *   - `null`: the queue is not manually paused.
  *
- * Invariant (enforced by `validateQueueRegistry`):
- *   `pauseSource === null` iff `state !== 'manually-paused'`.
+ * FR-R3-011 — persisted on `QueueState`, alongside the `queueLifecycle` it
+ * qualifies, and projected onto a registry entry on read. The invariant
+ * `pauseSource === null` iff not paused is established by
+ * `projectQueueRegistry` rather than asserted across two records.
  */
 export type QueuePauseSource = 'operator' | 'cascade' | 'retry-cap' | null;
 
+/**
+ * The persisted registry entry. **Carries no pause state** (FR-R3-011).
+ *
+ * `state` and `pauseSource` used to live here, in `KEYS.queueRegistry`, while
+ * `queueLifecycle` and the legacy `paused` boolean lived in `KEYS.queue` — three
+ * representations of one fact across two memento keys with no transaction
+ * between them. They are gone from the persisted shape rather than merely left
+ * unwritten, and that is the point: a reader that forgets to project now fails
+ * to compile, where an inert-but-present field would have answered "active" for
+ * a queue that is paused. Silence in the safe direction is not available here.
+ *
+ * `ProjectedQueueRegistryEntry` below is what readers get.
+ */
 export interface QueueRegistryEntry {
   readonly id: string;
   readonly name: string;
   readonly position: number;
-  readonly state: QueueRegistryState;
-  readonly pauseSource: QueuePauseSource;
   readonly schedule: QueueSchedule | null;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -94,6 +109,67 @@ export interface QueueRegistryEntry {
 export interface QueueRegistry {
   readonly entries: readonly QueueRegistryEntry[];
   readonly updatedAt: number;
+}
+
+/**
+ * A registry entry with its pause view filled in from the authoritative
+ * `QueueState` (FR-R3-011).
+ *
+ * Structurally identical to the pre-collapse `QueueRegistryEntry`, deliberately:
+ * every consumer that reads `entry.state === 'manually-paused'` keeps reading
+ * exactly that, and gets an answer sourced from one place instead of a second
+ * copy that a crash between two writes could have left stale.
+ */
+export interface ProjectedQueueRegistryEntry extends QueueRegistryEntry {
+  readonly state: QueueRegistryState;
+  readonly pauseSource: QueuePauseSource;
+}
+
+export interface ProjectedQueueRegistry {
+  readonly entries: readonly ProjectedQueueRegistryEntry[];
+  readonly updatedAt: number;
+}
+
+/**
+ * The pause facts this module needs from a queue's authoritative record.
+ *
+ * Narrowed to two fields rather than taking `QueueState` so the registry stays
+ * import-free and pure — it stores shapes, it does not reach into queue state.
+ */
+export interface QueuePauseView {
+  readonly paused: boolean;
+  readonly pauseSource: QueuePauseSource;
+}
+
+/**
+ * Fill in each entry's pause view from `pauseByQueueId` (FR-R3-011).
+ *
+ * A queue with no entry in the map projects as `active`. That is the honest
+ * answer and not a fallback with a hidden failure mode: a registry entry whose
+ * `QueueState` has not been created yet has never been paused, because pausing
+ * is a write to that very record.
+ *
+ * The `pauseSource === null` iff `state !== 'manually-paused'` invariant that
+ * `validateQueueRegistry` used to assert across two persisted records now holds
+ * by construction here — there is one place that builds the pair, and it builds
+ * both halves from the same input.
+ */
+export function projectQueueRegistry(
+  registry: QueueRegistry,
+  pauseByQueueId: ReadonlyMap<string, QueuePauseView>
+): ProjectedQueueRegistry {
+  return {
+    entries: registry.entries.map((entry) => {
+      const view = pauseByQueueId.get(entry.id);
+      const paused = view?.paused === true;
+      return {
+        ...entry,
+        state: paused ? 'manually-paused' : 'active',
+        pauseSource: paused ? view?.pauseSource ?? 'operator' : null
+      };
+    }),
+    updatedAt: registry.updatedAt
+  };
 }
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -115,8 +191,6 @@ export function makeDefaultRegistry(now: number = Date.now()): QueueRegistry {
         id: DEFAULT_QUEUE_ID,
         name: 'Default queue',
         position: 0,
-        state: 'active',
-        pauseSource: null,
         schedule: null,
         createdAt: now,
         updatedAt: now
@@ -126,7 +200,23 @@ export function makeDefaultRegistry(now: number = Date.now()): QueueRegistry {
   };
 }
 
-export function findQueue(registry: QueueRegistry, id: string): QueueRegistryEntry | undefined {
+/**
+ * Look a queue up by id, preserving whichever entry shape was handed in.
+ *
+ * Generic over the entry rather than fixed to `QueueRegistryEntry` because
+ * FR-R3-011 gave the registry two read shapes: the persisted one, and the
+ * projected one that carries the pause view. A non-generic signature would
+ * widen a projected lookup back to the persisted entry, so a caller that had
+ * correctly asked for the projection would find `state` missing again and be
+ * tempted to re-derive it locally — which is the second derivation site the
+ * collapse exists to remove. Callers passing a plain `QueueRegistry` are
+ * unaffected: `T` infers `QueueRegistryEntry` and the result type is what it
+ * always was.
+ */
+export function findQueue<T extends QueueRegistryEntry>(
+  registry: { readonly entries: readonly T[] },
+  id: string
+): T | undefined {
   return registry.entries.find((e) => e.id === id);
 }
 
@@ -223,29 +313,10 @@ export function validateQueueRegistry(registry: QueueRegistry): void {
       );
     }
     positions.add(e.position);
-    if (e.state !== 'active' && e.state !== 'manually-paused') {
-      throw new QueueRegistryViolation(
-        'invalid-queue-state',
-        `QueueRegistry entry "${e.id}" has invalid state: ${String(e.state)}`
-      );
-    }
-    const expectsSource = e.state === 'manually-paused';
-    const hasSource =
-      e.pauseSource === 'operator' ||
-      e.pauseSource === 'cascade' ||
-      e.pauseSource === 'retry-cap';
-    if (expectsSource && !hasSource) {
-      throw new QueueRegistryViolation(
-        'invalid-queue-state',
-        `QueueRegistry entry "${e.id}" is manually-paused but has invalid pauseSource: ${String(e.pauseSource)}`
-      );
-    }
-    if (!expectsSource && e.pauseSource !== null) {
-      throw new QueueRegistryViolation(
-        'invalid-queue-state',
-        `QueueRegistry entry "${e.id}" has non-null pauseSource ('${String(e.pauseSource)}') while state is '${e.state}'`
-      );
-    }
+    // FR-R3-011 — the `state` / `pauseSource` checks that stood here are gone
+    // with the fields. They asserted a pairing between two values this record
+    // no longer holds; `projectQueueRegistry` now establishes the same pairing
+    // by construction, from the one record that owns it.
   }
   for (let i = 0; i < registry.entries.length; i++) {
     if (!positions.has(i)) {
@@ -295,8 +366,6 @@ export function createQueue(
     id: params.id,
     name: trimmedName,
     position: registry.entries.length,
-    state: 'active',
-    pauseSource: null,
     schedule: null,
     createdAt: params.now,
     updatedAt: params.now
@@ -367,61 +436,12 @@ export function deleteQueue(
   };
 }
 
-export function setQueueState(
-  registry: QueueRegistry,
-  params: {
-    id: string;
-    state: QueueRegistryState;
-    /**
-     * Required when `state === 'manually-paused'`; ignored otherwise (set to
-     * `null` automatically). Defaults to `'operator'` when omitted on a pause
-     * transition so legacy callers keep working.
-     */
-    pauseSource?: Exclude<QueuePauseSource, null>;
-    now: number;
-  }
-): QueueRegistry {
-  const existing = findQueue(registry, params.id);
-  if (!existing) {
-    throw new QueueRegistryViolation('unknown-queue-id', `Unknown queue id: ${params.id}`);
-  }
-  const pauseSource: QueuePauseSource =
-    params.state === 'manually-paused' ? params.pauseSource ?? 'operator' : null;
-  return {
-    entries: registry.entries.map((e) =>
-      e.id === params.id
-        ? {
-            ...e,
-            state: params.state,
-            pauseSource,
-            updatedAt: params.now
-          }
-        : e
-    ),
-    updatedAt: params.now
-  };
-}
-
-export function setQueuePaused(
-  registry: QueueRegistry,
-  params: {
-    id: string;
-    paused: boolean;
-    /**
-     * Origin of the pause transition. Defaults to `'operator'` when
-     * `paused: true`; ignored when `paused: false`.
-     */
-    pauseSource?: Exclude<QueuePauseSource, null>;
-    now: number;
-  }
-): QueueRegistry {
-  return setQueueState(registry, {
-    id: params.id,
-    state: params.paused ? 'manually-paused' : 'active',
-    pauseSource: params.pauseSource,
-    now: params.now
-  });
-}
+// FR-R3-011 — `setQueueState()` and `setQueuePaused()` were deleted here, not
+// deprecated. They were the registry's half of the two-key pause write, and a
+// working writer for a field that no longer exists is a working template for
+// reintroducing the divergence this collapse removed. Pause writes go to
+// `QueueState` through `QueueManager.setQueuePausedState`, which is now a single
+// write to a single key.
 
 /**
  * Attach or clear a queue's one-shot schedule. Any entry may carry one — the

@@ -55,7 +55,21 @@ const UUID_HIGH = '11111111-2222-4333-8444-555555555555';
 const UUID_BG = '99999999-8888-4777-9666-555555555555';
 const NOW = 1_700_000_000_000;
 
-function entry(overrides: Partial<QueueRegistryEntry>): QueueRegistryEntry {
+/**
+ * A pre-collapse registry entry — `state` and `pauseSource` included.
+ *
+ * FR-R3-011 removed both fields from `QueueRegistryEntry`, but a v5 store on
+ * disk still has them and the v5 → v6 migration under test reads the inherited
+ * pause off exactly those fields. The fixture type keeps them writable so the
+ * seed stays the shape the migration was written against; the resulting
+ * `QueueRegistryEntry` cast is what hands it to the store as persisted state.
+ */
+type LegacyRegistryEntry = QueueRegistryEntry & {
+  readonly state?: 'active' | 'manually-paused';
+  readonly pauseSource?: 'operator' | 'cascade' | 'retry-cap' | null;
+};
+
+function entry(overrides: Partial<LegacyRegistryEntry>): QueueRegistryEntry {
   return {
     id: DEFAULT_QUEUE_ID,
     name: 'Default queue',
@@ -136,6 +150,7 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
       pausedReason: null,
       updatedAt: 400,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };
@@ -160,7 +175,7 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
     });
 
     // Registry has exactly one entry; id === 'default'; state inherited.
-    const registry = store.getQueueRegistry();
+    const registry = store.getProjectedQueueRegistry();
     expect(registry.entries).toHaveLength(1);
     expect(registry.entries[0].id).toBe(DEFAULT_QUEUE_ID);
     expect(registry.entries[0].state).toBe('manually-paused');
@@ -168,7 +183,7 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
     expect(registry.entries[0].schedule).toBeNull();
 
     // The in-flight task is preserved (status + identity).
-    const queueState = store.getQueue();
+    const queueState = store.getQueue(DEFAULT_QUEUE_ID);
     expect(queueState.inFlightId).toBe('r-in-flight');
     const inFlightRow = queueState.requests.find((r) => r.id === 'r-in-flight');
     expect(inFlightRow?.status).toBe('in-flight');
@@ -255,7 +270,7 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
 
     // The single-queue UI projection is available: registry has exactly one
     // entry with id === 'default' and the queue is active (the v6 default).
-    const registry = store.getQueueRegistry();
+    const registry = store.getProjectedQueueRegistry();
     expect(registry.entries).toHaveLength(1);
     expect(registry.entries[0].id).toBe(DEFAULT_QUEUE_ID);
     expect(registry.entries[0].state).toBe('active');
@@ -321,6 +336,7 @@ describe('Feature 030 (US1, T020) — v5 → v6 single-queue migration end-to-en
       pausedReason: null,
       updatedAt: 200,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null
     };

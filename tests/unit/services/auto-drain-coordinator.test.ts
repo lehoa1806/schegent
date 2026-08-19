@@ -19,14 +19,19 @@ import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinat
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import type { QueueLifecycle } from '../../../src/queue/feature-request';
 
+// FR-R3-011 — `paused` is gone from this fixture, not merely unset. It was the
+// retired `QueueState.paused` mirror, and step 2 used to read it; a fixture that
+// can still express it is a fixture that can express a queue paused one way and
+// running the other, which is exactly the disagreement the collapse removed.
+// Pausedness is `queueLifecycle === 'operator-paused'` here as it is on disk.
 function makeStore(queueState: {
-  paused: boolean;
   inFlightId: string | null;
   queueLifecycle?: QueueLifecycle;
 }) {
   return {
     getQueue: vi.fn(() => ({
       queueLifecycle: queueState.queueLifecycle ?? 'active-empty',
+      pauseSource: null,
       ...queueState
     })),
     // BUG-003 — step 3's second reading. `null` is "this queue holds no Run",
@@ -77,7 +82,7 @@ function makeController() {
 
 describe('AutoDrainCoordinator (T099 / T102)', () => {
   it('promotes the next pending feature when queue is idle and the lease is available', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next item' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -92,7 +97,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   });
 
   it('short-circuits when the queue is paused', async () => {
-    const store = makeStore({ paused: true, inFlightId: null });
+    const store = makeStore({ inFlightId: null, queueLifecycle: 'operator-paused' });
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -108,7 +113,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   });
 
   it('short-circuits when the workspace concurrency ceiling is full', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next' }, false);
     const lease = makeLease(true);
     const controller = makeController();
@@ -124,7 +129,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   });
 
   it('short-circuits when THIS queue already holds an in-flight Task', async () => {
-    const store = makeStore({ paused: false, inFlightId: 'q-1' });
+    const store = makeStore({ inFlightId: 'q-1' });
     const queue = makeQueue({ id: 'q-2', description: 'next' }, true, false);
     const lease = makeLease(true);
     const controller = makeController();
@@ -146,7 +151,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   it.each([['paused'], ['running']] as const)(
     'short-circuits when this queue already holds a %s Run',
     async (status) => {
-      const store = makeStore({ paused: false, inFlightId: null });
+      const store = makeStore({ inFlightId: null });
       store.getRun = vi.fn(() => ({ id: 'run-1', status }) as never);
       const queue = makeQueue({ id: 'q-2', description: 'next' });
       const lease = makeLease(true);
@@ -173,7 +178,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       // The queue's Run slot is free once its Run is terminal — the successor is
       // exactly what should claim it. Guards the case above from becoming
       // "a queue never drains twice".
-      const store = makeStore({ paused: false, inFlightId: null });
+      const store = makeStore({ inFlightId: null });
       store.getRun = vi.fn(() => ({ id: 'run-1', status }) as never);
       const queue = makeQueue({ id: 'q-2', description: 'next' });
       const lease = makeLease(true);
@@ -190,7 +195,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   );
 
   it('short-circuits when no pending feature exists', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     const queue = makeQueue(null);
     const lease = makeLease(true);
     const controller = makeController();
@@ -206,7 +211,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   });
 
   it('short-circuits when the execution lease is held by another window', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(false);
     const controller = makeController();
@@ -232,7 +237,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   // test that fails if the gate returns, and `running` needs an assertion that
   // it is not what the drain consults, or the next edit reads it again.
   it('starts a second Run while the engine is already driving one', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     let runningReads = 0;
@@ -259,7 +264,7 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
   });
 
   it('waits on the cap, which is what bounds concurrency now that 4b is gone', async () => {
-    const store = makeStore({ paused: false, inFlightId: null });
+    const store = makeStore({ inFlightId: null });
     // Step 4's execution reading is closed; every other gate is open.
     const queue = makeQueue({ id: 'q-2', description: 'next' }, true, true, false);
     const lease = makeLease(true);
@@ -287,10 +292,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
 describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
   it('idle-pending lifecycle returns early before peekNextPending/tryAcquire', async () => {
     const store = makeStore({
-      paused: false,
       inFlightId: null,
-      queueLifecycle: 'idle-pending'
-    });
+      queueLifecycle: 'idle-pending'});
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -310,10 +313,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
 
   it('running lifecycle proceeds through the existing checks (FR-005 carve-out)', async () => {
     const store = makeStore({
-      paused: false,
       inFlightId: 'q-1',
-      queueLifecycle: 'running'
-    });
+      queueLifecycle: 'running'});
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -329,10 +330,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
 
   it('active-empty lifecycle proceeds through the existing checks', async () => {
     const store = makeStore({
-      paused: false,
       inFlightId: null,
-      queueLifecycle: 'active-empty'
-    });
+      queueLifecycle: 'active-empty'});
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -346,12 +345,16 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
     expect(controller.admitNew).toHaveBeenCalled();
   });
 
-  it('operator-paused short-circuits via the legacy paused gate (not the new lifecycle gate)', async () => {
+  // FR-R3-011 — this used to read "short-circuits via the legacy paused gate
+  // (not the new lifecycle gate)", which was true when step 2 consulted the
+  // `paused` mirror and the lifecycle value was along for the ride. The mirror
+  // is retired, so the lifecycle value is now the only thing refusing here, and
+  // this case is the fourth member of the enumeration above rather than a
+  // different mechanism sharing a name.
+  it('operator-paused short-circuits at the lifecycle gate', async () => {
     const store = makeStore({
-      paused: true,
       inFlightId: null,
-      queueLifecycle: 'operator-paused'
-    });
+      queueLifecycle: 'operator-paused'});
     const queue = makeQueue({ id: 'q-2', description: 'next' });
     const lease = makeLease(true);
     const controller = makeController();
@@ -390,7 +393,7 @@ function roundRobinHarness(options: { capacity: number }) {
     store: {
       getQueue: vi.fn(() => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
-        paused: false,
+        pauseSource: null,
         inFlightId: null
       })),
       getRun: vi.fn(() => null),
@@ -560,9 +563,9 @@ function interleavingHarness(
 
   const coord = new AutoDrainCoordinator({
     store: {
-      getQueue: () => ({
+      getQueue: (_queueId: string) => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
-        paused: false,
+        pauseSource: null,
         inFlightId: null
       }),
       getRun: (_queueId: string) => null,
