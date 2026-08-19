@@ -9,6 +9,11 @@
   // longer fit one file inside `svelte-component-loc-budget`'s 500 lines, and
   // this was the seam already there.
   //
+  // Feature 097 redesign: the visual rendering of each standalone task row was
+  // extracted into `QueueTaskRow.svelte` to keep both files under the 500-line
+  // budget. This file retains the container layout, the table header, the
+  // connected-run rows, and all drag-and-drop / reorder / move orchestration.
+  //
   // Refusals travel back up rather than rendering here: the tier shows one
   // refusal line for every control it owns, and a second line inside the row
   // list would put two different refusals on screen with no way to tell which
@@ -20,8 +25,8 @@
   import { buildQueueRunRows, type ConnectedRunRow } from '../../lib/queue-run-rows';
   import { findTaskPipeline, resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { deriveTaskPhaseProgress, deriveTaskTiming } from '../../lib/task-row-view';
-  import { formatDuration } from '../../lib/format-duration';
   import { nowFine } from '../../lib/tick-store';
+  import QueueTaskRow from './QueueTaskRow.svelte';
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -74,11 +79,17 @@
     (snapshot.queue.queues ?? []).filter((summary) => summary.id !== queueId)
   );
 
+  // ---------- Status display (connected-run rows only) ----------
+  function statusDisplayLabel(status: string): string {
+    if (status === 'completed') return 'DONE';
+    if (status === 'in-flight') return 'RUNNING';
+    return status.toUpperCase();
+  }
+
+  // ---------- IPC handlers ----------
   async function moveTaskTo(taskId: string, event: Event): Promise<void> {
     const select = event.currentTarget as HTMLSelectElement;
     const targetQueueId = select.value;
-    // Reset first: the row is about to leave this queue on success, and on a
-    // refusal the operator should re-pick rather than see a stale selection.
     select.value = '';
     if (targetQueueId.length === 0) return;
     onRefusal(null);
@@ -91,26 +102,16 @@
   }
 
   function onRowKeyDown(event: KeyboardEvent, row: Row): void {
-    // A `<button>` fires click on Enter and Space in a browser; jsdom does not
-    // synthesise that, so FR-059's keyboard path is handled explicitly.
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     selectRow(row);
   }
 
   // US2/T034 (feature 030) reorder, ported onto the FR-047 collapsed-row list.
-  // One shared id (not a per-row boolean) tracks which handle is pressed,
-  // since every row here is rendered by this single component instance
-  // rather than one `QueueItem` instance per row.
   let dragArmedTaskId = $state<string | null>(null);
 
-  function onHandleMouseDown(taskId: string): void {
-    dragArmedTaskId = taskId;
-  }
-
-  function onHandleMouseUp(): void {
-    dragArmedTaskId = null;
-  }
+  function onHandleMouseDown(taskId: string): void { dragArmedTaskId = taskId; }
+  function onHandleMouseUp(): void { dragArmedTaskId = null; }
 
   function onDragStart(event: DragEvent, taskId: string): void {
     if (dragArmedTaskId !== taskId) return;
@@ -138,9 +139,7 @@
     if (result.status === 'rejected') onRefusal(refusalText(result.reason));
   }
 
-  function onDragEnd(): void {
-    dragArmedTaskId = null;
-  }
+  function onDragEnd(): void { dragArmedTaskId = null; }
 
   async function onMoveUp(taskId: string): Promise<void> {
     onRefusal(null);
@@ -159,11 +158,23 @@
   {#if rows.length === 0}
     <p class="empty" data-testid="queue-detail-empty">This queue has no work yet.</p>
   {:else}
-    {#each rows as row (row.key)}
+    <!-- Table header -->
+    <div class="table-header" role="row" aria-hidden="true">
+      <span class="th th-position">#</span>
+      <span class="th th-prompt">PROMPT</span>
+      <span class="th th-process">PROCESS</span>
+      <span class="th th-progress">PROGRESS</span>
+      <span class="th th-time">TIME</span>
+      <span class="th th-status">STATUS</span>
+      <span class="th th-chevron"></span>
+    </div>
+
+    {#each rows as row, rowIndex (row.key)}
       {#if row.kind === 'run'}
+        <!-- Connected-run row -->
         <button
           type="button"
-          class="row"
+          class="table-row status-{row.run.status}"
           data-row-key={row.key}
           data-testid="queue-run-row-{row.run.connectedRunId}"
           data-selected={row.run.connectedRunId === selectedRunId ? 'true' : 'false'}
@@ -171,14 +182,38 @@
           onclick={() => selectRow(row)}
           onkeydown={(event) => onRowKeyDown(event, row)}
         >
-          <span class="row-label">{row.run.label}</span>
-          <span class="row-kind">Workflow</span>
-          <span class="row-progress">
-            {row.run.completedNodeCount} of {row.run.nodeCount} nodes
+          <span class="cell cell-position">{rowIndex + 1}</span>
+          <span class="cell cell-prompt">
+            <span class="prompt-label">{row.run.label}</span>
+            <span class="prompt-id">{row.run.connectedRunId}</span>
+            <span class="workflow-badge">WORKFLOW · {row.run.memberTaskIds.length} TASKS COLLAPSED</span>
           </span>
-          <span class="row-status">{row.run.status}</span>
+          <span class="cell cell-process">
+            <span class="process-name">Workflow</span>
+            <span class="process-id">workflow · {row.run.workflowId}</span>
+          </span>
+          <span class="cell cell-progress">
+            <span class="progress-bar">
+              {#each Array(row.run.nodeCount) as _, i}
+                <span
+                  class="phase-seg"
+                  class:seg-completed={i < row.run.completedNodeCount}
+                  class:seg-future={i >= row.run.completedNodeCount}
+                ></span>
+              {/each}
+            </span>
+            <span class="progress-text">
+              {row.run.completedNodeCount} of {row.run.nodeCount} nodes
+            </span>
+          </span>
+          <span class="cell cell-time"><span class="time-primary">&mdash;</span></span>
+          <span class="cell cell-status">
+            <span class="status-badge badge-{row.run.status}">{statusDisplayLabel(row.run.status)}</span>
+          </span>
+          <span class="cell cell-chevron" aria-hidden="true">›</span>
         </button>
       {:else}
+        <!-- Standalone task row with drag-and-drop wrapper -->
         {@const pipeline = findTaskPipeline(row.task, snapshot.availablePipelines)}
         {@const pipelineName = resolveTaskPipelineName(row.task, snapshot.availablePipelines)}
         {@const progress = deriveTaskPhaseProgress(row.task, pipeline)}
@@ -205,253 +240,145 @@
               onmouseup={onHandleMouseUp}
             >
               <svg class="drag-handle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                <circle cx="6" cy="3" r="1.2" />
-                <circle cx="6" cy="7" r="1.2" />
-                <circle cx="6" cy="11" r="1.2" />
-                <circle cx="6" cy="15" r="1.2" />
-                <circle cx="10" cy="3" r="1.2" />
-                <circle cx="10" cy="7" r="1.2" />
-                <circle cx="10" cy="11" r="1.2" />
-                <circle cx="10" cy="15" r="1.2" />
+                <circle cx="6" cy="3" r="1.2" /><circle cx="6" cy="7" r="1.2" />
+                <circle cx="6" cy="11" r="1.2" /><circle cx="6" cy="15" r="1.2" />
+                <circle cx="10" cy="3" r="1.2" /><circle cx="10" cy="7" r="1.2" />
+                <circle cx="10" cy="11" r="1.2" /><circle cx="10" cy="15" r="1.2" />
               </svg>
             </button>
           {/if}
-          <button
-            type="button"
-            class="row"
-            data-row-key={row.key}
-            data-testid="queue-task-row-{row.task.id}"
-            data-selected={row.task.id === selectedRunId ? 'true' : 'false'}
-            aria-label="Open run {row.task.label}"
-            onclick={() => selectRow(row)}
-            onkeydown={(event) => onRowKeyDown(event, row)}
-          >
-            <span class="row-label">{row.task.label}</span>
-            <span class="row-kind" data-testid="queue-task-pipeline-{row.task.id}">
-              {pipelineName}
-            </span>
-            <span class="row-progress" data-testid="queue-task-progress-{row.task.id}">
-              {row.task.currentPhase ?? '—'} ({progress.completed}/{progress.total})
-            </span>
-            <span class="row-status">{row.task.status}</span>
-            <span class="row-timing" data-testid="queue-task-timing-{row.task.id}">
-              {timing.kind === 'waiting'
-                ? `Waiting ${formatDuration(timing.value)}`
-                : `${formatDuration(timing.value)} elapsed`}
-            </span>
-            {#if row.task.retryCount > 0}
-              <span class="row-retry" data-testid="queue-task-retry-{row.task.id}">
-                Retried {row.task.retryCount}&times;
-              </span>
-            {/if}
-            {#if row.task.lastErrorSummary !== null}
-              <span class="row-error" data-testid="queue-task-error-{row.task.id}">
-                {row.task.lastErrorSummary}
-              </span>
-            {/if}
-          </button>
-          <!--
-            FR-015 / US2 (feature 030) — only a pending Task moves or reorders.
-            A Task that has started is executing against this queue's lease,
-            and a Task that has finished is a record. These controls sit
-            beside the row rather than inside it: the row is a `<button>`,
-            and interactive content does not nest.
-          -->
+          <QueueTaskRow
+            task={row.task}
+            {rowIndex}
+            {pipeline}
+            {pipelineName}
+            {progress}
+            {timing}
+            isSelected={row.task.id === selectedRunId}
+            onSelect={() => selectRow(row)}
+            onKeyDown={(event) => onRowKeyDown(event, row)}
+          />
           {#if canReorder}
-            <button
-              type="button"
-              class="reorder-btn"
-              data-testid="queue-task-reorder-up-{row.task.id}"
-              title="Move up"
-              aria-label="Move {row.task.label} up"
-              onclick={() => onMoveUp(row.task.id)}
-            >&#9650;</button>
-            <button
-              type="button"
-              class="reorder-btn"
-              data-testid="queue-task-reorder-down-{row.task.id}"
-              title="Move down"
-              aria-label="Move {row.task.label} down"
-              onclick={() => onMoveDown(row.task.id)}
-            >&#9660;</button>
+            <button type="button" class="reorder-btn" data-testid="queue-task-reorder-up-{row.task.id}"
+              title="Move up" aria-label="Move {row.task.label} up"
+              onclick={() => onMoveUp(row.task.id)}>&#9650;</button>
+            <button type="button" class="reorder-btn" data-testid="queue-task-reorder-down-{row.task.id}"
+              title="Move down" aria-label="Move {row.task.label} down"
+              onclick={() => onMoveDown(row.task.id)}>&#9660;</button>
           {/if}
           {#if canReorder && moveTargets.length > 0}
-            <select
-              class="move"
-              data-testid="queue-task-move-{row.task.id}"
+            <select class="move" data-testid="queue-task-move-{row.task.id}"
               aria-label="Move {row.task.label} to another queue"
-              onchange={(event) => moveTaskTo(row.task.id, event)}
-            >
+              onchange={(event) => moveTaskTo(row.task.id, event)}>
               <option value="">Move to&hellip;</option>
-              {#each moveTargets as target (target.id)}
-                <option value={target.id}>{target.name}</option>
-              {/each}
+              {#each moveTargets as target (target.id)}<option value={target.id}>{target.name}</option>{/each}
             </select>
           {/if}
         </div>
       {/if}
     {/each}
+
+    <p class="ordering-note">
+      Ordered by <strong>position</strong>, ascending — the order the queue will work,
+      which starts as added order. Statuses interleave on purpose: there is no grouping.
+    </p>
   {/if}
 </div>
 
 <style>
-  .rows {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 0 20px;
-  }
+  .rows { display: flex; flex-direction: column; gap: 0; padding: 0 20px; }
+  .empty { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
 
-  .empty {
-    margin: 0;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .row-wrap {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .row-wrap .row {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .move {
-    font: inherit;
-    font-size: 11px;
-    padding: 4px 6px;
-    color: var(--vscode-dropdown-foreground);
-    background: var(--vscode-dropdown-background);
-    border: 1px solid var(--vscode-dropdown-border, transparent);
-    border-radius: 4px;
-  }
-
-  .drag-handle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
-    width: 16px;
-    min-width: 16px;
-    min-height: 20px;
-    padding: 0;
-    color: var(--vscode-descriptionForeground);
-    cursor: grab;
-    user-select: none;
-    flex-shrink: 0;
-  }
-
-  .drag-handle:hover {
-    color: var(--vscode-foreground);
-  }
-
-  .drag-handle:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 1px;
-  }
-
-  .drag-handle-icon {
-    width: 12px;
-    height: 16px;
-    fill: currentColor;
-  }
-
-  .row-wrap[draggable='true']:active .drag-handle {
-    cursor: grabbing;
-  }
-
-  .reorder-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    flex-shrink: 0;
-    padding: 0 4px;
-    font: inherit;
-    line-height: 1;
-    color: var(--vscode-descriptionForeground);
-    background: transparent;
-    border: 1px solid var(--vscode-widget-border, transparent);
-    border-radius: 4px;
-    cursor: pointer;
-  }
-
-  .reorder-btn:hover {
-    color: var(--vscode-foreground);
-    background: var(--vscode-toolbar-hoverBackground);
-  }
-
-  .reorder-btn:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 1px;
-  }
-
-  /*
-    The tier's generic `button` rule does not reach here — Svelte scopes styles
-    per component — so the row reproduces it inline. These declarations are that
-    rule's, not new ones; only `border-radius`, `background` and the grid are
-    the row's own, exactly as they overrode it before the extraction.
-  */
-  .row {
+  /* 7-column grid shared by header and connected-run rows */
+  .table-header,
+  .table-row {
     display: grid;
-    grid-template-columns: 2fr auto 1fr auto;
+    grid-template-columns: 36px 2fr 1fr 1.5fr auto auto 28px;
     gap: 12px;
-    align-items: center;
+    align-items: start;
     text-align: left;
-    font: inherit;
-    color: var(--vscode-foreground);
-    padding: 6px 12px;
-    cursor: pointer;
-    border: 1px solid var(--vscode-widget-border, transparent);
-    border-radius: 0;
-    background: var(--vscode-editorWidget-background);
+    padding: 8px 12px;
   }
 
-  .row[data-selected='true'] {
-    background: var(--vscode-list-activeSelectionBackground, var(--vscode-editorWidget-background));
+  .table-header {
+    border-bottom: 1px solid var(--vscode-widget-border, transparent);
+    padding-top: 4px;
+    padding-bottom: 6px;
   }
 
-  .row:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 2px;
+  .th {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--vscode-descriptionForeground); user-select: none;
   }
 
-  .row-label {
-    font-weight: 500;
-    color: var(--vscode-editor-foreground);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  /* Connected-run row */
+  .table-row {
+    font: inherit; color: var(--vscode-foreground); cursor: pointer;
+    border: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border, transparent) 40%, transparent);
+    border-radius: 0; background: transparent; transition: background-color 120ms ease-out;
+  }
+  .table-row:hover { background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 5%, transparent)); }
+  .table-row[data-selected='true'] { background: var(--vscode-list-activeSelectionBackground, var(--vscode-editorWidget-background)); }
+  .table-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+  .cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .cell-position { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground); justify-content: center; align-items: center; padding-top: 2px; }
+  .cell-prompt { gap: 3px; }
+  .prompt-label { font-weight: 500; color: var(--vscode-editor-foreground); white-space: pre-wrap; word-break: break-word; line-height: 1.35; }
+  .prompt-id { font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.75; }
+
+  .workflow-badge {
+    display: inline-flex; align-self: flex-start; padding: 2px 8px; margin-top: 2px;
+    background: color-mix(in srgb, var(--schegent-color-active) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--schegent-color-active) 30%, transparent);
+    border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+    color: var(--schegent-color-active); text-transform: uppercase;
   }
 
-  .row-kind,
-  .row-progress,
-  .row-status {
-    font-size: 11px;
-    text-transform: uppercase;
-    color: var(--vscode-descriptionForeground);
-  }
+  .cell-process { gap: 2px; }
+  .process-name { font-size: 12px; font-weight: 500; color: var(--vscode-foreground); }
+  .process-id { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; }
+  .cell-progress { gap: 4px; }
+  .progress-bar { display: flex; gap: 2px; align-items: center; height: 8px; }
+  .phase-seg { flex: 1; height: 100%; border-radius: 2px; min-width: 6px; }
+  .seg-completed { background: var(--schegent-color-active); }
+  .seg-future { background: var(--schegent-muted-fg); opacity: 0.2; }
+  .progress-text { font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .cell-time { gap: 2px; white-space: nowrap; align-items: flex-end; }
+  .time-primary { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; font-weight: 500; color: var(--vscode-foreground); }
+  .cell-status { align-items: center; justify-content: center; padding-top: 2px; }
 
-  .row-timing,
-  .row-retry,
-  .row-error {
-    grid-column: 1 / -1;
-    text-align: left;
-    font-size: 11px;
-    color: var(--vscode-descriptionForeground);
+  .status-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 2px 10px; border-radius: 4px; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
   }
+  .badge-in-flight { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); border: 1px solid color-mix(in srgb, var(--schegent-color-active) 35%, transparent); }
+  .badge-completed { background: color-mix(in srgb, var(--schegent-color-completed) 18%, transparent); color: var(--schegent-color-completed); border: 1px solid color-mix(in srgb, var(--schegent-color-completed) 35%, transparent); }
+  .badge-failed { background: color-mix(in srgb, var(--schegent-color-error) 18%, transparent); color: var(--schegent-color-error); border: 1px solid color-mix(in srgb, var(--schegent-color-error) 35%, transparent); }
+  .badge-pending { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border, transparent); }
+  .badge-paused { background: color-mix(in srgb, var(--schegent-color-warning) 18%, transparent); color: var(--schegent-color-warning); border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 35%, transparent); }
+  .badge-canceled { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border, transparent); opacity: 0.7; }
 
-  .row-retry {
-    color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
-  }
+  .cell-chevron { font-size: 16px; color: var(--vscode-descriptionForeground); opacity: 0.4; align-items: center; justify-content: center; padding-top: 2px; transition: opacity 120ms ease-out; }
+  .table-row:hover .cell-chevron { opacity: 1; }
 
-  .row-error {
-    color: var(--vscode-errorForeground);
-    overflow-wrap: anywhere;
-  }
+  /* Row wrapper for drag-and-drop + reorder controls */
+  .row-wrap { display: flex; gap: 4px; align-items: start; }
+  .row-wrap :global(.table-row) { flex: 1; min-width: 0; }
+
+  .move { font: inherit; font-size: 11px; padding: 4px 6px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); border-radius: 4px; margin-top: 8px; }
+
+  .drag-handle { display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; width: 16px; min-width: 16px; min-height: 20px; padding: 0; margin-top: 10px; color: var(--vscode-descriptionForeground); cursor: grab; user-select: none; flex-shrink: 0; }
+  .drag-handle:hover { color: var(--vscode-foreground); }
+  .drag-handle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  .drag-handle-icon { width: 12px; height: 16px; fill: currentColor; }
+  .row-wrap[draggable='true']:active .drag-handle { cursor: grabbing; }
+
+  .reorder-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; flex-shrink: 0; padding: 0 4px; font: inherit; line-height: 1; color: var(--vscode-descriptionForeground); background: transparent; border: 1px solid var(--vscode-widget-border, transparent); border-radius: 4px; cursor: pointer; margin-top: 8px; }
+  .reorder-btn:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+  .reorder-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+  .ordering-note { margin: 12px 0 0; padding: 8px 0; font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.6; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border, transparent) 30%, transparent); }
 </style>

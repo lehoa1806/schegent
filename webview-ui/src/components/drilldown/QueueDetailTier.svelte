@@ -254,56 +254,65 @@
           {runtime === null ? 'Unknown' : queueLifecycleLabel(runtime.lifecycle)}
         </span>
         <span class="throughput" data-testid="queue-detail-throughput">
-          {completedCount} completed &middot; {failedCount} failed &middot; {pendingCount} pending
+          <span class="count-completed">{completedCount} completed</span>
+          <span class="sep">&middot;</span>
+          <span class="count-failed">{failedCount} failed</span>
+          <span class="sep">&middot;</span>
+          <span class="count-pending">{pendingCount} pending</span>
         </span>
       </p>
     </div>
     {#if isPrimary}
       <div class="actions">
-        {#if !composerOpen}
+        <div class="action-group action-group--primary">
+          {#if !composerOpen}
+            <button
+              type="button"
+              class="primary"
+              data-testid="queue-composer-open"
+              aria-label="Add work"
+              onclick={openComposer}
+            >Add work</button>
+          {/if}
+          {#if !configuring}
+            <button
+              type="button"
+              data-testid="queue-config-open"
+              aria-label="Queue settings"
+              onclick={openConfig}
+            >Settings</button>
+          {/if}
+        </div>
+        <div class="action-group action-group--controls">
+          <QueueControls
+            {isPrimary}
+            {paused}
+            {pendingCount}
+            {hasInFlight}
+            {clearDoneDisabled}
+            {cleanDisabled}
+            queueLifecycle={runtime?.lifecycle ?? null}
+            {onResume}
+            {onPause}
+            {onClearDone}
+            {onClean}
+          />
+          <!--
+            FR-003 — the default queue is the one every unrouted Task lands on, so
+            deleting it has no coherent outcome. The control stays visible and
+            disabled with the reason attached, rather than disappearing: an absent
+            button is the shape this whole feature exists to fix.
+          -->
           <button
             type="button"
-            data-testid="queue-composer-open"
-            aria-label="Add work"
-            onclick={openComposer}
-          >Add work</button>
-        {/if}
-        {#if !configuring}
-          <button
-            type="button"
-            data-testid="queue-config-open"
-            aria-label="Queue settings"
-            onclick={openConfig}
-          >Settings</button>
-        {/if}
-        <QueueControls
-          {isPrimary}
-          {paused}
-          {pendingCount}
-          {hasInFlight}
-          {clearDoneDisabled}
-          {cleanDisabled}
-          queueLifecycle={runtime?.lifecycle ?? null}
-          {onResume}
-          {onPause}
-          {onClearDone}
-          {onClean}
-        />
-        <!--
-          FR-003 — the default queue is the one every unrouted Task lands on, so
-          deleting it has no coherent outcome. The control stays visible and
-          disabled with the reason attached, rather than disappearing: an absent
-          button is the shape this whole feature exists to fix.
-        -->
-        <button
-          type="button"
-          class="danger"
-          data-testid="queue-delete"
-          aria-label="Delete queue"
-          disabled={isDefaultQueue || busy}
-          aria-describedby={isDefaultQueue ? 'queue-delete-reason' : undefined}
-          onclick={deleteThisQueue}
-        >Delete Queue</button>
+            class="danger"
+            data-testid="queue-delete"
+            aria-label="Delete queue"
+            disabled={isDefaultQueue || busy}
+            aria-describedby={isDefaultQueue ? 'queue-delete-reason' : undefined}
+            onclick={deleteThisQueue}
+          >Delete Queue</button>
+        </div>
       </div>
     {/if}
   </header>
@@ -358,129 +367,81 @@
 
 <style>
   .queue-detail-tier {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    min-height: 0;
-    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 0; overflow-y: auto;
   }
-
   .tier-header {
     display: grid;
     grid-template-areas: 'back back' 'identity action';
     grid-template-columns: 1fr auto;
-    gap: 8px;
-    align-items: end;
-    padding: 16px 20px 0;
+    gap: 8px; align-items: end; padding: 16px 20px 0;
   }
-
   .back {
-    grid-area: back;
-    justify-self: start;
-    padding: 2px 0;
-    border: 0;
-    background: transparent;
+    grid-area: back; justify-self: start; padding: 2px 0;
+    border: 0; background: transparent;
     color: var(--vscode-descriptionForeground);
   }
-
-  .identity {
-    grid-area: identity;
-  }
-
+  .identity { grid-area: identity; }
   .tier-header h1 {
-    margin: 0 0 4px;
-    font-size: 20px;
-    font-weight: 600;
+    margin: 0 0 4px; font-size: 20px; font-weight: 600;
     color: var(--vscode-editor-foreground);
   }
-
   .meta {
-    display: flex;
-    gap: 12px;
-    margin: 0;
-    font-size: 12px;
+    display: flex; gap: 12px; margin: 0; font-size: 12px;
     color: var(--vscode-descriptionForeground);
   }
+  .lifecycle { color: var(--vscode-textLink-foreground); }
 
-  .lifecycle {
-    color: var(--vscode-textLink-foreground);
-  }
+  /* Throughput status colors — each count uses its semantic color */
+  .throughput { display: inline-flex; align-items: center; gap: 6px; }
+  .count-completed { color: var(--schegent-color-completed); }
+  .count-failed { color: var(--schegent-color-error); }
+  .count-pending { color: var(--schegent-color-active); }
+  .sep { color: var(--schegent-muted-fg); user-select: none; }
 
   button {
-    font: inherit;
-    color: var(--vscode-foreground);
+    font: inherit; color: var(--vscode-foreground);
     background: var(--vscode-button-secondaryBackground, transparent);
     border: 1px solid var(--vscode-widget-border, transparent);
-    border-radius: 4px;
-    padding: 6px 12px;
-    cursor: pointer;
+    border-radius: 4px; padding: 6px 12px; cursor: pointer;
   }
-
   button.primary {
     background: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
     border-color: var(--vscode-button-border, transparent);
   }
+  button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 
-  button:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 2px;
-  }
-
-  .actions {
-    grid-area: action;
-    display: flex;
-    gap: 8px;
-    align-items: center;
+  /* Primary actions (left) | separator | queue-state / destructive (right) */
+  .actions { grid-area: action; display: flex; gap: 8px; align-items: center; }
+  .action-group { display: flex; gap: 6px; align-items: center; }
+  .action-group--controls {
+    display: flex; gap: 6px; align-items: center;
+    border-left: 1px solid var(--schegent-divider);
+    padding-left: 8px;
   }
 
   button.danger {
     color: var(--vscode-errorForeground);
     border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border, transparent));
   }
+  button:disabled { opacity: 0.5; cursor: default; }
 
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  .hint, .refusal { margin: 0; padding: 0 20px; font-size: 12px; }
+  .hint { color: var(--vscode-descriptionForeground); }
+  .refusal { color: var(--vscode-errorForeground); }
 
-  .hint,
-  .refusal {
-    margin: 0;
-    padding: 0 20px;
-    font-size: 12px;
-  }
-
-  .hint {
-    color: var(--vscode-descriptionForeground);
-  }
-
-  .refusal {
-    color: var(--vscode-errorForeground);
-  }
-
-  .config-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    padding: 0 20px;
-  }
-
+  .config-row { display: flex; gap: 8px; align-items: center; padding: 0 20px; }
   .config-row input {
-    flex: 1;
-    font: inherit;
-    padding: 6px 8px;
+    flex: 1; font: inherit; padding: 6px 8px;
     color: var(--vscode-input-foreground);
     background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border, transparent);
     border-radius: 4px;
   }
-
   .composer-row {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 0 20px;
+    display: flex; flex-direction: column;
+    align-items: stretch; gap: 8px; padding: 0 20px;
   }
 </style>
+
