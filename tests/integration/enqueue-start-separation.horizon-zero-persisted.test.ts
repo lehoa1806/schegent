@@ -65,7 +65,7 @@ describe('Feature 065 (T024b) — SC-008 "0% persisted" invariant', () => {
       }
 
       // Persisted state MUST remain null on this attempt.
-      const persisted = h.store.getQueue();
+      const persisted = h.store.getQueue('default');
       expect(persisted.scheduledStartAt).toBeNull();
       expect(persisted.queueLifecycle).not.toBe('idle-pending');
 
@@ -110,7 +110,7 @@ describe('Feature 065 (T024b) — SC-008 "0% persisted" invariant', () => {
         threw = err instanceof ScheduledStartHorizonError;
       }
       expect(threw).toBe(true);
-      const persisted = h.store.getQueue();
+      const persisted = h.store.getQueue('default');
       expect(persisted.scheduledStartAt).toBeNull();
       expect(persisted.queueLifecycle).not.toBe('idle-pending');
     }
@@ -131,6 +131,6 @@ describe('Feature 065 (T024b) — SC-008 "0% persisted" invariant', () => {
     });
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
-    expect(h.store.getQueue().scheduledStartAt).toBe(exactBoundary);
+    expect(h.store.getQueue('default').scheduledStartAt).toBe(exactBoundary);
   });
 });

@@ -240,7 +240,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     // Simulate a second in-flight FeatureRequest (cap=2). Bypass capacity
     // by writing directly through the store the way the controller would
     // when global concurrency cap > 1.
-    const snapshot = store.getQueue();
+    const snapshot = store.getQueue(DEFAULT_QUEUE_ID);
     await store.setQueue({
       ...snapshot,
       requests: snapshot.requests.map((r) =>

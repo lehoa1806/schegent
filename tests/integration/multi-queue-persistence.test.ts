@@ -75,8 +75,8 @@ describe('multi-queue persistence survives a reload (T016, US1)', () => {
     void c;
 
     // Per-queue pause state is per queue, not a workspace-wide flag.
-    expect(second.store.getQueue(DEFAULT_QUEUE_ID).paused).toBe(true);
-    expect(second.store.getQueue(docs).paused).toBe(false);
+    expect(second.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(second.store.getQueue(docs).queueLifecycle === 'operator-paused').toBe(false);
 
     // The `list()` default parameter still addresses the default queue, and
     // `listAll()` spans both.

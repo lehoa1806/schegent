@@ -184,7 +184,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
 
     expect(result.outcome).toBe('rejected-foreign-lock');
     expect(result.reason).toMatch(/foreign-fresh:other-window/);
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
     expect(h.audit.append).toHaveBeenCalledTimes(1);
   });
 
@@ -204,7 +204,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     });
 
     expect(result.outcome).toBe('enqueued');
-    expect(h.store.getQueue().requests).toHaveLength(1);
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
   });
 
   it('rejects with rejected-paused when the queue is paused', async () => {
@@ -218,7 +218,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     });
 
     expect(result.outcome).toBe('rejected-paused');
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
     expect(h.audit.append).toHaveBeenCalledTimes(1);
   });
 
@@ -238,7 +238,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     });
 
     expect(result.outcome).toBe('enqueued');
-    expect(h.store.getQueue().requests).toHaveLength(2);
+    expect(h.store.getQueue('default').requests).toHaveLength(2);
     expect(h.controller.startNew).not.toHaveBeenCalled();
   });
 
@@ -263,7 +263,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     expect(result.outcome).toBe('enqueued');
     expect(result.outcome).not.toBe('rejected-already-running');
     const pending = h.store
-      .getQueue()
+      .getQueue('default')
       .requests.filter((r) => r.status === 'pending');
     expect(pending).toHaveLength(1);
     expect(pending[0]?.description).toBe('second');
@@ -279,7 +279,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     });
     expect(result.outcome).toBe('rejected-validation');
     expect(result.reason).toBe('description-empty');
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 
   it('rejects descriptions exceeding the 32k cap with rejected-validation', async () => {
@@ -292,7 +292,7 @@ describe('GuardedRunService.scheduleOrEnqueue (FR-006/FR-007/FR-008)', () => {
     });
     expect(result.outcome).toBe('rejected-validation');
     expect(result.reason).toBe('description-too-long');
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 });
 
@@ -332,7 +332,7 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
       pipelineId: 'fast-fix'
     });
     expect(result.outcome).toBe('enqueued');
-    expect(h.store.getQueue().requests[0]?.pipelineId).toBe('fast-fix');
+    expect(h.store.getQueue('default').requests[0]?.pipelineId).toBe('fast-fix');
   });
 
   it('scheduleOrEnqueue rejects an unknown pipelineId with rejected-validation', async () => {
@@ -347,7 +347,7 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
     });
     expect(result.outcome).toBe('rejected-validation');
     expect(result.reason).toMatch(/pipeline-id-unknown:unknown-pipeline/);
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 
   it('scheduleOrEnqueue preserves the rerun block on the enqueued FeatureRequest', async () => {
@@ -366,7 +366,7 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
       }
     });
     expect(result.outcome).toBe('enqueued');
-    const enqueued = h.store.getQueue().requests[0];
+    const enqueued = h.store.getQueue('default').requests[0];
     expect(enqueued?.rerun).toBeDefined();
     expect(enqueued?.rerun?.originalRunId).toBe('run-prev');
     expect(enqueued?.rerun?.reason).toBe('manual');
@@ -391,7 +391,7 @@ describe('GuardedRunService — pipelineId & rerun (T020/T021/T022)', () => {
     expect(result.reason).toBe('rerun-requires-pipeline-id');
     // Validation rejects before the queue write; no lock is taken either way.
     expect(h.store.getLock()).toBeNull();
-    expect(h.store.getQueue().requests).toHaveLength(0);
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 
   it('rejects rerun with an invalid reason value', async () => {

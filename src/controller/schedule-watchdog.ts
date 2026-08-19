@@ -1,12 +1,29 @@
-import type { QueueManager } from '../queue/queue-manager';
-import type { QueueRegistry } from '../queue/queue-registry';
+import type { QueueState } from '../queue/feature-request';
 import type { SanitizedLogger } from '../lib/logger';
 import type { AuditEventType } from '../contracts/audit-events';
 
 export interface QueueScheduleWatchdogDeps {
-  readonly getRegistry: () => QueueRegistry;
-  readonly queue: Pick<QueueManager, 'fireDueSchedules'>;
-  readonly drain: () => Promise<void> | void;
+  /**
+   * Every queue's persisted execution state. FR-R3-002 (T284) — the watchdog
+   * reads `QueueState`, not `QueueRegistryEntry.schedule`. The registry's
+   * `schedule` field has been `null` since the v5 → v6 migration; the live
+   * per-queue deadline is `QueueState.scheduledStartAt`, added by feature 065
+   * and made per-queue by feature 092's v9 → v10 record.
+   */
+  readonly getQueueStates: () => Readonly<Record<string, QueueState>>;
+  /**
+   * Whether `ScheduledStartCoordinator` still holds an in-process timer for
+   * this queue. A queue whose timer is armed and healthy is the coordinator's
+   * to fire; the watchdog exists for the deadlines that no timer will reach.
+   */
+  readonly hasArmedTimer: (queueId: string) => boolean;
+  /**
+   * The shared promotion hop — clears the queue's schedule fields, then asks
+   * `AutoDrainCoordinator.drainIfIdle(queueId)`. FR-R3-002 (T285): the same
+   * function the coordinator's `onFire` calls, so promotion has one path and
+   * the watchdog is not a second idle-pending enforcement site.
+   */
+  readonly promote: (queueId: string) => Promise<void> | void;
   readonly isPrimary: () => boolean;
   readonly logger: Pick<SanitizedLogger, 'warn' | 'info'>;
   readonly audit?: {
@@ -25,16 +42,29 @@ export interface QueueScheduleWatchdogDeps {
 }
 
 /**
- * Feature 051 — Decision recorded: KEEP this class as a slim no-op shim.
- * Reason: removing the construction site in `extension.ts` (and the
- * watchdog-managed `setRateLimitHandler` wiring around it) would force a
- * restructure of the activation flow for no behavioral gain — the tick()
- * already short-circuits to `[]` in single-queue mode (030). Reserved for
- * future re-introduction of scheduled queues; the test stays as guard.
+ * FR-R3-002 (T284/T285) — the recovery sweep for scheduled starts that no
+ * in-process timer will fire.
+ *
+ * This class was a documented no-op from feature 030 to feature R3-002, on the
+ * premise that `QueueRegistryEntry.schedule` is always `null` in single-queue
+ * mode. The premise stopped holding when feature 065 moved the deadline to
+ * `QueueState.scheduledStartAt` and feature 092 made that state per-queue, and
+ * its absence left one state unreachable: a scheduled start denied at fire time
+ * because a foreign window held the workspace lock. `ScheduledStartCoordinator`
+ * leaves such a queue in `idle-pending` with its deadline still persisted and
+ * its timer dropped — and `AutoDrainCoordinator.drainIfIdle()` *refuses*
+ * `idle-pending` by design, so nothing else in the system would ever pick it
+ * up. That schedule stayed pending indefinitely.
+ *
+ * The sweep is deliberately narrow. It does not decide whether a queue may run
+ * — step 1 of the drain gate still does, and `promote` is how this class asks
+ * it. It only answers "is there an elapsed deadline that no timer owns?", which
+ * is a question about liveness, not about policy.
  */
 export class QueueScheduleWatchdog {
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
+  private readonly now: () => number;
   private timer: unknown = null;
   private disposed = false;
 
@@ -44,6 +74,7 @@ export class QueueScheduleWatchdog {
   ) {
     this.setTimer = deps.setTimer ?? ((fn, ms) => setInterval(fn, ms));
     this.clearTimer = deps.clearTimer ?? ((handle) => clearInterval(handle as NodeJS.Timeout));
+    this.now = deps.now ?? (() => Date.now());
   }
 
   public start(): void {
@@ -64,18 +95,88 @@ export class QueueScheduleWatchdog {
   }
 
   /**
-   * Feature 030 (US3, T047) — single-queue mode. The per-queue schedule
-   * monitor is a strict no-op: `QueueRegistryEntry.schedule` is always
-   * `null` after the v5 → v6 migration, so there is nothing to fire.
-   * The class is kept as a slim shim so the extension activation flow
-   * does not need restructuring; future re-introduction of multi-queue
-   * schedules can restore the real polling loop.
+   * Promotes every queue holding an elapsed, unowned scheduled start and
+   * returns the ids it acted on — the empty array when there is nothing due,
+   * which is the ordinary case.
+   *
+   * A queue is due when all four hold on the **same entry**:
+   *   - `queueLifecycle === 'idle-pending'` — the lifecycle a persisted
+   *     `scheduledStartAt` is required to be paired with;
+   *   - `scheduledStartAt !== null` — there is a deadline at all;
+   *   - `scheduledStartAt <= now` — it has elapsed;
+   *   - no armed timer — the coordinator is not about to fire it itself.
+   *
+   * The last clause is what keeps this from racing the coordinator into a
+   * double promotion. The first is what keeps it from promoting a queue an
+   * operator paused or already started: those are not `idle-pending`, so a
+   * schedule superseded on either ground is skipped here too, exactly as the
+   * coordinator skips it.
+   *
+   * Due queues are promoted oldest-deadline-first, so a backlog that
+   * accumulated behind a foreign lock is released in the order the operator
+   * scheduled it. Each promotion is wrapped individually: one queue that
+   * cannot promote must not skip the queues behind it.
    */
   public async tick(): Promise<readonly string[]> {
     if (this.disposed || !this.deps.isPrimary()) return [];
-    // Feature 030 — schedule is always null on the single unified queue;
-    // no entry can ever be "due". Returning [] early skips the registry
-    // scan, the audit append, and the drain hop.
-    return [];
+    const now = this.now();
+    const due = Object.entries(this.deps.getQueueStates())
+      .filter(
+        ([queueId, state]) =>
+          state.queueLifecycle === 'idle-pending' &&
+          state.scheduledStartAt !== null &&
+          state.scheduledStartAt <= now &&
+          !this.deps.hasArmedTimer(queueId)
+      )
+      .map(([queueId, state]) => ({
+        queueId,
+        scheduledStartAt: state.scheduledStartAt as number,
+        source: state.scheduledStartSource
+      }))
+      .sort((a, b) => a.scheduledStartAt - b.scheduledStartAt);
+
+    const acted: string[] = [];
+    for (const entry of due) {
+      // FR-023a core payload: queueId, eventType, occurredAt, transitionReason.
+      // `watchdog-recovered` distinguishes this from the coordinator's
+      // `timer-fired` and `offline-elapsed` — the deadline elapsed while this
+      // window was up, but no timer was left to fire it. No task description
+      // or operator-authored content appears here.
+      await this.appendAudit({
+        queueId: entry.queueId,
+        scheduledStartAt: entry.scheduledStartAt,
+        scheduledStartSource: entry.source,
+        firedAt: now,
+        lateByMs: now - entry.scheduledStartAt,
+        transitionReason: 'watchdog-recovered'
+      });
+      try {
+        await this.deps.promote(entry.queueId);
+        acted.push(entry.queueId);
+      } catch (err) {
+        this.deps.logger.warn(
+          `schedule-watchdog promotion failed for one queue: ${(err as Error).message}`
+        );
+      }
+    }
+    return acted;
+  }
+
+  private async appendAudit(payload: Record<string, unknown>): Promise<void> {
+    if (!this.deps.audit) return;
+    try {
+      await this.deps.audit.append({
+        runId: '',
+        phase: 'scheduled-start',
+        iteration: 0,
+        eventType: 'scheduled-start-fired',
+        outcome: 'info',
+        payload: { ...payload, occurredAt: this.now() }
+      });
+    } catch (err) {
+      this.deps.logger.warn(
+        `schedule-watchdog audit append failed: ${(err as Error).message}`
+      );
+    }
   }
 }

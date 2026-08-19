@@ -81,7 +81,7 @@ describe('a connected run under repeat and overlapping starts', () => {
     expect(launched.outcome).toBe('started');
 
     const before = storedRun(harness);
-    const queuedBefore = harness.store.getQueue().requests.length;
+    const queuedBefore = harness.store.getQueue('default').requests.length;
 
     // The first child has not settled. `isNodeStartable` is injected as
     // accepting, so nothing but gate 3 can be refusing this.
@@ -98,7 +98,7 @@ describe('a connected run under repeat and overlapping starts', () => {
     const after = storedRun(harness);
     expect(after.revision).toBe(before.revision);
     expect(after.nodes['n-ship']).toBeUndefined();
-    expect(harness.store.getQueue().requests).toHaveLength(queuedBefore);
+    expect(harness.store.getQueue('default').requests).toHaveLength(queuedBefore);
   });
 
   it('produces exactly one child from two identical rapid submissions (FR-047, SC-008)', async () => {
@@ -107,7 +107,7 @@ describe('a connected run under repeat and overlapping starts', () => {
     // The revision the operator's view was rendered from. Both submissions carry
     // it, which is what makes them identical.
     const submitted = storedRun(harness).revision;
-    const queuedBefore = harness.store.getQueue().requests.length;
+    const queuedBefore = harness.store.getQueue('default').requests.length;
 
     const first = await continueAt(launcher, harness, 'n-ship', SHIP_REQUEST, submitted);
     const second = await continueAt(launcher, harness, 'n-ship', SHIP_REQUEST, submitted);
@@ -122,7 +122,7 @@ describe('a connected run under repeat and overlapping starts', () => {
     expect(second.current?.revision).toBe(submitted + 1);
 
     // SC-008: exactly one child, and exactly one attempt referencing it.
-    expect(harness.store.getQueue().requests).toHaveLength(queuedBefore + 1);
+    expect(harness.store.getQueue('default').requests).toHaveLength(queuedBefore + 1);
     const after = storedRun(harness);
     expect(after.nodes['n-ship']!.attempts).toHaveLength(1);
     expect(after.nodes['n-ship']!.attempts[0]!.queueItemId).toBe(first.queueItemId);

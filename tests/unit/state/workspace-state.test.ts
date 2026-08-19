@@ -41,6 +41,7 @@ function emptyQueue(): QueueState {
     pausedReason: null,
     updatedAt: 0,
     queueLifecycle: 'active-empty',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null
   };
@@ -123,7 +124,7 @@ describe('WorkspaceStateStore.subscribe', () => {
     const events: StoreChangeKey[] = [];
     store.subscribe((key) => events.push(key));
 
-    store.getQueue();
+    store.getQueue(DEFAULT_QUEUE_ID);
     store.getRun(DEFAULT_QUEUE_ID);
     store.getLock();
     store.getWatchdog();
@@ -209,7 +210,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     await store.insertPendingRequest(pendingFeature('first'), { position: 0 });
     await store.insertPendingRequest(pendingFeature('second'), { position: 0 });
 
-    const queue = store.getQueue();
+    const queue = store.getQueue(DEFAULT_QUEUE_ID);
     expect(queue.requests.map((request) => [request.id, request.position])).toEqual([
       ['first', 1],
       ['second', 0]
@@ -228,7 +229,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     await store.insertPendingRequest(pendingFeature('B'), {});
     await store.insertPendingRequest(pendingFeature('C'), {});
 
-    const beforePromotion = store.getQueue();
+    const beforePromotion = store.getQueue(DEFAULT_QUEUE_ID);
     await store.setQueue({
       ...beforePromotion,
       requests: beforePromotion.requests.map((request) =>
@@ -241,7 +242,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     await store.insertPendingRequest(pendingFeature('D'), {});
 
     const pendingOrder = store
-      .getQueue()
+      .getQueue(DEFAULT_QUEUE_ID)
       .requests.filter((request) => request.status === 'pending')
       .sort((a, b) => a.position - b.position)
       .map((request) => request.id);
@@ -254,7 +255,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
       store.insertPendingRequest(pendingFeature('concurrent-b'))
     ]);
 
-    expect(store.getQueue().requests.map((request) => request.id).sort()).toEqual([
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.map((request) => request.id).sort()).toEqual([
       'concurrent-a',
       'concurrent-b'
     ]);
@@ -289,7 +290,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     });
 
     await store.reorderPendingRequest('third', 0);
-    expect(store.getQueue().requests.map((request) => [request.id, request.position])).toEqual([
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.map((request) => [request.id, request.position])).toEqual([
       ['first', 1],
       ['second', 2],
       ['third', 0]
@@ -399,8 +400,8 @@ describe('Persistence migration (T065 / SC-013)', () => {
 
     const s = new WorkspaceStateStore(memento);
     await s.initialize();
-    const queue = s.getQueue();
-    expect(queue.paused).toBe(false);
+    const queue = s.getQueue(DEFAULT_QUEUE_ID);
+    expect(queue.queueLifecycle).not.toBe('operator-paused');
     expect(queue.pausedReason).toBeNull();
     expect(queue.requests).toHaveLength(1);
     const r = queue.requests[0];
@@ -426,6 +427,7 @@ describe('Persistence migration (T065 / SC-013)', () => {
       inFlightId: null,
       updatedAt: 1700000000000,
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       requests: [
@@ -451,8 +453,8 @@ describe('Persistence migration (T065 / SC-013)', () => {
 
     const s = new WorkspaceStateStore(memento);
     await s.initialize();
-    const queue = s.getQueue();
-    expect(queue.paused).toBe(true);
+    const queue = s.getQueue(DEFAULT_QUEUE_ID);
+    expect(queue.queueLifecycle).toBe('operator-paused');
     expect(queue.pausedReason).toBe('rate-limited');
     expect(queue.requests[0].retryCount).toBe(2);
     expect(queue.requests[0].lastError).toBe('oops');
@@ -462,9 +464,9 @@ describe('Persistence migration (T065 / SC-013)', () => {
     const memento = new FakeMemento();
     const s = new WorkspaceStateStore(memento);
     await s.initialize();
-    const queue = s.getQueue();
+    const queue = s.getQueue(DEFAULT_QUEUE_ID);
     expect(queue.requests).toEqual([]);
-    expect(queue.paused).toBe(false);
+    expect(queue.queueLifecycle).not.toBe('operator-paused');
     expect(queue.pausedReason).toBeNull();
     expect(queue.inFlightId).toBeNull();
     expect(typeof queue.updatedAt).toBe('number');

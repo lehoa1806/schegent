@@ -4,7 +4,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { runAuto } from '../commands/auto';
 import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
-import { runEnqueue } from '../commands/enqueue';
+import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
 import { runExportAuditLog } from '../commands/export-audit';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
@@ -86,7 +86,7 @@ export interface ConnectedRunService extends ConnectedRunPort {
 
 type ConnectedRunStore = Pick<
   WorkspaceStateStore,
-  'getQueue' | 'getConnectedRun' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
+  'getRequest' | 'getConnectedRun' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
 >;
 
 /**
@@ -105,14 +105,22 @@ type ConnectedRunStore = Pick<
  * `pending` and `paused` both read as `in-flight` because the only question this
  * answers is whether the child has settled, and neither has (see
  * data-model.md "Derived" on why the name is `in-flight`).
+ *
+ * FR-R3-002 (T283) — the queue read is `getRequest`, not `getQueue()`. The
+ * argument-less read resolved to the Default queue, so a child in flight on any
+ * other queue was simply absent from the array, fell through to history, and
+ * resolved `null` — which, per the paragraph above, the launcher's gate reads as
+ * **settled**. A live child was therefore reported as finished. `getRequest`
+ * names the *Task*, and the store resolves whichever queue owns it; a caller
+ * that holds a Task id and no queue id has an honest way to ask.
  */
 function readChildState(
   store: ConnectedRunStore,
   history: Pick<HistoryStore, 'list'>,
   queueItemId: string
 ): ConnectedChildState | null {
-  const request = store.getQueue().requests.find((entry) => entry.id === queueItemId);
-  if (request !== undefined) {
+  const request = store.getRequest(queueItemId);
+  if (request !== null) {
     if (request.status === 'completed') return 'completed';
     if (request.status === 'failed') return 'failed';
     if (request.status === 'canceled') return 'canceled';
@@ -168,7 +176,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.enqueue', async (args) => {
+    vscode.commands.registerCommand('schegent.enqueue', async (args: EnqueueCommandArgs) => {
       const result = await runEnqueue(args, {
         guardedRunService: deps.guardedRunService,
         store: deps.store,
@@ -178,7 +186,12 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         promptForInput: false
       });
       if (result?.result.outcome === 'enqueued') {
-        void deps.controller.drainQueuedWork().catch((err) =>
+        // FR-R3-002 (T279) — drain the queue the task actually landed on.
+        // `runEnqueue` has already refused an unnamed queue, so `args.queueId`
+        // is a valid fallback for the case where the inserted row could not be
+        // read back; the argument-less drain this replaces always swept Default.
+        const drainTarget = result.queueId ?? args.queueId;
+        void deps.controller.drainQueuedWork(drainTarget).catch((err) =>
           deps.logger.warn(`enqueue: auto-drain failed: ${(err as Error).message}`)
         );
       }

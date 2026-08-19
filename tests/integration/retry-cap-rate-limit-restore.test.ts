@@ -155,7 +155,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     expect(q.queueLifecycle).toBe('idle-pending');
     expect(q.scheduledStartSource).toBe('system-rate-limit-recovery');
     expect(typeof q.scheduledStartAt).toBe('number');
@@ -200,7 +200,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     expect(q.queueLifecycle).toBe('idle-pending');
     expect(q.scheduledStartSource).toBe('system-rate-limit-recovery');
     // Buffered restore target = resetsAtMs + RETRY_BUFFER_MS.
@@ -217,12 +217,11 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     // Legacy operator-paused lifecycle preserved.
     expect(q.queueLifecycle).toBe('operator-paused');
     expect(q.scheduledStartAt).toBeNull();
     expect(q.scheduledStartSource).toBeNull();
-    expect(q.paused).toBe(true);
 
     expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
     const unavail = h.audit.byType('system-pause-restore-unavailable');
@@ -249,7 +248,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     expect(q.queueLifecycle).toBe('operator-paused');
     expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
     const unavail = h.audit.byType('system-pause-restore-unavailable');
@@ -272,7 +271,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     expect(q.queueLifecycle).toBe('operator-paused');
     expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
     const unavail = h.audit.byType('system-pause-restore-unavailable');
@@ -295,7 +294,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'transient_error');
 
-    const q = h.store.getQueue();
+    const q = h.store.getQueue('default');
     expect(q.queueLifecycle).toBe('operator-paused');
     expect(q.scheduledStartAt).toBeNull();
     expect(h.audit.byType('system-pause-scheduled-restore')).toHaveLength(0);
@@ -326,7 +325,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
       await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-      const q = h.store.getQueue();
+      const q = h.store.getQueue('default');
       // Lifecycle MUST NOT enter idle-pending; the legacy operator-paused
       // path is taken because the ingress precondition fails.
       expect(q.queueLifecycle).toBe('operator-paused');
@@ -354,7 +353,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
       await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-      const q = h.store.getQueue();
+      const q = h.store.getQueue('default');
       expect(q.queueLifecycle).toBe('operator-paused');
       expect(q.scheduledStartAt).toBeNull();
       expect(q.scheduledStartSource).toBeNull();
@@ -386,7 +385,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
       await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-      const q = h.store.getQueue();
+      const q = h.store.getQueue('default');
       expect(q.queueLifecycle).toBe('idle-pending');
       expect(q.scheduledStartSource).toBe('system-rate-limit-recovery');
       // The trailing `rejected` `resetsAt` MUST be the chosen epoch.
@@ -409,7 +408,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
 
     await handler.scheduleQueuePauseAndFail(run, 1, phaseResult, 'rate_limit');
 
-    const armed = h.store.getQueue();
+    const armed = h.store.getQueue('default');
     expect(armed.queueLifecycle).toBe('idle-pending');
     const target = armed.scheduledStartAt!;
     expect(typeof target).toBe('number');
@@ -422,7 +421,7 @@ describe('Feature 065 BUG-006 (T071 step 6) — retry-cap → scheduled-restore 
     h.fakeTimer.fireDue(h.clock.now());
     await new Promise((r) => setImmediate(r));
 
-    const fired = h.store.getQueue();
+    const fired = h.store.getQueue('default');
     expect(fired.queueLifecycle).toBe('running');
     expect(fired.scheduledStartAt).toBeNull();
     expect(fired.scheduledStartSource).toBeNull();

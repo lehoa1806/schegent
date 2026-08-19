@@ -146,7 +146,7 @@ describe('runRestartCanceledTask — BUG-001', () => {
     await queue.finish(target.id, 'canceled');
 
     // Fill the default queue up to the cap with pending tasks.
-    const snapshot = store.getQueue();
+    const snapshot = store.getQueue(DEFAULT_QUEUE_ID);
     const filler = [] as typeof snapshot.requests;
     for (let i = 0; i < MAX_PENDING_TASKS_PER_QUEUE; i += 1) {
       filler.push({

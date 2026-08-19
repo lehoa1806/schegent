@@ -323,8 +323,8 @@ describe('FR-006 — cap exhaustion pauses the queue', () => {
     expect(run.pendingRetryAt).toBeNull(); // cap-exhausted state clears the timer
     expect(run.pendingRetryCause).toBeNull();
 
-    const queueState = store.getQueue();
-    expect(queueState.paused).toBe(true);
+    const queueState = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(queueState.queueLifecycle).toBe('operator-paused');
     expect(queueState.pausedReason).toBe(`retry-cap-exhausted:${run.id}`);
 
     // Audit event must record the queue-paused event with delayedRetryCount=5.

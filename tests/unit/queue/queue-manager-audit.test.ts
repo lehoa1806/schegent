@@ -94,7 +94,7 @@ describe('QueueManager Audit Emissions (Feature 072)', () => {
     await expect(queue.markInFlight(task.id, runId, false)).resolves.toBeUndefined();
     
     // And the state should be updated to in-flight.
-    const inFlight = store.getQueue().requests.find(r => r.id === task.id);
+    const inFlight = store.getQueue('default').requests.find(r => r.id === task.id);
     expect(inFlight?.status).toBe('in-flight');
   });
 });

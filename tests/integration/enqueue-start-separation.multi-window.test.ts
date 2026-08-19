@@ -86,11 +86,12 @@ async function makeWindow(
     auditWriter: audit as unknown as Pick<AuditLogWriter, 'append'>,
     logger: logger as unknown as Pick<SanitizedLogger, 'warn'>,
     onFire: async () => {
-      const cur = store.getQueue();
+      const cur = store.getQueue('default');
       if (cur.queueLifecycle === 'idle-pending') {
         await store.setQueue({
           ...cur,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           updatedAt: clock.now()
@@ -128,14 +129,14 @@ describe('Feature 065 (T049 / FR-019a) — multi-window contention', () => {
   it('window B enqueues without intent → window A reload sees lifecycle moved out of active-empty', async () => {
     // Window A initializes first; queue starts active-empty.
     const winA = await makeWindow('window-A', memento, clock);
-    const lifecycleA0 = winA.store.getQueue().queueLifecycle;
+    const lifecycleA0 = winA.store.getQueue('default').queueLifecycle;
     expect(lifecycleA0).toBe('active-empty');
 
     // Window B initializes against the SAME memento — it sees the same
     // lifecycle. (This mirrors a second VS Code window opening on the
     // same workspace.)
     const winB = await makeWindow('window-B', memento, clock);
-    const lifecycleB0 = winB.store.getQueue().queueLifecycle;
+    const lifecycleB0 = winB.store.getQueue('default').queueLifecycle;
     expect(lifecycleB0).toBe('active-empty');
 
     // Window B enqueues a task with NO startIntent (the standard
@@ -158,7 +159,7 @@ describe('Feature 065 (T049 / FR-019a) — multi-window contention', () => {
     // re-reads the underlying memento). The lifecycle MUST reflect
     // window B's write.
     const winA2 = await makeWindow('window-A-reload', memento, clock);
-    const lifecycleA1 = winA2.store.getQueue().queueLifecycle;
+    const lifecycleA1 = winA2.store.getQueue('default').queueLifecycle;
     expect(lifecycleA1).toBe('idle-pending');
     expect(lifecycleA1).not.toBe(lifecycleA0);
   });
@@ -183,8 +184,8 @@ describe('Feature 065 (T049 / FR-019a) — multi-window contention', () => {
     // contents — proving the snapshot tick from window A is sufficient
     // to see the transition without dispatching its own enqueue.
     const winA2 = await makeWindow('window-A-reload', memento, clock);
-    const requestsFromA = winA2.store.getQueue().requests.filter((r) => r.status === 'pending');
-    const requestsFromB = winB.store.getQueue().requests.filter((r) => r.status === 'pending');
+    const requestsFromA = winA2.store.getQueue('default').requests.filter((r) => r.status === 'pending');
+    const requestsFromB = winB.store.getQueue('default').requests.filter((r) => r.status === 'pending');
     expect(requestsFromA.length).toBe(1);
     expect(requestsFromA[0].description).toBe('cross-window task');
     expect(requestsFromA[0].id).toBe(requestsFromB[0].id);

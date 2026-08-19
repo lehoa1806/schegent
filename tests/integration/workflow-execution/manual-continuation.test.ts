@@ -88,7 +88,7 @@ const OPERATOR_SHIP_REQUEST: RunRequest = {
 
 /** The queue row a start produced, as the drain path will read it. */
 function rowFor(harness: Harness, queueItemId: string): FeatureRequest {
-  const row = harness.store.getQueue().requests.find((request) => request.id === queueItemId);
+  const row = harness.store.getQueue('default').requests.find((request) => request.id === queueItemId);
   if (row === undefined) throw new Error(`queue row ${queueItemId} is missing`);
   return row;
 }
@@ -152,7 +152,7 @@ describe('a connected run whose completed node offers two branches', () => {
 
     // Then: the run recorded a decision and started nothing.
     expect(startedNodes(harness)).toEqual(['n-triage']);
-    expect(harness.store.getQueue().requests.map((row) => row.id)).toEqual([triageQueueItemId]);
+    expect(harness.store.getQueue('default').requests.map((row) => row.id)).toEqual([triageQueueItemId]);
 
     // Later: pump every mechanism that acts without an operator.
     harness.clock.advance(6 * 60 * 60 * 1000);
@@ -169,7 +169,7 @@ describe('a connected run whose completed node offers two branches', () => {
     // Still nothing. The second evaluation appended a second decision — the
     // trail grew, the run did not.
     expect(startedNodes(harness)).toEqual(['n-triage']);
-    expect(harness.store.getQueue().requests.map((row) => row.id)).toEqual([triageQueueItemId]);
+    expect(harness.store.getQueue('default').requests.map((row) => row.id)).toEqual([triageQueueItemId]);
     expect(storedRun(harness).decisions).toHaveLength(2);
   });
 

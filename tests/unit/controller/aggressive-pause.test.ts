@@ -252,7 +252,7 @@ describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
     const result = await controller.pauseActivePhase();
     expect(result).toEqual({ ok: true });
 
-    const entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('manually-paused');
     expect(entry?.pauseSource).toBe('cascade');
   });

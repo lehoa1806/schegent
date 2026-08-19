@@ -302,8 +302,8 @@ describe('T075 (FR-043, US3 scenario 3) — pausing the bound queue stops the ru
 
     expect(taskIdsIn(DEFAULT_QUEUE_ID)).toEqual([otherChild]);
     expect(taskIdsIn(releaseQueueId)).toEqual([boundChild]);
-    expect(harness.store.getQueue(DEFAULT_QUEUE_ID).paused).toBe(false);
-    expect(harness.store.getQueue(releaseQueueId).paused).toBe(true);
+    expect(harness.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
+    expect(harness.store.getQueue(releaseQueueId).queueLifecycle === 'operator-paused').toBe(true);
   });
 
   it('lets the run advance again once the bound queue resumes', async () => {

@@ -3,9 +3,18 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceStateStore } from '../state/workspace-state';
+import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import { runEnqueue, type EnqueueCommandArgs, type RunEnqueueResult } from './enqueue';
 
-export interface AutoCommandArgs extends EnqueueCommandArgs {}
+/**
+ * FR-R3-002 (T279) — `queueId` stays optional here even though `runEnqueue`
+ * now requires one. `schegent.auto` is a Command Palette entry with no queue
+ * selector, so its caller genuinely has no queue to name; `runAuto` resolves
+ * the reserved default explicitly below rather than passing the absence on.
+ */
+export interface AutoCommandArgs extends Omit<EnqueueCommandArgs, 'queueId'> {
+  queueId?: string;
+}
 
 export interface RunAutoCtx {
   readonly guardedRunService: Pick<GuardedRunService, 'scheduleOrEnqueue'>;
@@ -30,6 +39,11 @@ export async function runAuto(
     // immediately (operator-chooser source for the audit trail).
     const argsWithIntent: EnqueueCommandArgs = {
       ...(args ?? {}),
+      // FR-R3-002 (T279) — the Palette has no queue selector, so this surface
+      // names the reserved default itself. Resolving it here keeps the choice
+      // visible at the boundary that made it, instead of inside `runEnqueue`
+      // where it would apply to every caller that merely forgot.
+      queueId: args?.queueId ?? DEFAULT_QUEUE_ID,
       startIntent: args?.startIntent ?? {
         startMode: 'now',
         source: 'operator-chooser'

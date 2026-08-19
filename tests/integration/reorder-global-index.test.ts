@@ -145,8 +145,6 @@ async function makeHarness(
         id: DEFAULT_QUEUE_ID,
         name: 'Default queue',
         position: 0,
-        state: 'active',
-        pauseSource: null,
         schedule: null,
         createdAt: NOW,
         updatedAt: NOW
@@ -161,6 +159,7 @@ async function makeHarness(
     pausedReason: null,
     updatedAt: NOW,
     queueLifecycle: inFlightId !== null ? 'running' : 'idle-pending',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null
   };
@@ -232,7 +231,7 @@ async function dispatch(
 
 function snapshotOrder(h: Harness): Array<{ id: string; status: string; position: number }> {
   return h.store
-    .getQueue()
+    .getQueue(DEFAULT_QUEUE_ID)
     .requests.slice()
     .sort((a, b) => a.position - b.position)
     .map((r) => ({ id: r.id, status: r.status, position: r.position }));
@@ -362,7 +361,7 @@ describe('Feature 065 BUG-009 T078 (FR-030) — global-index reorder contract', 
 
       expect(ack.status).toBe('rejected');
       expect(snapshotOrder(h)).toEqual(before);
-      expect(h.store.getQueue().inFlightId).toBe('T0');
+      expect(h.store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBe('T0');
 
       const reorderEvents = h.auditEntries.filter(
         (e) => e.eventType === 'task-reordered'

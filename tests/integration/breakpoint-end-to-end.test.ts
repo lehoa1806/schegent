@@ -196,7 +196,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     expect(invokedPhases).toContain('speckit-analyze');
 
     // The host queue should be cascade-paused.
-    const regAfterFire = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const regAfterFire = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(regAfterFire?.state).toBe('manually-paused');
     expect(regAfterFire?.pauseSource).toBe('cascade');
 
@@ -220,7 +220,7 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     expect(invokedPhases).toContain('finalize');
 
     // Host queue is cascade-cleared post-resume.
-    const regAfterResume = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const regAfterResume = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(regAfterResume?.state).toBe('active');
     expect(regAfterResume?.pauseSource).toBeNull();
   });

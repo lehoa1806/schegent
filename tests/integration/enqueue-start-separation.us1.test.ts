@@ -66,7 +66,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
 
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.queueLifecycle).toBe('idle-pending');
     expect(persisted.scheduledStartAt).toBeNull();
     expect(persisted.scheduledStartSource).toBeNull();
@@ -95,7 +95,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
 
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.queueLifecycle).toBe('running');
     expect(persisted.scheduledStartAt).toBeNull();
     expect(persisted.scheduledStartSource).toBeNull();
@@ -123,7 +123,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
 
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.queueLifecycle).toBe('idle-pending');
     expect(persisted.scheduledStartAt).toBe(scheduledAt);
     expect(persisted.scheduledStartSource).toBe('operator-chooser');
@@ -140,7 +140,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(h.audit.byType('scheduled-start-fired').length).toBe(1);
-    const afterFire = h.store.getQueue();
+    const afterFire = h.store.getQueue('default');
     expect(afterFire.queueLifecycle).toBe('running');
     expect(afterFire.scheduledStartAt).toBeNull();
   });
@@ -155,7 +155,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
 
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.queueLifecycle).toBe('idle-pending');
     expect(persisted.scheduledStartAt).toBeNull();
     expect(persisted.scheduledStartSource).toBeNull();
@@ -171,7 +171,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
       via: 'webview',
       callerKind: 'human'
     });
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
 
     // Now simulate "Start queue" from the chooser/restart mode. The
     // GuardedRunService doesn't expose a dedicated restart entry point;
@@ -191,7 +191,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
 
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.queueLifecycle).toBe('running');
     // idle-pending-exited should fire because we transitioned out.
     const exits = h.audit.byType('idle-pending-exited');
@@ -266,7 +266,7 @@ describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {
     // (which is out of scope for T024 but covered by T038 in Phase 6)
     // owns the cancel. For T024 we assert the persisted state is
     // observable so the test will catch any silent stale-state bug.
-    const persisted = h.store.getQueue();
+    const persisted = h.store.getQueue('default');
     expect(persisted.requests.find((r) => r.id === itemId)).toBeUndefined();
   });
 });

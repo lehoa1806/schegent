@@ -47,10 +47,11 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     // Then forcibly set scheduledStartAt to a past value (simulating a
     // persistence that survived across reloads).
     const elapsedAt = h.clock.now() - 60_000;
-    const current = h.store.getQueue();
+    const current = h.store.getQueue('default');
     await h.store.setQueue({
       ...current,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: elapsedAt,
       scheduledStartSource: 'operator-chooser',
       updatedAt: h.clock.now()
@@ -64,7 +65,7 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     await new Promise((r) => setImmediate(r));
 
     // (c) Lifecycle transitions to running.
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -88,10 +89,11 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     });
     const futureAt = h.clock.now() + 60_000;
     const persistedAt = futureAt;
-    const current = h.store.getQueue();
+    const current = h.store.getQueue('default');
     await h.store.setQueue({
       ...current,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: persistedAt,
       scheduledStartSource: 'operator-chooser',
       updatedAt: h.clock.now()
@@ -103,7 +105,7 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     await h.coordinator.reArm();
 
     // The persisted value is byte-identical (we never mutated it on re-arm).
-    const armed = h.store.getQueue();
+    const armed = h.store.getQueue('default');
     expect(armed.scheduledStartAt).toBe(persistedAt);
 
     // The coordinator armed a new timer (one extra armed event).
@@ -114,7 +116,7 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     h.fakeTimer.fireDue(h.clock.now());
     await new Promise((r) => setImmediate(r));
 
-    const fired = h.store.getQueue();
+    const fired = h.store.getQueue('default');
     expect(fired.queueLifecycle).toBe('running');
     expect(fired.scheduledStartAt).toBeNull();
     expect(h.audit.byType('scheduled-start-fired').length).toBe(1);
@@ -145,7 +147,7 @@ describe('Feature 065 (T045) — programmatic past-timestamp coercion (FR-014a)'
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();

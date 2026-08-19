@@ -141,13 +141,13 @@ describe('Queue mutations integration (T044)', () => {
       sys.postAck
     );
     expect(sys.acks.at(-1)?.status).toBe('accepted');
-    expect(sys.store.getQueue().paused).toBe(true);
+    expect(sys.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
 
     // Mark B in-flight then finish completed (in-flight isn't started by router; the controller
     // would orchestrate this; for the contract, we just verify pause does NOT mutate inFlightId)
     await sys.queue.markInFlight(b.id, 'run-B');
     await sys.queue.finish(b.id, 'completed');
-    expect(sys.store.getQueue().paused).toBe(true); // still paused
+    expect(sys.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true); // still paused
 
     // Resume queue
     await sys.router.dispatch(
@@ -155,7 +155,7 @@ describe('Queue mutations integration (T044)', () => {
       sys.postAck
     );
     expect(sys.acks.at(-1)?.status).toBe('accepted');
-    expect(sys.store.getQueue().paused).toBe(false);
+    expect(sys.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
 
     // Fail C, then clearFailed
     await sys.queue.markInFlight(c.id, 'run-C');

@@ -75,7 +75,7 @@ describe('workspace-state — KEYS.queue holds a per-queue record (FR-006)', () 
     await store.setQueue(buildV9QueueState({ pendingCount: 1 }));
 
     expect(Object.keys(raw())).toEqual([DEFAULT_QUEUE_ID]);
-    expect(store.getQueue().requests).toHaveLength(1);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toHaveLength(1);
     expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toHaveLength(1);
   });
 
@@ -131,14 +131,14 @@ describe('workspace-state — per-queue isolation (FR-006)', () => {
   it('pauses one queue without pausing another', async () => {
     await store.updateQueue(
       (current) => ({
-        queue: { ...current, paused: true, pausedReason: 'operator', queueLifecycle: 'operator-paused' },
+        queue: { ...current, paused: true, pausedReason: 'operator', queueLifecycle: 'operator-paused'},
         result: null
       }),
       QUEUE_A
     );
 
-    expect(store.getQueue(QUEUE_A).paused).toBe(true);
-    expect(store.getQueue(QUEUE_B).paused).toBe(false);
+    expect(store.getQueue(QUEUE_A).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getQueue(QUEUE_B).queueLifecycle === 'operator-paused').toBe(false);
     expect(store.getQueue(QUEUE_B).queueLifecycle).not.toBe('operator-paused');
   });
 
@@ -177,8 +177,7 @@ describe('workspace-state — an unknown queueId fabricates nothing (FR-007)', (
 
     expect(absent.requests).toEqual([]);
     expect(absent.inFlightId).toBeNull();
-    expect(absent.paused).toBe(false);
-    expect(absent.queueLifecycle).toBe('active-empty');
+        expect(absent.queueLifecycle).toBe('active-empty');
     expect(absent.scheduledStartAt).toBeNull();
     expect(absent.scheduledStartSource).toBeNull();
   });

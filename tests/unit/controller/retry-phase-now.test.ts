@@ -238,7 +238,7 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
       await controller.resumeExisting(DEFAULT_QUEUE_ID);
     }
     const capRun = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(store.getQueue().pausedReason).toBe(`retry-cap-exhausted:${capRun.id}`);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe(`retry-cap-exhausted:${capRun.id}`);
 
     // To make retryPhaseNow accept, the run needs pendingRetryAt set.
     // Setting it manually here (the cap-exhausted state cleared it). This
@@ -261,8 +261,8 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(store.getQueue().paused).toBe(false);
-    expect(store.getQueue().pausedReason).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
   });
 
   it('leaves unrelated queue pauses intact (different runId in pausedReason)', async () => {
@@ -284,8 +284,8 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(store.getQueue().paused).toBe(true);
-    expect(store.getQueue().pausedReason).toBe('retry-cap-exhausted:some-other-run-id-9999');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('retry-cap-exhausted:some-other-run-id-9999');
   });
 
   it('leaves unrelated queue pauses intact (different reason prefix)', async () => {
@@ -301,7 +301,7 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(store.getQueue().paused).toBe(true);
-    expect(store.getQueue().pausedReason).toBe('operator-paused');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('operator-paused');
   });
 });

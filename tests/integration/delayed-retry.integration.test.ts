@@ -171,8 +171,8 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     expect(run.pendingRetryCause).toBeNull();
     expect(run.status).toBe('paused');
 
-    const queueState = harness.store.getQueue();
-    expect(queueState.paused).toBe(true);
+    const queueState = harness.store.getQueue(DEFAULT_QUEUE_ID);
+    expect(queueState.queueLifecycle).toBe('operator-paused');
     expect(queueState.pausedReason).toBe(`retry-cap-exhausted:${run.id}`);
   });
 

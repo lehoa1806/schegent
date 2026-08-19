@@ -182,11 +182,11 @@ describe('a connected run whose child fails', () => {
 
     // Startable: connection 3 offered `n-rollback`, and it starts like any other
     // node — a real enqueue through the real guarded-run service.
-    const queuedBefore = harness.store.getQueue().requests.length;
+    const queuedBefore = harness.store.getQueue('default').requests.length;
     const rollback = await continueAt(launcher, harness, 'n-rollback', ROLLBACK_REQUEST);
     expect(rollback.outcome).toBe('started');
     if (rollback.outcome !== 'started') throw new Error('unreachable');
-    expect(harness.store.getQueue().requests).toHaveLength(queuedBefore + 1);
+    expect(harness.store.getQueue('default').requests).toHaveLength(queuedBefore + 1);
     expect(storedRun(harness).nodes['n-rollback']!.attempts).toHaveLength(1);
     expect(storedRun(harness).nodes['n-rollback']!.attempts[0]!.queueItemId).toBe(
       rollback.queueItemId

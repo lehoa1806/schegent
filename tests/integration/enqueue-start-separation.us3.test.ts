@@ -28,12 +28,13 @@ afterEach(() => {
 
 describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqueue', () => {
   it('(1) operator-paused + enqueue → tail-append; lifecycle preserved; no schedule events', async () => {
-    const cur = h.store.getQueue();
+    const cur = h.store.getQueue('default');
     await h.store.setQueue({
       ...cur,
       paused: true,
       pausedReason: 'operator',
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       updatedAt: h.clock.now()
     });
 
@@ -50,7 +51,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
     // Existing behavior: paused queue rejects new enqueues.
     expect(result.outcome).toBe('rejected-paused');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('operator-paused');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -72,7 +73,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
       callerKind: 'human'
     });
     expect(first.outcome).toBe('enqueued');
-    const armed = h.store.getQueue();
+    const armed = h.store.getQueue('default');
     expect(armed.queueLifecycle).toBe('idle-pending');
     expect(armed.scheduledStartAt).toBe(scheduledAt);
 
@@ -90,7 +91,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
     expect(second.outcome).toBe('enqueued');
     expect(second.lifecycleAfter).toBe('idle-pending');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     // FR-008 — schedule fields byte-identical.
     expect(after.queueLifecycle).toBe('idle-pending');
     expect(after.scheduledStartAt).toBe(scheduledAt);
@@ -109,8 +110,8 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
       callerKind: 'human'
     });
     expect(first.outcome).toBe('enqueued');
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
-    expect(h.store.getQueue().scheduledStartAt).toBeNull();
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').scheduledStartAt).toBeNull();
 
     const baselineEntered = h.audit.byType('idle-pending-entered').length;
 
@@ -123,7 +124,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
     expect(second.outcome).toBe('enqueued');
     expect(second.lifecycleAfter).toBe('idle-pending');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('idle-pending');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -149,7 +150,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
 
     const baselineArmed = h.audit.byType('scheduled-start-armed').length;
     const baselineEntered = h.audit.byType('idle-pending-entered').length;
-    const before = h.store.getQueue();
+    const before = h.store.getQueue('default');
 
     for (let i = 0; i < 10; i++) {
       const result = await h.service.scheduleOrEnqueue({
@@ -162,7 +163,7 @@ describe('Feature 065 (T034) — User Story 3: paused / idle-pending silent enqu
       expect(result.lifecycleAfter).toBe('idle-pending');
     }
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     // Lifecycle, scheduledStartAt, scheduledStartSource unchanged.
     expect(after.queueLifecycle).toBe(before.queueLifecycle);
     expect(after.scheduledStartAt).toBe(before.scheduledStartAt);

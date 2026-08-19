@@ -74,7 +74,10 @@ export interface ScheduledStartFiredEvent {
 export interface ScheduledStartCoordinatorDeps {
   // Feature 092 (T058) — `getQueueStates` is what lets `reArm()` ask which
   // queues carry persisted execution state instead of assuming `'default'`.
-  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueStates' | 'updateQueue'>;
+  // FR-R3-002 (T284) — read-only. The lock-unavailable branch of `fire()` was
+  // the coordinator's one write to persisted state, contradicting the header
+  // note above; removing it restores "schedules timers, never persists".
+  readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueStates'>;
   readonly auditWriter: Pick<AuditLogWriter, 'append'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly onFire: (queueId: string) => Promise<void> | void;
@@ -87,10 +90,10 @@ export interface ScheduledStartCoordinatorDeps {
   // Feature 065 (T053) — optional probe that returns `true` when the
   // workspace lock is held by a foreign owner at fire time. When true,
   // `fire()` emits `scheduled-start-superseded { superseder: 'lock-unavailable' }`
-  // and clears `scheduledStartAt`/`scheduledStartSource` without flipping
-  // the lifecycle out of `idle-pending`. The next auto-drain heartbeat
-  // (after the foreign lock is released) will retry the promotion via
-  // the existing rule (FR-014). The operator is NOT asked to reschedule.
+  // and drops the timer without flipping the lifecycle out of `idle-pending`.
+  // FR-R3-002 (T284) — the persisted `scheduledStartAt`/`scheduledStartSource`
+  // are retained so `QueueScheduleWatchdog` can retry the promotion once this
+  // window is primary. The operator is NOT asked to reschedule.
   readonly isForeignLockHeld?: () => boolean;
   readonly now?: () => number;
   readonly setTimer?: (fn: () => void, ms: number) => NodeJS.Timeout;
@@ -208,10 +211,21 @@ export class ScheduledStartCoordinator {
     // Feature 065 (T053 / FR-014) — lock-unavailable-at-fire. If a
     // competing process holds the workspace lock when the timer fires,
     // we cannot safely promote the queue. Emit `scheduled-start-superseded`
-    // with `lock-unavailable`, clear the `scheduledStartAt` fields, and
-    // leave the queue in `idle-pending`. The next auto-drain heartbeat
-    // (after the foreign lock is released) will retry the promotion
-    // under the existing rule. The operator is NOT asked to reschedule.
+    // with `lock-unavailable`, drop the timer, and leave the queue in
+    // `idle-pending`. The operator is NOT asked to reschedule.
+    //
+    // FR-R3-002 (T284) — the persisted `scheduledStartAt` / `Source` are
+    // **retained**, where feature 065 cleared them "so auto-drain takes over".
+    // Auto-drain never did: `AutoDrainCoordinator.drainIfIdle()` refuses an
+    // `idle-pending` queue by design, and once the deadline was erased the
+    // entry was indistinguishable from one an operator had dismissed. Nothing
+    // could tell it apart and nothing promoted it. Keeping the deadline makes
+    // "this queue was due and never ran" a durable, addressable fact:
+    // `QueueScheduleWatchdog.tick()` sweeps for exactly that shape once this
+    // window is primary, and `reArm()` finds it across a restart. Retention
+    // also holds the pairing invariant — a persisted `scheduledStartAt` and
+    // `queueLifecycle === 'idle-pending'` on the same entry — which clearing
+    // one half quietly broke in the other direction.
     if (this.isForeignLockHeldFn?.() === true) {
       this.timers.delete(queueId);
       await this.appendAudit('scheduled-start-superseded', {
@@ -221,21 +235,6 @@ export class ScheduledStartCoordinator {
         superseder: 'lock-unavailable' as SchedulerSuperseder,
         transitionReason: 'superseded'
       });
-      // Clear scheduledStartAt/Source so auto-drain takes over without
-      // re-firing the timer. Keep lifecycle as idle-pending — operator
-      // intent is preserved.
-      await this.store.updateQueue(
-        (current) => ({
-          queue: {
-            ...current,
-            scheduledStartAt: null,
-            scheduledStartSource: null,
-            updatedAt: this.nowFn()
-          },
-          result: undefined
-        }),
-        queueId
-      );
       return;
     }
     this.timers.delete(queueId);

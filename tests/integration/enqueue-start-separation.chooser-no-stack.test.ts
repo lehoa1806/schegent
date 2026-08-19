@@ -69,7 +69,7 @@ describe('Feature 065 (T052) — chooser-no-stack regression (Edge Cases L120 + 
     // Both tasks landed at the tail of pending — neither got promoted nor
     // launched a separate chooser. The single open chooser's decision
     // (which we'll exercise in (B)) governs the entire queue.
-    const queue = h.store.getQueue();
+    const queue = h.store.getQueue('default');
     const pendingItems = queue.requests.filter((r) => r.status === 'pending');
     expect(pendingItems.length).toBe(2);
     expect(pendingItems[0].description).toBe('first task (chooser open)');
@@ -103,7 +103,7 @@ describe('Feature 065 (T052) — chooser-no-stack regression (Edge Cases L120 + 
       via: 'webview',
       callerKind: 'human'
     });
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
     expect(h.audit.byType('idle-pending-entered').length).toBe(1);
 
     // Operator's single "Start now" chooser commit. This is the production
@@ -123,7 +123,7 @@ describe('Feature 065 (T052) — chooser-no-stack regression (Edge Cases L120 + 
 
     // Both tasks are still in the queue — the chooser commit didn't drop
     // them. Auto-drain will dispatch them one by one (covered elsewhere).
-    const afterCommit = h.store.getQueue();
+    const afterCommit = h.store.getQueue('default');
     expect(afterCommit.queueLifecycle).toBe('running');
     expect(afterCommit.scheduledStartAt).toBeNull();
     expect(afterCommit.scheduledStartSource).toBeNull();
@@ -150,7 +150,7 @@ describe('Feature 065 (T052) — chooser-no-stack regression (Edge Cases L120 + 
 
     // Crucial assertion: between the silent enqueue and the explicit
     // operator click, the queue MUST NOT have transitioned to `running`.
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
     expect(h.audit.byType('idle-pending-exited').length).toBe(0);
     expect(h.audit.byType('scheduled-start-fired').length).toBe(0);
 

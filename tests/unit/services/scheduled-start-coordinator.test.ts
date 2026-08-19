@@ -62,6 +62,7 @@ function idlePending(scheduledStartAt: number): QueueState {
     pausedReason: null,
     updatedAt: NOW_BASE,
     queueLifecycle: 'idle-pending',
+    pauseSource: null,
     scheduledStartAt,
     scheduledStartSource: 'operator-chooser',
     migrationNotice: null
@@ -91,23 +92,18 @@ function makeHarness(): Harness {
           pausedReason: null,
           updatedAt: clock,
           queueLifecycle: 'active-empty',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           migrationNotice: null
         } as unknown as QueueState)) as never,
       // Feature 092 — `reArm()` can no longer hardcode `'default'`; it has to
       // ask which queues carry persisted execution state.
-      getQueueStates: (() => Object.fromEntries(states.entries())) as never,
-      updateQueue: (async (
-        mutate: (current: QueueState) => { queue: QueueState; result: unknown },
-        queueId: string = DEFAULT_QUEUE_ID
-      ) => {
-        const current = states.get(queueId);
-        if (!current) return undefined;
-        const next = mutate(current);
-        states.set(queueId, next.queue);
-        return next.result;
-      }) as never
+      getQueueStates: (() => Object.fromEntries(states.entries())) as never
+      // FR-R3-002 (T284) — no `updateQueue` double. The coordinator's store
+      // Pick is read-only now that the lock-unavailable branch retains the
+      // persisted deadline instead of erasing it, so a writer here would be a
+      // seam the subject cannot reach.
     },
     auditWriter: {
       append: async (entry: { eventType: string; payload: Record<string, unknown> }) => {
@@ -260,6 +256,7 @@ describe('feature 092 (T041) — one timer per queue, not one timer per workspac
     // would classify itself superseded by A's pause.
     h.setQueueState(QUEUE_A, {
       queueLifecycle: 'operator-paused',
+      pauseSource: null,
       scheduledStartAt: null
     } as Partial<QueueState>);
 
@@ -361,6 +358,7 @@ describe('feature 092 (T041) — one timer per queue, not one timer per workspac
     h.setQueueState(QUEUE_B, { scheduledStartAt: past });
     h.setQueueState(QUEUE_C, {
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       scheduledStartAt: null
     } as Partial<QueueState>);
 

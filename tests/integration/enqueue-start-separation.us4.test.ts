@@ -41,8 +41,8 @@ describe('Feature 065 (T039) — User Story 4: cancel / change / convert-to-now 
       callerKind: 'human'
     });
     expect(result.outcome).toBe('enqueued');
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
-    expect(h.store.getQueue().scheduledStartAt).toBe(scheduledAt);
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').scheduledStartAt).toBe(scheduledAt);
   }
 
   it('(a) cancel → scheduledStartAt = null, lifecycle stays idle-pending, scheduled-start-canceled emitted', async () => {
@@ -58,7 +58,7 @@ describe('Feature 065 (T039) — User Story 4: cancel / change / convert-to-now 
     expect(out.outcome).toBe('applied');
     expect(out.lifecycleAfter).toBe('idle-pending');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('idle-pending');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -90,7 +90,7 @@ describe('Feature 065 (T039) — User Story 4: cancel / change / convert-to-now 
     expect(out.outcome).toBe('applied');
     expect(out.lifecycleAfter).toBe('idle-pending');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('idle-pending');
     expect(after.scheduledStartAt).toBe(newAt);
     expect(after.scheduledStartSource).toBe('operator-restart');
@@ -126,7 +126,7 @@ describe('Feature 065 (T039) — User Story 4: cancel / change / convert-to-now 
     expect(out.outcome).toBe('applied');
     expect(out.lifecycleAfter).toBe('running');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
