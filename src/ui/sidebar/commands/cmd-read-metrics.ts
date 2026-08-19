@@ -1,6 +1,7 @@
 import type { ReadMetricsCommand, ReadMetricsResponse } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
 import { ack, checkPrimary } from './handler-helpers';
+import { buildMetricsCoverage, EMPTY_CUMULATIVE_TOTALS } from '../../../metrics/metrics-rollup';
 
 // Feature 073 T010 — handler MUST gate on isPrimaryHost() to prevent multi-window
 // races during archive scans.
@@ -17,6 +18,15 @@ export const handler: CommandHandler<ReadMetricsCommand> = async (ctx, command) 
     tasks: [],
     phaseTypeAggregates: [],
     costTimeline: [],
+    // FR-R3-009 — zeroed totals with `available: false` coverage. A rejection
+    // means "nothing was read", and the coverage window says so rather than
+    // presenting a zero as an all-time figure.
+    cumulative: EMPTY_CUMULATIVE_TOTALS,
+    coverage: buildMetricsCoverage({
+      rollupAvailable: false,
+      rollupRuns: 0,
+      includesArchives
+    }),
     meta: {
       includesArchives,
       totalScannedEntries: 0,

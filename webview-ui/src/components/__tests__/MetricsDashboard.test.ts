@@ -8,6 +8,8 @@ import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type {
   CostTimelinePoint,
+  CumulativeTotals,
+  MetricsCoverage,
   PhaseRecord,
   PhaseTypeAggregate,
   ReadMetricsResponse,
@@ -87,6 +89,33 @@ function costPoint(overrides: Partial<CostTimelinePoint> = {}): CostTimelinePoin
   });
 }
 
+// FR-R3-009 — the wire response now carries durable cumulative totals and two
+// coverage windows. The default fixture is the pre-rollup shape (nothing durable
+// recorded yet) so existing assertions keep testing the fold-derived detail.
+const EMPTY_CUMULATIVE: CumulativeTotals = Object.freeze({
+  runs: 0,
+  completedRuns: 0,
+  failedRuns: 0,
+  canceledRuns: 0,
+  durationMs: 0,
+  costUsd: 0,
+  costUsdIsPartial: false,
+  phasesTotal: 0,
+  phasesCompleted: 0,
+  phasesSkipped: 0,
+  backendInvocations: 0
+});
+
+function coverage(overrides: {
+  totals?: Partial<MetricsCoverage['totals']>;
+  detail?: Partial<MetricsCoverage['detail']>;
+} = {}): MetricsCoverage {
+  return {
+    totals: { available: false, runs: 0, ...overrides.totals },
+    detail: { includesArchives: false, ...overrides.detail }
+  };
+}
+
 function successResult(overrides: Partial<ReadMetricsResponse> = {}): { outcome: 'success' } & ReadMetricsResponse {
   return {
     outcome: 'success',
@@ -94,6 +123,8 @@ function successResult(overrides: Partial<ReadMetricsResponse> = {}): { outcome:
     phaseTypeAggregates: [],
     costTimeline: [],
     oldestIncludedTimestamp: undefined,
+    cumulative: EMPTY_CUMULATIVE,
+    coverage: coverage(),
     meta: {
       includesArchives: false,
       totalScannedEntries: 0,
@@ -161,7 +192,7 @@ describe('MetricsDashboard', () => {
 
     const summary = getByTestId('metrics-summary-cards');
     expect(summary.tagName).toBe('DL');
-    expect(summary.getAttribute('aria-label')).toBe('Workflow totals');
+    expect(summary.getAttribute('aria-label')).toBe('Retained run detail totals');
     expect(summary.querySelectorAll('.summary-card')).toHaveLength(0);
     expect(getByTestId('metrics-summary-tasks-completed').textContent).toBe('1');
     expect(getByTestId('metrics-summary-invocations').textContent).toBe('5');
@@ -350,5 +381,105 @@ describe('MetricsDashboard', () => {
     await tick();
     await tick();
     expect(getByTestId('metrics-task-row-run-r').textContent).toContain('Reconstructed');
+  });
+});
+
+// FR-R3-009 T396 — the two coverage windows are rendered separately. The totals
+// window describes the durable rollup's range; the detail window describes the
+// audit corpus the per-run sections were folded from, and is narrower whenever
+// retention has pruned anything.
+describe('MetricsDashboard — coverage windows for totals and detail (FR-R3-009, T396)', () => {
+  it('renders the rollup-backed totals with their own window, distinct from the detail window', async () => {
+    readMetricsSpy.mockResolvedValue(
+      successResult({
+        tasks: [task({ runId: 'run-1' })],
+        oldestIncludedTimestamp: '2026-05-01T00:00:00.000Z',
+        cumulative: {
+          ...EMPTY_CUMULATIVE,
+          runs: 40,
+          completedRuns: 38,
+          failedRuns: 2,
+          durationMs: 4_000_000,
+          costUsd: 12.5,
+          backendInvocations: 190
+        },
+        coverage: coverage({
+          totals: { available: true, runs: 40, earliest: '2026-01-01T00:00:00.000Z' },
+          detail: { earliest: '2026-05-01T00:00:00.000Z', includesArchives: false }
+        })
+      })
+    );
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
+    await tick();
+    await tick();
+
+    expect(getByTestId('metrics-cumulative-runs').textContent).toBe('40');
+    expect(getByTestId('metrics-cumulative-completed').textContent).toBe('38');
+    expect(getByTestId('metrics-cumulative-failed').textContent).toBe('2');
+    expect(getByTestId('metrics-cumulative-cost').textContent).toBe('$12.50');
+    expect(getByTestId('metrics-cumulative-invocations').textContent).toBe('190');
+
+    const totalsWindow = getByTestId('metrics-totals-coverage-window').textContent ?? '';
+    const detailWindow = getByTestId('metrics-coverage-window').textContent ?? '';
+    expect(totalsWindow).toContain('40 runs');
+    expect(totalsWindow).toContain('2026');
+    expect(detailWindow).toContain('Run detail since');
+    expect(detailWindow).toContain('live log only');
+    expect(totalsWindow).not.toBe(detailWindow);
+  });
+
+  it('marks a partial cumulative cost as a floor rather than an exact total', async () => {
+    readMetricsSpy.mockResolvedValue(
+      successResult({
+        tasks: [task()],
+        cumulative: { ...EMPTY_CUMULATIVE, runs: 3, costUsd: 1.25, costUsdIsPartial: true },
+        coverage: coverage({ totals: { available: true, runs: 3 } })
+      })
+    );
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
+    await tick();
+    await tick();
+    expect(getByTestId('metrics-cumulative-cost').textContent).toBe('$1.25+');
+  });
+
+  it('says so plainly when no durable rollup has been recorded yet', async () => {
+    readMetricsSpy.mockResolvedValue(
+      successResult({
+        tasks: [task()],
+        cumulative: { ...EMPTY_CUMULATIVE, runs: 1, completedRuns: 1 },
+        coverage: coverage({ totals: { available: false, runs: 0 } })
+      })
+    );
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
+    await tick();
+    await tick();
+    expect(getByTestId('metrics-totals-coverage-window').textContent).toContain(
+      'No durable rollup recorded yet'
+    );
+  });
+
+  it('keeps cumulative totals visible when retention has pruned every run detail', async () => {
+    readMetricsSpy.mockResolvedValue(
+      successResult({
+        tasks: [],
+        cumulative: { ...EMPTY_CUMULATIVE, runs: 12, completedRuns: 12 },
+        coverage: coverage({ totals: { available: true, runs: 12, earliest: '2026-01-01T00:00:00.000Z' } })
+      })
+    );
+    const { getByTestId } = render(MetricsDashboard, { props: { active: true } });
+    await tick();
+    await tick();
+
+    expect(getByTestId('metrics-cumulative-runs').textContent).toBe('12');
+    expect(getByTestId('metrics-empty').textContent).toContain('pruned by retention');
+  });
+
+  it('does not render a cumulative strip before the first response lands', async () => {
+    readMetricsSpy.mockImplementation(() => new Promise(() => {}));
+    const { queryByTestId } = render(MetricsDashboard, { props: { active: true } });
+    await tick();
+    await tick();
+    expect(queryByTestId('metrics-cumulative')).toBeNull();
+    expect(queryByTestId('metrics-coverage-window')).toBeNull();
   });
 });

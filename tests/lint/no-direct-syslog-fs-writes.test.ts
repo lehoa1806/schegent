@@ -38,6 +38,23 @@ const ALLOWED_SYSLOG_REFERENCES: ReadonlySet<string> = new Set([
  *   - audit-log-writer.ts  → `.schegent/audit.log`.
  *   - raw-transcript-writer.ts → `.schegent/sessions/.../transcript-*.log`.
  *   - verbose-diagnostic-writer.ts → `.schegent/sessions/.../diagnostics/...`.
+ *   - cli-transport-sink.ts → `.schegent/cli-transport.log` (FR-R3-007).
+ *   - metrics-rollup-writer.ts → `.schegent/metrics-rollup.jsonl` (FR-R3-009).
+ *
+ * The fifth was added when the per-line `monitor-stdout-line` audit writer was
+ * retired: line content needs a home with its own retention budget, and routing
+ * it through any writer above would put it back in competition with that
+ * writer's budget — the exact coupling the split removed. It reuses the shared
+ * sanitizer rather than the shared writer, which is the part that actually
+ * matters for redaction-by-reuse.
+ *
+ * The sixth is the durable metrics rollup, and it is the one entry here that
+ * does not need the shared sanitizer at all: a record is a run id, a terminal
+ * status, two ISO timestamps, six integers and an optional number, with no
+ * operator-authored text in it to redact. Routing it through `audit-log-writer`
+ * would have been the obvious reuse and is exactly wrong — the rollup exists
+ * *because* the audit log rotates, so sharing that file would give the rollup
+ * the retention policy it was built to escape.
  *
  * None of these target a path containing `syslog`. The test below
  * verifies that claim by also scanning for `appendFile.*syslog`.
@@ -46,7 +63,9 @@ const ALLOWED_APPENDFILE_FILES: ReadonlySet<string> = new Set([
   'src/lib/runtime-log/runtime-log-sink.ts',
   'src/audit/audit-log-writer.ts',
   'src/audit/raw-transcript-writer.ts',
-  'src/audit/verbose-diagnostic-writer.ts'
+  'src/audit/verbose-diagnostic-writer.ts',
+  'src/monitor/cli-transport-sink.ts',
+  'src/metrics/metrics-rollup-writer.ts'
 ]);
 
 function execGrep(pattern: string, extraFlags: string = ''): readonly string[] {

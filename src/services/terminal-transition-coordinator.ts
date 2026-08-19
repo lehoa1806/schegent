@@ -5,6 +5,17 @@ import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { HistoryRecorder } from './history-recorder';
 
 /**
+ * FR-R3-009 — the durable cumulative-totals rollup's append hook.
+ *
+ * Structural, not an import of `metrics/`: the coordinator's job is the terminal
+ * transition, and it should not learn what a rollup record contains. The
+ * implementation lives in `metrics/terminal-run-rollup-recorder.ts`.
+ */
+export interface TerminalRollupHook {
+  recordTerminalRun(run: WorkflowRun): Promise<void>;
+}
+
+/**
  * Durable, idempotent terminal transition journal. The intent is persisted
  * before the terminal run record. Activation replay completes queue/history
  * projection before clearing it, repairing crashes at any intermediate step.
@@ -29,7 +40,13 @@ export class TerminalTransitionCoordinator {
     private readonly store: WorkspaceStateStore,
     private readonly queue: Pick<QueueManager, 'finish'>,
     private readonly history: Pick<HistoryRecorder, 'record'>,
-    private readonly logger: SanitizedLogger
+    private readonly logger: SanitizedLogger,
+    /**
+     * FR-R3-009 — optional so every existing harness that builds a coordinator
+     * directly keeps working; a coordinator without it simply writes no rollup,
+     * and cumulative totals then fall back to the retained audit corpus.
+     */
+    private readonly rollup?: TerminalRollupHook
   ) {}
 
   public async begin(run: WorkflowRun): Promise<void> {
@@ -69,6 +86,21 @@ export class TerminalTransitionCoordinator {
       await this.store.setTerminalTransitionIntent(run.id, null);
     } catch (error) {
       this.logger.warn(`terminal-transition: replay remains pending: ${(error as Error).message}`);
+    }
+
+    // FR-R3-009 (T390/T391) — one rollup record per terminal run, appended here
+    // because both terminal callers and the crash-replay loop funnel through this
+    // method; the writer's run-id idempotence keeps a repeat at zero appends.
+    //
+    // Outside the `try` above deliberately: the queue/history projection is the
+    // durable half and owns the journalled intent, and a rollup failure must not
+    // leave that intent uncleared. The rollup is a derived summary — best-effort
+    // with respect to run progress, reported through evidence health, never a
+    // reason a terminal transition does not complete.
+    try {
+      await this.rollup?.recordTerminalRun(run);
+    } catch (error) {
+      this.logger.warn(`terminal-transition: metrics rollup append failed: ${(error as Error).message}`);
     }
   }
 

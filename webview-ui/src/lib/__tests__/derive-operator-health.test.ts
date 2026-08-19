@@ -117,6 +117,14 @@ describe('deriveOperatorHealth', () => {
         runtimeLog: {
           status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
           lastFailureAt: null, cause: null
+        },
+        metricsRollup: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        historyPointer: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
         }
       }
     }))).toMatchObject({ level: 'blocked', label: 'evidence unavailable' });
@@ -137,8 +145,50 @@ describe('deriveOperatorHealth', () => {
         runtimeLog: {
           status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
           lastFailureAt: null, cause: null
+        },
+        metricsRollup: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        historyPointer: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
         }
       }
     }))).toMatchObject({ level: 'attention', label: 'evidence degraded' });
+  });
+
+  // FR-R3-009 T396 — a failed rollup append is silent in the product until
+  // cumulative totals regress after a rotation, so the banner has to name it.
+  it('names the metrics rollup among the degraded sinks', () => {
+    const health = deriveOperatorHealth(snapshot({
+      evidenceHealth: {
+        overall: 'degraded',
+        audit: {
+          status: 'healthy', continuationPolicy: 'fail-closed', failureCount: 0,
+          lastFailureAt: null, cause: null
+        },
+        rawTranscript: {
+          status: 'degraded', continuationPolicy: 'continue-degraded', failureCount: 1,
+          lastFailureAt: '2026-08-01T00:00:00.000Z', cause: 'stream-error'
+        },
+        runtimeLog: {
+          status: 'degraded', continuationPolicy: 'continue-degraded', failureCount: 1,
+          lastFailureAt: '2026-08-01T00:00:00.000Z', cause: 'io-error'
+        },
+        metricsRollup: {
+          status: 'degraded', continuationPolicy: 'continue-degraded', failureCount: 2,
+          lastFailureAt: '2026-08-01T00:00:00.000Z', cause: 'io-error'
+        },
+        historyPointer: {
+          status: 'healthy', continuationPolicy: 'continue-degraded', failureCount: 0,
+          lastFailureAt: null, cause: null
+        }
+      }
+    }));
+    expect(health).toMatchObject({ level: 'attention', label: 'evidence degraded' });
+    expect(health.title).toBe(
+      'raw transcript, runtime log and metrics rollup evidence is incomplete; workflow execution remains available'
+    );
   });
 });

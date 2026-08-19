@@ -1,8 +1,15 @@
 <script lang="ts">
-  import type { CostTimelinePoint, PhaseTypeAggregate, TaskRecord } from '../../lib/messages';
+  import type {
+    CostTimelinePoint,
+    CumulativeTotals,
+    MetricsCoverage,
+    PhaseTypeAggregate,
+    TaskRecord
+  } from '../../lib/messages';
   import { readMetrics } from '../../lib/metrics-ipc';
   import { formatAbsoluteTime } from '../../lib/format';
   import './metrics-shared.css';
+  import MetricsCumulativeTotals from './MetricsCumulativeTotals.svelte';
   import MetricsSummary from './MetricsSummary.svelte';
   import MetricsTaskTable, { type MetricsSortKey } from './MetricsTaskTable.svelte';
   import MetricsPhaseAnalytics from './MetricsPhaseAnalytics.svelte';
@@ -18,6 +25,12 @@
   let phaseTypeAggregates = $state<readonly PhaseTypeAggregate[]>([]);
   let costTimeline = $state<readonly CostTimelinePoint[]>([]);
   let oldestIncludedTimestamp = $state<string | undefined>(undefined);
+  // FR-R3-009 — the durable cumulative totals and the two coverage windows.
+  // Undefined until the first response lands; the totals strip is not rendered
+  // from a locally invented zero, because a zero shown as an all-time figure is
+  // the defect this feature exists to remove.
+  let cumulative = $state<CumulativeTotals | undefined>(undefined);
+  let coverage = $state<MetricsCoverage | undefined>(undefined);
   let includeArchives = $state(false);
   let sortKey = $state<MetricsSortKey>('startTime');
   let sortDir = $state<'asc' | 'desc'>('desc');
@@ -35,6 +48,8 @@
     phaseTypeAggregates = result.phaseTypeAggregates;
     costTimeline = result.costTimeline;
     oldestIncludedTimestamp = result.oldestIncludedTimestamp;
+    cumulative = result.cumulative;
+    coverage = result.coverage;
     page = 0;
   }
 
@@ -50,6 +65,18 @@
   const totalCostUsd = $derived.by(() => {
     if (!tasks.some((task) => task.totalCostUsd !== undefined)) return undefined;
     return tasks.reduce((sum, task) => sum + (task.totalCostUsd ?? 0), 0);
+  });
+
+  // FR-R3-009 T396 — the detail window is stated separately from the totals
+  // window above it, and is narrower by construction: everything below the
+  // totals strip is a fold over an audit corpus that retention prunes.
+  const detailWindow = $derived.by(() => {
+    const earliest = coverage?.detail.earliest ?? oldestIncludedTimestamp;
+    const scope = (coverage?.detail.includesArchives ?? includeArchives)
+      ? 'live log and archives'
+      : 'live log only';
+    if (earliest === undefined) return `Run detail: ${scope}`;
+    return `Run detail since ${formatAbsoluteTime(earliest)} (${scope})`;
   });
 
   function sortValue(task: TaskRecord, key: MetricsSortKey): string | number | undefined {
@@ -125,9 +152,9 @@
           checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
         Include archived history
       </label>
-      {#if oldestIncludedTimestamp}
+      {#if loaded}
         <span class="coverage-window" data-testid="metrics-coverage-window">
-          Since {formatAbsoluteTime(oldestIncludedTimestamp)}
+          {detailWindow}
         </span>
       {/if}
     </div>
@@ -140,19 +167,34 @@
         <span></span><span></span><span></span><span></span>
       </div>
     </div>
-  {:else if tasks.length === 0}
-    <p class="empty" data-testid="metrics-empty">
-      No workflow runs recorded yet. Start a task from Queues to populate this view.
-    </p>
   {:else}
-    <MetricsSummary tasksCompleted={totalTasksCompleted} elapsedMs={totalElapsedMs}
-      {totalCostUsd} backendInvocations={totalBackendInvocations} />
-    <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
-      {ariaSort} onSort={toggleSort}
-      {onExpandToggleClick} onPageChange={goToPage} />
-    <MetricsPhaseAnalytics aggregates={phaseTypeAggregates} />
-    <MetricsCostChart timeline={costTimeline} {activePointIndex}
-      onActivePointChange={(index) => { activePointIndex = index; }} />
+    <!-- FR-R3-009 — cumulative totals stand above the log-derived detail and
+         survive a retention prune, so they are rendered whenever the rollup has
+         anything to report, including when the detail below is empty. -->
+    {#if cumulative !== undefined && coverage !== undefined && (cumulative.runs > 0 || coverage.totals.available)}
+      <MetricsCumulativeTotals {cumulative} {coverage} />
+    {/if}
+
+    {#if tasks.length === 0}
+      <p class="empty" data-testid="metrics-empty">
+        {#if cumulative !== undefined && cumulative.runs > 0}
+          Per-run detail for the runs counted above is no longer in the retained
+          audit log. Cumulative totals remain available; the runs themselves have
+          been pruned by retention.
+        {:else}
+          No workflow runs recorded yet. Start a task from Queues to populate this view.
+        {/if}
+      </p>
+    {:else}
+      <MetricsSummary tasksCompleted={totalTasksCompleted} elapsedMs={totalElapsedMs}
+        {totalCostUsd} backendInvocations={totalBackendInvocations} />
+      <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
+        {ariaSort} onSort={toggleSort}
+        {onExpandToggleClick} onPageChange={goToPage} />
+      <MetricsPhaseAnalytics aggregates={phaseTypeAggregates} />
+      <MetricsCostChart timeline={costTimeline} {activePointIndex}
+        onActivePointChange={(index) => { activePointIndex = index; }} />
+    {/if}
   {/if}
 </main>
 
