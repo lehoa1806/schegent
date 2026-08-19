@@ -68,6 +68,7 @@
           "CMD_START_PHASE_LOG_TAIL",
           "CMD_STOP_PHASE_LOG_TAIL",
           "CMD_OPEN_VERBOSE_SETTING",
+          "CMD_RESOLVE_AUDIT_POINTER",
           "CMD_SET_PHASE_BREAKPOINT",
           "CMD_CLEAR_PHASE_BREAKPOINT",
           "CMD_START_QUEUE",
@@ -182,6 +183,11 @@
         },
         {
           "name": "availableModels",
+          "optional": false,
+          "type": "Record<BackendRunnerKind, readonly string[]>"
+        },
+        {
+          "name": "configuredModels",
           "optional": false,
           "type": "Record<BackendRunnerKind, readonly string[]>"
         },
