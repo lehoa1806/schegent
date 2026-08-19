@@ -107,8 +107,43 @@ describe('backend-neutral outcome evaluation corpus', () => {
       'fatal-signature',
       'rate-limit',
       'truncated-output',
+      'internal-execution-error',
       'session-continuation',
       'runner-switch'
+    ]);
+  });
+
+  // The pinned list above stops the corpus shrinking, but it cannot say whether
+  // the corpus still *covers* what it claims to. These two assertions do: every
+  // arm of the two mappers under evaluation must be reached by some case. Added
+  // 2026-08-19 after `transient_error` — the parser kind behind Feature 011's
+  // delayed-retry path — turned out to be reachable only as an *outcome* (via a
+  // truncated `malformed` parse) and never as a parser *kind*, so both mappers'
+  // `case 'transient_error'` arms were unexercised here while this suite
+  // reported "covers every required scenario".
+  it('reaches every parser kind the outcome mappers switch on', () => {
+    const covered = new Set(corpus.cases.map((c) => c.expected.parserKind));
+    expect([...covered].sort()).toEqual([
+      'clean',
+      'malformed',
+      'open_questions',
+      'rate_limited',
+      'remaining_issues',
+      'transient_error'
+    ]);
+  });
+
+  it('reaches every termination reason the parser path can produce', () => {
+    // `iteration_cap`, `timeout` and `cancel` are deliberately absent: they are
+    // produced by the controller loop, the watchdog and the operator, none of
+    // which run through `mapTerminationReason`.
+    const covered = new Set(corpus.cases.map((c) => c.expected.terminationReason));
+    expect([...covered].sort()).toEqual([
+      'error',
+      'open_questions',
+      'rate_limit',
+      'remaining_issues',
+      'token'
     ]);
   });
 

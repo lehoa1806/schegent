@@ -130,6 +130,27 @@
       }
     },
     {
+      "id": "internal-execution-error",
+      "description": "A non-zero exit with no termination token is transient, not fatal, so the phase halts without ending the run.",
+      "output": {
+        "stdoutLines": [
+          "Analyzing the specification...",
+          "{\"type\":\"result\",\"subtype\":\"error_during_execution\"}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "transient_error",
+        "phaseOutcome": "transient_error",
+        "terminationReason": "error",
+        "auditEntryPresent": true,
+        "mayAdvance": false
+      }
+    },
+    {
       "id": "session-continuation",
       "description": "An exact backend-owned session is resumed with the recovery prompt.",
       "output": {
