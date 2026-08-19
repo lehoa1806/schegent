@@ -13,6 +13,7 @@ import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
+import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -125,12 +126,18 @@ async function ownRun(featureId = 'feat-1'): Promise<void> {
     queueLifecycle: 'running'});
 }
 
+// Feature 098 (T055) — carries a frozen Pipeline now. Every Run freezes one at
+// creation, and the projector no longer substitutes a built-in list for a Run
+// that does not, so a fixture without one projects an empty strip and the cases
+// that read a tile off it read nothing. The legacy-run case further down builds
+// its own record without a Pipeline, which is the point of that case.
 function sampleRun(): WorkflowRun {
   return {
     id: 'run-1',
     featureId: 'feat-1',
     featureDir: 'specs/001-x',
     status: 'running',
+    pipeline: SPECKIT_RUN_PIPELINE,
     currentPhase: 'speckit-plan',
     currentIteration: 0,
     startedAt: 1_700_000_000_000,
@@ -1209,24 +1216,25 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
     p.dispose();
   });
 
-  it('falls back to the 7 built-in tiles for legacy runs lacking pipeline snapshot (T050)', async () => {
-    const legacyRun: WorkflowRun = sampleRun();
-    expect(legacyRun.pipeline).toBeUndefined();
-    await store.setRun(DEFAULT_QUEUE_ID, legacyRun);
+  // Feature 098 (T055, FR-030/FR-033) — the inverse of what T050 pinned. This
+  // case used to assert that a Run carrying no Pipeline snapshot projected the
+  // seven built-in tiles; there are no built-in tiles to fall back to, and
+  // inventing a Phase list for a Run that never declared one is the fail-open
+  // FR-033 forbids. The strip is empty, and it stays empty rather than being
+  // filled from somewhere the operator did not import.
+  //
+  // A Run in this shape is degenerate rather than legacy now — every Run freezes
+  // a Pipeline at creation — so the record is built here instead of coming from
+  // `sampleRun()`, which carries one.
+  it('projects no tiles for a run carrying no pipeline snapshot (T055)', async () => {
+    const noPipelineRun: WorkflowRun = { ...sampleRun(), pipeline: undefined };
+    expect(noPipelineRun.pipeline).toBeUndefined();
+    await store.setRun(DEFAULT_QUEUE_ID, noPipelineRun);
     await ownRun();
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
-    expect(runtimeOf(snap).phases).toHaveLength(7);
-    expect(runtimeOf(snap).phases.map((t) => t.name)).toEqual([
-      'speckit-specify',
-      'speckit-clarify',
-      'speckit-plan',
-      'speckit-tasks',
-      'speckit-analyze',
-      'speckit-implement',
-      'finalize'
-    ]);
+    expect(runtimeOf(snap).phases).toEqual([]);
     p.dispose();
   });
 

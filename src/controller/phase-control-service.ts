@@ -1,4 +1,3 @@
-import { BUILT_IN_PHASES } from '../config/pipeline-config';
 import { getOperatorActor } from '../lib/operator-attribution';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
@@ -481,8 +480,19 @@ export class PhaseControlService {
     return { ok: true };
   }
 
+  /**
+   * Feature 098 (T029, US3, FR-028) — a Run's phases are the ones in its own
+   * snapshot, and a Run without one has none.
+   *
+   * The fallback read `BUILT_IN_PHASES`, so a snapshot-less Run had every
+   * membership question answered by the seventeen ids the built-in layer claimed:
+   * a breakpoint could be set on, or a removal accepted for, a Phase that Run was
+   * never going to execute. Answering `false` is not merely the same answer an
+   * empty built-in layer would now give — it is the answer that stays correct if a
+   * catalog is ever non-empty again.
+   */
   private phaseExists(run: WorkflowRun, phaseId: string): boolean {
-    return (run.pipeline?.phases ?? BUILT_IN_PHASES).some((phase) => phase.id === phaseId);
+    return (run.pipeline?.phases ?? []).some((phase) => phase.id === phaseId);
   }
 
   private describePhaseState(run: WorkflowRun, phaseId: string): string {

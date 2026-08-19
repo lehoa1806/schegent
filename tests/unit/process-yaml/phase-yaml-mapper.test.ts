@@ -55,7 +55,13 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   retryCondition: 'attempts < 3',
   forceContinueOnRetryCap: true,
   isRequired: false,
-  runner: 'claude'
+  runner: 'claude',
+  // Feature 098 T012/T014 — both values are deliberately NOT the FR-005 defaults
+  // (`workspace` / `required`), so a field dropped anywhere on the path shows up
+  // as a changed value rather than as a coincidentally-correct one. `git` pairs
+  // legally with the `claude` runner above.
+  sideEffects: 'git',
+  evidencePolicy: 'none'
 };
 
 const FULL_SKILL: PhaseDefinition = {
@@ -164,9 +170,19 @@ describe('phase-yaml-mapper — the format stays closed (T020, SC-008)', () => {
     expect([...authored].sort()).toEqual([...PORTABLE_PHASE_FIELDS].sort());
   });
 
+  // Feature 098 T012/T014 — `sideEffects` and `evidencePolicy` left this list.
+  // They are the author's declaration, not the host's resolution, so they are
+  // portable now (FR-003); `promptVersion` and `sourceScope` are still resolved
+  // by the host and still have nowhere to go in a document.
   it('excludes the host-resolved fields a Phase carries at runtime', () => {
-    for (const field of ['sideEffects', 'evidencePolicy', 'promptVersion', 'sourceScope']) {
+    for (const field of ['promptVersion', 'sourceScope']) {
       expect(PORTABLE_PHASE_FIELDS.has(field)).toBe(false);
+    }
+  });
+
+  it('carries the two declared fields as portable', () => {
+    for (const field of ['sideEffects', 'evidencePolicy']) {
+      expect(PORTABLE_PHASE_FIELDS.has(field)).toBe(true);
     }
   });
 });

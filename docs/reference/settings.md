@@ -192,11 +192,15 @@ Rotated archives are retained per a built-in 7-day archive-age floor plus a coun
 ### `schegent.defaultPipelineId`
 
 - **Type:** `string`
-- **Default:** `"speckit-new-feature"`
+- **Default:** `""`
 - **Scope:** `resource`
-- **Pattern:** `^[a-z][a-z0-9-]{0,63}$`
+- **Pattern:** `^[a-z][a-z0-9-]{0,63}$` (or empty)
 
-Pipeline id used when a feature is enqueued without an explicit selection. Set this to a custom pipeline id if you want every Enqueue Feature click to default to your variant.
+Pipeline id used when a feature is enqueued without an explicit selection. It
+ships **empty** and leaving it empty is a supported configuration: a launch that
+falls through to it is refused with the missing id named, rather than defaulting
+to a pipeline you never chose. Set it to one of your own pipeline ids — imported
+or authored — to give the Enqueue Feature dialog a pre-selection.
 
 ### `schegent.phases`
 
@@ -204,13 +208,15 @@ Pipeline id used when a feature is enqueued without an explicit selection. Set t
 - **Default:** `[]`
 - **Scope:** `resource`
 
-Portable custom Phase definitions. Resolution selects one complete valid source row per id using workspace > user > built-in precedence. Invalid rows remain visible for repair and fall back to the next valid source; rows never merge field-by-field.
+Portable Phase definitions. Resolution selects one complete valid source row per id using workspace > user > built-in precedence. Invalid rows remain visible for repair and fall back to the next valid source; rows never merge field-by-field.
+
+The built-in layer is retained, read-only, and permanently empty, so in practice a workspace row wins over a user row and a lone user row wins outright. Every Phase in the catalog therefore lives in this key or its workspace-scoped twin, whether you typed it or imported it from a process document.
 
 Each phase object accepts:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). Reserved built-ins: `speckit-specify`, `speckit-clarify`, `speckit-plan`, `speckit-tasks`, `speckit-analyze`, `speckit-implement`, `finalize`, `done`. |
+| `id` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved and no id is privileged; reusing one from a lower-precedence scope shadows that row. |
 | `name` | string | yes | Display name (1–80 chars) shown in sidebar tiles, audit logs, and pipeline picker. |
 | `description` | string | no | Portable description, up to 1024 chars. |
 | `version` | positive integer | no | Host-owned optimistic version. Omit for new settings rows; the host defaults it to 1. |
@@ -223,6 +229,12 @@ Each phase object accepts:
 | `retryCondition` | string | no | Retry-condition DSL expression evaluated against the audit-entry's `metrics` map. See [Custom Phases](../features/custom-phases.md#retry-condition-dsl). |
 | `isRequired` | boolean | no | Whether terminal failure stops the workflow; defaults to `true`. |
 | `runner` | string | no | Phase runner override: `claude`, `codex`, or `agy`. |
+| `sideEffects` | string | no | Containment class: `none`, `workspace`, `git`, or `unrestricted`. Omitted, it is `workspace`. Declaring `git` requires a Git-capable `runner` (`claude` or `agy`) or the save is refused. |
+| `evidencePolicy` | string | no | Evidence strictness: `required`, `best-effort`, or `none`. Omitted, it is `required`. |
+
+Both defaults are the narrow end of their range and both apply because the row
+said nothing — nothing is inferred from the id. A row that omits them is
+`workspace` and `required` even when it shadows a row that declared otherwise.
 
 Example:
 
@@ -257,9 +269,9 @@ Each pipeline accepts:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Unique pipeline id, kebab-case, ≤64 chars (`pipelineId` is the portable alias). The id `speckit-new-feature` is reserved for the built-in. Immutable once saved. |
+| `id` | string | yes | Unique pipeline id, kebab-case, ≤64 chars (`pipelineId` is the portable alias). No id is reserved. Immutable once saved. |
 | `name` | string | yes | Display name (1–80 chars) shown in the QuickPick picker and sidebar header. |
-| `phases` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a built-in id or one of your `schegent.phases[].id`. The same id may appear more than once. |
+| `phases` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a phase with an effective definition — one of your `schegent.phases[].id`, whether authored or imported. The same id may appear more than once. Do not list `done`: it is the terminal state the host appends after the last phase, not a definition, and naming it fails the `unknown-phase` check like any other undefined id. |
 | `description` | string | no | Optional summary, ≤1024 chars. |
 | `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
 | `inputs` | array of objects | no | Declared session inputs: `{ portId, label, type, required?, description? }`. `type` is one of `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, `repository-context`. |
@@ -287,7 +299,7 @@ Example:
       "id": "quick-spec",
       "name": "Quick Spec",
       "version": 1,
-      "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "done"],
+      "phases": ["speckit-specify", "speckit-plan", "speckit-implement"],
       "inputs": [
         { "portId": "brief", "label": "Feature brief", "type": "text", "required": true }
       ],
@@ -309,9 +321,10 @@ Example:
 ```
 
 Rows are resolved workspace > user > built-in, one effective definition per id.
-An invalid row stays visible with its field errors while the next valid scope for
-that id becomes effective. Exceeding 20 effective pipelines, or 50 phases in one
-pipeline, warns without truncating anything. Editing this key from the Pipeline
+The built-in layer is read-only and ships empty, so every Pipeline you can run
+came from this key. An invalid row stays visible with its field errors while the
+next valid scope for that id becomes effective. Exceeding 20 effective pipelines,
+or 50 phases in one pipeline, warns without truncating anything. Editing this key from the Pipeline
 Builder is gated by `schegent.trust.allowPipelineOverrides`; see
 [Trust Scopes](../operations/trust-scopes.md) and
 [Configuration](../operations/configuration.md).
@@ -627,7 +640,7 @@ For quick lookup, the full list of keys:
 | `schegent.watchdog.pollIntervalMinutes` | resource | `30` |
 | `schegent.audit.rotation.sizeMB` | resource | `5` |
 | `schegent.audit.rotation.maxAgeDays` | resource | `30` |
-| `schegent.defaultPipelineId` | resource | `"speckit-new-feature"` |
+| `schegent.defaultPipelineId` | resource | `""` |
 | `schegent.phases` | resource | `[]` |
 | `schegent.pipelines` | resource | `[]` |
 | `schegent.workflows` | resource | `[]` |

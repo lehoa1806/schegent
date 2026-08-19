@@ -89,27 +89,29 @@ describe('FR-R3-008 — the progress denominator is frozen at run creation', () 
     const { factory, setCap } = factoryWithLiveCap(5);
     const run = await factory.create(plainItem(), 'specs/001-thing', 'ab-flow');
 
-    // The pipeline is alpha + beta(loopable) + the appended `done`; only beta
-    // carries the cap's weight, so 1 + 5 + 1 = 7.
+    // The pipeline is alpha + beta(loopable); only beta carries the cap's weight,
+    // so 1 + 5 = 6. Feature 098 (T025, FR-022) removed the terminal `done` the
+    // resolver used to append, which is where the third phase and the seventh
+    // invocation came from.
     expect(run.plannedTotal).toEqual({
-      phaseCount: 3,
+      phaseCount: 2,
       iterationCap: 5,
-      maxPhaseInvocations: 7
+      maxPhaseInvocations: 6
     });
 
     setCap(2);
 
     // Nothing re-reads the setting on the Run's behalf: the record is the source.
     expect(run.plannedTotal!.iterationCap, 'the frozen cap, not the live one').toBe(5);
-    expect(run.plannedTotal!.maxPhaseInvocations).toBe(7);
+    expect(run.plannedTotal!.maxPhaseInvocations).toBe(6);
 
     // And a Run created *after* the change gets the new cap, which is what makes
     // the first assertion about freezing rather than about the thunk being unread.
     const later = await factory.create(plainItem(), 'specs/002-thing', 'ab-flow');
     expect(later.plannedTotal).toEqual({
-      phaseCount: 3,
+      phaseCount: 2,
       iterationCap: 2,
-      maxPhaseInvocations: 4
+      maxPhaseInvocations: 3
     });
   });
 
@@ -124,7 +126,7 @@ describe('FR-R3-008 — the progress denominator is frozen at run creation', () 
     });
     const run = await factory.create(plainItem(), 'specs/001-thing', 'ab-flow');
     expect(run.plannedTotal!.iterationCap).toBe(DEFAULT_ITERATION_CAP);
-    expect(run.plannedTotal!.phaseCount).toBe(3);
+    expect(run.plannedTotal!.phaseCount).toBe(2);
   });
 
   it('freezes a total with no overrides applied, whatever the run start phase', async () => {

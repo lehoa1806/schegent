@@ -33,6 +33,12 @@ export type LaunchPipelineRejectionReason =
   | 'pipeline-not-found'
   /** It resolved, but the definition itself is invalid (FR-014). */
   | 'pipeline-invalid'
+  /**
+   * Feature 098 (FR-031) — the effective catalog holds no Pipelines at all, so
+   * nothing could have resolved. Distinct from `pipeline-not-found` because the
+   * remedy differs: import a process document, rather than check the id.
+   */
+  | 'catalog-empty'
   /** No folder is open, so no local reference can be contained. */
   | 'no-workspace-root'
   /** An existing queue guard refused: paused, foreign lock, capacity. */

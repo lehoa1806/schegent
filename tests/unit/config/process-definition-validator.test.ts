@@ -68,9 +68,35 @@ describe('validatePhaseDefinition', () => {
     );
   });
 
-  it.each(['sideEffects', 'evidencePolicy', 'promptVersion'])('rejects host field %s', (field) => {
-    expect(validatePhaseDefinition(valid({ [field]: 'none' })).errors).toEqual(
-      expect.arrayContaining([expect.objectContaining({ field, code: 'unknown-field' })])
+  // Feature 098 T015 — `sideEffects` and `evidencePolicy` left this list. They
+  // are the author's declaration of what a Phase is allowed to touch and what
+  // evidence it owes (FR-003), so an operator writes them and this validator now
+  // has to admit them; `promptVersion` is still resolved by the host and still
+  // has no author-facing spelling.
+  it('rejects host field promptVersion', () => {
+    expect(validatePhaseDefinition(valid({ promptVersion: 'none' })).errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'promptVersion', code: 'unknown-field' })
+      ])
+    );
+  });
+
+  it.each([
+    ['sideEffects', 'workspace'],
+    ['evidencePolicy', 'required']
+  ])('accepts authored field %s and carries it onto the definition', (field, value) => {
+    const result = validatePhaseDefinition(valid({ [field]: value }));
+    expect(result.errors).toEqual([]);
+    expect(result.definition?.[field as 'sideEffects' | 'evidencePolicy']).toBe(value);
+  });
+
+  it.each(['sideEffects', 'evidencePolicy'])('refuses a value outside the %s registry', (field) => {
+    // Admitting the key is not admitting arbitrary text: the closed registry is
+    // what keeps a containment class from arriving as a word the freeze cannot
+    // act on. `'none'` is legal for `evidencePolicy` and not for `sideEffects`,
+    // so the out-of-registry probe has to be a value neither one accepts.
+    expect(validatePhaseDefinition(valid({ [field]: 'whatever' })).errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field, code: 'invalid-enum' })])
     );
   });
 

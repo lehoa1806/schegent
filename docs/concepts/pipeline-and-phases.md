@@ -1,23 +1,28 @@
 # Pipelines & Phases
 
-A **pipeline** is an ordered list of phases that Schegent walks through for a single feature request. Schegent ships with a built-in pipeline — the standard Spec Driven Development workflow pipeline — and lets you define your own. You select a pipeline when you enqueue a task; the default is set by `schegent.defaultPipelineId` (which itself defaults to `speckit-new-feature`).
+A **pipeline** is an ordered list of phases that Schegent walks through for a single feature request. Schegent ships **no pipelines and no phases**. Every definition arrives by importing a process document at runtime, and `schegent.defaultPipelineId` ships empty. The extension package carries example documents under `examples/`; the Spec Driven Development workflow described below is one of them, not something compiled into the product. You select a pipeline when you enqueue a task, and a launch that resolves no pipeline is refused with importing named as the remedy rather than falling back to something you never chose.
 
-This page explains what each built-in phase does, the rules that govern phase execution, and how phase overrides let you tune individual phases without forking the whole pipeline.
+This page explains what each phase of the shipped Spec Driven Development example does, the rules that govern phase execution, and how phase overrides let you tune individual phases without forking the whole pipeline.
 
-## The Spec Driven Development workflow pipeline (`speckit-new-feature`)
+## The Spec Driven Development workflow example (`speckit-new-feature`)
 
-Eight phases in order. The first six are operator-visible work; the last two are completion sentinels.
+One document, `examples/speckit-new-feature.pipeline.yaml`, supplying one pipeline and the nine phases it names. Import it and the pipeline becomes selectable; skip it and nothing here exists.
 
-| # | Phase id | Loopable | What Claude does in this phase |
+| # | Phase id | Name | What Claude does in this phase |
 |---|---|---|---|
-| 1 | `speckit-specify` | no | Reads your feature description and produces `specs/<NNN-name>/spec.md`, the canonical specification. |
-| 2 | `speckit-clarify` | yes | Reviews the spec for ambiguity and resolves clarification markers. Loops until no open questions remain or the loop cap fires. |
-| 3 | `speckit-plan` | no | Drafts the implementation plan (`plan.md`) covering architecture, data model, and contract changes. |
-| 4 | `speckit-tasks` | no | Breaks the plan into discrete tasks in `tasks.md`. |
-| 5 | `speckit-analyze` | yes | Audits the spec, plan, and tasks for cross-artifact consistency. Loops while consistency issues remain (up to the loop cap). |
-| 6 | `speckit-implement` | no | Executes the tasks in order, writing code and tests until the feature is built. |
-| 7 | `finalize` | no | Re-reads the implemented feature, regenerates any derived documentation, verifies the build and tests pass. |
-| 8 | `done` | no | Terminal sentinel — emits the closing audit events and releases the run cleanly. |
+| 1 | `speckit-specify` | Spec-kit Specify | Reads your feature description and produces `specs/<NNN-name>/spec.md`, the canonical specification. |
+| 2 | `speckit-clarify` | Spec-kit Clarify | Reviews the spec for ambiguity and resolves clarification markers. Repeats while `open_questions > 0`. |
+| 3 | `speckit-plan` | Spec-kit Plan | Drafts the implementation plan (`plan.md`) covering architecture, data model, and contract changes. |
+| 4 | `speckit-tasks` | Spec-kit Tasks | Breaks the plan into discrete tasks in `tasks.md`. |
+| 5 | `speckit-checklist` | Spec-kit Checklist | Generates a requirements-quality checklist under `checklists/`. Non-blocking — a missing checklist warns and proceeds. |
+| 6 | `speckit-analyze` | Spec-kit Analyze | Audits the spec, plan, and tasks for cross-artifact consistency. Repeats while `critical_issues > 0`. |
+| 7 | `speckit-implement` | Spec-kit Implement | Executes the tasks in order, writing code and tests until the feature is built. Repeats while `pending_tasks > 0`. |
+| 8 | `speckit-review` | Spec-kit Review | Finishes any incomplete task, then loops code review and security review to zero findings. Repeats while any of the three counts is non-zero. |
+| 9 | `finalize` | Finalize | Re-reads the implemented feature, regenerates any derived documentation, verifies the build and tests pass. |
+
+The example declares none of `sideEffects`, `evidencePolicy`, or `loopable`, so all nine phases take the defaults described under [The phase definition](#the-phase-definition): `workspace` containment and `required` evidence. Repetition is driven by each phase's `retryCondition`, which the host consults whether or not `loopable` is set; `loopable` affects only the planned-total estimate the progress bar divides by.
+
+The example ends at `finalize` and declares no `done` phase. `done` remains a terminal sentinel the host understands, but a pipeline is not obliged to name one.
 
 
 
@@ -25,7 +30,7 @@ Eight phases in order. The first six are operator-visible work; the last two are
 
 Each phase is a versioned JSON record. Every phase has these fields:
 
-- **`id`** — a stable kebab-case identifier (regex `^[a-z][a-z0-9-]{0,63}$`). Built-in pipelines use the ids above; the bare names `specify`, `clarify`, `plan`, `tasks`, `analyze`, `implement`, `finalize`, `done` are reserved so a custom phase declared with one of those ids *shadows* (replaces) the built-in.
+- **`id`** — a stable kebab-case identifier (regex `^[a-z][a-z0-9-]{0,63}$`). **No id is reserved and no id is privileged.** The ids above belong to the example document, not to the product; import it and they are yours, edit them and nothing objects. An id shadows another only within the scope precedence described below — workspace over user — and it grants no capability by being recognised, because nothing recognises it.
 - **`name`** — display name used in the sidebar, audit log summaries, and pipeline picker (1–80 chars).
 - **`description`** — optional operator-facing context (up to 1024 chars).
 - **`version`** — a positive, host-owned revision. Legacy definitions load as version 1; changed rows increment on save.
@@ -38,6 +43,21 @@ Each phase is a versioned JSON record. Every phase has these fields:
 - **`isRequired`** — optional completion policy. Missing or `true` means a
   terminal failure stops the task. `false` allows the sequencer to continue
   after retry policy is exhausted and the phase ends as failed or timed out.
+- **`sideEffects`** — optional containment class: one of `none`, `workspace`,
+  `git`, `unrestricted`. It declares what the phase is permitted to write.
+  **Omitted, it is `workspace`.** A phase declaring `git` must also declare a
+  Git-capable runner (`claude` or `agy`), or the save is refused — Codex's
+  workspace-write sandbox keeps `.git` read-only. That rule reads the
+  declaration, never the id: a phase named `finalize` that declares no Git side
+  effects is not treated as a Git phase, and a phase named anything at all that
+  declares `git` is.
+- **`evidencePolicy`** — optional: one of `required`, `best-effort`, `none`.
+  **Omitted, it is `required`.**
+
+Both defaults are the narrow end of their range, and both are chosen because the
+phase said nothing rather than because the host recognised it. Earlier releases
+derived the containment class from whether the id was one the extension shipped;
+since no id is now, the class is declared or it is `workspace`.
 
 ### Optional phases
 
@@ -78,6 +98,8 @@ Phase overrides live at two precedence levels:
 
 Resolution selects one complete valid source row per id: workspace first, then user, then built-in. An invalid higher-precedence row remains visible but is quarantined, allowing the next valid source to become effective. Source rows do not merge field-by-field.
 
+The built-in layer is retained and permanently empty. It is read-only and is never a save target, so in practice a workspace row wins over a user row, and a lone user row wins outright. An import writes to whichever writable layer you pick in the import preflight — there is no default, and an unchosen scope never quietly resolves to the workspace. Nothing writes to the built-in layer.
+
 ### Concrete example
 
 In your user `settings.json`:
@@ -96,9 +118,9 @@ In your user `settings.json`:
 }
 ```
 
-The setting takes an array of complete phase records. A custom record whose `id` matches a built-in phase id *shadows* the built-in. Workspace-scoped (`.vscode/settings.json`) entries take precedence over user-scoped ones. The sidebar's host-computed `phasePrecedence` projection remains a UI-only compatibility indicator; runtime catalog resolution never merges rows per field.
+The setting takes an array of complete phase records. Workspace-scoped (`.vscode/settings.json`) entries take precedence over user-scoped ones, so a record here shadows a record with the same `id` in the user layer. The sidebar's host-computed `phasePrecedence` projection remains a UI-only compatibility indicator; runtime catalog resolution never merges rows per field.
 
-Omitted optional fields use runtime defaults; they are not copied from a shadowed lower source.
+Omitted optional fields use runtime defaults; they are not copied from a shadowed lower source. That includes `sideEffects` and `evidencePolicy` — a record that omits them is `workspace` and `required`, not whatever the row it shadows declared.
 
 ### What happens on save
 
@@ -112,13 +134,13 @@ This is intentional: phase definitions are configuration, not commands. To use a
 
 ## Custom phases
 
-The pipeline is not closed to seven phases. You can extend it with your own — for example, a `security-scan` phase between `implement` and `finalize` that runs a custom prompt against the just-written code.
+Every phase is a custom phase now — the shipped example's nine are yours the moment you import them, and they are ordinary rows in your own settings afterwards. "Custom" here means only *authored by you rather than imported from the example*: nothing distinguishes the two once they are in the catalog. You might add a `security-scan` phase between `speckit-implement` and `finalize` that runs a prompt against the just-written code.
 
-Custom phases:
+Phases:
 
 - Are declared in `schegent.phases` with an `id`, `name`, positive `version`, and exactly one of `instruction` or `skill`; pipeline order is declared separately.
-- Flow through *the same* audit pipeline as built-ins: every `phase-start` and `phase-end` event carries the same fields, sanitization runs identically, and the verbose diagnostic sink captures everything.
-- Are subject to the same phase overrides as built-ins (model, effort, timeout, loopable, retryCondition).
+- All flow through *the same* audit pipeline: every `phase-start` and `phase-end` event carries the same fields, sanitization runs identically, and the verbose diagnostic sink captures everything. There is no second, privileged path — there is nothing left to be privileged.
+- Are all subject to the same phase overrides (model, effort, timeout, loopable, retryCondition).
 
 See [Custom Phases](../features/custom-phases.md) for the full reference.
 

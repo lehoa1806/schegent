@@ -36,6 +36,7 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import type { AuditTailEntry, QueueRuntime, WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { SPECKIT_RUN_PIPELINE } from '../fixtures/speckit-catalog-fixture';
 
 const QUEUE_B = 'b1f2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
 
@@ -95,10 +96,18 @@ function runtimeFor(snapshot: WorkflowSnapshot, queueId: string): QueueRuntime {
   return runtime;
 }
 
+// Feature 098 (T055) — a Run's phase strip comes from the Pipeline frozen onto
+// it and from nowhere else now; the projector used to supply a built-in list to
+// a Run that declared none, which is what gave this fixture a non-empty strip
+// for free. The isolation claim needs the owning queue's strip to be non-empty
+// while the idle queue's stays empty, so the Pipeline is declared here. The
+// override and breakpoint below name `speckit-clarify` and `speckit-implement`,
+// which is why it is the Spec Kit fixture.
 function sampleRun(overrides: Partial<WorkflowRun> & Pick<WorkflowRun, 'id' | 'featureId'>): WorkflowRun {
   return {
     featureDir: 'specs/001-x',
     status: 'running',
+    pipeline: SPECKIT_RUN_PIPELINE,
     currentPhase: 'speckit-plan',
     currentIteration: 0,
     startedAt: 1_700_000_000_000,

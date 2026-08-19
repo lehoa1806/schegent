@@ -2,10 +2,24 @@
 // `state-projector.ts`. The orchestrator owns mutable bookkeeping
 // (monotonic timers, phase-message accumulation) while this module owns the
 // stateless shape transformation from `WorkflowRun` → `PhaseTile[]`.
+//
+// Feature 098 (T055, FR-030) — with nothing to project, this projects nothing.
+// Both branches below used to fall back to `buildEmptyPhases()`, seven
+// placeholder tiles named after the Phases the built-in layer supplied. In a
+// product where every Phase arrives by import, those tiles describe a process
+// the operator never defined, and an idle sidebar showing them tells them the
+// catalog holds something it does not.
+//
+// The guidance that replaces them is NOT returned from here. FR-030a makes it
+// one message shared by this surface and the launch surface, so it lives in
+// `src/contracts/empty-catalog-guidance.ts` and each surface derives it from
+// the count it already holds — `emptyCatalogGuidance(tiles.length)` here,
+// `emptyCatalogGuidance(pipelines.length)` there. Threading it through the
+// projection instead would put it on the snapshot, across the IPC boundary and
+// into the parity tests, to deliver a constant both ends can already import.
 import type { Phase, PhaseOutcome } from '../../controller/phase';
 import type { WorkflowRun } from '../../state/workflow-run';
 import {
-  buildEmptyPhases,
   isRecursivePhase,
   type PhaseName,
   type PhaseResultState,
@@ -30,7 +44,9 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
     -readonly [K in keyof PhaseTile]: PhaseTile[K];
   };
   if (!run) {
-    return buildEmptyPhases().map((p) => ({ ...p }));
+    // Idle. Nothing has been launched, so the tracker has only the catalog to
+    // draw on and the catalog ships empty.
+    return [];
   }
 
   const removedPhaseIds = new Set(
@@ -52,9 +68,10 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
         elapsedMs: 0,
         subProgress: null
       }))
-      : buildEmptyPhases()
-        .filter((phase) => !removedPhaseIds.has(phase.name))
-        .map<MutableTile>((p) => ({ ...p }));
+      // A Run carrying no Pipeline is degenerate — every Run freezes one at
+      // start — but the answer is the one an empty catalog gets: show nothing
+      // invented. `removedPhaseIds` has nothing left to filter here.
+      : [];
 
   const phaseOrder = new Map<PhaseName, number>();
   tiles.forEach((tile, idx) => phaseOrder.set(tile.name, idx));

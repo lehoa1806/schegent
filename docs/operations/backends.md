@@ -74,15 +74,22 @@ Precedence for runner selection per phase:
 2. Global `schegent.backend.runner` setting
 3. Fallback to `'claude'`
 
-Five built-in phases are an intentional exception to inheritance.
-`speckit-specify`, `specify-brainstorm`, and `superpowers-implement` invoke
-mandatory branch/worktree creation; `finalize` and `superpowers-review-close`
-commit or change branches.
-They are pinned to `claude`. Codex runs under `workspace-write`, which protects
-`.git` from modification. Overrides for these phase IDs must set `runner`
-explicitly to `claude` or `agy`; the Pipeline Builder disables Codex/Inherit
-and the host rejects incompatible configuration or legacy run snapshots before
-invoking a CLI.
+A phase that declares `sideEffects: git` is an intentional exception to
+inheritance: it is pinned to a Git-capable runner. Codex runs under
+`workspace-write`, which protects `.git` from modification, so such a phase
+must set `runner` explicitly to `claude` or `agy`. The Pipeline Builder
+disables Codex/Inherit for it, and the host rejects incompatible configuration
+or legacy run snapshots before invoking a CLI.
+
+The rule reads the **declaration**, never the id. Until feature 098 the host
+carried a list of five phase ids — `speckit-specify`, `specify-brainstorm`,
+`superpowers-implement`, `finalize`, `superpowers-review-close` — and inferred
+Git access from membership in it. That list is deleted with no replacement: the
+extension now ships no phases at all, so there is no id it could recognise, and
+a phase named `finalize` that declares nothing is an ordinary `workspace` phase.
+If a phase you import or author commits, tags, or otherwise writes `.git`, it
+must say `sideEffects: git` — naming it after one of the old five grants it
+nothing.
 
 When a run starts, every inherited runner choice is resolved and persisted in
 the immutable pipeline snapshot, together with the run's effective global

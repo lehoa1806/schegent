@@ -46,6 +46,11 @@ import type {
 } from '../../../src/services/process-yaml/types';
 import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
+import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
+import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 
 const REVISIONS: ProcessYamlLayerRevisions = Object.freeze({
   user: 'user-rev-1',
@@ -1777,5 +1782,101 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
 
       expect(rows[0]?.outcome, JSON.stringify(testCase)).toBe(testCase.expected);
     }
+  });
+});
+
+describe('the shipped example imports into a workspace that has never imported (T032)', () => {
+  // Feature 098 (SC-002) — the defect this feature exists to fix, asserted on the
+  // document the VSIX actually ships rather than on a fixture that resembles it.
+  //
+  // The presence oracle is built the way `preflight-service.ts` builds it — through
+  // `resolvePhaseCatalog` / `resolvePipelineCatalog` over the product's own layers,
+  // with the operator's two layers empty. That is deliberate and is what makes this
+  // test say something: a `context({ phaseRows: [] })` would pass today, because the
+  // planner is given its rows and the rows were never the argument that was wrong.
+  // What was wrong is that the built-in layer claimed the nine Phase ids and the one
+  // Pipeline id this very document supplies, so every row came back `skip` and the
+  // import wrote nothing.
+  const EXAMPLE = readFileSync(
+    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
+    'utf8'
+  );
+
+  function shippedContext(): PackageImportContext {
+    const phaseCatalog = resolvePhaseCatalog({
+      builtIn: BUILT_IN_PHASES,
+      user: [],
+      workspace: []
+    });
+    const pipelineCatalog = resolvePipelineCatalog({
+      builtIn: BUILT_IN_PIPELINES,
+      user: [],
+      workspace: [],
+      phaseCatalog: phaseCatalog.effective
+    });
+    return {
+      phaseRows: phaseCatalog.records,
+      pipelineRows: pipelineCatalog.records,
+      effectivePhases: phaseCatalog.effective,
+      revisions: phaseCatalog.revisions,
+      pipelineRevisions: pipelineCatalog.revisions
+    };
+  }
+
+  it('plans ten rows — one Pipeline and nine Phases — and skips none', () => {
+    const rows = plannedRows(EXAMPLE, shippedContext());
+
+    expect(rows).toHaveLength(10);
+    expect(rows.filter((row) => row.outcome === 'skip')).toEqual([]);
+    expect(rows.map((row) => row.outcome)).toEqual(Array.from({ length: 10 }, () => 'import'));
+  });
+
+  it('names the Pipeline first and then its nine Phases in declaration order', () => {
+    const rows = plannedRows(EXAMPLE, shippedContext());
+
+    expect(rows.map((row) => [row.resourceKind, row.resourceId])).toEqual([
+      ['pipeline', 'speckit-new-feature'],
+      ['phase', 'speckit-specify'],
+      ['phase', 'speckit-clarify'],
+      ['phase', 'speckit-plan'],
+      ['phase', 'speckit-tasks'],
+      ['phase', 'speckit-checklist'],
+      ['phase', 'speckit-analyze'],
+      ['phase', 'speckit-implement'],
+      ['phase', 'speckit-review'],
+      ['phase', 'finalize']
+    ]);
+  });
+
+  it('carries a definition on every row, so confirming the plan has ten things to write', () => {
+    // A plan whose rows resolve `import` but carry nothing would report ten writes
+    // and perform none. Each row is asserted to hold the definition the write needs,
+    // and the root Pipeline's phase list is asserted to be the one the document
+    // declared — the plan is what a confirmed write becomes effective from.
+    const rows = plannedRows(EXAMPLE, shippedContext());
+
+    for (const row of rows) {
+      expect(row.outcome).toBe('import');
+      // A `modelCatalog` import row carries `backend`/`modelId` in place of a
+      // `definition`, so it has to be excluded from the check below. Asserting
+      // the exclusion is empty keeps the narrowing from silently excusing a row.
+      expect(row.resourceKind).not.toBe('modelCatalog');
+      if (row.outcome !== 'import' || row.resourceKind === 'modelCatalog') continue;
+      expect(row.definition).toBeDefined();
+    }
+    const root = rows[0];
+    expect(root?.resourceKind).toBe('pipeline');
+    expect(root?.outcome).toBe('import');
+  });
+
+  it('also plans the bugfix example with no skip rows', () => {
+    const bugfix = readFileSync(
+      join(__dirname, '..', '..', '..', 'examples', 'speckit-bugfix.pipeline.yaml'),
+      'utf8'
+    );
+    const rows = plannedRows(bugfix, shippedContext());
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.filter((row) => row.outcome === 'skip')).toEqual([]);
   });
 });

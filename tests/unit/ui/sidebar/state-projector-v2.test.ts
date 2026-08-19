@@ -11,6 +11,7 @@ import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import type { LiveActivity, PhaseTile, WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { runOf, runtimeOf } from './queue-runtime-read.helpers';
 import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -71,12 +72,19 @@ function makeProjector(opts: { ownerId?: string; debounceMs?: number; tickInterv
   });
 }
 
+// Feature 098 (T055) — the frozen Pipeline is no longer optional decoration on
+// this fixture. The projector used to answer a Run without one with seven
+// placeholder tiles, so every case below got a phase strip for free; it answers
+// with zero tiles now, and a strip has to be frozen onto the Run the way
+// `createRun()` freezes one. The ids are the Spec Kit ones because these cases
+// name `speckit-plan`, `speckit-clarify` and `speckit-analyze` directly.
 function runningRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
     id: 'run-1',
     featureId: ownedTaskId,
     featureDir: 'specs/001-x',
     status: 'running',
+    pipeline: SPECKIT_RUN_PIPELINE,
     currentPhase: 'speckit-plan',
     currentIteration: 0,
     startedAt: 1_700_000_000_000,

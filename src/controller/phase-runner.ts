@@ -15,7 +15,7 @@ import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
 import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { RawTranscriptMode, TerminationReason } from '../state/workflow-run';
-import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
+import type { PhaseDef } from '../config/pipeline-config';
 import { assertPhaseRunnerPolicy } from '../config/phase-runner-policy';
 import type { RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
 import { composeVerboseDiagnosticPath } from '../audit/verbose-diagnostic-path';
@@ -241,16 +241,19 @@ export class PhaseRunner {
     // measured to the end of this method (or to the early return on a
     // timeout / failure path).
     const phaseRunStartMs = Date.now();
-    const debugPipelineId = inputs.pipelineId ?? BUILT_IN_PIPELINE_ID;
+    // Feature 098 (T045, FR-034) — six expressions here read
+    // `?? BUILT_IN_PIPELINE_ID`; all six omit rather than invent.
+    const pipelineAttribution: { pipelineId?: string } =
+      inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId };
     const debugPhaseId = inputs.phaseDef?.id ?? inputs.phase;
     this.logger.debug('phase-runner.lock-acquired', {
-      pipelineId: debugPipelineId,
+      ...pipelineAttribution,
       phaseId: debugPhaseId,
       runId: inputs.runId,
       waitMs: 0
     });
     this.logger.debug('phase-runner.iteration-tick', {
-      pipelineId: debugPipelineId,
+      ...pipelineAttribution,
       phaseId: debugPhaseId,
       runId: inputs.runId,
       iteration: inputs.iteration
@@ -259,7 +262,7 @@ export class PhaseRunner {
       return await this.runInner(inputs);
     } finally {
       this.logger.debug('phase-runner.lock-released', {
-        pipelineId: debugPipelineId,
+        ...pipelineAttribution,
         phaseId: debugPhaseId,
         holdMs: Date.now() - phaseRunStartMs
       });
@@ -287,7 +290,7 @@ export class PhaseRunner {
         iteration: inputs.iteration,
         eventType: 'phase-breakpoint-fired',
         payload: {
-          pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+          ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
           phaseId: breakpointPhaseId,
           iterationN: inputs.iteration,
           timestamp: firedAt
@@ -331,10 +334,15 @@ export class PhaseRunner {
     const effectiveRunnerKind = inputs.phaseDef?.runner
       ?? this.runnerRegistry?.getGlobalDefault()
       ?? DEFAULT_BACKEND;
-    assertPhaseRunnerPolicy(inputs.phaseDef?.id ?? inputs.phase, effectiveRunnerKind);
+    // Feature 098 T018 — the declared class is the rule's input, and this is the
+    // only site that sees the pair the two save gates cannot: both return early
+    // when a Phase declares no runner, so `git` with no runner reaches execution
+    // without a verdict and the runner it actually gets is resolved right above.
+    const policyPhaseId = inputs.phaseDef?.id ?? inputs.phase;
+    assertPhaseRunnerPolicy(policyPhaseId, inputs.phaseDef?.sideEffects, effectiveRunnerKind);
 
     const startPayload: Record<string, unknown> = {
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       // Feature 074 — always-present runner attribution.
       runner: effectiveRunnerKind,
@@ -676,7 +684,12 @@ export class PhaseRunner {
   private buildVerboseTarget(inputs: PhaseRunInputs): VerboseDiagnosticTarget | undefined {
     if (!this.verboseAccessor) return undefined;
     if (!this.verboseAccessor.isVerboseDiagnosticsEnabled()) return undefined;
-    const pipelineId = inputs.pipelineId ?? BUILT_IN_PIPELINE_ID;
+    // Feature 098 (T045, FR-034) — the Pipeline id is a directory name here, so
+    // a substituted one would file a Run's diagnostics under a Pipeline that had
+    // nothing to do with it. A path segment cannot be omitted; the whole opt-in
+    // declines, as it already does for any path this method cannot trust.
+    const pipelineId = inputs.pipelineId;
+    if (pipelineId === undefined) return undefined;
     const phaseId = inputs.phaseDef?.id ?? inputs.phase;
     try {
       return composeVerboseDiagnosticPath({
@@ -704,7 +717,7 @@ export class PhaseRunner {
       ?? this.runnerRegistry?.getGlobalDefault()
       ?? DEFAULT_BACKEND;
     const meta: Record<string, unknown> = {
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       runner: effectiveRunnerKind
     };
@@ -743,7 +756,7 @@ export class PhaseRunner {
     phaseDef?: PhaseDef;
   }): Promise<void> {
     const payload: Record<string, unknown> = {
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       runner: inputs.phaseDef?.runner ?? this.runnerRegistry?.getGlobalDefault() ?? DEFAULT_BACKEND,
       outcome: 'failed',

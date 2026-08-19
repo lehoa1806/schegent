@@ -3,6 +3,25 @@ import { buildCatalog, type PhaseDef, type PipelineCatalog } from '../../src/con
 import { snapshotPhaseDef } from '../../src/config/pipeline-snapshot';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkflowRunFactory } from '../../src/services/workflow-run-factory';
+import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
+
+/**
+ * Feature 098 (T024) — `resolvePipeline` answers with a discriminated resolution
+ * now. This suite is about a successful resolution's frozen Phases, so a refusal
+ * fails here rather than as `undefined.phases` at the assertion.
+ */
+function resolved(
+  factory: WorkflowRunFactory,
+  id: string,
+  runnerKind?: BackendRunnerKind
+): WorkflowRunPipeline {
+  const resolution = runnerKind
+    ? factory.resolvePipeline(id, runnerKind)
+    : factory.resolvePipeline(id);
+  if (!resolution.ok) throw new Error(`expected '${id}' to resolve, got ${resolution.refusal.reason}`);
+  return resolution.pipeline;
+}
 
 function factoryHarness(source: PhaseDef): {
   readonly factory: WorkflowRunFactory;
@@ -39,7 +58,7 @@ describe('catalog edits cannot mutate queued or active Run Phase snapshots', () 
       timeoutSeconds: 20, loopable: true, sourceScope: 'workspace' as const
     };
     const { factory } = factoryHarness(authored);
-    const queued = factory.resolvePipeline('custom-pipeline').phases[0];
+    const queued = resolved(factory, 'custom-pipeline').phases[0];
     authored.description = 'After';
     authored.version = 3;
     expect(queued).toMatchObject({ description: 'Before', version: 2, skill: 'skill-a', runner: 'codex' });
@@ -52,7 +71,7 @@ describe('catalog edits cannot mutate queued or active Run Phase snapshots', () 
       sourceScope: 'user' as const
     };
     const { factory, removeCustomSource, catalogPhaseIds } = factoryHarness(source);
-    const active = factory.resolvePipeline('custom-pipeline', 'agy').phases[0];
+    const active = resolved(factory, 'custom-pipeline', 'agy').phases[0];
     removeCustomSource();
     expect(catalogPhaseIds()).toEqual(['done']);
     expect(active).toMatchObject({

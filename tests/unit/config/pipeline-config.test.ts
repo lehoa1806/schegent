@@ -1,17 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   ALLOWED_PHASE_FIELDS,
-  BUILT_IN_BUGFIX_PIPELINE,
-  BUILT_IN_BUGFIX_PIPELINE_ID,
-  BUILT_IN_PHASES,
-  BUILT_IN_PHASE_IDS,
-  BUILT_IN_PIPELINE,
-  BUILT_IN_PIPELINE_ID,
-  BUILT_IN_PIPELINES,
   EFFORT_LEVELS,
   INSTRUCTION_MAX_LEN,
   NAME_MAX_LEN,
-  PHASE_ID_PATTERN,
   SOFT_CAP_PHASES,
   SOFT_CAP_PIPELINES,
   SOFT_CAP_PIPELINE_PHASES,
@@ -27,6 +19,18 @@ import {
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
+// Feature 098 (T080) — the definitions these tests resolve over now come from the
+// fixture rather than from `BUILT_IN_PHASES` / `BUILT_IN_PIPELINE`. Each test
+// below is about validation, merge precedence, or by-id map construction; none of
+// them was ever about which rows the product compiles in, and sourcing them from
+// the built-in layer only made them fail when that layer emptied.
+import {
+  FIXTURE_PHASES,
+  FIXTURE_PHASE_IDS,
+  FIXTURE_PIPELINES,
+  FIXTURE_PIPELINE_IDS,
+  FIXTURE_PIPELINE_SIMPLE
+} from '../../fixtures/process-catalog-fixture';
 
 const validPhase = (overrides: Partial<PhaseDef> = {}): PhaseDef => ({
   id: 'security-audit',
@@ -253,8 +257,8 @@ describe('validateCatalog — soft caps and warnings', () => {
 
   it('warns when defaultPipelineId references unknown pipeline', () => {
     const report = validateCatalog({
-      phases: [...BUILT_IN_PHASES],
-      pipelines: [BUILT_IN_PIPELINE],
+      phases: [...FIXTURE_PHASES],
+      pipelines: [FIXTURE_PIPELINE_SIMPLE],
       defaultPipelineId: 'non-existent'
     });
     expect(report.warnings.some((w) => w.source === 'pipeline' && w.id === 'non-existent')).toBe(
@@ -262,11 +266,11 @@ describe('validateCatalog — soft caps and warnings', () => {
     );
   });
 
-  it('returns no errors for built-in catalog', () => {
+  it('returns no errors for a well-formed catalog', () => {
     const report = validateCatalog({
-      phases: [...BUILT_IN_PHASES],
-      pipelines: [BUILT_IN_PIPELINE],
-      defaultPipelineId: BUILT_IN_PIPELINE_ID
+      phases: [...FIXTURE_PHASES],
+      pipelines: [...FIXTURE_PIPELINES],
+      defaultPipelineId: FIXTURE_PIPELINE_IDS.simple
     });
     expect(report.errors).toEqual([]);
   });
@@ -305,30 +309,28 @@ describe('validateCatalog — soft caps and warnings', () => {
 
 describe('mergeCatalog — precedence and duplicate warnings', () => {
   it('workspace shadows user shadows builtin for shared Phase ids (081 FR-003)', () => {
-    const customSpecify: PhaseDef = {
-      id: 'speckit-specify',
-      name: 'Workspace Specify',
-      instruction: 'Workspace-level override',
-      
+    const customFirst: PhaseDef = {
+      id: FIXTURE_PHASE_IDS.first,
+      name: 'Workspace First',
+      instruction: 'Workspace-level override'
     };
-    const userSpecify: PhaseDef = {
-      id: 'speckit-specify',
-      name: 'User Specify',
-      instruction: 'User-level override',
-      
+    const userFirst: PhaseDef = {
+      id: FIXTURE_PHASE_IDS.first,
+      name: 'User First',
+      instruction: 'User-level override'
     };
     const merge = mergeCatalog(
-      { phases: BUILT_IN_PHASES },
-      { phases: [userSpecify] },
-      { phases: [customSpecify] }
+      { phases: FIXTURE_PHASES },
+      { phases: [userFirst] },
+      { phases: [customFirst] }
     );
-    const merged = merge.catalog.phases.find((p) => p.id === 'speckit-specify');
-    expect(merged?.name).toBe('Workspace Specify');
+    const merged = merge.catalog.phases.find((p) => p.id === FIXTURE_PHASE_IDS.first);
+    expect(merged?.name).toBe('Workspace First');
   });
 
   it('flags duplicate phase ids within the same precedence layer', () => {
     const merge = mergeCatalog(
-      { phases: BUILT_IN_PHASES },
+      { phases: FIXTURE_PHASES },
       {
         phases: [
           validPhase({ id: 'audit-x', name: 'A' }),
@@ -344,7 +346,7 @@ describe('mergeCatalog — precedence and duplicate warnings', () => {
 
   it('flags duplicate pipeline ids within the same precedence layer', () => {
     const merge = mergeCatalog(
-      { pipelines: [BUILT_IN_PIPELINE] },
+      { pipelines: [FIXTURE_PIPELINE_SIMPLE] },
       {
         pipelines: [
           validPipeline({ id: 'sec', phases: ['speckit-specify'] }),
@@ -375,58 +377,27 @@ describe('isPhaseDef / isPipelineDef predicates', () => {
 
 describe('buildCatalog — constructs by-id maps', () => {
   it('exposes phasesById and pipelinesById', () => {
-    const catalog = buildCatalog([...BUILT_IN_PHASES], [BUILT_IN_PIPELINE], { claude: [], codex: [], agy: [] }, BUILT_IN_PIPELINE_ID);
-    expect(catalog.phasesById.get('speckit-specify')?.name).toBe('Spec-kit Specify');
-    expect(catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID)?.id).toBe(BUILT_IN_PIPELINE_ID);
+    const catalog = buildCatalog(
+      [...FIXTURE_PHASES],
+      [...FIXTURE_PIPELINES],
+      { claude: [], codex: [], agy: [] },
+      FIXTURE_PIPELINE_IDS.simple
+    );
+    expect(catalog.phasesById.get(FIXTURE_PHASE_IDS.first)?.name).toBe('Fixture First');
+    expect(catalog.pipelinesById.get(FIXTURE_PIPELINE_IDS.simple)?.id).toBe(
+      FIXTURE_PIPELINE_IDS.simple
+    );
   });
 });
 
-describe('Feature 026 T021 — speckit-bugfix built-in catalog members', () => {
-  const BUGFIX_PHASE_IDS = [
-    'bugfix-report',
-    'bugfix-patch',
-    'bugfix-verify-pre',
-    'bugfix-implement',
-    'bugfix-verify-post'
-  ] as const;
-
-  it('(a) BUILT_IN_PHASES.length === 17', () => {
-    // 9 standard (specify, clarify, plan, tasks, checklist, analyze,
-    // implement, review, finalize) + 5 bugfix (report, patch, verify-pre,
-    // implement, verify-post) + 3 superpowers (specify-brainstorm,
-    // superpowers-implement, superpowers-review-close) = 17.
-    expect(BUILT_IN_PHASES.length).toBe(17);
-  });
-
-  it('(b) every new bugfix phase id is present in BUILT_IN_PHASE_IDS', () => {
-    for (const id of BUGFIX_PHASE_IDS) {
-      expect((BUILT_IN_PHASE_IDS as readonly string[]).includes(id)).toBe(true);
-    }
-  });
-
-  it('(c) BUILT_IN_PIPELINES.length === 3 with bugfix second and dev-new-feature third', () => {
-    expect(BUILT_IN_PIPELINES.length).toBe(3);
-    const bugfix = BUILT_IN_PIPELINES[1];
-    expect(bugfix.id).toBe('speckit-bugfix');
-    expect(bugfix.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
-    expect([...bugfix.phases]).toEqual([...BUGFIX_PHASE_IDS]);
-    // The exported pipeline constant is the same identity used in the
-    // array — guards against accidental duplication.
-    expect(BUILT_IN_BUGFIX_PIPELINE.phases).toEqual(bugfix.phases);
-    const devNewFeature = BUILT_IN_PIPELINES[2];
-    expect(devNewFeature.id).toBe('dev-new-feature');
-  });
-
-  it('(d) BUILT_IN_PIPELINE_ID remains `speckit-new-feature` (legacy fallback id unchanged)', () => {
-    expect(BUILT_IN_PIPELINE_ID).toBe('speckit-new-feature');
-  });
-
-  it('(e) every bugfix phase id matches PHASE_ID_PATTERN', () => {
-    for (const id of BUGFIX_PHASE_IDS) {
-      expect(PHASE_ID_PATTERN.test(id)).toBe(true);
-    }
-  });
-});
+// Feature 098 (T080) — `describe('Feature 026 T021 — speckit-bugfix built-in
+// catalog members')` stood here. Its five cases asserted the length of
+// `BUILT_IN_PHASES`, the membership of five bugfix ids in `BUILT_IN_PHASE_IDS`,
+// the length and ordering of `BUILT_IN_PIPELINES`, and the value of
+// `BUILT_IN_PIPELINE_ID` — nothing but the content of the built-in rows, which
+// T036 emptied. There is no behavior left to migrate: the same guarantees now
+// belong to the YAML documents in `repo/examples/`, and the tests that hold them
+// are the import-planner tests that plan those documents.
 
 describe('Feature 026 T017 — phase Effort + Model validator coverage', () => {
   // (a) ALLOWED_PHASE_FIELDS keeps `model` and `effort` (no widening,
@@ -519,31 +490,22 @@ describe('Feature 082 — widened PipelineDef', () => {
     expect(full.bindings).toHaveLength(2);
   });
 
-  it('normalizes every built-in to version 1 with no authored contract collections', () => {
-    for (const pipeline of BUILT_IN_PIPELINES) {
-      expect(pipeline.version).toBe(1);
-      expect(pipeline.inputs).toBeUndefined();
-      expect(pipeline.outputs).toBeUndefined();
-      expect(pipeline.bindings).toBeUndefined();
-      expect(pipeline.executionDefaults).toBeUndefined();
-      expect(pipeline.recommendedNext).toBeUndefined();
-      expect(pipeline.sourceScope).toBeUndefined();
-      expect(pipeline.phases.length).toBeGreaterThan(0);
-    }
-  });
+  // Feature 098 (T080) — `normalizes every built-in to version 1 with no
+  // authored contract collections` stood here. It looped over `BUILT_IN_PIPELINES`
+  // asserting the shape of each row; with the layer empty (T036) the loop has no
+  // iterations and the case would pass without testing anything. The `version`
+  // normalization it guarded is a property of the YAML mapper now, and the
+  // `accepts a legacy { id, name, phases } row` case above still holds the
+  // optionality of every widened field.
 
-  it('keeps equalsBuiltInPipelines matching a structurally equal reset payload', () => {
-    const resetPayload = BUILT_IN_PIPELINES.map((pipeline) => ({
-      phases: [...pipeline.phases],
-      version: pipeline.version,
-      name: pipeline.name,
-      id: pipeline.id
-    }));
-    expect(equalsBuiltInPipelines(resetPayload)).toBe(true);
-    expect(equalsBuiltInPipelines(resetPayload.slice(0, 1))).toBe(false);
-    expect(
-      equalsBuiltInPipelines(BUILT_IN_PIPELINES.map((p) => ({ id: p.id, name: p.name, phases: [...p.phases] })))
-    ).toBe(false);
+  it('keeps equalsBuiltInPipelines matching only an empty reset payload', () => {
+    // Feature 098 (T080) — this case built its payload out of `BUILT_IN_PIPELINES`
+    // and asserted that a truncated copy failed to match. With the built-in layer
+    // empty (T036) the honest statement is the one below: the reset payload the
+    // three save commands compare against is `[]`, and any row at all is a
+    // divergence from it. The comparison itself is what T037 deliberately kept.
+    expect(equalsBuiltInPipelines([])).toBe(true);
+    expect(equalsBuiltInPipelines([FIXTURE_PIPELINE_SIMPLE])).toBe(false);
   });
 
   it('rejects a row whose new field has the wrong shape', () => {

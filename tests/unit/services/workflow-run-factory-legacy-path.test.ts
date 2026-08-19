@@ -150,7 +150,14 @@ describe('the plan-less path is untouched by the envelope (FR-R3-001, T267)', ()
 
     const run = await subject.create(item(), null, 'ab-flow');
 
-    expect(run.pipeline).toEqual(subject.resolvePipeline('ab-flow'));
+    // Feature 098 (T024) — `resolvePipeline` answers with a discriminated
+    // resolution, so the comparison is against the contract it resolved rather
+    // than against the return value, which now also carries the `ok` tag.
+    const resolution = subject.resolvePipeline('ab-flow');
+    if (!resolution.ok) {
+      throw new Error(`expected 'ab-flow' to resolve, got ${resolution.refusal.reason}`);
+    }
+    expect(run.pipeline).toEqual(resolution.pipeline);
   });
 });
 

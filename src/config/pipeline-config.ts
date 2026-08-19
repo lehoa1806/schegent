@@ -1,9 +1,19 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
-export type PhaseSideEffects = 'none' | 'workspace' | 'git' | 'unrestricted';
-export type PhaseEvidencePolicy = 'required' | 'best-effort' | 'none';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { PhaseDefinitionScope } from '../contracts/process-definitions';
+// One declaration serves the authored contract and the runtime shape. These were
+// duplicated string unions here; a Phase now declares its own containment class,
+// so a second copy would let the document field and the runtime field drift with
+// nothing to catch it. Re-exported because `PhaseSideEffects` /
+// `PhaseEvidencePolicy` are part of this module's published surface.
+export {
+  PHASE_SIDE_EFFECTS,
+  PHASE_EVIDENCE_POLICIES,
+  type PhaseSideEffects,
+  type PhaseEvidencePolicy
+} from '../contracts/process-definitions';
+import type { PhaseSideEffects, PhaseEvidencePolicy } from '../contracts/process-definitions';
 import {
   isPipelineDefinitionScope,
   type PhaseBinding,
@@ -35,7 +45,7 @@ export interface PhaseDef {
    */
   readonly forceContinueOnRetryCap?: boolean;
   readonly runner?: BackendRunnerKind;
-  readonly sideEffects?: PhaseSideEffects; // Custom omission => unrestricted.
+  readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly promptVersion?: string;
   /** Resolution origin used only to derive host-owned runtime policy. */
@@ -81,25 +91,6 @@ export interface ValidationReport {
   readonly errors: readonly ValidationError[];
   readonly warnings: readonly ValidationWarning[];
 }
-export const BUILT_IN_PHASE_IDS = [
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-checklist',
-  'speckit-analyze',
-  'speckit-implement',
-  'speckit-review',
-  'finalize',
-  'bugfix-report',
-  'bugfix-patch',
-  'bugfix-verify-pre',
-  'bugfix-implement',
-  'bugfix-verify-post',
-  'specify-brainstorm',
-  'superpowers-implement',
-  'superpowers-review-close'
-] as const;
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export const ID_MAX_LEN = 64;
 export const NAME_MAX_LEN = 80;
@@ -109,292 +100,39 @@ export const TIMEOUT_MAX = 3600;
 export const SOFT_CAP_PHASES = 50;
 export const SOFT_CAP_PIPELINES = 20;
 export const SOFT_CAP_PIPELINE_PHASES = 50;
-export const PHASE_INSTRUCTIONS: Readonly<Record<string, string>> = {
-  'speckit-specify': '/speckit-specify',
-  'speckit-clarify': [
-    'Run /speckit-clarify on the active feature spec.',
-    '',
-    'NON-SKIPPABLE: You MUST actually invoke /speckit-clarify — never infer "no ambiguities" without an executed run. A "clean" result is valid ONLY when it comes from a real /speckit-clarify Completion Report.',
-    '',
-    'Auto-accept mode: For every question, accept the recommended/suggested answer automatically:',
-    '- For multiple-choice with "Recommended: Option [X]" → respond with that option letter or "recommended".',
-    '- For short-answer with "Suggested:" → respond with "suggested".',
-    '- Process ALL questions in the iteration without pausing. Do NOT ask the user.',
-    '',
-    'Evidence gate: The iteration counts only if /speckit-clarify actually ran and produced evidence — EITHER a Completion Report with a coverage summary table, OR the explicit "No critical ambiguities detected" message.',
-    '',
-    'Result determination (from the actual run output only):',
-    '- If "No critical ambiguities detected" AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If all coverage categories are Clear AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If ANY questions were asked and auto-accepted → emit "Open questions:" followed by a summary (controller will re-loop)',
-    '',
-    'Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.'
-  ].join('\n'),
-  'speckit-plan': '/speckit-plan',
-  'speckit-tasks': '/speckit-tasks',
-  'speckit-checklist': [
-    'Run /speckit-checklist on the active feature.',
-    '',
-    'Auto-select: Depth=Standard, Audience=Reviewer, Focus=Top 2 relevance clusters. For all clarifying questions, choose the most comprehensive option automatically.',
-    '',
-    'Verify (soft — non-blocking): Confirm the run produced a checklist under <feature_dir>/checklists/. If missing, note the warning but proceed.',
-    '',
-    'Always emit [SCHEGENT_STATUS: CLEAR] when complete — checklist is non-blocking.',
-    '',
-    'Inside the SCHEGENT AUDIT LOG block, emit `checklist_items: <N>` as a top-level integer metric line.'
-  ].join('\n'),
-  'speckit-analyze': [
-    'Run /speckit-analyze on the active feature.',
-    '',
-    'NON-SKIPPABLE: You MUST actually invoke /speckit-analyze at least once — never assume "0 CRITICAL issues" without an executed run. /speckit-analyze is READ-ONLY (writes no files), so a skipped run leaves NO artifact trace. A "clean" result is valid ONLY when it comes from a real Specification Analysis Report whose Metrics block reports Critical Issues Count: 0.',
-    '',
-    'Evidence gate: The iteration counts only if /speckit-analyze actually ran and produced a Specification Analysis Report with its findings table and Metrics block (Total Requirements, Total Tasks, Coverage %, Critical Issues Count).',
-    '',
-    'Result determination (from the actual report only):',
-    '- If 0 CRITICAL issues AND no remediation performed → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If CRITICAL issues exist → apply auto-remediation (see below), then emit "Remaining issues:" listing unresolved criticals',
-    '',
-    'Auto-remediation (when issues exist):',
-    '- Respond "Yes, suggest and apply remediation for ALL issues including HIGH severity."',
-    '- Apply ALL suggested edits to spec.md, plan.md, and/or tasks.md.',
-    '- Do NOT assume remediation fixed everything — the controller will re-loop to verify.',
-    '',
-    'REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines (NOT nested under Notes:, Findings:, or any other heading). These lines MUST appear even when the count is 0. Example:',
-    'critical_issues: 0',
-    'high_issues: 2',
-    'The controller uses these metrics to decide whether to re-loop. Missing metrics cause incorrect advancement.'
-  ].join('\n'),
-  'speckit-implement': [
-    'Run /speckit-implement on the active feature.',
-    '',
-    'After implementation completes, load <feature_dir>/tasks.md and count every task NOT marked complete.',
-    '',
-    'Result determination:',
-    '- If 0 pending tasks remain → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If any tasks are still pending → emit "Remaining issues:" listing the incomplete tasks',
-    '',
-    'REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.'
-  ].join('\n'),
-  'speckit-review': [
-    'Review the implementation and finish all pending tasks:',
-    '1. Load <feature_dir>/tasks.md and list every task not marked complete.',
-    '2. Cross-check the implementation against spec.md and plan.md for gaps.',
-    '3. Implement every remaining or incomplete task to completion.',
-    '',
-    'Then trigger code review — fix EVERY finding, loop until clean:',
-    '- Run /code-review against the current diff with --fix.',
-    '- Fix every finding regardless of severity or confidence level.',
-    '- After applying fixes, re-run /code-review until zero findings, up to 10 iterations.',
-    '',
-    'Then trigger security review — fix EVERY finding, loop until clean:',
-    '- Run /security-review against the current diff.',
-    '- Apply a fix for every finding.',
-    '- After applying fixes, re-run /security-review until zero findings, up to 10 iterations.',
-    '',
-    'False-positive carve-out: The only finding you may leave unedited is a demonstrated false positive with a recorded one-line justification.',
-    '',
-    'Result determination:',
-    '- If all tasks complete AND both reviews report zero findings → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If any findings remain → emit "Remaining issues:" listing residuals',
-    '',
-    'Inside the SCHEGENT AUDIT LOG block, emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>` as top-level integer metric lines.'
-  ].join('\n'),
-  finalize: [
-    'Verify the implementation and drive it to green:',
-    '',
-    '1. Format FIRST: Run the project formatter in write mode (e.g. cargo fmt, npm run format) exactly once before the check set.',
-    '2. Run the full check set — build, tests, lint, typecheck. Capture pass/fail for each.',
-    '3. If any check fails: diagnose root cause, apply a real fix, re-run affected checks, repeat until all green (max 10 iterations). Do NOT mask failures (no skipped tests, no eslint-disable, no loosened types).',
-    '4. Standard fallbacks when plan.md lists no explicit commands:',
-    '   - Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check',
-    '   - Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit',
-    '   - Python: test runner, ruff/flake8, mypy/pyright',
-    '',
-    '5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>',
-    '6. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>',
-    '',
-    'Result determination:',
-    '- If all checks green → emit [SCHEGENT_STATUS: CLEAR]',
-    '- If checks still failing after 10 iterations → emit "Remaining issues:" listing failures',
-    '',
-    'Inside the SCHEGENT AUDIT LOG block, emit `checks_passing: <N>` and `checks_failing: <N>` as top-level integer metric lines.'
-  ].join('\n'),
-  'bugfix-report': '/speckit-bugfix-report',
-  'bugfix-patch': '/speckit-bugfix-patch',
-  'bugfix-verify-pre': '/speckit-bugfix-verify',
-  'bugfix-implement': '/speckit-implement',
-  'bugfix-verify-post': '/speckit-bugfix-verify',
-  'specify-brainstorm':
-    "Let's brainstorm the idea from the input and run /speckit-specify",
-  'superpowers-implement':
-    "Use git worktree for this feature. Get the 'feature_directory' from .specify/feature.json. Don't re-plan, execute the tasks.md in that 'feature_directory' using subagent-driven development with TDD",
-  'superpowers-review-close':
-    "Get the 'feature_directory' from .specify/feature.json. Don't re-plan, analyze the implementation, identify open tasks, evaluate them, and implement them. Mark all implemented tasks to done. After that, perform a code review and finish the development branch. At the end, create commits for the pending changes if necessary. Merge all new commits to develop, then checkout to develop"
-};
-export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([
-  Object.freeze({
-    id: 'speckit-specify',
-    name: 'Spec-kit Specify',
-    instruction: PHASE_INSTRUCTIONS['speckit-specify'],
-    model: 'claude-opus-5',
-    runner: 'claude'
-  }),
-  Object.freeze({
-    id: 'speckit-clarify',
-    name: 'Spec-kit Clarify',
-    instruction: PHASE_INSTRUCTIONS['speckit-clarify'],
-    retryCondition: 'open_questions > 0',
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-plan',
-    name: 'Spec-kit Plan',
-    instruction: PHASE_INSTRUCTIONS['speckit-plan'],
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-tasks',
-    name: 'Spec-kit Tasks',
-    instruction: PHASE_INSTRUCTIONS['speckit-tasks'],
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-checklist',
-    name: 'Spec-kit Checklist',
-    instruction: PHASE_INSTRUCTIONS['speckit-checklist'],
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-analyze',
-    name: 'Spec-kit Analyze',
-    instruction: PHASE_INSTRUCTIONS['speckit-analyze'],
-    retryCondition: 'critical_issues > 0',
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-implement',
-    name: 'Spec-kit Implement',
-    instruction: PHASE_INSTRUCTIONS['speckit-implement'],
-    retryCondition: 'pending_tasks > 0',
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'speckit-review',
-    name: 'Spec-kit Review',
-    instruction: PHASE_INSTRUCTIONS['speckit-review'],
-    retryCondition: 'pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0',
-    model: 'claude-opus-5'
-  }),
-  Object.freeze({
-    id: 'finalize',
-    name: 'Finalize',
-    instruction: PHASE_INSTRUCTIONS.finalize,
-    model: 'claude-opus-5',
-    runner: 'claude'
-  }),
-  Object.freeze({
-    id: 'bugfix-report',
-    name: 'Spec-kit Bugfix Report',
-    instruction: PHASE_INSTRUCTIONS['bugfix-report']
-  }),
-  Object.freeze({
-    id: 'bugfix-patch',
-    name: 'Spec-kit Bugfix Patch',
-    instruction: PHASE_INSTRUCTIONS['bugfix-patch']
-  }),
-  Object.freeze({
-    id: 'bugfix-verify-pre',
-    name: 'Spec-kit Bugfix Verify (pre)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-verify-pre']
-  }),
-  Object.freeze({
-    id: 'bugfix-implement',
-    name: 'Spec-kit Implement (bugfix)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-implement']
-  }),
-  Object.freeze({
-    id: 'bugfix-verify-post',
-    name: 'Spec-kit Bugfix Verify (post)',
-    instruction: PHASE_INSTRUCTIONS['bugfix-verify-post']
-  }),
-  Object.freeze({
-    id: 'specify-brainstorm',
-    name: 'Specify with Brainstorm',
-    instruction: PHASE_INSTRUCTIONS['specify-brainstorm'],
-    runner: 'claude'
-  }),
-  Object.freeze({
-    id: 'superpowers-implement',
-    name: 'Superpowers Implement',
-    instruction: PHASE_INSTRUCTIONS['superpowers-implement'],
-    runner: 'claude'
-  }),
-  Object.freeze({
-    id: 'superpowers-review-close',
-    name: 'Superpowers Review and Close',
-    instruction: PHASE_INSTRUCTIONS['superpowers-review-close'],
-    runner: 'claude'
-  })
-]);
+// Feature 098 (T036, FR-010, FR-011) — the built-in layer, emptied.
+//
+// It held seventeen Phases and three Pipelines, and `import-planner.ts` scans
+// every layer including this one before writing, so the two example documents
+// that ship in the VSIX resolved to sixteen skip rows and zero writes: the
+// import UI was the only route in and it wrote nothing. The rows moved to
+// `examples/`, where an operator imports them; the layer stays because
+// three-scope precedence, the `shadowed` status and the presence scan are all
+// still the machinery this product resolves with (FR-017, and the retention
+// test `tests/unit/config/built-in-scope-retention.test.ts`).
+//
+// `BUILT_IN_WORKFLOWS` has been `Object.freeze([])` since feature 086, which is
+// the existence proof that the seventeen `{ builtIn, user, workspace }` call
+// sites need no change to accept an empty first layer.
+export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([]);
 
-export const BUILT_IN_PIPELINE_ID = 'speckit-new-feature';
-
-export const BUILT_IN_BUGFIX_PIPELINE_ID = 'speckit-bugfix';
-
-export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID = 'dev-new-feature';
-
-export const DEFAULT_PIPELINE_ID = BUILT_IN_PIPELINE_ID;
-
-export const BUILT_IN_PIPELINE: PipelineDef = Object.freeze({
-  id: BUILT_IN_PIPELINE_ID,
-  name: 'Spec-kit New Feature',
-  version: 1,
-  phases: Object.freeze([
-    'speckit-specify',
-    'speckit-clarify',
-    'speckit-plan',
-    'speckit-tasks',
-    'speckit-checklist',
-    'speckit-analyze',
-    'speckit-implement',
-    'speckit-review',
-    'finalize'
-  ]) as readonly string[]
-});
-
-export const BUILT_IN_BUGFIX_PIPELINE: PipelineDef = Object.freeze({
-  id: BUILT_IN_BUGFIX_PIPELINE_ID,
-  name: 'Spec-kit Bugfix',
-  version: 1,
-  phases: Object.freeze([
-    'bugfix-report',
-    'bugfix-patch',
-    'bugfix-verify-pre',
-    'bugfix-implement',
-    'bugfix-verify-post'
-  ]) as readonly string[]
-});
-
-export const BUILT_IN_DEV_NEW_FEATURE_PIPELINE: PipelineDef = Object.freeze({
-  id: BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID,
-  name: 'Dev New Feature',
-  version: 1,
-  phases: Object.freeze([
-    'specify-brainstorm',
-    'speckit-clarify',
-    'speckit-plan',
-    'speckit-tasks',
-    'speckit-analyze',
-    'superpowers-implement',
-    'superpowers-review-close'
-  ]) as readonly string[]
-});
-
-export const BUILT_IN_PIPELINES: readonly PipelineDef[] = Object.freeze([
-  BUILT_IN_PIPELINE,
-  BUILT_IN_BUGFIX_PIPELINE,
-  BUILT_IN_DEV_NEW_FEATURE_PIPELINE
-]);
+// The Pipeline half of the same change (T036). Two of the three definitions this
+// array held are now `examples/speckit-new-feature.pipeline.yaml` and
+// `examples/speckit-bugfix.pipeline.yaml`. The third, `dev-new-feature`, has no
+// document successor: the shipped example set is good as it stands (standing
+// decision, 2026-08-19), so an operator who wants that Pipeline authors it like
+// any other. Nothing here is load-bearing for it — a Pipeline with no document
+// is simply one nobody has imported.
+//
+// Feature 098 (T081) — four id constants stood here until this point:
+// `BUILT_IN_PIPELINE_ID`, `BUILT_IN_BUGFIX_PIPELINE_ID`,
+// `BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID` and `DEFAULT_PIPELINE_ID`. T036 left
+// them deliberately, because thirteen expressions still substituted them for an
+// absent Pipeline id and deleting them alongside the rows would have ended that
+// phase on a tree that did not compile. Those consumers are gone, so the names
+// go too: a constant naming a definition no installation has is a standing
+// invitation to substitute it again.
+export const BUILT_IN_PIPELINES: readonly PipelineDef[] = Object.freeze([]);
 
 // Feature 059 — default-detection helpers used by the per-capability
 // trust gate in `cmd-save-phases.ts` and `cmd-save-pipelines.ts`. The
@@ -422,34 +160,26 @@ function stableJsonStringify(value: unknown): string {
 }
 
 /**
- * Returns `true` iff `payload` is byte-equivalent (after key-sorted
- * JSON normalization) to the `BUILT_IN_PHASES` catalog. Used by the
- * trust gate to recognize a reset-to-defaults save.
+ * `true` iff `payload` is byte-equivalent (after key-sorted JSON
+ * normalization) to the built-in Phase layer — which, since T036, means
+ * `payload` is empty. The trust gate reads this to recognize a
+ * reset-to-defaults save, so an operator can always return to defaults from
+ * a denied state (feature 059's I-2 invariant).
+ *
+ * Feature 098 (T037) kept the comparison in this form rather than reducing it
+ * to `payload.length === 0`. The two are equivalent for an array, and this is
+ * the form `equalsBuiltInWorkflows()` has used since feature 086 against its
+ * own empty layer: the three functions are one family, read together by the
+ * three save commands, and a fourteen-line saving is not worth two of them
+ * answering the question differently from the third.
  */
 export function equalsBuiltInPhases(payload: readonly unknown[]): boolean {
   return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PHASES);
 }
 
-/**
- * Returns `true` iff `payload` is byte-equivalent (after key-sorted
- * JSON normalization) to the `BUILT_IN_PIPELINES` catalog. Used by the
- * trust gate to recognize a reset-to-defaults save.
- */
+/** The Pipeline half of {@link equalsBuiltInPhases}, on the same terms. */
 export function equalsBuiltInPipelines(payload: readonly unknown[]): boolean {
   return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PIPELINES);
-}
-
-/**
- * Returns the `retryCondition` declared on the built-in phase with the
- * given id, or `undefined` if the phase has no default retry condition
- * (built-in phases currently do not declare retry conditions). Used by
- * the row-granularity retry-condition gate in `cmd-save-phases.ts`: a
- * payload row whose `retryCondition` matches this value is considered
- * "default" and bypasses the per-row gate.
- */
-export function defaultRetryConditionForPhaseId(phaseId: string): string | undefined {
-  const phase = BUILT_IN_PHASES.find((p) => p.id === phaseId);
-  return phase?.retryCondition;
 }
 
 export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set([
@@ -632,11 +362,11 @@ export function mergeCatalog(
     }
   }
 
+  // Feature 098 (T081, FR-033) — the final fallback named the built-in
+  // Pipeline. With no layer supplying one, the merged catalog has no default,
+  // and the empty string is how that is spelled (FR-033a).
   const defaultPipelineId =
-    workspace.defaultPipelineId ??
-    user.defaultPipelineId ??
-    builtin.defaultPipelineId ??
-    BUILT_IN_PIPELINE_ID;
+    workspace.defaultPipelineId ?? user.defaultPipelineId ?? builtin.defaultPipelineId ?? '';
 
   const mergedModels: Record<BackendRunnerKind, readonly string[]> = {
     claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
@@ -682,11 +412,24 @@ export function buildCatalog(
   });
 }
 
-export const BUILT_IN_CATALOG: PipelineCatalog = buildCatalog(
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINES,
+/**
+ * The catalog with nothing in it: no Phases, no Pipelines, no models, and — since
+ * there are no Pipelines to name — no default.
+ *
+ * Feature 098 (T036/T041) — this replaces `BUILT_IN_CATALOG` in the one role it
+ * had left, as the fallback a caller reaches for when it was handed no catalog.
+ * `BUILT_IN_CATALOG` was that fallback built from the seventeen built-in Phases
+ * and three built-in Pipelines, so a host with no configuration came up offering
+ * a process the operator had never imported. Built through `buildCatalog` rather
+ * than hand-rolled, so the frozen arrays and empty id maps have the same shape
+ * every other catalog has. `pipeline-config-loader.ts` reads this too; it is one
+ * constant so the two cannot answer differently.
+ */
+export const EMPTY_CATALOG: PipelineCatalog = buildCatalog(
+  [],
+  [],
   { claude: [], codex: [], agy: [] },
-  BUILT_IN_PIPELINE_ID
+  ''
 );
 
 export function validatePhaseRaw(value: unknown): readonly ValidationError[] {
@@ -773,7 +516,10 @@ export function validateCatalog(catalog: {
     warnings.push({
       source: 'pipeline',
       id: catalog.defaultPipelineId,
-      message: `defaultPipelineId '${catalog.defaultPipelineId}' references unknown pipeline; falling back to '${BUILT_IN_PIPELINE_ID}'`
+      // Feature 098 (T081) — this used to promise a fallback to the built-in
+      // Pipeline. There is none: an unresolvable default is refused at launch
+      // by name (FR-023), so the warning reports the fact and stops there.
+      message: `defaultPipelineId '${catalog.defaultPipelineId}' references unknown pipeline`
     });
   }
 

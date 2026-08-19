@@ -20,6 +20,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
+// Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
+// so a test that drives Phases supplies one. See the fixture header for why the
+// ids here are the real Spec Kit ones.
+import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -138,6 +142,7 @@ beforeEach(async () => {
     lock,
     opts,
     {
+      catalog: buildSpeckitCatalog(),
       historyStore: historyStore as unknown as import('../../../src/state/history-store').HistoryStore,
       auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter
     }

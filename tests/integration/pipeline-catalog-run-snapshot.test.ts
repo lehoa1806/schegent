@@ -26,7 +26,27 @@ import {
 } from '../../src/config/pipeline-config';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkflowRunFactory } from '../../src/services/workflow-run-factory';
+import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
 import { migrateV7ToV8 } from '../../src/state/workflow-run-migrator';
+
+/**
+ * Feature 098 (T024) — `resolvePipeline` answers with a discriminated resolution
+ * now. This suite is about what a *successful* resolution freezes, so it says so
+ * once here and a refusal fails loudly at the call rather than as a missing
+ * property several assertions later.
+ */
+function resolved(
+  factory: WorkflowRunFactory,
+  id: string,
+  runnerKind?: BackendRunnerKind
+): WorkflowRunPipeline {
+  const resolution = runnerKind
+    ? factory.resolvePipeline(id, runnerKind)
+    : factory.resolvePipeline(id);
+  if (!resolution.ok) throw new Error(`expected '${id}' to resolve, got ${resolution.refusal.reason}`);
+  return resolution.pipeline;
+}
 
 const SPECIFY: PhaseDef = {
   id: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Write the spec.',
@@ -111,7 +131,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
     const authored = authoredPipeline();
     const { factory } = factoryHarness(authored);
 
-    const queued = factory.resolvePipeline('contract-flow');
+    const queued = resolved(factory, 'contract-flow');
 
     expect(queued).toMatchObject({
       id: 'contract-flow',
@@ -130,7 +150,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
     const authored = authoredPipeline();
     const { factory } = factoryHarness(authored);
 
-    const queued = factory.resolvePipeline('contract-flow');
+    const queued = resolved(factory, 'contract-flow');
 
     // Every mutation an operator could make by editing the row afterwards,
     // including reaching through the nested arrays the freeze must not alias.
@@ -156,7 +176,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
   it('freezes the contract transitively so nothing can mutate it in place', () => {
     const { factory } = factoryHarness(authoredPipeline());
 
-    const queued = factory.resolvePipeline('contract-flow');
+    const queued = resolved(factory, 'contract-flow');
 
     expect(Object.isFrozen(queued)).toBe(true);
     expect(Object.isFrozen(queued.inputs)).toBe(true);
@@ -170,7 +190,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
   it('retains the contract after the catalog Pipeline is removed entirely (FR-027)', () => {
     const { factory, removePipeline, catalogPipelineIds } = factoryHarness(authoredPipeline());
 
-    const active = factory.resolvePipeline('contract-flow', 'agy');
+    const active = resolved(factory, 'contract-flow', 'agy');
     removePipeline();
 
     expect(catalogPipelineIds()).toEqual(['other-flow']);
@@ -188,7 +208,7 @@ describe('catalog edits cannot mutate queued or active Run Pipeline contracts (U
   it('stores no source metadata, revision, validation state, or workspace path', () => {
     const { factory } = factoryHarness(authoredPipeline());
 
-    const queued = factory.resolvePipeline('contract-flow');
+    const queued = resolved(factory, 'contract-flow');
 
     for (const key of ['sourceScope', 'sourceKey', 'sourceStatus', 'sourceErrors', 'revision', 'revisions', 'status', 'errors', 'warnings', 'display', 'persisted']) {
       expect(queued).not.toHaveProperty(key);

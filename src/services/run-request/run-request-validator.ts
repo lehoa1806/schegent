@@ -446,11 +446,12 @@ function refuseOutputsWithoutRoot(
  * so a plan-carrying Run and a legacy resolve-at-drain Run produce byte-identical
  * snapshots from the same catalog.
  *
- * Note what is *absent*: no fallback. `WorkflowRunFactory.resolvePipeline()`
- * substitutes the built-in Pipeline for an unknown id and the `done` Phase for a
- * missing one, which is exactly the fail-open behaviour FR-033 forbids. Here the
- * Phase list is whatever the caller resolved, and a Phase the catalog no longer
- * has is simply not in it — the definition freezes as it truly was.
+ * Note what is *absent*: no fallback. `WorkflowRunFactory.resolvePipeline()` used
+ * to substitute the built-in Pipeline for an unknown id and to drop a Phase the
+ * catalog no longer had, which is exactly the fail-open behaviour FR-033 forbids;
+ * feature 098 (T024/T025) made both a refusal there too. Here the Phase list is
+ * whatever the caller resolved, and a Phase the catalog no longer has is simply
+ * not in it — the definition freezes as it truly was.
  */
 function freezePipeline(source: EffectivePipelineSource): WorkflowRunPipeline {
   return snapshotPipelineContract(

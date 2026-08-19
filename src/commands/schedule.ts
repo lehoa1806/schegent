@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService } from '../services/guarded-run-service';
-import { BUILT_IN_PIPELINE_ID, type PipelineDef, type PipelineCatalog } from '../config/pipeline-config';
+import type { PipelineDef, PipelineCatalog } from '../config/pipeline-config';
 
 export interface ScheduleCommandArgs {
   description?: string;
@@ -93,26 +93,40 @@ async function pickPipelineId(
   pipelines: readonly PipelineDef[],
   defaultPipelineId: string
 ): Promise<string | undefined> {
-  if (pipelines.length <= 1) {
+  // Feature 098 (T049, FR-033a/FR-033b) — `defaultPipelineId` is the empty
+  // string when no default is set, which is now what a fresh install ships.
+  // With nothing to pick from, that empty id is still what travels onward: the
+  // launch path answers it with the FR-023 refusal that names it, whereas
+  // returning `undefined` here would abort the command silently.
+  if (pipelines.length === 0) {
     return defaultPipelineId;
   }
+  // One Pipeline and no default has exactly one thing the operator could have
+  // meant. Answering the unset default instead would send an id nothing
+  // resolves to the launch path while a resolvable one sat unused.
+  if (pipelines.length === 1) {
+    return defaultPipelineId === '' ? pipelines[0].id : defaultPipelineId;
+  }
+  // Feature 098 (T050, FR-035) — no row is badged. One id used to carry a
+  // `$(zap)` label, a `[BuiltIn]` detail and a place ahead of the sort,
+  // because one Pipeline came from the built-in layer. Every Pipeline is
+  // imported now, so that marking would tell an operator their own definition
+  // was "built in" on the strength of the id they chose.
   const items: PipelinePickItem[] = pipelines.map((p) => ({
-    label: p.id === BUILT_IN_PIPELINE_ID ? `$(zap) ${p.name}` : p.name,
+    label: p.name,
     description: p.id,
-    detail: p.id === BUILT_IN_PIPELINE_ID ? '[BuiltIn]' : undefined,
     picked: p.id === defaultPipelineId,
     pipelineId: p.id
   }));
   items.sort((a, b) => {
+    // The operator's default still sorts first: that is a choice they made.
     if (a.pipelineId === defaultPipelineId) return -1;
     if (b.pipelineId === defaultPipelineId) return 1;
-    if (a.pipelineId === BUILT_IN_PIPELINE_ID) return -1;
-    if (b.pipelineId === BUILT_IN_PIPELINE_ID) return 1;
     return a.label.localeCompare(b.label);
   });
   const choice = await vscode.window.showQuickPick(items, {
     title: 'Schegent: select pipeline',
-    placeHolder: `Default: ${defaultPipelineId}`,
+    placeHolder: defaultPipelineId === '' ? 'Select a pipeline' : `Default: ${defaultPipelineId}`,
     ignoreFocusOut: false
   });
   return choice?.pipelineId;

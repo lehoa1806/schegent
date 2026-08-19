@@ -742,7 +742,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // coordinator emits `scheduled-start-superseded { lock-unavailable }`
     // and leaves the armed deadline persisted; `QueueScheduleWatchdog` below
     // retries it once this window is primary. The operator is NOT prompted.
-    isForeignLockHeld: () => lock.isForeignLockHeld()
+    isForeignLockHeld: () => lock.isForeignLockHeld(),
+    // Feature 098 (T058 / FR-031a) — a schedule that comes due with nothing
+    // imported meets the refusal a manual launch meets, and the operator is
+    // told in the same words. Read through `activeCatalog` rather than
+    // captured, so a catalog imported into after the coordinator was built is
+    // the one the gate sees.
+    emptyCatalogGate: {
+      isCatalogEmpty: () => activeCatalog.pipelinesById.size === 0,
+      onRefused: (refusal) => notifier.warn(refusal.message)
+    }
   });
   try {
     await scheduledStartCoordinator.reArm();

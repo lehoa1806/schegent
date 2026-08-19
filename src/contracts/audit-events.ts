@@ -60,8 +60,17 @@ export const PHASE_EVENT_TYPES = ['phase-start', 'phase-end'] as const;
 // invocation reused a prior CLI session via `--resume <id>` for cost
 // optimization (prompt cache preservation). Semantically distinct
 // from `isContinue`. Additive — no `AUDIT_SCHEMA_VERSION` bump.
+/**
+ * Feature 098 (T045, FR-034) — `pipelineId` is optional on the four payloads an
+ * invocation can reach without one. It used to be mandatory, and the emitters
+ * kept it so by substituting the built-in Pipeline id whenever the invocation
+ * supplied none. That id named a Pipeline the product no longer ships, so the
+ * guarantee the mandatory field offered was that a reader always found *an*
+ * attribution — not that the attribution was true. Absent is the honest shape:
+ * a reader that finds no id knows none was claimed.
+ */
 export interface PhaseStartPayload {
-  readonly pipelineId: string;
+  readonly pipelineId?: string;
   readonly phaseId: string;
   readonly runner: BackendRunnerKind;
   readonly model?: string;
@@ -541,7 +550,7 @@ export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
 export interface OptionalPhaseFailureContinuedPayload {
   readonly runId: string;
-  readonly pipelineId: string;
+  readonly pipelineId?: string;
   readonly phaseId: string;
   readonly runner: BackendRunnerKind;
   readonly iteration: number;
@@ -701,7 +710,7 @@ export interface WorkspaceStateResetPayload {
 }
 
 export interface RetryEvaluatedPayload {
-  readonly pipelineId: string;
+  readonly pipelineId?: string;
   readonly phaseId: string;
   readonly expression: string;
   readonly metrics: Readonly<Record<string, number>>;
@@ -737,7 +746,7 @@ export interface PhaseBreakpointClearedPayload {
 export interface PhaseBreakpointFiredPayload {
   readonly runId: string;
   readonly phaseId: string;
-  readonly pipelineId: string;
+  readonly pipelineId?: string;
   readonly iterationN: number;
 }
 

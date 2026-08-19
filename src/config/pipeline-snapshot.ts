@@ -3,30 +3,34 @@ import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
-import {
-  builtInEvidencePolicy,
-  builtInSideEffects,
-  phaseRequiresGitMetadataWrite
-} from './phase-runner-policy';
-import { BUILT_IN_PHASE_IDS } from './pipeline-config';
+import { writesGitMetadata } from './phase-runner-policy';
 
-/** Freeze one phase with its effective backend persisted for the run lifetime. */
+/**
+ * Freeze one phase with its effective backend persisted for the run lifetime.
+ *
+ * Feature 098 T017 — the freeze asks what the Phase DECLARED, and falls back to
+ * two literals. It used to ask which id this is, and answer from two lists: the
+ * `isBuiltIn` derivation for scope, and `builtInSideEffects` /
+ * `builtInEvidencePolicy` underneath it. A Phase the operator imported is by
+ * definition not on either list, so it was frozen `unrestricted` whatever it
+ * declared — the least contained class, assigned by omission. `workspace` is the
+ * default now (FR-005), and the `unrestricted` branch disappearing is the
+ * security improvement (data-model.md §2.2).
+ *
+ * The defaults are written out here rather than derived, because with no
+ * built-in layer there is no second value left to choose between.
+ */
 export function snapshotPhaseDef(
   phase: PhaseDef,
   defaultRunner?: BackendRunnerKind
 ): PhaseDef {
-  const isBuiltIn = phase.sourceScope === 'built-in' || (
-    phase.sourceScope === undefined &&
-    ((BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id) || phase.id === 'done')
-  );
   return Object.freeze({
     ...phase,
     version: phase.version ?? 1,
     runner: effectiveRunnerKindForPhase(phase, defaultRunner),
-    sideEffects: phase.sideEffects ?? (isBuiltIn ? builtInSideEffects(phase.id) : 'unrestricted'),
-    evidencePolicy:
-      phase.evidencePolicy ?? (isBuiltIn ? builtInEvidencePolicy(phase.id) : 'required'),
-    promptVersion: phase.promptVersion ?? (isBuiltIn ? 'builtin-v1' : 'custom-v1')
+    sideEffects: phase.sideEffects ?? 'workspace',
+    evidencePolicy: phase.evidencePolicy ?? 'required',
+    promptVersion: phase.promptVersion ?? 'custom-v1'
   });
 }
 
@@ -79,17 +83,22 @@ export function snapshotPipelineContract(
   });
 }
 
-/** Resolve a phase backend while retaining protected built-in Git capability. */
+/**
+ * Resolve a phase backend while retaining Git capability for a Phase that
+ * declares it needs one.
+ *
+ * Feature 098 T018 — keyed on the declared class rather than on scope plus an id
+ * list. The protection is the same and its reach is wider: an imported Phase
+ * declaring `git` now keeps it, where before only the five listed built-in ids
+ * did. `undefined` declares nothing and takes the configured default, so a Phase
+ * that said nothing is unaffected.
+ */
 export function effectiveRunnerKindForPhase(
   phase: PhaseDef | undefined,
   defaultRunner?: BackendRunnerKind
 ): BackendRunnerKind {
   if (phase?.runner !== undefined) return phase.runner;
-  const isBuiltIn = phase?.sourceScope === 'built-in' || (
-    phase !== undefined && phase.sourceScope === undefined &&
-    (BUILT_IN_PHASE_IDS as readonly string[]).includes(phase.id)
-  );
-  if (phase && isBuiltIn && phaseRequiresGitMetadataWrite(phase.id)) return DEFAULT_BACKEND;
+  if (phase !== undefined && writesGitMetadata(phase.sideEffects)) return DEFAULT_BACKEND;
   return defaultRunner ?? DEFAULT_BACKEND;
 }
 
@@ -102,15 +111,20 @@ export function resolvePinnedRunnerKind(
   return persisted ?? sessionOwner ?? configured ?? DEFAULT_BACKEND;
 }
 
-/** Preserve a protected built-in's pinned runner across legacy layered overrides. */
+/**
+ * Preserve a Git-declaring Phase's pinned runner across legacy layered overrides.
+ *
+ * Feature 098 T018 — the `sourceScope === 'built-in'` gate goes with the id list.
+ * Keeping it would have made this function dead the moment the built-in layer
+ * emptied, which is a silent loss of the pin rather than a visible one.
+ */
 export function mergePhaseRunnerPolicy(
   prior: PhaseDef | undefined,
   next: PhaseDef
 ): PhaseDef {
   return next.runner === undefined &&
     prior?.runner !== undefined &&
-    next.sourceScope === 'built-in' &&
-    phaseRequiresGitMetadataWrite(next.id)
+    writesGitMetadata(next.sideEffects)
       ? { ...next, runner: prior.runner }
       : next;
 }

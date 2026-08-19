@@ -1,11 +1,44 @@
 #!/usr/bin/env node
 import { inflateRawSync } from 'node:zlib';
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join, relative, resolve, sep } from 'node:path';
 
 export const MAX_VSIX_COMPRESSED_BYTES = 2 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 5 * 1024 * 1024;
+
+const EXAMPLES_DIR = fileURLToPath(new URL('../examples', import.meta.url));
+const EXAMPLES_PREFIX = 'extension/examples/';
+
+/**
+ * Feature 098 (T063, FR-041, SC-014) — the sample documents, enumerated rather
+ * than named.
+ *
+ * They used to be three literal entries, and that list went stale twice: 096's
+ * `model-catalog.yaml` shipped unpinned, and REL-03 above records the clean-build
+ * failure it caused. Naming them was never the point — with the built-in Phase
+ * and Pipeline layers gone, `examples/` IS the process catalog, so what this
+ * check has to say is "everything the operator can import reached the package",
+ * and only the directory knows what that is.
+ *
+ * Modelling what vsce packages, not what the directory holds: `.vscodeignore`
+ * drops `**\/.DS_Store` and touches no other part of `examples/`, so that one
+ * exclusion is the whole difference. Recursive, because a subdirectory would
+ * ship too.
+ */
+function packagedExampleEntries(dir = EXAMPLES_DIR) {
+  const entries = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      entries.push(...packagedExampleEntries(full));
+      continue;
+    }
+    if (entry.name === '.DS_Store') continue;
+    entries.push(EXAMPLES_PREFIX + relative(EXAMPLES_DIR, full).split(sep).join('/'));
+  }
+  return entries.sort();
+}
 
 export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   '[Content_Types].xml',
@@ -79,12 +112,13 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   // structural reason REL-03 records above, one category over. `.vscodeignore`
   // excludes no part of `examples/`, so anything dropped in that directory
   // ships, and this archive check was the only thing comparing the two. It runs
-  // last, behind `test:visual`. `vsix-allowlist-grounding.test.ts` now checks
-  // the `examples/` direction both ways without a build, so the next sample
-  // added here fails in `npm run test` rather than at packaging time.
-  'extension/examples/model-catalog.yaml',
-  'extension/examples/speckit-bugfix.pipeline.yaml',
-  'extension/examples/speckit-new-feature.pipeline.yaml'
+  // last, behind `test:visual`.
+  //
+  // Feature 098 (T063) replaced the three literal entries with the enumeration
+  // above. A sample added to `examples/` is now pinned by existing, and the
+  // check fails when the package is missing one — which is the direction that
+  // matters once `examples/` is the only source of process content there is.
+  ...packagedExampleEntries()
 ]);
 
 function findEndOfCentralDirectory(buf, vsixPath) {

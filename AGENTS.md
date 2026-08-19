@@ -1,7 +1,7 @@
 # AGENTS.md
 
 This file orients autonomous coding agents working inside the execution
-repository. The workspace-level `../CLAUDE.md` is the single source of truth
+repository. The workspace-level `../AGENTS.md` is the single source of truth
 for hard rules when changing host code.
 
 ## What This Repo Is
@@ -26,7 +26,7 @@ npm run ci
 
 ## Rules
 
-Consult `../CLAUDE.md` before changing host code, IPC contracts, audit
+Consult `../AGENTS.md` before changing host code, IPC contracts, audit
 semantics, redaction, lock handling, state migrations,
 runtime/logging sinks, or the Phase / Pipeline / Workflow definition catalogs
 and their save gates. Keep this file as a short summary so it cannot drift

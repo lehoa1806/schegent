@@ -171,8 +171,14 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        {#if pipelines.length === 0}
-          <option value={draft.defaultPipelineId}>{draft.defaultPipelineId}</option>
+        <!-- Feature 098 (T049, FR-033a) — the current value needs a row of its
+             own whenever no Pipeline carries it, or the bound value and the
+             displayed one diverge. Unset is the common case now, and it reads
+             as a named state rather than a blank line. -->
+        {#if !pipelines.some((p) => p.id === draft.defaultPipelineId)}
+          <option value={draft.defaultPipelineId}>
+            {draft.defaultPipelineId === '' ? 'No default' : draft.defaultPipelineId}
+          </option>
         {/if}
         {#each pipelines as p (p.id)}
           <option value={p.id}>{p.name} ({p.id})</option>

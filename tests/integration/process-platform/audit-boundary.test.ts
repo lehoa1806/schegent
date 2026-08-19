@@ -114,7 +114,7 @@ import {
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WORKFLOWS
 } from '../../../src/ui/sidebar/messages';
-import { RecordingQueue, makeWorkspaceRoot, removeWorkspaceRoot } from './built-in-run-harness';
+import { RecordingQueue, makeWorkspaceRoot, removeWorkspaceRoot } from './run-harness';
 
 type Scope = WritablePhaseDefinitionScope;
 type LayerKey = 'phases' | 'pipelines' | 'workflows';
@@ -500,15 +500,27 @@ async function driveExport(): Promise<readonly Emission[]> {
 
 // -- Launch -----------------------------------------------------------------
 
+// Feature 098 (T080) — the Pipeline named `speckit-specify` and the reader
+// supplied no Phases, because the built-in Phase layer resolved that id for free.
+// It resolves nothing now, so the Pipeline quarantines, the catalog is empty and
+// the launch is refused before it reaches the audit port this case is about. The
+// Phase is authored here instead, in the same scope as the Pipeline that names it.
+const LAUNCH_PHASE = Object.freeze({
+  id: 'audit-launch-phase',
+  name: 'Audit Launch Phase',
+  version: 1,
+  instruction: CANARY_TEXT
+});
+
 const LAUNCH_PIPELINE = Object.freeze({
   id: 'audit-launch',
   name: 'Audit Launch',
-  phases: ['speckit-specify'],
+  phases: [LAUNCH_PHASE.id],
   outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
 });
 
 const LAUNCH_CATALOG = loadCatalog({
-  getPhases: () => undefined,
+  getPhases: (scope) => (scope === 'user' ? [LAUNCH_PHASE] : undefined),
   getPipelines: (scope) => (scope === 'user' ? [LAUNCH_PIPELINE] : undefined),
   getModels: () => undefined,
   getDefaultPipelineId: () => undefined

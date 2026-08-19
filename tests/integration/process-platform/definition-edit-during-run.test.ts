@@ -35,9 +35,10 @@ const PIPELINE_ID = 'edited-mid-run';
 
 /**
  * Five real Phase ids, so the authored list and the edit that replaces it are
- * both resolvable. `resolvePipeline()` substitutes `done` for anything the
- * catalog cannot find, which would quietly convert a deleted Phase into a
- * passing assertion.
+ * both resolvable. `resolvePipeline()` used to drop anything the catalog could
+ * not find, which would quietly convert a deleted Phase into a passing
+ * assertion; feature 098 (T025) refuses instead, so an unresolvable id fails
+ * this fixture loudly now rather than silently.
  */
 function phase(id: string, name: string): PhaseDef {
   return { id, name, version: 1, instruction: `Run ${name}.`, sourceScope: 'built-in' };

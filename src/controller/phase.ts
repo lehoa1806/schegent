@@ -10,34 +10,17 @@ import { validate as parseRetryCondition, evaluate as evalRetryCondition } from 
  */
 export const FORCE_CONTINUE_NOTIFY_TAG = '[notify] forced-continue';
 
-export const BUILT_IN_PHASE_IDS = [
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-checklist',
-  'speckit-analyze',
-  'speckit-implement',
-  'speckit-review',
-  'finalize',
-  'done'
-] as const;
-
-export type BuiltInPhaseId = (typeof BUILT_IN_PHASE_IDS)[number];
-
+// Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
+// built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
+// it and the `INVOCABLE_PHASES` list derived from that. It was a ten-id
+// duplicate of `pipeline-config.ts`'s seventeen, kept in sync by hand; with the
+// catalog resolved at runtime there is no fixed set of ids to name, and `Phase`
+// was already `string` because an operator's Phase id is data.
+//
+// The `'done'` string further down this file is untouched. It is a terminal
+// *state* of the phase state machine, not a Phase definition — nothing imports
+// it as a catalog entry, and the sequencer needs a name for "finished".
 export type Phase = string;
-
-export const INVOCABLE_PHASES: readonly BuiltInPhaseId[] = [
-  'speckit-specify',
-  'speckit-clarify',
-  'speckit-plan',
-  'speckit-tasks',
-  'speckit-checklist',
-  'speckit-analyze',
-  'speckit-implement',
-  'speckit-review',
-  'finalize'
-] as const;
 
 export const LOOP_PHASES: ReadonlySet<string> = new Set<string>(['speckit-clarify', 'speckit-analyze', 'speckit-implement', 'speckit-review']);
 

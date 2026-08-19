@@ -22,8 +22,19 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { SCHEMA_VERSION, buildIdleSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 
-const PHASE_CATALOG = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, user: [], workspace: [] });
+// Feature 098 (T080) — `PORTED_PIPELINE` names `speckit-specify` and
+// `speckit-plan`, which used to resolve out of the built-in Phase layer. That layer
+// stays wired in because the product still resolves it, but it is empty, so the
+// rows arrive as a configured layer. Without them the Pipeline is `invalid`, the
+// Workflow that binds it resolves to nothing, and the projection under test is
+// empty. See the fixture header for why the ids are the real Spec Kit ones.
+const PHASE_CATALOG = resolvePhaseCatalog({
+  builtIn: BUILT_IN_PHASES,
+  user: [],
+  workspace: SPECKIT_PHASE_DEFS
+});
 
 /**
  * A user-scope Pipeline that declares ports — the built-ins declare none, so a
