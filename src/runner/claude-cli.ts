@@ -53,6 +53,14 @@ const COMPLETION_SETTLE_MS = 15_000;
 // restores the full idle window as soon as the current turn emits anything,
 // so the exposure is one inter-event gap rather than the whole turn. A real
 // fix would need a replay/live boundary from the CLI itself.
+//
+// BUG-004 (FR-029) demoted this from the decision to a bound on one. Deciding
+// *when* to suppress without ever deciding *what* discarded a resumed
+// invocation's own result as readily as a replayed one; the boundary below
+// decides, and this window now only caps how long a stream that never crosses
+// it may go on suppressing. Do NOT restore it to a decision, and do not raise
+// it without re-deriving the value — it is conjoined with the boundary and the
+// suppressed-result bound, never consulted alone.
 const RESUME_HISTORY_REPLAY_MS = 60_000;
 
 function isTerminalResultLine(line: string): boolean {
@@ -68,6 +76,38 @@ function isTerminalResultLine(line: string): boolean {
     record.kind !== 'task-notification' &&
     record.subtype !== 'task-notification';
 }
+
+// BUG-004 (FR-029) — the structural boundary that replaced the wall-clock
+// replay guess. The CLI opens every invocation with this envelope, so a
+// terminal result on its far side belongs to the current turn.
+//
+// T075 measured what this boundary is and is not, on CLI 2.1.233 across all
+// three argv prefixes the runner can build (none, `--resume <id>`, `-c`):
+// `init` is the first line every time, with zero lines before it. So it has no
+// separating power — nothing is ever on the near side — and "arm from a result
+// after `init`" is equivalent to "always arm" on this version. What it does
+// carry is the property the fix needs: `init` is always present and always
+// first, so a rule keyed on it can never fail to arm, and therefore can never
+// reintroduce BUG-002's stall by silently never arming. No line in the stream
+// marks itself as replayed, so there is no discriminating signal to prefer.
+function isSessionInitLine(line: string): boolean {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!parsed || typeof parsed !== 'object') return false;
+    const record = parsed as Record<string, unknown>;
+    return record.type === 'system' && record.subtype === 'init';
+  } catch {
+    return false;
+  }
+}
+
+// FR-029's fallback bound. Reachable only on a CLI that emits a terminal
+// result before any `init` — that is, a replaying one, which T075 found no
+// reachable configuration to be. It is kept as a real safeguard rather than
+// deleted because the alternative to bounding an unreachable path is an
+// unbounded one: without it, a stream that never crosses the boundary
+// suppresses every result it produces for the whole replay window.
+const MAX_SUPPRESSED_RESULTS = 1;
 
 function isStreamJsonEventLine(line: string): boolean {
   try {
@@ -221,10 +261,12 @@ export class ClaudeCliRunner implements BackendRunner {
       await diagnosticWriter.prepare(verboseTarget);
     }
 
-    // Feature 068 — capture the assembled command (cliPath + argv) so
-    // the controller can emit a `cli-invocation` audit event whose
-    // `payload.command` mirrors the exact spawned argv. The audit
-    // writer's sanitizer runs the field through the redaction set.
+    // Feature 068 — capture the assembled command (cliPath + argv). Audit
+    // schema v3 (2026-08-02) made `cli-invocation` payloads metadata-only,
+    // so this string is never persisted; it survives as a presence signal
+    // that a spawn occurred. It carries cliPath, `--debug-file` targets and
+    // prompt temp-file paths, so it must not be routed into a payload —
+    // see the `command` field's contract in `invocation-result.ts`.
     const command = [request.cliPath, ...args].join(' ');
 
     // Feature 093 (T046a) — declared outside the `try` so the `finally` below
@@ -287,6 +329,12 @@ export class ClaudeCliRunner implements BackendRunner {
       let completedAwaitingExit = false;
       let stdoutLineBuffer = '';
       const invocationStartedAt = Date.now();
+      // BUG-004 (FR-029) — replay suppression is now decided from the stream,
+      // not the clock. `sawCurrentTurnBoundary` latches on this invocation's
+      // opening `system`/`init` envelope; `suppressedResults` bounds what the
+      // fallback may discard when that envelope never arrives.
+      let sawCurrentTurnBoundary = false;
+      let suppressedResults = 0;
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
       // arrived for the active window. Each data event resets it. Before the
@@ -343,10 +391,40 @@ export class ClaudeCliRunner implements BackendRunner {
         // before the replayed result; fresh invocations accept fast results.
         for (const char of chunk) {
           if (char === '\n') {
+            // FR-029 — the boundary is checked before the result on the same
+            // chunk is judged, so an `init` and the turn's own result arriving
+            // together resolve as live. This is the whole of BUG-004: the
+            // wall-clock guard could only decide *when* to suppress, never
+            // *what*, so it discarded a resumed invocation's genuine result as
+            // readily as a replayed one and disabled FR-025's grace-terminate
+            // for the window's full duration.
+            if (isSessionInitLine(stdoutLineBuffer)) sawCurrentTurnBoundary = true;
             if (isTerminalResultLine(stdoutLineBuffer)) {
               const replayingHistory =
-                shouldResume && Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
-              if (!replayingHistory) sawCompletionMarker = true;
+                shouldResume &&
+                !sawCurrentTurnBoundary &&
+                suppressedResults < MAX_SUPPRESSED_RESULTS &&
+                Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
+              if (replayingHistory) {
+                suppressedResults += 1;
+                // FR-029 diagnosability. A suppression used to be legible only
+                // as its consequence — a 90-minute idle expiry — so it is
+                // logged where it happens. Fixed fields only: no prompt,
+                // transcript, session id, or workspace path, and routed
+                // through SanitizedLogger so SECRET_PATTERNS stays the single
+                // redaction source.
+                this._logger.info(
+                  '[ClaudeCliRunner] suppressed terminal result ' +
+                    'rule=pre-init-fallback-bound ' +
+                    `resumed=${shouldResume} ` +
+                    `elapsedMs=${Date.now() - invocationStartedAt} ` +
+                    `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
+                    `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
+                    `phase=${request.phase} iteration=${request.iteration}`
+                );
+              } else {
+                sawCompletionMarker = true;
+              }
             } else if (isStreamJsonEventLine(stdoutLineBuffer)) {
               sawCompletionMarker = false;
             }
