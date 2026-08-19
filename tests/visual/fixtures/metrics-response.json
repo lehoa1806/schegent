@@ -50,5 +50,31 @@
     { "date": "2026-08-01", "dailyCostUsd": 0.31, "cumulativeCostUsd": 0.73 }
   ],
   "oldestIncludedTimestamp": "2026-07-31T14:01:00.000Z",
+  "cumulative": {
+    "runs": 24,
+    "completedRuns": 21,
+    "failedRuns": 2,
+    "canceledRuns": 1,
+    "durationMs": 10680000,
+    "costUsd": 9.87,
+    "costUsdIsPartial": false,
+    "phasesTotal": 96,
+    "phasesCompleted": 88,
+    "phasesSkipped": 5,
+    "backendInvocations": 173
+  },
+  "coverage": {
+    "totals": {
+      "available": true,
+      "earliest": "2026-06-02T08:14:00.000Z",
+      "latest": "2026-08-01T09:06:00.000Z",
+      "runs": 24
+    },
+    "detail": {
+      "earliest": "2026-07-31T14:01:00.000Z",
+      "latest": "2026-08-01T09:06:00.000Z",
+      "includesArchives": false
+    }
+  },
   "meta": { "includesArchives": false, "totalScannedEntries": 73, "parseWarnings": 0 }
 }
