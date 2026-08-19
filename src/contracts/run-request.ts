@@ -11,6 +11,10 @@
 // creates durable state for a Run" holds structurally rather than by
 // convention. Validation returns the more precise type instead of a boolean —
 // there is no `isValid` flag a later mutation can leave stale.
+//
+// FR-R3-001 named that second tier `ExecutionEnvelope` and made it the thing the
+// execution path reads, rather than a record the factory harvested one field
+// from. `FrozenRunPlan` is retained as an alias of it, not as a sibling type.
 
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
@@ -150,14 +154,31 @@ export interface FrozenOutputRequest {
 }
 
 /**
- * What validation produces and the enqueue path consumes.
+ * What validation produces, the enqueue path consumes, and the execution path
+ * executes — one value for all three (FR-R3-001, T256).
+ *
+ * Feature 087 froze `pipeline`, `inputs`, `supplemental`, `outputs` and
+ * `instructions` together and then only ever read the first of them on the way
+ * to the backend. The other four were frozen, persisted, and dropped at the
+ * factory seam. The fix is not four more optional scalars on `PromptInputs` —
+ * that closes today's gap and reopens it on the next field. It is this: one
+ * envelope, constructed at one site, **consumed by reference**. A component
+ * that needs part of the request takes the whole envelope; it does not copy
+ * fields out of it, so adding a field here does not mean editing every
+ * consumer. FR-R3-002's mandatory `queueId` is the next such field, and it
+ * belongs here for exactly that reason.
  *
  * `pipeline` reuses `WorkflowRunPipeline` rather than introducing a parallel
  * snapshot type: it is already the expanded contract-plus-`PhaseDef[]` shape
  * that `snapshotPipelineContract()` produces and that a Run executes. A second
  * type for the same thing would be a second source of truth.
+ *
+ * Immutability is structural — every member is `readonly`, `validateRunRequest()`
+ * is the only constructor, and no consumer holds a mutable alias — so an
+ * in-flight envelope behaves exactly as the in-flight `pipeline` snapshot
+ * already does under a catalog or task-row edit.
  */
-export interface FrozenRunPlan {
+export interface ExecutionEnvelope {
   readonly pipeline: WorkflowRunPipeline;
   readonly inputs: readonly FrozenInputBinding[];
   readonly supplemental: readonly FrozenSupplementalInput[];
@@ -166,6 +187,17 @@ export interface FrozenRunPlan {
   readonly frozenAt: number;
 }
 
+/**
+ * The enqueue-path spelling of the same value (feature 087's name for it).
+ *
+ * Deliberately an alias rather than a second interface. The queue persists what
+ * validation froze and the execution path executes what the queue persisted, so
+ * there is one type, not three that happen to agree today. Two structurally
+ * identical interfaces would let a field be added to one half and silently not
+ * reach the other — which is the defect FR-R3-001 exists to close, rewritten.
+ */
+export type FrozenRunPlan = ExecutionEnvelope;
+
 export type ValidationOutcome =
-  | { readonly ok: true; readonly plan: FrozenRunPlan }
+  | { readonly ok: true; readonly plan: ExecutionEnvelope }
   | { readonly ok: false; readonly errors: readonly RunRequestFieldError[] };

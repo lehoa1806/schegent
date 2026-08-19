@@ -409,7 +409,23 @@ async function readAuditShapes(workspaceRoot: string): Promise<readonly AuditSha
     }));
 }
 
-/** The transcript a run wrote, reduced the same way. */
+/**
+ * The transcript a run wrote, reduced the same way.
+ *
+ * Consecutive non-JSON lines collapse to one `raw` marker. FR-R3-001 is why:
+ * the transcript opens each invocation with the verbatim prompt, and a composed
+ * run's prompt now carries the bound inputs, supplemental context, declared
+ * output targets and operator instructions that a plain enqueue has none of. Its
+ * prompt is therefore *longer*, on purpose — that is the requirement, not drift.
+ *
+ * Without the collapse this comparison counts prompt lines, so it fails on
+ * exactly the change FR-R3-001 exists to make, and it would keep failing every
+ * time the envelope grows a field. Collapsed, it still asserts what FR-037
+ * claims: the same sequence of transcript events, with verbatim CLI bytes
+ * present, untransformed, in the same places. Presence of the raw span is the
+ * guarantee — the writer must never rewrite those bytes — and its length never
+ * was.
+ */
 async function readTranscriptShapes(
   workspaceRoot: string,
   runId: string
@@ -421,7 +437,7 @@ async function readTranscriptShapes(
   } catch {
     return [];
   }
-  return raw
+  const shapes = raw
     .trim()
     .split('\n')
     .filter((line) => line.length > 0)
@@ -436,6 +452,7 @@ async function readTranscriptShapes(
         return 'raw';
       }
     });
+  return shapes.filter((shape, index) => shape !== 'raw' || shapes[index - 1] !== 'raw');
 }
 
 let tmpRoot: string;

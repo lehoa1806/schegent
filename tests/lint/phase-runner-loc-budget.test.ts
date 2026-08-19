@@ -35,8 +35,16 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // BackendRunnerRegistry constructor overload, resolveRunner() per-invocation
 // helper, and runner attribution on all audit payloads (pipelineMeta +
 // startPayload).
+//
+// FR-R3-001 (T260) — bumped phase-runner.ts +15 for the `envelope` field on
+// `PhaseRunInputs`, its forward into `promptBuilder.build()`, and the type
+// import. Almost all of it is the comment recording why it is *one* field and
+// not four: this file is a carrier for the envelope and must not learn to read
+// its members, which is the single thing a future reader here could get wrong.
+// No responsibility was added — the coordinator shell forwards one more input
+// than it did — so the budget buys the note, not new work.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 790 },
+  { path: 'src/controller/phase-runner.ts', max: 805 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
