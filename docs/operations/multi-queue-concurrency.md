@@ -14,7 +14,7 @@ Be clear about the boundary before you plan around it:
 
 So multiple queues now buy you **separate inboxes with separate schedules, separate controls, and real throughput**. Size `schegent.queue.globalConcurrencyCap` for how many Claude processes you actually want against this machine and this working tree — it is a ceiling on concurrent runs, not on eligible queues.
 
-Two things are still shared, and they are why the cap exists at all: **one working tree** and **one window**. Read [Concurrent runs share one working tree](#concurrent-runs-share-one-working-tree) and [Recovery checkpoints are declined while runs are concurrent](#recovery-checkpoints-are-declined-while-runs-are-concurrent) before you raise the cap.
+Two things are still shared, and they are why the cap exists at all: **one working tree** and **one window**. Read [Concurrent runs share one working tree](#concurrent-runs-share-one-working-tree) and [Recovery checkpoints under concurrency](#recovery-checkpoints-under-concurrency) before you raise the cap.
 
 Earlier releases refused the second start outright — the run record held exactly one run, so a second one would have clobbered it. Feature 093 replaced that record with one entry per queue (state schema v11) and removed the refusal. If you are upgrading, nothing to do; see [Upgrading from a single-queue workspace](#upgrading-from-a-single-queue-workspace).
 
@@ -53,19 +53,56 @@ Three things to know before you use them:
 
 All of these are mutating actions, so they work only in the primary window.
 
+## Every action names its queue
+
+Once a workspace has more than one queue, "which queue" stops being a formality. Schegent's rule is that a production caller names its queue or the call is refused — there is no queue an unaddressed action quietly falls back to.
+
+What you will notice:
+
+- **Enqueueing from a surface that has no queue picker still works.** The Command Palette's **Schegent: Auto** and the dashboard's unscoped composer both mean the default queue, and both say so at their own boundary before the request travels. That is a deliberate choice made where the operator can see it, not a fallback applied further down.
+- **Enqueueing from the Queue Detail composer goes to the queue you opened.** It always meant to; before this change the queue you were looking at was resolved correctly at the surface and then dropped one layer below it, so the task landed on the default queue and the acknowledgement named no queue at all.
+- **A control that cannot work out its target refuses rather than choosing.** This follows the same precedent as cancel and resume, which report `ambiguous-run-target` when more than one run could be meant. Choosing wrongly is silent; refusing is visible, and for a destructive action it is the only recoverable option.
+- **A single-queue workspace reads exactly as before.** Removing implicit fallbacks does not remove the default queue. If you have never created a second queue, nothing on this page changes what you see.
+
+Three places used to resolve the default queue implicitly and no longer do: the enqueue command, the scheduled-start fire handler, and the connected-run child lookup. The third is the one worth knowing about if you ran connected Workflows across several queues before this change — see below.
+
+### Connected Workflow children across queues
+
+A Workflow node waits on its child Pipeline run. That wait is driven by reading the child's state, and the read used to search only the default queue. A child executing on any other queue was therefore not found, which the launcher's gate reads as *settled* — so the parent advanced past a node whose child was still running.
+
+The lookup now names the task and lets the store resolve whichever queue owns it. A child is observed wherever it runs. Unknown ids still read as settled, deliberately: that is what stops a reference to a deleted task wedging a Workflow forever.
+
+If you have Workflow runs from before this change that finished suspiciously early, that is the likely explanation. There is no repair path for a completed run; re-run it.
+
 ## Scheduled starts
 
 One mechanism starts a queue at a time you choose: **lifecycle scheduled start**. Choose a start mode when you start a queue, and the queue moves into the `idle-pending` lifecycle: it holds its pending tasks and deliberately does not auto-promote until its trigger fires or you start it by hand. This is the one the lifecycle badge reports, and the one the rest of this page means by `idle-pending`.
 
 The lockstep is strict, and it is per queue: a queue either has both a scheduled start and the `idle-pending` lifecycle, or neither. You will never see one without the other, and one queue's armed start says nothing about another's lifecycle.
 
-Each queue's timer is its own — up to twenty queues may be armed at once, and firing or clearing one leaves the rest armed.
+Each queue's timer is its own — up to twenty queues may be armed at once, and firing or clearing one leaves the rest armed. A start fires on the queue that armed it: that queue leaves `idle-pending` and drains, and every sibling — armed or not — is left exactly as it was.
+
+### When another window holds the lock at fire time
+
+A scheduled start can come due while a second VS Code window holds the workspace lock. This window cannot safely promote the queue, so it does not: it records `scheduled-start-superseded` with `superseder: lock-unavailable`, drops the in-process timer, and **keeps the scheduled time on the queue**. You are not asked to reschedule.
+
+A recovery sweep runs about once a minute in the primary window and picks the queue up. It promotes a queue only when all of the following hold, so it acts as a retry rather than as a second scheduler:
+
+- this window is primary;
+- the queue is `idle-pending` and carries a scheduled time that has passed;
+- no in-process timer is still armed for it.
+
+The promotion is recorded as `scheduled-start-fired` with `transitionReason: watchdog-recovered` and a `lateByMs` measuring how long the start waited. If several queues are waiting, the oldest scheduled time goes first. A queue an operator moved out of `idle-pending`, or one whose schedule was cleared, is not picked up — the sweep recovers a deadline that elapsed, and never promotes a queue that was merely sitting idle.
+
+A deadline that elapsed while the window was closed is handled at startup instead, when persisted schedules are re-armed — that one fires immediately and is recorded with `transitionReason: offline-elapsed`. The sweep is the backstop behind both.
+
+Earlier releases cleared the scheduled time on a lock-denied fire and expected auto-drain to take over. Auto-drain declines an `idle-pending` queue by design, so nothing did: the start was simply lost until someone started the queue by hand. If you have been starting a scheduled queue manually after a second window was open, that is what you were working around.
 
 Feature 097 removed the second, independent **queue schedule** mechanism (the registry-stored expression armed from a schedule field on Queue Detail, with its own Arm/Re-arm/Disarm controls). It did not share the `idle-pending` lockstep above and could sit alongside it unrelated; that surface is gone, and lifecycle scheduled start is now the only way to arm a future start.
 
 ## The concurrency ceiling
 
-`schegent.queue.globalConcurrencyCap` bounds how many runs may **execute at once** across the workspace. Default `1`, range `1..20`. Raising it is how you turn concurrent execution on; the default is `1` because concurrent runs share one working tree, which makes recovery checkpoints unavailable — see [Concurrent runs share one working tree](#concurrent-runs-share-one-working-tree) below and the [settings reference](../reference/settings.md).
+`schegent.queue.globalConcurrencyCap` bounds how many runs may **execute at once** across the workspace. Default `1`, range `1..20`. Raising it is how you turn concurrent execution on; the default is `1` because concurrent runs share one working tree and Schegent does not resolve their file contention for you — see [Concurrent runs share one working tree](#concurrent-runs-share-one-working-tree) below and the [settings reference](../reference/settings.md).
 
 - Set it to `1` for single-run behaviour without deleting any queue. At `1` the whole lifecycle — start, streaming, pause, resume, retry, breakpoint, cancel — is indistinguishable from the pre-093 behaviour.
 - A value outside the range is refused, not clamped.
@@ -88,16 +125,18 @@ The window has one status bar and, now, several runs, so the bar summarizes inst
 
 The bar never names a queue. It is a summary surface and deliberately carries no operator-authored names; the sidebar is where you identify which queue is which.
 
-## Recovery checkpoints are declined while runs are concurrent
+## Recovery checkpoints under concurrency
 
-A recovery checkpoint is a `git diff HEAD` of the one working tree. With two runs in flight that diff necessarily contains the sibling's in-progress edits, so applying it later would revert work that had nothing to do with the run being restored. Rather than write a snapshot that is unsafe to use, Schegent **declines** it:
+A recovery checkpoint is a `git diff HEAD` of the one working tree, so with two runs in flight the raw diff contains the sibling's in-progress edits and applying it later would revert work that had nothing to do with the run being restored. Schegent scopes the patch instead: each phase's audit record names the files it wrote, that declaration is what a run claims, and the whole-tree diff is read at every phase boundary to check the claims add up. A run gets a patch holding its own sections and none of its sibling's.
+
+When the claims do **not** add up, Schegent declines rather than writing a snapshot it cannot attribute:
 
 - No `.patch` is written, so there is nothing to restore by mistake.
-- A `<timestamp>-<phase>.declined.json` marker is written next to where the snapshot would have gone, recording `runId`, `phaseId`, `declinedAt`, `inFlightRuns`, `restorable: false`, and the reason `concurrent-runs-share-one-worktree`.
-- The runtime log gets a matching warning.
+- A `<timestamp>-<phase>.declined.json` marker is written next to where the snapshot would have gone, recording `runId`, `phaseId`, `declinedAt`, `inFlightRuns`, `restorable: false`, a `reason`, and a `detail` naming the paths or runs involved.
+- The runtime log gets a matching warning, with counts only — the paths stay in the marker.
 - The run is **not** blocked. A declined checkpoint is not a failed one; the Git-capable phase proceeds. (A genuinely failed snapshot still blocks its phase — that behaviour is unchanged.)
 
-So: checkpoints are available when one run is executing, and are recorded-but-declined whenever a second run is live. If you are about to do something you expect to want to revert, run it at cap `1`, or on a workspace where it is the only live run. See [Recovery checkpoints](recovery-checkpoints.md).
+The usual cause is a working tree with edits nobody's run claims — a file you changed by hand while runs were live. Keep the tree to the runs while they are executing, or run at cap `1`, where the whole mechanism is bypassed and the patch is the plain whole-tree diff. [Recovery checkpoints](recovery-checkpoints.md) lists every decline reason and what to do about it.
 
 ## Concurrent runs share one working tree
 

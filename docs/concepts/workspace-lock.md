@@ -14,6 +14,16 @@ Since multiple queues arrived, there are **two** leases, not one. They answer di
 
 Losing primacy does not release an execution lease, and holding an execution lease does not make a window primary. That separation is the whole point: draining a queue must never be a route to becoming the window that owns the workspace.
 
+## Where a lease actually lives
+
+Both leases are decided in a small record on disk, under `<workspaceRoot>/.schegent/ownership/`. That is worth knowing for one reason: it is the only thing two VS Code windows can both see. Everything else Schegent persists lives in `workspaceState`, which VS Code gives each extension host its own copy of — so a lease decided there would be two windows each reading an empty slot and each concluding it had won.
+
+Claiming a lease is a single step, not a read followed by a write: the window creates the *next* numbered record for that resource, and the operating system lets exactly one create succeed. Whichever window loses is told who won.
+
+The number on that record is also a token the holder carries. If a window stalls — a long GC pause, a suspended laptop — past the 15-second staleness threshold, another window may reclaim the lease at the next number, and when the stalled window wakes up it still believes it holds the lease. It does not, and the number is how it finds out: its writes are refused rather than landing late on top of the new holder's work. This is the failure the record numbering exists for, and it is why a lease that was reclaimed can never be un-reclaimed.
+
+If that directory cannot be read or written — a permissions problem, a full disk, a network filesystem that is not answering — no window becomes primary and no queue is drained. Work waits, and the sidebar stays read-only. That is deliberate: the alternative to "nobody proceeds" is "everybody proceeds", which is two windows spawning the CLI against one working tree. See [When the lock looks stuck](#when-the-lock-looks-stuck).
+
 ## What the leases protect
 
 The **window-primacy lease** guards the workspace as a single, shared resource. While a window holds it, that window is the only one that may:
@@ -50,7 +60,7 @@ When the operator clicks Resume, the run continues on the lease it never gave up
 If VS Code crashes, the extension host dies, or you reload the window while a run is mid-flight, the in-memory lease state vanishes. On the next activation the extension:
 
 1. Re-reads the persisted `WorkflowRun` state from `workspaceState`.
-2. Primacy is reclaimed by the activating window. Any execution lease the dead window left behind goes stale 15 seconds after its last heartbeat and is reclaimable from then on, so a crash cannot strand a queue permanently.
+2. Primacy is reclaimed by the activating window. Anything the dead window left behind — primacy, and any execution lease it held — goes stale 15 seconds after its last heartbeat and is reclaimable from then on, so a crash cannot strand a queue permanently. Each reclaim is issued at the next number, so if the dead host's process were somehow still alive and were to wake up, it would find its own claims refused rather than shared.
 3. **Every run still recorded as executing is resumed, not failed.** Once primacy is acquired, the activating window walks the per-queue run record and re-drives each such run from its last-known phase. A window that crashed mid-concurrency persisted several runs, and each is re-armed on the queue that owns it. Separately, a run holding a pending delayed-retry deadline has its watchdog re-armed — or resumes immediately if the deadline already elapsed.
 
 If primacy is *not* acquired — another window holds it — nothing is resumed here. The runs stay as persisted and the primary window owns them.
@@ -66,6 +76,8 @@ Primacy is *per workspace*, not per host. If you open the same workspace folder 
 - You can switch primary host by reloading the windows in order — the first window to activate against an unowned workspace becomes the primary.
 
 Trying to enqueue a task or click Resume in a secondary window surfaces a "not primary host" rejection in the audit log. The UI reflects the read-only state.
+
+Opening both windows at the same instant is a case worth calling out, because it used to be the one that went wrong. Two hosts activating together both looked at their own copy of `workspaceState`, both found no primacy lease, and both wrote themselves in — two primary windows, neither aware of the other, both willing to spawn the CLI against one working tree. Since the lease moved to the shared on-disk record, simultaneous activation elects one window and tells the other who won. There is no timing window left in which both succeed; the two outcomes are "this window is primary" and "another window is".
 
 One caveat worth knowing if you habitually keep two windows open on the same workspace: primacy goes to whichever window activates first against an unowned workspace, and it keeps it until it closes. Runs finishing do not open a gap for the second window to slip into — that used to be exactly what happened, and it was a bug, not a handover mechanism. If the wrong window is primary, close it and **reload** the one you want: primacy is claimed at activation and nowhere else, so a window that started out secondary stays secondary until it activates again.
 
@@ -106,7 +118,7 @@ Per-folder state (independent queues, independent canonical folders, operator-se
 
 ## When the lock looks stuck
 
-There are three failure modes that look like a stuck lock from the outside:
+There are four failure modes that look like a stuck lock from the outside:
 
 ### 1. A run is paused and you forgot
 
@@ -116,15 +128,33 @@ The most common cause. The queue is genuinely held — by a run that is *intenti
 
 This means the persisted `WorkflowRun` is out of sync with the runtime projection. Almost always caused by a partial activation (extension reloaded mid-startup). Run **Reload Window** in VS Code; on reactivation the recovery path will reconcile the state.
 
-### 3. The reset command
+### 3. No window is primary and only one window is open
 
-In the worst case — for example, after a hard crash that left state in a genuinely inconsistent shape — the **Reset Workspace State** command (`schegent.reset`) clears the persisted runtime state for the workspace. This is a destructive operation:
+The sidebar is read-only, but there is no second window to blame. Check whether `<workspaceRoot>/.schegent/ownership/` is readable and writable by you. A permissions problem, a full disk, or a network share that is not answering all produce the same symptom, because a window that cannot arbitrate refuses to claim primacy rather than assuming it holds it. Fix the directory — or delete it if its contents are corrupt, with no VS Code window open on the workspace — and reload. The records are recreated on the next activation and nothing in them is worth preserving: they hold owner identities and timestamps, not any of your work.
 
-- It does *not* delete `.schegent/audit.log` or the per-run session tree.
-- It *does* clear the queue, all `WorkflowRun` records, all pause/breakpoint state, and any pending-retry schedule.
-- It re-runs the forward-only migration sequence (currently up to v11) against the cleared state.
+One caveat if your workspace lives on a network filesystem: the exclusive-create step the leases rely on is not reliable on NFSv2 or on some SMB configurations. Schegent is designed for a local working tree, and a workspace on such a share is outside what the lease model can arbitrate.
 
-Use it only when reload-window has not helped. The audit log preserves every event up to the reset; you can always reconstruct what was in the queue if you need to.
+### 4. The reset command
+
+In the worst case — for example, after a hard crash that left state in a genuinely inconsistent shape — the **Reset Workspace State** command (`schegent.reset`) clears the persisted runtime state for the workspace. This is a destructive operation, and it runs as a sequenced transaction rather than as a single wipe.
+
+**What it does, in order:**
+
+1. **Cancels any running phase and waits for the CLI subprocess to exit.** Up to 10 seconds. If a phase is still running when that window elapses, the reset is **refused** and *nothing is cleared* — you get the workspace back exactly as it was, with a message saying why. Clearing state while a subprocess is still alive would leave that subprocess writing into a state that no longer describes it, which is worse than not resetting at all.
+2. **Stops the background writers** — the schedule watchdog, the retry watchdog, the drain triggers, and the lease heartbeat — and gives back every execution lease and the window's primacy lease. Nothing restarts until step 5.
+3. **Records a generation marker** saying a reset is underway.
+4. **Clears the state**, then advances the marker to complete. The clear and both marker writes are one serialized section, so a queue or run write racing the reset either finishes wholly before the clear or queues behind it — it cannot land in the middle and leave a key behind.
+5. **Rebuilds the window**, which is also what re-acquires primacy. A reset always leaves the window able to be primary again.
+
+**What it clears:** every persisted workspace-state key — the queue registry and all queue records, every `WorkflowRun`, connected-run records, history, pause and breakpoint state, pending-retry schedules, execution leases, the primacy record, scheduled starts, and your saved "don't ask again" prompt choices. The set is derived from the key map rather than hand-listed, so a key added in a later release is cleared by default; the only exceptions are the schema version and the reset marker itself, each with a recorded reason in the source.
+
+**What it preserves:** `.schegent/audit.log`, its rotated archives, and the per-run session trees under `.schegent/sessions/`. Reset does not touch the filesystem at all — it is a workspace-state operation, and the evidence lives in files. That is deliberate: reset is the command you reach for while diagnosing a problem, and it would be no use if it destroyed what you were diagnosing with.
+
+It re-runs the forward-only migration sequence against the cleared state, and it appends one `workspace-state-reset` audit entry recording the outcome, the phase it reached, the generation, and how many runs it cancelled — counts and closed reason codes only, no paths and no task text.
+
+**If the host dies mid-reset**, the marker is left reading `in-progress`. The next activation sees it, finishes the clear at the same generation, and appends the audit entry — so a half-applied reset is recovered rather than left looking like a normal workspace. That recovery is the reason the marker exists: a partially cleared state is indistinguishable from a whole one by inspection.
+
+Use it only when reload-window has not helped. The audit log preserves every event up to and including the reset; you can always reconstruct what was in the queue if you need to.
 
 ## The retain-vs-release matrix
 
@@ -154,5 +184,6 @@ The two leases fail differently, so the symptom tells you which one to look at:
 - **The sidebar is read-only and says another window is primary.** That is the primacy lease. Close the other window, or reload this one after the other releases.
 - **One queue never promotes while other queues do.** That is that queue's execution lease, held by another window. It clears when that window's run on it finishes, when that window closes, or 15 seconds after it dies.
 - **Every remaining queue waits while `cap` runs are executing.** That is neither lease — that is `schegent.queue.globalConcurrencyCap`, working as configured. Raise it, or wait for a slot. Remember a paused run still holds its slot.
+- **Nothing is primary, no queue promotes, and there is no other window.** That is neither lease either — that is the storage both of them are decided in. Check `<workspaceRoot>/.schegent/ownership/`, as above.
 
 The next page, [Sessions, Logs, and Audit Evidence](sessions-and-logs.md), explains the on-disk records that survive across runs and across the lock lifecycle.

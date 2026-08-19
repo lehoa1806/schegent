@@ -199,11 +199,29 @@ asserts this property on every CI run.
 The Dashboard's **System** tab renders system-scoped audit events
 (`queue-cleared-all`, `queue-paused`, scheduled-start transitions, etc.)
 plus `cli-invocation` entries cross-listed from the live tail. Each
-entry now shows an absolute timestamp, the originating `taskId` and
-`phaseId` (or `—` when absent), a category badge, an outcome badge with
-a colored left-border, the full (untruncated) summary, and — for
-`cli-invocation` events — the sanitized CLI command in a monospace,
-whitespace-preserving `<pre>` block.
+entry shows an absolute timestamp, the originating `taskId` and
+`phaseId` (or `—` when absent), a category badge, a color-coded outcome
+badge, and the full (untruncated) summary.
+
+**Why `cli-invocation` entries show no command line.** The tab renders
+*"Invocation details are intentionally omitted."* where the command used
+to appear. Spec 068 US2 originally required the sanitized command in a
+monospace `<pre>` block and it shipped that way; the audit schema v3
+change of 2026-08-02 then made payloads metadata-only, and
+`cli-invocation` payloads no longer carry the executable path, argv,
+command text, PID, or session id at all. The command is therefore absent
+from the record rather than withheld at render time — there is no
+setting, filter, or permission that brings it back, and the on-disk
+`.schegent/audit.log` does not contain it either. What survives is the
+runner kind, the operation, the permission mode, and the
+continuation/session-reuse booleans, which the entry summary composes.
+For the full v3 payload inventory see
+[Audit event reference](../reference/audit-events.md); for why the
+omission is load-bearing rather than incidental see
+[Threat model](../security/threat-model.md) — it is what makes the audit
+log safe to ship off-machine. Operators who need the exact command line
+have it in the local-only raw transcript, which is deliberately not
+shipped without review.
 
 **Persistence across reload (spec 068, US3):** on webview cold-start the
 host reads the tail of `.schegent/audit.log` (bounded by
@@ -213,9 +231,15 @@ files degrade silently to an empty list — no operator-facing modal.
 
 ### 7. Metrics tab (spec 073)
 
-The Dashboard's **Metrics** tab is a read-only, on-demand rollup of the
-workspace's `.schegent/audit.log` — every number shown is recomputed at
-request time; nothing new is written to disk.
+The Dashboard's **Metrics** tab is read-only and on-demand. Per-run detail is
+recomputed from the workspace's `.schegent/audit.log` at request time;
+**all-time totals** are read from the durable `.schegent/metrics-rollup.jsonl`
+rollup and composed with that scan, so they survive log rotation instead of
+shrinking with it. The read path itself writes nothing.
+
+The two figures therefore cover different spans, and each is labelled with its
+own window — see [Metrics Coverage and the Rollup](metrics.md) for what to
+expect when they disagree (they normally do).
 
 **Loading model:** the tab fetches on first activation (`CMD_READ_METRICS`)
 and on explicit **Refresh**. There is no live tail — unlike the Phase Log
@@ -223,9 +247,15 @@ Feed and System tab, Metrics does not subscribe to push updates.
 
 **Layout:**
 
-- **Summary cards** — tasks completed, total elapsed time, total backend
-  invocations, and total cost (only shown when the CLI reported cost
-  data; otherwise "Not recorded").
+- **All-time totals strip** — runs, terminal-outcome breakdown, total elapsed
+  time, total cost, and total backend invocations, rollup-backed and monotonic.
+  A cost shown as `12.34+` means at least one counted run reported no cost, so
+  the figure is a floor. The strip names how many runs the rollup covers and the
+  earliest one; if there is no rollup yet it says so, because scan-derived
+  totals will still move with rotation.
+- **Retained run detail totals** — the same shape of summary cards for the runs
+  currently in scan range only. Deliberately narrower than the strip above, and
+  labelled that way, so a subtotal is never read as an all-time figure.
 - **Task table** — one row per workflow run, sortable by any column and
   paginated at 200 rows per page. Each row expands to a nested
   phase-by-phase breakdown (outcome, duration, timestamps).
@@ -237,12 +267,17 @@ Feed and System tab, Metrics does not subscribe to push updates.
 
 **Archived-history toggle:** an **Include archived history** checkbox
 (opt-in, default off) widens the scan to rotated `audit.log.<stamp>`
-archives in addition to the live file. When on, a coverage-window strip
-shows the oldest included timestamp so the operator knows how far back
-the current numbers reach.
+archives in addition to the live file. It widens the *detail* window only —
+the header chip restates that window (its earliest timestamp, and whether
+archives are in scope) whenever a response lands. All-time totals are already
+rollup-backed and do not move with the toggle.
 
 **Empty state:** when no tasks are found, the tab shows an informational
-empty-state card with guidance instead of a blank table.
+empty-state card with guidance instead of a blank table. On a long-lived
+workspace whose detail has rotated away but whose rollup still holds runs, the
+all-time strip is rendered above that card and the card explains that the runs
+counted above were pruned by retention — totals without detail is an expected
+state, not a fault.
 
 **No mutation:** the tab issues exactly one read-only IPC command
 (`CMD_READ_METRICS`) and never calls a mutating command. The single call

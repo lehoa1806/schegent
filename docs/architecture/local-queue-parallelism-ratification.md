@@ -135,7 +135,7 @@ above. Dispositions are drawn from a closed set: `satisfied`,
 |---|---|---|---|
 | 1 | Architecture and security reviewers approve the implementation RFC and its updated threat model | `not-satisfied` | There is no implementation RFC and no updated threat model, so there is nothing for a reviewer to have approved. See [Criterion 1 in full](#criterion-1-in-full) — this row is not discharged by anything in this document. |
 | 2 | AuthN/authZ and tenant-isolation contracts have automated negative tests | `not-applicable` | The authorised shape has one mutating identity and one tenant. Queues are not principals: every queue executes as the same local operator, under the same VS Code Workspace Trust decision, against the same filesystem owner, and no queue can be addressed, authenticated, or authorised separately from any other. An authorization contract needs two principals to bind differently, and a cross-tenant negative test needs a second tenant to be denied. Neither exists to be tested. The window-primacy lease continues to admit exactly one mutating window per workspace, so a second window does not supply the missing second principal either. |
-| 3 | Scheduler, lease/fencing, idempotency, cancellation, crash recovery, and rolling rollback pass deterministic fault-injection tests | `satisfied` | Each named mechanism that exists in the authorised shape is covered by deterministic tests, and the interleaving in those tests is driven rather than raced (`tests/integration/concurrent-run-execution.test.ts:101` — "the interleaving is chosen, not raced"). Scheduler: per-queue round-robin drain, `tests/integration/concurrent-drain.test.ts`. Cap as a real execution ceiling including the N+1th refusal: `tests/integration/concurrency-cap.test.ts:155`. Lease: per-queue execution lease with heartbeat and staleness reclaim (`src/state/execution-lease.ts`), release on every terminal status and on the drain's pre-ownership failure path, `tests/integration/execution-lease-release.test.ts:243`. Cancellation and bulkheading: `tests/integration/concurrent-run-execution.test.ts:306` — one Run's failure disposes only its own session. Crash recovery: forward-only v10 → v11 migration with per-queue Run records, `tests/unit/state/run-state-migrator-v10-to-v11.test.ts` and `tests/integration/crash-recovery.integration.test.ts`. **Absences, stated rather than passed over**: there are no fencing tokens and no idempotency keys. Their failure mode — a stale worker writing state or evidence after ownership has moved, or a duplicate delivery starting two subprocesses — requires an executor that can outlive the process holding the lease, and the authorised shape has exactly one host process. There is likewise no rolling rollback: a downgrade to a runtime older than schema version 11 is **refused** at load with an explicit message, not rolled back (`src/state/queue-state-migrator.ts:644`). Refusal is the correct local behaviour and is not a substitute for the mixed-version-worker design the remote form of this criterion requires. |
+| 3 | Scheduler, lease/fencing, idempotency, cancellation, crash recovery, and rolling rollback pass deterministic fault-injection tests | `satisfied` | Each named mechanism that exists in the authorised shape is covered by deterministic tests, and the interleaving in those tests is driven rather than raced (`tests/integration/concurrent-run-execution.test.ts:101` — "the interleaving is chosen, not raced"). Scheduler: per-queue round-robin drain, `tests/integration/concurrent-drain.test.ts`. Cap as a real execution ceiling including the N+1th refusal: `tests/integration/concurrency-cap.test.ts:155`. Lease: per-queue execution lease with heartbeat and staleness reclaim (`src/state/execution-lease.ts`), release on every terminal status and on the drain's pre-ownership failure path, `tests/integration/execution-lease-release.test.ts:243`. Cancellation and bulkheading: `tests/integration/concurrent-run-execution.test.ts:306` — one Run's failure disposes only its own session. Crash recovery: forward-only per-queue reshapes of the persisted record — v10 → v11 for Run records (`tests/unit/state/run-state-migrator-v10-to-v11.test.ts`) and v11 → v12 for history records (`tests/unit/state/history-partition.test.ts`, `tests/unit/state/migration-audit-forwarder-v12.test.ts`), plus the v12 → v13 queue-pause collapse (`tests/unit/state/queue-pause-collapse.test.ts`) — plus `tests/integration/crash-recovery.integration.test.ts`. **Absences, stated rather than passed over**: there are no fencing tokens and no idempotency keys. Their failure mode — a stale worker writing state or evidence after ownership has moved, or a duplicate delivery starting two subprocesses — requires an executor that can outlive the process holding the lease, and the authorised shape has exactly one host process. There is likewise no rolling rollback: a downgrade to a runtime older than schema version 13 is **refused** at load with an explicit message, not rolled back (`src/state/queue-state-migrator.ts:644`). That comparison is against the runtime `STATE_SCHEMA_VERSION` rather than a literal, so a schema bump moves the pinned number in premise 10 without changing what the refusal does — which is why this disposition survived the v11 → v12 and v12 → v13 bumps on re-evaluation rather than being re-derived. v13 is FR-R3-011's queue-pause collapse — a forward-only rewrite within each queue record rather than a reshape of the record map, so it is a narrower change than v10 → v12 and the argument above covers it unchanged. Refusal is the correct local behaviour and is not a substitute for the mixed-version-worker design the remote form of this criterion requires. |
 | 4 | Secret brokering and evidence retention have an operational owner, documented rotation/deletion procedures, and no secret-bearing default diagnostic path | `not-applicable` | Concurrency adds no credential path and no evidence boundary. Every queue's phase invocation inherits the same local host environment under the same Workspace Trust decision the single-queue product already relied on, so there is no second worker for a credential to be brokered *to* and no least-privilege boundary to issue one across. Retention has one filesystem owner and one `.schegent/` store; the criterion's subject matter — arbitrating policy between owners — has no second party. The redaction set (`SECRET_PATTERNS`) and the append-only audit writer are unchanged by 092 and 093, so the default diagnostic path is the one already evaluated for the single-run product. |
 | 5 | Prompt/tool policy is enforced outside the model and has adversarial tests | `not-applicable` | The criterion defends against one tenant or agent influencing another's execution across a trust boundary. The authorised shape has no second trust level to cross: all N queues execute tasks authored by the same operator, in the same workspace, at the same provenance. Concurrent Runs do share one working tree, so one Run's file writes are visible to another's phase — but that channel already existed between sequential Runs in the single-queue product and carries the same operator-authored content at the same trust level. What changed is the interleaving, not the provenance. That is why the single-working-tree assumption is an enumerated premise of the [re-evaluation trigger](#re-evaluation-trigger) rather than a closed question: if a future change gives one queue content the operator did not author, this row's reasoning fails and the criterion becomes live. |
 | 6 | A staged rollout has measurable stop conditions and a tested return to the local path | `satisfied` | The rollout control and the stop condition are the same operator-visible setting. `schegent.queue.globalConcurrencyCap` is per-workspace and takes effect on the next start decision; setting it to 1 returns the product to single-Run execution. That return is tested rather than asserted: `tests/integration/concurrency-cap.test.ts:239` lowers a live cap to 1 and asserts that executing Runs are left alone and only later starts are refused, so the drain-to-one is a drain and not a kill. The measurable condition is `sessions.size` at each start decision, which is the same oracle the cap gate itself consults. |
@@ -215,7 +215,7 @@ means this record no longer holds.
 | 7 | Window-primacy lease cardinality | one holder per workspace | `WorkspaceLockManager` |
 | 8 | Execution lease tenure | per queue, claimed at start, released at the Run's terminal transition | `src/state/execution-lease.ts` |
 | 9 | Working trees shared by concurrent Runs | one, operator-authored | `docs/operations/` |
-| 10 | State schema version | 11, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
+| 10 | State schema version | 13, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
 | 11 | Content provenance across queues | one operator, one trust level | criterion 5 above |
 
 Premises 10 and 11 were added by re-reading this record's own reasoning against
@@ -253,6 +253,12 @@ parity test fail.
 
 ### The default moved to 1 (2026-08-18)
 
+> The checkpoint half of this reasoning was superseded the same day by
+> FR-R3-004 — see [Checkpoints stopped being the reason
+> (2026-08-18)](#checkpoints-stopped-being-the-reason-2026-08-18) below. The
+> default did not move again. Retained as written, because it is the reasoning
+> the decision was actually taken on.
+
 The principal architecture review of 2026-08-18 recorded, as REL-02, that a
 fresh install ran three Runs concurrently by default, and that this is the
 configuration in which recovery checkpoints are unavailable. That is not a
@@ -275,6 +281,44 @@ confirmation, or making the checkpoint service tolerate concurrency. The first
 two would walk back the ratification through the back door. The third is the
 real fix and is a design problem — per-Run isolation — filed as a round-3
 backlog item rather than approximated here.
+
+### Checkpoints stopped being the reason (2026-08-18)
+
+That round-3 backlog item is FR-R3-004, and it took the third option the same
+day — after finding the framing of it wrong. Making the checkpoint service
+tolerate concurrency did not require per-Run isolation. It required a source of
+attribution, and one already existed: every phase's audit record names the files
+it created, modified and deleted, so what a Run claims of the tree is something
+it *declares* rather than something the host has to infer from a diff it cannot
+partition. `RunCheckpointService` now scopes each patch to the sections its Run
+claimed, re-reads the whole-tree diff at every phase boundary to check the
+claims account for everything present, and declines only when they do not.
+Three Runs in flight produce three patches, each holding its own work and none
+of its siblings'. The mechanism, the alternatives, and the observational shape
+that was tried first and falsified are recorded in
+[checkpoint-attribution-decision.md](checkpoint-attribution-decision.md).
+
+That changes a reason here, not a decision:
+
+- **The default stays 1**, and this section stands. What justifies it is now
+  file contention between Runs that edit the same paths — the caveat this
+  record has carried from the start — and no longer the unavailability of
+  recovery evidence.
+- **`concurrent-runs-share-one-worktree` became a historical decline reason.**
+  Nothing emits it. A checkpoint above one in-flight Run is now declined for
+  what the tree actually shows — an unclaimed change, a path two Runs both
+  claimed, or a gap in the evidence — and each of those is a condition an
+  operator can act on, which the blanket refusal was not.
+- **Per-Run isolation is no longer filed as the fix for REL-02.** The ban on
+  `git worktree` is untouched, and nothing in FR-R3-004 asks to lift it; the
+  feature was delivered inside the one shared tree.
+
+What did **not** change: the range, the enforcement sites enumerated above, the
+scheduler, the one shared working tree, or the operator's responsibility for two
+Runs that edit the same file. Scoping a patch is not isolating a tree. A Run
+whose sibling overwrote its work still gets a patch of its own declared paths,
+and that patch reflects the tree as it ended up — recovery evidence, not a
+guarantee about who wrote last.
 
 ### Why this record enumerates rather than summarises
 

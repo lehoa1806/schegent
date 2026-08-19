@@ -1,8 +1,8 @@
 # Sessions, Logs, and Audit Evidence
 
-Schegent writes to disk in four distinct places, each with a different purpose, durability, and trust profile. This page is the map. After reading it you will know exactly what survives a run, what gets sanitized, and where to look when you need to investigate something.
+Schegent writes to disk in five distinct places, each with a different purpose, durability, and trust profile. This page is the map. After reading it you will know exactly what survives a run, what gets sanitized, and where to look when you need to investigate something.
 
-## The four sinks at a glance
+## The six sinks at a glance
 
 | Sink | Location | Sanitized? | Rotates? | Purpose |
 |---|---|---|---|---|
@@ -10,6 +10,8 @@ Schegent writes to disk in four distinct places, each with a different purpose, 
 | Raw transcript | `<workspaceRoot>/.schegent/sessions/raw-<runId>.log` | **no** (local-only) | no | Per-run scrollback equivalent for deep debug |
 | Verbose diagnostic files | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/...` | **no** (opt-in) | no | Per-invocation unredacted debug payloads |
 | Runtime debug log | `<workspaceRoot>/.schegent/syslog` (default) | yes | yes | Sanitized mirror of the Output channel |
+| CLI transport capture | `<workspaceRoot>/.schegent/cli-transport.log` | yes (paths retained) | yes | Line-by-line record of what the CLI emitted |
+| Metrics rollup | `<workspaceRoot>/.schegent/metrics-rollup.jsonl` | n/a (no free text) | **never pruned** | One counters-only record per terminal run, so all-time totals outlive rotation |
 
 ## 1. The structured audit log
 
@@ -129,6 +131,91 @@ Like `audit.log`, the runtime log is sanitized by the same central function. A s
 
 If the runtime log writer encounters an I/O error (disk full, permission denied), it suppresses further writes for the same path and surfaces a warning. The suppression clears when you save the runtime-log settings again, even if you save the *same* values — that is the operator-visible recovery affordance.
 
+## 5. The CLI transport capture
+
+`.schegent/cli-transport.log` holds the lines the CLI emitted, one per line:
+
+```text
+<ISO-8601 timestamp>\t<runId>\t<phase>\t<stream>\t<the line the CLI printed>
+```
+
+Content comes last so `cut -f5-` gives you back the CLI's own bytes, and
+`awk -F'\t' '$2 == "<runId>"'` narrows the file to one run. See the
+[file layout reference](../reference/file-layout.md#cli-transportlog) for the
+full description.
+
+### Why it is not in the audit log
+
+It used to be. The monitor wrote one `monitor-stdout-line` audit event per line,
+and those events came to 93.2% of a measured `audit.log` — enough to push the
+Metrics dashboard's window down to roughly forty runs, because the audit log's
+rotation budget was being spent on CLI transport rather than on the run events
+the dashboard reads. Separating the two lets each have its own budget. The
+*counts* stayed in the audit log: one `monitor-invocation-summary` per
+invocation carries `stdoutLines`, `stderrLines`, `firstOutputAt`, and
+`lastOutputAt`.
+
+### Retention
+
+The capture is bounded in code, not by settings: 5 MiB active file plus three
+rotated generations, so 20 MiB per workspace. They are not operator-tunable on
+purpose — a raisable bound would put this file back into competition with the
+audit log's retention.
+
+### Best-effort, unlike the audit log
+
+A failed audit append fails the run closed. A failed transport write does not
+affect the phase at all: it warns once per cause in the runtime log and capture
+stops for that cause. So treat the file as a convenience for reconstructing a
+timeline, not as evidence that must be complete. The raw transcript remains the
+canonical byte-for-byte artefact, and it is unaffected by this sink.
+
+### Sanitization and paths
+
+Lines pass through the same central redaction set as the audit log. Unlike the
+audit log, this sink does **not** apply the paths-free discipline — the CLI's
+output routinely names files, and stripping paths would leave the lines
+useless. That makes it sanitized but path-bearing: safer than the raw
+transcript, less bounded than a v3 audit payload.
+
+## 6. The metrics rollup
+
+`.schegent/metrics-rollup.jsonl` is the odd one out on this page. The other five
+sinks record *what happened*; this one records *how much*, and it exists because
+the other five all rotate.
+
+One line per terminal run, appended at `completed`, `failed`, or `canceled`,
+holding an id, a terminal status, two timestamps, six integer counters and an
+optional cost — nothing else. There is no description, no path, no prompt, no CLI
+output, which is why the sanitization column reads n/a: there is no free text in
+it to redact.
+
+### Why it is never pruned
+
+Every other metric the dashboard shows is a fold over `audit.log` and its
+archives, so it reports the *rotation window* rather than the history. Applied to
+a cumulative figure that is a defect rather than a limitation: when rotation
+pruned an archive, the all-time total went **down**. The rollup is written while
+the evidence is still present and then left alone, so those totals stop depending
+on what the log still holds. At roughly 200 bytes per run it costs bytes per day,
+which is why it can afford to have no retention policy at all.
+
+It is append-only and **never recomputed** — rebuilding it from a corpus that may
+already be pruned would reintroduce exactly the defect it removes — and the
+append is idempotent per run id, so a crash-replayed terminal transition does not
+double-count.
+
+### What it is not
+
+Not evidence. It carries no record of what a run *did*, only of its size, and it
+is not a substitute source for anything `audit.log` holds. A rollup write failure
+never fails a phase; it warns once, shows up as a degraded `metrics rollup` sink
+in evidence health, and leaves that one run's totals contribution to expire with
+its audit evidence.
+
+See [Metrics Coverage and the Rollup](../operations/metrics.md) for the operator
+view, including how to report from the file with `jq`.
+
 ## The session tree, per run
 
 Each run gets its own subtree under `.schegent/sessions/<runId>/`:
@@ -138,6 +225,8 @@ Each run gets its own subtree under `.schegent/sessions/<runId>/`:
 ├── audit.log                       <- structured evidence (shared across all runs)
 ├── audit.log.<rotation-stamp>      <- rotated archives
 ├── syslog (or syslog.1, .2 ...)    <- runtime log + rotations
+├── cli-transport.log (+ .1 ... .3) <- captured CLI output (shared across runs)
+├── metrics-rollup.jsonl            <- one counters-only record per terminal run
 └── sessions/
     ├── raw-<runId>.log             <- raw transcript for runId
     └── <runId>/

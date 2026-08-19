@@ -275,5 +275,12 @@ put a fresh install into the configuration where checkpoints are declined. The
 reasoning and what was deliberately not done are recorded in
 [local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md#the-default-moved-to-1-2026-08-18).
 
+The checkpoint half of that reason lapsed the same day: FR-R3-004 scoped each
+patch to the paths its Run's audit records declare, so a checkpoint above one
+in-flight Run is attributable and the blanket decline is gone. The default stays
+**1** on the shared-tree contention argument alone. This changes nothing in this
+gate either — attribution is a local mechanism inside one host's working tree,
+and it neither reaches nor relaxes any boundary clause below.
+
 Every clause of this gate other than the concurrency-cap carve-out remains
 fully in force.
