@@ -10,6 +10,16 @@
 //
 // Driven against a real temporary git repository rather than a stubbed
 // `execFile`, because the property under test is what lands on disk.
+//
+// **Superseded in part by FR-R3-004.** Concurrency no longer forces the decline:
+// a Run whose writes were observed gets a scoped patch, and the attribution
+// tests live in `run-checkpoint-attribution.test.ts`. What survives here is the
+// half that was never about concurrency — a decline writes no `.patch` and does
+// not block its phase, and a genuine capture failure still does. The service
+// below is built with a ledger that observed nothing, which is exactly the
+// residual unattributable case, so these Runs still decline; only the recorded
+// *reason* moved from `concurrent-runs-share-one-worktree` to
+// `attribution-evidence-incomplete`.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
@@ -20,6 +30,7 @@ import * as path from 'node:path';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { RunCheckpointService } from '../../../src/services/run-checkpoint-service';
+import { RunMutationLedger } from '../../../src/services/run-mutation-ledger';
 
 const run = promisify(execFile);
 
@@ -65,8 +76,26 @@ afterEach(async () => {
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
+/** A ledger that has observed nothing: the residual unattributable case. */
+function blindLedger(root = workspaceRoot): RunMutationLedger {
+  return new RunMutationLedger({
+    readDiff: async () =>
+      (
+        await run('git', ['diff', '--binary', '--no-ext-diff', 'HEAD'], { cwd: root })
+      ).stdout,
+    listInFlightRunIds: () => [],
+    workspaceRoot: root
+  });
+}
+
 function service(countInFlightRuns: () => number): RunCheckpointService {
-  return new RunCheckpointService(storageRoot, workspaceRoot, logger, countInFlightRuns);
+  return new RunCheckpointService(
+    storageRoot,
+    workspaceRoot,
+    logger,
+    countInFlightRuns,
+    blindLedger()
+  );
 }
 
 async function artifacts(): Promise<readonly string[]> {
@@ -128,11 +157,11 @@ describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', (
     expect(recorded).toMatchObject({
       runId: 'run-a',
       phaseId: 'speckit-implement',
-      reason: 'concurrent-runs-share-one-worktree',
+      reason: 'attribution-evidence-incomplete',
       inFlightRuns: 3,
       restorable: false
     });
-    expect(warnings.join('\n')).toContain('concurrent-runs-share-one-worktree');
+    expect(warnings.join('\n')).toContain('attribution-evidence-incomplete');
   });
 
   it('does not block the Git-capable phase it declined to snapshot', async () => {
@@ -149,7 +178,13 @@ describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', (
     // Not a git repository, so `git diff` fails. The pre-feature contract holds:
     // a snapshot that cannot be taken blocks the phase.
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-checkpoint-nogit-'));
-    const broken = new RunCheckpointService(storageRoot, outside, logger, () => 1);
+    const broken = new RunCheckpointService(
+      storageRoot,
+      outside,
+      logger,
+      () => 1,
+      blindLedger(outside)
+    );
     await expect(broken.checkpoint(RUN, 'speckit-implement')).rejects.toThrow(
       'checkpoint-unavailable'
     );

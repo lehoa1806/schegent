@@ -35,7 +35,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
+  FakeMemento,
   QUEUE_A,
   QUEUE_B,
   drainUntil,
@@ -51,6 +54,8 @@ import {
 } from './concurrent-run-harness';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { WorkspaceLockManager, STALENESS_THRESHOLD_MS } from '../../src/state/lock';
+import { createDiskOwnershipFs } from '../../src/state/ownership-fs';
+import { WorkspaceStateStore } from '../../src/state/workspace-state';
 import { runCancel } from '../../src/commands/cancel';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import type { Notifier } from '../../src/ui/notifications';
@@ -406,16 +411,32 @@ describe('Feature 093 (T065, SC-014) — rate-limit backoff stays a per-Run comp
   });
 });
 
-describe('Feature 093 (T066, SC-015) — checkpoints are declined under concurrency', () => {
+describe('Feature 093 (T066, SC-015) — an unattributable snapshot is still declined', () => {
   it('records the reason and writes nothing an operator could restore', async () => {
     const { a } = await bothExecuting();
+
+    // FR-R3-004 replaced the condition this test was originally written against.
+    // A second live Run no longer makes a checkpoint impossible — each Run's
+    // audit record declares the files it wrote, and the patch is scoped to that
+    // declaration — so `concurrent-runs-share-one-worktree` is now a historical
+    // reason nothing emits. SC-015 itself is unchanged, and is what this asserts:
+    // a snapshot that cannot be attributed to one Run is declined, with a reason
+    // recorded, and no `.patch` an operator could apply.
+    //
+    // The condition that produces one now is a change in the tree no Run claims.
+    // Neither Run here declares anything (`cleanStdout` reports empty `files_*`
+    // lists), so a staged edit belongs to nobody — which is exactly the hand edit
+    // an operator makes while runs are live. Staged rather than merely written,
+    // because `git diff HEAD` does not see an untracked file.
+    await fs.writeFile(path.join(tmpRoot, 'stray.txt'), 'nobody declared this\n');
+    await promisify(execFile)('git', ['add', 'stray.txt'], { cwd: tmpRoot });
 
     const runRoot = path.join(tmpRoot, '.checkpoint-storage', 'checkpoints', a.runId);
     // Measured as a delta, because Run A's first Git-capable phase ran while it
     // was the only Run in flight and legitimately snapshotted — that patch is
     // restorable and SC-015 does not forbid it. What SC-015 forbids is a patch
-    // written *while a sibling holds uncommitted work*, so the assertion is
-    // about what this next call adds, not about what the directory holds.
+    // whose partition is undecidable, so the assertion is about what this next
+    // call adds, not about what the directory holds.
     const before = new Set(await fs.readdir(runRoot));
 
     // The probe is the production one, reading the real record: two Runs are
@@ -431,10 +452,13 @@ describe('Feature 093 (T066, SC-015) — checkpoints are declined under concurre
     const recorded = JSON.parse(await fs.readFile(path.join(runRoot, marker!), 'utf8'));
     expect(recorded).toMatchObject({
       runId: a.runId,
-      reason: 'concurrent-runs-share-one-worktree',
+      reason: 'unattributed-worktree-change',
       inFlightRuns: 2,
       restorable: false
     });
+    // The paths live in the marker, which is 0600 beside the checkpoints; the
+    // runtime-log warning that accompanies it carries counts only.
+    expect(recorded.detail.paths).toEqual(['stray.txt']);
 
     // Declining is not failing: the Git-capable phase it guards still proceeds.
     await expect(h.checkpoints.checkpoint(run, 'speckit-implement')).resolves.toBeUndefined();
@@ -650,5 +674,143 @@ describe('Feature 093 (T068c, FR-028, SC-009) — an operator ending one Run kee
     const finishedB = await runToTerminal(QUEUE_B, b.runId);
     expect(finishedB.status).toBe('completed');
     await expectStillPrimary(rival);
+  });
+});
+
+describe('Feature FR-R3-003 (T307, FR-028, SC-009) — the tenure holds under fencing', () => {
+  // The blocks above build their rival as a second `WorkspaceLockManager` over
+  // `h.lockStore` — one store, one memento, two managers. That was the strongest
+  // rival available before this feature, and it is weaker than it looks: a
+  // `Memento` is a per-extension-host cache, so two real windows never share the
+  // record those tests share, and every refusal above was arbitrated by a
+  // structure only one host can see. These re-assert the same property against a
+  // rival that is a genuine second host — its own store over its own memento —
+  // with nothing in common but the `.schegent/ownership` directory both are
+  // pointed at. If the fenced mechanism arbitrated nothing, this rival would
+  // acquire while queue B is still mid-phase.
+  //
+  // What fencing adds to SC-009 is that "still primary" becomes checkable rather
+  // than inferable. A Run-scoped release followed by a re-acquire also ends with
+  // the window holding primacy, and reads identical through `isHeld()` and
+  // `ownerOfRecord()`; it differs only in the generation, and in the gap between
+  // the two calls during which a rival could have taken the workspace. So the
+  // assertion here is the *unchanged fence*, which no release-and-reacquire can
+  // satisfy.
+
+  interface RivalHost {
+    readonly manager: WorkspaceLockManager;
+    readonly store: WorkspaceStateStore;
+  }
+
+  const ownershipDir = (): string => path.join(tmpRoot, '.schegent', 'ownership');
+
+  beforeEach(() => {
+    // The seam activation stage 2 uses, pointed at the workspace this harness
+    // already created. Managers read `store.ownership` per call, so `h.lock`
+    // built in `makeHarness` lands on it too.
+    h.lockStore.useOwnershipStorage(createDiskOwnershipFs(ownershipDir()), ownershipDir());
+  });
+
+  /** A second extension host: its own memento, the same ownership directory. */
+  async function rivalHost(): Promise<RivalHost> {
+    const store = new WorkspaceStateStore(new FakeMemento());
+    await store.initialize();
+    store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir()), ownershipDir());
+    return {
+      manager: new WorkspaceLockManager(store, 'window-b', h.lockClock, noopScheduler),
+      store
+    };
+  }
+
+  async function expectFencedPrimacy(rival: RivalHost, fence: number): Promise<void> {
+    expect(h.lock.isHeld()).toBe(true);
+    expect(await h.lock.hasPrimacy()).toBe(true);
+    expect(h.lock.fenceOfRecord()).toBe(fence);
+    expect((await rival.manager.tryAcquire()).acquired).toBe(false);
+  }
+
+  it('holds one generation across both Runs reaching their terminal transition', async () => {
+    expect((await h.lock.tryAcquire()).acquired).toBe(true);
+    const fence = h.lock.fenceOfRecord();
+    expect(fence).toBe(1);
+
+    const rival = await rivalHost();
+    expect(await rival.manager.tryAcquire()).toEqual({ acquired: false, ownerId: 'window-a' });
+    // The rival's own mirror is empty and stays empty — it has never seen this
+    // window's `KEYS.lock` and cannot. Its refusal came from the shared record,
+    // which is the only thing a second host can read.
+    expect(rival.store.getLock()).toBeNull();
+
+    const { a, b } = await bothExecuting();
+    expect((await runToTerminal(QUEUE_A, a.runId)).status).toBe('completed');
+    await expectFencedPrimacy(rival, fence!);
+
+    expect((await runToTerminal(QUEUE_B, b.runId)).status).toBe('completed');
+    await expectFencedPrimacy(rival, fence!);
+
+    // Disposal, and only disposal, ends it — and the rival's claim is issued at
+    // the next generation, never at the one this window carried.
+    await h.lock.release();
+    expect(await h.lock.hasPrimacy()).toBe(false);
+    expect((await rival.manager.tryAcquire()).acquired).toBe(true);
+    expect(rival.manager.fenceOfRecord()).toBe(2);
+  });
+
+  it('holds one generation when an operator cancels one queue s Run', async () => {
+    expect((await h.lock.tryAcquire()).acquired).toBe(true);
+    const fence = h.lock.fenceOfRecord()!;
+    const rival = await rivalHost();
+
+    const { a, b } = await bothExecuting();
+    const result = await runCancel({
+      controller: h.controller,
+      store: h.store,
+      queue: h.queue,
+      audit: new AuditLogWriter({ workspaceRoot: tmpRoot }, h.logger),
+      notifier: { info: () => {}, warn: () => {}, error: () => {} } as unknown as Notifier,
+      logger: h.logger,
+      taskId: a.feature.id
+    });
+    expect(result).toEqual({ ok: true });
+
+    h.step(a.runId);
+    await drainUntil(
+      () => h.store.getRun(QUEUE_A)?.status === 'canceled',
+      () => `queue A s Run to reach canceled`
+    );
+
+    // `runCancel` was one of the four Run-scoped releases FR-028 condemned. A
+    // release here would clear the fence outright; a release paired with a
+    // re-acquire would bump it. Neither is what an unchanged generation looks
+    // like.
+    await expectFencedPrimacy(rival, fence);
+
+    expect((await runToTerminal(QUEUE_B, b.runId)).status).toBe('completed');
+    await expectFencedPrimacy(rival, fence);
+  });
+
+  it('shows the cost of a Run-scoped release: a second host takes the workspace', async () => {
+    expect((await h.lock.tryAcquire()).acquired).toBe(true);
+    const rival = await rivalHost();
+    const { a, b } = await bothExecuting();
+    await runToTerminal(QUEUE_A, a.runId);
+
+    // Stand in for the release the removed `withLock('drive-run', …)` wrapper
+    // performed in its `finally`, with queue B still mid-phase. The assertions
+    // above are not vacuous: every one of them flips here.
+    await h.lock.release();
+    expect((await rival.manager.tryAcquire()).acquired).toBe(true);
+    expect(h.lock.isHeld()).toBe(false);
+    expect(await h.lock.hasPrimacy()).toBe(false);
+    // And it is not recoverable by trying again. Under fencing the window does
+    // not merely pause being primary — its generation is superseded, so the
+    // token queue B's guarded writes carry is worthless from here.
+    expect((await h.lock.tryAcquire()).acquired).toBe(false);
+    expect(h.lock.fenceOfRecord()).toBeNull();
+
+    // Queue B is still executing throughout, which is what makes it a defect
+    // rather than an ordering detail.
+    expect(isTerminalRunStatus(h.store.getRun(QUEUE_B)?.status ?? 'running')).toBe(false);
+    await runToTerminal(QUEUE_B, b.runId);
   });
 });

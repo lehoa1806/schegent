@@ -35,6 +35,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { createPhaseBreakpointAccessor } from '../../src/controller/breakpoint-accessor';
 import { TerminalTransitionCoordinator } from '../../src/services/terminal-transition-coordinator';
 import { RunCheckpointService } from '../../src/services/run-checkpoint-service';
+import { RunMutationLedger } from '../../src/services/run-mutation-ledger';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
@@ -226,6 +227,8 @@ export interface Harness {
   readonly lockStore: WorkspaceStateStore;
   readonly lockClock: FixedClock;
   readonly checkpoints: RunCheckpointService;
+  /** FR-R3-004 — the attribution record the controller brackets each phase with. */
+  readonly mutationLedger: RunMutationLedger;
   readonly logger: SanitizedLogger;
   /** Every invocation the CLI saw, in dispatch order, with its Run. */
   readonly invocations: Array<{ runId: string; phase: string }>;
@@ -344,12 +347,27 @@ export async function makeHarness(
   const lease = new ExecutionLeaseManager(store, 'window-a', lockClock, noopScheduler);
 
   // Production wiring, verbatim from `run-safety-wiring.ts`: the probe counts
-  // non-terminal Runs across the whole record.
+  // non-terminal Runs across the whole record, and the ledger bounds itself by
+  // the same list so "in flight" means one thing to both.
+  const inFlightRuns = () =>
+    Object.values(store.getRunMap()).filter((run) => !isTerminalRunStatus(run.status));
+  const mutationLedger = new RunMutationLedger({
+    readDiff: async () =>
+      (
+        await promisify(execFile)('git', ['diff', '--binary', '--no-ext-diff', 'HEAD'], {
+          cwd: workspaceRoot,
+          maxBuffer: 20 * 1024 * 1024
+        })
+      ).stdout,
+    listInFlightRunIds: () => inFlightRuns().map((run) => run.id),
+    workspaceRoot
+  });
   const checkpoints = new RunCheckpointService(
     path.join(workspaceRoot, '.checkpoint-storage'),
     workspaceRoot,
     logger,
-    () => Object.values(store.getRunMap()).filter((run) => !isTerminalRunStatus(run.status)).length
+    () => inFlightRuns().length,
+    mutationLedger
   );
 
   const deps: WorkflowControllerDeps = {
@@ -363,6 +381,7 @@ export async function makeHarness(
     ),
     executionLease: lease,
     checkpoints,
+    mutationLedger,
     getRawTranscriptMode: () => 'always'
   };
 
@@ -402,6 +421,7 @@ export async function makeHarness(
     lockStore,
     lockClock,
     checkpoints,
+    mutationLedger,
     logger,
     invocations,
     script: (fn) => {

@@ -1,4 +1,4 @@
-import type { PhaseRunner } from '../controller/phase-runner';
+import type { PhaseRunInputs, PhaseRunOutput, PhaseRunner } from '../controller/phase-runner';
 import { composePhaseMessagePath } from '../controller/phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
@@ -8,7 +8,13 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { IsContinueGate } from '../controller/is-continue-gate';
 import { PhaseSequencer, nextOverridesAfterSkip } from '../controller/phase-sequencer';
-import type { PhaseResult, SanitizedError, WorkflowRun } from '../state/workflow-run';
+import {
+  computeRunPhaseStats,
+  type PhaseResult,
+  type RunPhaseStats,
+  type SanitizedError,
+  type WorkflowRun
+} from '../state/workflow-run';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { PhaseName } from '../ui/sidebar/snapshot';
 import { BUILT_IN_PIPELINE_ID } from '../config/pipeline-config';
@@ -27,9 +33,33 @@ import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-ev
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
+import type { PhaseMutationReport, RunMutationLedger } from './run-mutation-ledger';
 import type { RunOutputRecord } from '../contracts/run-results';
 import { resolveRunOutputs } from './run-output/run-output-resolver';
 import { createBoundedOutputProbe } from './run-output/run-output-probe';
+
+/**
+ * FR-R3-004 — a phase's own account of what it wrote, taken from the audit
+ * record the invocation produced, or `null` when there is no such account.
+ *
+ * `null` and an empty list are different answers and both are load-bearing. An
+ * empty list is a phase that ran and reported writing nothing, which is usable
+ * evidence; `null` is a phase that produced no parsed audit entry at all — it
+ * threw, was cancelled, or its output was malformed — and what it wrote is
+ * unknown. The ledger turns the second into incomplete evidence, so the next
+ * checkpoint declines instead of writing a patch that may be missing a file.
+ *
+ * The paths themselves are untrusted: they come from CLI stdout, which is
+ * operator-influenced. Nothing here opens them; the ledger canonicalises them
+ * lexically and matches them against sections git itself printed.
+ */
+function declaredMutations(output: PhaseRunOutput | null): PhaseMutationReport | null {
+  const audit = output?.result.auditEntry;
+  if (audit === null || audit === undefined) return null;
+  return {
+    declaredPaths: [...audit.filesCreated, ...audit.filesModified, ...audit.filesDeleted]
+  };
+}
 
 interface RunDriverOptions {
   readonly cliPath: string;
@@ -118,6 +148,14 @@ export interface RunDriverDeps {
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
   readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
   readonly checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
+  /**
+   * FR-R3-004 — brackets every phase dispatch so a checkpoint taken under
+   * concurrency knows which Run wrote which file. Optional on the same terms as
+   * `checkpoints`: the unit harnesses build a driver directly, and a driver
+   * without a ledger simply produces no attribution evidence, which the
+   * checkpoint service reads as grounds to decline rather than to guess.
+   */
+  readonly mutationLedger?: Pick<RunMutationLedger, 'observeBeforePhase' | 'observeAfterPhase'>;
 }
 
 /**
@@ -197,6 +235,34 @@ export class RunDriver {
   private latestSnapshotOf(run: WorkflowRun): WorkflowRun | null {
     const found = this.deps.store.findRunByTask(run.featureId);
     return found !== null && found.run.id === run.id ? found.run : null;
+  }
+
+  /**
+   * FR-R3-004 — dispatch one phase inside this Run's attribution window.
+   *
+   * Every phase is bracketed, not just the Git-capable ones: `PhaseSideEffects`
+   * marks most built-in phases `workspace`, and those mutate the tree too, so
+   * observing only at the checkpoint seam would leave their writes undeclared and
+   * force a decline for every sibling.
+   *
+   * The window closes in a `finally`, so a phase that threw or was cancelled
+   * still closes its own — carrying `null`, because a phase that did not finish
+   * produced no audit record and what it wrote is therefore unknown. An unclosed
+   * window is a hole in the record, and a hole is indistinguishable from a
+   * sibling's write.
+   */
+  private async dispatchObserved(
+    run: WorkflowRun,
+    inputs: PhaseRunInputs
+  ): Promise<PhaseRunOutput> {
+    await this.deps.mutationLedger?.observeBeforePhase(run);
+    let output: PhaseRunOutput | null = null;
+    try {
+      output = await this.deps.runner.run(inputs);
+      return output;
+    } finally {
+      await this.deps.mutationLedger?.observeAfterPhase(run, declaredMutations(output));
+    }
   }
 
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
@@ -431,7 +497,7 @@ export class RunDriver {
           run = await this.deps.persistTransition(run, nextRun);
         }
 
-        const output = await this.deps.runner.run({
+        const output = await this.dispatchObserved(run, {
           phase: run.currentPhase,
           phaseDef: dispatchPhaseDef,
           pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
@@ -467,7 +533,13 @@ export class RunDriver {
           isContinue: sessionDispatch.isContinue,
           sessionReuse: sessionDispatch.sessionReuse,
           resumeSessionId: sessionDispatch.resumeSessionId,
-          resumePrompt: sessionDispatch.resumePrompt
+          resumePrompt: sessionDispatch.resumePrompt,
+          // FR-R3-001 (T260) — forwarded whole, on every phase of the Run, so
+          // the request the operator approved is the request each phase is asked
+          // to carry out. Read from the Run rather than re-read from the queue
+          // row: the row can be edited or removed mid-Run, and the envelope
+          // cannot.
+          envelope: run.envelope
         });
         if (
           this.overriddenActivePhaseAborts.delete(
@@ -1029,16 +1101,24 @@ export class RunDriver {
   // written and every downstream reader — prior-output references, the Run details
   // projection — answered from an absence rather than from a record.
   //
-  // The declaration is read from the **frozen plan** on the queue item, never from
-  // the live catalog: the plan is what the operator approved, and a Pipeline edited
-  // mid-Run must not change what this Run is judged to have produced.
+  // The declaration is read from the **frozen envelope** on the Run, never from
+  // the live catalog: the envelope is what the operator approved, and a Pipeline
+  // edited mid-Run must not change what this Run is judged to have produced.
+  //
+  // FR-R3-001 (T266) moved the read off the queue row. It used to be
+  // `queue.findById(run.featureId)?.runPlan?.outputs` — a second lookup, of a
+  // second copy, keyed on a row that may already be gone by the time a Run
+  // completes. The targets the backend was told to write (T264) and the targets
+  // probed here are now literally the same array on the same object, so the two
+  // cannot disagree; under the old read they could disagree silently, and the
+  // observable symptom was an `unresolved` output nobody had asked for.
   //
   // Returns `[]` — not a throw — for every "there is nothing to record" shape:
-  // no queue row, no plan, no declared outputs. FR-008's "records nothing" and
-  // "there was nothing to record" are the same observable outcome, and a completion
-  // transition must not be gated on the queue still holding a row for the Run.
+  // no envelope (a legacy or non-composed Run) and no declared outputs. FR-008's
+  // "records nothing" and "there was nothing to record" are the same observable
+  // outcome, and a completion transition must not be gated on it.
   private async recordDeclaredOutputs(run: WorkflowRun): Promise<readonly RunOutputRecord[]> {
-    const outputs = this.deps.queue.findById(run.featureId)?.runPlan?.outputs;
+    const outputs = run.envelope?.outputs;
     if (!outputs || outputs.length === 0) return [];
 
     return resolveRunOutputs(outputs, {
@@ -1049,19 +1129,13 @@ export class RunDriver {
 
   // Feature 072 — derive phase stats from the pipeline snapshot and
   // completion records for the task-execution-ended payload.
-  private computePhaseStats(run: WorkflowRun): {
-    phasesTotal: number;
-    phasesCompleted: number;
-    phasesSkipped: number;
-  } {
-    const total = run.pipeline?.phases?.length ?? 0;
-    const completed = run.phasesCompleted.filter(
-      (p) => p.result === 'clean'
-    ).length;
-    const skipped = run.phasesCompleted.filter(
-      (p) => p.result === 'skipped'
-    ).length;
-    return { phasesTotal: total, phasesCompleted: completed, phasesSkipped: skipped };
+  //
+  // FR-R3-009 — delegated to `computeRunPhaseStats` in `state/workflow-run.ts`
+  // so the durable metrics rollup reports the same three numbers this payload
+  // does. Both are unioned by run id downstream; two implementations would let
+  // a total depend on which range a run fell in.
+  private computePhaseStats(run: WorkflowRun): RunPhaseStats {
+    return computeRunPhaseStats(run);
   }
 }
 
