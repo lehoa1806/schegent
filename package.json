@@ -996,7 +996,7 @@
     "build:webview": "npm --prefix webview-ui run build",
     "contracts:generate": "node scripts/generate-contract-schemas.mjs",
     "contracts:check": "node scripts/generate-contract-schemas.mjs --check",
-    "docs:check": "node scripts/check-docs.mjs",
+    "docs:check": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs",
     "security:secrets": "node scripts/scan-secrets.mjs",
     "security:actions": "node scripts/check-workflow-pins.mjs",
     "license:check": "node scripts/check-licenses.mjs",
