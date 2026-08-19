@@ -93,6 +93,7 @@ function seedV10Workspace(memento: FakeMemento, run: WorkflowRun): void {
     queueMap[entry.id] = {
       ...state,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       requests: state.requests.map((request) => ({
         ...request,
         id: taskIdFor(entry.id),
@@ -120,6 +121,13 @@ async function migrateAndForward(
       v6MigrationEvents: result.v6MigrationEvents,
       v7MigrationEvents: result.v7MigrationEvents,
       v11MigrationEvents: result.v11MigrationEvents,
+      // Deliberately empty rather than `result.v12MigrationEvents`. Seeding a v10
+      // workspace also trips the v11 → v12 history partition, and forwarding both
+      // would make every count assertion below a statement about two migrations
+      // at once. The v12 half has its own end-to-end file
+      // (`migration-audit-forwarder-v12.test.ts`) so neither is asserted through
+      // the other.
+      v12MigrationEvents: [],
       runRepairEvents: result.runRepairEvents
     },
     writer,

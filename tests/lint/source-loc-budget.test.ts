@@ -25,7 +25,93 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // reference each. Constructing the (stateless) service twice inline would
   // have bought the const line back while putting a factory call inside a
   // per-projection closure, which is worse code for a line of budget.
-  { path: 'src/extension.ts', maxLines: 1_362 },
+  // Feature FR-R3-006 (T352) — 1,362 → 1,382 for the reset transaction's host
+  // wiring, against a ceiling that had zero to give. Extraction was measured
+  // first and is most of the change: the quiesce wait, the stage-2 support
+  // factory, and both activation-path recovery helpers moved out, to
+  // src/commands/reset-wiring.ts, which buys 77 lines (1,459 → 1,382). What
+  // could not move is the port literal, and it is in this file by definition —
+  // `ResetHost` closes over three locals of `activate()` (`stage2`,
+  // `tearDownStage2`, `ensureStage2`), and the reason it is constructed after
+  // the lifecycle rather than beside the store is the reason the comment sits at
+  // that site. The remainder is one field on `Stage2Wiring`, the command
+  // registration that moved with the port, and three call sites. Raised to
+  // exactly what the file measures, per the convention above.
+  // Feature FR-R3-007 (T358) — 1,382 → 1,391 for the CLI transport sink's
+  // wiring, against a ceiling that had one line to give. Nine of those lines
+  // are the construction and the reason for its shape; extraction is what the
+  // shape already is — the sink, its per-emit settings accessor and the
+  // production factory all live in src/monitor/cli-transport-sink.ts, and
+  // `createCliTransportSink` exists precisely so this file holds a call rather
+  // than a deps literal. What cannot move is that the monitor is constructed
+  // here and the recorder is now a required constructor argument, so the two
+  // must meet in this file. Requiring it rather than defaulting it is the point:
+  // an optional recorder would make this one line load-bearing in the way
+  // `ownership-registry-wiring.test.ts` describes, where omitting it captures
+  // nothing and no test fails. Raised to exactly what the file measures, per the
+  // convention above — and note that the measure is `lineCount()` below, which
+  // counts the empty segment after the final newline, so it reads one higher
+  // than `wc -l`. Setting a ceiling from `wc -l` is what put this entry one line
+  // short on the first attempt.
+  // Feature FR-R3-008 (T385) — 1,391 → 1,405 for the liveness recorder's
+  // wiring, against a ceiling that had zero to give (the previous entry raised
+  // it to exactly what the file measured). Extraction is what the shape already
+  // is: the coalescing lives in src/monitor/activity-coalescer.ts and the write
+  // rule in src/controller/run-liveness-recorder.ts, so this file holds neither.
+  // What cannot move is that the monitor observes output and the controller
+  // persists it, and only this file constructs both — plus the ordering between
+  // them, which is the whole reason the fourteen lines are here rather than in a
+  // helper: the monitor is built in `wireStage2` well before the controller, so
+  // the recorder is late-bound through a `let` that the adapter closes over and
+  // one assignment closes after the controller exists. That is the same shape as
+  // `telemetryProjector` below, and putting it behind a `createLateBound…()`
+  // factory was measured and rejected — it buys about four lines by hiding an
+  // idiom this file already uses twice, and by moving the null window (the span
+  // in which an observation is dropped) out of the file whose statement order
+  // defines it. `activity` is a *required* constructor argument on
+  // `ClaudeCliMonitor` for the reason the FR-R3-007 entry above gives: optional
+  // would make this wiring silently omissible with no test failing. Raised to
+  // exactly what the file measures, per the convention above.
+  //
+  // Phase-log-tail extraction ratchet: 1,405 → 1,281. The first *downward* entry
+  // since the P4 pass at the top, and it is deliberately not attached to a
+  // feature. Every raise above is a correct argument that the feature's own
+  // wiring could not move, and each one is still correct; what accumulated was
+  // unrelated pre-existing bulk that per-feature scope forbids touching, so a
+  // ceiling that only ever rises stops being a forcing function and becomes a
+  // changelog. Feature 020's tail block moved whole to
+  // src/activation/phase-log-tail-wiring.ts. It qualified on shape, not on size:
+  // the block had exactly two outward references — the service the router reads
+  // and the dashboard-bridge binding — and its registry, task-leave listener set
+  // and previous-in-flight-id cursor were private to it while sitting in scope
+  // for the 300 lines that follow. Eight imports were used by nothing else and
+  // went with it. Set to exactly what the file measures; this is now below the
+  // 1,305 the P4 pass reached, so the next raise starts from a real floor.
+  //
+  // FR-R3-009 / FR-R3-010 — 1,281 → 1,302, against a ceiling the ratchet above
+  // left with nothing to give. Two features, and neither put its subject matter
+  // here: FR-R3-009's rollup writer and terminal recorder are constructed in
+  // src/activation/run-safety-wiring.ts and reach this file as one input on a
+  // call that already existed, and FR-R3-010's evidence corpus reader lives in
+  // src/services/history/. What lands here is the wiring that only this file
+  // can do.
+  // Fifteen of the lines are FR-R3-010's. Eight are the history-evidence
+  // adapter in the router literal — the same closure-over-`workspaceRoot` shape
+  // as the `metricsService` adapter it sits beside, and there for the same
+  // reason: the corpus reader is reached through it and the handler never
+  // resolves a root itself. Extraction was measured and buys three lines (a
+  // `createHistoryEvidenceService()` call plus its import, against five
+  // construction lines) while splitting the router's adapter family across two
+  // files, which is the trade the feature-084 entry above already weighed and
+  // declined. The other seven are two imports and the `v12MigrationEvents`
+  // declare/assign/forward triple. That triple cannot move: the four migration
+  // event lists are four `let`s outside a `try` over `store.initialize()`,
+  // because the writer that forwards them does not exist until after the call
+  // that produces them, and that ordering is the whole reason feature 092's
+  // v10 events went unaudited. One migration is one line in each of the three
+  // places, by construction.
+  // Set to exactly what the file measures, per the convention above.
+  { path: 'src/extension.ts', maxLines: 1_302 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -125,7 +211,108 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // deletion at either site reads as "never skip lock release" being violated.
   // Nothing was extracted because nothing was added; re-measuring is the only
   // honest response to a file that shrank in code and grew in explanation.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1023 },
+  // FR-R3-001 — 1023 → 1041 for the envelope backfill in
+  // `resumeExistingOnQueue`. The previous ceiling carried four lines of slack
+  // over a file that measured 1019, so the +18 here is the 22 lines that landed
+  // less that slack. Four lines of code and thirteen of reasoning: a
+  // `??`, a log line, and a conditional spread, guarded on the field's absence.
+  // It sits inline rather than in a helper because it is the third member of a
+  // sequence the function already runs in place — pinned runner, then pipeline,
+  // then envelope — and extracting one of three would hide the only property
+  // that makes the group legible, which is that each repairs a field a Run
+  // created before some feature does not have. The comment is long because the
+  // line it guards reads like the thing the feature bans (a queue-row read on a
+  // path to execution) and is not; a reader who cannot tell those apart at this
+  // seam is a reader who deletes the guard or generalises it.
+  // FR-R3-004 — 1041 → 1051 for the mutation ledger's optional dep. Three lines
+  // of code — an import, a `Pick<...>` field, and one line handing it to the
+  // driver factory — plus seven of reasoning. There is nothing to extract:
+  // this file constructs the `RunDriver`, so a dep the driver needs arrives
+  // here by definition, and the only alternative to a new field is folding the
+  // ledger into the `checkpoints` dep beside it. That was measured and
+  // rejected, not skipped: the two answer to different lifetimes — the ledger
+  // records at every phase boundary, `checkpoints` only at a Git-capable phase
+  // — so a merged dep would make every controller test that wants a checkpoint
+  // double supply an observation double as well, and would put the ledger's
+  // continuous bracketing behind a name that says it happens before Git.
+  // Raised to exactly what the file measures.
+  // FR-R3-005 — 1051 → 1066 for the refused-cleanup outcome. Six lines of code
+  // — a type import, a local, two assignments off the widened
+  // `SessionCleanupOutcome`, and a ternary that omits the field rather than
+  // setting it `undefined` — plus nine of contract. Nothing to extract: this
+  // method already owns the "queue mutation stands regardless of cleanup"
+  // rule, and a refusal is a third answer to the question `sessionCleaned`
+  // was asked, not a new question. Folding it into `sessionCleaned: false`
+  // was the rejected alternative — it reads as "the evidence is still on
+  // disk", when the finding is that the host declined to reach for it — and
+  // returning it out-of-band would put the two halves of one outcome on two
+  // paths through the same `if`. The doc comments carry the weight because
+  // the field is optional in a shape whose other optional field is omitted
+  // for an unrelated reason, and a reader who conflates them removes one.
+  // Feature FR-R3-008 (T385) — 1,066 → 1,084 for the liveness write. Extraction
+  // was measured first and is the larger half of the change: the write rule and
+  // all four of its guards moved out, to `recordRunLiveness` in
+  // src/controller/run-liveness-recorder.ts, which buys 46 lines (1,130 →
+  // 1,084). It went out rather than staying because it needs exactly two of this
+  // class's collaborators — `store` and `logger` — which is the same test
+  // `execution-lease-release.ts` passed. The pin
+  // (`liveness-does-not-touch-transition.test.ts`) still goes through the
+  // controller, because that delegating method is the seam the monitor binds to
+  // and is therefore what needs guarding against regression.
+  // What could not move is 18 lines in three parts. The `getIterationCap` thunk
+  // is at the `WorkflowRunFactory` construction site, and that site is here by
+  // definition; it reads `options.iterationCap` rather than a live setting, and
+  // the six lines above it say why, because the field being frozen at creation is
+  // the whole of FR-R3-008's denominator guarantee. The public
+  // `recordRunActivity` is a two-line delegation that cannot become an import at
+  // its call site: `store` is a private field, and `extension.ts` binds a
+  // *method* on the constructed controller. And two imports. Nothing here is a
+  // new responsibility — the class already owned "persist a Run record" — so
+  // there is no third module hiding in it. Raised to exactly what the file
+  // measures.
+  //
+  // Operator-command extraction ratchet: 1,084 → 963. Same deliberate pass as
+  // the `src/extension.ts` entry above, and the same reasoning for taking it
+  // outside a feature: the raises are individually correct and cumulatively a
+  // ratchet. Two whole methods moved — `deleteTask` to src/controller/
+  // task-deletion.ts and `retryPhaseNow` to src/controller/
+  // manual-retry-override.ts — leaving a delegation each, plus the inline
+  // 21-line return type of the first, which became `TaskDeletionOutcome`
+  // alongside it. `SessionCleanupRunner` moved with the deletion path and is
+  // re-exported from here, so its one consumer's import path is unchanged.
+  // Both qualified for the reason `run-liveness-recorder.ts` did: each is a
+  // self-contained transaction over one queue that needs a handful of this
+  // class's collaborators and nothing from the drive loop. They were in this
+  // class only because that is where the webview command lands.
+  // What was deliberately NOT extracted, and should stay put: the two 111-line
+  // lifecycle methods, `resumeExistingOnQueue` and `handleUnexpectedStartFailure`.
+  // They are the largest remaining blocks and they carry the lease and
+  // primacy invariants CLAUDE.md is explicit about; moving the drive core to buy
+  // budget is the drive-by refactor the ratchet exists to make unnecessary, not
+  // to force. Set to exactly what the file measures.
+  //
+  // FR-R3-010 — 963 → 973 for the history recorder's two new dependencies,
+  // against a ceiling the ratchet above left with nothing to give. No new
+  // responsibility: this class already constructed the recorder, and the
+  // recorder itself already lived in src/services/history-recorder.ts. What
+  // grew is its deps literal. Six of the ten lines say why `queueIdForTask` is
+  // `queueIdForExistingTask` and not `queueIdForTask` — the strict resolver
+  // that returns `null` rather than falling back to `'default'` — and this
+  // construction site is the only place that choice can be got wrong, because
+  // the recorder cannot tell a resolved queue from a guessed one. The other
+  // four are the `HistoryDescriptionStore`, which needs `options.cwd` and
+  // `logger`, both constructor locals.
+  // The measured alternative, and why it is not taken here: FR-R3-010 created
+  // this same ten-line literal at a second site, in
+  // src/activation/run-safety-wiring.ts, and a `createHistoryRecorder()` factory
+  // in the module that already owns the class would collapse both. It buys 8 of
+  // the 10 — 965 measured, so it does not clear this ceiling on its own — while
+  // changing the live wiring of a third file this task does not otherwise
+  // touch. Recorded rather than done: it is a consolidation worth making on its
+  // own terms, not a budget manoeuvre, and doing it here would mean a raise and
+  // a refactor instead of one or the other.
+  // Set to exactly what the file measures.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 973 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both

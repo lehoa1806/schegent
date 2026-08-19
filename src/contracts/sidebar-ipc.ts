@@ -69,6 +69,9 @@ export const CMD_STOP_PHASE_LOG_TAIL = 'CMD_STOP_PHASE_LOG_TAIL' as const;
 // "Open Settings" CTA when verbose diagnostics is disabled. Read-only
 // (the operator still has to flip the toggle by hand).
 export const CMD_OPEN_VERBOSE_SETTING = 'CMD_OPEN_VERBOSE_SETTING' as const;
+// FR-R3-010 — resolve a completed Run's `auditLogPointer` to its audit records.
+// READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-audit-pointer.ts` says why.
+export const CMD_RESOLVE_AUDIT_POINTER = 'CMD_RESOLVE_AUDIT_POINTER' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -176,6 +179,7 @@ export const COMMAND_TYPES = [
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
+  CMD_RESOLVE_AUDIT_POINTER,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -223,6 +227,9 @@ import type {
   StopPhaseLogTailCommand
 } from './sidebar-ipc/phase-log';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
+import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
+export type { HistoryEvidenceEntry, ResolveAuditPointerRequest, ResolveAuditPointerCommand,
+  ResolveAuditPointerResponse } from './sidebar-ipc/history-evidence';
 import type {
   ExportProcessYamlCommand,
   PreflightProcessYamlCommand
@@ -269,6 +276,8 @@ export type {
   TaskRecord,
   PhaseTypeAggregate,
   CostTimelinePoint,
+  CumulativeTotals,
+  MetricsCoverage,
   ReadMetricsRequest,
   ReadMetricsCommand,
   ReadMetricsResponse
@@ -607,6 +616,7 @@ export type SidebarCommand =
   | StartPhaseLogTailCommand
   | StopPhaseLogTailCommand
   | OpenVerboseSettingCommand
+  | ResolveAuditPointerCommand
   | SetPhaseBreakpointCommand
   | ClearPhaseBreakpointCommand
   | StartQueueCommand
@@ -789,6 +799,9 @@ export function isCmdStopPhaseLogTail(value: unknown): value is StopPhaseLogTail
 }
 export function isCmdOpenVerboseSetting(value: unknown): value is OpenVerboseSettingCommand {
   return isObjectWithType(value, CMD_OPEN_VERBOSE_SETTING);
+}
+export function isCmdResolveAuditPointer(value: unknown): value is ResolveAuditPointerCommand {
+  return isObjectWithType(value, CMD_RESOLVE_AUDIT_POINTER);
 }
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
@@ -993,6 +1006,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_START_PHASE_LOG_TAIL]: isCmdStartPhaseLogTail,
   [CMD_STOP_PHASE_LOG_TAIL]: isCmdStopPhaseLogTail,
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
+  [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

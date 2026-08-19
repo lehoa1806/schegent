@@ -60,6 +60,13 @@ function refusalFor(sourceRunId: string, outputName: string) {
   );
 }
 
+/**
+ * FR-R3-010 (T402) — a `prior-output` reference names a run id and nothing
+ * else, so `outputsFor` folds every partition. These cases file everything
+ * under one queue; the cross-partition fold has its own case below.
+ */
+const QUEUE = 'default';
+
 beforeEach(async () => {
   const store = new WorkspaceStateStore(new FakeMemento());
   await store.initialize();
@@ -68,12 +75,12 @@ beforeEach(async () => {
 
 describe('a Run the reader cannot find (FR-011)', () => {
   it('answers null rather than an empty list', async () => {
-    await history.append(entryFor('run-known'));
+    await history.append(QUEUE, entryFor('run-known'));
     expect(readPriorRunOutputs('run-never-existed')).toBeNull();
   });
 
   it('refuses as prior-run-not-found', async () => {
-    await history.append(entryFor('run-known', [{ name: 'report', status: 'unresolved' }]));
+    await history.append(QUEUE, entryFor('run-known', [{ name: 'report', status: 'unresolved' }]));
     expect(refusalFor('run-never-existed', 'report')).toEqual({
       ok: false,
       code: 'prior-run-not-found'
@@ -85,9 +92,9 @@ describe('a Run the reader cannot find (FR-011)', () => {
     // can no longer tell you about that Run" and "no such Run" are the same
     // answer. Claiming it was found and recorded nothing would assert something
     // about a record the host does not have.
-    await history.append(entryFor('run-oldest', [{ name: 'report', status: 'resolved', reference: 'out/report.md' }]));
+    await history.append(QUEUE, entryFor('run-oldest', [{ name: 'report', status: 'resolved', reference: 'out/report.md' }]));
     for (let i = 0; i < 50; i++) {
-      await history.append(entryFor(`run-filler-${i}`));
+      await history.append(QUEUE, entryFor(`run-filler-${i}`));
     }
     expect(readPriorRunOutputs('run-oldest')).toBeNull();
     expect(refusalFor('run-oldest', 'report')).toEqual({
@@ -99,12 +106,12 @@ describe('a Run the reader cannot find (FR-011)', () => {
 
 describe('a Run the reader finds (FR-011, FR-012)', () => {
   it('answers an empty list — not null — for a Run that recorded nothing', async () => {
-    await history.append(entryFor('run-silent'));
+    await history.append(QUEUE, entryFor('run-silent'));
     expect(readPriorRunOutputs('run-silent')).toEqual([]);
   });
 
   it('refuses an output of a Run that recorded nothing as prior-output-not-found', async () => {
-    await history.append(entryFor('run-silent'));
+    await history.append(QUEUE, entryFor('run-silent'));
     expect(refusalFor('run-silent', 'report')).toEqual({
       ok: false,
       code: 'prior-output-not-found'
@@ -113,6 +120,7 @@ describe('a Run the reader finds (FR-011, FR-012)', () => {
 
   it('refuses an output name the Run never recorded as prior-output-not-found', async () => {
     await history.append(
+      QUEUE,
       entryFor('run-recorded', [{ name: 'report', status: 'resolved', reference: 'out/report.md' }])
     );
     expect(refusalFor('run-recorded', 'summary')).toEqual({
@@ -123,6 +131,7 @@ describe('a Run the reader finds (FR-011, FR-012)', () => {
 
   it('refuses an output recorded unresolved as prior-output-not-found (FR-012)', async () => {
     await history.append(
+      QUEUE,
       entryFor('run-recorded', [
         { name: 'report', status: 'resolved', reference: 'out/report.md' },
         { name: 'summary', status: 'unresolved' }
@@ -136,6 +145,7 @@ describe('a Run the reader finds (FR-011, FR-012)', () => {
 
   it('resolves an output recorded with a location', async () => {
     await history.append(
+      QUEUE,
       entryFor('run-recorded', [{ name: 'report', status: 'resolved', reference: 'out/report.md' }])
     );
     expect(refusalFor('run-recorded', 'report')).toEqual({
@@ -146,9 +156,28 @@ describe('a Run the reader finds (FR-011, FR-012)', () => {
 
   it('matches the output name exactly, without trimming or case folding', async () => {
     await history.append(
+      QUEUE,
       entryFor('run-recorded', [{ name: 'report', status: 'resolved', reference: 'out/report.md' }])
     );
     expect(refusalFor('run-recorded', ' report').ok).toBe(false);
     expect(refusalFor('run-recorded', 'Report').ok).toBe(false);
+  });
+
+  it('resolves across partitions, so which queue ran the work does not decide it', async () => {
+    // FR-R3-010 (T402) partitioned history by queue. A `prior-output` reference
+    // names a run id and nothing else, so a lookup restricted to one partition
+    // would make the very same reference resolvable or not depending on which
+    // queue happened to pick the work up — a composition breaking for a reason
+    // the operator never expressed.
+    await history.append(
+      'queue-release',
+      entryFor('run-elsewhere', [
+        { name: 'report', status: 'resolved', reference: 'out/elsewhere.md' }
+      ])
+    );
+    expect(refusalFor('run-elsewhere', 'report')).toEqual({
+      ok: true,
+      reference: 'out/elsewhere.md'
+    });
   });
 });

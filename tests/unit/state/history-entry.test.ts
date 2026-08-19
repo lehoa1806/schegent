@@ -1,13 +1,22 @@
-// US5 / FR-029: HistoryEntry must persist a sanitized full original
-// description so rerun-from-history is faithful, and legacy entries (written
-// under STATE_SCHEMA_VERSION 1, before the field existed) must be migrated
-// forward with `originalDescription === undefined` so the rerun control can
-// disable itself with the canonical tooltip.
+// US5 / FR-029: a sanitized full original description must survive a completed
+// run so rerun-from-history is faithful, and legacy entries (written under
+// STATE_SCHEMA_VERSION 1, before the field existed) must be migrated forward
+// with `originalDescription === undefined` so the rerun control can disable
+// itself with the canonical tooltip.
+//
+// FR-R3-010 (T405) moved *where* the full text lives — out of the memento entry
+// and onto disk beside the run's other evidence — without changing that it must
+// exist. `buildHistoryEntry` now returns it alongside the entry rather than
+// inside it, so the FR-029 requirement is asserted on `fullDescription` and the
+// entry is asserted to have stopped carrying it.
 
 import { describe, it, expect } from 'vitest';
 import {
+  buildAuditLogPointer,
   buildHistoryEntry,
   ensureHistoryEntry,
+  parseAuditLogPointer,
+  withDescriptionRef,
   DESCRIPTION_PREVIEW_MAX,
   type HistoryEntry
 } from '../../../src/state/history-entry';
@@ -16,12 +25,21 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 
 const logger = new SanitizedLogger();
 
-describe('buildHistoryEntry — sanitized originalDescription (US5 / FR-029)', () => {
-  it('persists the full sanitized original description', () => {
+/**
+ * The partition every read in this file is performed against.
+ *
+ * `ensureHistoryEntry` takes it because the map key is the only place the queue
+ * association is recorded (FR-R3-010 T402), so a normaliser has to be told
+ * which partition the row came out of.
+ */
+const QUEUE = 'queue-under-test';
+
+describe('buildHistoryEntry — sanitized full description (US5 / FR-029, FR-R3-010)', () => {
+  it('returns the full sanitized original description for the caller to store', () => {
     const description =
       'Investigate cache invalidation when the upstream API rotates its session-id cookie ' +
       'after a 401 response and the client retries with a stale auth header.';
-    const entry = buildHistoryEntry({
+    const built = buildHistoryEntry({
       runId: 'run-1',
       featureId: 'feat-1',
       description,
@@ -30,15 +48,37 @@ describe('buildHistoryEntry — sanitized originalDescription (US5 / FR-029)', (
       completedAt: 1_700_000_001_500,
       logger
     });
-    expect(entry.originalDescription).toBe(description);
+    expect(built.fullDescription).toBe(description);
     // and the preview is independently truncated
-    expect(entry.descriptionPreview.length).toBeLessThanOrEqual(DESCRIPTION_PREVIEW_MAX);
+    expect(built.entry.descriptionPreview.length).toBeLessThanOrEqual(DESCRIPTION_PREVIEW_MAX);
   });
 
-  it('redacts token-shaped strings inside originalDescription before persistence', () => {
+  it('no longer puts the full description in the memento entry', () => {
+    // FR-R3-010: the entry is rewritten whole on every completion, so an
+    // unbounded field on it makes the cost of recording a run a function of the
+    // *content* of the 50 runs before it. The field is not merely absent — it
+    // must be genuinely unset, since a `''` would read as an empty description
+    // rather than as one stored elsewhere.
+    const built = buildHistoryEntry({
+      runId: 'run-1b',
+      featureId: 'feat-1b',
+      description: 'a'.repeat(4_000),
+      terminalStatus: 'completed',
+      startedAt: 0,
+      completedAt: 1,
+      logger
+    });
+    expect(built.entry.originalDescription).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(built.entry, 'originalDescription')).toBe(false);
+    // The length is kept so the UI can say how much text it is not showing
+    // without a filesystem round trip.
+    expect(built.entry.descriptionLength).toBe(4_000);
+  });
+
+  it('redacts token-shaped strings before the text leaves the builder', () => {
     const dirty =
       'I tested with sk-ant-api03-' + 'X'.repeat(60) + ' and it failed.';
-    const entry = buildHistoryEntry({
+    const built = buildHistoryEntry({
       runId: 'run-2',
       featureId: 'feat-2',
       description: dirty,
@@ -48,24 +88,87 @@ describe('buildHistoryEntry — sanitized originalDescription (US5 / FR-029)', (
       lastErrorSummary: 'auth failure',
       logger
     });
-    expect(entry.originalDescription).toBeDefined();
-    expect(entry.originalDescription!).not.toContain('sk-ant-api03-XXXXXXXXXX');
-    expect(entry.originalDescription!).toContain('[REDACTED]');
+    // The sanitize-once invariant makes this the only place redaction happens,
+    // so a secret surviving here reaches disk verbatim.
+    expect(built.fullDescription).not.toContain('sk-ant-api03-XXXXXXXXXX');
+    expect(built.fullDescription).toContain('[REDACTED]');
   });
 
-  it('still persists originalDescription when description is short', () => {
-    const description = 'tiny';
-    const entry = buildHistoryEntry({
+  it('returns the description unchanged when it is shorter than the preview cap', () => {
+    const built = buildHistoryEntry({
       runId: 'run-3',
       featureId: 'feat-3',
-      description,
+      description: 'tiny',
       terminalStatus: 'completed',
       startedAt: 0,
       completedAt: 100,
       logger
     });
-    expect(entry.originalDescription).toBe('tiny');
-    expect(entry.descriptionPreview).toBe('tiny');
+    expect(built.fullDescription).toBe('tiny');
+    expect(built.entry.descriptionPreview).toBe('tiny');
+    expect(built.entry.descriptionLength).toBe(4);
+  });
+
+  it('the builder never claims a reference the caller has not yet earned', () => {
+    // A `descriptionRef` asserts that something is retrievable. The builder
+    // runs before the write, so it cannot know — stamping one there and hoping
+    // is how a record comes to point at nothing.
+    const built = buildHistoryEntry({
+      runId: 'run-4',
+      featureId: 'feat-4',
+      description: 'whatever',
+      terminalStatus: 'completed',
+      startedAt: 0,
+      completedAt: 1,
+      logger
+    });
+    expect(built.entry.descriptionRef).toBeUndefined();
+
+    const stamped = withDescriptionRef(built.entry, '.schegent/history/run-4.txt');
+    expect(stamped.descriptionRef).toBe('.schegent/history/run-4.txt');
+
+    // A failed write leaves the entry exactly as it was, not carrying a null.
+    const unstamped = withDescriptionRef(built.entry, null);
+    expect(unstamped).toBe(built.entry);
+  });
+});
+
+// FR-R3-010 (T407) — the pointer format has one writer and one reader, and the
+// reader tolerates exactly the legacy shapes that shipped before it existed.
+
+describe('auditLogPointer format (FR-R3-010 T407)', () => {
+  it('round-trips a run id', () => {
+    const pointer = buildAuditLogPointer('run-abc');
+    expect(pointer).toBe('runId:run-abc');
+    expect(parseAuditLogPointer(pointer)).toEqual({ runId: 'run-abc' });
+  });
+
+  it('refuses the legacy shapes rather than guessing a run id from them', () => {
+    // Fixtures written before the format was pinned carried a path and an empty
+    // string. Both parse to `null`, which the resolver reports as
+    // *unaddressable* — a different answer from "the evidence expired", and
+    // collapsing the two would tell an operator their evidence had aged out
+    // when in fact it was never addressable.
+    expect(parseAuditLogPointer('.schegent/audit.log')).toBeNull();
+    expect(parseAuditLogPointer('')).toBeNull();
+    expect(parseAuditLogPointer('runId:')).toBeNull();
+  });
+
+  it('a stored entry with no pointer is given the derivable one on read', () => {
+    const entry = ensureHistoryEntry(
+      {
+        runId: 'run-derived',
+        featureId: 'feat-derived',
+        descriptionPreview: '',
+        terminalStatus: 'completed',
+        startedAt: '2026-05-10T00:00:00.000Z',
+        completedAt: '2026-05-10T00:00:01.000Z',
+        durationMs: 0,
+        lastErrorSummary: null
+      },
+      QUEUE
+    );
+    expect(entry!.auditLogPointer).toBe('runId:run-derived');
   });
 });
 
@@ -83,7 +186,7 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
       lastErrorSummary: null,
       auditLogPointer: 'runId:run-1'
     };
-    const entry = ensureHistoryEntry(raw);
+    const entry = ensureHistoryEntry(raw, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.originalDescription).toBe('full original description goes here');
   });
@@ -104,7 +207,7 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
       lastErrorSummary: null,
       auditLogPointer: 'runId:legacy-1'
     };
-    const entry = ensureHistoryEntry(legacyRaw);
+    const entry = ensureHistoryEntry(legacyRaw, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.originalDescription).toBeUndefined();
     // confirms the field is genuinely absent (vs stored as null/empty-string)
@@ -124,7 +227,7 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
       lastErrorSummary: null,
       auditLogPointer: 'runId:run-bad'
     };
-    const entry = ensureHistoryEntry(raw);
+    const entry = ensureHistoryEntry(raw, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.originalDescription).toBeUndefined();
   });
@@ -136,7 +239,9 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
     // and is synchronous. Any audit-log access would require an extra
     // dependency parameter or a Promise return type.
     expect(typeof ensureHistoryEntry).toBe('function');
-    expect(ensureHistoryEntry.length).toBe(1);
+    // `raw` and the partition it was read from — no dependency through which
+    // I/O could reach it.
+    expect(ensureHistoryEntry.length).toBe(2);
     // returns synchronously — no Promise
     const out = ensureHistoryEntry({
       runId: 'r',
@@ -148,7 +253,7 @@ describe('ensureHistoryEntry — forward migration of legacy entries (US5 / FR-0
       durationMs: 0,
       lastErrorSummary: null,
       auditLogPointer: 'runId:r'
-    });
+    }, QUEUE);
     expect(out).not.toBeNull();
     expect(out instanceof Promise).toBe(false);
   });
@@ -178,7 +283,7 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
       completedAt: 1_700_000_001_000,
       logger,
       ...(runOutputs !== undefined ? { runOutputs } : {})
-    });
+    }).entry;
   }
 
   it('buildHistoryEntry carries the records through unchanged', () => {
@@ -192,7 +297,7 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
   });
 
   it('ensureHistoryEntry preserves the records across a read cycle', () => {
-    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))));
+    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))), QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.runOutputs).toEqual(RECORDED);
   });
@@ -201,7 +306,7 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
     // The absent key is what makes `prior-output-not-found` reachable (FR-012).
     // A normaliser that filled it with '' or null would make an unlocatable
     // output look locatable to the resolver.
-    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))));
+    const entry = ensureHistoryEntry(JSON.parse(JSON.stringify(built(RECORDED))), QUEUE);
     const summary = entry!.runOutputs!.find((record) => record.name === 'summary');
     expect(summary).toBeDefined();
     expect(Object.prototype.hasOwnProperty.call(summary, 'reference')).toBe(false);
@@ -222,7 +327,7 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
       lastErrorSummary: null,
       auditLogPointer: 'runId:legacy-outputs'
     };
-    const entry = ensureHistoryEntry(legacyRaw);
+    const entry = ensureHistoryEntry(legacyRaw, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.runOutputs).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(entry, 'runOutputs')).toBe(false);
@@ -240,7 +345,7 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
       durationMs: 1_000,
       lastErrorSummary: null,
       auditLogPointer: 'runId:run-bad-outputs'
-    });
+    }, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.runOutputs).toBeUndefined();
   });

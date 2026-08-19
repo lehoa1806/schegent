@@ -9,6 +9,7 @@
     CMD_OPEN_HISTORY_ITEM_DETAILS
   } from '../lib/messages';
   import { useConfirm } from '../lib/use-confirm';
+  import { resolveAuditPointer } from '../lib/history-evidence-ipc';
 
   interface Props {
     history: readonly HistoryEntry[];
@@ -44,8 +45,68 @@
     postCommand(CMD_RERUN_FROM_HISTORY, { runId });
   }
 
-  function onOpenAudit(): void {
-    postCommand(CMD_OPEN_AUDIT_LOG);
+  // FR-R3-010 (T411) — per-row evidence state for the Audit action.
+  //
+  // `tone` is the whole point of this task. An operator told "could not load"
+  // goes looking for a bug; one told "the audit log covering this run has been
+  // rotated away" goes looking for the archive. Those are different actions, so
+  // the three "no evidence" answers render as `info` and only a genuine
+  // resolution failure renders as `error`. The host already keeps them apart on
+  // the wire — collapsing them here would throw that away at the last step.
+  type EvidenceState = { readonly tone: 'info' | 'error'; readonly message: string };
+  let evidence = $state<Record<string, EvidenceState | undefined>>({});
+  let pending = $state<Record<string, boolean>>({});
+
+  async function onOpenAudit(runId: string): Promise<void> {
+    if (pending[runId]) return;
+    pending = { ...pending, [runId]: true };
+    evidence = { ...evidence, [runId]: undefined };
+    try {
+      const result = await resolveAuditPointer(runId);
+      evidence = { ...evidence, [runId]: describeEvidence(result) };
+      // Only a run whose evidence is actually reachable opens the log. Opening
+      // it on an expired pointer would drop the operator into a file that
+      // cannot contain what they asked for, with nothing to say why.
+      if (result.outcome === 'resolved') postCommand(CMD_OPEN_AUDIT_LOG);
+    } finally {
+      pending = { ...pending, [runId]: false };
+    }
+  }
+
+  function describeEvidence(
+    result: Awaited<ReturnType<typeof resolveAuditPointer>>
+  ): EvidenceState {
+    switch (result.outcome) {
+      case 'resolved':
+        return {
+          tone: 'info',
+          message: result.truncated
+            ? `Opened audit log — showing the first ${result.entries.length} of this run's records.`
+            : `Opened audit log — ${result.entries.length} record${result.entries.length === 1 ? '' : 's'} for this run.`
+        };
+      case 'evidence-expired':
+        return {
+          tone: 'info',
+          message: 'The audit log covering this run has been rotated away. Check archived logs.'
+        };
+      case 'no-evidence-recorded':
+        return { tone: 'info', message: 'This run recorded no audit entries.' };
+      case 'unaddressable':
+        return {
+          tone: 'info',
+          message: 'This run predates audit pointers, so its records cannot be located automatically.'
+        };
+      case 'failure':
+        // The reason is a closed set the host chose; it never carries a path or
+        // an adapter's message, so it is safe to branch on but not to print.
+        return {
+          tone: 'error',
+          message:
+            result.reason === 'corpus-unreadable'
+              ? 'Could not read the audit log.'
+              : 'Could not load this run’s audit records.'
+        };
+    }
   }
 
   function onOpenDetails(id: string): void {
@@ -128,8 +189,8 @@
               class="action"
               data-testid="history-item-open-audit-{entry.runId}"
               aria-label="Open audit log"
-              aria-disabled={readOnlyAria}
-              onclick={onOpenAudit}
+              aria-disabled={pending[entry.runId] ? 'true' : readOnlyAria}
+              onclick={() => onOpenAudit(entry.runId)}
             >Audit</button>
             <button
               type="button"
@@ -140,6 +201,24 @@
               onclick={() => onOpenDetails(entry.runId)}
             >Details</button>
           </span>
+          {#if evidence[entry.runId]}
+            {@const state = evidence[entry.runId]}
+            {#if state?.tone === 'error'}
+              <span
+                class="evidence tone-error"
+                data-testid="history-item-evidence-{entry.runId}"
+                data-evidence-tone="error"
+                role="alert"
+              >{state.message}</span>
+            {:else}
+              <span
+                class="evidence tone-info"
+                data-testid="history-item-evidence-{entry.runId}"
+                data-evidence-tone="info"
+                role="status"
+              >{state?.message}</span>
+            {/if}
+          {/if}
         </li>
       {/each}
     </ul>
@@ -272,6 +351,22 @@
     display: inline-flex;
     gap: 4px;
     align-items: center;
+  }
+  /* FR-R3-010 (T411) — the two tones are visually distinct on purpose. An
+     expired pointer is an ordinary fact about retention, so it reads muted;
+     only a failure borrows the error colour. */
+  .evidence {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    padding-top: 3px;
+    font-size: 0.82em;
+    line-height: 1.4;
+  }
+  .evidence.tone-info {
+    color: var(--schegent-muted-fg);
+  }
+  .evidence.tone-error {
+    color: var(--schegent-error-text);
   }
   .action {
     background: transparent;
