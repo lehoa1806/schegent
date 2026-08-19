@@ -15,11 +15,11 @@
 //
 // Two things this path deliberately does NOT do:
 //
-//   It does not fail open. `WorkflowRunFactory.resolvePipeline()` substitutes the
-//   built-in Pipeline for an unknown id and `done` for a Phase the catalog lost;
-//   that behaviour is pinned for every pre-existing path (T041) and forbidden
-//   here (FR-033). A composed run either resolves exactly what the operator
-//   submitted against, or it is refused.
+//   It does not fail open. FR-033 forbids it here, and feature 098 (T024/T025)
+//   removed the last of it elsewhere: `WorkflowRunFactory.resolvePipeline()` used
+//   to substitute the built-in Pipeline for an unknown id and to drop a Phase the
+//   catalog lost, and refuses both now. A composed run either resolves exactly
+//   what the operator submitted against, or it is refused.
 //
 //   It does not expand the plan itself. Resolution against the effective catalog
 //   happens in the seam because that is the only layer that can see it; the
@@ -29,6 +29,10 @@
 // No absolute path leaves this file (FR-020). The workspace root is resolved
 // host-side and every field error names a field id and a limit, never a location.
 
+import {
+  CATALOG_EMPTY_REASON,
+  EMPTY_CATALOG_REFUSAL
+} from '../../../contracts/empty-catalog-guidance';
 import type { LaunchPipelineCommand, LaunchPipelineResult } from '../../../contracts/sidebar-ipc';
 import { startPipelineRun } from '../../../services/workflow-execution/node-run-starter';
 import { getCanonicalWorkspaceRoot } from '../../../state/workspace-folder-picker';
@@ -49,6 +53,21 @@ export const handler: CommandHandler<LaunchPipelineCommand> = async (ctx, comman
     request: command.payload.request,
     workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null
   });
+
+  // Feature 098 (T058, FR-031) — the empty catalog is the one refusal whose
+  // remedy is not in the request. Every other rejected-definition reason names
+  // something the operator can address in the composer they are looking at; this
+  // one asks them to leave it and import a process document, so it is said in
+  // words rather than left as a reason literal for the composer to echo.
+  //
+  // Notified host-side rather than carried on the ack, on the same terms the
+  // scheduled-start path uses — that path has no webview to render anything, and
+  // a refusal an operator only sees if a surface happens to be open is not the
+  // record FR-031b says the message is. The ack still carries the named reason
+  // below, unchanged.
+  if (started.outcome === 'rejected-definition' && started.reason === CATALOG_EMPTY_REASON) {
+    ctx.deps.notifyWarning?.(EMPTY_CATALOG_REFUSAL);
+  }
 
   // One arm differs from the seam's vocabulary: the queue item id is this wire's
   // `requestId`. The rest are the same refusal families, forwarded unchanged.

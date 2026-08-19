@@ -43,8 +43,16 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // its members, which is the single thing a future reader here could get wrong.
 // No responsibility was added — the coordinator shell forwards one more input
 // than it did — so the budget buys the note, not new work.
+// Feature 098 (T018) — bumped phase-runner.ts +10. `assertPhaseRunnerPolicy`
+// took an id and now takes the Phase's declared `sideEffects` alongside it, which
+// costs one argument and one line at the call. The rest is the note recording why
+// the assertion is here at all: this is the only site that sees a `git`-declaring
+// Phase with no runner of its own, because both save gates return early on that
+// shape. No responsibility was added — the coordinator shell still forwards a
+// verdict it does not compute — so, as with FR-R3-001 T260 above, the budget buys
+// the note rather than new work.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 805 },
+  { path: 'src/controller/phase-runner.ts', max: 815 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped

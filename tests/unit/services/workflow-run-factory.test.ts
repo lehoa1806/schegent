@@ -9,8 +9,10 @@
 // The pre-feature behaviour is reconstructed rather than remembered: the run a
 // plan-less item produces is compared field-by-field against
 // `resolvePipeline(requestedId)`, which is the function the pre-feature `create()`
-// called and which this feature does not modify. So the comparison stays honest
-// even if the catalog, the built-in Pipeline, or the snapshot helpers change.
+// called. So the comparison stays honest even if the catalog or the snapshot
+// helpers change. Feature 098 (T024/T025) did modify that function — it answers
+// with a discriminated resolution and refuses rather than substituting — which is
+// why the comparison now goes through the `resolved()` helper below.
 //
 // The `pipeline-snapshot.test.ts` integration suite covers the *plan-carrying*
 // half, including the deleted-Phase and deleted-Pipeline cases.
@@ -27,7 +29,11 @@ import type { FrozenRunPlan } from '../../../src/contracts/run-request';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { ensureExtendedFeatureRequest, type FeatureRequest } from '../../../src/queue/feature-request';
 import { buildMutationPlan } from '../../../src/services/mutation-plan';
-import { WorkflowRunFactory } from '../../../src/services/workflow-run-factory';
+import {
+  UnresolvablePipelineError,
+  WorkflowRunFactory
+} from '../../../src/services/workflow-run-factory';
+import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 
 const ALPHA: PhaseDef = {
   id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.', sourceScope: 'built-in'
@@ -47,12 +53,17 @@ function catalog(): PipelineCatalog {
   return buildCatalog([ALPHA, BETA, DONE], [AB_FLOW], { claude: [], codex: [], agy: [] }, 'ab-flow');
 }
 
-function factory(): WorkflowRunFactory {
+function factory(getCatalog: () => PipelineCatalog = catalog): WorkflowRunFactory {
   return new WorkflowRunFactory({
-    getCatalog: catalog,
+    getCatalog,
     defaultRunnerKind: 'claude',
     logger: new SanitizedLogger()
   });
+}
+
+/** Feature 098 (T020/T023) — the post-feature shape of a catalog with nothing in it. */
+function emptyCatalog(): PipelineCatalog {
+  return buildCatalog([], [], { claude: [], codex: [], agy: [] }, '');
 }
 
 function plainItem(overrides: Partial<FeatureRequest> = {}): FeatureRequest {
@@ -63,6 +74,17 @@ function plainItem(overrides: Partial<FeatureRequest> = {}): FeatureRequest {
     }),
     ...overrides
   };
+}
+
+/**
+ * Feature 098 (T024) — `resolvePipeline` answers with a discriminated resolution
+ * now, so a test that wants the Pipeline says so and a refusal fails loudly here
+ * rather than as `undefined.phases` three assertions later.
+ */
+function resolved(subject: WorkflowRunFactory, id: string): WorkflowRunPipeline {
+  const resolution = subject.resolvePipeline(id);
+  if (!resolution.ok) throw new Error(`expected '${id}' to resolve, got ${resolution.refusal.reason}`);
+  return resolution.pipeline;
 }
 
 /** What `validateRunRequest()` produces, reduced to what the factory reads. */
@@ -82,20 +104,7 @@ describe('a queue item without a frozen plan resolves exactly as before (T041)',
 
     const run = await subject.create(plainItem(), null, 'ab-flow');
 
-    expect(run.pipeline).toEqual(subject.resolvePipeline('ab-flow'));
-  });
-
-  it('keeps the fail-open fallback for an unknown Pipeline id', async () => {
-    // Deliberately pinned rather than fixed. The fallback is wrong for a
-    // *composed* run — which is why T040's branch exists — but it is the
-    // behaviour every pre-existing start path has, and changing it here would be
-    // a silent behavioural change to runs this feature never touched.
-    const subject = factory();
-
-    const run = await subject.create(plainItem(), null, 'no-such-pipeline');
-
-    expect(run.pipeline).toEqual(subject.resolvePipeline('no-such-pipeline'));
-    expect(run.pipeline?.phases.some((phase) => phase.id === 'done')).toBe(true);
+    expect(run.pipeline).toEqual(resolved(subject, 'ab-flow'));
   });
 
   it('writes no runInputs, so the record serializes as it did before', async () => {
@@ -107,12 +116,88 @@ describe('a queue item without a frozen plan resolves exactly as before (T041)',
 
   it('starts at the same phase and carries the same mutation plan', async () => {
     const subject = factory();
-    const resolved = subject.resolvePipeline('ab-flow');
+    const pipeline = resolved(subject, 'ab-flow');
 
     const run = await subject.create(plainItem(), null, 'ab-flow');
 
-    expect(run.currentPhase).toBe(resolved.phases[0]?.id);
-    expect(run.mutationPlan?.fingerprint).toBe(buildMutationPlan(resolved).fingerprint);
+    expect(run.currentPhase).toBe(pipeline.phases[0]?.id);
+    expect(run.mutationPlan?.fingerprint).toBe(buildMutationPlan(pipeline).fingerprint);
+  });
+});
+
+// Feature 098 (T020, US3, FR-023/FR-024, SC-007/SC-008) — the two substitutions
+// this factory used to perform become refusals.
+//
+// The test that stood here pinned the fail-open fallback deliberately: under
+// feature 087 an unknown id became the built-in Pipeline, and that was the
+// behaviour every pre-composed start path had. It is now the defect. With the
+// built-in layer emptied the fallback substitutes *nothing* — or, while the rows
+// are still present, a Spec-kit Pipeline the operator never asked for — so the
+// honest answer is a refusal naming the id that failed to resolve.
+//
+// Both refusals are values, not throws: `resolvePipeline` is also read from
+// snapshot-projection paths where a throw takes down the sidebar render rather
+// than refusing a launch. `create()` is the one caller that converts a refusal
+// into a failure, and it does so the way it already fails an unapproved mutation
+// plan — before any Run record exists.
+describe('an unresolvable definition is refused, not substituted (T020)', () => {
+  it('refuses an unknown Pipeline id, naming it', () => {
+    const resolution = factory().resolvePipeline('no-such-pipeline');
+
+    expect(resolution).toEqual({
+      ok: false,
+      refusal: { reason: 'pipeline-not-found', pipelineId: 'no-such-pipeline' }
+    });
+  });
+
+  it('creates no Run record for an unknown Pipeline id', async () => {
+    await expect(factory().create(plainItem(), null, 'no-such-pipeline')).rejects.toThrow(
+      UnresolvablePipelineError
+    );
+  });
+
+  it('carries the requested id on the error the caller sees', async () => {
+    // SC-007 is about the operator seeing *which* id failed, so the refusal has
+    // to survive the hop out of the factory rather than being flattened into a
+    // generic start failure.
+    const error = await factory()
+      .create(plainItem(), null, 'no-such-pipeline')
+      .then(() => null, (err: unknown) => err);
+
+    expect(error).toBeInstanceOf(UnresolvablePipelineError);
+    expect((error as UnresolvablePipelineError).refusal).toEqual({
+      reason: 'pipeline-not-found',
+      pipelineId: 'no-such-pipeline'
+    });
+    expect((error as Error).message).toContain('no-such-pipeline');
+  });
+
+  it('refuses a Pipeline naming a Phase id with no definition, rather than omitting it', () => {
+    // The pre-feature expression was `phasesById.get(phaseId) ?? get('done')`,
+    // and since no `PhaseDef` ever declared `done` the miss resolved to
+    // `undefined` and the Phase was dropped — a Run that silently executed a
+    // shorter sequence than the Pipeline named (FR-022).
+    const gapped: PipelineDef = {
+      id: 'gapped', name: 'Has a gap', phases: ['alpha', 'ghost'], sourceScope: 'workspace'
+    };
+    const subject = factory(() =>
+      buildCatalog([ALPHA, BETA], [gapped], { claude: [], codex: [], agy: [] }, 'gapped')
+    );
+
+    expect(subject.resolvePipeline('gapped')).toEqual({
+      ok: false,
+      refusal: { reason: 'unknown-phase', pipelineId: 'gapped', phaseId: 'ghost' }
+    });
+  });
+
+  it('appends no terminal phase to a Pipeline that does not name one', () => {
+    // The terminal `done` append went with the substitution (FR-021/FR-022). It
+    // depended on the same never-resolving lookup, so nothing it produced ever
+    // reached a Run — but a `done` reappearing here would mean a Phase in the
+    // snapshot that no Pipeline declared.
+    const pipeline = resolved(factory(), 'ab-flow');
+
+    expect(pipeline.phases.map((phase) => phase.id)).toEqual(['alpha', 'beta']);
   });
 });
 
@@ -142,5 +227,41 @@ describe('a queue item carrying a frozen plan uses it verbatim (T040)', () => {
     );
 
     expect(Object.keys(run)).not.toContain('runOutputs');
+  });
+});
+
+// Feature 098 (T023, US3, FR-029, SC-009) — the refusals above sit on the
+// resolution path, and a frozen plan does not travel it.
+//
+// This is the standing hard rule on drain-time resolution, asserted rather than
+// stated: the operator approved one process and must watch that process run. The
+// catalog here holds *nothing* — not a stale definition, not a renamed one — so
+// every substitution and every refusal the feature introduces has its worst case
+// available, and the only thing that can carry the Run is the snapshot itself.
+describe('a frozen plan bypasses every refusal (T023)', () => {
+  it('executes every Phase in the snapshot, in order, against an empty catalog', async () => {
+    const plan = planFor(AB_FLOW, [ALPHA, BETA]);
+
+    const run = await factory(emptyCatalog).create(
+      plainItem({ pipelineId: 'ab-flow', runPlan: plan }), null, 'ab-flow'
+    );
+
+    expect(run.pipeline?.phases.map((phase) => phase.id)).toEqual(['alpha', 'beta']);
+    expect(run.pipeline).toEqual(plan.pipeline);
+    expect(run.currentPhase).toBe('alpha');
+  });
+
+  it('refuses nothing, even though the requested id resolves to nothing', async () => {
+    const subject = factory(emptyCatalog);
+    // The same id, on the same factory, without a plan: the refusal is live, so
+    // the plan branch is demonstrably bypassing it rather than resolving to the
+    // same answer by luck.
+    expect(subject.resolvePipeline('ab-flow').ok).toBe(false);
+
+    const run = await subject.create(
+      plainItem({ runPlan: planFor(AB_FLOW, [ALPHA, BETA]) }), null, 'ab-flow'
+    );
+
+    expect(run.pipeline?.id).toBe('ab-flow');
   });
 });

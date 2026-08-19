@@ -9,16 +9,83 @@ import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import {
-  BUILT_IN_BUGFIX_PIPELINE_ID,
-  BUILT_IN_CATALOG,
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINE_ID,
-  BUILT_IN_PIPELINES,
   buildCatalog,
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
+
+// Feature 098 (T080) — the two Pipelines these tests drive, declared here instead
+// of read off `BUILT_IN_PIPELINE` / `BUILT_IN_BUGFIX_PIPELINE`. They keep the
+// Spec-kit ids on purpose, because two things in the host still key on those exact
+// strings: `LOOP_PHASES` in `controller/phase.ts` decides which Phase loops, and
+// `workflow-run-factory.ts` skips the Phase after `speckit-specify` when a
+// featureDir is supplied. A test of either behavior needs a Pipeline that declares
+// them. That is a statement about the host's remaining hardcoded vocabulary — the
+// catalog ships none of these rows, and every one below is built by this file.
+const SPECKIT_PIPELINE_ID = 'speckit-new-feature';
+const SPECKIT_PHASE_IDS = [
+  'speckit-specify',
+  'speckit-clarify',
+  'speckit-plan',
+  'speckit-tasks',
+  'speckit-checklist',
+  'speckit-analyze',
+  'speckit-implement',
+  'speckit-review',
+  'finalize'
+];
+
+const BUGFIX_PIPELINE_ID = 'speckit-bugfix';
+const BUGFIX_PHASE_IDS = [
+  'bugfix-report',
+  'bugfix-patch',
+  'bugfix-verify-pre',
+  'bugfix-implement',
+  'bugfix-verify-post'
+];
+
+/**
+ * A Phase declaring nothing beyond its identity, except where a test needs a
+ * declaration to be visible. `speckit-specify` and `finalize` pin `runner:
+ * 'claude'` so the runner-inheritance test has both a pinned Phase and an
+ * inheriting one; `speckit-clarify` carries the retryCondition that makes it
+ * loopable, which is what the clarify-loop tests exercise.
+ */
+function testPhase(id: string): PhaseDef {
+  const base: PhaseDef = { id, name: id, instruction: `run ${id}` };
+  if (id === 'speckit-specify' || id === 'finalize') return { ...base, runner: 'claude' };
+  if (id === 'speckit-clarify') {
+    return { ...base, loopable: true, retryCondition: 'open_questions > 0' };
+  }
+  return base;
+}
+
+const TEST_PHASES: readonly PhaseDef[] = Object.freeze(
+  [...SPECKIT_PHASE_IDS, ...BUGFIX_PHASE_IDS].map(testPhase)
+);
+
+const SPECKIT_PIPELINE: PipelineDef = Object.freeze({
+  id: SPECKIT_PIPELINE_ID,
+  name: 'Spec-kit New Feature',
+  phases: Object.freeze([...SPECKIT_PHASE_IDS]) as readonly string[]
+});
+
+const BUGFIX_PIPELINE: PipelineDef = Object.freeze({
+  id: BUGFIX_PIPELINE_ID,
+  name: 'Spec-kit Bugfix',
+  phases: Object.freeze([...BUGFIX_PHASE_IDS]) as readonly string[]
+});
+
+function testCatalog() {
+  return buildCatalog(
+    TEST_PHASES,
+    [SPECKIT_PIPELINE, BUGFIX_PIPELINE],
+    { claude: [], codex: [], agy: [] },
+    SPECKIT_PIPELINE_ID
+  );
+}
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -45,6 +112,26 @@ function makeNotifier(): Notifier {
     warn: vi.fn(),
     error: vi.fn()
   } as unknown as Notifier;
+}
+
+/**
+ * Feature 098 (T026) — a pre-074 `pipeline` snapshot: present, because feature 009
+ * predates 074, and carrying no per-phase `runner`, because that is the field 074
+ * added. Two of the fixtures below omitted `pipeline` entirely, which quietly made
+ * them pre-*009* records too. The resume path used to synthesize the built-in
+ * Pipeline for those and now refuses, so a test about runner pinning or about
+ * disabled-phase skipping supplies the snapshot it is actually about.
+ */
+function pre074Snapshot(pipelineId: string): WorkflowRunPipeline {
+  const pipeline = [SPECKIT_PIPELINE, BUGFIX_PIPELINE].find(
+    (candidate) => candidate.id === pipelineId
+  )!;
+  const byId = new Map(TEST_PHASES.map((phase) => [phase.id, phase]));
+  return {
+    id: pipeline.id,
+    name: pipeline.name,
+    phases: pipeline.phases.map((phaseId) => ({ ...byId.get(phaseId)!, runner: undefined }))
+  };
 }
 
 function makeLock(): WorkspaceLockManager & { release: ReturnType<typeof vi.fn> } {
@@ -76,8 +163,13 @@ const opts = {
   cliPath: 'claude',
   cwd: '/repo',
   iterationCap: 5,
-  timeoutMs: 5_000,
+  timeoutMs: 5_000
 };
+
+// Feature 098 (T080) — the controller's own fallback is the empty catalog now, so
+// a test that means to drive a Pipeline has to hand it one. It goes in the deps
+// argument rather than in `opts`, which is where the controller reads it.
+const deps = { catalog: testCatalog() };
 
 let memento: FakeMemento;
 let store: WorkspaceStateStore;
@@ -107,12 +199,13 @@ beforeEach(async () => {
     notifier,
     new SanitizedLogger(),
     lock,
-    opts
+    opts,
+    deps
   );
 });
 
 describe('SchegentWorkflowController.startNew', () => {
-  it('drives all 9 phases to completion when all return clean', async () => {
+  it('drives every phase of the pipeline to completion when all return clean', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
@@ -121,22 +214,12 @@ describe('SchegentWorkflowController.startNew', () => {
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.status).toBe('completed');
     expect(run.currentPhase).toBe('done');
-    expect(runSpy).toHaveBeenCalledTimes(9);
+    expect(runSpy).toHaveBeenCalledTimes(SPECKIT_PHASE_IDS.length);
     const phasesCalled = runSpy.mock.calls.map((c) => (c[0] as { phase: string }).phase);
-    expect(phasesCalled).toEqual([
-      'speckit-specify',
-      'speckit-clarify',
-      'speckit-plan',
-      'speckit-tasks',
-      'speckit-checklist',
-      'speckit-analyze',
-      'speckit-implement',
-      'speckit-review',
-      'finalize'
-    ]);
+    expect(phasesCalled).toEqual(SPECKIT_PHASE_IDS);
   });
 
-  it('snapshots the speckit-new-feature pipeline onto run.pipeline when no pipelineId is supplied (T022, US1)', async () => {
+  it('snapshots the default pipeline onto run.pipeline when no pipelineId is supplied (T022, US1)', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
@@ -144,19 +227,9 @@ describe('SchegentWorkflowController.startNew', () => {
 
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.pipeline).toBeTruthy();
-    expect(run.pipeline?.id).toBe('speckit-new-feature');
+    expect(run.pipeline?.id).toBe(SPECKIT_PIPELINE_ID);
     expect(run.pipeline?.name).toBe('Spec-kit New Feature');
-    expect(run.pipeline?.phases.map((p) => p.id)).toEqual([
-      'speckit-specify',
-      'speckit-clarify',
-      'speckit-plan',
-      'speckit-tasks',
-      'speckit-checklist',
-      'speckit-analyze',
-      'speckit-implement',
-      'speckit-review',
-      'finalize'
-    ]);
+    expect(run.pipeline?.phases.map((p) => p.id)).toEqual(SPECKIT_PHASE_IDS);
   });
 
   it('freezes the effective global runner into every inherited phase', async () => {
@@ -168,7 +241,8 @@ describe('SchegentWorkflowController.startNew', () => {
       notifier,
       new SanitizedLogger(),
       lock,
-      { ...opts, defaultRunnerKind: 'agy' }
+      { ...opts, defaultRunnerKind: 'agy' },
+      deps
     );
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
@@ -446,29 +520,20 @@ describe('SchegentWorkflowController.startNew', () => {
   });
 });
 
-describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routing (T021a, US2, FR-007 + FR-011 + FR-014)', () => {
-  const BUGFIX_PHASES = [
-    'bugfix-report',
-    'bugfix-patch',
-    'bugfix-verify-pre',
-    'bugfix-implement',
-    'bugfix-verify-post'
-  ];
-
+describe('SchegentWorkflowController.startNew — second-pipeline routing (T021a, US2, FR-007 + FR-011 + FR-014)', () => {
   it('(a) captures the bugfix pipeline 5-phase list in the immutable WorkflowRun.pipeline snapshot when pipelineId is supplied', async () => {
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('bug report');
 
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: BUGFIX_PIPELINE_ID });
 
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(run.pipeline?.id).toBe(BUILT_IN_BUGFIX_PIPELINE_ID);
+    expect(run.pipeline?.id).toBe(BUGFIX_PIPELINE_ID);
     expect(run.pipeline?.name).toBe('Spec-kit Bugfix');
     const ids = run.pipeline?.phases.map((p) => p.id) ?? [];
-    // The bugfix pipeline only declares the 5 ordered phases. The snapshot
-    // contains the 5 declared phases.
-    expect(ids.slice(0, BUGFIX_PHASES.length)).toEqual(BUGFIX_PHASES);
-    expect(ids.length).toBe(5);
+    // The snapshot contains exactly the phases the pipeline declares — no
+    // terminal append, no substitution for an id the catalog cannot resolve.
+    expect(ids).toEqual(BUGFIX_PHASE_IDS);
     expect(Object.isFrozen(run.pipeline)).toBe(true);
     expect(Object.isFrozen(run.pipeline?.phases)).toBe(true);
   });
@@ -477,15 +542,15 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('bug report');
 
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: BUGFIX_PIPELINE_ID });
     const snapshotBefore = store.getRun(DEFAULT_QUEUE_ID)!.pipeline;
     const phasesBefore = snapshotBefore!.phases.map((p) => p.id);
 
     // Replace the controller's catalog with one that defines a DIFFERENT 'speckit-bugfix'
     // pipeline (single-phase 'finalize'). The pre-existing run's snapshot must not retarget.
-    const finalizeDef = BUILT_IN_PHASES.find((p) => p.id === 'finalize')!;
+    const finalizeDef = TEST_PHASES.find((p) => p.id === 'finalize')!;
     const tamperedBugfix: PipelineDef = Object.freeze({
-      id: BUILT_IN_BUGFIX_PIPELINE_ID,
+      id: BUGFIX_PIPELINE_ID,
       name: 'Tampered Bugfix',
       phases: Object.freeze(['finalize']) as readonly string[]
     });
@@ -493,7 +558,7 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
       [finalizeDef],
       [tamperedBugfix],
       { claude: [], codex: [], agy: [] },
-      BUILT_IN_BUGFIX_PIPELINE_ID
+      BUGFIX_PIPELINE_ID
     );
     controller.setCatalog(tamperedCatalog);
 
@@ -511,31 +576,34 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     }).toThrow();
   });
 
-  it('(c) falls back to BUILT_IN_PIPELINE_ID when startNew is invoked without a pipelineId option', async () => {
+  it('(c) falls back to the catalog defaultPipelineId when startNew is invoked without a pipelineId option', async () => {
+    // Feature 098 (T080) — this case also asserted `BUILT_IN_PIPELINES.length === 3`
+    // and that `BUILT_IN_CATALOG.defaultPipelineId` equalled `BUILT_IN_PIPELINE_ID`.
+    // Both were statements about which rows the product compiles in, and T036
+    // emptied that layer. What is left is the behavior the title names: with no
+    // `pipelineId` option, the Run targets whatever the *catalog in hand* declares
+    // as its default — the fixture catalog here, an imported one in the product.
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
     await controller.startNew(feature, null);
 
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(run.pipeline?.id).toBe(BUILT_IN_PIPELINE_ID);
-    expect(run.pipeline?.id).toBe('speckit-new-feature');
-    // BUILT_IN_PIPELINES now ships three pipelines (speckit-new-feature, speckit-bugfix,
-    // dev-new-feature). BUILT_IN_CATALOG.defaultPipelineId still resolves to
-    // BUILT_IN_PIPELINE_ID for the legacy headless/no-reader path; the user-facing default
-    // for fresh installs is overridden to 'dev-new-feature' via package.json.
-    expect(BUILT_IN_PIPELINES.length).toBe(3);
-    expect(BUILT_IN_CATALOG.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
+    expect(run.pipeline?.id).toBe(controller.getCatalog().defaultPipelineId);
+    expect(run.pipeline?.id).toBe(SPECKIT_PIPELINE_ID);
   });
 
-  it('(d) falls back to BUILT_IN_PIPELINE_ID for unknown pipelineId at the controller surface (existing warn-and-fallback path)', async () => {
-    // NOTE: the GuardedRunService scheduler is the primary "unknown pipeline" rejection
-    // surface (see src/services/guarded-run-service.ts and
-    // tests/unit/services/guarded-run-service.test.ts) — the controller never receives an
-    // unknown pipelineId in normal scheduling. The controller's own resolvePipelineSnapshot
-    // path emits a warning and falls back to BUILT_IN_PIPELINE_ID rather than silently
-    // continuing without a recognized pipeline. This test pins that defense-in-depth
-    // behavior so a future refactor cannot quietly drop the warning.
+  it('(d) refuses an unknown pipelineId at the controller surface rather than substituting one', async () => {
+    // Feature 098 (T026, US3, FR-023/FR-033b) — this pinned the opposite: the
+    // controller warned and fell back to BUILT_IN_PIPELINE_ID, on the reasoning that
+    // continuing with *a* recognized Pipeline beat continuing with none. With the
+    // built-in layer about to be empty there is nothing to fall back to, and while
+    // the rows are still present the fallback runs a Spec-kit Pipeline the operator
+    // did not ask for. The warning it pinned is still asserted — what changed is
+    // that no Run exists afterwards, so nothing executed under the wrong process.
+    //
+    // The GuardedRunService scheduler remains the primary rejection surface for an
+    // unknown id; this is the defense-in-depth layer behind it.
     runSpy.mockImplementation(async () => makeOutput());
     const feature = await queue.enqueue('feature description');
 
@@ -549,12 +617,16 @@ describe('SchegentWorkflowController.startNew — speckit-bugfix pipeline routin
     try {
       await controller.startNew(feature, null, { pipelineId: 'pipeline-that-does-not-exist' });
 
-      const run = store.getRun(DEFAULT_QUEUE_ID)!;
-      expect(run.pipeline?.id).toBe(BUILT_IN_PIPELINE_ID);
+      expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+      expect(runSpy).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalled();
       const messages = warnSpy.mock.calls.map((c) => String(c[0]));
       expect(
-        messages.some((m) => m.includes("pipeline-that-does-not-exist") && m.includes("not found"))
+        messages.some(
+          (m) =>
+            m.includes('pipeline-that-does-not-exist') &&
+            m.includes('not in the effective catalog')
+        )
       ).toBe(true);
     } finally {
       realLogger.warn = originalWarn;
@@ -583,6 +655,7 @@ describe('SchegentWorkflowController.resumeExisting', () => {
       id: 'run-pre-074-codex',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
+      pipeline: pre074Snapshot(SPECKIT_PIPELINE_ID),
       status: 'paused',
       currentPhase: 'speckit-clarify',
       currentIteration: 1,
@@ -608,7 +681,8 @@ describe('SchegentWorkflowController.resumeExisting', () => {
       notifier,
       new SanitizedLogger(),
       lock,
-      { ...opts, defaultRunnerKind: 'codex' }
+      { ...opts, defaultRunnerKind: 'codex' },
+      deps
     );
 
     expect(await codexController.resumeExisting(DEFAULT_QUEUE_ID)).toBe(true);
@@ -699,6 +773,7 @@ describe('SchegentWorkflowController phase controls', () => {
       id: 'run-disabled',
       featureId: feature.id,
       featureDir: 'specs/001-existing',
+      pipeline: pre074Snapshot(SPECKIT_PIPELINE_ID),
       status: 'paused',
       currentPhase: 'speckit-clarify',
       currentIteration: 1,

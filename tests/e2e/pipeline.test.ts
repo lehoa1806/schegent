@@ -14,6 +14,7 @@ import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 
 // Feature 034 Item 055 — deterministic Speckit pipeline E2E test.
 //
@@ -85,7 +86,15 @@ async function buildHarness(tmpRoot: string) {
       cwd: tmpRoot,
       iterationCap: 5,
       timeoutMs: 30_000,
-    }
+    },
+    // Feature 098 (T066) — the controller resolved to the compiled-in catalog
+    // when handed none, so this harness got the nine Spec Kit Phases without
+    // asking. There is no compiled-in catalog, and `startNew` against an empty
+    // one records no run at all, which is how all three cases here went red.
+    // The fixture supplies exactly the document the assertions below describe;
+    // `test:e2e` runs on its own config outside `verify:all`, so nothing else
+    // was going to report this.
+    { catalog: buildSpeckitCatalog() }
   );
 
   return { controller, store, queue, audit };

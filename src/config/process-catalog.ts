@@ -90,7 +90,11 @@ function parseLayer(
     const errors = [...result.errors];
     let definition = result.definition;
     if (definition?.runner !== undefined) {
-      const runnerPolicyError = phaseRunnerPolicyError(definition.phaseId, definition.runner);
+      const runnerPolicyError = phaseRunnerPolicyError(
+        definition.phaseId,
+        definition.sideEffects,
+        definition.runner
+      );
       if (runnerPolicyError !== null) {
         errors.push({
           phaseId: definition.phaseId, field: 'runner',
@@ -145,6 +149,8 @@ export function phaseDefinitionToPhaseDef(
 ): PhaseDef {
   const builtIn = scope === 'built-in' ? builtInById.get(definition.phaseId) : undefined;
   const pinnedRunner = definition.runner ?? builtIn?.runner;
+  const sideEffects = definition.sideEffects ?? builtIn?.sideEffects;
+  const evidencePolicy = definition.evidencePolicy ?? builtIn?.evidencePolicy;
   return Object.freeze({
     id: definition.phaseId,
     name: definition.name,
@@ -167,8 +173,19 @@ export function phaseDefinitionToPhaseDef(
       ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
       : {}),
     ...(pinnedRunner !== undefined ? { runner: pinnedRunner } : {}),
-    ...(builtIn?.sideEffects !== undefined ? { sideEffects: builtIn.sideEffects } : {}),
-    ...(builtIn?.evidencePolicy !== undefined ? { evidencePolicy: builtIn.evidencePolicy } : {}),
+    // Feature 098 T016 — the declaration wins, then the built-in row, then
+    // absence. This used to read `builtIn?.sideEffects` alone, and `builtIn` is
+    // non-`undefined` only at `built-in` scope, so an imported Phase's declared
+    // containment class was discarded HERE — one layer before the snapshot could
+    // see it. Fixing the freeze alone would not have helped: the field arrived at
+    // the freeze already absent, and the freeze would have applied its default to
+    // a Phase that had in fact declared something (research.md R3, FR-004).
+    //
+    // Absence stays absence. The FR-005 default belongs to `snapshotPhaseDef`,
+    // and resolving it here would make an omission indistinguishable from a
+    // declaration one layer earlier than intended.
+    ...(sideEffects !== undefined ? { sideEffects } : {}),
+    ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
     ...(builtIn?.promptVersion !== undefined ? { promptVersion: builtIn.promptVersion } : {})
   });
 }

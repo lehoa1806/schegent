@@ -36,6 +36,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
+import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 import type { CatalogConfigReader } from '../../src/config/pipeline-config-loader';
 import { loadCatalog } from '../../src/config/pipeline-config-loader';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
@@ -58,9 +59,18 @@ import { collectWorkflowPipelineRefs } from '../../src/ui/sidebar/workflow-pipel
 
 const WORKFLOW_ID = 'design-then-build';
 
-/** The one operator-authored Phase; the rest of the sequences use built-ins. */
+/**
+ * The Phase rows the two Pipelines below reference.
+ *
+ * Feature 098 (T080) — `done` is the one this file authors; `speckit-specify` and
+ * `finalize` used to resolve out of the built-in Phase layer, which is empty now.
+ * Without them here the Pipelines quarantine as `unknown-phase` and every gate
+ * below reports `pipeline-invalid` instead of the defect it is about. See the
+ * fixture header for why the ids are the real Spec Kit ones.
+ */
 const AUTHORED_PHASE_ROWS: readonly unknown[] = [
-  { id: 'done', name: 'Done', version: 1, instruction: 'Done.' }
+  { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
+  ...SPECKIT_PHASE_DEFS
 ];
 
 // Built-in Pipelines declare no ports, so a connection between two of them could

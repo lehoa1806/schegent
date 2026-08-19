@@ -8,7 +8,10 @@ import type { Notifier } from '../../../src/ui/notifications';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow-run';
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
+// Feature 098 (T080) — these rows came from `BUILT_IN_PHASES`, which is empty
+// now; the fixture supplies the same definitions under the same ids. See its
+// header for why the ids are the real Spec Kit ones.
+import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 
@@ -62,7 +65,7 @@ const STANDARD_PIPELINE = Object.freeze({
       'speckit-analyze',
       'speckit-implement',
       'finalize'
-    ].map((id) => Object.freeze(BUILT_IN_PHASES.find((p) => p.id === id)!))
+    ].map((id) => Object.freeze(SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === id)!))
   )
 });
 

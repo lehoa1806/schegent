@@ -24,6 +24,7 @@ included:
       spec:
         instruction: /speckit-specify
         runner: claude
+        sideEffects: git
         model: claude-sonnet-5
         effort: high
     - metadata:
@@ -187,5 +188,6 @@ included:
 
           Inside the SCHEGENT AUDIT LOG block, emit `checks_passing: <N>` and `checks_failing: <N>` as top-level integer metric lines.
         runner: claude
+        sideEffects: git
         model: claude-sonnet-5
         effort: medium

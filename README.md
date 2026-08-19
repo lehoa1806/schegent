@@ -11,10 +11,16 @@
 
 **Schegent** is a Visual Studio Code extension that runs the
 [Claude Code CLI](https://docs.claude.com/claude-code) as a headless
-backend and walks it through the seven Spec Driven Development workflow phases
-on your behalf. You enqueue a feature request in the sidebar, walk
-away, and come back to either a completed feature or a paused run
-waiting for an operator decision.
+backend and walks it through the phases of a pipeline you supply. You
+enqueue a feature request in the sidebar, walk away, and come back to
+either a completed feature or a paused run waiting for an operator
+decision.
+
+The extension ships the orchestration and **no process content**: no
+phases, no pipelines, no workflows, no models. You import those as YAML
+documents at runtime, and the package carries examples under
+[examples/](examples/) — including a nine-phase Spec Driven Development
+pipeline — to import on a first run.
 
 
 ---
@@ -39,8 +45,8 @@ waiting for an operator decision.
 
 ## What it does
 
-Schegent treats each Spec Driven Development workflow phase as a discrete CLI invocation, then
-strings the phases together inside an orchestrator that handles:
+Schegent treats each phase as a discrete CLI invocation, then strings the
+phases together inside an orchestrator that handles:
 
 - **Queueing and concurrency** — up to 20 independent queues, each
   running one task at a time, with a visible queue of pending tasks.
@@ -54,7 +60,9 @@ strings the phases together inside an orchestrator that handles:
   rate-limit failures, manual overrides for everything else.
 - **Customization** — override the model, effort, timeout, or
   loopability of any phase without forking the pipeline; add your own
-  phases and pipelines through workspace settings.
+  phases and pipelines through workspace settings. Every definition in
+  the catalog is one you imported or authored, so there is nothing
+  privileged to fork around.
 - **Observability** — a sanitized, append-only audit log; opt-in
   unredacted diagnostics for deep troubleshooting; a sanitized runtime
   log that mirrors the VS Code Output channel to disk.
@@ -133,12 +141,19 @@ one of:
 
 ## Quick start
 
-1. Open the Schegent sidebar.
-2. Click **Enqueue Feature Request** (or run
+1. Open the Schegent sidebar. On a fresh install it says **No process
+   definitions yet** — the catalog is empty until you import something.
+2. Import a process document. [examples/](examples/) ships
+   `speckit-new-feature.pipeline.yaml` (one pipeline, nine phases),
+   `speckit-bugfix.pipeline.yaml` (one pipeline, five phases), and
+   `model-catalog.yaml`. You see a plan before anything is written, and
+   you choose which scope to write into.
+3. Click **Enqueue Feature Request** (or run
    `Schegent: Enqueue Feature Request` from the command palette).
-3. Enter a short, declarative description of what you want built.
-4. Confirm the pipeline selection (`speckit-new-feature` by default).
-5. Watch the **In-flight** card. Each phase reports its progress in
+4. Enter a short, declarative description of what you want built.
+5. Pick a pipeline. There is no shipped default —
+   `schegent.defaultPipelineId` is empty until you set it.
+6. Watch the **In-flight** card. Each phase reports its progress in
    the **Phase Log Feed** below.
 
 When the run finishes, the task moves to **History**. To rerun, right-
@@ -152,9 +167,11 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 
 | Feature | Summary |
 |---|---|
-| **Three built-in pipelines** | `speckit-new-feature` (9 phases), `dev-new-feature` (7 phases), and `speckit-bugfix` (5 phases). |
+| **Runtime-only catalog** | The extension ships zero phases, pipelines, workflows, and models. Everything arrives by importing a YAML document; [examples/](examples/) carries `speckit-new-feature` (9 phases), `speckit-bugfix` (5 phases), and a model catalog to start from. |
+| **Import with a plan** | Every import shows one row per resource — import, skip, blocked, or invalid — before writing anything, and never overwrites an id you already hold. |
 | **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — merged across four precedence layers. |
-| **Custom phases & pipelines** | Define your own phases through `schegent.phases` / `schegent.pipelines`; they run through the same audit path as the built-ins. |
+| **Custom phases & pipelines** | Define your own phases through `schegent.phases` / `schegent.pipelines`. Every phase runs through the same audit path; no id is reserved and none is privileged. |
+| **Declared containment** | A phase declares what it may write (`sideEffects`) and how strictly evidence is enforced (`evidencePolicy`). Omitted, they are `workspace` and `required`; nothing is inferred from the phase's name. |
 | **Phase breakpoints** | Pause a run before a named phase to review state and intervene; consumed on fire. |
 | **Aggressive pause** | SIGTERM at click time with a 2s SIGKILL escalation; state is updated before the kill so the audit record never lies. |
 | **Rate-limit handling** | Parses Anthropic reset hints and schedules a dynamic backoff (5-attempt cap, 60-minute fallback). |
@@ -239,7 +256,7 @@ Frequently used keys:
 | `schegent.audit.rotation.maxAgeDays` | number | `30` | Rotated archive retention floor. |
 | `schegent.logging.verbose` | boolean | `false` | Opt-in unredacted per-phase capture. |
 | `schegent.logging.runtimeLogLevel` | enum | `"INFO"` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
-| `schegent.defaultPipelineId` | string | `"speckit-new-feature"` | Pipeline used when none is explicitly chosen. |
+| `schegent.defaultPipelineId` | string | `""` | Pipeline used when none is explicitly chosen. Ships empty; a launch that falls through to it is refused rather than defaulted. |
 | `schegent.fatalSignatures` | string[] | `[]` | Operator-additive fatal-signature substrings. |
 | `schegent.claude.autoCompactPctOverride` | integer\|null | unset | Exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` when set. |
 | `schegent.multiRoot.suppressWarning` | boolean | `false` | Suppress the one-shot multi-root activation toast — see [The Workspace Lock → Multi-root workspaces](docs/concepts/workspace-lock.md#multi-root-workspaces). |
@@ -354,6 +371,7 @@ Useful targets:
 | `npm run test:perf` | Blocking performance and sustained-evidence budgets. |
 | `npm run test:e2e` | End-to-end VS Code suite. |
 | `npm run test:integration` | Integration suite (boots a real VS Code instance). |
+| `npm run verify:all` | Contract, docs, secret, workflow, and licence checks + every typecheck + both lint passes + unit tests. Covers no e2e, visual, perf, eval, or integration suite — run those separately. |
 | `npm run ci` | Full pre-merge gate (all typechecks + lint + unit/eval/visual/perf/E2E + build + exact package + isolated integration). |
 | `npm run package` | `vsce package --no-dependencies`. |
 | `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |

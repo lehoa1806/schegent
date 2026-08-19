@@ -5,6 +5,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+// Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
+// so a test that drives Phases supplies one. See the fixture header for why the
+// ids here are the real Spec Kit ones.
+import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
@@ -104,7 +108,8 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
       notifier,
       logger,
       lock,
-      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 }
+      { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
+      { catalog: buildSpeckitCatalog() }
     );
 
     const feature = await queue.enqueue('Add login');

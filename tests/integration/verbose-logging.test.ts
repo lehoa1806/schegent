@@ -4,6 +4,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+// Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
+// so a test that drives Phases supplies one. See the fixture header for why the
+// ids here are the real Spec Kit ones.
+import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
@@ -176,7 +180,7 @@ async function runOnce(opts: {
     // which retains no transcript for a run that completes. FR-027 is about
     // whether raw capture is INDEPENDENT of the verbose-diagnostics flag, so
     // the retention policy is held fixed at `always` and only `verbose` varies.
-    { getRawTranscriptMode: () => 'always' }
+    { catalog: buildSpeckitCatalog(), getRawTranscriptMode: () => 'always' }
   );
 
   const feature = await queue.enqueue('Spec a thing', {});

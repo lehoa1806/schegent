@@ -1,7 +1,7 @@
 import type { Phase } from './phase';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
-import { BUILT_IN_PIPELINE_ID, type PhaseDef } from '../config/pipeline-config';
+import type { PhaseDef } from '../config/pipeline-config';
 import type { InvocationResult } from '../parser/stdout-parser';
 import type { LastRetryDecision } from '../state/workflow-run';
 import {
@@ -78,7 +78,12 @@ export class PhaseRetryEvaluator {
 
     const phaseDefId = inputs.phaseDef?.id ?? inputs.phase;
     const basePayload = {
-      pipelineId: inputs.pipelineId ?? BUILT_IN_PIPELINE_ID,
+      // Feature 098 (T045, FR-034) — omitted, not substituted. This read
+      // `?? BUILT_IN_PIPELINE_ID`, so an invocation that carried no Pipeline id
+      // produced a `phase.retry_evaluated` record attributing the decision to a
+      // Pipeline that had nothing to do with it — and, once the built-in layer
+      // emptied, to one no installation holds.
+      ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: phaseDefId,
       expression,
       metrics: inputs.metrics

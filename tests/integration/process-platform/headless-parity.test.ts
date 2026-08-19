@@ -123,7 +123,7 @@ import {
   RecordingQueue,
   makeWorkspaceRoot,
   removeWorkspaceRoot
-} from './built-in-run-harness';
+} from './run-harness';
 import type { ExportProcessYamlRequest } from '../../../src/contracts/sidebar-ipc/process-yaml';
 import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
 import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
@@ -277,7 +277,13 @@ const HELD_PIPELINE = Object.freeze({
   id: 'parity-held',
   name: 'Parity Held',
   version: 1,
-  phases: ['speckit-specify']
+  // Feature 098 (T080) — this named `speckit-specify`, which resolved out of the
+  // built-in Phase layer. It names the Phase the document brings instead, which is
+  // also what the document's own `parity-held` names. The row has to stay valid: a
+  // Pipeline write carries the whole layer, held rows included, so an unresolvable
+  // held row would fail the write and the case would see one layer written where
+  // it means to observe two.
+  phases: ['parity-specify']
 });
 
 /**
@@ -1386,16 +1392,28 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
 // NEITHER adapter adds an event of its own, over a recorder proven live by a
 // command that does emit. The audit-boundary assertions proper are T036-T038.
 
+// Feature 098 (T080) — the Pipeline named `speckit-specify` and the reader below
+// supplied no Phases at all, because the built-in Phase layer resolved that id for
+// free. It resolves nothing now, so the Pipeline would quarantine and both arms
+// would refuse the launch identically — a parity that proves nothing. The Phase is
+// authored here instead, in the same scope as the Pipeline that names it.
+const LAUNCH_PHASE = Object.freeze({
+  id: 'parity-launch-phase',
+  name: 'Parity Launch Phase',
+  version: 1,
+  instruction: 'Launch.'
+});
+
 const LAUNCH_PIPELINE = Object.freeze({
   id: 'parity-launch',
   name: 'Parity Launch',
-  phases: ['speckit-specify'],
+  phases: [LAUNCH_PHASE.id],
   outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
 });
 
 /** The effective catalog both arms resolve against, through the real loader. */
 const LAUNCH_CATALOG = loadCatalog({
-  getPhases: () => undefined,
+  getPhases: (scope) => (scope === 'user' ? [LAUNCH_PHASE] : undefined),
   getPipelines: (scope) => (scope === 'user' ? [LAUNCH_PIPELINE] : undefined),
   getModels: () => undefined,
   getDefaultPipelineId: () => undefined
@@ -1527,7 +1545,7 @@ describe('Pipeline launch parity (T034, US2, FR-010, FR-013)', () => {
     const frozen = headless.queue.only.runPlan;
     expect(frozen).toEqual(sidebar.queue.only.runPlan);
     expect(frozen?.pipeline.id).toBe(LAUNCH_PIPELINE.id);
-    expect(frozen?.pipeline.phases.map((phase) => phase.id)).toEqual(['speckit-specify']);
+    expect(frozen?.pipeline.phases.map((phase) => phase.id)).toEqual([LAUNCH_PHASE.id]);
     expect(frozen?.outputs).toEqual([
       { portId: 'report', type: 'markdown', target: 'out/report.md', overwriteConfirmed: false }
     ]);

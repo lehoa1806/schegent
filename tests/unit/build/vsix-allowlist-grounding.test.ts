@@ -139,30 +139,33 @@ describe('the pinned VSIX chunk list is grounded in the webview source tree', ()
   });
 });
 
+/**
+ * Feature 098 (T063) changed what there is to check here.
+ *
+ * The pin used to be three literal entries and these cases compared them to the
+ * directory in both directions. `check-vsix-smoke.mjs` now enumerates
+ * `examples/` itself, so "is every file pinned" answers itself and both
+ * directions collapse into one claim: the script's model of what vsce takes from
+ * `examples/` matches this file's. They stay two independent implementations —
+ * the `.DS_Store` exclusion is spelled out in each — so the comparison still has
+ * something to catch, and it catches the regression that matters most: a return
+ * to a hand-maintained list, which is what went stale twice.
+ */
 describe('the pinned VSIX examples agree with the examples directory', () => {
-  it('every file that ships from examples/ is pinned', async () => {
-    const pinned = new Set(await pinnedExampleEntries());
-    const unpinned = packagedExampleEntries().filter((name) => !pinned.has(name));
+  it('pins exactly what ships from examples/, derived rather than listed', async () => {
     expect(
-      unpinned,
-      'these files ship from examples/ but are absent from ALLOWED_VSIX_ENTRIES; ' +
-        'pin each one, or exclude it in .vscodeignore if it is not meant to ship'
-    ).toEqual([]);
-  });
-
-  it('every pinned examples/ entry still exists', async () => {
-    const onDisk = new Set(packagedExampleEntries());
-    const orphaned = (await pinnedExampleEntries()).filter((name) => !onDisk.has(name));
-    expect(
-      orphaned,
-      'these examples are pinned but no longer exist; a sample was removed without unpinning it'
-    ).toEqual([]);
+      await pinnedExampleEntries(),
+      'ALLOWED_VSIX_ENTRIES disagrees with examples/; the pin is derived from that ' +
+        'directory, so a difference means the two models of .vscodeignore have drifted ' +
+        'or the entries were hand-listed again'
+    ).toEqual(packagedExampleEntries());
   });
 
   it('finds the example files it claims to check', () => {
     // Same reason as the dynamic-import control above: a walk that silently
-    // returned nothing would make both directions vacuously green, and the
-    // "every pinned entry exists" direction would be the one to hide it.
+    // returned nothing would make the comparison vacuously green — and now more
+    // easily so, since an enumeration that returns nothing agrees with a walk
+    // that returns nothing.
     expect(packagedExampleEntries().length).toBeGreaterThan(0);
   });
 });

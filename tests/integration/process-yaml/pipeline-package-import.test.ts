@@ -190,10 +190,16 @@ const HELD_PHASE = Object.freeze({
 });
 
 const HELD_PIPELINE = Object.freeze({
+  // Feature 098 (T080) — the held Pipeline used to name `speckit-specify`, which
+  // resolved out of the built-in Phase layer. That layer is empty, so it names the
+  // held Phase instead: every installation below that holds this Pipeline holds
+  // that Phase in the same scope. The row has to stay valid, because the point of
+  // "held" is that an import leaves it standing — an invalid row would be rejected
+  // by the write gate and the case would report a validation failure instead.
   id: 'held-pipeline',
   name: 'Held Pipeline',
   version: 2,
-  phases: ['speckit-specify']
+  phases: ['held']
 });
 
 // ---------------------------------------------------------------------------

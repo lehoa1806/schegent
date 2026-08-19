@@ -1,33 +1,38 @@
 // Doc-drift guard for AGENTS.md ↔ CLAUDE.md.
 //
-// Design: CLAUDE.md is the SINGLE source of truth for hard rules.
-// AGENTS.md is a short orientation file that points at CLAUDE.md
-// and carries a non-authoritative summary. This test enforces:
+// Design: the workspace-root AGENTS.md is the SINGLE source of truth for
+// hard rules. `CLAUDE.md` and `repo/AGENTS.md` are pointers to it and carry
+// no copy of the rule set. This test enforces:
 //
-//   1. CLAUDE.md contains every curated topical anchor below.
-//      Adding a new hard rule MUST update CLAUDE.md AND append an
+//   1. AGENTS.md contains every curated topical anchor below.
+//      Adding a new hard rule MUST update AGENTS.md AND append an
 //      anchor here (so the cross-references stay live).
-//   2. Each AGENTS.md explicitly references CLAUDE.md as the authority.
-//   3. The envelope AGENTS.md has not silently grown its own copy of
-//      the full rule set — preventing the older "dual-maintained"
-//      failure mode that drove this test's creation.
+//   2. Both pointer files explicitly name AGENTS.md as the authority.
+//   3. Neither pointer file has grown its own copy of the rule set —
+//      preventing the "dual-maintained" failure mode that drove this
+//      test's creation.
 //   4. The SPECKIT active-plan pointer is identical in both envelope
 //      files, and names a plan that exists.
 //
-// THERE ARE TWO AGENTS.md FILES, and this test used to guard only one
-// of them — the wrong one. `repo/AGENTS.md` is a ~950-byte orientation
-// stub that delegates to `../CLAUDE.md` and carries zero **Never**
-// bullets by construction. The workspace-root `AGENTS.md` is the 22 KB
-// envelope file that carries the summary rule set. Rule 3 was written
-// for the second and was reading the first, so it asserted `0 <= 35`
-// forever while the file it meant to bound reached 33 bullets unwatched.
-// Rule 4 did not exist at all, which is why the active-plan pointer
-// drifted fourteen features (081 → 095) before anyone noticed: the
-// vendored /speckit-plan skill updates the marker pair in CLAUDE.md
-// only, and nothing compared the two. Forking the vendored skill to add
-// a second write target would be re-applied on every spec-kit upgrade;
-// comparing the two blocks here costs nothing and cannot be upgraded
-// away.
+// THE DIRECTION OF AUTHORITY WAS INVERTED on 2026-08-19. It used to run
+// CLAUDE.md → AGENTS.md: CLAUDE.md held the 62 **Never** bullets and both
+// AGENTS.md files delegated up to it, with the envelope AGENTS.md carrying a
+// 33-bullet summary that this test bounded to keep it from becoming a mirror.
+// A summary that restates rules is a second thing to maintain, and rule 3
+// existed only because it was one — so the rules moved wholesale into
+// AGENTS.md and both other files became pointers with no rule text at all.
+// Rule 3 now asserts the absence rather than bounding the size, which is the
+// stronger form of the same invariant: there is no permitted headroom for a
+// pointer file to drift into a rule set, because zero copies are allowed.
+//
+// Rule 4 predates the inversion and is unchanged by it. It exists because the
+// active-plan pointer drifted fourteen features (081 → 095) unnoticed: the
+// vendored /speckit-plan skill updates the marker pair in CLAUDE.md only, and
+// nothing compared the two. Forking the vendored skill to add a second write
+// target would be re-applied on every spec-kit upgrade; comparing the two
+// blocks here costs nothing and cannot be upgraded away. Note this means the
+// skill still writes the *pointer* file, not the authoritative one, so the
+// AGENTS.md block is the hand-maintained half.
 
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
@@ -40,9 +45,9 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const WORKSPACE_ROOT = path.resolve(REPO_ROOT, '..');
 
 // Topical anchors — each phrase MUST appear at least once in
-// CLAUDE.md. Use lowercased substring matching. Keep phrases short,
+// AGENTS.md. Use lowercased substring matching. Keep phrases short,
 // unambiguous, and tied to a single invariant.
-const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
+const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   'weaken the redaction set',
   'route untrusted strings to the ui',
   'weaken csp for webviews',
@@ -115,20 +120,23 @@ const CLAUDE_RULE_ANCHORS: ReadonlyArray<string> = [
   'reintroduce drain step 4b'
 ];
 
-const CLAUDE_MD = path.join(WORKSPACE_ROOT, 'CLAUDE.md');
-/** The 22 KB envelope orientation file — the one that carries a summary rule set. */
+/** The authoritative envelope file — the only one that carries the rule set. */
 const ENVELOPE_AGENTS_MD = path.join(WORKSPACE_ROOT, 'AGENTS.md');
-/** The ~950-byte execution-repo stub that delegates upward. */
+/** Pointer file. Keeps the SPECKIT marker pair; carries no rule text. */
+const CLAUDE_MD = path.join(WORKSPACE_ROOT, 'CLAUDE.md');
+/** Execution-repo pointer file. Delegates up to ../AGENTS.md. */
 const REPO_AGENTS_MD = path.join(REPO_ROOT, 'AGENTS.md');
 
+/** Every file that points at AGENTS.md rather than restating it. */
+const POINTER_FILES: ReadonlyArray<string> = [CLAUDE_MD, REPO_AGENTS_MD];
+
 /**
- * Ceiling on the envelope summary's **Never** bullets. It stood at 33 against
- * CLAUDE.md's 58 when this bound was first pointed at the right file, so the
- * headroom is deliberate: adding a rule to both files is normal and must not
- * fail the build. Breaching 40 means the summary is becoming a mirror, which
- * is the dual-maintained rule set this guard exists to prevent.
+ * Floor on the authoritative file's **Never** bullets. It stood at 62 when the
+ * rules moved here, so a floor of 20 is loose on purpose: this catches the file
+ * being emptied or truncated, not ordinary rule churn. The anchor list above is
+ * what pins individual rules.
  */
-const ENVELOPE_AGENTS_MAX_NEVER = 40;
+const AGENTS_MIN_NEVER = 20;
 
 const SPECKIT_BLOCK = /<!--\s*SPECKIT START\s*-->\s*\n([\s\S]*?)\n\s*<!--\s*SPECKIT END\s*-->/;
 
@@ -146,45 +154,38 @@ function speckitBlock(file: string): string | null {
 const envelopePresent = fs.existsSync(CLAUDE_MD) && fs.existsSync(ENVELOPE_AGENTS_MD);
 
 describe.skipIf(!envelopePresent)('AGENTS.md ↔ CLAUDE.md parity guard', () => {
-  it('CLAUDE.md contains every curated hard-rule anchor', () => {
-    const claude = read(CLAUDE_MD).toLowerCase();
-    const missing = CLAUDE_RULE_ANCHORS.filter((a) => !claude.includes(a));
-    expect(missing, 'anchors not found in CLAUDE.md').toEqual([]);
+  it('AGENTS.md contains every curated hard-rule anchor', () => {
+    const agents = read(ENVELOPE_AGENTS_MD).toLowerCase();
+    const missing = HARD_RULE_ANCHORS.filter((a) => !agents.includes(a));
+    expect(missing, 'anchors not found in AGENTS.md').toEqual([]);
   });
 
-  it('both AGENTS.md files point at CLAUDE.md as the authoritative hard-rule source', () => {
-    for (const file of [ENVELOPE_AGENTS_MD, REPO_AGENTS_MD]) {
-      const agents = read(file).toLowerCase();
-      expect(agents, `${file} should name CLAUDE.md`).toContain('claude.md');
-      expect(agents, `${file} should disclaim authority`).toContain('single source of truth');
+  it('every pointer file names AGENTS.md as the authoritative hard-rule source', () => {
+    for (const file of POINTER_FILES) {
+      const pointer = read(file).toLowerCase();
+      expect(pointer, `${file} should name AGENTS.md`).toContain('agents.md');
+      expect(pointer, `${file} should name the authority`).toContain('single source of truth');
     }
   });
 
-  it('the envelope AGENTS.md remains a summary and does not mirror the full rule set', () => {
-    // This is the assertion that was reading repo/AGENTS.md — a stub with zero
-    // **Never** bullets — and so could never fail. It belongs to the envelope
-    // file, which is the only one that carries a summary able to drift.
-    const envelopeCount = countNever(read(ENVELOPE_AGENTS_MD));
-    const claudeCount = countNever(read(CLAUDE_MD));
-
-    expect(claudeCount, 'CLAUDE.md should carry the full set').toBeGreaterThanOrEqual(20);
+  it('AGENTS.md carries the full rule set', () => {
+    const agentsCount = countNever(read(ENVELOPE_AGENTS_MD));
     expect(
-      envelopeCount,
-      `AGENTS.md has ${envelopeCount} **Never** bullets — keep it a summary and point readers at CLAUDE.md (${claudeCount} bullets)`
-    ).toBeLessThanOrEqual(ENVELOPE_AGENTS_MAX_NEVER);
-    expect(
-      envelopeCount,
-      'AGENTS.md must stay strictly shorter than CLAUDE.md, not equal to it'
-    ).toBeLessThan(claudeCount);
+      agentsCount,
+      `AGENTS.md has ${agentsCount} **Never** bullets — it is the authoritative rule set and must not be emptied or truncated`
+    ).toBeGreaterThanOrEqual(AGENTS_MIN_NEVER);
   });
 
-  it('repo/AGENTS.md stays a short delegating stub', () => {
-    // Its whole job is to send a reader up to ../CLAUDE.md. Growing bullets
-    // here would be the same dual-maintenance defect one directory down.
-    expect(
-      countNever(read(REPO_AGENTS_MD)),
-      'repo/AGENTS.md should delegate, not restate rules'
-    ).toBe(0);
+  it('no pointer file restates the rule set', () => {
+    // Zero copies allowed, in either pointer file. A summary that restates
+    // rules is a second thing to maintain, and the drift it produces is
+    // invisible: both files read as authoritative while they disagree.
+    for (const file of POINTER_FILES) {
+      expect(
+        countNever(read(file)),
+        `${file} should delegate to AGENTS.md, not restate rules`
+      ).toBe(0);
+    }
   });
 
   it('the SPECKIT active-plan pointer is identical in AGENTS.md and CLAUDE.md', () => {
@@ -204,8 +205,9 @@ describe.skipIf(!envelopePresent)('AGENTS.md ↔ CLAUDE.md parity guard', () => 
 
   it('the active plan named by the SPECKIT pointer exists', () => {
     // A pointer at a deleted or renamed spec directory fails the same way a
-    // stale one does: the reader follows it and learns nothing.
-    const block = speckitBlock(CLAUDE_MD) ?? '';
+    // stale one does: the reader follows it and learns nothing. Read the
+    // authoritative file's block — the two are already asserted equal above.
+    const block = speckitBlock(ENVELOPE_AGENTS_MD) ?? '';
     const target = /\]\((specs\/[A-Za-z0-9._/-]+\.md)\)/.exec(block);
 
     expect(target, `no specs/… link found in the SPECKIT block: ${block}`).not.toBeNull();

@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
-import {
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINE_ID,
-  isPhaseDef
-} from '../../../src/config/pipeline-config';
+import { isPhaseDef } from '../../../src/config/pipeline-config';
 import { pipelineLayerRevision } from '../../../src/config/pipeline-catalog';
 import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
+// Feature 098 (T080) — the Pipelines these tests author name `speckit-specify`,
+// `speckit-clarify` and `finalize`, which used to resolve out of the built-in
+// Phase layer. That layer is empty now, so a test about *Pipeline* resolution has
+// to supply the Phases its Pipelines reference or every row quarantines as
+// `unknown-phase` and reports `pipeline-validation` instead of the gate under
+// test. See the fixture header for why the ids are the real Spec Kit ones.
+import { SPECKIT_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
+
+/** The Phase rows the Pipelines below reference, as a settings layer supplies them. */
+const REFERENCED_PHASES = SPECKIT_PHASE_DEFS;
 
 function makeReader(opts: {
   userPhases?: readonly unknown[];
@@ -25,12 +31,38 @@ function makeReader(opts: {
 }
 
 describe('loadCatalog (T044, T045, US3)', () => {
-  it('returns the built-in catalog when no reader is supplied', () => {
+  // Feature 098 (T021, US3, FR-027, SC-012) — a load with no configured reader
+  // used to answer with `BUILT_IN_CATALOG`, which is how a host with no settings
+  // source at all still came up holding seventeen Phases and three Pipelines the
+  // operator never authored. There is no reader, so there is nothing to report;
+  // the honest catalog is the empty one, and the default Pipeline is unset.
+  //
+  // `models` is deliberately excluded from the sweep: the manifest default is
+  // already empty and this feature does not touch it.
+  it('returns an empty catalog when no reader is supplied', () => {
     const result = loadCatalog();
-    expect(result.catalog.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
+
+    expect(result.catalog.phases).toEqual([]);
+    expect(result.catalog.pipelines).toEqual([]);
+    expect(result.catalog.phasesById.size).toBe(0);
+    expect(result.catalog.pipelinesById.size).toBe(0);
+    expect(result.catalog.defaultPipelineId).toBe('');
+    expect(result.defaultPipelineId).toBe('');
     expect(result.errors).toEqual([]);
     expect(result.usedFallback).toBe(false);
-    expect(result.catalog.phasesById.has('speckit-specify')).toBe(true);
+  });
+
+  it('substitutes no definition of its own for the reader it does not have', () => {
+    // The specific substitution FR-027 removes, named rather than implied: with
+    // no reader the loader reached for the built-in layer by constant, not
+    // through layer resolution, so emptying the layer would not have reached it.
+    const result = loadCatalog();
+
+    // The ids are spelled out rather than read off `BUILT_IN_PIPELINE_ID`: the
+    // constant is itself scheduled for deletion, and a test that the host supplies
+    // no definition should not source the id it checks from the host.
+    expect(result.catalog.phasesById.has('speckit-specify')).toBe(false);
+    expect(result.catalog.pipelinesById.has('speckit-new-feature')).toBe(false);
   });
 
   it('workspace settings shadow user settings for shared Phase ids (081 FR-003)', () => {
@@ -78,7 +110,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
     };
     const reader = makeReader({
       userPipelines: [userPipeline],
-      workspacePipelines: [workspacePipeline]
+      workspacePipelines: [workspacePipeline],
+      workspacePhases: REFERENCED_PHASES
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
@@ -117,7 +150,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
       userPipelines: [{ id: 'user-default', name: 'User Default', phases: ['speckit-specify'] }],
       workspacePipelines: [
         { id: 'workspace-default', name: 'Workspace Default', phases: ['speckit-specify'] }
-      ]
+      ],
+      workspacePhases: REFERENCED_PHASES
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
@@ -132,13 +166,17 @@ describe('loadCatalog (T044, T045, US3)', () => {
       
     };
     const reader = makeReader({
-      userPhases: [badPhase]
+      userPhases: [badPhase],
+      workspacePhases: REFERENCED_PHASES
     });
     expect(() => loadCatalog(reader)).not.toThrow();
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
     expect(result.usedFallback).toBe(false);
-    expect(result.catalog.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
+    // Feature 098 (T028) — an unresolvable default re-anchors to `''` rather than
+    // to a Pipeline the loader picked. The quarantine this test is about is
+    // unaffected either way.
+    expect(result.catalog.defaultPipelineId).toBe('');
     expect(result.catalog.phasesById.has('speckit-specify')).toBe(true);
     expect(result.catalog.phasesById.has('INVALID-ID-CAPITAL')).toBe(false);
     expect(result.phaseCatalog.records.some((record) => record.status === 'invalid')).toBe(true);
@@ -160,7 +198,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
           name: 'Intact Pipeline',
           phases: ['speckit-specify', 'finalize']
         }
-      ]
+      ],
+      workspacePhases: REFERENCED_PHASES
     });
     const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
@@ -173,15 +212,17 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.warnings.some((warning) => warning.id === 'broken')).toBe(true);
   });
 
-  it('falls back when defaultPipelineId references an unknown pipeline (T045)', () => {
+  it('reports no default when defaultPipelineId references an unknown pipeline (T045)', () => {
     const reader = makeReader({
       userDefault: 'phantom-pipeline'
     });
     const result = loadCatalog(reader);
-    // The catalog merge resolves the defaultPipelineId fallback to BUILT_IN
-    // (since the user-supplied phantom is not present), so the result must still be
-    // built-in-only and never throw.
-    expect(result.catalog.defaultPipelineId).toBe(BUILT_IN_PIPELINE_ID);
+    // Feature 098 (T028, FR-026) — the phantom does not resolve, and the loader
+    // used to re-anchor to `BUILT_IN_PIPELINE_ID`: a default the operator never
+    // named, offered as though they had. It reports no default instead, and still
+    // never throws.
+    expect(result.catalog.defaultPipelineId).toBe('');
+    expect(result.defaultPipelineId).toBe('');
   });
 
   it('coerces malformed phase/pipeline entries silently (T045)', () => {
@@ -244,12 +285,14 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
     expect(result.pipelineCatalog.revisions.user).toBe(pipelineLayerRevision(userPipelines));
   });
 
-  it('exposes a built-in-only resolution when no reader is supplied', () => {
+  // Feature 098 (T036, FR-027) — this used to assert that a reader-less load still
+  // exposed a built-in Pipeline in the effective set. The built-in layer ships no
+  // rows, so the resolution a reader-less load exposes is the empty one: no
+  // records at all, in any scope, and nothing effective.
+  it('exposes an empty resolution when no reader is supplied', () => {
     const result = loadCatalog();
-    expect(result.pipelineCatalog.records.every((record) => record.scope === 'built-in')).toBe(true);
-    expect(result.pipelineCatalog.effective.some((p) => p.pipelineId === BUILT_IN_PIPELINE_ID)).toBe(
-      true
-    );
+    expect(result.pipelineCatalog.records).toEqual([]);
+    expect(result.pipelineCatalog.effective).toEqual([]);
   });
 
   it('retains every configured row as a record, including malformed ones', () => {
@@ -259,7 +302,8 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
           null,
           { id: 'no-phases-array' },
           { id: 'good', name: 'Good', phases: ['finalize'] }
-        ] as readonly unknown[]
+        ] as readonly unknown[],
+        workspacePhases: REFERENCED_PHASES
       })
     );
     const userRecords = result.pipelineCatalog.records.filter((record) => record.scope === 'user');
@@ -274,7 +318,8 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
         userPipelines: [
           { id: 'good', name: 'Good', phases: ['finalize'] },
           { id: 'bad', name: 'Bad', phases: [] }
-        ] as readonly unknown[]
+        ] as readonly unknown[],
+        workspacePhases: REFERENCED_PHASES
       })
     );
     const ids = result.catalog.pipelines.map((pipeline) => pipeline.id);
@@ -290,11 +335,17 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
   it('stamps the resolved sourceScope onto each effective pipeline', () => {
     const result = loadCatalog(
       makeReader({
-        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }]
+        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
+        userPhases: REFERENCED_PHASES
       })
     );
     expect(result.catalog.pipelinesById.get('scoped')?.sourceScope).toBe('workspace');
-    expect(result.catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID)?.sourceScope).toBe('built-in');
+    // Feature 098 (T036) — the second half of this assertion used to name a
+    // built-in Pipeline id and expect `built-in`. No row carries that scope now,
+    // so the stamp is only observable across the two configured layers.
+    expect(result.catalog.pipelines.every((pipeline) => pipeline.sourceScope !== 'built-in')).toBe(
+      true
+    );
   });
 
   it('surfaces resolver warnings without producing catalog errors', () => {
@@ -302,7 +353,8 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
       makeReader({
         userPipelines: [
           { id: 'suggester', name: 'Suggester', phases: ['finalize'], recommendedNext: ['ghost'] }
-        ] as readonly unknown[]
+        ] as readonly unknown[],
+        workspacePhases: REFERENCED_PHASES
       })
     );
     expect(result.errors).toEqual([]);
@@ -314,7 +366,8 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
     const result = loadCatalog(
       makeReader({
         workspaceDefault: 'scoped',
-        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }]
+        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
+        userPhases: REFERENCED_PHASES
       })
     );
     expect(result.defaultPipelineId).toBe('scoped');
@@ -436,12 +489,12 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       .toBeUndefined();
   });
 
-  it.each(['speckit-specify', 'specify-brainstorm', 'superpowers-implement', 'finalize', 'superpowers-review-close'])(
-    'pins the built-in Git-mutating phase %s to Claude',
-    (phaseId) => {
-      expect(BUILT_IN_PHASES.find((phase) => phase.id === phaseId)?.runner).toBe('claude');
-    }
-  );
+  // Feature 098 (T036, FR-010) — a block here read `BUILT_IN_PHASES` for five
+  // named ids and asserted each pinned `runner: 'claude'`. Both halves of that
+  // assertion are gone: the built-in layer ships no rows to read, and T018 already
+  // re-keyed the Git-runner rule off the id list onto the Phase's own declared
+  // `sideEffects` (FR-007), with FR-008 permitting no replacement list. The
+  // `sideEffects`-keyed block further down is the successor.
 
   it.each(SUPPORTED_BACKENDS)('accepts phase definitions with runner: %s', (runner) => {
     const reader = makeReader({
@@ -518,6 +571,12 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     expect(result.catalog.phasesById.get('legacy-loopable')?.loopable).toBe(true);
   });
 
+  // Feature 098 T018 — the Git-runner rule was re-keyed from a list of five
+  // known ids onto the Phase's own declared `sideEffects` (FR-007), and FR-008
+  // permits no replacement id list. So in the three blocks below the id is
+  // scenery: it keeps each case recognisable as the one it replaced, and the
+  // declaration is what the rule reads. A row that declares nothing is admitted
+  // whatever it is called, which is the point of the first block.
   it.each([
     'speckit-specify',
     'specify-brainstorm',
@@ -553,7 +612,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       name: 'Git phase override',
       version: 1,
       instruction: 'Create or close the branch.',
-      runner: 'codex' as const
+      runner: 'codex' as const,
+      sideEffects: 'git' as const
     };
     const reader = makeReader({ workspacePhases: [phase] });
     const result = loadCatalog(reader);
@@ -562,8 +622,12 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: 'phase', id })
     ]));
-    expect(result.catalog.phasesById.get(id)?.runner).toBe('claude');
-    expect(result.catalog.phasesById.get(id)?.sourceScope).toBe('built-in');
+    // Feature 098 (T036) — quarantining the row used to leave a built-in
+    // definition standing under the same id, so the assertion was that the pinned
+    // `claude` runner survived the rejection. There is nothing underneath any more:
+    // rejecting the only row that claims the id leaves the id unresolved, which is
+    // the outcome the quarantine now produces.
+    expect(result.catalog.phasesById.has(id)).toBe(false);
     expect(isPhaseDef(phase)).toBe(true);
   });
 
@@ -576,7 +640,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
             id: 'finalize',
             name: 'Finalize override',
             instruction: 'Commit and merge the work.',
-            runner
+            runner,
+            sideEffects: 'git' as const
           }
         ]
       });

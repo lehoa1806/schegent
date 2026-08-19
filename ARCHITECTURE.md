@@ -309,6 +309,19 @@ easy to mistake for state resolved somewhere else. They are not.
   validation and freezes them into `envelope.pipeline.phases`. Nothing
   downstream re-resolves them; `run.defaultRunnerKind` is a run-level fallback
   for partially migrated snapshots, not the authority for a phase that has one.
+  Since feature 098 the containment class and evidence policy are **declared by
+  the Phase, never derived from its id**: `sideEffects` defaults to `workspace`
+  and `evidencePolicy` to `required` when the definition omits them (FR-005),
+  and both defaults are literals in that one function. The derivation they
+  replaced asked whether the host recognised the id and answered `unrestricted`
+  for every Phase it did not — which, for imported Phases, was all of them. A
+  `sideEffects: git` declaration additionally requires a Git-capable runner
+  ([phase-runner-policy.ts](src/config/phase-runner-policy.ts)), enforced three
+  times — at save, again when the catalog resolves the row, and once more before
+  the phase runs — and every time against the declaration. There is deliberately
+  no replacement id list (FR-008): an id carries no authority, so a Phase named
+  `finalize` is admitted or refused on exactly the terms of one named anything
+  else.
 - **The mutation plan is a projection, not a second source.**
   [buildMutationPlan()](src/services/mutation-plan.ts) is a pure function of
   that frozen phase array — `run.mutationPlan` is a memoized derivation of
@@ -928,6 +941,25 @@ algorithms with no Pipeline knowledge, and
 [workflow-derived-ports.ts](src/config/workflow-derived-ports.ts) derives a
 Workflow's own ports on read rather than storing them. The full contract is in
 the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
+
+**All three families ship an empty built-in layer** (feature
+098-runtime-only-catalog). `BUILT_IN_PHASES`, `BUILT_IN_PIPELINES` and
+`BUILT_IN_WORKFLOWS` are each `Object.freeze([])` and
+`schegent.defaultPipelineId` defaults to `''`, so a fresh install resolves no
+Phase, no Pipeline, no Workflow and no Model until the operator imports a
+document. The layer itself is retained in full: three-scope precedence
+(workspace > user > built-in), the `effective` / `shadowed` / `invalid`
+statuses, deterministic writable-layer revisions, and the ordered save-gate
+tables in [cmd-save-phases.ts](src/ui/sidebar/commands/cmd-save-phases.ts) and
+[cmd-save-pipelines.ts](src/ui/sidebar/commands/cmd-save-pipelines.ts) all
+behave exactly as before — one rung of each table, built-in immutability, is now
+unreachable because no id belongs to the empty layer, and it is kept because it
+encodes the rule rather than the rows. `EMPTY_CATALOG` replaces the deleted
+`BUILT_IN_CATALOG` as the unreadable-configuration fallback, and
+`BUILT_IN_PIPELINE_ID` is deleted with no successor: a launch that resolves no
+Pipeline is refused with `catalog-empty`
+([empty-catalog-guidance.ts](src/contracts/empty-catalog-guidance.ts)) rather
+than defaulted. `examples/` is the only process content in the package.
 
 [src/services/process-yaml/](src/services/process-yaml/) is the portable
 exchange format for all three of those families — `schegent/v1` `Phase`,

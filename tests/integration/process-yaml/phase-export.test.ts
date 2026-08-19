@@ -12,7 +12,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 import { CMD_EXPORT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -181,29 +180,42 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     // reads named keys only. Feeding it an object that does carry them proves
     // the emitter drops them rather than relying on the type to be enough
     // (FR-009, FR-010, SC-008).
+    //
+    // Feature 098 T012/T014 — the non-portable set shrank to the two fields the
+    // host resolves. `sideEffects` and `evidencePolicy` are now the author's own
+    // declaration and travel (FR-003), so they are carried here with legal values
+    // and asserted present: a list this test still called non-portable would pass
+    // by dropping exactly the fields the feature exists to move.
     const definition = {
       phaseId: 'ship-it',
       name: 'Ship It',
       version: 3,
       instruction: 'Ship the thing.',
-      sideEffects: ['writes-files'],
-      evidencePolicy: 'strict',
+      sideEffects: 'unrestricted',
+      evidencePolicy: 'best-effort',
       promptVersion: 7,
       sourceScope: 'user'
     } as unknown as PhaseDefinition;
 
     const text = serializePhaseDocument(documentFromPhaseDefinition(definition));
-    for (const field of ['sideEffects', 'evidencePolicy', 'promptVersion', 'sourceScope']) {
+    for (const field of ['promptVersion', 'sourceScope']) {
       expect(text, `${field} must not appear in the document`).not.toContain(field);
     }
+    expect(text).toContain('sideEffects: unrestricted');
+    expect(text).toContain('evidencePolicy: best-effort');
   });
 
   it('QS-4 refuses to export a stored row that declares a non-portable field', async () => {
     // The other half: the catalog treats a non-portable key on an authored row
     // as an unknown field, so the row carries no valid definition and export
     // reports it rather than quietly emitting a stripped document.
+    //
+    // Feature 098 T015 — the probe moved to `promptVersion`. `sideEffects` is an
+    // authored field now, so a row declaring it is valid and exportable; leaving
+    // it here would have kept the case green off `invalid-enum` on a malformed
+    // value rather than off the unknown-field refusal it is about.
     const h = buildHarness({
-      user: [{ ...AUTHORED_PHASE, sideEffects: ['writes-files'] }]
+      user: [{ ...AUTHORED_PHASE, promptVersion: 7 }]
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -211,12 +223,23 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
   });
 
-  it('QS-5 exports the effective definition when a layer shadows a built-in', async () => {
-    const builtIn = BUILT_IN_PHASES.find((p) => p.id === 'speckit-specify');
-    expect(builtIn).toBeDefined();
-
+  // Feature 098 (T036) — this shadowed a built-in row with a user row. The
+  // built-in layer holds nothing to shadow now, so the case is re-keyed onto the
+  // two layers that remain. The property is unchanged and is the whole point of
+  // QS-5: an export writes the definition this installation actually runs, not
+  // whichever layer happens to be looked at first.
+  it('QS-5 exports the effective definition when a layer shadows another', async () => {
     const h = buildHarness({
       user: [
+        {
+          phaseId: 'speckit-specify',
+          name: 'User Specify',
+          version: 1,
+          instruction: 'Use the shipped house style.',
+          model: 'claude-opus-5'
+        }
+      ],
+      workspace: [
         {
           phaseId: 'speckit-specify',
           name: 'Locally Overridden Specify',
@@ -231,8 +254,8 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     const text = h.saved[0]!.text;
     expect(text).toContain('name: Locally Overridden Specify');
     expect(text).toContain('model: claude-sonnet-5');
-    // The shadowed built-in's own values are not what this installation runs.
-    expect(text).not.toContain(`name: ${builtIn!.name}`);
+    // The shadowed row's own values are not what this installation runs.
+    expect(text).not.toContain('name: User Specify');
   });
 
   it('QS-6 reports a row that exists but does not resolve as does-not-resolve', async () => {

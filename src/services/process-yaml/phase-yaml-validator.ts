@@ -14,9 +14,12 @@
 //
 //   * The admitted key sets are the emitter's key-order constants. A field
 //     added to the format is admitted by the reader and the writer at the same
-//     moment, and a field NOT in those lists — `sideEffects`,
-//     `evidencePolicy`, `promptVersion`, `sourceScope` — is refused by the
-//     closed-format rule without a denial list to maintain (FR-001, FR-009).
+//     moment, and a field NOT in those lists — `promptVersion`, `sourceScope` —
+//     is refused by the closed-format rule without a denial list to maintain
+//     (FR-001, FR-009). Feature 098 admitted `sideEffects` and `evidencePolicy`
+//     by the single `SPEC_KEY_ORDER` edit that property describes; the two that
+//     remain refused are host-resolved state, not authored fields, which is why
+//     they are named here rather than merely omitted.
 //   * Every length, pattern and range is imported from the catalog validator,
 //     so the format cannot drift from the values the catalog already accepts
 //     (FR-008).
@@ -38,7 +41,11 @@ import {
 } from '../../config/process-definition-validator';
 import {
   PHASE_EFFORT_LEVELS,
-  type PhaseDefinitionEffort
+  PHASE_EVIDENCE_POLICIES,
+  PHASE_SIDE_EFFECTS,
+  type PhaseDefinitionEffort,
+  type PhaseEvidencePolicy,
+  type PhaseSideEffects
 } from '../../contracts/process-definitions';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../runner/backend-runner-factory';
 import {
@@ -334,6 +341,44 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // Feature 098 — membership against the catalog's own enums, in the shape
+  // `runner` above already uses. The values are value-imported from
+  // `contracts/process-definitions` rather than written out, so the format cannot
+  // admit a class the catalog would then reject (FR-001, FR-002). No new bound is
+  // introduced: the refusal names the field and lists the legal values, and never
+  // echoes the author's own text, so `ECHO_MAX` has nothing to cap here.
+  let sideEffects: PhaseSideEffects | undefined;
+  const sideEffectsNode = optionalScalar(section, 'sideEffects', defects);
+  if (sideEffectsNode !== undefined) {
+    if (!(PHASE_SIDE_EFFECTS as readonly string[]).includes(sideEffectsNode.value)) {
+      defects.push(
+        defect(
+          'sideEffects',
+          'invalid-enum',
+          `Phase sideEffects must be one of ${PHASE_SIDE_EFFECTS.join(', ')}`
+        )
+      );
+    } else {
+      sideEffects = sideEffectsNode.value as PhaseSideEffects;
+    }
+  }
+
+  let evidencePolicy: PhaseEvidencePolicy | undefined;
+  const evidencePolicyNode = optionalScalar(section, 'evidencePolicy', defects);
+  if (evidencePolicyNode !== undefined) {
+    if (!(PHASE_EVIDENCE_POLICIES as readonly string[]).includes(evidencePolicyNode.value)) {
+      defects.push(
+        defect(
+          'evidencePolicy',
+          'invalid-enum',
+          `Phase evidencePolicy must be one of ${PHASE_EVIDENCE_POLICIES.join(', ')}`
+        )
+      );
+    } else {
+      evidencePolicy = evidencePolicyNode.value as PhaseEvidencePolicy;
+    }
+  }
+
   let model: string | undefined;
   const modelNode = optionalScalar(section, 'model', defects);
   if (modelNode !== undefined) {
@@ -408,6 +453,8 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
 
   const common = {
     ...(runner !== undefined ? { runner } : {}),
+    ...(sideEffects !== undefined ? { sideEffects } : {}),
+    ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),

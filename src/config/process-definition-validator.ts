@@ -1,8 +1,12 @@
 import {
   PHASE_EFFORT_LEVELS,
+  PHASE_EVIDENCE_POLICIES,
   PHASE_ID_MAX_LEN,
+  PHASE_SIDE_EFFECTS,
   type PhaseDefinition,
-  type PhaseFieldError
+  type PhaseEvidencePolicy,
+  type PhaseFieldError,
+  type PhaseSideEffects
 } from '../contracts/process-definitions';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
@@ -31,7 +35,12 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'retryCondition',
   'isRequired',
   'forceContinueOnRetryCap',
-  'runner'
+  'runner',
+  // Feature 098 T015 — authored, not host-resolved. The save path and the import
+  // path must hold a definition to the same closed set, or a Phase would be
+  // accepted by one route and refused by the other on the same field.
+  'sideEffects',
+  'evidencePolicy'
 ]);
 
 const ERROR_MESSAGE_MAX = 512;
@@ -252,6 +261,47 @@ export function validatePhaseDefinition(
       runner = value.runner as BackendRunnerKind;
     }
   }
+  // Feature 098 T015 — membership against the same two sets the exchange reader
+  // uses, value-imported from `contracts/process-definitions` so there is one
+  // legal-value list per field rather than one per entry route (FR-001, FR-002).
+  let sideEffects: PhaseSideEffects | undefined;
+  if (value.sideEffects !== undefined) {
+    if (
+      typeof value.sideEffects !== 'string' ||
+      !(PHASE_SIDE_EFFECTS as readonly string[]).includes(value.sideEffects)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'sideEffects',
+          'invalid-enum',
+          `Phase sideEffects must be one of ${PHASE_SIDE_EFFECTS.join(', ')}`
+        )
+      );
+    } else {
+      sideEffects = value.sideEffects as PhaseSideEffects;
+    }
+  }
+
+  let evidencePolicy: PhaseEvidencePolicy | undefined;
+  if (value.evidencePolicy !== undefined) {
+    if (
+      typeof value.evidencePolicy !== 'string' ||
+      !(PHASE_EVIDENCE_POLICIES as readonly string[]).includes(value.evidencePolicy)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'evidencePolicy',
+          'invalid-enum',
+          `Phase evidencePolicy must be one of ${PHASE_EVIDENCE_POLICIES.join(', ')}`
+        )
+      );
+    } else {
+      evidencePolicy = value.evidencePolicy as PhaseEvidencePolicy;
+    }
+  }
+
   if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
     errors.push(
       fieldError(
@@ -356,7 +406,9 @@ export function validatePhaseDefinition(
     ...(retryCondition !== undefined ? { retryCondition } : {}),
     ...(typeof isRequired === 'boolean' ? { isRequired } : {}),
     ...(typeof forceContinueOnRetryCap === 'boolean' ? { forceContinueOnRetryCap } : {}),
-    ...(runner !== undefined ? { runner } : {})
+    ...(runner !== undefined ? { runner } : {}),
+    ...(sideEffects !== undefined ? { sideEffects } : {}),
+    ...(evidencePolicy !== undefined ? { evidencePolicy } : {})
   };
   const definition: PhaseDefinition = hasInstruction
     ? { ...common, instruction: instruction as string }

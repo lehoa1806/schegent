@@ -11,8 +11,6 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
 import {
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINE,
   buildCatalog,
   type PhaseDef,
   type PipelineDef
@@ -128,6 +126,40 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
+// Feature 098 (T080) — the two framing Phases and the Pipeline they belong to,
+// declared here instead of read off `BUILT_IN_PHASES` / `BUILT_IN_PIPELINE`.
+//
+// They keep their ids and their fields, because this file is about a *custom*
+// Pipeline: the custom Phase is the subject, and the two around it are the
+// control — the assertion that `speckit-specify` runs on `claude-opus-5` with no
+// effort and no timeout is what makes the `security-audit` overrides mean
+// something rather than being the only values in the run. Substituting fixture
+// ids would keep that structure, and the ids are kept only so the diff shows the
+// definitions moving rather than the test changing.
+const SPECIFY_PHASE: PhaseDef = {
+  id: 'speckit-specify',
+  name: 'Spec-kit Specify',
+  instruction: 'Run /speckit-specify',
+  model: 'claude-opus-5',
+  runner: 'claude'
+};
+
+const FINALIZE_PHASE: PhaseDef = {
+  id: 'finalize',
+  name: 'Finalize',
+  instruction: 'Finalize the feature.',
+  model: 'claude-opus-5',
+  runner: 'claude'
+};
+
+const FRAMING_PHASES: readonly PhaseDef[] = [SPECIFY_PHASE, FINALIZE_PHASE];
+
+const FRAMING_PIPELINE: PipelineDef = {
+  id: 'speckit-new-feature',
+  name: 'Spec-kit New Feature',
+  phases: [SPECIFY_PHASE.id, FINALIZE_PHASE.id]
+};
+
 describe('Dynamic pipelines end-to-end (T034, US2)', () => {
   it('runs a custom 3-phase pipeline with model/effort/timeout overrides and loop semantics', async () => {
     const securityPhase: PhaseDef = {
@@ -142,11 +174,15 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const securityPipeline: PipelineDef = {
       id: 'security',
       name: 'Security Audit Pipeline',
-      phases: ['speckit-specify', 'security-audit', 'finalize', 'done']
+      // Feature 098 (T025, FR-022) — no trailing `'done'`. No Phase declares
+      // that id, so the resolver used to drop the entry silently; it refuses the
+      // whole Pipeline now. Every assertion below is unchanged, because the
+      // sequence that actually ran never included it.
+      phases: ['speckit-specify', 'security-audit', 'finalize']
     };
 
-    const customPhases: readonly PhaseDef[] = [...BUILT_IN_PHASES, securityPhase];
-    const customPipelines: readonly PipelineDef[] = [BUILT_IN_PIPELINE, securityPipeline];
+    const customPhases: readonly PhaseDef[] = [...FRAMING_PHASES, securityPhase];
+    const customPipelines: readonly PipelineDef[] = [FRAMING_PIPELINE, securityPipeline];
     const catalog = buildCatalog(customPhases, customPipelines, { claude: [], codex: [], agy: [] }, 'security');
 
     const logger = new SanitizedLogger();
@@ -222,8 +258,8 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(specifyStart.payload).not.toHaveProperty('timeoutMs');
   });
 
-  it('falls back to defaultPipelineId when feature.pipelineId is unknown to the catalog', async () => {
-    const catalog = buildCatalog(BUILT_IN_PHASES, [BUILT_IN_PIPELINE], { claude: [], codex: [], agy: [] }, 'speckit-new-feature');
+  it('refuses a start when feature.pipelineId is unknown to the catalog (T026, FR-023)', async () => {
+    const catalog = buildCatalog(FRAMING_PHASES, [FRAMING_PIPELINE], { claude: [], codex: [], agy: [] }, FRAMING_PIPELINE.id);
 
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
@@ -249,11 +285,26 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       { catalog }
     );
 
+    const warnings: string[] = [];
+    vi.spyOn(logger, 'warn').mockImplementation((message: string) => {
+      warnings.push(message);
+    });
+
     const feature = await queue.enqueue('Some feature', { pipelineId: 'nonexistent' });
     await controller.startNew(feature, null);
 
-    const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(run.pipeline?.id).toBe('speckit-new-feature');
-    expect(invocations.length).toBeGreaterThan(0);
+    // Feature 098 (T026, US3, FR-023) — this used to fall through to
+    // `catalog.defaultPipelineId` and run the built-in Pipeline. The Task named a
+    // Pipeline; running a different one is not a recovery from that, it is a
+    // silent substitution of the process, so the start is refused: no Run record,
+    // no CLI invocation, and the id that failed to resolve is named.
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(invocations).toEqual([]);
+    expect(
+      warnings.some(
+        (message) =>
+          message.includes('nonexistent') && message.includes('not in the effective catalog')
+      )
+    ).toBe(true);
   });
 });

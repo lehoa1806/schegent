@@ -34,10 +34,14 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
+// Feature 098 (T080) — the bugfix Pipeline and its Phases come from the test
+// fixture rather than from a compiled-in catalog, which no longer holds any. The
+// ids are the real ones because `phase-sequencer.ts` and
+// `workflow-run-migrator.ts` still key on them; see the fixture header.
 import {
-  BUILT_IN_BUGFIX_PIPELINE_ID,
-  BUILT_IN_CATALOG
-} from '../../src/config/pipeline-config';
+  buildSpeckitCatalog,
+  SPECKIT_BUGFIX_PIPELINE_ID
+} from '../fixtures/speckit-catalog-fixture';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
@@ -167,7 +171,7 @@ async function buildHarness(opts: HarnessOpts): Promise<{
       iterationCap: 5,
       timeoutMs: 1000,
     },
-    { catalog: BUILT_IN_CATALOG, auditWriter: audit }
+    { catalog: buildSpeckitCatalog(), auditWriter: audit }
   );
 
   return { controller, store, queue, invocations };
@@ -199,9 +203,9 @@ describe('Feature 026 T020a — speckit-bugfix fails fast on empty feature point
 
     // Enqueue with an empty/missing feature pointer (featureDir omitted).
     const feature = await queue.enqueue('Bug against missing feature', {
-      pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID
+      pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
-    await controller.startNew(feature, null, { pipelineId: BUILT_IN_BUGFIX_PIPELINE_ID });
+    await controller.startNew(feature, null, { pipelineId: SPECKIT_BUGFIX_PIPELINE_ID });
 
     // (a) Run halts via the existing audited-failure pathway (no new
     // state literal). currentPhase stays pinned at bugfix-report.

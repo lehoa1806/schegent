@@ -61,9 +61,9 @@ The phase-tracking IPC shape was widened to support operator-defined pipelines:
 - `PhaseName` is `string` (was a fixed literal union of the eight built-in phases). Webview components must not assume any specific phase id list.
 - `PhaseTile.order` is `number` (was a 1..7 tuple). Tiles render in catalog order, with vertical scroll when the active pipeline exceeds ~10 phases.
 - `PhaseTile.loopable?: boolean` is now optional, mirroring the per-phase `PhaseDef.loopable` setting.
-- `WorkflowSnapshot.activePipeline?: { id: string; name: string }` is optional. When present, the dashboard header renders `Phase Progression — Pipeline: <name>`; when absent, the built-in `speckit-new-feature` pipeline is implied.
+- `WorkflowSnapshot.activePipeline?: { id: string; name: string }` is optional. When present, the dashboard header renders `Phase Progression — Pipeline: <name>`; when absent, no Pipeline is named.
 
-All four fields fall back to the prior built-in defaults when omitted, so existing snapshots continue to render unchanged.
+Feature 098 removes the fallback these bullets used to describe. There is no built-in Pipeline left to imply and no built-in phase-id list to fall back to, so absence now means absence: the webview renders what the projection carries and infers nothing from a missing field. `snapshot-types.ts` lost `BUILT_IN_PHASE_NAMES`, `PHASE_NAMES`, and `BuiltInPhaseName` with the layer they mirrored (T040) — `PhaseName` stays `string` on both sides of the boundary, which is the parity the file exists to hold. `IDLE_GENERAL_SETTINGS.defaultPipelineId` is `''` for the same reason (T048): the empty string is how "no default" is spelled across the boundary, not a missing field, and the host default, the manifest contribution, and this idle snapshot all agree on it.
 
 ### Per-queue snapshot, `schemaVersion` 4 (spec 092)
 
@@ -287,6 +287,33 @@ would show the operator a run vanishing instead of a run loading. And the
 composer stays closed until asked for, with the picker shown only when the
 catalog has something to pick, because a live compose control over an empty
 catalog is a control whose only outcome is a refusal.
+
+Feature 098 revises the second of those in one direction and leaves it standing
+in the other. The picker still appears only when there is something to pick, but
+the **Start a Run** zone now stays mounted with nothing imported and shows the
+empty-catalog guidance in place of the choices
+(`data-testid="runs-surface-empty-catalog"`). Hiding the whole zone was right
+when an empty catalog was a transient state of a product that shipped Pipelines;
+it is wrong now that it is the state every install starts in, because it left the
+operator no visible route from an empty catalog to a non-empty one and left
+`RunLauncher.svelte` reachable from nowhere. The text comes from
+[`src/contracts/empty-catalog-guidance.ts`](../src/contracts/empty-catalog-guidance.ts),
+imported rather than restated, and both call sites go through
+`emptyCatalogGuidance(count)`, which returns the guidance only when the count is
+zero — so the empty state is derived from the projection and never stored as a
+second flag to keep in step.
+
+**This zone is the only operator-visible instance.** `PhaseTracker.svelte`
+renders the same text from the same source
+(`data-testid="phase-tracker-empty-catalog"`), but that component sits in the
+reachability `ALLOWLIST` above as *"Superseded by RunDetailTier's phase list"* —
+it was retired before feature 098 and no panel root imports it. The live phase
+strip is `drilldown/RunDetailTier.svelte`, which reads `runtime?.phases` and is
+reachable only once a run exists, so it has no empty-catalog case to answer. The
+host side is what makes the idle surface honest: `buildPhasesFromRun(null)`
+returns **zero tiles** rather than the seven placeholders `buildEmptyPhases()`
+used to invent (T055), so an idle tracker no longer claims a catalog that is not
+there.
 
 **A shipped `.svelte` view with no import path from a panel root now fails a
 test.** `tests/lint/svelte-surface-reachability.test.ts` walks from the two
@@ -707,9 +734,14 @@ retry is self-healing at whatever depth it stopped.
 The new-task pipeline selector, relocated by feature 097 to
 [`QueueInputForm.svelte:128-146`](src/components/QueueInputForm.svelte)
 (mounted in `drilldown/QueueDetailTier.svelte`'s on-demand composer; see
-"Feature 017 queue and phase-task IPC" above), lists two built-in
-pipelines (`speckit-new-feature`, `speckit-bugfix`). The default selection
-remains `speckit-new-feature`. The shortcut form in
+"Feature 017 queue and phase-task IPC" above), listed two built-in
+pipelines (`speckit-new-feature`, `speckit-bugfix`) and defaulted to the
+first. Feature 098 ships neither: the selector lists whatever
+`availablePipelines` carries, which is empty until the operator imports a
+document. `defaultSelectedPipelineId` preselects `defaultPipelineId` when it
+names a Pipeline in the list and the first available one otherwise; `''` names
+none, so an unset default preselects the first row rather than an id the
+operator cannot see. The shortcut form in
 [`ControlPanel.svelte`](src/components/ControlPanel.svelte) does NOT
 include the selector and falls back to the controller's default
 pipeline (research Decision 6).

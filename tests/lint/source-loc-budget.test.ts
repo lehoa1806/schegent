@@ -111,7 +111,25 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // v10 events went unaudited. One migration is one line in each of the three
   // places, by construction.
   // Set to exactly what the file measures, per the convention above.
-  { path: 'src/extension.ts', maxLines: 1_302 },
+  //
+  // Feature 098 (T058b) — 1,302 → 1,311, against a ceiling the entry above left
+  // with nothing to give. The feature's subject matter is not here: the
+  // empty-catalog refusal is decided in
+  // src/services/scheduled-start-coordinator.ts, which owns the `EmptyCatalogGate`
+  // type, the disarm, and the failure handling around the notice, and the words
+  // it says come from src/contracts/empty-catalog-guidance.ts. What lands here is
+  // the one thing only this file can do: bind the gate's two closures to
+  // `activeCatalog` and `notifier`, both locals of `wireStage2`. Neither can move.
+  // Reading the catalog through `activeCatalog` on every probe rather than
+  // capturing a size is the requirement — a coordinator built before the first
+  // import must see what the operator imported after it — and a factory taking
+  // both locals as arguments would cost an import and a call to hide two
+  // one-line closures. Five of the nine lines are the comment that says so, which
+  // is the same trade every entry above made. Optional on `Deps` and required at
+  // this site, per the FR-R3-007 entry's reasoning: a gate is what makes the
+  // refusal reach an operator who is not looking at a webview, so the wiring is
+  // the behaviour. Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_311 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

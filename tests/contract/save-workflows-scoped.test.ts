@@ -54,6 +54,7 @@ import {
 } from '../../src/ui/sidebar/messages';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import { workflowLayerRevision } from '../../src/config/workflow-catalog';
+import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 import {
   WORKFLOW_CONDITION_OPERATORS,
   type WorkflowCatalogMutation
@@ -192,9 +193,16 @@ function buildRouter(
           user: [],
           workspace: opts.pipelines ?? [DESIGN_PIPELINE, BUILD_PIPELINE]
         }),
+        // Feature 098 (T080) — the fixture Pipelines name `speckit-specify` and
+        // `finalize`, which used to resolve out of the built-in Phase layer. That
+        // layer is empty now, so without these rows every gate below reports
+        // `workflow-validation` instead of the gate under test.
         readPhaseConfig: () => ({
           user: [],
-          workspace: [{ id: 'done', name: 'Done', version: 1, instruction: 'Done.' }]
+          workspace: [
+            { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
+            ...SPECKIT_PHASE_DEFS
+          ]
         })
       };
 

@@ -12,10 +12,12 @@
 // matter how deeply the result is copied.
 //
 // The two deletion cases are the ones a fallback-shaped implementation absorbs
-// silently. `resolvePipeline()` substitutes the built-in Pipeline for an unknown
-// id and the `done` Phase for a missing one, so a run whose Pipeline was deleted
-// executes something else entirely and never reports that it did (spec FR-033,
-// US4 scenarios 2 and 3, quickstart Scenario 8 steps 4-5).
+// silently. `resolvePipeline()` used to substitute the built-in Pipeline for an
+// unknown id and to drop a Phase the catalog lost, so a run whose Pipeline was
+// deleted executed something else entirely and never reported that it did (spec
+// FR-033, US4 scenarios 2 and 3, quickstart Scenario 8 steps 4-5). Feature 098
+// (T024/T025) made both a refusal, which is what this test always asked of the
+// composed path — the plan is still what makes the run's own process immune.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -160,6 +162,10 @@ describe('a queue item without a frozen plan keeps the pre-feature behavior', ()
     const run = await factory.create(legacy, null, 'ab-flow');
 
     expect(run.pipeline?.id).toBe('ab-flow');
-    expect(run.pipeline?.phases.map((phase) => phase.id)).toEqual(['alpha', 'beta', 'done']);
+    // Feature 098 (T025, FR-022) — `['alpha', 'beta']`, not `['alpha', 'beta',
+    // 'done']`: the resolver no longer appends a terminal `done` Phase. What this
+    // test is about is unchanged — a plan-less item still resolves through the
+    // catalog at drain — and the sequence it resolves is now the authored one.
+    expect(run.pipeline?.phases.map((phase) => phase.id)).toEqual(['alpha', 'beta']);
   });
 });

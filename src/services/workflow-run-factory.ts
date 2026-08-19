@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  BUILT_IN_PIPELINE,
-  BUILT_IN_PIPELINE_ID,
-  type PhaseDef,
-  type PipelineCatalog
-} from '../config/pipeline-config';
+import { type PhaseDef, type PipelineCatalog } from '../config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../lib/logger';
 import type { FeatureRequest } from '../queue/feature-request';
@@ -34,33 +29,88 @@ export interface WorkflowRunFactoryDeps {
   readonly logger: SanitizedLogger;
 }
 
+/**
+ * Feature 098 (T024/T025, US3, FR-023/FR-024) — why a resolution failure is a
+ * value here and a throw one layer up.
+ *
+ * `resolvePipeline` is read from snapshot-projection paths as well as from
+ * `create()`, and a projection renders the sidebar. A throw on that path takes
+ * down the render rather than refusing a launch, so this function answers with a
+ * discriminated resolution and lets each caller decide. `create()` is the caller
+ * that decides "fail", and it does so through `requirePipeline` below — the same
+ * shape it already uses for an unapproved mutation plan, and before any Run
+ * record exists.
+ */
+export type PipelineRefusal =
+  | { readonly reason: 'pipeline-not-found'; readonly pipelineId: string }
+  | {
+      readonly reason: 'unknown-phase';
+      readonly pipelineId: string;
+      readonly phaseId: string;
+    };
+
+export type PipelineResolution =
+  | { readonly ok: true; readonly pipeline: WorkflowRunPipeline }
+  | { readonly ok: false; readonly refusal: PipelineRefusal };
+
+/** One phrasing, read by the log line and by the error the operator sees. */
+export function describePipelineRefusal(refusal: PipelineRefusal): string {
+  return refusal.reason === 'pipeline-not-found'
+    ? `pipeline '${refusal.pipelineId}' is not in the effective catalog`
+    : `pipeline '${refusal.pipelineId}' names phase '${refusal.phaseId}', ` +
+      'which is not in the effective catalog';
+}
+
+/** The refusal, carried across the hop out of `create()` so SC-007 can name the id. */
+export class UnresolvablePipelineError extends Error {
+  public readonly refusal: PipelineRefusal;
+
+  constructor(refusal: PipelineRefusal) {
+    super(describePipelineRefusal(refusal));
+    this.name = 'UnresolvablePipelineError';
+    this.refusal = refusal;
+  }
+}
+
 export class WorkflowRunFactory {
   constructor(private readonly deps: WorkflowRunFactoryDeps) {}
 
   public resolvePipeline(
     requestedId: string,
     defaultRunnerKind = this.deps.defaultRunnerKind ?? DEFAULT_BACKEND
-  ): WorkflowRunPipeline {
+  ): PipelineResolution {
     const catalog = this.deps.getCatalog();
-    let pipeline = catalog.pipelinesById.get(requestedId);
-    if (!pipeline) {
-      if (requestedId !== BUILT_IN_PIPELINE_ID) {
-        this.deps.logger.warn(
-          `pipeline '${requestedId}' not found; falling back to '${BUILT_IN_PIPELINE_ID}'`
-        );
-      }
-      pipeline = catalog.pipelinesById.get(BUILT_IN_PIPELINE_ID) ?? BUILT_IN_PIPELINE;
-    }
+    const pipeline = catalog.pipelinesById.get(requestedId);
+    if (!pipeline) return this.refuse({ reason: 'pipeline-not-found', pipelineId: requestedId });
     const phases: PhaseDef[] = [];
     for (const phaseId of pipeline.phases) {
-      const def = catalog.phasesById.get(phaseId) ?? catalog.phasesById.get('done');
-      if (def) phases.push(snapshotPhaseDef(def, defaultRunnerKind));
+      // Feature 098 (T025, FR-022) — the pre-feature expression was
+      // `phasesById.get(phaseId) ?? phasesById.get('done')`, guarded by
+      // `if (def)`. No `PhaseDef` ever declared `done`, so a miss resolved to
+      // `undefined` and the phase was *dropped*: a Run executed a shorter
+      // sequence than the Pipeline it was launched from, with nothing recorded.
+      // The terminal `done` append that followed the loop went the same way, for
+      // the same reason. A Pipeline naming a Phase the catalog does not hold is
+      // now refused, naming both.
+      const def = catalog.phasesById.get(phaseId);
+      if (!def) {
+        return this.refuse({ reason: 'unknown-phase', pipelineId: requestedId, phaseId });
+      }
+      phases.push(snapshotPhaseDef(def, defaultRunnerKind));
     }
-    if (!phases.some((phase) => phase.id === 'done')) {
-      const done = catalog.phasesById.get('done');
-      if (done) phases.push(snapshotPhaseDef(done, defaultRunnerKind));
-    }
-    return snapshotPipelineContract(pipeline, phases);
+    return { ok: true, pipeline: snapshotPipelineContract(pipeline, phases) };
+  }
+
+  private refuse(refusal: PipelineRefusal): PipelineResolution {
+    this.deps.logger.warn(describePipelineRefusal(refusal));
+    return { ok: false, refusal };
+  }
+
+  /** The one conversion from refusal to failure; see the note above the types. */
+  private requirePipeline(requestedId: string): WorkflowRunPipeline {
+    const resolution = this.resolvePipeline(requestedId);
+    if (!resolution.ok) throw new UnresolvablePipelineError(resolution.refusal);
+    return resolution.pipeline;
   }
 
   public async create(
@@ -71,15 +121,18 @@ export class WorkflowRunFactory {
     // Feature 087 (T040, US4, FR-030/FR-033) — a composed item already carries
     // the definition it was submitted against, expanded through the effective
     // catalog at that moment. Resolving again here would re-read the catalog as
-    // it stands *now*, which is the drift this feature exists to close, and
-    // `resolvePipeline()` fails open on top of it: an unknown Pipeline becomes
-    // the built-in one and a deleted Phase becomes `done`, silently.
+    // it stands *now*, which is the drift this feature exists to close.
+    //
+    // Feature 098 (T023) — that fail-open is gone: `requirePipeline` refuses an
+    // unknown Pipeline id and a Pipeline naming an undefined Phase. The
+    // short-circuit is what keeps the refusals off this branch — a plan carries
+    // its own definition, so a Phase since deleted from the catalog still
+    // executes from the snapshot.
     //
     // Every other path — items enqueued before this feature, and the existing
-    // non-composed starts — carries no plan and takes the original branch
-    // unchanged.
+    // non-composed starts — carries no plan and takes the resolving branch.
     const plan = feature.runPlan;
-    const pipeline = plan?.pipeline ?? this.resolvePipeline(requestedId);
+    const pipeline = plan?.pipeline ?? this.requirePipeline(requestedId);
     const mutationPlan = buildMutationPlan(pipeline);
     const approved = mutationPlan.gitCapablePhaseIds.length === 0 ||
       await (this.deps.requestGitApproval?.(mutationPlan) ?? Promise.resolve(true));
