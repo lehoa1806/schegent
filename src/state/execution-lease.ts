@@ -16,6 +16,11 @@
 
 import { HEARTBEAT_INTERVAL_MS, STALENESS_THRESHOLD_MS, systemClock, systemScheduler } from './lock';
 import type { Clock, Scheduler, SchedulerHandle } from './lock';
+import {
+  fallbackOwnershipRegistry,
+  queueResource,
+  type OwnershipRegistry
+} from './ownership-registry';
 
 /** One queue's execution claim. Persisted under `KEYS.executionLeases`. */
 export interface ExecutionLease {
@@ -28,18 +33,38 @@ export interface ExecutionLease {
 /**
  * The store surface the manager needs. Narrow on purpose: the lease manager
  * owns the staleness arithmetic, the store owns persistence.
+ *
+ * `ownership` is optional because this port predates feature FR-R3-003 and is
+ * implemented by hand-rolled doubles that carry no registry. Absent, the manager
+ * falls back to one memoized on the store object, so two managers over one double
+ * still contend — see `fallbackOwnershipRegistry`. A real `WorkspaceStateStore`
+ * always supplies it.
  */
 export interface ExecutionLeaseStore {
   getExecutionLeases(): Record<string, ExecutionLease>;
   setExecutionLease(queueId: string, lease: ExecutionLease | null): Promise<void>;
+  readonly ownership?: OwnershipRegistry;
 }
 
+/**
+ * Feature FR-R3-003 — acquisition moved to the fenced registry for the same
+ * reason as window primacy: `KEYS.executionLeases` is a `Memento` entry, so the
+ * read-decide-write it used to perform arbitrated nothing between two extension
+ * hosts. Two windows could each claim the same queue and each start a Run on the
+ * one shared working tree.
+ *
+ * The mirror under `KEYS.executionLeases` is retained and is advisory, exactly as
+ * `KEYS.lock` is for primacy: the synchronous readers below need it, and each is
+ * gated on this window holding the queue's fence.
+ */
 export class ExecutionLeaseManager {
   private readonly store: ExecutionLeaseStore;
   private readonly ownerId: string;
   private readonly clock: Clock;
   private readonly scheduler: Scheduler;
   private heartbeatHandle: SchedulerHandle | null = null;
+  /** Queue id → the generation this window's claim on it was issued at. */
+  private readonly fences = new Map<string, number>();
 
   constructor(
     store: ExecutionLeaseStore,
@@ -58,22 +83,42 @@ export class ExecutionLeaseManager {
   }
 
   /**
+   * Read at call time rather than captured in the constructor: a store points its
+   * ownership storage at the workspace during activation stage 2, which may be
+   * after this manager was built.
+   */
+  private get ownership(): OwnershipRegistry {
+    return this.store.ownership ?? fallbackOwnershipRegistry(this.store);
+  }
+
+  /**
    * Claim one queue. Succeeds when the queue is unclaimed, already ours, or
    * held by an owner whose heartbeat has gone stale — the same three cases the
    * workspace lock admits, applied per queue instead of per workspace.
+   *
+   * A storage failure is a refusal on the same terms as contention: the drain's
+   * step 6 reads `acquired: false` as "another window has this queue", waits, and
+   * tries again on the next sweep, which is the correct response to both.
    */
   public async tryAcquire(queueId: string): Promise<{ acquired: boolean; ownerId: string }> {
-    const existing = this.store.getExecutionLeases()[queueId];
     const now = this.clock.now();
-    if (existing && existing.ownerId !== this.ownerId) {
-      if (!this.isStale(existing, now)) {
-        return { acquired: false, ownerId: existing.ownerId };
-      }
+    const outcome = await this.ownership.acquire(
+      queueResource(queueId),
+      this.ownerId,
+      now,
+      STALENESS_THRESHOLD_MS
+    );
+    if (outcome.outcome !== 'acquired') {
+      this.fences.delete(queueId);
+      const recorded =
+        outcome.outcome === 'held' ? outcome.ownerId : this.ownerOfRecord(queueId);
+      return { acquired: false, ownerId: recorded ?? this.ownerId };
     }
+    this.fences.set(queueId, outcome.fence);
     await this.store.setExecutionLease(queueId, {
       queueId,
       ownerId: this.ownerId,
-      acquiredAt: existing?.ownerId === this.ownerId ? existing.acquiredAt : now,
+      acquiredAt: outcome.acquiredAt,
       heartbeatAt: now
     });
     this.startHeartbeat();
@@ -81,9 +126,29 @@ export class ExecutionLeaseManager {
   }
 
   public isHeld(queueId: string): boolean {
+    if (!this.fences.has(queueId)) return false;
     const lease = this.store.getExecutionLeases()[queueId];
     if (!lease || lease.ownerId !== this.ownerId) return false;
     return !this.isStale(lease, this.clock.now());
+  }
+
+  /** The fencing token this window's claim on `queueId` was issued at. */
+  public fenceOfRecord(queueId: string): number | null {
+    return this.fences.get(queueId) ?? null;
+  }
+
+  /**
+   * The authoritative answer to "does this window still hold `queueId`", read from
+   * the fenced record rather than the mirror (T301).
+   *
+   * Fails closed: storage that cannot answer resolves to `false`, so the drain
+   * declines to admit rather than starting a Run on an unverified claim.
+   */
+  public async hasLease(queueId: string): Promise<boolean> {
+    const fence = this.fences.get(queueId);
+    if (fence === undefined) return false;
+    const verdict = await this.ownership.verify(queueResource(queueId), this.ownerId, fence);
+    return verdict.outcome === 'valid';
   }
 
   public isForeignLeaseHeld(queueId: string): boolean {
@@ -100,7 +165,12 @@ export class ExecutionLeaseManager {
   public heldQueueIds(): readonly string[] {
     const now = this.clock.now();
     return Object.values(this.store.getExecutionLeases())
-      .filter((lease) => lease.ownerId === this.ownerId && !this.isStale(lease, now))
+      .filter(
+        (lease) =>
+          lease.ownerId === this.ownerId &&
+          this.fences.has(lease.queueId) &&
+          !this.isStale(lease, now)
+      )
       .map((lease) => lease.queueId);
   }
 
@@ -108,22 +178,45 @@ export class ExecutionLeaseManager {
    * One interval refreshes every lease this window holds. A per-lease timer
    * would multiply memento writes by the queue count for no added safety —
    * the leases share an owner, so they go stale together or not at all.
+   *
+   * Driven from the fence map rather than the mirror: the fences are what this
+   * window was actually granted, and a mirror entry naming this owner without a
+   * fence is a claim it cannot prove. A queue whose generation has moved on is
+   * dropped from both, and — unlike primacy — it is not re-acquired here. A
+   * reclaimed execution lease means another window is draining that queue, and
+   * the drain's step 6 is the one place allowed to decide to contend for it.
    */
   public async heartbeat(): Promise<void> {
     const now = this.clock.now();
-    const mine = Object.values(this.store.getExecutionLeases()).filter(
-      (lease) => lease.ownerId === this.ownerId
-    );
-    for (const lease of mine) {
-      await this.store.setExecutionLease(lease.queueId, { ...lease, heartbeatAt: now });
+    for (const [queueId, fence] of [...this.fences]) {
+      const verdict = await this.ownership.heartbeat(
+        queueResource(queueId),
+        this.ownerId,
+        fence,
+        now
+      );
+      if (verdict.outcome === 'unavailable') continue;
+      if (verdict.outcome === 'rejected') {
+        this.fences.delete(queueId);
+        const stale = this.store.getExecutionLeases()[queueId];
+        if (stale?.ownerId === this.ownerId) {
+          await this.store.setExecutionLease(queueId, null);
+        }
+        continue;
+      }
+      const lease = this.store.getExecutionLeases()[queueId];
+      await this.store.setExecutionLease(queueId, {
+        queueId,
+        ownerId: this.ownerId,
+        acquiredAt: lease?.ownerId === this.ownerId ? lease.acquiredAt : now,
+        heartbeatAt: now
+      });
     }
+    this.stopHeartbeatIfIdle();
   }
 
   public async release(queueId: string): Promise<void> {
-    const lease = this.store.getExecutionLeases()[queueId];
-    if (lease && lease.ownerId === this.ownerId) {
-      await this.store.setExecutionLease(queueId, null);
-    }
+    await this.releaseOne(queueId);
     this.stopHeartbeatIfIdle();
   }
 
@@ -134,13 +227,49 @@ export class ExecutionLeaseManager {
     // record. Re-read and guard rather than assume: the only caller is
     // `dispose()`, which releases the workspace lock immediately afterwards,
     // and a throw here would skip that release.
-    for (const queueId of Object.keys(this.store.getExecutionLeases())) {
+    //
+    // The fence map is unioned in, because a claim this window was granted must
+    // be given back even when its mirror entry has already gone.
+    const candidates = new Set([
+      ...this.fences.keys(),
+      ...Object.keys(this.store.getExecutionLeases())
+    ]);
+    for (const queueId of candidates) {
       const lease = this.store.getExecutionLeases()[queueId];
-      if (lease?.ownerId === this.ownerId) {
-        await this.store.setExecutionLease(queueId, null);
-      }
+      if (!this.fences.has(queueId) && lease?.ownerId !== this.ownerId) continue;
+      await this.releaseOne(queueId);
     }
     this.stopHeartbeatIfIdle();
+  }
+
+  /**
+   * Give one queue back.
+   *
+   * The fence is this window's own when it acquired the lease itself. When it
+   * does not have one, the record is consulted: a release is authorized by being
+   * the owner of record *at the current generation*, which is a claim a revived
+   * predecessor cannot make, because it is no longer the owner of record. That
+   * fallback is what lets the controller's manager instance release a lease the
+   * drain's instance acquired — they share an owner id and a store, and without it
+   * a terminal Run would strand its queue until the 15 s staleness reclaim.
+   */
+  private async releaseOne(queueId: string): Promise<void> {
+    const resource = queueResource(queueId);
+    const fence = this.fences.get(queueId) ?? (await this.currentFenceIfMine(resource));
+    this.fences.delete(queueId);
+    if (fence !== null) {
+      await this.ownership.release(resource, this.ownerId, fence);
+    }
+    const lease = this.store.getExecutionLeases()[queueId];
+    if (lease && lease.ownerId === this.ownerId) {
+      await this.store.setExecutionLease(queueId, null);
+    }
+  }
+
+  private async currentFenceIfMine(resource: string): Promise<number | null> {
+    const record = await this.ownership.read(resource);
+    if (!record || record.holder?.ownerId !== this.ownerId) return null;
+    return record.fence;
   }
 
   /**
@@ -180,9 +309,7 @@ export class ExecutionLeaseManager {
   }
 
   private stopHeartbeatIfIdle(): void {
-    if (Object.values(this.store.getExecutionLeases()).some((l) => l.ownerId === this.ownerId)) {
-      return;
-    }
+    if (this.fences.size > 0) return;
     this.heartbeatHandle?.clear();
     this.heartbeatHandle = null;
   }
