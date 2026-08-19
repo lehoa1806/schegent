@@ -852,11 +852,14 @@ rules intact, and [queue-manager.ts](src/queue/queue-manager.ts) splits capacity
 into `hasQueueCapacity(queueId)` (one in-flight run per queue — a queue is still
 sequential) and `hasWorkspaceCapacity()` (`schegent.queue.globalConcurrencyCap`,
 default `1`, range `[1, 20]`). The default is `1`, not the range's midpoint or
-its ceiling: feature 098 (REL-02) lowered it from `3` so that concurrency is a
-thing an operator turns on deliberately, having read what two Runs sharing one
-worktree costs — see
-[Recovery checkpoints](docs/operations/recovery-checkpoints.md). The range is
-unchanged. `DEFAULT_GLOBAL_CONCURRENCY_CAP` in
+its ceiling: the 2026-08-18 defaults change lowered it from `3` to close review
+finding REL-02 — see the [principal architecture
+review](docs/operations/principal-architecture-review-2026-08-18.md) — so that
+concurrency is a thing an operator turns on deliberately, having read what two
+Runs sharing one worktree costs — see
+[Recovery checkpoints](docs/operations/recovery-checkpoints.md). Not feature
+098: that number belongs to the runtime-only catalog, cited elsewhere in this
+file, which never touched this setting. The range is unchanged. `DEFAULT_GLOBAL_CONCURRENCY_CAP` in
 [workspace-state.ts](src/state/workspace-state.ts) is the constant; this line is
 pinned against it by
 [architecture-doc-schema-parity.test.ts](tests/lint/architecture-doc-schema-parity.test.ts).
