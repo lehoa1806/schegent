@@ -10,9 +10,13 @@ import { composeWorkflowSnapshot } from './snapshot-composer';
 
 const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
   getRunMap: () => ({}),
-  getQueue: () => ({
-    requests: [], inFlightId: null, paused: false, pausedReason: null,
-    updatedAt: 0, queueLifecycle: 'active-empty' as const,
+  // FR-R3-002 (T281) — the parameter is declared even though the stub ignores
+  // it. TypeScript accepts a zero-parameter function where a one-parameter one
+  // is expected, so a stub written `getQueue: () => …` reintroduces the ambient
+  // shape the requirement removed without the compiler saying a word.
+  getQueue: (_queueId: string) => ({
+    requests: [], inFlightId: null, pausedReason: null,
+    updatedAt: 0, queueLifecycle: 'active-empty' as const, pauseSource: null,
     scheduledStartAt: null, scheduledStartSource: null
   }),
   getLock: () => null,

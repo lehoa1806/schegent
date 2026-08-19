@@ -462,7 +462,7 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
     // Cascade-pause invariant: the host queue is in manually-paused with
     // pauseSource: 'cascade' (the breakpoint fire cascade-pauses the
     // host queue — see workflow-controller.ts:769).
-    const queueAfterBreakpoint = findQueue(harness.store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const queueAfterBreakpoint = findQueue(harness.store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(queueAfterBreakpoint?.state).toBe('manually-paused');
     expect(queueAfterBreakpoint?.pauseSource).toBe('cascade');
 
@@ -562,7 +562,7 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
     const pausedRun = harness.store.getRun(DEFAULT_QUEUE_ID);
     expect(pausedRun?.status).toBe('paused');
     expect(pausedRun?.manualPauseCause).toBe('operator-paused');
-    const queueBeforeResume = findQueue(harness.store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const queueBeforeResume = findQueue(harness.store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(queueBeforeResume?.state).toBe('manually-paused');
     expect(queueBeforeResume?.pauseSource).toBe('operator');
 
@@ -578,7 +578,7 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
 
     // Queue MUST still be manually-paused with pauseSource: 'operator'
     // (cascadedResume is a NO-OP — FR-004).
-    const queueAfterResume = findQueue(harness.store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const queueAfterResume = findQueue(harness.store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(queueAfterResume?.state).toBe('manually-paused');
     expect(queueAfterResume?.pauseSource).toBe('operator');
 

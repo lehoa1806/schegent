@@ -127,7 +127,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     const persisted = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(persisted.manualPauseAt).not.toBeNull();
     expect(persisted.manualPauseCause).toBe('operator-paused');
-    const entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('manually-paused');
     expect(entry?.pauseSource).toBe('cascade');
   });
@@ -136,13 +136,13 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     await seedInFlightRun(DEFAULT_QUEUE_ID);
 
     await controller.pauseActivePhase();
-    let entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    let entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.pauseSource).toBe('cascade');
 
     const resumed = await controller.resumeActivePhase();
     expect(resumed).toEqual({ ok: true });
 
-    entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('active');
     expect(entry?.pauseSource).toBeNull();
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
@@ -155,7 +155,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
 
     // Cascade pauses the queue via phase pause.
     await controller.pauseActivePhase();
-    let entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    let entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.pauseSource).toBe('cascade');
 
     // Operator independently pauses the queue while the phase is paused —
@@ -163,13 +163,13 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     // pause-during-cascade promotion is the contract from FR-005.)
     const opPause = await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'operator-action');
     expect(opPause.ok).toBe(true);
-    entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.pauseSource).toBe('operator');
 
     // Resuming the phase MUST NOT auto-resume the operator-paused queue.
     const resumed = await controller.resumeActivePhase();
     expect(resumed).toEqual({ ok: true });
-    entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('manually-paused');
     expect(entry?.pauseSource).toBe('operator');
   });
@@ -179,7 +179,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
 
     // Operator pauses the queue first.
     await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'first');
-    let entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    let entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.pauseSource).toBe('operator');
 
     // Now pause the active phase. Cascade attempts to pause, but the queue
@@ -193,7 +193,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null });
 
     await queue.cascadedPause(DEFAULT_QUEUE_ID);
-    entry = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(entry?.state).toBe('manually-paused');
     expect(entry?.pauseSource).toBe('operator');
   });

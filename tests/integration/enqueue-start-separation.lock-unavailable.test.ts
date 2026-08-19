@@ -14,12 +14,27 @@
 //       process (simulated via a probe returning true);
 //   (c) `ScheduledStartCoordinator.fire()` finds the lock unavailable;
 //   (d) emit `scheduled-start-superseded { superseder: 'lock-unavailable' }`;
-//   (e) clear `scheduledStartAt`;
-//   (f) release the competing lock and assert that the next normal
-//       auto-drain heartbeat retries the promotion under the existing
-//       auto-drain rule;
+//   (e) FR-R3-002 (T284) — **retain** `scheduledStartAt`, where T053 cleared it;
+//   (f) release the competing lock and assert auto-drain still declines;
 //   (g) operator is NOT asked to reschedule (no UI ask, no rejection
 //       audit).
+//
+// FR-R3-002 (T284) amended (e) and (f), and it is worth saying why rather than
+// quietly editing the assertions. T053's premise was the spec line quoted above
+// — "auto-drain retries on the next normal heartbeat" — and step (f) below was
+// written to verify it and found that it does not: auto-drain declines an
+// `idle-pending` queue by design (FR-003), so with the deadline erased the entry
+// was indistinguishable from one an operator had dismissed and nothing in the
+// system could pick it up. The schedule was lost, not deferred. The retry the
+// spec promised now exists as `QueueScheduleWatchdog.tick()`, and it recognises
+// the queue by exactly the deadline (e) used to clear — which is why retention
+// is the fix and not merely a different choice. Step (f) keeps asserting that
+// auto-drain declines, because that is still correct and is what keeps the
+// watchdog from becoming a second idle-pending enforcement site.
+//
+// The recovery half lives in
+// `tests/integration/multi-queue/lock-denied-schedule-retry.test.ts`; this file
+// stays the coordinator's own regression.
 //
 // Implementation note: the coordinator's `fire()` accepts an optional
 // `isForeignLockHeld()` probe (per T053 wiring). When the probe returns
@@ -93,18 +108,23 @@ async function makeFixture(): Promise<Fixture> {
     store,
     auditWriter: audit as unknown as Pick<AuditLogWriter, 'append'>,
     logger: logger as unknown as Pick<SanitizedLogger, 'warn'>,
-    onFire: async () => {
-      const cur = store.getQueue();
+    // FR-R3-002 (T289) — addressed by the fired queue id, like the production
+    // handler in `src/extension.ts`. This fixture is single-queue, so the two
+    // read the same today; hard-coding `'default'` is what made the multi-queue
+    // defect invisible to scaffolding in the first place.
+    onFire: async (queueId) => {
+      const cur = store.getQueue(queueId);
       if (cur.queueLifecycle === 'idle-pending') {
         await store.setQueue({
           ...cur,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           updatedAt: clock.now()
-        });
+        }, queueId);
       }
-      await autoDrain.drainIfIdle();
+      await autoDrain.drainIfIdle(queueId);
     },
     isForeignLockHeld: () => foreignLockHeld.value,
     now: () => clock.now(),
@@ -167,7 +187,7 @@ describe('Feature 065 (T053 / FR-014) — lock-unavailable-at-fire regression', 
     });
     expect(enqueueResult.outcome).toBe('enqueued');
     expect(enqueueResult.lifecycleAfter).toBe('idle-pending');
-    expect(f.store.getQueue().scheduledStartAt).toBe(scheduledAt);
+    expect(f.store.getQueue('default').scheduledStartAt).toBe(scheduledAt);
 
     // Sanity: scheduled-start-armed event emitted during arm.
     expect(f.audit.byType('scheduled-start-armed').length).toBe(1);
@@ -195,11 +215,12 @@ describe('Feature 065 (T053 / FR-014) — lock-unavailable-at-fire regression', 
     // short-circuits before the fired path).
     expect(f.audit.byType('scheduled-start-fired').length).toBe(0);
 
-    // (e) `scheduledStartAt` was cleared; lifecycle stays `idle-pending`
-    // (operator intent preserved — the task did not vanish).
-    const afterFire = f.store.getQueue();
-    expect(afterFire.scheduledStartAt).toBeNull();
-    expect(afterFire.scheduledStartSource).toBeNull();
+    // (e) FR-R3-002 (T284) — `scheduledStartAt` is **retained** and the
+    // lifecycle stays `idle-pending`, so the pairing invariant holds on the
+    // same entry and the queue remains addressable as "was due, never ran".
+    const afterFire = f.store.getQueue('default');
+    expect(afterFire.scheduledStartAt).toBe(scheduledAt);
+    expect(afterFire.scheduledStartSource).toBe('operator-chooser');
     expect(afterFire.queueLifecycle).toBe('idle-pending');
     // The task is still at the head of pending.
     const pending = afterFire.requests.filter((r) => r.status === 'pending');
@@ -220,20 +241,19 @@ describe('Feature 065 (T053 / FR-014) — lock-unavailable-at-fire regression', 
     });
     expect(askOps.length).toBe(0);
 
-    // (f) The competing process releases its lock. The next auto-drain
-    // heartbeat must retry the promotion under the existing auto-drain
-    // rule. Because the coordinator cleared scheduledStartAt and the
-    // lifecycle is idle-pending, auto-drain must FIRST observe a
-    // lifecycle transition out of `idle-pending` to do anything (per
-    // T010 / FR-003 — auto-drain MUST NOT auto-promote from idle-pending).
-    //
-    // The operator (or a future heartbeat-driven retry path) is what
-    // moves the queue out of idle-pending. Here we verify the gate
-    // remains correct: lock release alone is not enough.
+    // (f) The competing process releases its lock. Auto-drain still declines:
+    // an `idle-pending` queue is not its to promote (T010 / FR-003), and
+    // FR-R3-002 keeps it that way — `AutoDrainCoordinator.drainIfIdle` remains
+    // the single idle-pending enforcement site, and the recovery sweep *asks*
+    // it rather than becoming a second one. Lock release alone is not enough,
+    // and the retained deadline does not change that.
     f.foreignLockHeld.value = false;
-    await f.autoDrain.drainIfIdle();
+    await f.autoDrain.drainIfIdle('default');
     expect(f.controller.admitNew).not.toHaveBeenCalled();
-    expect(f.store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(f.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+    // The deadline survives the declined drain, which is what leaves
+    // `QueueScheduleWatchdog.tick()` something to recognise.
+    expect(f.store.getQueue('default').scheduledStartAt).toBe(scheduledAt);
 
     // The operator's explicit "Start queue" click would then flip the
     // lifecycle to `running` and auto-drain would dispatch — that path is

@@ -87,7 +87,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
 
   it('injects no runPlan on any queue item', async () => {
     const { store } = await seededStore();
-    const requests = store.getQueue().requests;
+    const requests = store.getQueue(DEFAULT_QUEUE_ID).requests;
     expect(requests.length).toBeGreaterThan(0);
     for (const request of requests) {
       expect(request).not.toHaveProperty(QUEUE_ITEM_KEY);
@@ -97,7 +97,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
   it('returns the persisted Run and queue byte-for-byte', async () => {
     const { store, fixture } = await seededStore();
     expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(fixture[KEYS.run]);
-    expect(store.getQueue().requests).toEqual(
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual(
       (fixture[KEYS.queue] as { requests: readonly unknown[] }).requests
     );
   });
@@ -128,7 +128,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     // disappears, which deep equality catches and byte comparison would drown.
     const { store, memento, fixture } = await seededStore();
 
-    await store.setQueue(store.getQueue());
+    await store.setQueue(store.getQueue(DEFAULT_QUEUE_ID));
 
     // Feature 092 — `KEYS.queue` holds `Record<queueId, QueueState>`; the
     // fixture seeds the pre-v10 singular shape, which `initialize()` lifts.
@@ -155,7 +155,7 @@ describe('a Run and a queue item built without the new fields serialize without 
       expect(Object.keys(stored)).not.toContain(key);
     }
 
-    const queue = store.getQueue();
+    const queue = store.getQueue(DEFAULT_QUEUE_ID);
     await store.setQueue(queue);
     const storedMap = memento.get<Record<string, { requests: readonly FeatureRequest[] }>>(KEYS.queue);
     const storedQueue = storedMap?.[DEFAULT_QUEUE_ID];

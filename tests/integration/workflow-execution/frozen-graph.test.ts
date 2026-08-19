@@ -80,7 +80,7 @@ function movableCatalog(): {
 
 /** The queue row a start produced, as the drain path will read it. */
 function rowFor(harness: Harness, queueItemId: string): FeatureRequest {
-  const row = harness.store.getQueue().requests.find((request) => request.id === queueItemId);
+  const row = harness.store.getQueue('default').requests.find((request) => request.id === queueItemId);
   if (row === undefined) throw new Error(`queue row ${queueItemId} is missing`);
   return row;
 }

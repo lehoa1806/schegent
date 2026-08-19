@@ -313,12 +313,12 @@ describe('feature 092 (T044, FR-039/FR-040, SC-004) — independent queue lifecy
       const paused = await w.queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'operator pause');
       expect(paused.ok, `trial ${trial}`).toBe(true);
 
-      expect(w.store.getQueue(DEFAULT_QUEUE_ID).paused, `trial ${trial}`).toBe(true);
+      expect(w.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused', `trial ${trial}`).toBe(true);
       expect(w.store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('operator-paused');
 
       // The sibling is untouched — same lifecycle, same in-flight Task, same
       // lease. A workspace-wide pause would have taken it down too.
-      expect(w.store.getQueue(QUEUE_B).paused, `trial ${trial}`).toBe(false);
+      expect(w.store.getQueue(QUEUE_B).queueLifecycle === 'operator-paused', `trial ${trial}`).toBe(false);
       expect(w.store.getQueue(QUEUE_B).queueLifecycle).not.toBe('operator-paused');
       expect(w.queue.inFlightCount(QUEUE_B), `trial ${trial}`).toBe(1);
       expect(w.executionLease.isHeld(QUEUE_B), `trial ${trial}`).toBe(true);
@@ -334,7 +334,7 @@ describe('feature 092 (T044, FR-039/FR-040, SC-004) — independent queue lifecy
     // Put queue B into `idle-pending` so pausing it emits the lifecycle event.
     await w.queue.enqueue('task on B', { queueId: QUEUE_B });
     await w.store.updateQueue(
-      (current) => ({ queue: { ...current, queueLifecycle: 'idle-pending' }, result: undefined }),
+      (current) => ({ queue: { ...current, queueLifecycle: 'idle-pending'}, result: undefined }),
       QUEUE_B
     );
 

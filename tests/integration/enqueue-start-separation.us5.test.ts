@@ -45,7 +45,7 @@ describe('Feature 065 (T043) — User Story 5: programmatic caller paths', () =>
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -72,7 +72,7 @@ describe('Feature 065 (T043) — User Story 5: programmatic caller paths', () =>
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
 
-    const armed = h.store.getQueue();
+    const armed = h.store.getQueue('default');
     expect(armed.queueLifecycle).toBe('idle-pending');
     expect(armed.scheduledStartAt).toBe(scheduledAt);
     expect(armed.scheduledStartSource).toBe('programmatic-scheduled');
@@ -91,7 +91,7 @@ describe('Feature 065 (T043) — User Story 5: programmatic caller paths', () =>
     // Allow async fire/onFire callback to settle.
     await new Promise((r) => setImmediate(r));
 
-    const fired = h.store.getQueue();
+    const fired = h.store.getQueue('default');
     expect(fired.queueLifecycle).toBe('running');
     expect(fired.scheduledStartAt).toBeNull();
     expect(fired.scheduledStartSource).toBeNull();
@@ -110,7 +110,7 @@ describe('Feature 065 (T043) — User Story 5: programmatic caller paths', () =>
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('idle-pending');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('idle-pending');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();

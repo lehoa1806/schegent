@@ -162,7 +162,7 @@ describe('feature 092 (T038a) — sequential execution survives per queue', () =
     const t2 = await queue.enqueue('task-two');
     const t3 = await queue.enqueue('task-three');
 
-    const requests = store.getQueue().requests;
+    const requests = store.getQueue(DEFAULT_QUEUE_ID).requests;
     const ids = new Set(requests.map((r) => r.queueId));
     expect(ids.size).toBe(1);
     expect(ids.has(DEFAULT_QUEUE_ID)).toBe(true);

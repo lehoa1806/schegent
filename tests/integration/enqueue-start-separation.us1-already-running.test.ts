@@ -48,16 +48,17 @@ describe('Feature 065 (T024a) — Story 1: superseded { superseder: "already-run
       callerKind: 'human'
     });
     expect(enqueueResult.outcome).toBe('enqueued');
-    expect(h.store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
     expect(h.audit.byType('scheduled-start-armed').length).toBe(1);
 
     // (b) Externally transition the queue to `running` (simulating a
     // prior-session in-flight task still draining). We deliberately do
     // NOT cancel the timer.
-    const cur = h.store.getQueue();
+    const cur = h.store.getQueue('default');
     await h.store.setQueue({
       ...cur,
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: cur.scheduledStartAt, // keep so coordinator's
       // armed.scheduledStartAt matches and we exercise the lifecycle-
       // mismatch branch (NOT the scheduledStartAt-mismatch branch).
@@ -83,14 +84,14 @@ describe('Feature 065 (T024a) — Story 1: superseded { superseder: "already-run
     // (f) Persisted `scheduledStartAt` cleared by host (clear is
     // owned by the host on the superseded path — for this test we
     // simulate the host reaction by clearing here, then re-assert).
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     await h.store.setQueue({
       ...after,
       scheduledStartAt: null,
       scheduledStartSource: null,
       updatedAt: h.clock.now()
     });
-    expect(h.store.getQueue().scheduledStartAt).toBeNull();
+    expect(h.store.getQueue('default').scheduledStartAt).toBeNull();
 
     // (g) No `idle-pending-exited` or `scheduled-start-fired` on this path.
     expect(h.audit.byType('idle-pending-exited').length).toBe(0);

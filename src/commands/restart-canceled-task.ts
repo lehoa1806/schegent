@@ -51,6 +51,12 @@ export async function runRestartCanceledTask(ctx: {
     const targetQueueId = feature.queueId ?? DEFAULT_QUEUE_ID;
     const now = Date.now();
     const previousRunId = feature.runId;
+    // FR-R3-002 (T280) — surfaced by removing `updateQueue`'s default
+    // parameter. This mutation already knew its queue (`targetQueueId`, used
+    // just below for the per-queue pending cap) and still wrote to Default. For
+    // a task on any other queue the read-back found no matching row, so the
+    // restart returned `null` and reported `illegal-state` — a live task the
+    // operator asked to restart, refused for a reason that was not true.
     const restarted = await ctx.store.updateQueue<FeatureRequest | null>((queue) => {
       const current = queue.requests.find((request) => request.id === taskId);
       if (!current || current.status !== 'canceled') return { queue, result: null };
@@ -84,7 +90,7 @@ export async function runRestartCanceledTask(ctx: {
         },
         result: next
       };
-    });
+    }, targetQueueId);
     if (!restarted) return { ok: false, reason: 'illegal-state' };
 
     await ctx.audit.append({

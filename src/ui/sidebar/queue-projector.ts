@@ -16,7 +16,7 @@ import type {
   QueueState,
   ScheduledStartSource
 } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID, type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { ManualPauseCause } from '../../state/workflow-run';
 import { projectQueues } from './queue-summary-projector';
 import {
@@ -45,7 +45,7 @@ export interface QueueProjectionContext {
   readonly sanitize: (input: string) => string;
   readonly inFlightPhase: PhaseName | null;
   readonly inFlightId: string | null;
-  readonly registry?: QueueRegistry;
+  readonly registry?: ProjectedQueueRegistry;
   /**
    * Feature 028 — when the active run is paused at a future-phase breakpoint,
    * the run-level `manualPauseCause === 'breakpoint-paused'`. The projector
@@ -227,7 +227,7 @@ function derivePausedField(
 
 function derivePauseCause(
   req: FeatureRequest,
-  registry: QueueRegistry | undefined,
+  registry: ProjectedQueueRegistry | undefined,
   inFlightManualPauseCause: ManualPauseCause | null
 ): QueueItem['pauseCause'] {
   // Feature 028 — when the in-flight run is paused at a future-phase

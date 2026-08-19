@@ -30,6 +30,7 @@ const EMPTY_QUEUE: QueueState = {
   pausedReason: null,
   updatedAt: 0,
   queueLifecycle: 'active-empty',
+  pauseSource: null,
   scheduledStartAt: null,
   scheduledStartSource: null
 };
@@ -39,7 +40,7 @@ type StoreShape = NonNullable<ConstructorParameters<typeof StateProjector>[0]['s
 function makeStoreWithoutAccessor(): StoreShape {
   return {
     getRunMap: () => ({}),
-    getQueue: () => EMPTY_QUEUE,
+    getQueue: (_queueId: string) => EMPTY_QUEUE,
     getLock: () => null,
     subscribe: () => ({ dispose: () => undefined })
   };
@@ -50,7 +51,7 @@ function makeStoreWithAccessor(
 ): StoreShape & Pick<WorkspaceStateStore, 'getConfirmSuppression'> {
   return {
     getRunMap: () => ({}),
-    getQueue: () => EMPTY_QUEUE,
+    getQueue: (_queueId: string) => EMPTY_QUEUE,
     getLock: () => null,
     subscribe: () => ({ dispose: () => undefined }),
     getConfirmSuppression: () => value

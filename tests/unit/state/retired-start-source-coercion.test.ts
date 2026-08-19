@@ -44,8 +44,6 @@ const REGISTRY: QueueRegistry = {
       id: DEFAULT_QUEUE_ID,
       name: 'Default queue',
       position: 0,
-      state: 'active',
-      pauseSource: null,
       schedule: null,
       createdAt: NOW,
       updatedAt: NOW
@@ -68,6 +66,7 @@ function seed(memento: FakeMemento, source: string | null): void {
     pausedReason: null,
     updatedAt: NOW,
     queueLifecycle: 'idle-pending',
+    pauseSource: null,
     scheduledStartAt: SCHEDULED_AT,
     scheduledStartSource: source
   } as unknown as QueueState;
@@ -84,7 +83,7 @@ async function loadQueue(source: string | null): Promise<QueueState> {
   seed(memento, source);
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
-  return store.getQueue();
+  return store.getQueue(DEFAULT_QUEUE_ID);
 }
 
 describe('Wake-up withdrawal — retired scheduledStartSource coercion', () => {

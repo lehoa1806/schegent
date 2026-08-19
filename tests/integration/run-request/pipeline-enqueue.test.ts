@@ -206,7 +206,7 @@ describe('a submission that fails validation leaves nothing behind (SC-002)', ()
     // mask the field error and the operator would correct the wrong thing.
     const harness = await makeHarness({ initialNow: NOW, catalog: catalog() });
     try {
-      await harness.store.setQueue({ ...harness.store.getQueue(), paused: true });
+      await harness.store.setQueue({ ...harness.store.getQueue('default'), paused: true });
 
       const { accepted, before, after } = await submit(harness, INVALID);
 
@@ -226,7 +226,7 @@ describe('a submission that passes validation performs exactly one durable write
 
       expect(accepted).toBe(true);
       expect(writes.rowAdding).toBe(1);
-      expect(harness.store.getQueue().requests).toHaveLength(1);
+      expect(harness.store.getQueue('default').requests).toHaveLength(1);
     } finally {
       harness.cleanup();
     }
@@ -255,7 +255,7 @@ describe('a submission that passes validation performs exactly one durable write
     try {
       await submit(harness, VALID);
 
-      const [row] = harness.store.getQueue().requests;
+      const [row] = harness.store.getQueue('default').requests;
       expect(row?.runPlan?.pipeline.id).toBe('compose-flow');
       expect(row?.runPlan?.pipeline.phases.map((phase) => phase.id)).toEqual(['compose']);
       expect(row?.runPlan?.inputs).toEqual([

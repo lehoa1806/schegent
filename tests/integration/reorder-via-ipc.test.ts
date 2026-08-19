@@ -105,8 +105,6 @@ async function makeHarness(): Promise<Harness> {
         id: DEFAULT_QUEUE_ID,
         name: 'Default queue',
         position: 0,
-        state: 'active',
-        pauseSource: null,
         schedule: null,
         createdAt: NOW,
         updatedAt: NOW
@@ -127,6 +125,7 @@ async function makeHarness(): Promise<Harness> {
     pausedReason: null,
     updatedAt: NOW,
     queueLifecycle: 'active-empty',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null
   };
@@ -192,7 +191,7 @@ async function dispatch(
 
 function pendingOrder(h: Harness): string[] {
   return h.store
-    .getQueue()
+    .getQueue(DEFAULT_QUEUE_ID)
     .requests.filter((r) => r.status === 'pending')
     .sort((a, b) => a.position - b.position)
     .map((r) => r.id);
@@ -259,7 +258,7 @@ describe('Feature 030 (US2, T027) — reorder via IPC end-to-end', () => {
     const fresh = new WorkspaceStateStore(harness.memento);
     await fresh.initialize();
     const reloaded = fresh
-      .getQueue()
+      .getQueue(DEFAULT_QUEUE_ID)
       .requests.filter((r) => r.status === 'pending')
       .sort((a, b) => a.position - b.position)
       .map((r) => r.id);
@@ -286,7 +285,7 @@ describe('Feature 030 (US2, T027) — reorder via IPC end-to-end', () => {
     // No state corruption: every row's queueId is still 'default',
     // positions are dense (0..4), no duplicates.
     const requests = harness.store
-      .getQueue()
+      .getQueue(DEFAULT_QUEUE_ID)
       .requests.filter((r) => r.status === 'pending');
     expect(requests.every((r) => r.queueId === 'default')).toBe(true);
     const positions = requests.map((r) => r.position).sort((a, b) => a - b);

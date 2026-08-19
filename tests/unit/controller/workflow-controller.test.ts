@@ -441,7 +441,7 @@ describe('SchegentWorkflowController.startNew', () => {
     expect(run.currentIteration).toBe(2);
     expect(task.status).toBe('paused');
     expect(task.pauseCause).toBe('phase-paused');
-    expect(store.getQueue().inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
     expect(lock.release).not.toHaveBeenCalled();
   });
 });

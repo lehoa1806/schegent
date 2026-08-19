@@ -24,6 +24,6 @@ describe('serialized queue mutation boundary', () => {
           .filter(({ line }) => /\.setQueue\s*\(/.test(line));
       });
 
-    expect(violations, 'Use WorkspaceStateStore.updateQueue() so reads occur inside the serialized mutation chain').toEqual([]);
+    expect(violations, 'Use WorkspaceStateStore.updateQueue(mutate, queueId) so reads occur inside the serialized mutation chain').toEqual([]);
   });
 });

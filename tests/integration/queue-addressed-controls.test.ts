@@ -139,7 +139,7 @@ function laterPhaseOf(run: WorkflowRun, offset = 1): string {
   return later.id;
 }
 
-const queueEntry = (queueId: string) => findQueue(h.store.getQueueRegistry(), queueId)!;
+const queueEntry = (queueId: string) => findQueue(h.store.getProjectedQueueRegistry(), queueId)!;
 
 const invocationCount = (runId: string): number =>
   h.invocations.filter((entry) => entry.runId === runId).length;

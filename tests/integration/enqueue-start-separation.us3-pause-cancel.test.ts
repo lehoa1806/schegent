@@ -22,7 +22,7 @@ import { makeHarness, type Harness } from './enqueue-start-separation.helpers';
 let h: Harness;
 
 function pendingCount(): number {
-  return h.store.getQueue().requests.filter((r) => r.status === 'pending').length;
+  return h.store.getQueue('default').requests.filter((r) => r.status === 'pending').length;
 }
 
 beforeEach(async () => {
@@ -49,7 +49,7 @@ describe('Feature 065 (T035) — User Story 3 regression: pause cancels schedule
     });
     expect(first.outcome).toBe('enqueued');
 
-    const armed = h.store.getQueue();
+    const armed = h.store.getQueue('default');
     expect(armed.queueLifecycle).toBe('idle-pending');
     expect(armed.scheduledStartAt).toBe(scheduledAt);
     expect(armed.scheduledStartSource).toBe('operator-chooser');
@@ -62,9 +62,8 @@ describe('Feature 065 (T035) — User Story 3 regression: pause cancels schedule
     // Operator pauses (positional signature: paused, queueId, pausedReason, pauseSource).
     await h.queue.setQueuePausedState(true, undefined, 'operator', 'operator');
 
-    const paused = h.store.getQueue();
+    const paused = h.store.getQueue('default');
     expect(paused.queueLifecycle).toBe('operator-paused');
-    expect(paused.paused).toBe(true);
     expect(paused.pausedReason).toBe('operator');
     // Schedule fields are cleared.
     expect(paused.scheduledStartAt).toBeNull();
@@ -109,17 +108,16 @@ describe('Feature 065 (T035) — User Story 3 regression: pause cancels schedule
     await h.queue.setQueuePausedState(true, undefined, 'operator', 'operator');
 
     // Pre-resume baseline.
-    expect(h.store.getQueue().queueLifecycle).toBe('operator-paused');
+    expect(h.store.getQueue('default').queueLifecycle).toBe('operator-paused');
     expect(pendingCount()).toBe(1);
     const baselineEntered = h.audit.byType('idle-pending-entered').length;
 
     // Operator resumes.
     await h.queue.setQueuePausedState(false, undefined, null, 'operator');
 
-    const resumed = h.store.getQueue();
+    const resumed = h.store.getQueue('default');
     // Lifecycle returns to idle-pending (pending.length > 0, no inFlight).
     expect(resumed.queueLifecycle).toBe('idle-pending');
-    expect(resumed.paused).toBe(false);
     expect(resumed.pausedReason).toBeNull();
     // scheduledStartAt is still null — operator must reschedule.
     expect(resumed.scheduledStartAt).toBeNull();
@@ -152,7 +150,7 @@ describe('Feature 065 (T035) — User Story 3 regression: pause cancels schedule
     await h.queue.setQueuePausedState(true, undefined, 'operator', 'operator');
 
     // Clear pending tasks while paused (simulate operator discard).
-    const paused = h.store.getQueue();
+    const paused = h.store.getQueue('default');
     await h.store.setQueue({
       ...paused,
       requests: paused.requests.filter((r) => r.status !== 'pending'),
@@ -165,10 +163,9 @@ describe('Feature 065 (T035) — User Story 3 regression: pause cancels schedule
     // Operator resumes with no pending tasks.
     await h.queue.setQueuePausedState(false, undefined, null, 'operator');
 
-    const resumed = h.store.getQueue();
+    const resumed = h.store.getQueue('default');
     // Lifecycle goes to active-empty (no pending, no inFlight).
     expect(resumed.queueLifecycle).toBe('active-empty');
-    expect(resumed.paused).toBe(false);
     expect(resumed.scheduledStartAt).toBeNull();
     expect(resumed.scheduledStartSource).toBeNull();
 

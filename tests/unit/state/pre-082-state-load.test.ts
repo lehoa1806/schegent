@@ -107,7 +107,7 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
   it('leaves the queue entry that pins a pipelineId alone', async () => {
     const { store, fixture } = await seededStore();
     const persistedQueue = fixture[KEYS.queue] as { requests: readonly unknown[] };
-    expect(store.getQueue().requests).toEqual(persistedQueue.requests);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual(persistedQueue.requests);
   });
 
   it('rewrites nothing when the same state is loaded twice', async () => {

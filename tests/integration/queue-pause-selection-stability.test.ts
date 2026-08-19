@@ -47,7 +47,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     await h.queue.markInFlight(enq.id, 'run-1');
 
     // Pre-pause baseline — task is in-flight.
-    const beforePauseQueue = h.store.getQueue();
+    const beforePauseQueue = h.store.getQueue('default');
     expect(beforePauseQueue.inFlightId).toBe(enq.id);
 
     const beforePauseProjection = projectQueue(beforePauseQueue, {
@@ -64,7 +64,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     const paused = await h.queue.pause(enq.id, 'manually-paused-task', false);
     expect(paused).toBe(true);
 
-    const afterPauseQueue = h.store.getQueue();
+    const afterPauseQueue = h.store.getQueue('default');
     expect(afterPauseQueue.inFlightId).toBeNull();
 
     // Assert: projection still includes the task (no drop) in the
@@ -94,10 +94,11 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     // Arm a system-rate-limit scheduled-restore on the queue. This
     // mirrors the side-effect of `GuardedRunService.transitionToScheduledRestore`.
     const scheduledAt = h.clock.now() + 30 * 60 * 1000; // 30 minutes ahead
-    const beforePause = h.store.getQueue();
+    const beforePause = h.store.getQueue('default');
     await h.store.setQueue({
       ...beforePause,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: scheduledAt,
       scheduledStartSource: 'system-rate-limit-recovery',
       updatedAt: h.clock.now()
@@ -107,7 +108,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     const paused = await h.queue.pause(enq.id, 'phase-paused', true);
     expect(paused).toBe(true);
 
-    const afterPauseQueue = h.store.getQueue();
+    const afterPauseQueue = h.store.getQueue('default');
     // FR-027 invariant — inFlightId is preserved.
     expect(afterPauseQueue.inFlightId).toBe(enq.id);
 
@@ -140,10 +141,11 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     });
     await h.queue.markInFlight(enq.id, 'run-1');
     const scheduledAt = h.clock.now() + 60 * 60 * 1000;
-    const beforePause = h.store.getQueue();
+    const beforePause = h.store.getQueue('default');
     await h.store.setQueue({
       ...beforePause,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: scheduledAt,
       scheduledStartSource: 'system-rate-limit-recovery',
       updatedAt: h.clock.now()
@@ -151,7 +153,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     await h.queue.pause(enq.id, 'phase-paused', true);
 
     // Pre-resume baseline — paused task in inFlight slot.
-    const pausedQueue = h.store.getQueue();
+    const pausedQueue = h.store.getQueue('default');
     const pausedProjection = projectQueue(pausedQueue, {
       sanitize: passSanitize,
       inFlightPhase: null,
@@ -166,8 +168,9 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     // task returns to in-flight via markInFlight (idempotent).
     h.clock.advance(scheduledAt - h.clock.now());
     await h.store.setQueue({
-      ...h.store.getQueue(),
+      ...h.store.getQueue('default'),
       queueLifecycle: 'running',
+      pauseSource: null,
       scheduledStartAt: null,
       scheduledStartSource: null,
       updatedAt: h.clock.now()
@@ -176,7 +179,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
 
     // Assert: projection routes the row back to in-flight; no paused
     // metadata on the resumed row.
-    const resumedQueue = h.store.getQueue();
+    const resumedQueue = h.store.getQueue('default');
     const resumedProjection = projectQueue(resumedQueue, {
       sanitize: passSanitize,
       inFlightPhase: null,
@@ -198,7 +201,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     await h.queue.markInFlight(a.id, 'run-1');
     await h.queue.pause(a.id, 'manually-paused-task', false);
 
-    const queue = h.store.getQueue();
+    const queue = h.store.getQueue('default');
     const projection = projectQueue(queue, {
       sanitize: passSanitize,
       inFlightPhase: null,

@@ -227,7 +227,7 @@ export class FakeChildRuns {
 
   readonly isChildSettled = (queueItemId: string): boolean =>
     this.terminal.has(queueItemId) ||
-    !this.harness.store.getQueue().requests.some((row) => row.id === queueItemId);
+    !this.harness.store.getQueue('default').requests.some((row) => row.id === queueItemId);
 }
 
 export function makeLauncherDeps(

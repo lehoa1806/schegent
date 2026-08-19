@@ -126,11 +126,12 @@ describe('Feature 065 (T049c) — scheduled-start-fired status-bar indicator', (
       logger: h.audit as unknown as Pick<SanitizedLogger, 'warn'>,
       onFire: async () => {
         // Mirror harness behavior to land the queue in `running`.
-        const cur = h.store.getQueue();
+        const cur = h.store.getQueue('default');
         if (cur.queueLifecycle === 'idle-pending') {
           await h.store.setQueue({
             ...cur,
             queueLifecycle: 'running',
+            pauseSource: null,
             scheduledStartAt: null,
             scheduledStartSource: null,
             updatedAt: h.clock.now()
@@ -153,10 +154,11 @@ describe('Feature 065 (T049c) — scheduled-start-fired status-bar indicator', (
       callerKind: 'human'
     });
     const elapsedAt = h.clock.now() - 60_000;
-    const cur = h.store.getQueue();
+    const cur = h.store.getQueue('default');
     await h.store.setQueue({
       ...cur,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: elapsedAt,
       scheduledStartSource: 'operator-chooser',
       updatedAt: h.clock.now()
@@ -194,11 +196,12 @@ describe('Feature 065 (T049c) — scheduled-start-fired status-bar indicator', (
       auditWriter: h.audit as unknown as Pick<AuditLogWriter, 'append'>,
       logger: h.audit as unknown as Pick<SanitizedLogger, 'warn'>,
       onFire: async () => {
-        const cur = h.store.getQueue();
+        const cur = h.store.getQueue('default');
         if (cur.queueLifecycle === 'idle-pending') {
           await h.store.setQueue({
             ...cur,
             queueLifecycle: 'running',
+            pauseSource: null,
             scheduledStartAt: null,
             scheduledStartSource: null,
             updatedAt: h.clock.now()
@@ -220,10 +223,11 @@ describe('Feature 065 (T049c) — scheduled-start-fired status-bar indicator', (
       callerKind: 'human'
     });
     const elapsedAt = h.clock.now() - 60_000;
-    const cur = h.store.getQueue();
+    const cur = h.store.getQueue('default');
     await h.store.setQueue({
       ...cur,
       queueLifecycle: 'idle-pending',
+      pauseSource: null,
       scheduledStartAt: elapsedAt,
       scheduledStartSource: 'operator-chooser',
       updatedAt: h.clock.now()

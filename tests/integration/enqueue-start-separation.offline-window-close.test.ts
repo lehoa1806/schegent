@@ -75,11 +75,12 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
     auditWriter: audit as unknown as Pick<AuditLogWriter, 'append'>,
     logger: logger as unknown as Pick<SanitizedLogger, 'warn'>,
     onFire: async () => {
-      const cur = store.getQueue();
+      const cur = store.getQueue('default');
       if (cur.queueLifecycle === 'idle-pending') {
         await store.setQueue({
           ...cur,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           updatedAt: clock.now()
@@ -133,7 +134,7 @@ describe('Feature 065 (T050 / Q12 / FR-018) — offline window-close', () => {
     // (c) Re-open the workspace state from the shared memento (modeling
     // VS Code activation).
     const reloaded = await openWorkspace(memento, clock);
-    const queue = reloaded.store.getQueue();
+    const queue = reloaded.store.getQueue('default');
 
     // (d) The task survived: lifecycle is idle-pending with no schedule.
     const pendingItems = queue.requests.filter((r) => r.status === 'pending');

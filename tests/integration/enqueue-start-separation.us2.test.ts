@@ -20,10 +20,11 @@ let h: Harness;
 beforeEach(async () => {
   h = await makeHarness();
   // Put the queue into `running` lifecycle to model "in-flight" state.
-  const cur = h.store.getQueue();
+  const cur = h.store.getQueue('default');
   await h.store.setQueue({
     ...cur,
     queueLifecycle: 'running',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null,
     updatedAt: h.clock.now()
@@ -36,7 +37,7 @@ afterEach(() => {
 
 describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', () => {
   it('(1) running + enqueue WITHOUT startIntent → tail-appended; no scheduled / idle-pending audit events', async () => {
-    const before = h.store.getQueue();
+    const before = h.store.getQueue('default');
     expect(before.queueLifecycle).toBe('running');
 
     const result = await h.service.scheduleOrEnqueue({
@@ -49,7 +50,7 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull();
     expect(after.scheduledStartSource).toBeNull();
@@ -81,7 +82,7 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
 
     expect(result.outcome).toBe('enqueued');
     expect(result.lifecycleAfter).toBe('running');
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     expect(after.queueLifecycle).toBe('running');
     expect(after.scheduledStartAt).toBeNull(); // ignored
     expect(after.scheduledStartSource).toBeNull();
@@ -119,10 +120,11 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
 
     // Simulate the in-flight termination: lifecycle returns to
     // active-empty (controller no longer running) and queue has 2 pending.
-    const cur = h.store.getQueue();
+    const cur = h.store.getQueue('default');
     await h.store.setQueue({
       ...cur,
       queueLifecycle: 'active-empty',
+      pauseSource: null,
       updatedAt: h.clock.now()
     });
 
@@ -138,7 +140,7 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
   });
 
   it('(4) SC-002 — N=10 enqueues into running: 0 state-shape changes, 0 chooser surfaces', async () => {
-    const before = h.store.getQueue();
+    const before = h.store.getQueue('default');
     const initialLifecycle = before.queueLifecycle;
     const initialScheduledStartAt = before.scheduledStartAt;
     const initialScheduledStartSource = before.scheduledStartSource;
@@ -168,7 +170,7 @@ describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', ()
       expect(result.lifecycleAfter).toBe('running');
     }
 
-    const after = h.store.getQueue();
+    const after = h.store.getQueue('default');
     // SC-002 — lifecycle and scheduled-start fields are unchanged.
     expect(after.queueLifecycle).toBe(initialLifecycle);
     expect(after.scheduledStartAt).toBe(initialScheduledStartAt);

@@ -115,12 +115,12 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     expect(pauseResult.ok).toBe(true);
 
     // FR-020/FR-023: both state surfaces must be in agreement.
-    const legacyAfterPause = store.getQueue();
-    const registryAfterPause = store.getQueueRegistry();
+    const legacyAfterPause = store.getQueue(DEFAULT_QUEUE_ID);
+    const registryAfterPause = store.getProjectedQueueRegistry();
     const entryAfterPause = registryAfterPause.entries.find(
       (e) => e.id === DEFAULT_QUEUE_ID
     );
-    expect(legacyAfterPause.paused).toBe(true);
+    expect(legacyAfterPause.queueLifecycle === 'operator-paused').toBe(true);
     expect(legacyAfterPause.pausedReason).toBe(`retry-cap-exhausted:${FAKE_RUN_ID}`);
     expect(entryAfterPause?.state).toBe('manually-paused');
     expect(entryAfterPause?.pauseSource).toBe('retry-cap');
@@ -143,12 +143,12 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     expect(resumeResult.queueId).toBe(DEFAULT_QUEUE_ID);
 
     // Both surfaces must clear in lockstep.
-    const legacyAfterResume = store.getQueue();
-    const registryAfterResume = store.getQueueRegistry();
+    const legacyAfterResume = store.getQueue(DEFAULT_QUEUE_ID);
+    const registryAfterResume = store.getProjectedQueueRegistry();
     const entryAfterResume = registryAfterResume.entries.find(
       (e) => e.id === DEFAULT_QUEUE_ID
     );
-    expect(legacyAfterResume.paused).toBe(false);
+    expect(legacyAfterResume.queueLifecycle === 'operator-paused').toBe(false);
     expect(legacyAfterResume.pausedReason).toBeNull();
     expect(entryAfterResume?.state).toBe('active');
     expect(entryAfterResume?.pauseSource).toBeNull();
@@ -160,13 +160,13 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     // that transition). Verify the gate fires.
     await coordinator.drainIfIdle();
     expect(promotedTasks).toEqual([]);
-    expect(store.getQueue().queueLifecycle).toBe('idle-pending');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('idle-pending');
     // Now the operator presses Start now (CMD_START_QUEUE without
     // startIntent) — the legacy drain path is the one in this test
     // (no GuardedRunService wired). Simulating via direct lifecycle
     // mutation followed by drainIfIdle.
-    const q = store.getQueue();
-    await store.setQueue({ ...q, queueLifecycle: 'active-empty' });
+    const q = store.getQueue(DEFAULT_QUEUE_ID);
+    await store.setQueue({ ...q, queueLifecycle: 'active-empty'});
     await coordinator.drainIfIdle();
     expect(promotedTasks).toEqual([pending.id]);
 

@@ -118,8 +118,6 @@ async function makeHarness(): Promise<Harness> {
         id: DEFAULT_QUEUE_ID,
         name: 'Default queue',
         position: 0,
-        state: 'active',
-        pauseSource: null,
         schedule: null,
         createdAt: NOW,
         updatedAt: NOW
@@ -140,6 +138,7 @@ async function makeHarness(): Promise<Harness> {
     pausedReason: null,
     updatedAt: NOW,
     queueLifecycle: 'running',
+    pauseSource: null,
     scheduledStartAt: null,
     scheduledStartSource: null
   };
@@ -205,7 +204,7 @@ async function dispatch(
 
 function pendingOrder(h: Harness): string[] {
   return h.store
-    .getQueue()
+    .getQueue(DEFAULT_QUEUE_ID)
     .requests.filter((r) => r.status === 'pending')
     .sort((a, b) => a.position - b.position)
     .map((r) => r.id);
@@ -228,7 +227,7 @@ describe('Feature 030 (US2, T028) — reorder rejection paths', () => {
     // State unchanged: pending order is still T1, T2, T3.
     expect(pendingOrder(harness)).toEqual(['T1', 'T2', 'T3']);
     // T0 is still in-flight.
-    expect(harness.store.getQueue().inFlightId).toBe('T0');
+    expect(harness.store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBe('T0');
     // Audit event emitted with rejection metadata.
     const reorderEvents = harness.auditEntries.filter(
       (e) => e.eventType === 'task-reordered'

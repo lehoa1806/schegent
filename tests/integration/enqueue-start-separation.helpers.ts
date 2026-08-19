@@ -274,20 +274,25 @@ export async function makeHarness(opts: {
       // After firing, the host transitions the queue lifecycle out of
       // `idle-pending` to mimic real behavior. Tests can override via
       // queue state mutations directly when needed.
-      const cur = store.getQueue();
+      //
+      // FR-R3-002 (T289) — every read and write here names `queueId`. This
+      // handler used to address `'default'` and discard the fired id with a
+      // `void queueId`, which is seam 2 of FUNC-02 reproduced in scaffolding:
+      // a schedule armed on queue B promoted queue A. It compiled and stayed
+      // green only because a single-queue harness makes the two the same id.
+      const cur = store.getQueue(queueId);
       if (cur.queueLifecycle === 'idle-pending') {
         await store.setQueue({
           ...cur,
           queueLifecycle: 'running',
+          pauseSource: null,
           scheduledStartAt: null,
           scheduledStartSource: null,
           updatedAt: clock.now()
-        });
+        }, queueId);
       }
-      // Drain whatever is pending.
-      await autoDrain.drainIfIdle();
-      // Avoid unused-var lint when test never asserts queueId.
-      void queueId;
+      // Drain whatever is pending on the queue that fired.
+      await autoDrain.drainIfIdle(queueId);
     },
     now: () => clock.now(),
     setTimer: fakeTimer.setTimer,

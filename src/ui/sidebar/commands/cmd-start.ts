@@ -1,3 +1,4 @@
+import { DEFAULT_QUEUE_ID } from '../../../queue/queue-registry';
 import type { StartCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
@@ -14,12 +15,20 @@ import { ack } from './handler-helpers';
 // originates from a human-facing surface, so `callerKind` is `'human'` —
 // omission of `startIntent` lands the task safely in `idle-pending` with
 // `scheduledStartAt: null` (per FR-009 dismiss path).
+//
+// FR-R3-002 (T279) — this is the ingress boundary that resolves an unscoped
+// submit. `StartCommand.payload.queueId` is optional because the webview's
+// unscoped queue form has no queue in hand, and this handler's own contract
+// already documents that absence as "the configured default queue". Resolving
+// it here, once and explicitly, is what lets `runEnqueue` require a queue and
+// refuse anything else: the meaning is applied at the layer that holds it,
+// not inferred by a default parameter four calls deeper.
 export const handler: CommandHandler<StartCommand> = async (ctx, command) => {
   const enqueueResult = (await Promise.resolve(
     ctx.deps.executeCommand('schegent.enqueue', {
       description: command.payload.description,
       pipelineId: command.payload.pipelineId,
-      queueId: command.payload.queueId,
+      queueId: command.payload.queueId ?? DEFAULT_QUEUE_ID,
       position: command.payload.position,
       ...(command.payload.startIntent
         ? { startIntent: command.payload.startIntent }

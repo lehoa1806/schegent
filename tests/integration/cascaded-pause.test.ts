@@ -160,7 +160,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     expect(runPaused.manualPauseCause).toBe('operator-paused');
     expect(pausedDuringPhase).toBe('speckit-clarify');
 
-    const regAfterPause = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const regAfterPause = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(regAfterPause?.state).toBe('manually-paused');
     expect(regAfterPause?.pauseSource).toBe('cascade');
 
@@ -188,7 +188,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // The host queue's cascade-pause is cleared as part of resumeActivePhase
     // (before resumeExisting fires), so the registry state flips back to
     // 'active' as soon as the IPC returns.
-    const regAfterResume = findQueue(store.getQueueRegistry(), DEFAULT_QUEUE_ID);
+    const regAfterResume = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);
     expect(regAfterResume?.state).toBe('active');
     expect(regAfterResume?.pauseSource).toBeNull();
 

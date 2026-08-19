@@ -114,6 +114,24 @@ const DECLARED_SEAM_CALLERS: ReadonlySet<string> = new Set([
   // Wiring only: registers the host command, starts nothing itself.
   'src/activation/ui-wiring.ts',
   'src/extension.ts',
+  // FR-R3-002 (T284/T285) — the scheduled-start pair. Both reach the start
+  // path, and neither does so in a way this grep can see: each calls an
+  // *injected* callback (`promote` on the watchdog, `onFire` on the
+  // coordinator), and `src/extension.ts` supplies the same
+  // `promoteScheduledQueue` to both — that one function is where the
+  // `drainQueuedWork(queueId)` actually happens. They match here only on the
+  // `drainIfIdle(` their comments name.
+  //
+  // Declaring them anyway is the point of this list. A file that can cause a
+  // queue to start belongs on the start surface whether or not the seam call
+  // is lexically present, and both thread a `queueId` through every hop, so
+  // the FR-034 question this declaration exists to ask is answered.
+  //
+  // Neither is added to START_PATH_ENTRANCES: that list is FR-034's own
+  // enumeration of four, and these are a later feature's callers of one of
+  // them, not a fifth entrance alongside them.
+  'src/controller/schedule-watchdog.ts',
+  'src/services/scheduled-start-coordinator.ts',
   // Contract and type declarations, not call sites.
   'src/contracts/sidebar-ipc.ts'
 ]);
