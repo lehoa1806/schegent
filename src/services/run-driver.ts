@@ -17,7 +17,6 @@ import {
 } from '../state/workflow-run';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { PhaseName } from '../ui/sidebar/snapshot';
-import { BUILT_IN_PIPELINE_ID } from '../config/pipeline-config';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
 import type { PhaseDef } from '../config/pipeline-config';
@@ -497,10 +496,15 @@ export class RunDriver {
           run = await this.deps.persistTransition(run, nextRun);
         }
 
+        // Feature 098 (T045, FR-034) — both reads below were
+        // `run.pipeline?.id ?? BUILT_IN_PIPELINE_ID`. Resolved once so the
+        // attribution the runner records and the directory the sidecar is
+        // written to cannot disagree about which Pipeline this is.
+        const dispatchPipelineId = run.pipeline?.id;
         const output = await this.dispatchObserved(run, {
           phase: run.currentPhase,
           phaseDef: dispatchPhaseDef,
-          pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+          pipelineId: dispatchPipelineId,
           iteration,
           iterationCap: this.deps.options.iterationCap,
           featureDescription: description,
@@ -518,13 +522,18 @@ export class RunDriver {
           processEnvAllowlist: this.deps.options.processEnvAllowlist,
           runId: run.id,
           rawTranscriptMode: run.rawTranscriptMode,
-          phaseMessagePath: composePhaseMessagePath({
-            cwd: this.deps.options.cwd,
-            runId: run.id,
-            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
-            phaseId: run.currentPhase,
-            iteration
-          }),
+          // A path segment cannot be omitted, so with no Pipeline id there is
+          // no canonical sidecar path — not one under an invented directory.
+          phaseMessagePath:
+            dispatchPipelineId === undefined
+              ? null
+              : composePhaseMessagePath({
+                  cwd: this.deps.options.cwd,
+                  runId: run.id,
+                  pipelineId: dispatchPipelineId,
+                  phaseId: run.currentPhase,
+                  iteration
+                }),
           previousPhaseMessage,
           cancellationSignal: this.cancellationController!.signal as unknown as {
             aborted: boolean;
@@ -894,7 +903,8 @@ export class RunDriver {
         if (optionalTerminalContinued) {
           await this.deps.emitOptionalPhaseFailureContinued(run, {
             runId: run.id,
-            pipelineId: run.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+            // Feature 098 (T045, FR-034) — omitted, not substituted.
+            ...(run.pipeline?.id === undefined ? {} : { pipelineId: run.pipeline.id }),
             phaseId: phaseResult.phase,
             runner: effectiveRunnerKind,
             iteration: phaseResult.iteration,
@@ -1027,7 +1037,8 @@ export class RunDriver {
     const persisted = await this.deps.persistTransition(run, advanced);
     await this.deps.emitOptionalPhaseFailureContinued(persisted, {
       runId: persisted.id,
-      pipelineId: persisted.pipeline?.id ?? BUILT_IN_PIPELINE_ID,
+      // Feature 098 (T045, FR-034) — omitted, not substituted.
+      ...(persisted.pipeline?.id === undefined ? {} : { pipelineId: persisted.pipeline.id }),
       phaseId: phaseResult.phase,
       runner,
       iteration: phaseResult.iteration,

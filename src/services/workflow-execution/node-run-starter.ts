@@ -29,6 +29,7 @@
 
 import * as fs from 'fs/promises';
 import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
+import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
 import type { RunRequestFieldError } from '../../contracts/run-request';
 import type { FrozenRunPlan, RunRequest } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
@@ -72,7 +73,18 @@ const OUTPUT_PROBE: OutputTargetProbe = {
 export type NodeRunStartRejection =
   | 'pipeline-not-found'
   | 'pipeline-invalid'
-  | 'no-workspace-root';
+  | 'no-workspace-root'
+  // Feature 098 (T030, US3, FR-031) — the empty catalog is its own reason, not a
+  // `pipeline-not-found` for whichever id the operator happened to ask for. The
+  // two want different remedies: the first says "import a process document", the
+  // second says "check the id". Collapsing them would send an operator with an
+  // empty catalog looking for a typo, which is the case this feature makes the
+  // common one rather than the rare one.
+  //
+  // T058 — spelled from the shared constant rather than as a literal, because
+  // FR-031a makes the scheduled-start path carry this same name and a second
+  // literal is a second thing to keep in step.
+  | CatalogEmptyReason;
 
 export type NodeRunStartResult =
   | { readonly outcome: 'enqueued'; readonly queueItemId: string; readonly plan: FrozenRunPlan }
@@ -182,8 +194,16 @@ function resolvePipelineSource(
   }
 
   const catalog = deps.getCatalog?.();
-  const definition = catalog?.pipelinesById.get(input.request.pipelineId);
-  if (!catalog || !definition) return { reason: 'pipeline-not-found' };
+  if (!catalog) return { reason: 'pipeline-not-found' };
+  // Feature 098 (T030, FR-031) — checked before the id lookup, because after the
+  // lookup every id looks equally absent and the distinction is lost. A catalog
+  // with no Pipelines at all cannot resolve anything, and saying so is a different
+  // message from "that id is not in the catalog". No reader at all stays
+  // `pipeline-not-found` above: that is the host being unable to look, not a
+  // catalog that is empty.
+  if (catalog.pipelinesById.size === 0) return { reason: CATALOG_EMPTY_REASON };
+  const definition = catalog.pipelinesById.get(input.request.pipelineId);
+  if (!definition) return { reason: 'pipeline-not-found' };
 
   const phases: PhaseDef[] = [];
   for (const phaseId of definition.phases) {

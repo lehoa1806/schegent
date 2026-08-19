@@ -15,13 +15,16 @@
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
   const RUNNER_KINDS = ['claude', 'codex', 'agy'] as const;
-  const GIT_METADATA_WRITE_PHASE_IDS = new Set([
-    'speckit-specify',
-    'specify-brainstorm',
-    'superpowers-implement',
-    'finalize',
-    'superpowers-review-close'
-  ]);
+  // Feature 098 T018 — this file used to mirror the host's
+  // `GIT_METADATA_WRITE_PHASE_IDS` and grey out the Inherit and Codex runner
+  // options for a built-in Phase on that list. Both halves of the condition are
+  // gone: the host rule now keys on the Phase's declared `sideEffects === 'git'`
+  // (FR-007) and FR-008 permits **no replacement id list** anywhere, webview
+  // copies included. `MutablePhase` carries no declared containment class, so
+  // this surface cannot answer the re-keyed question and does not guess at it —
+  // the save gate in `cmd-save-phases.ts` and the launch assertion in
+  // `phase-runner.ts` are the authoritative refusals, and a save that violates
+  // the rule comes back as a field error on `runner`.
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -129,11 +132,6 @@
     if (layer === 'built-in') return 'Built-in';
     if (layer === 'workspace') return 'Workspace';
     return 'User';
-  }
-
-  function runnerOptionDisabled(phase: MutablePhase, runner: string): boolean {
-    return phase.scope === 'built-in' && GIT_METADATA_WRITE_PHASE_IDS.has(phase.id) &&
-      (runner === '' || runner === 'codex');
   }
 
   /**
@@ -365,9 +363,9 @@
                 {/if}
               </span>
               <select class="select-input" data-testid="phases-runner-{phase.id}" value={phase.runner ?? ''} disabled={selectedReadOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { runner: value ? (value as PhaseDefinition['runner']) : undefined }); }}>
-                <option value="" disabled={runnerOptionDisabled(phase, '')}>[Inherit / Default]</option>
+                <option value="">[Inherit / Default]</option>
                 {#each RUNNER_KINDS as runner}
-                  <option value={runner} disabled={runnerOptionDisabled(phase, runner)}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
+                  <option value={runner}>{runner}{!snapshot.availableBackends.includes(runner) ? ' (Unavailable)' : ''}</option>
                 {/each}
               </select>
             </label>

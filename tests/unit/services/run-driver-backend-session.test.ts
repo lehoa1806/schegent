@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
+import { buildMutationPlan } from '../../../src/services/mutation-plan';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 function cleanOutput(cliSessionId?: string) {
@@ -204,6 +205,11 @@ describe('RunDriver backend-scoped sessions', () => {
         {
           id: 'speckit-specify',
           name: 'Specify',
+          // Feature 098 T018 — the pin follows the declared class rather than the
+          // id, so the snapshot phase declares it. `effectiveRunnerKindForPhase`
+          // reads `sideEffects` and returns `claude` for a `git` Phase that names
+          // no runner, which is what the assertion below still checks.
+          sideEffects: 'git',
           instruction: 'Create the feature branch.'
         },
         run.pipeline!.phases[1]
@@ -212,6 +218,21 @@ describe('RunDriver backend-scoped sessions', () => {
     run.currentPhase = 'speckit-specify';
     run.defaultRunnerKind = 'codex';
     deps.options.defaultRunnerKind = 'codex';
+    // Feature 098 T018 — a consequence of the re-keying, and the reason it is
+    // spelled out rather than stubbed. The runner pin and the mutation-plan
+    // approval gate at `run-driver.ts:470` used to read different inputs: the pin
+    // came off the five-id list while `sideEffects` stayed undefined, so a
+    // "protected" phase got a pinned runner *without* being Git-class to the
+    // gate. Both now read the one declaration, so a phase that earns the pin also
+    // needs an approved plan — and this fixture has to supply one or the dispatch
+    // it is asserting about never happens.
+    const plan = buildMutationPlan(run.pipeline!);
+    run.mutationPlan = plan;
+    run.gitApprovalReceipt = {
+      approvedAt: plan.capturedAt,
+      planFingerprint: plan.fingerprint,
+      approvedPhaseIds: plan.gitCapablePhaseIds
+    };
 
     await new RunDriver(deps).drive(run, 'legacy protected phase');
 

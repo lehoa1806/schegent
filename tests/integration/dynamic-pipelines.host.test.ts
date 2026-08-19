@@ -44,10 +44,14 @@ export async function run(): Promise<void> {
     [],
     'schegent.pipelines defaultValue must be []'
   );
+  // Feature 098 (T066, FR-033a) — this asserted `'speckit-new-feature'`, the
+  // Pipeline the built-in layer supplied. There is no built-in layer, so a
+  // shipped default would name a Pipeline no installation has; the empty string
+  // is how "no default" is spelled, and `package.json` declares it that way.
   assert.equal(
     defaultPipelineInspect.defaultValue,
-    'speckit-new-feature',
-    'schegent.defaultPipelineId defaultValue must be "speckit-new-feature"'
+    '',
+    'schegent.defaultPipelineId defaultValue must be "" — the extension ships no pipelines'
   );
 
   // (c) — `schegent.schedule` must be a registered command (it is the entry

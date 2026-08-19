@@ -1,30 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   IDLE_LIVE_ACTIVITY,
-  PHASE_NAMES,
   SCHEMA_VERSION,
-  buildEmptyPhases,
   buildIdleSnapshot,
   isRecursivePhase
 } from '../../../../src/ui/sidebar/snapshot';
 
+// Feature 098 (T083) — the seven-placeholder-tile case is gone, with
+// `buildEmptyPhases()` and the two name lists it read. The projector answers an
+// empty catalog with zero tiles now (T055), and what replaces this case lives in
+// `tests/unit/ui/sidebar/phase-projector.test.ts`: zero tiles paired with the
+// import guidance. Nothing here builds a Phase list any more, so there is no
+// canonical order left for this file to have an opinion about.
+
 describe('snapshot builders', () => {
   it('exports SCHEMA_VERSION === 4', () => {
     expect(SCHEMA_VERSION).toBe(4);
-  });
-
-  it('builds 7 phase tiles in canonical order with v2 fields', () => {
-    const phases = buildEmptyPhases();
-    expect(phases).toHaveLength(7);
-    phases.forEach((tile, idx) => {
-      expect(tile.name).toBe(PHASE_NAMES[idx]);
-      expect(tile.order).toBe(idx + 1);
-      expect(tile.state).toBe('not-started');
-      expect(tile.iteration).toBe(0);
-      expect(tile.lastResult).toBeNull();
-      expect(tile.elapsedMs).toBe(0);
-      expect(tile.subProgress).toBeNull();
-    });
   });
 
   // Feature 092 (T091/T096) — the per-run singulars (`status`, `phases`,
@@ -79,10 +70,17 @@ describe('snapshot builders', () => {
     expect(snap.availablePipelines).toEqual([]);
   });
 
+  // Feature 098 (T080) — this case used to sweep the exported `PHASE_NAMES` and
+  // recompute the predicate for each entry, which meant it agreed with
+  // `isRecursivePhase` by construction. With that list gone the two ids it
+  // recognises are named outright, and a Phase id the operator imported stands as
+  // the negative case that matters: the predicate answers on the id alone, and
+  // there is no longer a fixed vocabulary for it to consult.
   it('isRecursivePhase identifies clarify and analyze only', () => {
-    for (const name of PHASE_NAMES) {
-      const expected = name === 'speckit-clarify' || name === 'speckit-analyze';
-      expect(isRecursivePhase(name)).toBe(expected);
+    expect(isRecursivePhase('speckit-clarify')).toBe(true);
+    expect(isRecursivePhase('speckit-analyze')).toBe(true);
+    for (const name of ['speckit-specify', 'speckit-implement', 'finalize', 'fixture-first']) {
+      expect(isRecursivePhase(name)).toBe(false);
     }
   });
 });

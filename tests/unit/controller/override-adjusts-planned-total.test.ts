@@ -30,7 +30,10 @@ import type { Notifier } from '../../../src/ui/notifications';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
+// Feature 098 (T080) — these rows came from `BUILT_IN_PHASES`, which is empty
+// now; the fixture supplies the same definitions under the same ids. See its
+// header for why the ids are the real Spec Kit ones.
+import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import { projectRunProgress } from '../../../src/ui/sidebar/run-projector';
@@ -53,7 +56,7 @@ const PIPELINE = Object.freeze({
   name: 'Spec-kit New Feature',
   phases: Object.freeze(
     ['speckit-specify', 'speckit-clarify', 'speckit-plan', 'speckit-tasks'].map((id) =>
-      Object.freeze(BUILT_IN_PHASES.find((phase) => phase.id === id)!)
+      Object.freeze(SPECKIT_ALL_PHASE_DEFS.find((phase) => phase.id === id)!)
     )
   )
 });
@@ -277,12 +280,31 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
   it('leaves a legacy record without a total untouched rather than writing 0 of 0', async () => {
     // `plannedTotalPatch` returns `{}` for a Run with no pipeline snapshot, so a
     // pre-snapshot record keeps rendering as unknown instead of as complete.
-    await seedRun({ pipeline: undefined, plannedTotal: undefined });
+    //
+    // Feature 098 (T029, FR-028) — driven through `restartActivePhase` rather than
+    // `disablePhase`. `phaseExists` used to answer membership from
+    // `BUILT_IN_PHASES` when a Run carried no snapshot, so an override could be
+    // applied to a Run whose plan nobody knew; it answers from the snapshot alone
+    // now, and refuses. `restartActivePhase` addresses the Run's *own*
+    // `currentPhase` and so has no membership question to ask — it is the path on
+    // which a snapshot-less record still reaches this patch, which is what makes
+    // the `{}` branch worth pinning rather than dead.
+    await seedRun({
+      pipeline: undefined,
+      plannedTotal: undefined,
+      status: 'paused',
+      currentIteration: 3,
+      manualPauseAt: NOW,
+      manualPauseCause: 'operator-paused'
+    });
 
-    await controller.disablePhase('speckit-tasks');
+    expect(await controller.restartActivePhase()).toEqual({ ok: true });
 
     const after = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(after.phaseOverrides).toHaveLength(1);
+    // The write landed — asserted on fields the restart owns, so an absent total
+    // cannot pass by nothing having been written at all.
+    expect(after.currentIteration).toBe(1);
+    expect(after.manualPauseAt).toBeNull();
     expect('plannedTotal' in after && after.plannedTotal !== undefined).toBe(false);
     expect(projectRunProgress(after)).toBeNull();
   });

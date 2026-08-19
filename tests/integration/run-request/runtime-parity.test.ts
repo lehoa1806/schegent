@@ -35,9 +35,11 @@
 //   terminal status through the same seam.
 //
 // The Pipeline ends in `done` deliberately: `WorkflowRunFactory.resolvePipeline`
-// appends a `done` Phase when one is absent while `validateRunRequest` does
-// not, so a Pipeline without it would differ for a reason that has nothing to
-// do with runtime parity.
+// used to append a `done` Phase when one was absent while `validateRunRequest`
+// did not, so a Pipeline without it would differ for a reason that has nothing
+// to do with runtime parity. Feature 098 (T025) removed that append, so the two
+// paths agree either way now; the `done` row stays because the catalog defines
+// it and a Pipeline naming a Phase the catalog does not hold is refused.
 //
 // -- Feature 088 (T048, FR-067, SC-009) -------------------------------------
 //

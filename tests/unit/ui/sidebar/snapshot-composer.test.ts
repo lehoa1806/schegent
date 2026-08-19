@@ -20,11 +20,18 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import { resolvePipelineCatalog, pipelineLayerRevision } from '../../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../../src/config/pipeline-config';
+import { SPECKIT_PHASE_DEFS } from '../../../fixtures/speckit-catalog-fixture';
 
+// Feature 098 (T080) — the Pipelines projected below name `speckit-specify`,
+// `speckit-plan` and `finalize`, which used to resolve out of the built-in Phase
+// layer. That layer stays wired in because the product still resolves it, but it
+// is empty, so the rows arrive as a configured layer instead. Without them every
+// projected Pipeline is `invalid` and no case here reaches the projection it is
+// about. See the fixture header for why the ids are the real Spec Kit ones.
 const PHASE_CATALOG = resolvePhaseCatalog({
   builtIn: BUILT_IN_PHASES,
   user: [],
-  workspace: []
+  workspace: SPECKIT_PHASE_DEFS
 });
 
 class FakeMemento implements Memento {
@@ -303,8 +310,12 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
   });
 
   it('omits the field on records nothing references', () => {
+    // Feature 098 (T080) — the unreferenced record used to be a built-in Pipeline,
+    // projected alongside the workspace row for free. Nothing is projected for free
+    // now, so the case authors the row it needs: one referenced Pipeline and one
+    // that nothing names.
     const { projection } = project({
-      workspace: [VALID_ROW],
+      workspace: [VALID_ROW, { ...VALID_ROW, id: 'unreferenced-flow', name: 'Unreferenced' }],
       workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const unreferenced = projection!.records.filter((r) => r.pipelineId !== 'custom-flow');

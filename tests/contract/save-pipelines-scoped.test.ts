@@ -54,6 +54,7 @@ import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import { pipelineLayerRevision, resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
 import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
+import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { collectWorkflowDefinitionPipelineRefs } from '../../src/ui/sidebar/workflow-definition-pipeline-refs';
 import type { PipelineCatalogMutation } from '../../src/contracts/pipeline-definitions';
@@ -78,7 +79,16 @@ interface Harness {
   layers: Layers;
 }
 
-const WORKSPACE_PHASE_ROW = { id: 'done', name: 'Done', version: 1, instruction: 'Done.' };
+// Feature 098 (T080) — `CUSTOM_ROW` names `speckit-specify` and `finalize`, which
+// used to resolve out of the built-in Phase layer. That layer is empty now, so a
+// Pipeline naming them fails gate 5 unless the workspace layer carries them:
+// every gate below would report `pipeline-validation` instead of the gate under
+// test. The rows come from the fixture; see its header for why the ids are the
+// real Spec Kit ones.
+const WORKSPACE_PHASE_ROWS = [
+  { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
+  ...SPECKIT_PHASE_DEFS
+];
 
 /**
  * Feature 083 (T052) — the definition-side half of gate 13's reference list,
@@ -100,7 +110,7 @@ function workflowRefs(
     phaseCatalog: resolvePhaseCatalog({
       builtIn: BUILT_IN_PHASES,
       user: [],
-      workspace: [WORKSPACE_PHASE_ROW]
+      workspace: WORKSPACE_PHASE_ROWS
     }).effective
   });
   return collectWorkflowDefinitionPipelineRefs(
@@ -158,7 +168,7 @@ function buildRouter(
         // Feature 082 (T038) — gate 5 resolves every `phaseId` against the
         // effective Phase catalog, so the workspace-authored `done` these
         // fixtures use has to exist as a Phase.
-        readPhaseConfig: () => ({ user: [], workspace: [WORKSPACE_PHASE_ROW] })
+        readPhaseConfig: () => ({ user: [], workspace: WORKSPACE_PHASE_ROWS })
       };
 
   const deps = {

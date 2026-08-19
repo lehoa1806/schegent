@@ -8,11 +8,16 @@
 // returns at the first bad field makes the operator fix a request one round
 // trip at a time, and the failure is invisible until a request has two faults.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PipelineInputPort, PipelineOutputPort } from '../../../../src/contracts/pipeline-definitions';
 import type { RunRequest } from '../../../../src/contracts/run-request';
 import { MAX_DESCRIPTION_LENGTH } from '../../../../src/queue/feature-request';
+import { buildCatalog, type PipelineCatalog } from '../../../../src/config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../../../src/config/pipeline-snapshot';
+import {
+  startPipelineRun,
+  type NodeRunStartDeps
+} from '../../../../src/services/workflow-execution/node-run-starter';
 import {
   validateRunRequest,
   type EffectivePipelineSource,
@@ -269,9 +274,9 @@ describe('the frozen plan (FR-009, FR-030)', () => {
   });
 
   it('freezes the Phase list the caller resolved, substituting nothing (FR-033)', async () => {
-    // `WorkflowRunFactory.resolvePipeline()` appends `done` and substitutes it
-    // for a Phase the catalog no longer has. Neither happens here: what the
-    // effective catalog yielded is what freezes.
+    // `WorkflowRunFactory.resolvePipeline()` used to append `done` and to drop a
+    // Phase the catalog no longer had; feature 098 (T025) refuses instead. Neither
+    // ever happened here: what the effective catalog yielded is what freezes.
     const source: EffectivePipelineSource = {
       definition: { id: 'ab-flow', name: 'A then B', phases: ['alpha', 'gone'] },
       phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.', sourceScope: 'built-in' }]
@@ -285,5 +290,108 @@ describe('the frozen plan (FR-009, FR-030)', () => {
   it('omits instructions entirely when none were supplied', async () => {
     const outcome = await validateRunRequest(request(), context());
     expect(outcome.ok && 'instructions' in outcome.plan).toBe(false);
+  });
+});
+
+// Feature 098 (T054, US4) — the empty catalog is refused by the host, whatever
+// the launch surface showed.
+//
+// FR-031, SC-010. FR-030a puts guidance at the point of action, and guidance is
+// not a gate: a request can arrive from a stale webview, from a surface that
+// rendered before the catalog was cleared, or from a caller that never rendered
+// anything. So the refusal has to be reachable by submitting a launch directly,
+// with no surface involved at all — which is what these cases do.
+//
+// They exercise `startPipelineRun` rather than `validateRunRequest`, in the file
+// the task names. `validateRunRequest` takes an already-resolved
+// `EffectivePipelineSource` — one `definition` and its `phases` — so by the time
+// it is called a Pipeline has been found and the catalog is by construction not
+// empty. It can never observe the state under test. The gate lives one layer
+// out, in `resolvePipelineSource`, ahead of the id lookup, and that is where a
+// launch submitted against an empty catalog actually meets its refusal.
+describe('Feature 098 (T054) — a launch against an empty catalog is refused by the host', () => {
+  const NO_MODELS = { claude: [], codex: [], agy: [] };
+
+  /** Only what the four gates read; the refusal lands before any of the rest. */
+  function starterDeps(catalog: PipelineCatalog) {
+    const scheduleOrEnqueue = vi.fn(async () => ({ outcome: 'enqueued', queueItemId: 'q-1' }));
+    return {
+      deps: {
+        guardedRun: { scheduleOrEnqueue },
+        getCatalog: () => catalog,
+        logger: { warn: () => undefined, sanitize: (value: string) => value }
+      } as unknown as NodeRunStartDeps,
+      scheduleOrEnqueue
+    };
+  }
+
+  const EMPTY_CATALOG = () => buildCatalog([], [], NO_MODELS, '');
+
+  it('names `catalog-empty`, not `pipeline-not-found`, when nothing is imported', async () => {
+    const { deps } = starterDeps(EMPTY_CATALOG());
+
+    const result = await startPipelineRun(deps, {
+      request: request({ pipelineId: 'ab-flow' }),
+      workspaceRoot: WORKSPACE_ROOT
+    });
+
+    // The distinction is the whole point: `pipeline-not-found` sends an operator
+    // looking for a typo, and with an empty catalog there is no id that would
+    // have worked.
+    expect(result).toEqual({ outcome: 'rejected-definition', reason: 'catalog-empty' });
+  });
+
+  it('refuses a launch submitted with no surface involved at all', async () => {
+    // The submission below is what a stale webview sends: a well-formed request
+    // naming a Pipeline that was in the catalog when the surface rendered. No
+    // guidance was displayed, because nothing displayed anything.
+    const { deps, scheduleOrEnqueue } = starterDeps(EMPTY_CATALOG());
+
+    const result = await startPipelineRun(deps, {
+      request: request({
+        pipelineId: 'a-pipeline-the-surface-listed',
+        inputs: [{ portId: 'brief', type: 'text', value: 'ship it' }]
+      }),
+      workspaceRoot: WORKSPACE_ROOT
+    });
+
+    expect(result).toMatchObject({ outcome: 'rejected-definition', reason: 'catalog-empty' });
+    // Nothing durable happened: the refusal is a gate, not a report filed after
+    // the fact.
+    expect(scheduleOrEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('refuses before the request is validated, so an empty catalog is not reported as bad fields', async () => {
+    // An empty request would fail validation on its own if it ever got that far.
+    // It must not: the operator's fields are not the problem, and a field-level
+    // response would name something they cannot fix.
+    const { deps } = starterDeps(EMPTY_CATALOG());
+
+    const result = await startPipelineRun(deps, {
+      request: request({ pipelineId: 'ab-flow', inputs: [] }),
+      workspaceRoot: WORKSPACE_ROOT
+    });
+
+    expect(result.outcome).toBe('rejected-definition');
+  });
+
+  it('still names the missing id once the catalog holds something', async () => {
+    // The companion assertion. Without it, "always answers `catalog-empty`" would
+    // pass every case above while destroying the distinction they exist to draw.
+    const { deps } = starterDeps(
+      buildCatalog(
+        [{ id: 'alpha', name: 'Alpha', version: 1, instruction: 'Do the thing.' }] as never,
+        [{ id: 'ab-flow', name: 'A then B', version: 1, phases: ['alpha'] }] as never,
+        NO_MODELS,
+        ''
+      )
+    );
+
+    const result = await startPipelineRun(deps, {
+      request: request({ pipelineId: 'no-such-flow' }),
+      workspaceRoot: WORKSPACE_ROOT
+    });
+
+    expect(result).toEqual({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
   });
 });

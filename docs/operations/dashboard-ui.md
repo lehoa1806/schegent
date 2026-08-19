@@ -60,9 +60,10 @@ The Schegent Dashboard is a rich Webview that serves as the central control plan
   - `completed` and `cancelled` rows: no per-row buttons. Terminal-row cleanup is delegated to the global `Clear Done` and `Clean` controls in the Queue Management zone.
 
 ### 4. Phase Progression Tiles
-**Purpose:** Visually tracks the state machine's progression across the Spec Driven Development workflow pipeline for the *currently active* feature.
-- **Tiles (`specify` -> `finalize`):** Each tile represents a distinct pipeline phase. 
+**Purpose:** Visually tracks the state machine's progression across the pipeline for the *currently active* feature.
+- **Tiles:** Each tile represents a distinct pipeline phase, in the order the chosen Pipeline names them. For the shipped Spec Driven Development example that runs `specify` -> `finalize`.
 - **UX Responsibility:** The active phase is highlighted (e.g., `IMPLEMENT ⏳`), giving you immediate context on whether the system is writing specs, planning architecture, or emitting code.
+- **Empty catalog (feature 098):** These tiles are run-scoped — you reach them by drilling into a run, which an empty catalog gives you no way to start — so on a fresh install there is nothing here to look at rather than a wrong thing. The tile strip is no longer padded out with placeholder phases when there is no run; it is simply empty. The surface that tells you what to do about it is the **Runs** tab: with no Pipelines its **Start a Run** zone shows *"No process definitions yet"* and the remedy — import a process document, with `examples/` named as the place the shipped ones are — in place of the Pipeline picker. A launch attempted anyway is refused with `catalog-empty` carrying the same remedy. See [Start a Feature](start-feature.md#first-run-the-catalog-is-empty).
 
 ### 5. Phase Log Feed (spec 020 — replaces the audit-tailed Activity Feed)
 
@@ -312,6 +313,15 @@ but were reachable from no panel route; 091 mounts them at
   before submitting.
 - **Empty state** — with no connected runs, the tab shows the compose control
   alone. This is the normal state, not an error.
+- **Empty catalog (feature 098)** — with no Pipelines at all, the **Start a Run**
+  zone stays where it is and shows *"No process definitions yet"* plus the
+  remedy — import a process document, with `examples/` named as the place the
+  shipped ones are — in place of the picker. Before 098 the whole zone was
+  hidden; that was right when an empty catalog was a passing state, and wrong
+  now that it is the state every install starts in, because it left no visible
+  route from an empty catalog to a working one. This is the surface that tells
+  you what to do on a fresh install. See
+  [Start a Feature](start-feature.md#first-run-the-catalog-is-empty).
 
 **A Pipeline removed from the catalog while its composer is open closes the
 composer** rather than composing against a definition the host would refuse.

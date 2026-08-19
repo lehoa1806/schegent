@@ -1,20 +1,20 @@
 # Custom Phases and Pipelines
 
-Beyond overriding the parameters of built-in phases, you can define entirely new phases and chain them into custom pipelines. This is how you adapt Schegent to a workflow that does not look like the Spec Driven Development workflow.
+Schegent ships no phases and no pipelines, so in a strict sense every definition in your catalog is a custom one. What this page covers is *authoring* — writing a definition yourself rather than importing it. The two produce identical rows; the distinction is only where the text came from.
 
-## When to define a custom phase
+## When to author rather than import
 
-- You have a workflow step that does not map to any of the eight built-ins — for example, "run lint and security scans before implement".
-- You have a multi-step custom flow you want to reuse across runs — a custom pipeline with its own ordering.
+- You have a workflow step that no document you have covers — for example, "run lint and security scans before implement".
+- You have a multi-step flow you want to reuse across runs — a pipeline with its own ordering.
 - You want a loop phase with a non-default exit condition (e.g., "loop until a metric is zero" rather than the default `[SCHEGENT_STATUS: CLEAR]` sentinel).
 
-If you just want to tune a built-in's model, effort, or timeout, you do not need a custom phase — see [Phase Overrides](phase-overrides.md).
+If you just want to tune the model, effort, or timeout of a phase you already imported, you do not need to author a new one — see [Phase Overrides](phase-overrides.md).
 
 If the phase you want already exists on someone else's machine, you do not need to retype it — see [Phase YAML Exchange](phase-yaml-exchange.md), which moves a phase definition between catalogs as a portable YAML document and never overwrites a phase you already have.
 
 ## Defining a new phase
 
-You can define new phases visually via the **Pipeline Builder > Phases** dashboard, or manually by adding an entry to `schegent.phases` whose `id` does **not** match a built-in:
+You can define new phases visually via the **Pipeline Builder > Phases** dashboard, or manually by adding an entry to `schegent.phases`:
 
 ![Phase Builder](../assets/walkthrough/01_phase_builder.png)
 
@@ -35,12 +35,30 @@ You can define new phases visually via the **Pipeline Builder > Phases** dashboa
 
 Field requirements:
 
-- `id` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). Cannot collide with built-in ids unless you intend to shadow.
+- `id` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved. Reusing an id you already have in a lower-precedence scope shadows that row; reusing one within the same scope is a duplicate and both rows are quarantined.
 - `name` — display name (1–80 chars).
 - `instruction` or `skill` — exactly one non-empty directive is required for every source row.
 - `loopable` — optional deprecated compatibility boolean.
+- `sideEffects` — optional containment class: `none`, `workspace`, `git`, or `unrestricted`. **Omitted, it is `workspace`.** Declare it honestly — this is what the phase is permitted to write, and nothing infers it from the phase's name.
+- `evidencePolicy` — optional: `required`, `best-effort`, or `none`. **Omitted, it is `required`.**
 
 Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow the same semantics as overrides; see [Phase Overrides](phase-overrides.md).
+
+### Declaring Git side effects
+
+A phase that commits, tags, or otherwise writes `.git` must say so and must run on a Git-capable runner:
+
+```jsonc
+{
+  "id": "commit-and-tag",
+  "name": "Commit and Tag",
+  "instruction": "...",
+  "sideEffects": "git",
+  "runner": "claude"
+}
+```
+
+Saving `sideEffects: git` with `runner: codex` is refused — Codex's workspace-write sandbox keeps `.git` read-only, so the phase would fail mid-run instead of at save time. The check reads the declaration, never the id: a phase called `finalize` that declares nothing is a `workspace` phase like any other, and a phase called `commit-and-tag` gets Git access because it asked for it.
 
 ## Using the new phase in a pipeline
 
@@ -62,8 +80,7 @@ A new phase id is only useful if some pipeline references it. Define a custom pi
         "speckit-analyze",
         "speckit-implement",
         "lint-and-scan",
-        "finalize",
-        "done"
+        "finalize"
       ]
     }
   ]
@@ -72,14 +89,14 @@ A new phase id is only useful if some pipeline references it. Define a custom pi
 
 Pipeline rules:
 
-- `id` — kebab-case, ≤ 64 chars. The id `speckit-new-feature` is reserved for the built-in.
-- `phases` — 1 to 50 entries. Each must reference a built-in id or one of your `schegent.phases[].id`.
+- `id` — kebab-case, ≤ 64 chars. No id is reserved; `speckit-new-feature` is simply the id the shipped example happens to use, and yours may reuse or replace it.
+- `phases` — 1 to 50 entries. Each must reference one of your `schegent.phases[].id`, whether you authored it or imported it. Do **not** list `done` — it is the terminal state the host appends after your last phase, not a phase you declare.
 
 If a referenced id is unknown at load time, the pipeline is rejected with a warning.
 
 ## Setting the default pipeline
 
-To make your custom pipeline the default, set:
+`schegent.defaultPipelineId` ships **empty**. Until you set it, a launch that names no pipeline is refused with the missing id named — it does not fall back to anything, because there is nothing to fall back to. To make a pipeline the default, set:
 
 ```jsonc
 {
@@ -87,7 +104,7 @@ To make your custom pipeline the default, set:
 }
 ```
 
-This sets the default selection in the enqueue dialog. You can still pick a different pipeline per task.
+This sets the default selection in the enqueue dialog. You can still pick a different pipeline per task, and leaving the setting empty is a supported configuration rather than an unfinished one.
 
 ## Loopable phases
 
@@ -168,18 +185,18 @@ When `missingKeys` is non-empty, the expression evaluates as if those identifier
 
 An invalid expression invalidates that source row. The catalog keeps the authored row visible with a field error so you can repair it, while runtime resolution falls back to the next valid workspace, user, or built-in source for the same id.
 
-## Custom phase audit trail
+## Audit trail
 
-Custom phases flow through the identical audit + redaction + transcript path as built-ins. The audit payload for a custom phase's `phase-start` event includes the `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. There is no separate audit channel for custom phases.
+Every phase flows through the same audit + redaction + transcript path; there is exactly one, and nothing is exempt from it. The audit payload for a `phase-start` event includes the `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. There is no separate audit channel for phases you authored, because there is no privileged channel for anything else to use.
 
-## Shadowing built-ins
+## Shadowing across scopes
 
-If a custom phase's `id` matches a built-in, the custom phase **shadows** the built-in. Shadowing rules:
+If two rows share an `id` in different scopes, the higher-precedence one **shadows** the other. Shadowing rules:
 
-- A shadow is a complete definition; omitted optional fields use runtime defaults and are not copied from the built-in.
-- Workspace-layer entries shadow user-layer entries; user-layer entries shadow built-ins.
+- A shadow is a complete definition; omitted optional fields use runtime defaults and are not copied from the row it shadows. That includes `sideEffects` and `evidencePolicy` — a shadow that omits them is `workspace` and `required`, whatever the shadowed row declared.
+- Workspace-layer entries shadow user-layer entries. The built-in layer sits below both and is permanently empty, so in practice there are two ranks with a third held open.
 
-Shadowing is the right pattern when you want to tune a built-in. Defining a new id is the right pattern when you want a new step.
+Shadowing is the right pattern when you want to tune a definition you imported without editing the document. Defining a new id is the right pattern when you want a new step.
 
 ## Worked example: custom bugfix pipeline
 
@@ -197,7 +214,7 @@ Suppose you want a smaller bugfix flow that skips the verify-pre phase:
 }
 ```
 
-You did not define any new phases — you reused the built-in bugfix phases in a custom order. To use it, pick **Bugfix (fast)** in the enqueue dialog when you submit a task.
+You did not define any new phases — you reused the five bugfix phases from `examples/speckit-bugfix.pipeline.yaml` in a different order, which assumes you imported that document first. To use it, pick **Bugfix (fast)** in the enqueue dialog when you submit a task.
 
 ## Worked example: custom phase with retry condition
 

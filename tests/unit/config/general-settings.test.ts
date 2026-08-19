@@ -12,12 +12,22 @@
 //     `scopes` map indicating the source (workspace > user > default).
 
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   ALLOWED_KEYS,
   readGeneralSettings,
   writeGeneralSettings,
   type GeneralSettingsConfig
 } from '../../../src/config/general-settings';
+import { SETTINGS_SCHEMA } from '../../../src/config/settings-schema';
+import { PIPELINE_ID_PATTERN } from '../../../src/config/pipeline-definition-validator';
+import { EMPTY_CATALOG } from '../../../src/config/pipeline-config';
+import {
+  WorkflowRunFactory,
+  describePipelineRefusal
+} from '../../../src/services/workflow-run-factory';
+import { SanitizedLogger } from '../../../src/lib/logger';
 
 // Minimal stub matching the slice of `vscode.WorkspaceConfiguration` that
 // the surface depends on. The real VS Code object is not importable in
@@ -991,5 +1001,104 @@ describe('Feature 019 — writeGeneralSettings hook onRuntimeLogSettingChanged',
       'logging.runtimeLogLevel': 'WARN'
     });
     expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 098 (T043, US6) — the default-Pipeline setting ships unset.
+//
+// FR-033/FR-033a/FR-033b, SC-012. The setting used to default to
+// `speckit-new-feature`, a Pipeline the built-in catalog supplied. The catalog
+// ships empty, so that default named a definition no installation holds: a
+// fresh install pointed its "default Pipeline" at nothing, and every consumer
+// that resolved it got a miss it had no vocabulary for.
+//
+// The correction is that the default is *unset*, spelled as the empty string so
+// the declared type stays `string` across the boundary contract. Three things
+// then have to hold together, and this block asserts all three:
+//   1. All four declarations agree on `''` — a fresh install reads one value,
+//      not four.
+//   2. `''` can never name a Pipeline, so nothing can offer it as a choice.
+//   3. A launch that falls through to it is *refused, naming the id*, rather
+//      than silently doing nothing.
+// ---------------------------------------------------------------------------
+
+describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () => {
+  const SETTING_KEY = 'schegent.defaultPipelineId';
+
+  it('reads as the empty string in all four declarations on a fresh install', async () => {
+    // 1 — the package manifest, the surface VS Code renders in its Settings UI.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: {
+        configuration: { properties: Record<string, { default?: unknown }> };
+      };
+    };
+    expect(manifest.contributes.configuration.properties[SETTING_KEY].default).toBe('');
+
+    // 2 — the settings schema, which the drift validator reads.
+    expect(SETTINGS_SCHEMA[SETTING_KEY].default).toBe('');
+
+    // 3 — the settings accessor, asserted through what it answers rather than
+    // through `KEY_SPECS`: a config that holds nothing is a fresh install.
+    expect(readGeneralSettings(makeConfig()).defaultPipelineId).toBe('');
+
+    // 4 — the idle view, both halves. The host projection and the webview
+    // projection are separate literals and `settings-defaults-parity.test.ts`
+    // exists because they have drifted before.
+    const hostIdle = await import('../../../src/ui/sidebar/snapshot.js');
+    const webviewIdle = await import('../../../webview-ui/src/lib/snapshot-types.js');
+    expect(hostIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+    expect(webviewIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+  });
+
+  it('keeps the declared type `string`, so the unset value crosses the boundary as a value', () => {
+    // FR-033a. "Unset" is deliberately not `undefined` or a missing key: the
+    // field is non-optional in the IPC contract, and making it optional to
+    // express absence would have every consumer handle two shapes of nothing.
+    expect(typeof readGeneralSettings(makeConfig()).defaultPipelineId).toBe('string');
+    expect(SETTINGS_SCHEMA[SETTING_KEY].type).toBe('string');
+  });
+
+  it('can never name a Pipeline, so no consumer can present it as a selectable one', () => {
+    // FR-033a's "MUST NOT present it as a selectable Pipeline" holds by
+    // construction rather than by three separate guards. Both consumers pick by
+    // membership — the schedule picker builds its items from the catalog, and
+    // the queue input form keeps the default only when some available Pipeline
+    // carries that id — so an id no Pipeline can ever carry is an id neither can
+    // ever offer. The Pipeline id grammar requires a leading letter, so the
+    // empty string is outside it and always will be.
+    expect(PIPELINE_ID_PATTERN.test('')).toBe(false);
+
+    // The setting's own pattern must accept it, though, or the value the
+    // manifest ships as its default would be flagged as drift the moment an
+    // operator writes it back explicitly.
+    const settingPattern = SETTINGS_SCHEMA[SETTING_KEY].pattern;
+    expect(settingPattern).toBeDefined();
+    expect(new RegExp(settingPattern as string).test('')).toBe(true);
+    expect(new RegExp(settingPattern as string).test('speckit-new-feature')).toBe(true);
+    expect(new RegExp(settingPattern as string).test('Not An Id')).toBe(false);
+  });
+
+  it('refuses a launch that falls through to it, naming the missing id', () => {
+    // FR-033b. The failure mode this rules out is a silent no-op: a launch that
+    // resolves no Pipeline, starts nothing, and says nothing. `resolvePipeline`
+    // is the one place that decides "fail", and it reports the id it could not
+    // find — the empty string here, which is what the operator needs to see to
+    // understand that the setting is unset rather than wrong.
+    const factory = new WorkflowRunFactory({
+      getCatalog: () => EMPTY_CATALOG,
+      logger: new SanitizedLogger()
+    });
+
+    const resolution = factory.resolvePipeline(EMPTY_CATALOG.defaultPipelineId);
+
+    expect(resolution.ok).toBe(false);
+    if (resolution.ok) return;
+    expect(resolution.refusal).toEqual({ reason: 'pipeline-not-found', pipelineId: '' });
+    expect(describePipelineRefusal(resolution.refusal)).toBe(
+      "pipeline '' is not in the effective catalog"
+    );
   });
 });

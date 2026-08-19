@@ -1,7 +1,6 @@
 import {
   BUILT_IN_PHASES,
   BUILT_IN_PIPELINES,
-  defaultRetryConditionForPhaseId,
   isPipelineDef,
   validatePipelineRaw
 } from '../../../config/pipeline-config';
@@ -277,7 +276,11 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
   }
   const runnerPolicyErrors = proposedLayer.definitions.flatMap((definition) => {
     if (definition.runner === undefined) return [];
-    const message = phaseRunnerPolicyError(definition.phaseId, definition.runner);
+    const message = phaseRunnerPolicyError(
+      definition.phaseId,
+      definition.sideEffects,
+      definition.runner
+    );
     return message === null ? [] : [{
       phaseId: definition.phaseId,
       field: 'runner',
@@ -370,7 +373,13 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     }
     for (let index = 0; index < proposedLayer.definitions.length; index++) {
       const phase = proposedLayer.definitions[index];
-      if (phase.retryCondition !== defaultRetryConditionForPhaseId(phase.phaseId)) {
+      // Feature 098 (T037) — `undefined`, not `defaultRetryConditionForPhaseId(…)`.
+      // That helper answered "what retryCondition does the built-in Phase of this
+      // id declare", and with the built-in layer empty (T036) the answer is
+      // `undefined` for every id, so the gate reduces to its honest form: a row
+      // that *declares* a retry condition needs the capability, and one that does
+      // not, does not. Same decision for every input, one fewer indirection.
+      if (phase.retryCondition !== undefined) {
         if (!isCapabilityAllowed('retryConditions')) {
           await denyAndAudit(ctx, 'retryConditions', index);
           return;

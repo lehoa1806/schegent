@@ -40,10 +40,22 @@ export const METADATA_KEY_ORDER = Object.freeze([
   'description'
 ] as const);
 
+// Feature 098 T012 — `sideEffects` and `evidencePolicy` are admitted HERE and
+// only here. `phase-yaml-validator.ts` derives its admitted-key set from this
+// constant and `phase-yaml-mapper.ts` derives its portable-field set from it, so
+// one edit opens the reader, the writer, and the portability check together and
+// there is no way to admit a field in one of the three and forget the others.
+//
+// Placement after `runner` is deliberate: `sideEffects` is the field the
+// Git-runner rule reads alongside `runner`, and adjacency keeps an exported
+// document legible (data-model.md §1.2). Order here is emission order only — the
+// reader admits these keys in any order.
 export const SPEC_KEY_ORDER = Object.freeze([
   'instruction',
   'skill',
   'runner',
+  'sideEffects',
+  'evidencePolicy',
   'model',
   'effort',
   'timeoutSeconds',

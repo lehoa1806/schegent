@@ -48,6 +48,11 @@
 //   specs/065-enqueue-start-separation/contracts/audit-events.diff.md
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import {
+  CATALOG_EMPTY_REASON,
+  EMPTY_CATALOG_REFUSAL,
+  type CatalogEmptyReason
+} from '../contracts/empty-catalog-guidance';
 import type { SanitizedLogger } from '../lib/logger';
 import type { ScheduledStartSource } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -62,6 +67,39 @@ export type SchedulerCancelReason =
   | 'operator-cancel'
   | 'pause-cancel'
   | 'change-schedule';
+
+/**
+ * Feature 098 (T058, FR-031a) — why a due schedule did not start, and how the
+ * operator hears about it.
+ *
+ * `reason` is the same literal a manual launch is refused with, read from the
+ * one module that names it, because FR-031a asks for "the same named reason"
+ * and not merely a similar one.
+ */
+export interface ScheduledStartRefusal {
+  readonly queueId: string;
+  readonly reason: CatalogEmptyReason;
+  /** The operator-facing text. FR-031b: this message is the record. */
+  readonly message: string;
+}
+
+/**
+ * The empty-catalog gate, wired as one object rather than two deps.
+ *
+ * The probe and the notification belong together: a caller that supplied the
+ * probe alone would silently drop due schedules — starting nothing, telling
+ * nobody — which is precisely the "fails silently" outcome FR-031a rules out.
+ * Pairing them makes that combination unspellable.
+ *
+ * Optional as a whole, because a coordinator with no gate is the pre-098
+ * behaviour and every existing caller is entitled to it.
+ */
+export interface EmptyCatalogGate {
+  /** Whether the effective catalog holds no Pipeline at fire time. */
+  readonly isCatalogEmpty: () => boolean;
+  /** Delivered instead of the start. Cheap and synchronous, like `onFiredObserver`. */
+  readonly onRefused: (refusal: ScheduledStartRefusal) => void;
+}
 
 export interface ScheduledStartFiredEvent {
   readonly queueId: string;
@@ -95,6 +133,10 @@ export interface ScheduledStartCoordinatorDeps {
   // are retained so `QueueScheduleWatchdog` can retry the promotion once this
   // window is primary. The operator is NOT asked to reschedule.
   readonly isForeignLockHeld?: () => boolean;
+  // Feature 098 (T058, FR-031a) — the empty-catalog gate. A schedule that comes
+  // due with nothing imported must reach the refusal a manual launch reaches,
+  // rather than promoting the queue and failing somewhere inside the drain.
+  readonly emptyCatalogGate?: EmptyCatalogGate;
   readonly now?: () => number;
   readonly setTimer?: (fn: () => void, ms: number) => NodeJS.Timeout;
   readonly clearTimer?: (handle: NodeJS.Timeout) => void;
@@ -114,6 +156,7 @@ export class ScheduledStartCoordinator {
   private readonly onFire: ScheduledStartCoordinatorDeps['onFire'];
   private readonly onFiredObserver: ScheduledStartCoordinatorDeps['onFiredObserver'];
   private readonly isForeignLockHeldFn: (() => boolean) | undefined;
+  private readonly emptyCatalogGate: EmptyCatalogGate | undefined;
   private readonly nowFn: () => number;
   private readonly setTimerFn: (fn: () => void, ms: number) => NodeJS.Timeout;
   private readonly clearTimerFn: (handle: NodeJS.Timeout) => void;
@@ -131,6 +174,7 @@ export class ScheduledStartCoordinator {
     this.onFire = deps.onFire;
     this.onFiredObserver = deps.onFiredObserver;
     this.isForeignLockHeldFn = deps.isForeignLockHeld;
+    this.emptyCatalogGate = deps.emptyCatalogGate;
     this.nowFn = deps.now ?? (() => Date.now());
     this.setTimerFn = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimerFn = deps.clearTimer ?? ((handle) => clearTimeout(handle));
@@ -237,6 +281,11 @@ export class ScheduledStartCoordinator {
       });
       return;
     }
+    // Feature 098 (T058, FR-031a) — last, and before anything is recorded or
+    // promoted. Placed after the two supersession checks on purpose: a schedule
+    // that was overtaken or blocked never reached the point of needing a
+    // catalog, and reporting an empty one would name the wrong cause.
+    if (this.refuseOnEmptyCatalog(queueId)) return;
     this.timers.delete(queueId);
     const firedAt = this.nowFn();
     await this.appendAudit('scheduled-start-fired', {
@@ -281,6 +330,10 @@ export class ScheduledStartCoordinator {
         await this.arm(queueId, queueState.scheduledStartAt, source);
         continue;
       }
+      // Feature 098 (T058, FR-031a) — the same gate. This branch promotes
+      // without a timer ever firing, so a gate placed only in `fire()` would
+      // leave the restart path starting runs the manual path refuses.
+      if (this.refuseOnEmptyCatalog(queueId)) continue;
       const firedAt = this.nowFn();
       await this.appendAudit('scheduled-start-fired', {
         queueId,
@@ -331,6 +384,36 @@ export class ScheduledStartCoordinator {
   public dispose(): void {
     for (const armed of this.timers.values()) this.clearTimerFn(armed.handle);
     this.timers.clear();
+  }
+
+  /**
+   * Feature 098 (T058, FR-031a / FR-031b) — refuse a due start when the catalog
+   * is empty, and say so. Answers `true` when the caller must stop.
+   *
+   * The timer is dropped either way: the deadline has passed, and a handle left
+   * behind would re-fire the same refusal on every tick. No audit event is
+   * emitted — FR-031b adds none for this, the decision is made before a Run
+   * exists to scope one to, and `scheduled-start-superseded` would be a
+   * misreport: nothing overtook this schedule.
+   *
+   * The notification is swallowed on failure for the same reason
+   * `notifyFiredObserver` is: it is a UI side-effect, and a failing toast must
+   * not turn a clean refusal into an exception the caller has to handle.
+   */
+  private refuseOnEmptyCatalog(queueId: string): boolean {
+    const gate = this.emptyCatalogGate;
+    if (!gate || gate.isCatalogEmpty() !== true) return false;
+    this.timers.delete(queueId);
+    try {
+      gate.onRefused({
+        queueId,
+        reason: CATALOG_EMPTY_REASON,
+        message: EMPTY_CATALOG_REFUSAL
+      });
+    } catch (err) {
+      this.logger.warn(`scheduled-start empty-catalog notice failed: ${(err as Error).message}`);
+    }
+    return true;
   }
 
   private notifyFiredObserver(event: ScheduledStartFiredEvent): void {

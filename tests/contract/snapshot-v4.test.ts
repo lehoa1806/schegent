@@ -26,6 +26,7 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import type { WorkflowRun } from '../../src/state/workflow-run';
 import { SCHEMA_VERSION, buildIdleSnapshot, type WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 
 /**
  * The per-run singulars FR-049 deletes. Named as data rather than as one
@@ -259,7 +260,17 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
     await store.setRun(DEFAULT_QUEUE_ID, 
       sampleRun({
         featureId: enqueued.id,
-        pipeline: { id: 'ported', name: 'Ported', phases: [] } as unknown as WorkflowRun['pipeline'],
+        // Feature 098 (T055) — the Phase list is no longer decorative here.
+        // `phases: []` used to reach the projector's built-in fallback, which is
+        // what made the strip assertion at the bottom of this case non-empty;
+        // the fallback is gone, so a Pipeline with no Phases now projects the
+        // empty strip it describes. The id stays `ported` — that is what the
+        // `inFlightRun.pipeline.id` assertion below is about.
+        pipeline: {
+          id: 'ported',
+          name: 'Ported',
+          phases: SPECKIT_PHASE_DEFS
+        } as unknown as WorkflowRun['pipeline'],
         manualPauseAt: 1_700_000_002_000,
         manualPauseCause: 'breakpoint-paused',
         resumeTargetPhaseId: 'speckit-tasks'

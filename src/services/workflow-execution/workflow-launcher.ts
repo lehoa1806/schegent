@@ -205,7 +205,13 @@ function refusalOf(
   if (started.reason === 'pipeline-not-found') {
     return { outcome: 'rejected-definition', reason: 'pipeline-mismatch' };
   }
-  if (started.reason === 'pipeline-invalid') {
+  // Feature 098 (T030) — `catalog-empty` joins `pipeline-invalid` on the same
+  // reasoning rather than widening this wire's closed set: from a Workflow's side
+  // both say "this node's Pipeline did not resolve", which is what
+  // `workflow-invalid` means here. The distinction the new reason exists to draw
+  // is one the *Pipeline* launcher surfaces; a Workflow whose nodes cannot resolve
+  // is refused by gate 1's graph validation before this seam is reached anyway.
+  if (started.reason === 'pipeline-invalid' || started.reason === 'catalog-empty') {
     return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
   }
   return { outcome: 'rejected-definition', reason: started.reason };

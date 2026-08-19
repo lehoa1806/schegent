@@ -25,7 +25,6 @@ vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
 }));
 
 import { pipelineLayerRevision } from '../../../../../src/config/pipeline-catalog';
-import { BUILT_IN_PIPELINES } from '../../../../../src/config/pipeline-config';
 import { handler } from '../../../../../src/ui/sidebar/commands/cmd-save-pipelines';
 import { CMD_SAVE_PIPELINES } from '../../../../../src/ui/sidebar/messages';
 import type {
@@ -109,12 +108,18 @@ function reset(current: readonly unknown[]): SavePipelinesCommand {
 beforeEach(() => capabilities.clear());
 
 describe('safe Pipeline source removal (US7, FR-022, FR-022a, FR-024)', () => {
-  it('rejects removal of a built-in source', async () => {
+  // Feature 098 (T036, FR-010) — this named a built-in Pipeline and expected
+  // `built-in-immutable`. That reason is keyed on the id being present in the
+  // built-in layer, which now holds nothing, so it can no longer be produced. The
+  // safety property it stood for survives on its own terms: a removal naming an id
+  // no writable layer owns is still rejected and still writes nothing. Only the
+  // reason code changes, to the generic mismatch.
+  it('rejects removal of an id no layer owns', async () => {
     const { ctx, acks, writes } = run({});
 
-    await handler(ctx, remove(BUILT_IN_PIPELINES[0].id, []));
+    await handler(ctx, remove('speckit-new-feature', []));
 
-    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'built-in-immutable' });
+    expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'pipeline-mutation-mismatch' });
     expect(writes).toEqual([]);
   });
 

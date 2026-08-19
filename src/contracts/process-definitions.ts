@@ -18,6 +18,21 @@ export type WritablePhaseDefinitionScope = Exclude<PhaseDefinitionScope, 'built-
 export const PHASE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 
+/**
+ * The containment class a Phase declares for itself (feature 098, FR-001).
+ *
+ * Declared here, beside `PHASE_EFFORT_LEVELS`, because a containment class is an
+ * authored document field like any other — not a property the host infers from
+ * which layer a definition came out of. `config/pipeline-config.ts` re-exports
+ * both of these rather than restating them, so the authored contract and the
+ * runtime shape cannot drift apart without `npm run typecheck` saying so.
+ */
+export const PHASE_SIDE_EFFECTS = ['none', 'workspace', 'git', 'unrestricted'] as const;
+export type PhaseSideEffects = (typeof PHASE_SIDE_EFFECTS)[number];
+
+export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as const;
+export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];
+
 interface PhaseDefinitionBase {
   readonly phaseId: string;
   readonly name: string;
@@ -25,6 +40,14 @@ interface PhaseDefinitionBase {
   readonly version: number;
   readonly model?: string;
   readonly effort?: PhaseDefinitionEffort;
+  /**
+   * What this Phase is permitted to touch, and whether its evidence is required.
+   * Optional on the wire so an older document still parses; the resolver supplies
+   * the FR-005 defaults (`workspace` / `required`) when a document omits them, so
+   * an absent field is never read as `unrestricted`.
+   */
+  readonly sideEffects?: PhaseSideEffects;
+  readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;

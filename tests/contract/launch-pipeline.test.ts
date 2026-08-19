@@ -500,9 +500,10 @@ describe('gate 5 — definition resolution', () => {
     expect(only(harness).result).toMatchObject({ reason: 'pipeline-not-found' });
   });
 
-  // FR-033. `WorkflowRunFactory.resolvePipeline()` substitutes `done` for a
-  // Phase the catalog lost; a composed run refuses instead, because a shorter
-  // sequence than the one the operator read is not the run they submitted.
+  // FR-033. `WorkflowRunFactory.resolvePipeline()` used to drop a Phase the
+  // catalog lost; a composed run refuses instead, because a shorter sequence than
+  // the one the operator read is not the run they submitted. Feature 098 (T025)
+  // made the resolver refuse as well, so the two paths agree now.
   it('refuses a Pipeline whose Phase the catalog no longer holds', async () => {
     const harness = buildRouter();
 

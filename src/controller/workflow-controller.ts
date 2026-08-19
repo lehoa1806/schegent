@@ -8,7 +8,7 @@ import type { WorkspaceLockManager } from '../state/lock';
 import { RunSessionRegistry, type RunSession } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
 import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
-import type { SanitizedError, WorkflowRun, WorkflowRunPipeline } from '../state/workflow-run';
+import type { SanitizedError, WorkflowRun } from '../state/workflow-run';
 import type { RunActivityObservation } from '../monitor/activity-coalescer';
 import { recordRunLiveness } from './run-liveness-recorder';
 import type { FeatureRequest } from '../queue/feature-request';
@@ -21,11 +21,7 @@ import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
-import {
-  BUILT_IN_CATALOG,
-  BUILT_IN_PIPELINE_ID,
-  type PipelineCatalog
-} from '../config/pipeline-config';
+import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
 import { LockHeldError } from '../lib/errors';
 import { DELAYED_RETRY_CAP } from './retry-constants';
 import type { DelayedRetryWatchdog } from './retry-handler';
@@ -173,7 +169,7 @@ export class SchegentWorkflowController {
   ) {
     this.monitor = deps.monitor ?? null;
     const auditWriter = deps.auditWriter ?? null;
-    this.catalog = deps.catalog ?? BUILT_IN_CATALOG;
+    this.catalog = deps.catalog ?? EMPTY_CATALOG;
     this.getRetryCapFn = deps.getRetryCap ?? null;
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
     this.terminalTransitions = deps.terminalTransitions;
@@ -459,6 +455,9 @@ export class SchegentWorkflowController {
     this.logger.info(`Workflow operation triggered: startNew`, { featureId: feature.id, featureDir, options });
     let run: WorkflowRun | null = null;
     try {
+      // Feature 098 (T026, US3, FR-033b) — no guard here, because that would be a
+      // second refusal site. `''` is not nullish, so an empty catalog's empty
+      // `defaultPipelineId` reaches `create()` and is refused there, `run` left null.
       run = await this.runFactory.create(feature, featureDir,
         options.pipelineId ?? feature.pipelineId ?? this.catalog.defaultPipelineId
       );
@@ -639,9 +638,6 @@ export class SchegentWorkflowController {
     );
   }
 
-  private synthesizeLegacyPipeline(defaultRunnerKind: BackendRunnerKind): WorkflowRunPipeline {
-    return this.runFactory.resolvePipeline(BUILT_IN_PIPELINE_ID, defaultRunnerKind);
-  }
   /**
    * Resumes the currently persisted run if it is in a legal resumable state
    * (paused, pending-retry, or failed/bugfix-terminal).
@@ -703,12 +699,18 @@ export class SchegentWorkflowController {
     const defaultRunnerKind = resolvePinnedRunnerKind(
       run.defaultRunnerKind, run.lastCliSessionRunnerKind, this.options.defaultRunnerKind
     );
-    let pipeline = run.pipeline;
+    // Feature 098 (T026, US3, FR-025) — a pre-009 Run has no `pipeline` snapshot,
+    // and this synthesized the built-in one: the Run resumed a sequence the host
+    // chose rather than the one it started, recorded only as an `info` line. With
+    // no built-in layer to synthesize from, and a pre-release product with no
+    // installed base to migrate, the resume is refused instead and the operator
+    // re-launches from an imported definition.
+    const pipeline = run.pipeline;
     if (!pipeline) {
-      pipeline = this.synthesizeLegacyPipeline(defaultRunnerKind);
-      this.logger.info(
-        `workflow-run.migrated runId=${run.id} fromSchema=pre-009 toPipeline=${BUILT_IN_PIPELINE_ID}`
+      this.logger.warn(
+        `resume: run ${run.id} carries no pipeline snapshot; refusing rather than substituting one`
       );
+      return NOT_RESUMED;
     }
     // FR-R3-001 — a composed Run that was already in flight when this feature
     // landed carries no `envelope`, because the field did not exist when it was
@@ -719,12 +721,10 @@ export class SchegentWorkflowController {
     //
     // `feature.runPlan` is not a second source: it is the same envelope
     // `validateRunRequest()` froze for this Run, aliased rather than rebuilt.
-    // Nothing under `src/` writes `runPlan` after enqueue, so the row cannot
-    // have drifted from what the Run was created against. This is the same
-    // shape as the `pipeline` backfill above and, like it, is guarded on the
-    // field's absence — a Run created after this feature already has an
-    // envelope and never reaches the right-hand side, so the execution path is
-    // still the only reader and the queue row is still never consulted there.
+    // Nothing under `src/` writes `runPlan` after enqueue, so the row cannot have
+    // drifted from what the Run was created against. It is guarded on the field's
+    // absence, so a Run created after this feature never reaches the right-hand
+    // side and the execution path is still the only reader of the envelope.
     const envelope = run.envelope ?? feature.runPlan;
     if (!run.envelope && envelope) {
       this.logger.info(`workflow-run.envelope-backfilled runId=${run.id}`);

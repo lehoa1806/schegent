@@ -23,18 +23,25 @@
 import type { CommandAckMessage, SidebarCommand } from '../../../src/ui/sidebar/messages';
 import { MessageRouter } from '../../../src/ui/sidebar/message-router';
 import type { RouterDeps } from '../../../src/ui/sidebar/message-router';
-import { builtInCatalog } from './built-in-run-harness';
+import { FIXTURE_PHASE_DEFINITIONS, FIXTURE_PHASE_IDS } from '../../fixtures/process-catalog-fixture';
+import { importedCatalog } from './run-harness';
 
 /** The gate tokens, mirrored from `src/ui/sidebar/commands/constants.ts`. */
 export const UNTRUSTED_REJECT = 'untrusted-workspace';
 export const SECONDARY_REJECT = 'secondary-window-readonly';
 
 /**
- * A Phase every build ships, so the export command reaches its adapter rather
- * than refusing on selection and leaving the not-gated claim resting on the
- * absence of a token.
+ * A Phase the probe's workspace layer holds, so the export command reaches its
+ * adapter rather than refusing on selection and leaving the not-gated claim
+ * resting on the absence of a token.
+ *
+ * Feature 098 (T080) — this was `speckit-plan`, described here as "a Phase every
+ * build ships". No build ships a Phase now, and an id nothing resolves would
+ * have turned the positive control into a silent no-op: `selectPhase` refuses
+ * with `not-found` before any adapter is touched, and `writes` stays empty for a
+ * reason that has nothing to do with the gate.
  */
-export const EXPORTABLE_PHASE_ID = 'speckit-plan';
+export const EXPORTABLE_PHASE_ID = FIXTURE_PHASE_IDS.first;
 
 export interface GateProbe {
   /** Every write port a handler touched, in call order. */
@@ -102,10 +109,14 @@ export function makeGateProbe(gates: GateSettings): GateProbe {
     updateConfig: async (): Promise<void> => {
       record('updateConfig', undefined);
     },
-    readPhaseConfig: () => ({ user: [], workspace: [] }),
+    // Feature 098 (T080) — the workspace layer holds the fixture rows rather
+    // than being empty, because `EXPORTABLE_PHASE_ID` has to resolve for the
+    // export positive-control to mean anything. The layer split is otherwise
+    // untouched: `user` is still unset, as it was.
+    readPhaseConfig: () => ({ user: [], workspace: FIXTURE_PHASE_DEFINITIONS }),
     readPipelineConfig: () => ({ user: [], workspace: [] }),
     readWorkflowConfig: () => ({ user: [], workspace: [] }),
-    getCatalog: () => builtInCatalog().catalog,
+    getCatalog: () => importedCatalog().catalog,
     guardedRun: {
       scheduleOrEnqueue: async () =>
         record('guardedRun.scheduleOrEnqueue', {

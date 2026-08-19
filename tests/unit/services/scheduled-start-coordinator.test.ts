@@ -23,6 +23,10 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  CATALOG_EMPTY_REASON,
+  EMPTY_CATALOG_GUIDANCE
+} from '../../../src/contracts/empty-catalog-guidance';
+import {
   ScheduledStartCoordinator,
   type ScheduledStartCoordinatorDeps
 } from '../../../src/services/scheduled-start-coordinator';
@@ -69,7 +73,13 @@ function idlePending(scheduledStartAt: number): QueueState {
   } as unknown as QueueState;
 }
 
-function makeHarness(): Harness {
+/**
+ * `overrides` is Feature 098 (T082): the empty-catalog gate is an optional dep,
+ * and every case above is written against a coordinator that does not carry
+ * one. Merging at construction keeps those cases exercising exactly the deps
+ * they always did.
+ */
+function makeHarness(overrides: Partial<ScheduledStartCoordinatorDeps> = {}): Harness {
   let clock = NOW_BASE;
   const created: FakeHandle[] = [];
   const cleared: FakeHandle[] = [];
@@ -127,7 +137,7 @@ function makeHarness(): Harness {
     }
   };
 
-  const coord = new ScheduledStartCoordinator(deps);
+  const coord = new ScheduledStartCoordinator({ ...deps, ...overrides });
 
   return {
     coord,
@@ -371,5 +381,142 @@ describe('feature 092 (T041) — one timer per queue, not one timer per workspac
     expect(h.coord.armedTimer(QUEUE_A)?.scheduledStartAt).toBe(future);
     // C carries no schedule: nothing armed for it.
     expect(h.coord.hasActiveTimer(QUEUE_C)).toBe(false);
+  });
+});
+
+// Feature 098 (T082, US4) — a schedule that comes due against an empty catalog.
+//
+// FR-031a, SC-010, spec §Edge Cases. A manual launch meets `catalog-empty` at
+// `startPipelineRun`'s first gate. A scheduled start reaches the drain by a
+// different road — the timer fires, the queue is promoted, and the drain
+// resolves the Pipeline later — so without a gate here the schedule either
+// starts nothing while reporting that it fired, or surfaces whatever generic
+// validation error the drain happens to produce. The requirement rules out
+// both: it must start nothing, and it must say why in the same words.
+//
+// The two failures worth naming, because each would pass a weaker test:
+//   - Firing anyway. `onFire` promotes the queue out of `idle-pending`; a
+//     schedule that promotes and then fails deep in the drain has already
+//     spent the deadline, and the operator is left with a queue that says it
+//     ran.
+//   - Emitting `scheduled-start-fired` anyway. FR-031b adds no audit event for
+//     the refusal — the operator-facing message *is* the record — and an audit
+//     trail claiming a start that never happened is worse than a silent one.
+describe('Feature 098 (T082) — a scheduled start against an empty catalog', () => {
+  interface Refusal {
+    readonly queueId: string;
+    readonly reason: string;
+    readonly message: string;
+  }
+
+  function withEmptyCatalog(isCatalogEmpty: () => boolean): {
+    readonly h: Harness;
+    readonly refusals: Refusal[];
+  } {
+    const refusals: Refusal[] = [];
+    const h = makeHarness({
+      emptyCatalogGate: {
+        isCatalogEmpty,
+        onRefused: (refusal: Refusal) => {
+          refusals.push(refusal);
+        }
+      }
+    } as Partial<ScheduledStartCoordinatorDeps>);
+    return { h, refusals };
+  }
+
+  it('refuses with the same named reason a manual launch receives', async () => {
+    const { h, refusals } = withEmptyCatalog(() => true);
+    const at = NOW_BASE + 60_000;
+    h.setQueueState(QUEUE_A, { scheduledStartAt: at });
+    await h.coord.arm(QUEUE_A, at, 'operator-chooser');
+    h.advance(60_000);
+
+    await h.runTimer(h.created[0]!);
+
+    expect(refusals).toHaveLength(1);
+    // The same literal `startPipelineRun` answers with. A schedule that failed
+    // with a reason of its own would be the "generic validation error" the
+    // requirement rules out.
+    expect(refusals[0]!.reason).toBe(CATALOG_EMPTY_REASON);
+    expect(refusals[0]!.queueId).toBe(QUEUE_A);
+    expect(refusals[0]!.message).toContain(EMPTY_CATALOG_GUIDANCE.body);
+  });
+
+  it('starts nothing and disarms, rather than promoting a queue it cannot run', async () => {
+    const { h } = withEmptyCatalog(() => true);
+    const at = NOW_BASE + 60_000;
+    h.setQueueState(QUEUE_A, { scheduledStartAt: at });
+    await h.coord.arm(QUEUE_A, at, 'operator-chooser');
+    h.advance(60_000);
+
+    await h.runTimer(h.created[0]!);
+
+    expect(h.fired).toEqual([]);
+    // Disarmed either way: the deadline has passed, and leaving the handle
+    // behind would re-fire the same refusal on the next tick.
+    expect(h.coord.hasActiveTimer(QUEUE_A)).toBe(false);
+  });
+
+  it('emits no scheduled-start-fired, and no new event type either (FR-031b)', async () => {
+    const { h } = withEmptyCatalog(() => true);
+    const at = NOW_BASE + 60_000;
+    h.setQueueState(QUEUE_A, { scheduledStartAt: at });
+    await h.coord.arm(QUEUE_A, at, 'operator-chooser');
+    h.advance(60_000);
+
+    await h.runTimer(h.created[0]!);
+
+    // Arming is the only thing that happened. `superseded` is excluded too: the
+    // schedule was not overtaken by anything, and classifying it that way would
+    // misreport the cause under one of the four closed `superseder` literals.
+    expect(h.audits.map((entry) => entry.eventType)).toEqual(['scheduled-start-armed']);
+  });
+
+  it('refuses on the offline-elapsed path too, which promotes without a timer', async () => {
+    // `reArm()` fires a queue whose deadline passed while the window was
+    // closed, reaching `onFire` without any timer callback. It is the same
+    // promotion and needs the same gate.
+    const { h, refusals } = withEmptyCatalog(() => true);
+    h.setQueueState(QUEUE_B, { scheduledStartAt: NOW_BASE - 5_000 });
+
+    await h.coord.reArm();
+
+    expect(h.fired).toEqual([]);
+    expect(refusals.map((refusal) => refusal.reason)).toEqual([CATALOG_EMPTY_REASON]);
+    expect(h.audits).toEqual([]);
+  });
+
+  it('fires normally once the catalog holds something', async () => {
+    // The companion assertion: the gate is a check, not a hold. Without it, a
+    // coordinator that refused everything would pass every case above.
+    const { h, refusals } = withEmptyCatalog(() => false);
+    const at = NOW_BASE + 60_000;
+    h.setQueueState(QUEUE_A, { scheduledStartAt: at });
+    await h.coord.arm(QUEUE_A, at, 'operator-chooser');
+    h.advance(60_000);
+
+    await h.runTimer(h.created[0]!);
+
+    expect(h.fired).toEqual([QUEUE_A]);
+    expect(refusals).toEqual([]);
+    expect(h.audits.map((entry) => entry.eventType)).toEqual([
+      'scheduled-start-armed',
+      'scheduled-start-fired'
+    ]);
+  });
+
+  it('leaves an unwired coordinator firing exactly as before', async () => {
+    // The dep is optional, and the wiring in `extension.ts` is the only place
+    // that supplies it. A coordinator without one must not start refusing.
+    const h = makeHarness();
+    const at = NOW_BASE + 60_000;
+    h.setQueueState(QUEUE_A, { scheduledStartAt: at });
+    await h.coord.arm(QUEUE_A, at, 'operator-chooser');
+    h.advance(60_000);
+
+    await h.runTimer(h.created[0]!);
+
+    expect(h.fired).toEqual([QUEUE_A]);
   });
 });
