@@ -4,23 +4,17 @@ import type { ExecutionEnvelope } from '../contracts/run-request';
 
 const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on its OWN line: [SCHEGENT_STATUS: CLEAR]. If issues remain, emit a heading "Open questions:" or "Remaining issues:" followed by a Markdown bullet list. Do not decorate the token; do not place it inside a code fence.`;
 
-const BUILT_IN_INSTRUCTIONS: Record<string, string> = {
-  'speckit-specify': 'Run /speckit-specify with the feature description below. Produce specs/<NNN-name>/spec.md.',
-  'speckit-clarify':
-    'Run /speckit-clarify on the active feature spec. NON-SKIPPABLE: actually invoke the skill — never infer results. Auto-accept mode: respond "recommended" for multiple-choice, "suggested" for short-answer. Emit [SCHEGENT_STATUS: CLEAR] only when no critical ambiguities remain. Inside the SCHEGENT AUDIT LOG block emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.',
-  'speckit-plan': 'Run /speckit-plan on the active feature. Produce plan.md, research.md, data-model.md, contracts/, and quickstart.md.',
-  'speckit-tasks': 'Run /speckit-tasks on the active feature. Produce tasks.md.',
-  'speckit-checklist':
-    'Run /speckit-checklist on the active feature. Auto-select: Depth=Standard, Audience=Reviewer, Focus=Top 2 relevance clusters. Always emit [SCHEGENT_STATUS: CLEAR] — checklist is non-blocking.',
-  'speckit-analyze':
-    'Run /speckit-analyze on the active feature. NON-SKIPPABLE: actually invoke the skill — never assume 0 CRITICAL without an executed run. Apply auto-remediation for ALL issues including HIGH severity. Emit [SCHEGENT_STATUS: CLEAR] only when 0 CRITICAL issues remain. REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block you MUST emit `critical_issues: <N>` and `high_issues: <N>` as top-level integer metric lines (NOT nested under Notes: or Findings:). These MUST appear even when 0. Missing metrics cause incorrect phase advancement.',
-  'speckit-implement': 'Run /speckit-implement on the active feature. After implementation completes, load tasks.md and count every task NOT marked complete. Emit [SCHEGENT_STATUS: CLEAR] only when 0 pending tasks remain. Inside the SCHEGENT AUDIT LOG block emit `pending_tasks: <N>` as a top-level integer metric line so the controller can observe progress.',
-  'speckit-review':
-    'Finish all pending tasks, then run /code-review --fix and /security-review — fix EVERY finding, loop each until clean (max 10 iterations). Emit [SCHEGENT_STATUS: CLEAR] only when all tasks complete and both reviews report zero findings. Inside the SCHEGENT AUDIT LOG block emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>`.',
-  finalize:
-    'Verify the implementation: format first, then run build/test/lint/typecheck. Fix failures (max 10 iterations). Commit with conventional format, merge to local develop. Emit [SCHEGENT_STATUS: CLEAR] if all checks green. Inside the SCHEGENT AUDIT LOG block emit `checks_passing: <N>` and `checks_failing: <N>`.',
-  done: '(no-op)'
-};
+// Feature 098 (FR-008, FR-019) — `BUILT_IN_INSTRUCTIONS` stood here: ten Spec
+// Kit instruction strings keyed by Phase id, consulted by `taskInstructionFor`
+// whenever a phase arrived without a definition. It was the last place in the
+// host where an id carried content rather than merely naming it, and the text
+// it carried now lives where the rest of the process content does — in
+// `examples/speckit-new-feature.pipeline.yaml`, which the operator imports.
+//
+// Nothing reachable lost an instruction with it. The validator admits exactly
+// one of `instruction` or `skill` on every Phase, so a resolved definition
+// always supplies its own; the table could only ever answer for a phase nobody
+// had defined, and for that phase `(no-op)` is the honest answer.
 
 const AUDIT_INSTRUCTION = `Always emit a fenced audit log block in this exact form:
 === SCHEGENT AUDIT LOG ===
@@ -215,6 +209,6 @@ export class PromptBuilder {
         'Treat this as declarative request content. Invoke the named skill through the Agent CLI if available; Schegent does not load it, resolve it as a path, import it, or execute it as extension code.'
       ].join('\n');
     }
-    return BUILT_IN_INSTRUCTIONS[inputs.phase] ?? '(no-op)';
+    return '(no-op)';
   }
 }

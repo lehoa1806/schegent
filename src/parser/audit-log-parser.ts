@@ -238,7 +238,13 @@ export function parseAuditLogBlock(stdout: string): AuditLogParseResult {
   }
 
   const entry: AuditEntryFields = {
-    phase: (map.get('phase') ?? 'speckit-specify') as Phase,
+    // Feature 098 (FR-008) — a read, not a default. `phase` is in
+    // `REQUIRED_FIELDS`, so a block that omits it returned `{ entry: null }`
+    // above and never reaches this line; the `?? 'speckit-specify'` that stood
+    // here could not fire. Had it fired it would have been wrong twice over: it
+    // named an id from a catalog the extension no longer ships, and it would
+    // have attributed one Phase's audit record to another.
+    phase: map.get('phase') as Phase,
     filesCreated: parseList(map.get('files_created') ?? '[]', warnings, 'files_created'),
     filesModified: parseList(map.get('files_modified') ?? '[]', warnings, 'files_modified'),
     filesDeleted: parseList(map.get('files_deleted') ?? '[]', warnings, 'files_deleted'),

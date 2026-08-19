@@ -60,6 +60,7 @@ describe('PromptBuilder.build', () => {
   it('includes the per-phase task instruction for clarify', () => {
     const prompt = builder.build({
       phase: 'speckit-clarify',
+      phaseDef: SPECKIT_ALL_PHASE_DEFS.find((phase) => phase.id === 'speckit-clarify'),
       iteration: 2,
       iterationCap: 10,
       featureDescription: 'desc',
@@ -69,8 +70,21 @@ describe('PromptBuilder.build', () => {
   });
 
   it('instructs clarify to emit open_questions and resolved_questions metrics (010, T032, US2/SC-007)', () => {
+    // The metric requirement is authored, not compiled in. This sentence is the
+    // one `examples/speckit-new-feature.pipeline.yaml` carries on its clarify
+    // Phase; the builder's job is to render the definition's instruction whole,
+    // and the retryCondition that reads those metrics is on the same Phase.
     const prompt = builder.build({
       phase: 'speckit-clarify',
+      phaseDef: {
+        id: 'speckit-clarify',
+        name: 'Clarify',
+        version: 1,
+        instruction:
+          'Run /speckit-clarify on the active feature spec. Inside the SCHEGENT AUDIT LOG ' +
+          'block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level ' +
+          'integer metric lines so the controller can observe progress.'
+      },
       iteration: 1,
       iterationCap: 10,
       featureDescription: 'desc',
@@ -78,6 +92,26 @@ describe('PromptBuilder.build', () => {
     });
     expect(prompt).toContain('open_questions: <N>');
     expect(prompt).toContain('resolved_questions: <N>');
+  });
+
+  // Feature 098 (FR-008) — an id carries no authority, and the builder was the
+  // last place in the host that still let one carry content: a table of ten
+  // Spec Kit instruction strings, keyed by id, consulted whenever a phase
+  // arrived without a definition. A Phase always resolves to exactly one of
+  // `instruction` or `skill` (the validator enforces it), so the table could
+  // only ever answer for a phase nobody had defined — and answering there is
+  // the defect, not the service.
+  it('gives a phase with no definition no instruction, whatever its id spells', () => {
+    const prompt = builder.build({
+      phase: 'speckit-clarify',
+      iteration: 1,
+      iterationCap: 10,
+      featureDescription: 'desc',
+      featureDir: null
+    });
+    expect(prompt).toContain('(no-op)');
+    expect(prompt, 'no compiled-in instruction for the id').not.toContain('/speckit-clarify');
+    expect(prompt).not.toContain('open_questions: <N>');
   });
 
   it('embeds carried issues from a previous iteration', () => {
@@ -185,16 +219,11 @@ describe('PromptBuilder.build', () => {
       expect(prompt).toContain('does not load it, resolve it as a path, import it, or execute it');
     });
 
-    it('falls back to the built-in switch when no phaseDef is supplied', () => {
-      const prompt = builder.build({
-        phase: 'speckit-clarify',
-        iteration: 1,
-        iterationCap: 10,
-        featureDescription: 'desc',
-        featureDir: null
-      });
-      expect(prompt).toContain('/speckit-clarify');
-    });
+    // Feature 098 (FR-008) — `falls back to the built-in switch when no phaseDef
+    // is supplied` stood here, asserting that a def-less `speckit-clarify` picked
+    // up the compiled-in instruction for that id. That table is gone, and the
+    // inverse is asserted above under `gives a phase with no definition no
+    // instruction, whatever its id spells`.
   });
 
   it('injects only the immediate previous phase message and sidecar path', () => {

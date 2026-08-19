@@ -50,7 +50,12 @@ class FakeMemento implements Memento {
   }
 }
 
-/** Four phases, none loopable, so `phaseCount` and the ceiling move together. */
+/**
+ * Four phases of the real Spec Kit slice. `speckit-clarify` carries a
+ * `retryCondition`, so it is a loop phase and weighs the frozen cap in the
+ * ceiling: 1 + 5 + 1 + 1 = 8 for the whole plan. Every assertion below but one
+ * reads `phaseCount` or the percentage, neither of which the weighting touches.
+ */
 const PIPELINE = Object.freeze({
   id: 'speckit-new-feature',
   name: 'Spec-kit New Feature',
@@ -136,7 +141,7 @@ async function seedRun(extra: Partial<WorkflowRun> = {}): Promise<WorkflowRun> {
     phasesCompleted: [settled('speckit-specify', 'clean')],
     lastError: null,
     pipeline: PIPELINE,
-    plannedTotal: { phaseCount: 4, iterationCap: 5, maxPhaseInvocations: 4 },
+    plannedTotal: { phaseCount: 4, iterationCap: 5, maxPhaseInvocations: 8 },
     delayedRetryCount: 0,
     pendingRetryAt: null,
     pendingRetryCause: null,
@@ -178,7 +183,9 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
     expect(carrying[0]!.plannedTotal).toEqual({
       phaseCount: 3,
       iterationCap: 5,
-      maxPhaseInvocations: 3
+      // 8 less the overridden `speckit-tasks`, which weighed 1: specify (1),
+      // clarify (the cap, 5) and plan (1) are what remains.
+      maxPhaseInvocations: 7
     });
   });
 
@@ -265,7 +272,7 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
     // from live settings would be indistinguishable here, so the probe is a
     // record whose frozen cap disagrees with the host's: the override must
     // preserve the record's.
-    await seedRun({ plannedTotal: { phaseCount: 4, iterationCap: 2, maxPhaseInvocations: 4 } });
+    await seedRun({ plannedTotal: { phaseCount: 4, iterationCap: 2, maxPhaseInvocations: 5 } });
 
     await controller.disablePhase('speckit-tasks');
 

@@ -40,7 +40,13 @@ export type PhaseOutcome =
   | 'paused-at-breakpoint';
 
 export interface PipelineLike {
-  readonly phases: ReadonlyArray<{ readonly id: string }>;
+  /**
+   * Feature 098 — the element carries `retryCondition` as well as `id` because
+   * the transition needs the *successor's* definition, not just its name, to
+   * say which iteration it enters at. Optional, so a caller that only has ids
+   * still type-checks and simply gets the no-definition answer.
+   */
+  readonly phases: ReadonlyArray<{ readonly id: string; readonly retryCondition?: string }>;
 }
 
 export interface PhaseDefLike {
@@ -89,7 +95,13 @@ export type TransitionResult =
 
 export function isLoopPhase(phase: Phase, phaseDef?: PhaseDefLike): boolean {
   if (phaseDef !== undefined) {
-    return !!phaseDef.retryCondition;
+    // Trimmed, because `transition()` below consults the condition only when it
+    // is non-empty after trimming. A whitespace-only string is not a condition
+    // to the branch that would evaluate it, and this predicate must not call it
+    // one either: doing so made a blank `retryCondition` loop the phase to the
+    // cap on `issues_remain` through the legacy branch, with no condition ever
+    // evaluated to end it.
+    return phaseDef.retryCondition !== undefined && phaseDef.retryCondition.trim().length > 0;
   }
   return LOOP_PHASES.has(phase);
 }
@@ -129,6 +141,25 @@ export function nextSuccessor(phase: Phase, pipeline?: PipelineLike): Phase {
   }
 }
 
+/**
+ * The iteration a successor enters at: 1 if it loops, 0 if it does not.
+ *
+ * Read off the successor's own row in the plan rather than off its id. Every
+ * advancing branch below asked `isLoopPhase(next)` with no definition, so the
+ * answer came from `LOOP_PHASES` — four hardcoded Spec Kit ids, and feature 098
+ * made the catalog runtime-only, where those ids mean nothing. The consequence
+ * was an off-by-one against the operator's own bound: a loop phase entered at 0
+ * runs at 0,1,…,cap before `iteration >= iterationCap` bites, one invocation
+ * more than the frozen `maxPhaseInvocations` weighted it.
+ *
+ * With no pipeline to consult there is no row to read, and the legacy set
+ * answers exactly as before.
+ */
+function successorIteration(next: Phase, pipeline?: PipelineLike): number {
+  const def = pipeline?.phases.find((phase) => phase.id === next);
+  return isLoopPhase(next, def) ? 1 : 0;
+}
+
 export function transition(input: TransitionInput): TransitionResult {
   const {
     phase,
@@ -148,7 +179,7 @@ export function transition(input: TransitionInput): TransitionResult {
     return {
       kind: 'advance',
       nextPhase: next,
-      nextIteration: isLoopPhase(next) ? 1 : 0,
+      nextIteration: successorIteration(next, pipeline),
       warnings
     };
   }
@@ -165,7 +196,7 @@ export function transition(input: TransitionInput): TransitionResult {
       return {
         kind: 'advance',
         nextPhase: next,
-        nextIteration: isLoopPhase(next) ? 1 : 0,
+        nextIteration: successorIteration(next, pipeline),
         warnings
       };
     }
@@ -205,7 +236,7 @@ export function transition(input: TransitionInput): TransitionResult {
           return {
             kind: 'advance',
             nextPhase: next,
-            nextIteration: isLoopPhase(next) ? 1 : 0,
+            nextIteration: successorIteration(next, pipeline),
             warnings
           };
         }
@@ -221,7 +252,7 @@ export function transition(input: TransitionInput): TransitionResult {
     return {
       kind: 'advance',
       nextPhase: next,
-      nextIteration: isLoopPhase(next) ? 1 : 0,
+      nextIteration: successorIteration(next, pipeline),
       warnings
     };
   }
@@ -233,7 +264,7 @@ export function transition(input: TransitionInput): TransitionResult {
       return {
         kind: 'advance',
         nextPhase: next,
-        nextIteration: isLoopPhase(next) ? 1 : 0,
+        nextIteration: successorIteration(next, pipeline),
         warnings
       };
     }
@@ -244,7 +275,7 @@ export function transition(input: TransitionInput): TransitionResult {
   return {
     kind: 'advance',
     nextPhase: next,
-    nextIteration: isLoopPhase(next) ? 1 : 0,
+    nextIteration: successorIteration(next, pipeline),
     warnings
   };
 }

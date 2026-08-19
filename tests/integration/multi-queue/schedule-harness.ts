@@ -24,6 +24,7 @@ import { QueueScheduleWatchdog } from '../../../src/controller/schedule-watchdog
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { QueueState, ScheduledStartSource } from '../../../src/queue/feature-request';
+import type { ScheduledStartRefusal } from '../../../src/services/scheduled-start-coordinator';
 
 export const DEFAULT_NOW = 1_700_000_000_000;
 
@@ -49,10 +50,14 @@ export interface ScheduleHarness {
   readonly watchdog: QueueScheduleWatchdog;
   /** Every `drainQueuedWork` the promotion handler issued, in order. */
   readonly drained: string[];
+  /** Every refusal the empty-catalog gate delivered, in order. */
+  readonly refusals: ScheduledStartRefusal[];
   /** `true` while a foreign window is deemed to hold the workspace lock. */
   foreignLockHeld: boolean;
   /** `true` while this window is primary; the watchdog will not act otherwise. */
   primary: boolean;
+  /** `true` while the active Process catalog holds no Pipeline (FR-031a). */
+  catalogEmpty: boolean;
   /** Persist `idle-pending` + a deadline, then arm the in-process timer. */
   armSchedule(
     queueId: string,
@@ -79,7 +84,8 @@ export async function makeScheduleHarness(
     drained.push(queueId);
   });
 
-  const state = { foreignLockHeld: false, primary: true };
+  const state = { foreignLockHeld: false, primary: true, catalogEmpty: false };
+  const refusals: ScheduledStartRefusal[] = [];
 
   // Mirrors `promoteScheduledQueue` in `src/extension.ts` line for line: the
   // fired queue id is the only address either half uses.
@@ -109,7 +115,15 @@ export async function makeScheduleHarness(
     isForeignLockHeld: () => state.foreignLockHeld,
     now: () => clock.now(),
     setTimer: fakeTimer.setTimer,
-    clearTimer: fakeTimer.clearTimer
+    clearTimer: fakeTimer.clearTimer,
+    // Feature 098 (FR-031a). Wired here for the same reason `onFire` is the
+    // production handler: an empty catalog refuses the start at fire time and
+    // leaves the deadline persisted, so a harness without the gate cannot
+    // reproduce the state the watchdog then has to leave alone.
+    emptyCatalogGate: {
+      isCatalogEmpty: () => state.catalogEmpty,
+      onRefused: (refusal) => { refusals.push(refusal); }
+    }
   });
 
   const watchdog = new QueueScheduleWatchdog({
@@ -117,6 +131,7 @@ export async function makeScheduleHarness(
     hasArmedTimer: (queueId) => coordinator.hasActiveTimer(queueId),
     promote: promoteScheduledQueue,
     isPrimary: () => state.primary,
+    isCatalogEmpty: () => state.catalogEmpty,
     logger,
     audit: audit as unknown as Pick<AuditLogWriter, 'append'>,
     now: () => clock.now()
@@ -138,10 +153,13 @@ export async function makeScheduleHarness(
     coordinator,
     watchdog,
     drained,
+    refusals,
     get foreignLockHeld() { return state.foreignLockHeld; },
     set foreignLockHeld(value: boolean) { state.foreignLockHeld = value; },
     get primary() { return state.primary; },
     set primary(value: boolean) { state.primary = value; },
+    get catalogEmpty() { return state.catalogEmpty; },
+    set catalogEmpty(value: boolean) { state.catalogEmpty = value; },
     armSchedule: async (queueId, at, source = 'operator-chooser') => {
       await putQueue(queueId, {
         queueLifecycle: 'idle-pending',

@@ -20,6 +20,7 @@ import {
   type PipelineCatalog,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
+import { isLoopPhase } from '../../../src/controller/phase';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import {
   ensureExtendedFeatureRequest,
@@ -37,14 +38,19 @@ import { WorkflowRunFactory } from '../../../src/services/workflow-run-factory';
 const SPECIFY: PhaseDef = {
   id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.', sourceScope: 'built-in'
 };
-/** The loop phase, whose weight in `maxPhaseInvocations` is the frozen cap. */
+/**
+ * The loop phase, whose weight in `maxPhaseInvocations` is the frozen cap.
+ *
+ * It loops because it carries a `retryCondition` — the field the controller
+ * actually reads — not because of the deprecated `loopable` flag.
+ */
 const LOOPING: PhaseDef = {
   id: 'beta',
   name: 'Beta',
   version: 1,
   instruction: 'Beta prompt.',
   sourceScope: 'built-in',
-  loopable: true
+  retryCondition: 'open_questions > 0'
 };
 const DONE: PhaseDef = {
   id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
@@ -156,7 +162,7 @@ describe('FR-R3-008 — the progress denominator is frozen at run creation', () 
     // — which is why `phaseCount` is a distinct-id count while
     // `maxPhaseInvocations`, a count of CLI invocations, is positional.
     const total = computePlannedTotal({
-      phases: [{ id: 'alpha' }, { id: 'beta', loopable: true }, { id: 'alpha' }],
+      phases: [{ id: 'alpha' }, { id: 'beta', retryCondition: 'x > 0' }, { id: 'alpha' }],
       overrides: [],
       iterationCap: 4
     });
@@ -166,11 +172,78 @@ describe('FR-R3-008 — the progress denominator is frozen at run creation', () 
 
   it('excludes an overridden phase from the total it records', () => {
     const total = computePlannedTotal({
-      phases: [{ id: 'alpha' }, { id: 'beta', loopable: true }, { id: 'done' }],
+      phases: [{ id: 'alpha' }, { id: 'beta', retryCondition: 'x > 0' }, { id: 'done' }],
       overrides: [{ phaseId: 'beta', action: 'skipped', setAt: 1, actor: 'operator' }],
       iterationCap: 5
     });
     expect(total.phaseCount, 'alpha and done').toBe(2);
     expect(total.maxPhaseInvocations, 'the loop phase contributes nothing once skipped').toBe(2);
+  });
+});
+
+// The ceiling weights the phases that can actually loop — the same phases the
+// controller will actually loop.
+//
+// `maxPhaseInvocations` weighted `loopable === true`, and the controller has
+// never read `loopable`: `transition()` loops a phase when its `retryCondition`
+// is non-empty and truthy, and its `loopable` fallback is reachable only when no
+// phase definition is passed at all (which the production path always does). The
+// manifest says as much — "Deprecated compatibility field... Loop behavior is
+// controlled by retryCondition".
+//
+// So the ceiling was wrong in both directions on any runtime-imported catalog: a
+// Phase declaring `retryCondition` and no `loopable` (which is every Phase in
+// `examples/`, and the only shape the YAML writer emits) was weighted 1 while it
+// could run the cap; a Phase declaring the deprecated `loopable` alone was
+// weighted the cap while it could only ever run once.
+describe('the ceiling weights what the controller loops (FR-R3-008)', () => {
+  const CAP = 4;
+
+  function ceiling(phase: Parameters<typeof computePlannedTotal>[0]['phases']): number {
+    return computePlannedTotal({ phases: phase, overrides: [], iterationCap: CAP })
+      .maxPhaseInvocations;
+  }
+
+  it('weights a phase carrying a retryCondition by the cap', () => {
+    expect(ceiling([{ id: 'beta', retryCondition: 'open_questions > 0' }])).toBe(CAP);
+  });
+
+  it('does not weight a phase carrying only the deprecated loopable flag', () => {
+    expect(ceiling([{ id: 'beta', loopable: true }])).toBe(1);
+  });
+
+  it('weights a phase with neither field once', () => {
+    expect(ceiling([{ id: 'alpha' }])).toBe(1);
+  });
+
+  it('ignores loopable entirely, in both directions', () => {
+    // `loopable: false` beside a real condition must not suppress the weight,
+    // and `loopable: true` without one must not create it.
+    expect(ceiling([{ id: 'beta', retryCondition: 'x > 0', loopable: false }])).toBe(CAP);
+    expect(ceiling([{ id: 'beta', loopable: true }])).toBe(1);
+  });
+
+  it('treats a blank condition as no condition, as the transition does', () => {
+    // `transition()` consults the condition only when it is non-empty after
+    // trimming, so a whitespace-only string loops nothing and must weigh 1.
+    expect(ceiling([{ id: 'beta', retryCondition: '   ' }])).toBe(1);
+  });
+
+  it('agrees with the loop predicate the controller applies, on every shape', () => {
+    // The two rules are one rule. Asserted against `isLoopPhase` rather than
+    // restated, so a change to the controller's predicate that is not mirrored
+    // here fails rather than drifts — the ceiling and the looping are the same
+    // claim about the same phase.
+    const shapes = [
+      { id: 'a' },
+      { id: 'b', retryCondition: 'x > 0' },
+      { id: 'c', retryCondition: '' },
+      { id: 'd', loopable: true },
+      { id: 'e', retryCondition: 'x > 0', loopable: false }
+    ];
+    for (const shape of shapes) {
+      const expected = isLoopPhase(shape.id, shape) ? CAP : 1;
+      expect(ceiling([shape]), `weight for ${JSON.stringify(shape)}`).toBe(expected);
+    }
   });
 });
