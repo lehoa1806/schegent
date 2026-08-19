@@ -19,7 +19,8 @@ const baseProps = {
   onmodelchange: vi.fn(),
   onadd: vi.fn(),
   onremove: vi.fn(),
-  onsave: vi.fn()
+  onsave: vi.fn(),
+  ondetect: vi.fn()
 };
 
 beforeEach(() => exportSpy.mockReset());
@@ -153,5 +154,86 @@ describe('ModelCatalogEditor duplicate-add guard (feature 096 T029, FR-005)', ()
     expect(onadd).toHaveBeenCalledTimes(1);
     expect(onadd).toHaveBeenCalledWith('claude');
     expect(queryByText(/already exists/i)).toBeNull();
+  });
+});
+
+// The editor used to derive its sections from `availableModels`, which is the
+// capability service's detected list. Claude and Codex now report no models —
+// neither CLI can enumerate them — so deriving from it collapsed the very
+// sections the operator types into. Sections are the union of what is
+// configured and what was detected.
+describe('ModelCatalogEditor sections survive an empty detected list', () => {
+  it('renders a section for a backend that has configured models but no detected ones', () => {
+    const { container } = render(ModelCatalogEditor, {
+      props: {
+        ...baseProps,
+        availableModels: { claude: [], codex: [], agy: ['gemini-3.7-flash-high'] },
+        models: { claude: ['claude-opus-5'], codex: [], agy: [] },
+        newModelInput: { claude: '', codex: '', agy: '' }
+      }
+    });
+
+    const headings = Array.from(container.querySelectorAll('.backend-section h3')).map(
+      (heading) => heading.textContent
+    );
+    expect(headings).toEqual(['claude Models', 'codex Models', 'agy Models']);
+  });
+
+  it('still renders a section for a backend present only in the detected list', () => {
+    const { container } = render(ModelCatalogEditor, {
+      props: {
+        ...baseProps,
+        availableModels: { agy: ['gemini-3.7-flash-high'] },
+        models: { claude: [] },
+        newModelInput: {}
+      }
+    });
+
+    const headings = Array.from(container.querySelectorAll('.backend-section h3')).map(
+      (heading) => heading.textContent
+    );
+    expect(headings).toEqual(['claude Models', 'agy Models']);
+  });
+});
+
+describe('ModelCatalogEditor detect control', () => {
+  const detectProps = {
+    ...baseProps,
+    availableModels: { claude: [], agy: ['gemini-3.7-flash-high'] },
+    models: { claude: ['claude-opus-5'], agy: [] },
+    newModelInput: { claude: '', agy: '' }
+  };
+
+  it('asks the parent to merge the detected list for that backend alone', async () => {
+    const ondetect = vi.fn();
+    const { getByLabelText } = render(ModelCatalogEditor, {
+      props: { ...detectProps, ondetect }
+    });
+
+    await fireEvent.click(getByLabelText('Detect agy models'));
+
+    expect(ondetect).toHaveBeenCalledTimes(1);
+    expect(ondetect).toHaveBeenCalledWith('agy');
+  });
+
+  it('disables detect for a backend whose CLI reported no models, and says why', () => {
+    const { getByLabelText } = render(ModelCatalogEditor, { props: detectProps });
+
+    const claudeDetect = getByLabelText('Detect claude models') as HTMLButtonElement;
+    expect(claudeDetect.disabled).toBe(true);
+    expect(claudeDetect.title).toMatch(/cannot list its models/i);
+
+    expect((getByLabelText('Detect agy models') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not call ondetect when the control is disabled', async () => {
+    const ondetect = vi.fn();
+    const { getByLabelText } = render(ModelCatalogEditor, {
+      props: { ...detectProps, ondetect }
+    });
+
+    await fireEvent.click(getByLabelText('Detect claude models'));
+
+    expect(ondetect).not.toHaveBeenCalled();
   });
 });

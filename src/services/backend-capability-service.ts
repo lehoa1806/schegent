@@ -14,12 +14,7 @@ const TERMINATION_GRACE_MS = 2_000;
 const AGY_MODEL_LIMIT = 200;
 const AGY_MODEL_ID_MAX_LENGTH = 128;
 
-const CLAUDE_FALLBACK_MODELS: readonly string[] = Object.freeze([
-  'claude-3-5-sonnet-20241022',
-  'claude-3-5-haiku-20241022',
-  'claude-3-opus-20240229'
-]);
-const CODEX_FALLBACK_MODELS: readonly string[] = Object.freeze(['codex-default']);
+const NO_MODELS: readonly string[] = Object.freeze([]);
 
 type SpawnFn = (
   command: string,
@@ -223,11 +218,16 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
       return { kind, available: false, models: Object.freeze([]) };
     }
 
-    if (kind === 'claude') {
-      return { kind, available: true, models: CLAUDE_FALLBACK_MODELS };
-    }
-    if (kind === 'codex') {
-      return { kind, available: true, models: CODEX_FALLBACK_MODELS };
+    // Neither CLI can enumerate its models: each accepts a `--model` that
+    // TAKES a value and exposes no listing subcommand. This service reports
+    // discovered facts, so for these two the honest answer is none. The lists
+    // that used to sit here were code-resident constants that read as
+    // discoveries; because the snapshot's `availableModels` seeded the Models
+    // editor and drove the `modelAvailable` advisory, they silently displaced
+    // the operator's own `schegent.models` catalog. The catalog is
+    // configuration and now reaches the webview as such, on its own field.
+    if (kind === 'claude' || kind === 'codex') {
+      return { kind, available: true, models: NO_MODELS };
     }
 
     const detected = await this.runBoundedCommand(kind, ['models']);
@@ -368,13 +368,31 @@ function errorCodeOf(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+/**
+ * The model ids in an `agy models` transcript.
+ *
+ * The command writes a `Fetching available models...` status line to stdout
+ * and then one `<id>\t<Display Name>` row per model, so the id is the first
+ * tab-delimited field and everything after the tab is prose for a human.
+ * Keeping the whole line — which this did until the Models editor started
+ * showing what it produced — yielded ids no operator, Phase, or Pipeline
+ * could ever match, plus the status line as a model of its own.
+ *
+ * A row is recognized by the shape of its id rather than by the presence of a
+ * tab: a model id carries no whitespace, while every status or prose line
+ * does. That admits a bare-id transcript too, so a future `agy` that drops
+ * the display column keeps working, and it is why the id is extracted BEFORE
+ * the length and duplicate guards — those must judge the id, not the label
+ * beside it, or two spellings of one model would both be admitted.
+ */
 export function parseAgyModels(stdout: string): readonly string[] {
   const seen = new Set<string>();
   const models: string[] = [];
   for (const line of stdout.split(/\r?\n/u)) {
-    const model = line.trim();
+    const model = line.split('\t', 1)[0]!.trim();
     if (
       model.length === 0
+      || /\s/u.test(model)
       || model.length > AGY_MODEL_ID_MAX_LENGTH
       || seen.has(model)
     ) {

@@ -16,7 +16,26 @@ import type {
 import { postCommand, type PostCommandResult } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
-const ACK_TIMEOUT_MS = 5000;
+/**
+ * A liveness backstop, not a latency budget — which is why it is minutes where
+ * every other correlated-request helper in this webview uses five seconds.
+ *
+ * Those helpers post to handlers that compute an answer and ack.
+ * `CMD_PREFLIGHT_PROCESS_YAML` does not: its handler awaits
+ * `openProcessYamlDocument()` — a native `showOpenDialog` — before it can ack
+ * anything, so this budget spans an operator browsing a file picker. At five
+ * seconds a healthy host reported "The host did not respond." whenever picking
+ * a file took longer than that, and the real ack arriving afterwards was
+ * dropped by the already-unsubscribed listener: the operator's document was
+ * read and planned, and the plan was discarded.
+ *
+ * Every branch of `cmd-preflight-process-yaml.ts` acks — including `canceled`
+ * when the dialog is dismissed — so silence past this point means the host is
+ * gone, which is the only thing this timer is a backstop for. It stays finite
+ * so a dead host resolves the promise rather than leaving the import surface
+ * stuck in `validating` for the rest of the session.
+ */
+const ACK_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Ask the host to export one Phase as a portable document.
@@ -113,8 +132,10 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
  *
  * Resolves the wire `PreflightProcessYamlResult` verbatim; the union is declared
  * once, in the contract, so there is no webview copy to drift. Host silence past
- * five seconds resolves as `'failed'` rather than widening the wire union with a
- * synthetic outcome, so the caller has exactly one non-committal state to render.
+ * `ACK_TIMEOUT_MS` resolves as `'failed'` rather than widening the wire union
+ * with a synthetic outcome, so the caller has exactly one non-committal state to
+ * render — see that constant for why its budget is minutes rather than the five
+ * seconds this family's other helpers use.
  *
  * Decision (084, autonomous): there is no injected `postMessage` parameter, even
  * though `saveWorkflows` takes one. That helper had to hand-roll a UUIDv4 to keep

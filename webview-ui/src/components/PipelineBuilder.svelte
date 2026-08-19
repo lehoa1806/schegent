@@ -20,7 +20,7 @@
     sourceRecordToMutable,
     toSavePhaseRow
   } from './PipelineBuilderEditors/phase-catalog-state';
-  import { initialModels } from './PipelineBuilderEditors/model-catalog-state';
+  import { initialModels, withModelAdded, withModelRemoved, withModelReplaced, withModelsDetected } from './PipelineBuilderEditors/model-catalog-state';
   import TrustBanner from './TrustBanner.svelte';
   import './PipelineBuilderEditors/pipeline-builder.css';
   interface Props {
@@ -68,6 +68,7 @@
   let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});
   let initialized = $state(false);
+  let lastAdoptedModels: Record<string, readonly string[]> | null = null; // re-sync on snapshot change
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
   let phaseMutation = $state<SavePhasesMutation | null>(null);
@@ -105,9 +106,10 @@
   $effect(() => { pipelineStore.syncFromSnapshot(snapshot); });
   $effect(() => { if (initialized) pipelineStore.recordHistory(); });
   $effect(() => {
-    if (!initialized && snapshot.availableModels) {
-      models = initialModels(snapshot.availableModels);
-      initialized = true;
+    // Seeded from the CONFIGURED catalog, so a confirmed import is adopted;
+    // `initialModels` records why detection is the wrong source.
+    if (snapshot.configuredModels && snapshot.configuredModels !== lastAdoptedModels) {
+      models = initialModels(snapshot.configuredModels); lastAdoptedModels = snapshot.configuredModels; initialized = true;
     }
     if (snapshot.availablePhases) effectivePhases = effectivePhasesToMutable(snapshot.availablePhases);
     const catalog = snapshot.phaseCatalog;
@@ -321,25 +323,23 @@
     }
   }
   let newModelInput = $state<Record<string, string>>({});
+  // The catalog transforms live in `model-catalog-state.ts` beside the seeding
+  // and merge rules they share; these are the bindings that apply them.
   function addModel(backend: string): void {
-    const val = (newModelInput[backend] || '').trim();
-    if (val) {
-      if (!models[backend]) models[backend] = [];
-      if (!models[backend].includes(val)) {
-        models[backend] = [...models[backend], val];
-        newModelInput[backend] = '';
-      }
-    }
+    const next = withModelAdded(models, backend, newModelInput[backend] ?? '');
+    if (!next) return;
+    models = next;
+    newModelInput[backend] = '';
   }
-  function removeModel(backend: string, index: number): void { 
-    if (models[backend]) {
-      models[backend] = models[backend].filter((_, i) => i !== index);
-    }
+  function removeModel(backend: string, index: number): void {
+    models = withModelRemoved(models, backend, index);
   }
   function updateModel(backend: string, index: number, value: string): void {
-    if (models[backend]) {
-      models[backend][index] = value;
-    }
+    models = withModelReplaced(models, backend, index, value);
+  }
+  function detectModels(backend: string): void {
+    const kind = backend as keyof typeof snapshot.availableModels;
+    models = withModelsDetected(models, backend, snapshot.availableModels?.[kind] ?? []);
   }
   function activateTab(tab: BuilderTab, focus = false): void {
     activeTab = tab;
@@ -492,6 +492,7 @@
         onadd={addModel}
         onremove={removeModel}
         onsave={saveModels}
+        ondetect={detectModels}
       />
     {/if}
   </div>

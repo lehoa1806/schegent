@@ -70,10 +70,19 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/dist/webview/index9.css',
   'extension/dist/webview/index10.css',
   'extension/dist/webview/index11.css',
-  // Operator-facing sample pipelines, shipped so a fresh install has
-  // something to import without network access. These are read as data, never
-  // executed at package time, and they are the only non-code payload outside
-  // `assets/`.
+  // Operator-facing sample documents, shipped so a fresh install has something
+  // to import without network access. These are read as data, never executed at
+  // package time, and they are the only non-code payload outside `assets/`.
+  //
+  // Feature 096 added the Model Catalog sample beside the two pipelines and did
+  // not pin it, so `package:smoke` failed closed on a clean build — the same
+  // structural reason REL-03 records above, one category over. `.vscodeignore`
+  // excludes no part of `examples/`, so anything dropped in that directory
+  // ships, and this archive check was the only thing comparing the two. It runs
+  // last, behind `test:visual`. `vsix-allowlist-grounding.test.ts` now checks
+  // the `examples/` direction both ways without a build, so the next sample
+  // added here fails in `npm run test` rather than at packaging time.
+  'extension/examples/model-catalog.yaml',
   'extension/examples/speckit-bugfix.pipeline.yaml',
   'extension/examples/speckit-new-feature.pipeline.yaml'
 ]);

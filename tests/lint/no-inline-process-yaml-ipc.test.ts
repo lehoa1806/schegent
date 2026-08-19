@@ -11,7 +11,16 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 const HELPER = 'webview-ui/src/lib/process-yaml-ipc.ts';
-const ALLOWED = new Set(['webview-ui/src/lib/messages.ts', HELPER]);
+const ALLOWED = new Set([
+  // Declaration site (re-export shim).
+  'webview-ui/src/lib/messages.ts',
+  HELPER,
+  // The helper's own unit test, which names the constant to assert the envelope
+  // the helper posts. It mocks `postCommand` rather than calling it, so it adds
+  // no call site — the same allowance `no-inline-save-phases.test.ts` and
+  // `no-inline-reorder-ipc.test.ts` make for theirs.
+  'webview-ui/src/lib/__tests__/process-yaml-ipc.test.ts'
+]);
 const COMMANDS = ['CMD_EXPORT_PROCESS_YAML', 'CMD_PREFLIGHT_PROCESS_YAML'] as const;
 
 function filesReferencing(literal: string): readonly string[] {

@@ -10,6 +10,7 @@
   import RawJsonPhaseEditor from '../settings/RawJsonPhaseEditor.svelte';
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import TrustBanner from '../TrustBanner.svelte';
+  import { mergeDetectedModels } from './model-catalog-state';
   import type { MutablePhase, PhaseEditState } from './types';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -135,9 +136,22 @@
       (runner === '' || runner === 'codex');
   }
 
+  /**
+   * What this phase's backend can be pointed at: the operator's own catalog
+   * (`schegent.models`) followed by whatever the CLI reported, deduped.
+   *
+   * This read `availableModels` alone until Claude and Codex started
+   * reporting no models — neither CLI can enumerate them — which left those
+   * phases with nothing to select but Inherit, the imported ids included.
+   * Configured comes first because it is the operator's list; detection only
+   * adds to it.
+   */
   function modelsFor(phase: MutablePhase): readonly string[] {
     const runner = phase.runner || snapshot.defaultRunnerKind || 'claude';
-    return snapshot.availableModels?.[runner] ?? [];
+    return mergeDetectedModels(
+      snapshot.configuredModels?.[runner] ?? [],
+      snapshot.availableModels?.[runner] ?? []
+    );
   }
 
   function configuredModelUnavailable(phase: MutablePhase): boolean {
@@ -222,7 +236,6 @@
   <div class="pane-left">
     <div class="phase-list">
       {#each phases as phase, index (phase.sourceKey)}
-        {@const exportable = phaseExportAvailability(phase)}
         <div class="phase-list-row">
           <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.scope}-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
             <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
@@ -236,15 +249,6 @@
           <div class="phase-list-actions">
             <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0 || phase.scope === 'built-in' || phases[index - 1]?.scope !== phase.scope} onclick={() => onmoveup(index)}>↑</button>
             <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1 || phase.scope === 'built-in' || phases[index + 1]?.scope !== phase.scope} onclick={() => onmovedown(index)}>↓</button>
-            <!-- FR-052 — Export is per row, and unlike every control beside it does
-                 not depend on trust or on a pending mutation: it writes a file the
-                 operator names and changes no catalog state. -->
-            <ProcessExportButton
-              phaseId={phase.id}
-              rowKey={phase.sourceKey}
-              resolves={exportable.resolves}
-              disabledReason={exportable.disabledReason}
-            />
           </div>
         </div>
       {/each}
@@ -254,6 +258,7 @@
     {#if selectedPhase && selectedIndex !== null && selectedEditState}
       {@const phase = selectedPhase}
       {@const index = selectedIndex}
+      {@const exportable = phaseExportAvailability(phase)}
       <div class="editor-card full-height" data-testid="phases-editor-{phase.id}">
         <div class="card-header-complex">
           <input class="title-input" data-testid="phases-name-{phase.id}" aria-label="Phase name" value={phase.name} readonly={selectedReadOnly} oninput={(event) => onphasechange(index, { name: event.currentTarget.value })} placeholder="Phase Name" />
@@ -266,6 +271,15 @@
             <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
             {#if phase.scope !== 'built-in'}<button class="btn btn-ghost" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>{/if}
             <button class="btn btn-ghost" data-testid="phases-duplicate" disabled={!trusted || savePending || mutationActive} onclick={() => onduplicate(index)}>Duplicate Phase</button>
+            <!-- FR-052 — Export is per phase, writes a file the operator names
+                 and changes no catalog state; shown here in the editor header
+                 rather than the sidebar to reduce visual clutter. -->
+            <ProcessExportButton
+              phaseId={phase.id}
+              rowKey={phase.sourceKey}
+              resolves={exportable.resolves}
+              disabledReason={exportable.disabledReason}
+            />
             {#if !selectedReadOnly}<button class="btn btn-secondary" disabled={!trusted || savePending} onclick={onsave}>Save Phase</button>{/if}
             {#if !selectedReadOnly}<button class="btn btn-destructive" data-testid="phases-remove" disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Delete Phase</button>{/if}
           </div>

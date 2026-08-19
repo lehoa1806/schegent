@@ -122,7 +122,14 @@ function buildSnapshot(
     producedAt: '2026-05-11T00:00:00.000Z',
     availablePipelines: Object.freeze(pipelines),
     availablePhases: Object.freeze(phases),
-    availableModels: Object.freeze({ claude: models, codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    // The `models` argument is the operator's catalog — `schegent.models` —
+    // which is what the Models tab edits and saves. `availableModels` is the
+    // capability service's detected list, and Claude reports none of its own:
+    // the CLI cannot enumerate its models. The two are deliberately not the
+    // same value here, because seeding the page from detection is the defect
+    // that made a confirmed import invisible.
+    availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    configuredModels: Object.freeze({ claude: models, codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze(['claude', 'codex', 'agy']) as readonly BackendRunnerKind[],
     phaseCatalog: {
       state: 'ready',
