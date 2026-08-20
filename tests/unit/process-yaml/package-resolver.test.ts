@@ -23,7 +23,6 @@ import { describe, expect, it } from 'vitest';
 import type {
   PhaseBinding,
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineInputPort,
   PipelineOutputPort,
   PipelineSourceRecord,
@@ -31,7 +30,6 @@ import type {
 } from '../../../src/contracts/pipeline-definitions';
 import type {
   PhaseDefinition,
-  PhaseDefinitionScope,
   PhaseSourceRecord,
   PhaseSourceStatus
 } from '../../../src/contracts/process-definitions';
@@ -62,15 +60,10 @@ function phase(phaseId: string, name = phaseId): PhaseDefinition {
  * resolver that read `record.definition` instead of the effective catalog would
  * see nothing at all rather than silently agreeing.
  */
-function storedRow(
-  phaseId: string,
-  scope: PhaseDefinitionScope,
-  status: PhaseSourceStatus
-): PhaseSourceRecord {
+function storedRow(phaseId: string, status: PhaseSourceStatus): PhaseSourceRecord {
   return Object.freeze({
-    key: `${scope}::${phaseId}::0`,
+    key: `${phaseId}::0`,
     phaseId,
-    scope,
     status,
     definition: null,
     display: Object.freeze({}),
@@ -89,9 +82,12 @@ function importedPhaseRow(definition: PhaseDefinition): ImportPlanRow {
   });
 }
 
+// Feature 099 (T496f, FR-042) — `presentIn` went with the layer tier: a skip row
+// reported WHICH layer already claimed the id, and one layer answers that before
+// it is asked. The status stayed, because "claimed by what kind of row" is still
+// the operator's next action.
 function skippedPhaseRow(
   phaseId: string,
-  presentIn: PhaseDefinitionScope = 'user',
   presentRowStatus: PhaseSourceStatus = 'effective'
 ): ImportPlanRow {
   return Object.freeze({
@@ -99,7 +95,6 @@ function skippedPhaseRow(
     resourceKind: 'phase' as const,
     resourceId: phaseId,
     name: phaseId,
-    presentIn,
     presentRowStatus
   });
 }
@@ -138,7 +133,7 @@ describe('resolvePhaseDependency — FR-030a, FR-030c', () => {
     // at all, and `plan` is stored but resolves nowhere.
     const ctx = context({
       effectivePhases: [phase('specify')],
-      storedPhases: [storedRow('plan', 'workspace', 'invalid')]
+      storedPhases: [storedRow('plan', 'invalid')]
     });
 
     expect(resolvePhaseDependency('specify', ctx)).toEqual({ status: 'resolved-effective' });
@@ -148,10 +143,13 @@ describe('resolvePhaseDependency — FR-030a, FR-030c', () => {
     });
   });
 
-  it('calls an id no layer claims absent, and one claimed but not effective unresolvable', () => {
+  it('calls an unclaimed id absent, and one claimed but not effective unresolvable', () => {
     // The distinction is the operator's next action: supply the Phase, or repair
-    // the row that already claims the id (FR-030c).
-    const ctx = context({ storedPhases: [storedRow('plan', 'user', 'shadowed')] });
+    // the row that already claims the id (FR-030c). Feature 099 (T496f, FR-043) —
+    // `shadowed` was one way a stored row claimed an id without resolving, and it
+    // is deleted with the layer tier. `invalid` is the other, and it is now the
+    // only one, so the pair this test needs is unchanged.
+    const ctx = context({ storedPhases: [storedRow('plan', 'invalid')] });
 
     expect(resolvePhaseDependency('nowhere', ctx)).toEqual({
       status: 'blocked',
@@ -175,7 +173,7 @@ describe('resolvePhaseDependency — FR-030a, FR-030c', () => {
     // beside the point.
     const ctx = context({
       effectivePhases: [phase('specify')],
-      storedPhases: [storedRow('specify', 'user', 'effective')],
+      storedPhases: [storedRow('specify', 'effective')],
       plannedPhaseRows: [skippedPhaseRow('specify')]
     });
 
@@ -187,8 +185,8 @@ describe('resolvePhaseDependency — FR-030a, FR-030c', () => {
     // because the id is claimed, and this same id does not resolve. Reading the
     // skip as "resolved" would import a Pipeline that fails at run time.
     const ctx = context({
-      storedPhases: [storedRow('specify', 'workspace', 'shadowed')],
-      plannedPhaseRows: [skippedPhaseRow('specify', 'workspace', 'shadowed')]
+      storedPhases: [storedRow('specify', 'invalid')],
+      plannedPhaseRows: [skippedPhaseRow('specify', 'invalid')]
     });
 
     expect(resolvePhaseDependency('specify', ctx)).toEqual({
@@ -415,16 +413,14 @@ describe('prospectivePhaseCatalog — the union, named so it has a test', () => 
 
 function storedPipelineRow(
   pipelineId: string,
-  scope: PipelineDefinitionScope,
   status: PipelineSourceStatus
 ): PipelineSourceRecord {
   // Definition-less for the same reason as `storedRow`: a resolver reading
   // `record.definition` rather than the effective catalog would see nothing here
   // instead of quietly agreeing with the right answer.
   return Object.freeze({
-    key: `${scope}::${pipelineId}::0`,
+    key: `${pipelineId}::0`,
     pipelineId,
-    scope,
     status,
     definition: null,
     display: Object.freeze({}),
@@ -444,7 +440,6 @@ function importedPipelineRow(definition: PipelineDefinition): ImportPlanRow {
 
 function skippedPipelineRow(
   pipelineId: string,
-  presentIn: PipelineDefinitionScope = 'user',
   presentRowStatus: PipelineSourceStatus = 'effective'
 ): ImportPlanRow {
   return Object.freeze({
@@ -452,7 +447,6 @@ function skippedPipelineRow(
     resourceKind: 'pipeline' as const,
     resourceId: pipelineId,
     name: pipelineId,
-    presentIn,
     presentRowStatus
   });
 }
@@ -523,7 +517,7 @@ describe('resolvePipelineDependency — pass 3 (FR-036, FR-037, FR-038, FR-042)'
     // nowhere. A pass 3 that read stored rows could not keep both green.
     const ctx = workflowContext({
       effectivePipelines: [pipeline({ pipelineId: 'ship-it' })],
-      storedPipelines: [storedPipelineRow('deploy-it', 'workspace', 'invalid')]
+      storedPipelines: [storedPipelineRow('deploy-it', 'invalid')]
     });
 
     expect(resolvePipelineDependency('ship-it', ctx)).toEqual({ status: 'resolved-effective' });
@@ -538,7 +532,7 @@ describe('resolvePipelineDependency — pass 3 (FR-036, FR-037, FR-038, FR-042)'
 
   it('distinguishes absent from unresolvable (FR-038)', () => {
     const ctx = workflowContext({
-      storedPipelines: [storedPipelineRow('deploy-it', 'user', 'shadowed')]
+      storedPipelines: [storedPipelineRow('deploy-it', 'invalid')]
     });
 
     expect(resolvePipelineDependency('nowhere', ctx)).toEqual({
@@ -565,7 +559,7 @@ describe('resolvePipelineDependency — pass 3 (FR-036, FR-037, FR-038, FR-042)'
   it('counts a Pipeline planned skip as resolved when the catalog resolves it (FR-036)', () => {
     const ctx = workflowContext({
       effectivePipelines: [pipeline({ pipelineId: 'ship-it' })],
-      storedPipelines: [storedPipelineRow('ship-it', 'user', 'effective')],
+      storedPipelines: [storedPipelineRow('ship-it', 'effective')],
       plannedPipelineRows: [skippedPipelineRow('ship-it')]
     });
 
@@ -577,8 +571,8 @@ describe('resolvePipelineDependency — pass 3 (FR-036, FR-037, FR-038, FR-042)'
     // claimed, and the Workflow is `blocked` naming that same id because the claim
     // does not resolve. Reads like a contradiction and is not.
     const ctx = workflowContext({
-      storedPipelines: [storedPipelineRow('ship-it', 'workspace', 'shadowed')],
-      plannedPipelineRows: [skippedPipelineRow('ship-it', 'workspace', 'shadowed')]
+      storedPipelines: [storedPipelineRow('ship-it', 'invalid')],
+      plannedPipelineRows: [skippedPipelineRow('ship-it', 'invalid')]
     });
 
     expect(resolvePipelineDependency('ship-it', ctx)).toEqual({
@@ -857,7 +851,7 @@ describe('graph validation at preflight — FR-035a, FR-041, SC-012b', () => {
       // to an invalid record only because a layer holds a row that failed
       // validation. Stating both keeps the two inputs consistent instead of
       // asserting a map entry no catalog could have produced.
-      storedPipelines: [storedPipelineRow('review-it', 'workspace', 'invalid')],
+      storedPipelines: [storedPipelineRow('review-it', 'invalid')],
       invalidPipelines: new Map([['review-it', 'Pipeline definition is invalid']])
     });
 

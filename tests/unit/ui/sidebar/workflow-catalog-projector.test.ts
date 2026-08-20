@@ -5,6 +5,11 @@
 // the webview, so these tests pin the two properties that stop being provable
 // once the shape drifts: every source row survives (C1) and every string is
 // sanitized exactly once and bounded (C5, C7).
+//
+// Feature 099 (T496f, FR-042) — one layer. C1's "every row from every layer"
+// becomes "every stored row", which is the same retention claim over the same
+// rows; C2's precedence walk has nothing left to order, and the case it settled
+// — one id claimed twice — is now settled by invalidating both.
 
 import { describe, expect, it } from 'vitest';
 import type {
@@ -32,9 +37,8 @@ const STANDARD: PipelineDefinition = {
 };
 
 const effectiveRecord = (pipeline: PipelineDefinition): PipelineSourceRecord => ({
-  key: `user::${pipeline.pipelineId}::0`,
+  key: `${pipeline.pipelineId}::0`,
   pipelineId: pipeline.pipelineId,
-  scope: 'user',
   status: 'effective',
   definition: pipeline,
   display: {},
@@ -42,9 +46,8 @@ const effectiveRecord = (pipeline: PipelineDefinition): PipelineSourceRecord => 
 });
 
 const invalidRecord = (pipelineId: string, message: string): PipelineSourceRecord => ({
-  key: `user::${pipelineId}::0`,
+  key: `${pipelineId}::0`,
   pipelineId,
-  scope: 'user',
   status: 'invalid',
   definition: null,
   display: {},
@@ -81,16 +84,16 @@ const pairRow = (id: string): Record<string, unknown> => ({
   startNodeIds: ['first']
 });
 
+/** The store's revision for the Workflow catalog, asserted by identity in C4. */
+const SEEDED_WORKFLOW_REVISION = 'rev-workflow-projector';
+
 const resolve = (input: {
-  builtIn?: readonly unknown[];
-  user?: readonly unknown[];
-  workspace?: readonly unknown[];
+  rows?: readonly unknown[];
   pipelines?: { effective: readonly PipelineDefinition[]; records: readonly PipelineSourceRecord[] };
 }): WorkflowCatalogResolution =>
   resolveWorkflowCatalog({
-    builtIn: input.builtIn ?? [],
-    user: input.user,
-    workspace: input.workspace,
+    rows: input.rows ?? [],
+    revision: SEEDED_WORKFLOW_REVISION,
     pipelineCatalog: input.pipelines ?? PIPELINES
   });
 
@@ -113,45 +116,58 @@ function strings(value: unknown, into: string[] = []): string[] {
 }
 
 describe('projectWorkflowCatalog — record retention (C1, C2, C3)', () => {
-  it('projects every source row from every layer, including invalid ones', () => {
+  it('projects every stored row in authored order, including invalid ones', () => {
     const projection = project({
-      user: [row('alpha'), { id: 'broken', name: '' }],
-      workspace: [row('alpha', { name: 'workspace copy' })]
+      rows: [row('alpha'), { id: 'broken', name: '' }, row('beta')]
     });
     expect(projection.state).toBe('ready');
-    expect(projection.records.map((record) => [record.workflowId, record.scope, record.status]))
-      .toEqual([
-        ['alpha', 'user', 'shadowed'],
-        ['broken', 'user', 'invalid'],
-        ['alpha', 'workspace', 'effective']
-      ]);
+    expect(projection.records.map((record) => [record.workflowId, record.status])).toEqual([
+      ['alpha', 'effective'],
+      ['broken', 'invalid'],
+      ['beta', 'effective']
+    ]);
   });
 
-  it('keys a record `${scope}:${workflowId}` and keeps duplicate ids in one scope distinct', () => {
-    const projection = project({ user: [row('dup'), row('dup')] });
-    expect(projection.records.map((record) => record.key)).toEqual(['user:dup', 'user:dup:1']);
+  // Feature 099 — the row that used to arrive `shadowed` was the second claim on
+  // an id, kept so the operator could see and edit it. Two rows claiming one id
+  // are both invalid now, but retention is the same guarantee: neither row is
+  // dropped, and each is separately addressable.
+  it('keeps both rows when two claim one id, rather than dropping either', () => {
+    const projection = project({ rows: [row('dup'), row('dup', { name: 'second claim' })] });
+    expect(projection.records.map((record) => [record.workflowId, record.status])).toEqual([
+      ['dup', 'invalid'],
+      ['dup', 'invalid']
+    ]);
+    expect(projection.effective).toEqual([]);
+  });
+
+  it('keys a record `${workflowId}::${index}`, keeping duplicate ids distinct', () => {
+    const projection = project({ rows: [row('dup'), row('dup')] });
+    expect(projection.records.map((record) => record.key)).toEqual(['dup::0', 'dup::1']);
   });
 
   it('projects only effective definitions in `effective`, never an invalid one', () => {
-    const projection = project({ user: [row('alpha'), { id: 'broken', name: '' }] });
+    const projection = project({ rows: [row('alpha'), { id: 'broken', name: '' }] });
     expect(projection.effective.map((definition) => definition.workflowId)).toEqual(['alpha']);
     expect(projection.records.find((record) => record.workflowId === 'broken')?.definition).toBeNull();
   });
 
-  it('echoes the layer fingerprints the webview must send back as expectedRevision (C4)', () => {
-    const resolution = resolve({ user: [row('alpha')] });
+  it('echoes the store revision the webview must send back as expectedRevision (C4)', () => {
+    const resolution = resolve({ rows: [row('alpha')] });
     const projection = projectWorkflowCatalog(resolution, {
       sanitize,
       effectivePipelines: PIPELINES.effective
     });
-    expect(projection.revisions).toEqual(resolution.revisions);
+    expect(projection.revision).toBe(resolution.revision);
+    expect(projection.revision).toBe(SEEDED_WORKFLOW_REVISION);
+    expect(projection).not.toHaveProperty('revisions');
   });
 });
 
 describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () => {
   it('sanitizes an authored secret out of a name exactly once', () => {
     const projection = project({
-      user: [row('alpha', { name: 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB build' })]
+      rows: [row('alpha', { name: 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB build' })]
     });
     const name = projection.records[0]?.definition?.name ?? '';
     expect(name).not.toContain('ghp_0123456789');
@@ -161,7 +177,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
   it('sanitizes node labels, connection endpoints, start ids, and display alike', () => {
     const secret = 'sk-ant-api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789';
     const projection = project({
-      user: [
+      rows: [
         {
           id: 'alpha',
           name: 'Alpha',
@@ -178,7 +194,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
 
   it('caps each projected error field at its declared length', () => {
     const projection = project({
-      user: [
+      rows: [
         row('alpha', {
           nodes: [{ nodeId: 'a'.repeat(200), pipelineId: 'standard' }],
           startNodeIds: ['a'.repeat(200)]
@@ -198,7 +214,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
       pipelineId: `missing-${index}`
     }));
     const projection = project({
-      user: [row('alpha', { nodes, startNodeIds: ['n0'] })]
+      rows: [row('alpha', { nodes, startNodeIds: ['n0'] })]
     });
     const record = projection.records[0];
     expect(record?.errors.length).toBe(20);
@@ -208,7 +224,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
   });
 
   it('projects no run identifier, session value, or absolute workspace path', () => {
-    const projection = project({ user: [pairRow('alpha')] });
+    const projection = project({ rows: [pairRow('alpha')] });
     for (const value of strings(projection)) {
       expect(value.startsWith('/')).toBe(false);
       expect(value).not.toMatch(/[A-Za-z]:\\/);
@@ -220,10 +236,11 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
 describe('projectWorkflowCatalog — warnings, not errors (C8, C9)', () => {
   it('carries soft-cap breaches as warnings and keeps state ready', () => {
     const projection = project({
-      user: Array.from({ length: 21 }, (_, index) => row(`w${index}`))
+      rows: Array.from({ length: 21 }, (_, index) => row(`w${index}`))
     });
     expect(projection.state).toBe('ready');
-    expect(projection.warnings.map((warning) => warning.code)).toContain('workflow-soft-cap-scope');
+    // Feature 099 — the cap was per scope and the code said so; one layer, one code.
+    expect(projection.warnings.map((warning) => warning.code)).toContain('workflow-soft-cap');
   });
 
   it('projects a whole-catalog failure as state error with empty records', () => {
@@ -245,7 +262,7 @@ describe('projectWorkflowCatalog — warnings, not errors (C8, C9)', () => {
     const warnings: string[] = [];
     const projection = composeWorkflowCatalogProjection(
       {
-        getWorkflowCatalog: () => resolve({ user: [row('alpha')] }),
+        getWorkflowCatalog: () => resolve({ rows: [row('alpha')] }),
         getPipelineCatalog: () => {
           throw new Error('pipeline catalog read failed');
         }
@@ -267,7 +284,7 @@ describe('projectWorkflowCatalog — warnings, not errors (C8, C9)', () => {
   it('derives ports from the composer-supplied effective Pipeline catalog', () => {
     const projection = composeWorkflowCatalogProjection(
       {
-        getWorkflowCatalog: () => resolve({ user: [pairRow('alpha')] }),
+        getWorkflowCatalog: () => resolve({ rows: [pairRow('alpha')] }),
         getPipelineCatalog: () => ({ effective: PIPELINES.effective })
       },
       sanitize
@@ -280,7 +297,7 @@ describe('projectWorkflowCatalog — warnings, not errors (C8, C9)', () => {
 
 describe('projectWorkflowCatalog — derived ports (C11)', () => {
   it('computes the same port surface the validator does, and never writes it back', () => {
-    const resolution = resolve({ user: [pairRow('alpha')] });
+    const resolution = resolve({ rows: [pairRow('alpha')] });
     const projection = projectWorkflowCatalog(resolution, {
       sanitize,
       effectivePipelines: PIPELINES.effective
@@ -301,7 +318,7 @@ describe('projectWorkflowCatalog — derived ports (C11)', () => {
   });
 
   it('projects empty port lists for a record with no definition', () => {
-    const projection = project({ user: [{ id: 'broken', name: '' }] });
+    const projection = project({ rows: [{ id: 'broken', name: '' }] });
     expect(projection.records[0]?.derivedInputs).toEqual([]);
     expect(projection.records[0]?.derivedOutputs).toEqual([]);
   });
@@ -319,7 +336,7 @@ describe('projectWorkflowCatalog — authored order and Pipeline drift (C12, C13
       { from: { nodeId: 'zulu', portId: 'plan' }, to: { nodeId: 'alpha', portId: 'brief' } }
     ];
     const projection = project({
-      user: [row('alpha', { nodes, connections, startNodeIds: ['zulu'] })]
+      rows: [row('alpha', { nodes, connections, startNodeIds: ['zulu'] })]
     });
     const definition = projection.records[0]?.definition;
     expect(definition?.nodes.map((node) => node.nodeId)).toEqual(['zulu', 'alpha', 'mike']);
@@ -331,7 +348,7 @@ describe('projectWorkflowCatalog — authored order and Pipeline drift (C12, C13
 
   it('marks a Workflow whose node names an unknown Pipeline invalid and names the Pipeline', () => {
     const projection = project({
-      user: [row('alpha', { nodes: [{ nodeId: 'a', pipelineId: 'nope' }] })]
+      rows: [row('alpha', { nodes: [{ nodeId: 'a', pipelineId: 'nope' }] })]
     });
     const record = projection.records[0];
     expect(record?.status).toBe('invalid');
@@ -341,7 +358,7 @@ describe('projectWorkflowCatalog — authored order and Pipeline drift (C12, C13
 
   it('names the transitive cause when the referenced Pipeline is itself invalid', () => {
     const projection = project({
-      user: [row('alpha', { nodes: [{ nodeId: 'a', pipelineId: 'broken' }] })],
+      rows: [row('alpha', { nodes: [{ nodeId: 'a', pipelineId: 'broken' }] })],
       pipelines: {
         effective: [STANDARD],
         records: [effectiveRecord(STANDARD), invalidRecord('broken', 'phase "ghost" is unknown')]

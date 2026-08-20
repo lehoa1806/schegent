@@ -4,27 +4,32 @@
 // resource plans `invalid` naming the field and the reason), QS-22 (every
 // defect in one pass, not one per attempt) and QS-23 (counts equal row count).
 //
-// The planner is pure and takes STORED ROWS OF EVERY LAYER — never a resolved
+// The planner is pure and takes STORED ROWS AT EVERY STATUS — never a resolved
 // effective catalog (FR-030, data-model "PhaseIdPresence"). These tests build
 // the rows by hand rather than through `resolvePhaseCatalog`, so a later change
 // that quietly swaps the argument for `resolution.effective` fails here: the
-// invalid-row and shadowed-row cases have no effective definition at all.
+// invalid-row cases have no effective definition at all.
+//
+// Feature 099 (T490, FR-049) — the rows used to arrive from three layers and the
+// presence oracle answered which layer held the claim. One layer now, so the
+// scope argument is gone from every builder and `presentIn` is gone from every
+// skip row. The property under test did not move: presence is still a scan of
+// stored rows at EVERY status, and `invalid` is still the load-bearing case,
+// because a row in that state has no resolved definition and an oracle reading
+// the effective catalog would call the id absent.
 
 import { describe, expect, it } from 'vitest';
 import type {
   PhaseDefinition,
-  PhaseDefinitionScope,
   PhaseSourceRecord,
   PhaseSourceStatus
 } from '../../../src/contracts/process-definitions';
 import type {
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineSourceRecord,
   PipelineSourceStatus
 } from '../../../src/contracts/pipeline-definitions';
 import type {
-  WorkflowDefinitionScope,
   WorkflowSourceRecord,
   WorkflowSourceStatus
 } from '../../../src/contracts/workflow-definitions';
@@ -42,42 +47,30 @@ import { parsePipelinePackage } from '../../../src/services/process-yaml/pipelin
 import { parseWorkflowPackage } from '../../../src/services/process-yaml/workflow-document';
 import type {
   ImportPlanRow,
-  ProcessYamlLayerRevisions
+  ProcessYamlCatalogRevision
 } from '../../../src/services/process-yaml/types';
 import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 
-const REVISIONS: ProcessYamlLayerRevisions = Object.freeze({
-  user: 'user-rev-1',
-  workspace: 'workspace-rev-1'
-});
+const REVISION: ProcessYamlCatalogRevision = 'phase-rev-1';
 
 /**
- * Deliberately different values from {@link REVISIONS}: the two catalogs are
- * independently mutable, so a plan that reported one layer's revision for the
+ * Deliberately a different value from {@link REVISION}: the two catalogs are
+ * independently mutable, so a plan that reported one kind's revision for the
  * other would gate the wrong write and pass a shared-fixture test (FR-043).
  */
-const PIPELINE_REVISIONS: ProcessYamlLayerRevisions = Object.freeze({
-  user: 'pipeline-user-rev-1',
-  workspace: 'pipeline-workspace-rev-1'
-});
+const PIPELINE_REVISION: ProcessYamlCatalogRevision = 'pipeline-rev-1';
 
-function storedRow(
-  phaseId: string,
-  scope: PhaseDefinitionScope,
-  status: PhaseSourceStatus
-): PhaseSourceRecord {
+function storedRow(phaseId: string, status: PhaseSourceStatus): PhaseSourceRecord {
   return Object.freeze({
-    key: `${scope}::${phaseId}::0`,
+    key: `${phaseId}::0`,
     phaseId,
-    scope,
     status,
-    // Deliberately null even for a `shadowed` row: presence must not depend on
+    // Deliberately null even for an `effective` row: presence must not depend on
     // a resolved definition being present (FR-030).
     definition: null,
     display: Object.freeze({}),
@@ -110,7 +103,7 @@ const VALID_DOCUMENT = document(
 
 describe('planPhaseImport', () => {
   it('plans a new id as import and names it (QS-14)', () => {
-    const result = planPhaseImport(validate(VALID_DOCUMENT), [], REVISIONS);
+    const result = planPhaseImport(validate(VALID_DOCUMENT), [], REVISION);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -133,7 +126,7 @@ describe('planPhaseImport', () => {
         }
       }
     ]);
-    expect(result.plan.computedAgainstRevision).toEqual(REVISIONS);
+    expect(result.plan.computedAgainstRevision).toEqual(REVISION);
     // A Phase document writes one layer, so there is no second revision to have
     // been computed against, and the plan claims none (FR-043).
     expect(result.plan.computedAgainstPipelineRevision).toBeUndefined();
@@ -153,7 +146,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(withRetry), [], REVISIONS);
+    const result = planPhaseImport(validate(withRetry), [], REVISION);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -164,10 +157,10 @@ describe('planPhaseImport', () => {
   });
 
   it('plans an id claimed by any stored row as skip, whatever that row status is', () => {
-    for (const status of ['effective', 'shadowed', 'invalid'] as const) {
-      const rows = [storedRow('ship-it', 'user', status)];
+    for (const status of ['effective', 'invalid'] as const) {
+      const rows = [storedRow('ship-it', status)];
 
-      const result = planPhaseImport(validate(VALID_DOCUMENT), rows, REVISIONS);
+      const result = planPhaseImport(validate(VALID_DOCUMENT), rows, REVISION);
 
       expect(result.outcome).toBe('planned');
       if (result.outcome !== 'planned') return;
@@ -177,7 +170,6 @@ describe('planPhaseImport', () => {
           resourceKind: 'phase',
           resourceId: 'ship-it',
           name: 'Ship It',
-          presentIn: 'user',
           presentRowStatus: status
         }
       ]);
@@ -197,7 +189,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(badVersion), [], REVISIONS);
+    const result = planPhaseImport(validate(badVersion), [], REVISION);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -224,7 +216,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(threeBad), [], REVISIONS);
+    const result = planPhaseImport(validate(threeBad), [], REVISION);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -243,7 +235,7 @@ describe('planPhaseImport', () => {
   it('does not claim an id for an invalid resource whose metadata never validated', () => {
     const noMetadata = document(['spec:', '  instruction: Ship the thing.', ''].join('\n'));
 
-    const result = planPhaseImport(validate(noMetadata), [], REVISIONS);
+    const result = planPhaseImport(validate(noMetadata), [], REVISION);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -256,7 +248,7 @@ describe('planPhaseImport', () => {
   it('produces counts that equal the row count, one bucket per outcome (QS-23)', () => {
     const cases = [
       { source: VALID_DOCUMENT, rows: [] as readonly PhaseSourceRecord[] },
-      { source: VALID_DOCUMENT, rows: [storedRow('ship-it', 'workspace', 'effective')] },
+      { source: VALID_DOCUMENT, rows: [storedRow('ship-it', 'effective')] },
       {
         source: document(
           ['metadata:', '  phaseId: ship-it', '  name: Ship It', '  version: soon', 'spec:', '  instruction: x', ''].join(
@@ -268,7 +260,7 @@ describe('planPhaseImport', () => {
     ];
 
     for (const testCase of cases) {
-      const result = planPhaseImport(validate(testCase.source), testCase.rows, REVISIONS);
+      const result = planPhaseImport(validate(testCase.source), testCase.rows, REVISION);
       expect(result.outcome).toBe('planned');
       if (result.outcome !== 'planned') return;
       const { counts, rows } = result.plan;
@@ -282,7 +274,7 @@ describe('planPhaseImport', () => {
   it('returns a refusal with NO rows for a document-level refusal (FR-027)', () => {
     const wrongKind = 'apiVersion: schegent/v1\nkind: Pipeline\nmetadata:\n  phaseId: ship-it\n';
 
-    const result = planPhaseImport(validate(wrongKind), [], REVISIONS);
+    const result = planPhaseImport(validate(wrongKind), [], REVISION);
 
     expect(result.outcome).toBe('refused');
     if (result.outcome !== 'refused') return;
@@ -292,38 +284,40 @@ describe('planPhaseImport', () => {
 });
 
 describe('findPhaseIdPresence', () => {
-  it('is null when no stored row in any layer claims the id', () => {
-    const rows = [storedRow('other', 'user', 'effective'), storedRow('third', 'workspace', 'invalid')];
+  it('is null when no stored row claims the id', () => {
+    const rows = [storedRow('other', 'effective'), storedRow('third', 'invalid')];
 
     expect(findPhaseIdPresence(rows, 'ship-it')).toBeNull();
   });
 
-  it('finds a claim in any layer, including a built-in row', () => {
-    const rows = [storedRow('specify', 'built-in', 'shadowed')];
+  it('finds a claim from a row that resolves to nothing', () => {
+    const rows = [storedRow('specify', 'invalid')];
 
     expect(findPhaseIdPresence(rows, 'specify')).toEqual({
-      scope: 'built-in',
-      status: 'shadowed'
+      status: 'invalid'
     });
   });
 
-  it('reports the earliest claimant in the layer order the presence oracle is written in', () => {
-    // built-in `specify` overridden by a user row: both claim the id. The oracle
-    // is a union over stored rows, so it names the first claimant in that union
-    // order — built-in, user, workspace — rather than resolving precedence.
+  it('reports the first claimant when more than one row claims the id', () => {
+    // Two rows claiming one id is the duplicate case, which resolution
+    // invalidates on both sides — but the oracle is a scan, not a resolution,
+    // and answers from the first row it meets. Feature 099 (T490): this was
+    // 'reports the earliest claimant in the layer order the presence oracle is
+    // written in', where the order was `built-in, user, workspace`. There is one
+    // layer, so the order is manifest order and the assertion is that the scan
+    // stops at the first hit rather than continuing to the last.
     const rows = [
-      storedRow('specify', 'user', 'effective'),
-      storedRow('specify', 'built-in', 'shadowed')
+      storedRow('specify', 'invalid'),
+      storedRow('specify', 'effective')
     ];
 
     expect(findPhaseIdPresence(rows, 'specify')).toEqual({
-      scope: 'built-in',
-      status: 'shadowed'
+      status: 'invalid'
     });
   });
 
   it('matches an id exactly, not as a prefix of a longer one', () => {
-    const rows = [storedRow('ship-it-again', 'user', 'effective')];
+    const rows = [storedRow('ship-it-again', 'effective')];
 
     expect(findPhaseIdPresence(rows, 'ship-it')).toBeNull();
     expect(findPhaseIdPresence(rows, 'ship-it-again')).not.toBeNull();
@@ -352,13 +346,11 @@ describe('findPhaseIdPresence', () => {
 
 function storedPipelineRow(
   pipelineId: string,
-  scope: PipelineDefinitionScope,
   status: PipelineSourceStatus
 ): PipelineSourceRecord {
   return Object.freeze({
-    key: `${scope}::${pipelineId}::0`,
+    key: `${pipelineId}::0`,
     pipelineId,
-    scope,
     status,
     definition: null,
     display: Object.freeze({}),
@@ -391,8 +383,8 @@ function context(overrides: Partial<PackageImportContext> = {}): PackageImportCo
     phaseRows: [],
     pipelineRows: [],
     effectivePhases: [],
-    revisions: REVISIONS,
-    pipelineRevisions: PIPELINE_REVISIONS,
+    revision: REVISION,
+    pipelineRevision: PIPELINE_REVISION,
     ...overrides
   };
 }
@@ -454,7 +446,7 @@ const MIXED = packageDocument(
 );
 
 const MIXED_CONTEXT = context({
-  phaseRows: [storedRow('specify', 'user', 'effective')],
+  phaseRows: [storedRow('specify', 'effective')],
   effectivePhases: [SPECIFY]
 });
 
@@ -498,8 +490,8 @@ describe('planPipelineImport', () => {
     // A confirmed package is two ordered writes against two independently
     // mutable layers. One revision cannot gate both, and reading the Pipeline
     // layer's at confirm time would leave FR-040 unable to fire for it.
-    expect(result.plan.computedAgainstRevision).toEqual(REVISIONS);
-    expect(result.plan.computedAgainstPipelineRevision).toEqual(PIPELINE_REVISIONS);
+    expect(result.plan.computedAgainstRevision).toEqual(REVISION);
+    expect(result.plan.computedAgainstPipelineRevision).toEqual(PIPELINE_REVISION);
   });
 
   it('gives every row an outcome from the closed set (FR-025)', () => {
@@ -520,7 +512,9 @@ describe('planPipelineImport', () => {
 
     for (const row of nonImport) {
       if (row.outcome === 'skip' && row.resourceKind !== 'modelCatalog') {
-        expect(row.presentIn).toBeTruthy();
+        // Feature 099 (T490) — `presentIn` went with the layer tier. The reason
+        // a skip gives is now the status alone, and asserting it is non-empty is
+        // what the pair of assertions here was ever for.
         expect(row.presentRowStatus).toBeTruthy();
       } else if (row.outcome === 'blocked') {
         expect(row.reason.code).toMatch(/^dependency-(absent|unresolvable)$/);
@@ -540,7 +534,6 @@ describe('planPipelineImport', () => {
       resourceKind: 'phase',
       resourceId: 'specify',
       name: 'Specify',
-      presentIn: 'user',
       presentRowStatus: 'effective'
     });
     expect(rows[2]?.outcome).toBe('invalid');
@@ -551,10 +544,10 @@ describe('planPipelineImport', () => {
   });
 
   it('skips a root Pipeline whose id a stored Pipeline row already claims, at any status', () => {
-    for (const status of ['effective', 'shadowed', 'invalid'] as const) {
+    for (const status of ['effective', 'invalid'] as const) {
       const rows = plannedRows(
         SELF_CONTAINED,
-        context({ pipelineRows: [storedPipelineRow('ship-it', 'workspace', status)] })
+        context({ pipelineRows: [storedPipelineRow('ship-it', status)] })
       );
 
       expect(rows[0]).toEqual({
@@ -562,7 +555,6 @@ describe('planPipelineImport', () => {
         resourceKind: 'pipeline',
         resourceId: 'ship-it',
         name: 'Ship It',
-        presentIn: 'workspace',
         presentRowStatus: status
       });
     }
@@ -580,7 +572,7 @@ describe('planPipelineImport', () => {
     // presence would report `import` on the root and fail at run time.
     const rows = plannedRows(
       SELF_CONTAINED,
-      context({ phaseRows: [storedRow('specify', 'user', 'shadowed')], effectivePhases: [] })
+      context({ phaseRows: [storedRow('specify', 'invalid')], effectivePhases: [] })
     );
 
     expect(rows[0]).toEqual({
@@ -595,8 +587,7 @@ describe('planPipelineImport', () => {
       resourceKind: 'phase',
       resourceId: 'specify',
       name: 'Specify',
-      presentIn: 'user',
-      presentRowStatus: 'shadowed'
+      presentRowStatus: 'invalid'
     });
     // FR-039, decided here rather than at the write: the blocked root does not
     // take the independently eligible Phase with it.
@@ -609,7 +600,7 @@ describe('planPipelineImport', () => {
       { text: MIXED, ctx: MIXED_CONTEXT },
       {
         text: SELF_CONTAINED,
-        ctx: context({ pipelineRows: [storedPipelineRow('ship-it', 'user', 'invalid')] })
+        ctx: context({ pipelineRows: [storedPipelineRow('ship-it', 'invalid')] })
       }
     ]) {
       const result = planPipelineImport(parsePackage(testCase.text), testCase.ctx);
@@ -665,67 +656,62 @@ describe('planPipelineImport', () => {
 // The skip guarantee is the one property an import must never get wrong: it is
 // what stands between an operator's half-repaired row and a document that
 // declares the same id. This module is its single enforcement site, so these
-// tests walk the whole matrix rather than sampling it — every layer in
-// `PRESENCE_SCAN_ORDER` crossed with every status, for each kind — and pin that
-// the two catalogs are scanned independently.
+// tests walk the whole matrix rather than sampling it — every status, for each
+// kind — and pin that the two catalogs are scanned independently.
+//
+// Feature 099 (T490, FR-049) — the matrix was every layer in
+// `PRESENCE_SCAN_ORDER` crossed with every status. `PRESENCE_SCAN_ORDER` and the
+// `shadowed` status are both gone, so the matrix is one axis shorter and one
+// cell narrower. It is still exhaustive over what remains, which is what makes
+// these cases a guarantee rather than a sample.
 
-const PRESENCE_SCOPES = ['built-in', 'user', 'workspace'] as const;
-const PRESENCE_STATUSES = ['effective', 'shadowed', 'invalid'] as const;
+const PRESENCE_STATUSES = ['effective', 'invalid'] as const;
 
-describe('Feature 085 T050 — presence covers every layer at every status (FR-030)', () => {
-  it('claims a Phase id from any layer in any state', () => {
-    for (const scope of PRESENCE_SCOPES) {
-      for (const status of PRESENCE_STATUSES) {
-        // `shadowed` and `invalid` are the load-bearing cells. A row in either
-        // state has no resolved definition, so an oracle that read the effective
-        // catalog would report "absent" and let the import overwrite work the
-        // operator is part-way through.
-        expect(findPhaseIdPresence([storedRow('specify', scope, status)], 'specify')).toEqual({
-          scope,
-          status
-        });
-      }
+describe('Feature 085 T050 — presence covers every status (FR-030)', () => {
+  it('claims a Phase id in any state', () => {
+    for (const status of PRESENCE_STATUSES) {
+      // `invalid` is the load-bearing cell. A row in that state has no resolved
+      // definition, so an oracle that read the effective catalog would report
+      // "absent" and let the import overwrite work the operator is part-way
+      // through.
+      expect(findPhaseIdPresence([storedRow('specify', status)], 'specify')).toEqual({
+        status
+      });
     }
   });
 
-  it('claims a Pipeline id from any layer in any state', () => {
-    for (const scope of PRESENCE_SCOPES) {
-      for (const status of PRESENCE_STATUSES) {
-        expect(
-          findPipelineIdPresence([storedPipelineRow('ship-it', scope, status)], 'ship-it')
-        ).toEqual({ scope, status });
-      }
+  it('claims a Pipeline id in any state', () => {
+    for (const status of PRESENCE_STATUSES) {
+      expect(
+        findPipelineIdPresence([storedPipelineRow('ship-it', status)], 'ship-it')
+      ).toEqual({ status });
     }
   });
 
-  it('plans a skip for a Phase claimed only by a shadowed or invalid row', () => {
+  it('plans a skip for a Phase claimed only by an invalid row', () => {
     // The end-to-end statement of the same rule: the oracle answering "present"
     // has to reach the row's outcome, not stop at the helper.
-    for (const status of ['shadowed', 'invalid'] as const) {
-      const rows = plannedRows(
-        SELF_CONTAINED,
-        context({ phaseRows: [storedRow('specify', 'workspace', status)] })
-      );
-      const phase = rows.find((row) => row.resourceKind === 'phase' && row.resourceId === 'specify');
-      expect(phase?.outcome).toBe('skip');
-      if (phase?.outcome !== 'skip') continue;
-      if (phase.resourceKind === 'modelCatalog') continue;
-      expect(phase.presentIn).toBe('workspace');
-      expect(phase.presentRowStatus).toBe(status);
-    }
+    const rows = plannedRows(
+      SELF_CONTAINED,
+      context({ phaseRows: [storedRow('specify', 'invalid')] })
+    );
+    const phase = rows.find((row) => row.resourceKind === 'phase' && row.resourceId === 'specify');
+    expect(phase?.outcome).toBe('skip');
+    if (phase?.outcome !== 'skip') return;
+    if (phase.resourceKind === 'modelCatalog') return;
+    expect(phase.presentRowStatus).toBe('invalid');
   });
 
   it('plans a skip for a Pipeline claimed only by an invalid row', () => {
     const rows = plannedRows(
       SELF_CONTAINED,
-      context({ pipelineRows: [storedPipelineRow('ship-it', 'workspace', 'invalid')] })
+      context({ pipelineRows: [storedPipelineRow('ship-it', 'invalid')] })
     );
     expect(rows[0]).toEqual({
       outcome: 'skip',
       resourceKind: 'pipeline',
       resourceId: 'ship-it',
       name: 'Ship It',
-      presentIn: 'workspace',
       presentRowStatus: 'invalid'
     });
   });
@@ -738,8 +724,8 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
     expect(findPipelineIdPresence([], 'ship-it')).toBeNull();
 
     const crossed = context({
-      phaseRows: [storedRow('ship-it', 'user', 'effective')],
-      pipelineRows: [storedPipelineRow('specify', 'user', 'effective')]
+      phaseRows: [storedRow('ship-it', 'effective')],
+      pipelineRows: [storedPipelineRow('specify', 'effective')]
     });
     const rows = plannedRows(SELF_CONTAINED, crossed);
 
@@ -748,33 +734,41 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
     expect(rows.map((row) => row.outcome)).toEqual(['import', 'import', 'import']);
   });
 
-  it('reports the earliest Pipeline claimant in the scan order, not by precedence', () => {
+  it('reports the first Pipeline claimant it meets, not the healthiest one', () => {
     // Same rule the Phase oracle already states: presence is a gate, and the
     // reported row is evidence for the skip rather than a routing decision.
+    // Feature 099 (T496f) — was '…in the scan order, not by precedence', where
+    // the order was the layer order and the fixture's two rows sat in different
+    // layers. Ordering across layers is gone; the assertion that survives is
+    // that the scan stops at the first hit and does not rank by status, so the
+    // `invalid` row is reported even with an `effective` row behind it.
     const rows = [
-      storedPipelineRow('ship-it', 'workspace', 'effective'),
-      storedPipelineRow('ship-it', 'built-in', 'shadowed')
+      storedPipelineRow('ship-it', 'invalid'),
+      storedPipelineRow('ship-it', 'effective')
     ];
     expect(findPipelineIdPresence(rows, 'ship-it')).toEqual({
-      scope: 'built-in',
-      status: 'shadowed'
+      status: 'invalid'
     });
   });
 
   it('matches a Pipeline id exactly, not as a prefix of a longer one', () => {
-    const rows = [storedPipelineRow('ship-it-again', 'user', 'effective')];
+    const rows = [storedPipelineRow('ship-it-again', 'effective')];
     expect(findPipelineIdPresence(rows, 'ship-it')).toBeNull();
     expect(findPipelineIdPresence(rows, 'ship-it-again')).not.toBeNull();
   });
 
-  it('names the layer and the state the claim was found in, on every skip (FR-026)', () => {
-    // "Already present" alone leaves the operator unable to act: which layer
-    // holds it, and is that row healthy or the broken one they are fixing?
+  it('names the state the claim was found in, on every skip (FR-026)', () => {
+    // "Already present" alone leaves the operator unable to act: is the row that
+    // holds it healthy, or the broken one they are trying to fix?
+    //
+    // Feature 099 (T496f, FR-049) — the title and question also asked WHICH
+    // LAYER held the claim, answered by `presentIn`. One layer, so the only
+    // answer left is the one the operator could always act on: the status.
     const rows = plannedRows(
       SELF_CONTAINED,
       context({
-        phaseRows: [storedRow('specify', 'built-in', 'effective')],
-        pipelineRows: [storedPipelineRow('ship-it', 'user', 'shadowed')]
+        phaseRows: [storedRow('specify', 'effective')],
+        pipelineRows: [storedPipelineRow('ship-it', 'invalid')]
       })
     );
     const skips = rows.filter((row) => row.outcome === 'skip');
@@ -782,7 +776,6 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
     for (const row of skips) {
       if (row.outcome !== 'skip') continue;
       if (row.resourceKind === 'modelCatalog') continue;
-      expect(PRESENCE_SCOPES).toContain(row.presentIn);
       expect(PRESENCE_STATUSES).toContain(row.presentRowStatus);
     }
   });
@@ -815,16 +808,14 @@ describe('Feature 085 T050 — presence covers every layer at every status (FR-0
 
 function storedWorkflowRow(
   workflowId: string,
-  scope: WorkflowDefinitionScope,
   status: WorkflowSourceStatus
 ): WorkflowSourceRecord {
   return Object.freeze({
-    key: `${scope}::${workflowId}::0`,
+    key: `${workflowId}::0`,
     workflowId,
-    scope,
     status,
-    // Null even for a `shadowed` row, like the other two builders: presence must
-    // not depend on a resolved definition being present (FR-030).
+    // Null even for an `effective` row, like the other two builders: presence
+    // must not depend on a resolved definition being present (FR-030).
     definition: null,
     display: Object.freeze({}),
     nodePipelineIds: Object.freeze([]),
@@ -834,14 +825,11 @@ function storedWorkflowRow(
 
 /**
  * Deliberately different again from the other two revision fixtures. Three
- * independently mutable layers cannot share one gate, and a plan that reported
- * one layer's revision for another would gate the wrong write and still pass a
+ * independently mutable kinds cannot share one gate, and a plan that reported
+ * one kind's revision for another would gate the wrong write and still pass a
  * shared-fixture test (FR-036, data-model §3.4).
  */
-const WORKFLOW_REVISIONS: ProcessYamlLayerRevisions = Object.freeze({
-  user: 'workflow-user-rev-1',
-  workspace: 'workflow-workspace-rev-1'
-});
+const WORKFLOW_REVISION: ProcessYamlCatalogRevision = 'workflow-rev-1';
 
 function workflowContext(
   overrides: Partial<WorkflowPackageImportContext> = {}
@@ -853,9 +841,9 @@ function workflowContext(
     effectivePhases: [],
     effectivePipelines: [],
     invalidPipelines: new Map(),
-    revisions: REVISIONS,
-    pipelineRevisions: PIPELINE_REVISIONS,
-    workflowRevisions: WORKFLOW_REVISIONS,
+    revision: REVISION,
+    pipelineRevision: PIPELINE_REVISION,
+    workflowRevision: WORKFLOW_REVISION,
     ...overrides
   };
 }
@@ -985,9 +973,9 @@ describe('planWorkflowImport', () => {
 
   it('gives every row an outcome from the closed set, whatever the catalog holds', () => {
     const claimed = workflowContext({
-      workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')],
-      pipelineRows: [storedPipelineRow('spec-authoring', 'workspace', 'shadowed')],
-      phaseRows: [storedRow('specify', 'built-in', 'invalid')]
+      workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')],
+      pipelineRows: [storedPipelineRow('spec-authoring', 'invalid')],
+      phaseRows: [storedRow('specify', 'invalid')]
     });
 
     for (const rows of [
@@ -1017,7 +1005,7 @@ describe('planWorkflowImport', () => {
     const rows = [
       ...plannedWorkflowRows(
         SELF_CONTAINED_WORKFLOW,
-        workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'shadowed')] })
+        workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'invalid')] })
       ),
       ...plannedWorkflowRows(invalidVersion, workflowContext())
     ];
@@ -1026,7 +1014,6 @@ describe('planWorkflowImport', () => {
 
     for (const row of nonImport) {
       if (row.outcome === 'skip' && row.resourceKind !== 'modelCatalog') {
-        expect(PRESENCE_SCOPES).toContain(row.presentIn);
         expect(PRESENCE_STATUSES).toContain(row.presentRowStatus);
       } else if (row.outcome === 'blocked') {
         expect(row.reason.dependency.resourceId.length).toBeGreaterThan(0);
@@ -1037,30 +1024,27 @@ describe('planWorkflowImport', () => {
     }
   });
 
-  it('skips a Workflow whose id a stored row already claims, in any layer at any status', () => {
-    // The third catalog's half of the FR-024/FR-030 skip guarantee. `shadowed`
-    // and `invalid` are the load-bearing cells: neither has a resolved
-    // definition, so an oracle reading the effective catalog would report the id
-    // absent and overwrite a row the operator may be part-way through fixing.
-    for (const scope of PRESENCE_SCOPES) {
-      for (const status of PRESENCE_STATUSES) {
-        const rows = plannedWorkflowRows(
-          SELF_CONTAINED_WORKFLOW,
-          workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', scope, status)] })
-        );
+  it('skips a Workflow whose id a stored row already claims, at any status', () => {
+    // The third catalog's half of the FR-024/FR-030 skip guarantee. `invalid` is
+    // the load-bearing cell: it has no resolved definition, so an oracle reading
+    // the effective catalog would report the id absent and overwrite a row the
+    // operator may be part-way through fixing.
+    for (const status of PRESENCE_STATUSES) {
+      const rows = plannedWorkflowRows(
+        SELF_CONTAINED_WORKFLOW,
+        workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', status)] })
+      );
 
-        expect(rows[0]).toEqual({
-          outcome: 'skip',
-          resourceKind: 'workflow',
-          resourceId: 'ship-it-flow',
-          name: 'Ship It Flow',
-          presentIn: scope,
-          presentRowStatus: status
-        });
-        // FR-025b — a skipped root takes nothing with it; the resources it
-        // shipped are still planned on their own merits.
-        expect(rows.slice(1).map((row) => row.outcome)).toEqual(['import', 'import']);
-      }
+      expect(rows[0]).toEqual({
+        outcome: 'skip',
+        resourceKind: 'workflow',
+        resourceId: 'ship-it-flow',
+        name: 'Ship It Flow',
+        presentRowStatus: status
+      });
+      // FR-025b — a skipped root takes nothing with it; the resources it
+      // shipped are still planned on their own merits.
+      expect(rows.slice(1).map((row) => row.outcome)).toEqual(['import', 'import']);
     }
   });
 
@@ -1068,9 +1052,9 @@ describe('planWorkflowImport', () => {
     // Three separate stores. A Pipeline named `ship-it-flow` does not claim the
     // Workflow id, and a shared scan would let one catalog gate another's import.
     const crossed = workflowContext({
-      pipelineRows: [storedPipelineRow('ship-it-flow', 'user', 'effective')],
-      phaseRows: [storedRow('spec-authoring', 'user', 'effective')],
-      workflowRows: [storedWorkflowRow('specify', 'user', 'effective')]
+      pipelineRows: [storedPipelineRow('ship-it-flow', 'effective')],
+      phaseRows: [storedRow('spec-authoring', 'effective')],
+      workflowRows: [storedWorkflowRow('specify', 'effective')]
     });
 
     expect(findWorkflowIdPresence([], 'ship-it-flow')).toBeNull();
@@ -1081,20 +1065,22 @@ describe('planWorkflowImport', () => {
     ]);
   });
 
-  it('reports the earliest Workflow claimant in the scan order, not by precedence', () => {
+  it('reports the first Workflow claimant it meets, not the healthiest one', () => {
+    // Feature 099 (T496f) — see the Pipeline case above: the layer order the
+    // old title named is gone, and what is asserted is that the scan stops at
+    // the first claiming row rather than ranking the claimants by status.
     const rows = [
-      storedWorkflowRow('ship-it-flow', 'workspace', 'effective'),
-      storedWorkflowRow('ship-it-flow', 'built-in', 'shadowed')
+      storedWorkflowRow('ship-it-flow', 'invalid'),
+      storedWorkflowRow('ship-it-flow', 'effective')
     ];
 
     expect(findWorkflowIdPresence(rows, 'ship-it-flow')).toEqual({
-      scope: 'built-in',
-      status: 'shadowed'
+      status: 'invalid'
     });
   });
 
   it('matches a Workflow id exactly, not as a prefix of a longer one', () => {
-    const rows = [storedWorkflowRow('ship-it-flow-again', 'user', 'effective')];
+    const rows = [storedWorkflowRow('ship-it-flow-again', 'effective')];
 
     expect(findWorkflowIdPresence(rows, 'ship-it-flow')).toBeNull();
     expect(findWorkflowIdPresence(rows, 'ship-it-flow-again')).not.toBeNull();
@@ -1108,9 +1094,9 @@ describe('planWorkflowImport', () => {
     expect(full.outcome).toBe('planned');
     if (full.outcome !== 'planned') return;
 
-    expect(full.plan.computedAgainstRevision).toEqual(REVISIONS);
-    expect(full.plan.computedAgainstPipelineRevision).toEqual(PIPELINE_REVISIONS);
-    expect(full.plan.computedAgainstWorkflowRevision).toEqual(WORKFLOW_REVISIONS);
+    expect(full.plan.computedAgainstRevision).toEqual(REVISION);
+    expect(full.plan.computedAgainstPipelineRevision).toEqual(PIPELINE_REVISION);
+    expect(full.plan.computedAgainstWorkflowRevision).toEqual(WORKFLOW_REVISION);
   });
 
   it('claims no revision for a layer a references-only document never writes (FR-043)', () => {
@@ -1125,7 +1111,7 @@ describe('planWorkflowImport', () => {
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
 
-    expect(result.plan.computedAgainstWorkflowRevision).toEqual(WORKFLOW_REVISIONS);
+    expect(result.plan.computedAgainstWorkflowRevision).toEqual(WORKFLOW_REVISION);
     expect(result.plan.computedAgainstPipelineRevision).toBeUndefined();
   });
 
@@ -1136,8 +1122,8 @@ describe('planWorkflowImport', () => {
       {
         text: SELF_CONTAINED_WORKFLOW,
         ctx: workflowContext({
-          workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'invalid')],
-          phaseRows: [storedRow('specify', 'workspace', 'shadowed')]
+          workflowRows: [storedWorkflowRow('ship-it-flow', 'invalid')],
+          phaseRows: [storedRow('specify', 'invalid')]
         })
       }
     ]) {
@@ -1185,9 +1171,9 @@ describe('planWorkflowImport', () => {
     // oracle it was handed exactly as it found it — the command-level "nothing
     // was written" is asserted in `workflow-preflight.test.ts`.
     const ctx = workflowContext({
-      workflowRows: [storedWorkflowRow('other-flow', 'user', 'effective')],
-      pipelineRows: [storedPipelineRow('spec-authoring', 'user', 'shadowed')],
-      phaseRows: [storedRow('specify', 'workspace', 'invalid')],
+      workflowRows: [storedWorkflowRow('other-flow', 'effective')],
+      pipelineRows: [storedPipelineRow('spec-authoring', 'invalid')],
+      phaseRows: [storedRow('specify', 'invalid')],
       effectivePhases: [SPECIFY]
     });
     const before = JSON.stringify(ctx);
@@ -1245,7 +1231,7 @@ describe('planWorkflowImport', () => {
       REFERENCES_ONLY_WORKFLOW,
       workflowContext({
         effectivePipelines: [SPEC_AUTHORING],
-        pipelineRows: [storedPipelineRow('spec-authoring', 'user', 'effective')]
+        pipelineRows: [storedPipelineRow('spec-authoring', 'effective')]
       })
     );
 
@@ -1255,7 +1241,7 @@ describe('planWorkflowImport', () => {
   it('distinguishes a node id no layer claims from one a layer claims and cannot resolve', () => {
     const rows = plannedWorkflowRows(
       REFERENCES_ONLY_WORKFLOW,
-      workflowContext({ pipelineRows: [storedPipelineRow('spec-authoring', 'workspace', 'shadowed')] })
+      workflowContext({ pipelineRows: [storedPipelineRow('spec-authoring', 'invalid')] })
     );
 
     expect(rows[0]).toMatchObject({
@@ -1308,7 +1294,7 @@ describe('planWorkflowImport', () => {
 
     const rows = plannedWorkflowRows(
       missingPhase,
-      workflowContext({ phaseRows: [storedRow('specify', 'user', 'invalid')] })
+      workflowContext({ phaseRows: [storedRow('specify', 'invalid')] })
     );
 
     expect(rows[0]).toMatchObject({
@@ -1356,7 +1342,7 @@ describe('planWorkflowImport', () => {
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
       workflowContext({
-        pipelineRows: [storedPipelineRow('spec-authoring', 'user', 'effective')],
+        pipelineRows: [storedPipelineRow('spec-authoring', 'effective')],
         effectivePipelines: [SPEC_AUTHORING]
       })
     );
@@ -1375,7 +1361,7 @@ describe('planWorkflowImport', () => {
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
       workflowContext({
-        pipelineRows: [storedPipelineRow('spec-authoring', 'workspace', 'shadowed')]
+        pipelineRows: [storedPipelineRow('spec-authoring', 'invalid')]
       })
     );
 
@@ -1464,18 +1450,16 @@ describe('planWorkflowImport', () => {
 // down.
 
 describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031, FR-034, SC-011)', () => {
-  it('claims a Workflow id from any layer in any state', () => {
+  it('claims a Workflow id in any state', () => {
     // The oracle-level twin of the Phase and Pipeline matrices above, walked
-    // rather than sampled. `shadowed` and `invalid` are the load-bearing cells:
-    // a row in either state has no resolved definition, so an oracle reading a
-    // resolved catalog would report the id absent and overwrite authored work —
-    // possibly a row the operator is part-way through repairing (FR-034).
-    for (const scope of PRESENCE_SCOPES) {
-      for (const status of PRESENCE_STATUSES) {
-        expect(
-          findWorkflowIdPresence([storedWorkflowRow('ship-it-flow', scope, status)], 'ship-it-flow')
-        ).toEqual({ scope, status });
-      }
+    // rather than sampled. `invalid` is the load-bearing cell: a row in that
+    // state has no resolved definition, so an oracle reading a resolved catalog
+    // would report the id absent and overwrite authored work — possibly a row
+    // the operator is part-way through repairing (FR-034).
+    for (const status of PRESENCE_STATUSES) {
+      expect(
+        findWorkflowIdPresence([storedWorkflowRow('ship-it-flow', status)], 'ship-it-flow')
+      ).toEqual({ status });
     }
   });
 
@@ -1491,10 +1475,10 @@ describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031,
       'effectivePipelines',
       'invalidPipelines',
       'phaseRows',
-      'pipelineRevisions',
+      'pipelineRevision',
       'pipelineRows',
-      'revisions',
-      'workflowRevisions',
+      'revision',
+      'workflowRevision',
       'workflowRows'
     ]);
   });
@@ -1505,7 +1489,7 @@ describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031,
     // fixing? Those are different next steps.
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
-      workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'workspace', 'invalid')] })
+      workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'invalid')] })
     );
 
     expect(rows[0]).toEqual({
@@ -1513,7 +1497,6 @@ describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031,
       resourceKind: 'workflow',
       resourceId: 'ship-it-flow',
       name: 'Ship It Flow',
-      presentIn: 'workspace',
       presentRowStatus: 'invalid'
     });
   });
@@ -1561,7 +1544,7 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
     const workflowClaimed = plannedWorkflowRows(
       SHARED_ID_ACROSS_KINDS,
       workflowContext({
-        workflowRows: [storedWorkflowRow('spec-authoring', 'user', 'effective')]
+        workflowRows: [storedWorkflowRow('spec-authoring', 'effective')]
       })
     );
     expect(workflowClaimed.map((row) => row.outcome)).toEqual(['skip', 'import', 'import']);
@@ -1569,7 +1552,7 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
     const pipelineClaimed = plannedWorkflowRows(
       SHARED_ID_ACROSS_KINDS,
       workflowContext({
-        pipelineRows: [storedPipelineRow('spec-authoring', 'user', 'effective')],
+        pipelineRows: [storedPipelineRow('spec-authoring', 'effective')],
         effectivePipelines: [EFFECTIVE_SPEC_AUTHORING]
       })
     );
@@ -1585,7 +1568,7 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
     // its own root cause, so the chain reads from either end.
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
-      workflowContext({ phaseRows: [storedRow('specify', 'workspace', 'shadowed')] })
+      workflowContext({ phaseRows: [storedRow('specify', 'invalid')] })
     );
 
     expect(rows).toHaveLength(3);
@@ -1615,8 +1598,7 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
       resourceKind: 'phase',
       resourceId: 'specify',
       name: 'Specify',
-      presentIn: 'workspace',
-      presentRowStatus: 'shadowed'
+      presentRowStatus: 'invalid'
     });
   });
 
@@ -1630,8 +1612,8 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
       workflowContext({
-        workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')],
-        phaseRows: [storedRow('specify', 'user', 'effective')],
+        workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')],
+        phaseRows: [storedRow('specify', 'effective')],
         effectivePhases: [SPECIFY]
       })
     );
@@ -1642,7 +1624,6 @@ describe('Feature 086 T058 — same-kind conflicts and the coherent triple (FR-0
       expect(Object.keys(row).sort()).toEqual([
         'name',
         'outcome',
-        'presentIn',
         'presentRowStatus',
         'resourceId',
         'resourceKind'
@@ -1682,8 +1663,8 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
     // "already present" would tell the operator to do nothing about a document
     // that is broken.
     const claimsEverything = workflowContext({
-      workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')],
-      phaseRows: [storedRow('specify', 'user', 'effective')],
+      workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')],
+      phaseRows: [storedRow('specify', 'effective')],
       effectivePhases: [SPECIFY]
     });
 
@@ -1693,7 +1674,6 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
     expect(rootRows[0].resourceId).toBe('ship-it-flow');
     expect(rootRows[0].defects.length).toBeGreaterThan(0);
     // An invalid row carries no presence evidence, because presence was never asked.
-    expect(rootRows[0]).not.toHaveProperty('presentIn');
     expect(rootRows[0]).not.toHaveProperty('presentRowStatus');
 
     const phaseRows = plannedWorkflowRows(MALFORMED_PHASE, claimsEverything);
@@ -1707,7 +1687,7 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
     // operator to fix something that is not in their way.
     const referencesOnlyClaimed = plannedWorkflowRows(
       REFERENCES_ONLY_WORKFLOW,
-      workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')] })
+      workflowContext({ workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')] })
     );
     // Without the claim this exact document is `blocked` on `spec-authoring` —
     // the `planWorkflowImport` block above pins that half.
@@ -1718,7 +1698,7 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
     // supply is `skip`, not `blocked`.
     const pipelineClaimed = plannedWorkflowRows(
       workflowDocument({ pipelines: [INCLUDED_SPEC_AUTHORING] }),
-      workflowContext({ pipelineRows: [storedPipelineRow('spec-authoring', 'user', 'effective')] })
+      workflowContext({ pipelineRows: [storedPipelineRow('spec-authoring', 'effective')] })
     );
     const pipeline = pipelineClaimed.find((row) => row.resourceKind === 'pipeline');
     expect(pipeline?.outcome).toBe('skip');
@@ -1734,8 +1714,8 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
     const rows = plannedWorkflowRows(
       SELF_CONTAINED_WORKFLOW,
       workflowContext({
-        workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')],
-        phaseRows: [storedRow('specify', 'workspace', 'shadowed')]
+        workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')],
+        phaseRows: [storedRow('specify', 'invalid')]
       })
     );
 
@@ -1775,7 +1755,7 @@ describe('Feature 086 T059 — the FR-025a precedence order (SC-009a)', () => {
         text,
         workflowContext(
           testCase.claimed
-            ? { workflowRows: [storedWorkflowRow('ship-it-flow', 'user', 'effective')] }
+            ? { workflowRows: [storedWorkflowRow('ship-it-flow', 'effective')] }
             : {}
         )
       );
@@ -1790,36 +1770,36 @@ describe('the shipped example imports into a workspace that has never imported (
   // document the VSIX actually ships rather than on a fixture that resembles it.
   //
   // The presence oracle is built the way `preflight-service.ts` builds it — through
-  // `resolvePhaseCatalog` / `resolvePipelineCatalog` over the product's own layers,
-  // with the operator's two layers empty. That is deliberate and is what makes this
-  // test say something: a `context({ phaseRows: [] })` would pass today, because the
-  // planner is given its rows and the rows were never the argument that was wrong.
-  // What was wrong is that the built-in layer claimed the nine Phase ids and the one
-  // Pipeline id this very document supplies, so every row came back `skip` and the
-  // import wrote nothing.
+  // `resolvePhaseCatalog` / `resolvePipelineCatalog` over the catalog itself, with
+  // nothing stored. That is deliberate and is what makes this test say something: a
+  // `context({ phaseRows: [] })` would pass today, because the planner is given its
+  // rows and the rows were never the argument that was wrong. What was wrong is that
+  // the built-in layer claimed the nine Phase ids and the one Pipeline id this very
+  // document supplies, so every row came back `skip` and the import wrote nothing.
+  //
+  // Feature 099 (T496f) — that layer is deleted rather than emptied, so the
+  // fixture is an empty store. The case still runs its rows through the real
+  // resolvers rather than hand-built records: what it defends is that no id this
+  // document supplies is claimed by anything the product ships, and reading the
+  // resolvers is how a reintroduced shipped row would fail it.
   const EXAMPLE = readFileSync(
     join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
     'utf8'
   );
 
   function shippedContext(): PackageImportContext {
-    const phaseCatalog = resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: [],
-      workspace: []
-    });
+    const phaseCatalog = resolvePhaseCatalog({ rows: [], revision: REVISION });
     const pipelineCatalog = resolvePipelineCatalog({
-      builtIn: BUILT_IN_PIPELINES,
-      user: [],
-      workspace: [],
+      rows: [],
+      revision: PIPELINE_REVISION,
       phaseCatalog: phaseCatalog.effective
     });
     return {
       phaseRows: phaseCatalog.records,
       pipelineRows: pipelineCatalog.records,
       effectivePhases: phaseCatalog.effective,
-      revisions: phaseCatalog.revisions,
-      pipelineRevisions: pipelineCatalog.revisions
+      revision: phaseCatalog.revision,
+      pipelineRevision: pipelineCatalog.revision
     };
   }
 

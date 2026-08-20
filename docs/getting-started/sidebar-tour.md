@@ -85,7 +85,7 @@ The rows are grouped:
 
 ### Models & phases
 
-- **Phase model overrides** — opens a per-phase editor that writes to `schegent.phases`.
+- **Phase model overrides** — opens a per-phase editor that saves a new version of the phase definition to the catalog.
 - **Available models** — bound to `schegent.models`. List of model identifiers your Pipeline Builder will surface.
 - **Default pipeline** — bound to `schegent.defaultPipelineId`.
 

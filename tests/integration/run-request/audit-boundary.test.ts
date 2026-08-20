@@ -85,14 +85,12 @@ const COMPOSE: PhaseDef = {
   name: 'Compose',
   version: 1,
   instruction: 'Compose the thing.',
-  sourceScope: 'built-in'
 };
 
 const AUDITED_FLOW: PipelineDef = {
   id: 'audited-flow',
   name: 'Audited Flow',
   phases: ['compose'],
-  sourceScope: 'workspace',
   inputs: [
     { portId: 'brief', label: 'Brief', type: 'text', required: true },
     { portId: 'dossier', label: 'Dossier', type: 'local-file', required: true }

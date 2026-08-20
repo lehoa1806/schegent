@@ -7,15 +7,16 @@
 // hooks (which must run in component context) and the template wiring.
 //
 // The mutation model mirrors the Phase catalog: exactly one declared mutation
-// is in flight at a time, saves send the complete layer for one scope, and a
+// is in flight at a time, saves send the complete catalog, and a
 // `stale-catalog` rejection rebases that single mutation onto the freshly
 // projected records instead of clobbering a concurrent edit.
+//
+// Feature 099 (T494a, FR-043) — one layer, so one adopted revision and no
+// `mutationScope`. The revision handshake is unchanged in every other respect:
+// it is the expected-revision gate FR-047 keeps, now reading the store's
+// manifest revision instead of a per-scope record.
 
-import type {
-  PipelineCatalogMutation,
-  WorkflowSnapshot,
-  WritablePipelineDefinitionScope
-} from '../../lib/snapshot-types';
+import type { PipelineCatalogMutation, WorkflowSnapshot } from '../../lib/snapshot-types';
 import { savePipelines as savePipelinesHelper } from '../../lib/save-pipelines';
 import { useConfirm } from '../../lib/use-confirm';
 import {
@@ -35,20 +36,18 @@ export interface PipelineCatalogStoreOptions {
   readonly onSaveAccepted: () => void;
 }
 
-type Revisions = Record<WritablePipelineDefinitionScope, string>;
-
 export class PipelineCatalogStore {
   pipelines = $state<MutablePipeline[]>([]);
   selectedIndex = $state<number | null>(null);
   newPhaseId = $state('');
   savePending = $state(false);
   mutation = $state<PipelineCatalogMutation | null>(null);
-  mutationScope = $state<WritablePipelineDefinitionScope | null>(null);
   mutationSourceKey = $state<string | null>(null);
   historyIndex = $state(-1);
 
   #history = $state<MutablePipeline[][]>([]);
-  #adopted = $state<Revisions>({ user: '', workspace: '' });
+  /** The revision the visible rows were projected from; '' before the first. */
+  #adopted = $state('');
   #acceptedRevision = $state<string | null>(null);
   #staleRevision = $state<string | null>(null);
   #undoRedoInFlight = false;
@@ -74,32 +73,22 @@ export class PipelineCatalogStore {
   syncFromSnapshot(snapshot: WorkflowSnapshot): void {
     const catalog = snapshot.pipelineCatalog;
     if (!catalog || catalog.state !== 'ready') return;
-    const revisionKey = `${catalog.revisions.user}:${catalog.revisions.workspace}`;
-    const adoptedKey = `${this.#adopted.user}:${this.#adopted.workspace}`;
-    const scope = this.mutationScope;
-    if (
-      this.#staleRevision !== null &&
-      this.mutation &&
-      scope &&
-      catalog.revisions[scope] !== this.#adopted[scope]
-    ) {
+    const revision = catalog.revision;
+    if (this.#staleRevision !== null && this.mutation && revision !== this.#adopted) {
       this.pipelines = rebasePipelineMutation(
         catalog.records,
         this.pipelines,
         this.mutation,
-        scope,
         this.mutationSourceKey
       );
-      this.#adopted = { ...catalog.revisions };
+      this.#adopted = revision;
       this.#staleRevision = null;
     }
-    const acceptedRefresh =
-      this.#acceptedRevision !== null && scope !== null &&
-      catalog.revisions[scope] !== this.#adopted[scope];
-    const shouldAdopt = adoptedKey === ':' || this.mutation === null || acceptedRefresh;
-    if (revisionKey === adoptedKey || !shouldAdopt) return;
+    const acceptedRefresh = this.#acceptedRevision !== null && revision !== this.#adopted;
+    const shouldAdopt = this.#adopted === '' || this.mutation === null || acceptedRefresh;
+    if (revision === this.#adopted || !shouldAdopt) return;
     this.pipelines = catalog.records.map(sourceRecordToMutablePipeline);
-    this.#adopted = { ...catalog.revisions };
+    this.#adopted = revision;
     this.savePending = false;
     this.#clearMutation();
     this.selectedIndex = null;
@@ -151,31 +140,24 @@ export class PipelineCatalogStore {
     this.pipelines = next;
     this.selectedIndex = index + 1;
     this.#declare(
-      {
-        kind: 'duplicate',
-        sourceScope: original.scope,
-        sourcePipelineId: original.id,
-        pipelineId: copy.id
-      },
+      { kind: 'duplicate', sourcePipelineId: original.id, pipelineId: copy.id },
       copy
     );
   }
 
   async remove(index: number, originatingElement?: HTMLElement | null): Promise<void> {
     const pipeline = this.pipelines[index];
-    if (!pipeline || pipeline.scope === 'built-in' || this.savePending) return;
-    const scope = pipeline.scope;
+    if (!pipeline || this.savePending) return;
     const confirmed = await useConfirm('catalog.remove-pipeline', {
       originatingElement,
-      context: { pipelineName: pipeline.name, pipelineId: pipeline.id, scope }
+      context: { pipelineName: pipeline.name, pipelineId: pipeline.id }
     });
     if (!confirmed) return;
     const proposed = this.pipelines.filter((_row, rowIndex) => rowIndex !== index);
     const mutation: PipelineCatalogMutation = { kind: 'remove', pipelineId: pipeline.id };
     this.mutation = mutation;
-    this.mutationScope = scope;
     this.mutationSourceKey = pipeline.sourceKey;
-    this.#submit(mutation, scope, proposed);
+    this.#submit(mutation, proposed);
   }
 
   /** Drops an unsaved draft, or restores a persisted row from the projection. */
@@ -200,22 +182,18 @@ export class PipelineCatalogStore {
       rowIndex === index ? { ...row, ...patch } : row
     );
     const updated = this.pipelines[index];
-    if (!updated.persisted) updated.sourceKey = `draft::${updated.scope}::${updated.id}`;
-    if (updated.persisted && updated.scope !== 'built-in') {
+    if (updated.persisted) {
       this.mutation = { kind: 'edit', pipelineId: current.id };
-      this.mutationScope = updated.scope;
       this.mutationSourceKey = updated.sourceKey;
       return;
     }
+    updated.sourceKey = `draft::${updated.id}`;
     if (this.mutation?.kind === 'create' && typeof patch.id === 'string') {
       this.mutation = { kind: 'create', pipelineId: patch.id };
     } else if (this.mutation?.kind === 'duplicate' && typeof patch.id === 'string') {
       this.mutation = { ...this.mutation, pipelineId: patch.id };
     }
-    if (!updated.persisted && updated.scope !== 'built-in') {
-      this.mutationScope = updated.scope;
-      this.mutationSourceKey = updated.sourceKey;
-    }
+    this.mutationSourceKey = updated.sourceKey;
   }
 
   setPhase(pipelineIndex: number, phaseIndex: number, phaseId: string): void {
@@ -251,7 +229,7 @@ export class PipelineCatalogStore {
   }
 
   save(): void {
-    if (this.mutation && this.mutationScope) this.#submit(this.mutation, this.mutationScope);
+    if (this.mutation) this.#submit(this.mutation);
   }
 
   /**
@@ -270,13 +248,11 @@ export class PipelineCatalogStore {
 
   #declare(mutation: PipelineCatalogMutation, draft: MutablePipeline): void {
     this.mutation = mutation;
-    this.mutationScope = draft.scope === 'built-in' ? 'workspace' : draft.scope;
     this.mutationSourceKey = draft.sourceKey;
   }
 
   #clearMutation(): void {
     this.mutation = null;
-    this.mutationScope = null;
     this.mutationSourceKey = null;
     this.#acceptedRevision = null;
     this.#staleRevision = null;
@@ -284,19 +260,15 @@ export class PipelineCatalogStore {
 
   #submit(
     mutation: PipelineCatalogMutation,
-    scope: WritablePipelineDefinitionScope,
     sourceRows: readonly MutablePipeline[] = this.pipelines
   ): void {
     const catalog = this.#options.getSnapshot().pipelineCatalog;
     if (!catalog || catalog.state !== 'ready' || this.savePending) return;
-    const pipelines = sourceRows
-      .filter((row) => row.scope === scope)
-      .map(toSavePipelineRow);
+    const pipelines = sourceRows.map(toSavePipelineRow);
     this.savePending = true;
     this.#acceptedRevision = null;
     void savePipelinesHelper({
-      scope,
-      expectedRevision: this.#adopted[scope],
+      expectedRevision: this.#adopted,
       mutation,
       pipelines
     }).then((result) => {
@@ -314,7 +286,7 @@ export class PipelineCatalogStore {
       this.#acceptedRevision = accepted?.revision ?? '';
       // An accepted save whose revision already matches the projection means no
       // further snapshot is coming; settle now instead of waiting for one.
-      if (this.#acceptedRevision === catalog.revisions[scope]) {
+      if (this.#acceptedRevision === catalog.revision) {
         this.savePending = false;
         this.#clearMutation();
       }

@@ -46,28 +46,24 @@ const COMPOSE: PhaseDef = {
   name: 'Compose',
   version: 1,
   instruction: 'Compose the thing.',
-  sourceScope: 'built-in'
 };
 const REVIEW: PhaseDef = {
   id: 'review',
   name: 'Review',
   version: 1,
   instruction: 'Review the thing.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
   id: 'done',
   name: 'Done',
   version: 1,
   instruction: '(no-op)',
-  sourceScope: 'built-in'
 };
 
 export const TRIAGE_FLOW: PipelineDef = {
   id: 'triage-flow',
   name: 'Triage Flow',
   phases: ['compose'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
   outputs: [{ portId: 'verdict', label: 'Verdict', type: 'markdown' }]
 };
@@ -77,7 +73,6 @@ export const SHIP_FLOW: PipelineDef = {
   id: 'ship-flow',
   name: 'Ship Flow',
   phases: ['compose', 'review'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'plan', label: 'Plan', type: 'text', required: true }],
   outputs: [{ portId: 'receipt', label: 'Receipt', type: 'markdown' }]
 };
@@ -86,7 +81,6 @@ export const ROLLBACK_FLOW: PipelineDef = {
   id: 'rollback-flow',
   name: 'Rollback Flow',
   phases: ['review'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'reason', label: 'Reason', type: 'text' }],
   outputs: []
 };
@@ -95,7 +89,6 @@ export const NOTIFY_FLOW: PipelineDef = {
   id: 'notify-flow',
   name: 'Notify Flow',
   phases: ['review'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'note', label: 'Note', type: 'text' }],
   outputs: []
 };

@@ -22,7 +22,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -30,16 +29,26 @@ import type {
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
   | { outcome: 'canceled' }
   | { outcome: 'failed'; message: string };
 
+/**
+ * Seeded so a plan's revisions can be asserted against values this file names,
+ * and so the two catalogs can never be confused for one another.
+ */
+const SEEDED_PHASE_REVISION = 'rev-phase-pipeline-preflight';
+const SEEDED_PIPELINE_REVISION = 'rev-pipeline-preflight';
+
 interface Harness {
   readonly ctx: Parameters<typeof preflightHandler>[0];
   readonly acks: CommandAckMessage[];
-  readonly writePhaseConfig: ReturnType<typeof vi.fn>;
+  readonly store: FakeCatalogStore;
+  /** What the Pipeline read reported, so a case can assert against it. */
+  readonly storedPipelines: readonly unknown[];
   readonly updateConfig: ReturnType<typeof vi.fn>;
   readonly executeCommand: ReturnType<typeof vi.fn>;
 }
@@ -47,13 +56,15 @@ interface Harness {
 function buildHarness(
   opts: {
     text?: string;
-    pipelines?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-    phases?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
+    pipelines?: readonly unknown[];
+    phases?: readonly unknown[];
     sanitize?: (value: string) => string;
   } = {}
 ): Harness {
   const acks: CommandAckMessage[] = [];
-  const writePhaseConfig = vi.fn();
+  const store = new FakeCatalogStore({
+    revisions: { phase: SEEDED_PHASE_REVISION, pipeline: SEEDED_PIPELINE_REVISION }
+  });
   const updateConfig = vi.fn();
   const executeCommand = vi.fn();
 
@@ -65,14 +76,15 @@ function buildHarness(
   const ctx = {
     deps: {
       readPhaseConfig: () => ({
-        user: opts.phases?.user ?? [],
-        workspace: opts.phases?.workspace ?? []
+        rows: opts.phases ?? [],
+        revision: store.revisionOf('phase')
       }),
       readPipelineConfig: () => ({
-        user: opts.pipelines?.user ?? [],
-        workspace: opts.pipelines?.workspace ?? []
+        rows: opts.pipelines ?? [],
+        revision: store.revisionOf('pipeline')
       }),
-      writePhaseConfig,
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       updateConfig,
       executeCommand,
       openProcessYamlDocument,
@@ -93,7 +105,7 @@ function buildHarness(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  return { ctx, acks, writePhaseConfig, updateConfig, executeCommand };
+  return { ctx, acks, store, storedPipelines: opts.pipelines ?? [], updateConfig, executeCommand };
 }
 
 /**
@@ -227,7 +239,7 @@ describe('Feature 085 — package preflight dispatches on the declared kind (FR-
   it('writes nothing while planning a package', async () => {
     const { harness } = await preflight({ text: PACKAGE_DOCUMENT });
 
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
     expect(harness.executeCommand).not.toHaveBeenCalled();
   });
@@ -307,16 +319,21 @@ describe('Feature 085 — an import row carries what the write will store (FR-02
     expect(root.definition.pipelineId).toBe('ship-it');
   });
 
-  it('reports both writable layer revisions the plan was computed against', async () => {
-    const { result } = await preflight({ text: PACKAGE_DOCUMENT });
+  it('reports one revision per catalog the plan was computed against', async () => {
+    const { harness, result } = await preflight({ text: PACKAGE_DOCUMENT });
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
 
-    expect(Object.keys(result.plan.computedAgainstRevision).sort()).toEqual([
-      'user',
-      'workspace'
-    ]);
-    expect(BUILT_IN_PIPELINES.some((pipeline) => pipeline.id === 'ship-it')).toBe(false);
+    // Feature 099 (FR-042) — one revision per catalog this plan can write, not a
+    // map of layer names. Distinctness matters: a plan that reported the Phase
+    // revision for the Pipeline catalog would satisfy a weaker assertion.
+    expect(result.plan.computedAgainstRevision).toBe(SEEDED_PHASE_REVISION);
+    expect(result.plan.computedAgainstPipelineRevision).toBe(SEEDED_PIPELINE_REVISION);
+    // The catalog this preflight read must not already hold the fixture's id, or
+    // a `skip` would be asserted above as an `import` for the wrong reason. The
+    // built-in tier is gone, so stored rows are the only place a collision could
+    // now come from.
+    expect(harness.storedPipelines).toEqual([]);
   });
 
   it('counts one bucket per outcome, summing to the row count (FR-028)', async () => {
@@ -363,7 +380,7 @@ describe('Feature 085 — a package cannot declare one id twice (FR-031)', () =>
   it('writes nothing, because a refusal never reaches a save', async () => {
     const harness = buildHarness({ text: DUPLICATED });
     await preflightHandler(harness.ctx, COMMAND);
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 

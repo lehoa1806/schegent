@@ -2,8 +2,8 @@
 //
 // The scenario this file exists to pin hardest is QS-24: a preflight changes
 // nothing. The harness supplies every write-shaped dependency a handler in this
-// directory could reach — `writePhaseConfig`, `executeCommand`, `notifyWarning`
-// — and asserts each was never called, and that both layer revisions read the
+// directory could reach — the catalog store, `executeCommand`, `notifyWarning`
+// — and asserts each was never reached, and that the catalog revision reads the
 // same before and after. It also asserts the chosen document is read EXACTLY
 // once: no second read, no re-read on a refusal, nothing retained past the call.
 //
@@ -14,7 +14,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -23,11 +22,18 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
   | { outcome: 'canceled' }
   | { outcome: 'failed'; message: string };
+
+/**
+ * Seeded so a plan's revision can be asserted against a value this file names,
+ * rather than against whatever the read happened to return.
+ */
+const SEEDED_PHASE_REVISION = 'rev-phase-preflight-seed';
 
 interface Harness {
   readonly ctx: Parameters<typeof preflightHandler>[0];
@@ -35,15 +41,14 @@ interface Harness {
   readonly audits: unknown[];
   readonly warnings: string[];
   readonly opens: { count: number };
-  readonly writePhaseConfig: ReturnType<typeof vi.fn>;
+  readonly store: FakeCatalogStore;
   readonly executeCommand: ReturnType<typeof vi.fn>;
   readonly notifyWarning: ReturnType<typeof vi.fn>;
 }
 
 function buildHarness(
   opts: {
-    user?: readonly unknown[];
-    workspace?: readonly unknown[];
+    rows?: readonly unknown[];
     open?: OpenResult;
     openThrows?: Error;
     withOpenAdapter?: boolean;
@@ -54,7 +59,7 @@ function buildHarness(
   const audits: unknown[] = [];
   const warnings: string[] = [];
   const opens = { count: 0 };
-  const writePhaseConfig = vi.fn();
+  const store = new FakeCatalogStore({ revisions: { phase: SEEDED_PHASE_REVISION } });
   const executeCommand = vi.fn();
   const notifyWarning = vi.fn();
 
@@ -66,8 +71,12 @@ function buildHarness(
 
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: opts.user ?? [], workspace: opts.workspace ?? [] }),
-      writePhaseConfig,
+      readPhaseConfig: () => ({
+        rows: opts.rows ?? [],
+        revision: store.revisionOf('phase')
+      }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       executeCommand,
       notifyWarning,
       ...(opts.withOpenAdapter === false ? {} : { openProcessYamlDocument }),
@@ -99,7 +108,7 @@ function buildHarness(
     audits,
     warnings,
     opens,
-    writePhaseConfig,
+    store,
     executeCommand,
     notifyWarning
   };
@@ -167,23 +176,25 @@ describe('Feature 084 — Phase import preflight', () => {
       }
     ]);
     expect(result.plan.counts).toEqual({ import: 1, skip: 0, invalid: 0, blocked: 0 });
-    const expected = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, user: [], workspace: [] });
-    expect(result.plan.computedAgainstRevision).toEqual(expected.revisions);
+    // The plan carries the revision the catalog read reported, verbatim — not one
+    // it recomputed for itself, which is what a confirmation later checks against.
+    expect(result.plan.computedAgainstRevision).toBe(SEEDED_PHASE_REVISION);
     expect(h.acks[0]!.status).toBe('accepted');
   });
 
-  // QS-24. Everything a handler in this directory could write with, and both
-  // revisions, checked either side of the call.
-  it('QS-24 writes nothing, moves neither revision, and reads the document exactly once', async () => {
-    const layers = { user: [], workspace: [] } as const;
-    const before = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, ...layers });
+  // QS-24. Everything a handler in this directory could write with, and the
+  // catalog revision, checked either side of the call.
+  it('QS-24 writes nothing, moves no revision, and reads the document exactly once', async () => {
     const h = buildHarness({ open: { outcome: 'read', bytes: bytes(NEW_PHASE_DOCUMENT) } });
+    const before = h.store.revisionOf('phase');
 
     await preflightHandler(h.ctx, COMMAND);
 
-    const after = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, ...layers });
-    expect(after.revisions).toEqual(before.revisions);
-    expect(h.writePhaseConfig).not.toHaveBeenCalled();
+    // Feature 099 (T496f) — the write seam a preflight must not reach is the
+    // catalog store. A save would leave a request behind AND move the revision;
+    // both are checked, because a refused save still records its request.
+    expect(h.store.layerSaves).toEqual([]);
+    expect(h.store.revisionOf('phase')).toBe(before);
     expect(h.executeCommand).not.toHaveBeenCalled();
     expect(h.notifyWarning).not.toHaveBeenCalled();
     expect(h.audits).toEqual([]);
@@ -206,16 +217,15 @@ describe('Feature 084 — Phase import preflight', () => {
     // `ship-it` exists only as a row that fails validation, so it appears in no
     // effective definition. Presence must still find it.
     const h = buildHarness({
-      user: [{ phaseId: 'ship-it', name: 'Ship It', version: 1 }],
+      rows: [{ phaseId: 'ship-it', name: 'Ship It', version: 1 }],
       open: { outcome: 'read', bytes: bytes(NEW_PHASE_DOCUMENT) }
     });
 
     await preflightHandler(h.ctx, COMMAND);
 
     const resolved = resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: [{ phaseId: 'ship-it', name: 'Ship It', version: 1 }],
-      workspace: []
+      rows: [{ phaseId: 'ship-it', name: 'Ship It', version: 1 }],
+      revision: SEEDED_PHASE_REVISION
     });
     expect(resolved.effective.some((def) => def.phaseId === 'ship-it')).toBe(false);
 
@@ -228,7 +238,6 @@ describe('Feature 084 — Phase import preflight', () => {
         resourceKind: 'phase',
         resourceId: 'ship-it',
         name: 'Ship It',
-        presentIn: 'user',
         presentRowStatus: 'invalid'
       }
     ]);

@@ -17,13 +17,14 @@
   // save, and shares none of those flags; its single precondition is that the
   // catalog actually holds the row, which is readable from the selection itself.
   // Deriving it in the editor would mean threading a flag whose inputs live here.
+  //
+  // Feature 099 (T494a, FR-043) — no scope picker. A save had a destination to
+  // choose while there were three layers; there is one, so the control is gone
+  // and "Reset Scope" is what it always did to the only layer there is: empty
+  // the catalog.
   import type { WorkflowExportInclusion } from '../../lib/messages';
-  import type { WritableWorkflowDefinitionScope } from '../../lib/snapshot-types';
   import { exportWorkflowYaml } from '../../lib/process-yaml-ipc';
   import type { MutableWorkflow } from './types';
-
-  /** The scopes an operator may write to. Rendered only here, so it lives here. */
-  const SCOPES: readonly WritableWorkflowDefinitionScope[] = ['workspace', 'user'];
 
   /**
    * Feature 086 T023 (FR-013) — the depths this control offers, each with the
@@ -49,7 +50,6 @@
     ];
 
   interface Props {
-    scope: WritableWorkflowDefinitionScope;
     savePending: boolean;
     mutatingDisabled: boolean;
     /** The effective Pipeline catalog resolved and holds nothing (FR-045). */
@@ -59,7 +59,6 @@
     saveDisabled: boolean;
     /** The Library row in focus, or null when nothing is selected. */
     selected: MutableWorkflow | null;
-    onscope: (scope: WritableWorkflowDefinitionScope) => void;
     onadd: () => void;
     onduplicate: () => void;
     onremove: (event: MouseEvent) => void;
@@ -68,7 +67,6 @@
   }
 
   const {
-    scope,
     savePending,
     mutatingDisabled,
     noPipelines,
@@ -76,7 +74,6 @@
     removeDisabled,
     saveDisabled,
     selected,
-    onscope,
     onadd,
     onduplicate,
     onremove,
@@ -136,21 +133,6 @@
 </script>
 
 <div class="toolbar">
-  <label class="scope-select">
-    Scope
-    <select
-      data-testid="workflows-scope"
-      value={scope}
-      disabled={mutatingDisabled}
-      aria-label="Workflow scope"
-      onchange={(event) =>
-        onscope(event.currentTarget.value as WritableWorkflowDefinitionScope)}
-    >
-      {#each SCOPES as writable (writable)}
-        <option value={writable}>{writable}</option>
-      {/each}
-    </select>
-  </label>
   <button
     class="btn btn-secondary"
     data-testid="workflows-duplicate"
@@ -181,7 +163,7 @@
     disabled={mutatingDisabled}
     onclick={onreset}
   >
-    Reset Scope
+    Reset Catalog
   </button>
   <!-- FR-013 — the choice sits beside the control it changes, so it is made
        before the document is produced rather than after. Disabled on exactly the

@@ -81,7 +81,6 @@ const AUTHORED_ROW = {
 };
 
 const SAMPLE_REQUEST: SaveWorkflowsRequest = {
-  scope: 'workspace',
   expectedRevision: 'a'.repeat(64),
   mutation: { kind: 'edit', workflowId: 'release-train' },
   workflows: [AUTHORED_ROW]
@@ -98,7 +97,7 @@ afterEach(() => {
 });
 
 describe('Feature 083 T033 — saveWorkflows helper', () => {
-  it('posts exactly one CMD_SAVE_WORKFLOWS envelope carrying the scoped request verbatim', async () => {
+  it('posts exactly one CMD_SAVE_WORKFLOWS envelope carrying the request verbatim', async () => {
     const posted: unknown[] = [];
     const postMessage = (msg: unknown): void => {
       posted.push(msg);
@@ -140,11 +139,11 @@ describe('Feature 083 T033 — saveWorkflows helper', () => {
     await promise;
   });
 
-  it('resolves accepted and preserves the { scope, revision, mutation } ack result', async () => {
+  it('resolves accepted and preserves the { revision, mutation } ack result', async () => {
     const postMessage = vi.fn();
     const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
     const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = { scope: 'workspace', revision: 'b'.repeat(64), mutation: 'edit' };
+    const result = { revision: 'b'.repeat(64), mutation: 'edit' };
     fireAck(env.correlationId, 'accepted', undefined, result);
     await expect(promise).resolves.toEqual({ status: 'accepted', result });
   });
@@ -187,7 +186,7 @@ describe('Feature 083 T033 — saveWorkflows helper', () => {
     const postMessage = vi.fn();
     const p1 = saveWorkflows(SAMPLE_REQUEST, postMessage);
     const p2 = saveWorkflows(
-      { ...SAMPLE_REQUEST, scope: 'user', mutation: { kind: 'remove', workflowId: 'release-train' } },
+      { ...SAMPLE_REQUEST, mutation: { kind: 'remove', workflowId: 'release-train' } },
       postMessage
     );
     expect(postMessage).toHaveBeenCalledTimes(2);
@@ -230,12 +229,7 @@ describe('Feature 083 T033 — saveWorkflows helper', () => {
   const MUTATIONS: readonly SaveWorkflowsRequest['mutation'][] = [
     { kind: 'create', workflowId: 'release-train' },
     { kind: 'edit', workflowId: 'release-train' },
-    {
-      kind: 'duplicate',
-      sourceScope: 'user',
-      sourceWorkflowId: 'release-train',
-      workflowId: 'release-train-copy'
-    },
+    { kind: 'duplicate', sourceWorkflowId: 'release-train', workflowId: 'release-train-copy' },
     { kind: 'remove', workflowId: 'release-train' },
     { kind: 'reset' }
   ];

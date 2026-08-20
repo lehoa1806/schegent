@@ -57,6 +57,7 @@ import {
   type PipelineDef
 } from '../../src/config/pipeline-config';
 import { CMD_LAUNCH_WORKFLOW } from '../../src/contracts/sidebar-ipc';
+import { FIXTURE_REVISION } from '../fixtures/catalog-snapshot-fixture';
 import type { LaunchWorkflowResult } from '../../src/contracts/sidebar-ipc/workflow-run';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import type { ConnectedWorkflowRun } from '../../src/state/connected-workflow-run';
@@ -239,21 +240,18 @@ const ALPHA: PhaseDef = {
   name: 'Alpha',
   version: 1,
   instruction: 'Alpha prompt.',
-  sourceScope: 'workspace'
 };
 const BETA: PhaseDef = {
   id: 'beta',
   name: 'Beta',
   version: 1,
   instruction: 'Beta prompt.',
-  sourceScope: 'workspace'
 };
 
 const AB_FLOW: PipelineDef = {
   id: 'ab-flow',
   name: 'A then B',
   phases: ['alpha', 'beta'],
-  sourceScope: 'workspace',
   inputs: [
     { portId: 'brief', label: 'Brief', type: 'text', required: true },
     { portId: 'notes', label: 'Notes', type: 'text' }
@@ -264,7 +262,6 @@ const SOLO_FLOW: PipelineDef = {
   id: 'solo-flow',
   name: 'Solo',
   phases: ['alpha'],
-  sourceScope: 'workspace',
   inputs: [],
   outputs: []
 };
@@ -356,11 +353,16 @@ function buildRouter(
     // Not `DEFAULT_BACKEND`, so a frozen Phase carrying it proves the host's
     // configured backend reached the snapshot rather than the fallback.
     defaultRunnerKind: 'codex',
-    readPhaseConfig: () => ({ user: [], workspace: PHASE_ROWS }),
-    readPipelineConfig: () => ({ user: [], workspace: PIPELINE_ROWS }),
+    // Feature 099 (T496f, FR-042) — the three readers answered `{ user,
+    // workspace }` and now answer `{ rows, revision }`. The deps bag is cast, so
+    // the old shape kept typechecking while every catalog resolved empty and
+    // every gate below answered `-not-found`; the rows are what these cases are
+    // about and they are unchanged.
+    readPhaseConfig: () => ({ rows: PHASE_ROWS, revision: FIXTURE_REVISION }),
+    readPipelineConfig: () => ({ rows: PIPELINE_ROWS, revision: FIXTURE_REVISION }),
     readWorkflowConfig: () => {
       reads.workflows += 1;
-      return { user: [], workspace: WORKFLOW_ROWS };
+      return { rows: WORKFLOW_ROWS, revision: FIXTURE_REVISION };
     },
     ...(opts.omitConnectedRuns ? {} : { connectedRuns }),
     ...(opts.omitCatalog

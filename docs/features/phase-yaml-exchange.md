@@ -26,11 +26,12 @@ different for a Pipeline or a Workflow.
 
 - A teammate wrote a `lint-and-scan` Phase you want on your machine too.
 - You keep a repository of reviewed Phase definitions and want them checked in
-  as readable files rather than as fragments of `settings.json`.
-- You are moving to a new machine and want your user-scope Phases to come with
-  you.
+  as readable files.
+- You are moving to a new machine, or to a second workspace, and want your Phases
+  to come with you. The catalog store is per-workspace and local — a YAML export
+  is the portable form.
 - You want a Phase definition in a code review, where a YAML diff is legible and
-  a settings-blob diff is not.
+  a JSON store record is not.
 
 ## The document format
 
@@ -193,16 +194,13 @@ Each row in the Phase manager has its own **Export** control. It writes a file
 you name; the suggested name is `<phaseId>.phase.yaml`.
 
 Export reads the **effective** catalog — the definition this installation would
-actually run, after precedence and validity filtering. Two consequences worth
-knowing:
+actually run, after validity filtering. One consequence worth knowing: an
+`invalid` row cannot be exported, because there is no valid definition to
+serialize. The control is disabled and says
+`This Phase has errors, so there is nothing valid to export.`
 
-- A `shadowed` row's Export stays enabled, and writes the definition that
-  *resolves* for that id, not the shadowed row's own contents. The row's
-  `shadowed` badge already tells you it is not the one in force. Disabling the
-  control would leave you with no way to obtain the definition that is.
-- An `invalid` row cannot be exported: there is no valid definition to
-  serialize. The control is disabled and says
-  `This Phase has errors, so there is nothing valid to export.`
+Export writes the **active** version. Earlier versions in the definition's
+history are readable in the Builder but are not what Export serializes.
 
 An unsaved draft cannot be exported either —
 `Save this Phase before exporting it.` Export serializes what the catalog holds,
@@ -225,7 +223,7 @@ Each plan row is one of three outcomes:
 
 | Outcome | Meaning |
 |---|---|
-| `import` | The document is valid and its `phaseId` is in no layer. Committing adds it. |
+| `import` | The document is valid and the catalog holds no Phase with that `phaseId`. Committing adds it. |
 | `skip` | A Phase with that id is already present. Committing would not change it. |
 | `invalid` | The document parsed but a field is out of bounds. The defects are listed per field. |
 
@@ -237,15 +235,14 @@ A document-level refusal produces no plan at all, not a partial one.
 
 ### The skip guarantee
 
-An import **never** overwrites an existing Phase. Not a user-scope one, not a
-workspace-scope one, not an invalid one, not a shadowed one.
+An import **never** overwrites an existing Phase. Not a valid one, not an invalid
+one.
 
-Presence is computed across **every layer** — `built-in`, `user`, `workspace` —
-and across **every row status**, including `shadowed` and `invalid`. If any layer
-holds a row with that `phaseId`, the outcome is `skip`, and the row says which
-layer claims it and what status that row has:
+Presence is computed across the catalog's **stored** rows at **every status**,
+including `invalid`. If the catalog holds a row with that `phaseId`, the outcome
+is `skip`, and the row says what status that row has:
 
-> `Already present in the workspace layer as an invalid row, so this import would not change it.`
+> `Already present as an invalid row, so this import would not change it.`
 
 Including invalid rows is the point rather than an oversight. A broken row is
 still an operator's authored work; an import that replaced it would erase an
@@ -256,13 +253,17 @@ Note the deliberate asymmetry with export:
 | Direction | Reads | Why |
 |---|---|---|
 | Export | the effective catalog | you want the definition that actually runs |
-| Import presence | every layer's stored rows, every status | you want nothing of yours silently replaced |
+| Import presence | the stored rows, every status | you want nothing of yours silently replaced |
 
-Reading the effective catalog for presence would treat a shadowed or invalid row
-as absent, and the import would then write over it.
+Reading the effective catalog for presence would treat an invalid row as absent,
+and the import would then write over it. That property is unchanged by the move
+to a single-layer store: only the *scan* collapsed, from a walk over three layers
+to one pass over the manifest.
 
 To replace a Phase you already have, remove or rename the existing row in the
 Phase manager first, or edit the document's `metadata.phaseId` before importing.
+Replacing it in place is also fine — editing the Phase writes a new version, and
+the one you are replacing stays readable in its history.
 
 ### The two capabilities an import can require
 
@@ -293,19 +294,20 @@ and a declared `import` mutation intent.
 That means an import inherits the catalog's existing write semantics unchanged:
 
 - **All-or-nothing.** One write of one layer, or no write at all.
-- **Revision-gated.** If the target layer changed since preflight, the save is
+- **Revision-gated.** If the catalog changed since preflight, the save is
   rejected as `stale-catalog` and you re-run the preflight against the current
-  layer. The revision gate runs *before* the trust gate, so a stale untrusted
+  catalog. The revision gate runs *before* the trust gate, so a stale untrusted
   save tells you it is stale.
 - **Validated again.** The save command's own validator is the gate. The
   document's declared values are forwarded verbatim, so a value the catalog
   would reject is rejected by the catalog, with the catalog's own message.
-- **One target scope.** `user` or `workspace`, chosen by you after seeing the
-  plan. `built-in` is never a save target.
+- **One target.** The catalog. There is no scope to choose: the built-in and
+  user/workspace tier is gone, so an import lands in the one place definitions
+  live.
 
 An import cannot be started while a Phase mutation is outstanding —
 `Save or discard your pending Phase changes before importing.` The commit sends
-the whole persisted layer, so starting one with a draft open would ask you to
+the whole persisted set, so starting one with a draft open would ask you to
 confirm a write that silently drops the edit you are mid-way through.
 
 ## Pipeline packages
@@ -371,7 +373,7 @@ outcomes, plus a fourth that only a Pipeline can have:
 | `blocked` | The Pipeline references a Phase this catalog cannot resolve, and the package does not supply it. Committing would write a Pipeline that cannot run. |
 
 The skip guarantee is unchanged and applies per resource: nothing you already
-have is overwritten, whichever layer holds it and whatever status it has.
+have is overwritten, whatever status it has.
 
 That produces one row pair worth recognizing, because it reads like a
 contradiction and is not:
@@ -381,9 +383,9 @@ contradiction and is not:
 
 Both are true at once. Presence and resolution are different questions:
 presence asks "would a write destroy something someone authored?" and counts
-shadowed and invalid rows, because those are still authored work. Resolution asks
-"can this Pipeline actually run?" and does not, because a shadowed or invalid row
-is not what runs. Fix the existing row, and both go away.
+invalid rows, because those are still authored work. Resolution asks "can this
+Pipeline actually run?" and does not, because an invalid row is not what runs.
+Fix the existing row, and both go away.
 
 ### Committing a package: two writes, in order
 
@@ -406,9 +408,10 @@ catalog on the strength of a write it did not manage to finish — a worse outco
 than an unfinished import. Re-run the same document once the cause is addressed
 and it finishes the job; the part that already landed simply reads as `skip`.
 
-The most common cause of a `partial` is the third capability a package can
-require: the Pipeline layer needs `schegent.trust.allowPipelineOverrides` on top
-of the two a Phase import needs. Grant it and re-run. See
+The Phase write passes the two Phase capabilities; the Pipeline write passes
+Workspace Trust and nothing further — there is no separate Pipeline capability to
+grant. So a `partial` here means the Phases were denied and the Pipeline never
+ran, or the Pipeline write hit the revision gate or a validation refusal. See
 [Trust Scopes](../operations/trust-scopes.md).
 
 ## Workflow packages
@@ -507,7 +510,7 @@ exporting several rows in a row. Nothing about it is persisted.
 An unsaved Workflow cannot be exported —
 `Save this Workflow first. Export writes the definition the catalog holds, not an
 unsaved draft.` Nothing else is pre-checked in the webview. In particular, a
-stored Workflow whose Pipelines are missing from every layer is still exportable
+stored Workflow whose Pipelines are missing from the catalog is still exportable
 in references-only form, graph intact: whether a reference resolves is the host's
 question to answer, because only the host reads the effective catalog.
 
@@ -569,10 +572,10 @@ its Pipelines is a Workflow whose nodes do not resolve. Writing them the other
 way round would publish, for as long as the next write took, a definition that
 cannot run.
 
-Each write carries its own revision and its own declared `import-package` intent
-naming that layer's target set, and each passes its own trust gate — so the
-outcomes are the same three as for a Pipeline package, with one more shape of
-`partial` available:
+Each write carries its own revision — one per kind — and its own declared
+`import-package` intent naming that kind's target set, and each passes its own
+gates. So the outcomes are the same three as for a Pipeline package, with one
+more shape of `partial` available:
 
 | Outcome | Meaning |
 |---|---|
@@ -585,11 +588,12 @@ same recovery: re-run the same document once the cause is addressed. Whatever
 already landed reads as `skip` on the second run, so the retry finishes the job
 from wherever it stopped, at any depth.
 
-The Workflow layer needs `schegent.trust.allowWorkflowOverrides`, on top of
-`allowPipelineOverrides` for the Pipeline layer and the Phase capabilities for
-the Phase layer. A package that stops one write short of finishing is most often
-missing the capability for the layer it stopped at. See
-[Trust Scopes](../operations/trust-scopes.md).
+Only the Phase write carries capability gates — `allowCustomPhases`, and
+`allowCustomRetryConditions` when a Phase declares one. The Pipeline and Workflow
+writes need Workspace Trust and nothing further; the capabilities that once gated
+them are retired. A package that stops one write short of finishing has hit the
+revision gate, a validation refusal, or a Phase-capability denial on the first
+write. See [Trust Scopes](../operations/trust-scopes.md).
 
 ## Refusal classes
 
@@ -680,12 +684,12 @@ audited as what it is — a Phase catalog save — by the save path that perform
 and one write either landed or it did not, so the catalog itself is the record.
 
 A **package** import is different, and that is the whole reason the third event
-exists. It writes up to three layers that can succeed independently, so a
+exists. It writes up to three kinds that can succeed independently, so a
 workspace holding the Phases and no Pipeline — or the Phases and Pipelines and no
 Workflow — is indistinguishable from an operator who imported only that much
 deliberately. The commit and refusal records are what tell those apart after the
 fact, and the third level does not change the shape of either: one
-`process-exchange-import-committed` per layer that landed, which is also why a
+`process-exchange-import-committed` per kind that landed, which is also why a
 refusal is recorded at *every* gate a package write can be turned away by. An
 unaudited refusal is indistinguishable from an operator who closed the dialog.
 
@@ -732,9 +736,11 @@ written across the boundary stays readable in both directions.
 - **Round-tripping normalizes formatting, not content.** Import a document that
   used a different (still legal) scalar style and re-export it, and the bytes
   will be the serializer's canonical form. The Phase is unchanged.
-- **`built-in` ids are claimed.** A document whose `phaseId` matches a built-in
-  Phase skips, because the built-in layer holds that id. To shadow a built-in,
-  author the override in the Phase manager, where the shadowing is explicit.
+- **No id is claimed in advance.** Nothing ships built in, so a fresh workspace
+  has an empty catalog and every `phaseId` is available. An id only skips once
+  you hold a Phase with that id.
+- **An import writes a version, like any other save.** A document that imports
+  creates version 1 of that Phase. Its history starts there.
 
 ## Troubleshooting
 

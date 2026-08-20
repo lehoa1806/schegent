@@ -64,7 +64,7 @@ function fireAck(id: string, status: 'accepted' | 'rejected', result?: unknown):
 const EMPTY_PLAN: ImportPlan = {
   rows: [],
   counts: { import: 0, skip: 0, blocked: 0, invalid: 0 },
-  computedAgainstRevision: { user: 'user-rev', workspace: 'workspace-rev' }
+  computedAgainstRevision: 'rev-preflight'
 };
 
 const PLANNED: PreflightProcessYamlResult = { outcome: 'planned', plan: EMPTY_PLAN };

@@ -175,7 +175,6 @@ beforeEach(async () => {
   mocks.state.createStatusBarItemDispose.mockClear();
   mocks.state.listeners.clear();
   mocks.state.workspaceFolders = undefined;
-  disposeWorkspaceFolderPicker();
   resetMultiRootWarningGuardForTest();
   // Feature FR-R3-003 — ownership records live on disk under the workspace, not
   // in the `Memento`, so unlike every other line above they outlive the process.
@@ -187,6 +186,17 @@ beforeEach(async () => {
     recursive: true,
     force: true
   });
+  // Feature 099 (T496f) — flushed AFTER the await, not before it. The prior
+  // case's activation is still alive by design (see the note above), and its
+  // in-flight async work reads the picker; a flush that happens before an
+  // `await` leaves a window in which one of those reads re-populates the cache
+  // with the `undefined` this line just set two statements above. The next case
+  // then sets its folder, calls `activate`, and reads a cache that was already
+  // populated — so stage 2 silently never wires. Flushing last leaves no such
+  // window. Nothing about the picker's own contract changes: its cache is
+  // invalidated by `onDidChangeWorkspaceFolders` in the product, and this file
+  // clears that listener set rather than firing it.
+  disposeWorkspaceFolderPicker();
 });
 
 describe('activate() — BUG-001 activation invariant', () => {

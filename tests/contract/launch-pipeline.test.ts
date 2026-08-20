@@ -294,21 +294,18 @@ const ALPHA: PhaseDef = {
   name: 'Alpha',
   version: 1,
   instruction: 'Alpha prompt.',
-  sourceScope: 'workspace'
 };
 const BETA: PhaseDef = {
   id: 'beta',
   name: 'Beta',
   version: 1,
   instruction: 'Beta prompt.',
-  sourceScope: 'workspace'
 };
 
 const AB_FLOW: PipelineDef = {
   id: 'ab-flow',
   name: 'A then B',
   phases: ['alpha', 'beta'],
-  sourceScope: 'workspace',
   inputs: [
     { portId: 'brief', label: 'Brief', type: 'text', required: true },
     { portId: 'notes', label: 'Notes', type: 'text' }
@@ -321,7 +318,6 @@ const BROKEN_FLOW: PipelineDef = {
   id: 'broken-flow',
   name: 'Broken',
   phases: ['alpha', 'ghost'],
-  sourceScope: 'workspace',
   inputs: [],
   outputs: []
 };

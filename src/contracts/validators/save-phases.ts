@@ -1,3 +1,9 @@
+// Feature 082 (T023) — CMD_SAVE_PHASES ingress validator.
+//
+// Feature 099 (FR-042) — `scope` left the envelope with the layer tier; see
+// `save-pipelines.ts` for why an envelope still carrying it is refused rather
+// than tolerated.
+
 import { CMD_SAVE_PHASES, type SidebarCommand } from '../sidebar-ipc';
 import type { PhaseCatalogMutation } from '../process-definitions';
 import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
@@ -29,10 +35,11 @@ function validMutation(value: unknown): value is PhaseCatalogMutation {
       && mutation.phaseIds.every(validPhaseId);
   }
   return mutation.kind === 'duplicate'
-    && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourcePhaseId', 'phaseId'])
-    && (mutation.sourceScope === 'built-in'
-      || mutation.sourceScope === 'user'
-      || mutation.sourceScope === 'workspace')
+    // Feature 099 (FR-043) — `sourceScope` left the duplicate mutation with the
+    // layer tier. It said which layer to copy FROM, and one catalog per kind
+    // leaves the source id naming the row exactly. Still listed nowhere, so an
+    // envelope carrying it is refused rather than silently stripped.
+    && !hasUnexpectedKeys(mutation, ['kind', 'sourcePhaseId', 'phaseId'])
     && validPhaseId(mutation.sourcePhaseId)
     && validPhaseId(mutation.phaseId);
 }
@@ -46,8 +53,7 @@ export function validateSavePhases(
     return fail('missing-payload', { type: CMD_SAVE_PHASES, correlationId });
   }
   const value = payload as Record<string, unknown>;
-  const invalid = hasUnexpectedKeys(value, ['scope', 'expectedRevision', 'mutation', 'phases'])
-    || (value.scope !== 'user' && value.scope !== 'workspace')
+  const invalid = hasUnexpectedKeys(value, ['expectedRevision', 'mutation', 'phases'])
     || typeof value.expectedRevision !== 'string'
     || value.expectedRevision.length === 0
     || value.expectedRevision.length > 128
@@ -58,7 +64,6 @@ export function validateSavePhases(
     type: CMD_SAVE_PHASES,
     correlationId,
     payload: {
-      scope: value.scope,
       expectedRevision: value.expectedRevision,
       mutation: value.mutation,
       phases: value.phases

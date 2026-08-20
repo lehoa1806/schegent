@@ -34,8 +34,7 @@ export type {
   ImportPlanCounts,
   ImportPlanOutcome,
   ImportPlanRow,
-  ProcessYamlLayerRevisions,
-  ProcessYamlPresenceScope,
+  ProcessYamlCatalogRevision,
   ProcessYamlPresenceStatus
 } from '../../services/process-yaml/types';
 

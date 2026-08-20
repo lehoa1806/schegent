@@ -3,9 +3,13 @@
   //
   // Split out of WorkflowCatalogEditor so that file stays inside the
   // repository-wide 500-line Svelte budget. A row summarises the whole
-  // definition — scope, purpose, Pipeline sequence, derived ports, validation
-  // state — so an operator who did not author it can tell what it does and
-  // whether it currently resolves, without selecting it first.
+  // definition — purpose, Pipeline sequence, derived ports, validation state —
+  // so an operator who did not author it can tell what it does and whether it
+  // currently resolves, without selecting it first.
+  //
+  // Feature 099 (T494a, FR-043) — the summary no longer opens on a scope. There
+  // is one layer, so the badge could only ever read one value and the row key
+  // could only ever carry one segment.
   //
   // The derived ports are the host's projection, never recomputed here: they
   // exist on no persisted row (FR-048), so a row the host has not projected
@@ -26,7 +30,7 @@
     <div class="phase-list-row">
       <button
         class="phase-list-item {selectedKey === row.sourceKey ? 'selected' : ''}"
-        data-testid="workflows-list-item-{row.scope}-{row.workflowId}"
+        data-testid="workflows-list-item-{row.workflowId}"
         aria-current={selectedKey === row.sourceKey ? 'true' : undefined}
         onclick={() => onselect(row.sourceKey)}
       >
@@ -63,7 +67,6 @@
           {/if}
         </div>
         <div class="phase-badges">
-          <span class="scope-badge">{row.scope}</span>
           <span class="status-badge status-{row.sourceStatus}">{row.sourceStatus}</span>
           <span class="node-count">
             {row.nodes.length}

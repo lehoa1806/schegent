@@ -52,9 +52,8 @@ import {
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
 
 const RECORD: WorkflowCatalogSourceProjection = {
-  key: 'workspace::release-train::0',
+  key: 'release-train::0',
   workflowId: 'release-train',
-  scope: 'workspace',
   status: 'effective',
   definition: {
     workflowId: 'release-train',
@@ -86,13 +85,15 @@ const error = (field: string): WorkflowDraftError => ({
 });
 
 describe('sourceRecordToMutableWorkflow', () => {
-  it('carries the authored graph and the precedence metadata the Library renders', () => {
+  it('carries the authored graph and the source metadata the Library renders', () => {
+    // Feature 099 (T496f, FR-042) — `scope` was the projection metadata the
+    // Library rendered as a badge, and it goes with the layer tier. `sourceKey`
+    // stays and is what distinguishes two rows claiming one id.
     const workflow = row();
     expect(workflow.workflowId).toBe('release-train');
     expect(workflow.version).toBe(2);
-    expect(workflow.scope).toBe('workspace');
     expect(workflow.sourceStatus).toBe('effective');
-    expect(workflow.sourceKey).toBe('workspace::release-train::0');
+    expect(workflow.sourceKey).toBe('release-train::0');
     expect(workflow.persisted).toBe(true);
     expect(workflow.nodes.map((node) => node.nodeId)).toEqual(['ship', 'draft']);
   });
@@ -200,9 +201,11 @@ describe('node and connection row editing', () => {
 });
 
 describe('makeNewWorkflowDraft', () => {
-  it('produces an unsaved row in the target scope with a free identifier', () => {
-    const draft = makeNewWorkflowDraft('user', ['new-workflow']);
-    expect(draft.scope).toBe('user');
+  it('produces an unsaved row with a free identifier', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — the target-scope argument left with
+    // the picker that supplied it; a draft has one catalog to land in. What the
+    // helper still decides is that the id is free and the row is unsaved.
+    const draft = makeNewWorkflowDraft(['new-workflow']);
     expect(draft.persisted).toBe(false);
     expect(draft.workflowId).not.toBe('new-workflow');
     expect(draft.nodes).toEqual([]);
@@ -309,7 +312,7 @@ describe('isWorkflowDirty', () => {
   it('compares the save shape, not the projection metadata', () => {
     expect(isWorkflowDirty(row(), null)).toBe(true);
     expect(isWorkflowDirty(row(), row())).toBe(false);
-    expect(isWorkflowDirty({ ...row(), sourceStatus: 'shadowed' }, row())).toBe(false);
+    expect(isWorkflowDirty({ ...row(), sourceStatus: 'invalid' }, row())).toBe(false);
     expect(isWorkflowDirty({ ...row(), name: 'Renamed' }, row())).toBe(true);
   });
 });

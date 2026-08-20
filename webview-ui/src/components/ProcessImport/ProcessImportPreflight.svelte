@@ -27,11 +27,11 @@
   // T037–T040 — the commit. It is the EXISTING `savePhases` helper, not a new
   // command (research R2): the revision gate, the gate ordering, the trust
   // gates, the primary-window check, and all-or-nothing are all inherited from a
-  // handler that is already pinned by tests. Every decision around it —
-  // offerable scopes, why Confirm is unavailable, what the save carries, and how
-  // its ack becomes a per-row result — lives in `process-import-state.ts` so it
-  // is testable without rendering, and so the plan table and the result table
-  // cannot disagree about why a row was skipped.
+  // handler that is already pinned by tests. Every decision around it — why
+  // Confirm is unavailable, what the save carries, and how its ack becomes a
+  // per-row result — lives in `process-import-state.ts` so it is testable
+  // without rendering, and so the plan table and the result table cannot
+  // disagree about why a row was skipped.
   //
   // T067 — the accessibility conventions this surface follows, and why. Both
   // tables name themselves and put the Phase id in a row header, because an
@@ -41,8 +41,10 @@
   // `aria-disabled`: a commit in flight must not be re-activatable at all, which
   // is stronger than a handler that declines. That costs the control its focus
   // stop, so its reason is a live region — announced when it changes and while
-  // reading the region — and the scope select, which IS focusable, carries the
-  // same reason as its description.
+  // reading the region. (Feature 099 T494a — the reason was also attached as the
+  // description of the scope select, which was focusable and could carry it;
+  // that control is gone with the layer tier, so the live region is now the
+  // whole announcement.)
   //
   // T049 — the commit is now two ordered writes, so this component gained one
   // fact and no new judgment: an outcome that can be `partial`. Everything that
@@ -72,17 +74,19 @@
   import { savePhases } from '../../lib/save-phases';
   import { savePipelines } from '../../lib/save-pipelines';
   import { saveWorkflows } from '../../lib/save-workflows';
-  import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
   //
   // Feature 085 T034 — one entry point, two kinds of document (FR-055a). The
   // operator no longer picks a per-kind action, so this surface can be handed a
   // Pipeline package it did not ask for and must describe it accurately: a kind
-  // per row (FR-056), and a statement of what confirming writes and where
-  // (FR-058). Both are read from `process-import-state.ts` rather than composed
-  // in the template, for the same reason the reasons already are — a sentence
-  // built in markup is a sentence no test can pin.
+  // per row (FR-056), and a statement of what confirming writes (FR-058). Both
+  // are read from `process-import-state.ts` rather than composed in the
+  // template, for the same reason the reasons already are — a sentence built in
+  // markup is a sentence no test can pin.
+  //
+  // Feature 099 (T494a, FR-043) — the statement no longer says "and where". One
+  // catalog, so the destination stopped being a fact the operator chooses or
+  // this surface reports.
   import {
-    IMPORT_TARGET_SCOPES,
     commitStatement,
     confirmBlockedReason,
     isModelCatalogPlan,
@@ -98,12 +102,11 @@
 
   interface Props {
     /**
-     * Both writable catalogs, per writable scope, as the snapshot currently holds
-     * them, projected the same way the managers project them for a save. The
-     * parent owns the projection because it owns the snapshot; this component
-     * only appends to it.
+     * All three catalogs as the snapshot currently holds them, projected the same
+     * way the managers project them for a save. The parent owns the projection
+     * because it owns the snapshot; this component only appends to it.
      */
-    layers?: Readonly<Record<WritablePhaseDefinitionScope, ImportTargetLayers>>;
+    layers?: ImportTargetLayers;
     /**
      * T066 — why the surrounding manager cannot start an import right now, or
      * `null` when it can. Stated rather than merely applied (FR-057), and owned by
@@ -114,10 +117,7 @@
   }
 
   const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [], workflows: [] };
-  const {
-    layers = { user: EMPTY_LAYERS, workspace: EMPTY_LAYERS },
-    disabledReason = null
-  }: Props = $props();
+  const { layers = EMPTY_LAYERS, disabledReason = null }: Props = $props();
 
   type PreflightSurface =
     | { readonly kind: 'idle' }
@@ -139,18 +139,13 @@
   let layerResults = $state<readonly ImportLayerResult[]>([]);
   /** Set with `results`, and only with them. Never inferred from the rows. */
   let outcome = $state<ImportCommitOutcome | null>(null);
-  /** The scope the completed commit wrote to, held so the summary cannot drift. */
-  let committedScope = $state<WritablePhaseDefinitionScope | null>(null);
-  /** No default. An unchosen scope never resolves to the workspace (FR-056). */
-  let scope = $state<WritablePhaseDefinitionScope | null>(null);
 
   const validating = $derived(surface.kind === 'validating');
   const plan = $derived(surface.kind === 'planned' ? surface.plan : null);
   const blockedReason = $derived(
     confirmBlockedReason({
       state: committing ? 'committing' : surface.kind,
-      plan,
-      scope
+      plan
     })
   );
   /**
@@ -172,14 +167,10 @@
     // Re-read rather than trust the disabled attribute: the parent's conditions
     // can change between render and click.
     if (disabledReason !== null) return;
-    // A new document invalidates the previous plan's result, and the scope
-    // choice with it — FR-056 forbids carrying a target the operator picked for
-    // some other document.
+    // A new document invalidates the previous plan's result.
     results = null;
     layerResults = [];
     outcome = null;
-    committedScope = null;
-    scope = null;
     surface = { kind: 'validating' };
     const result = await preflightProcessYaml();
     if (result.outcome === 'planned') {
@@ -201,40 +192,31 @@
     // The gate is re-read here, not trusted from the rendered `disabled`: a
     // keyboard activation can arrive in the same tick the state changed.
     if (blockedReason !== null || plan === null) return;
-    // Feature 096 T024 — Model Catalog has exactly one implicit target, so it
-    // has no `scope` to read and dispatches through its own, simpler commit
-    // function (Implementation Notes point 1) instead of `runImportCommit`.
+    // Feature 096 T024 — the Model Catalog is not in the store (FR-056), so it
+    // dispatches through its own, simpler single-write commit function
+    // (Implementation Notes point 1) instead of `runImportCommit`.
     if (isModelCatalogPlan(plan)) {
       committing = true;
       const report = await runModelCatalogImportCommit(plan, { saveModels: saveModelsImport });
       committing = false;
-      committedScope = null;
       outcome = report.outcome;
       layerResults = [];
       results = report.rows;
       return;
     }
-    if (scope === null) return;
-    const target = scope;
     committing = true;
     // The three writes, in dependency order, each gated on its own revision.
     // `runImportCommit` stops at the first rejection and reports what did land —
     // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
-    const report = await runImportCommit(plan, target, layers[target], {
+    const report = await runImportCommit(plan, layers, {
       savePhases,
       savePipelines,
       saveWorkflows
     });
     committing = false;
-    committedScope = target;
     outcome = report.outcome;
     layerResults = report.results;
     results = report.rows;
-  }
-
-  function onScopeChange(event: Event): void {
-    const chosen = (event.currentTarget as HTMLSelectElement).value;
-    scope = IMPORT_TARGET_SCOPES.find((candidate) => candidate === chosen) ?? null;
   }
 </script>
 
@@ -314,42 +296,22 @@
 
       {#if results === null}
         <!-- FR-058 — what Confirm does, said before it is pressed: only the
-             eligible rows, and into the scope the operator picked. Stated as
-             visible prose next to the controls rather than wired into their
-             descriptions, because it is true of the surface at all times and
-             not a reason a particular control is unavailable. -->
+             eligible rows. Stated as visible prose next to the controls rather
+             than wired into their descriptions, because it is true of the
+             surface at all times and not a reason a particular control is
+             unavailable. -->
         <p class="preflight-note" data-testid="process-import-commit-statement">
-          {isModelCatalogPlan(plan) ? modelCatalogCommitStatement(plan) : commitStatement(plan, scope)}
+          {isModelCatalogPlan(plan) ? modelCatalogCommitStatement(plan) : commitStatement(plan)}
         </p>
 
         <div class="preflight-commit">
-          {#if !isModelCatalogPlan(plan)}
-            <!-- FR-034/FR-035/FR-056 — an explicit choice between the two writable
-                 layers. The placeholder is the initial selection and is not a
-                 target, so an unchosen scope cannot resolve to the workspace.
-                 Feature 096 — Model Catalog has exactly one implicit target
-                 (`'workspace'`), so this choice does not exist for it and no
-                 selector is rendered at all. -->
-            <label class="preflight-scope" for="process-import-scope">
-              Import into
-              <select
-                id="process-import-scope"
-                data-testid="process-import-scope"
-                disabled={committing}
-                value={scope ?? ''}
-                aria-describedby={blockedReason !== null
-                  ? 'process-import-confirm-reason'
-                  : undefined}
-                onchange={onScopeChange}
-              >
-                <option value="">Choose a scope…</option>
-                {#each IMPORT_TARGET_SCOPES as candidate (candidate)}
-                  <option value={candidate}>{candidate}</option>
-                {/each}
-              </select>
-            </label>
-          {/if}
-
+          <!--
+            Feature 099 (T494a, FR-043) — the scope selector stood here. It made
+            the operator choose between the two writable layers before Confirm
+            would enable, and it existed because a write had somewhere else it
+            could have gone. There is one catalog, so there is no choice to make
+            and no placeholder to guard against.
+          -->
           <!-- FR-036/FR-057 — unavailable confirmation always says why, next to
                the control, rather than leaving a dead button. -->
           <button
@@ -360,7 +322,7 @@
             title={blockedReason ??
               (isModelCatalogPlan(plan)
                 ? 'Import these models into the catalog'
-                : 'Import this Phase into the chosen scope')}
+                : 'Import this document into the catalog')}
             aria-describedby={blockedReason !== null
               ? 'process-import-confirm-reason'
               : undefined}
@@ -370,8 +332,8 @@
           {#if blockedReason !== null}
             <!-- T067 — a live region, because a `disabled` button takes no focus:
                  without this the reason is only available to someone reading the
-                 region, and the change from "choose a scope" to available would
-                 pass silently. -->
+                 region, and a change from blocked to available would pass
+                 silently. -->
             <p
               class="preflight-note"
               id="process-import-confirm-reason"
@@ -391,7 +353,6 @@
         {results}
         {layerResults}
         {outcome}
-        {committedScope}
         {modelCatalogOutcome}
       />
     {/if}
@@ -459,22 +420,5 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--schegent-pad);
-  }
-  .preflight-scope {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .preflight-scope select {
-    min-height: 24px;
-    background: var(--schegent-input-bg);
-    color: var(--schegent-input-fg);
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius);
-    font: inherit;
-  }
-  .preflight-scope select:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

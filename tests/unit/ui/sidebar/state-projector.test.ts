@@ -157,15 +157,16 @@ function sampleRun(): WorkflowRun {
 
 describe('StateProjector.getCurrentSnapshot', () => {
   it('projects source-aware Phase rows and sanitizes operator-authored catalog text', () => {
+    // Feature 099 (T496f, FR-042) — one stored layer, so the row that used to be
+    // seeded at `workspace` is simply the row.
     const catalog = resolvePhaseCatalog({
-      builtIn: [],
-      user: [],
-      workspace: [{
+      rows: [{
         id: 'operator-phase',
         name: 'Token SECRET',
         version: 1,
         instruction: 'Run SECRET safely.'
-      }]
+      }],
+      revision: 'rev-phase-projector'
     });
     const p = new StateProjector({
       store,
@@ -177,9 +178,12 @@ describe('StateProjector.getCurrentSnapshot', () => {
     p.start();
     const phaseCatalog = p.getCurrentSnapshot().phaseCatalog;
     expect(phaseCatalog?.state).toBe('ready');
+    // Feature 099 (T496f, FR-042) — the record's `scope` went with the layer
+    // tier; `key` took its place as the field that distinguishes two rows
+    // claiming one id, which is the only thing scope was still doing here.
     expect(phaseCatalog?.records[0]).toMatchObject({
       phaseId: 'operator-phase',
-      scope: 'workspace',
+      key: 'operator-phase::0',
       status: 'effective'
     });
     expect(phaseCatalog?.records[0].definition?.name).toBe('Token [REDACTED]');

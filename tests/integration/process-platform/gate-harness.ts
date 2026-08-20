@@ -24,6 +24,7 @@ import type { CommandAckMessage, SidebarCommand } from '../../../src/ui/sidebar/
 import { MessageRouter } from '../../../src/ui/sidebar/message-router';
 import type { RouterDeps } from '../../../src/ui/sidebar/message-router';
 import { FIXTURE_PHASE_DEFINITIONS, FIXTURE_PHASE_IDS } from '../../fixtures/process-catalog-fixture';
+import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
 import { importedCatalog } from './run-harness';
 
 /** The gate tokens, mirrored from `src/ui/sidebar/commands/constants.ts`. */
@@ -109,13 +110,17 @@ export function makeGateProbe(gates: GateSettings): GateProbe {
     updateConfig: async (): Promise<void> => {
       record('updateConfig', undefined);
     },
-    // Feature 098 (T080) — the workspace layer holds the fixture rows rather
-    // than being empty, because `EXPORTABLE_PHASE_ID` has to resolve for the
-    // export positive-control to mean anything. The layer split is otherwise
-    // untouched: `user` is still unset, as it was.
-    readPhaseConfig: () => ({ user: [], workspace: FIXTURE_PHASE_DEFINITIONS }),
-    readPipelineConfig: () => ({ user: [], workspace: [] }),
-    readWorkflowConfig: () => ({ user: [], workspace: [] }),
+    // Feature 098 (T080) — the store holds the fixture rows rather than being
+    // empty, because `EXPORTABLE_PHASE_ID` has to resolve for the export
+    // positive-control to mean anything.
+    //
+    // Feature 099 (T496f, FR-042) — the three readers answered `{ user,
+    // workspace }` and now answer `{ rows, revision }`. Which layer held a row
+    // was never what this harness was about; it needs the rows to be readable
+    // and the other two catalogs to be empty, and both survive verbatim.
+    readPhaseConfig: () => ({ rows: FIXTURE_PHASE_DEFINITIONS, revision: FIXTURE_REVISION }),
+    readPipelineConfig: () => ({ rows: [], revision: FIXTURE_REVISION }),
+    readWorkflowConfig: () => ({ rows: [], revision: FIXTURE_REVISION }),
     getCatalog: () => importedCatalog().catalog,
     guardedRun: {
       scheduleOrEnqueue: async () =>

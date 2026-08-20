@@ -54,7 +54,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
+import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
   CMD_SAVE_PHASES,
@@ -109,13 +109,13 @@ afterEach(async () => {
 interface Harness {
   router: MessageRouter;
   audit: AuditLogWriter;
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
 }
 
 function buildHarness(): Harness {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
+  const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -128,16 +128,15 @@ function buildHarness(): Harness {
     notifyWarning: vi.fn(),
     logger,
     audit,
-    updateConfig: async (key, value) => {
-      updateConfigCalls.push({ key, value });
-    },
-    readPhaseConfig: () => ({ user: [], workspace: [] })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
-  return { router: new MessageRouter(deps), audit, updateConfigCalls };
+  return { router: new MessageRouter(deps), audit, store };
 }
 
 async function dispatchSave(
-  router: MessageRouter,
+  harness: Harness,
   phases: readonly unknown[],
   correlationId = 'integ-untrusted-1'
 ): Promise<CapturedAck> {
@@ -146,13 +145,12 @@ async function dispatchSave(
     type: CMD_SAVE_PHASES,
     correlationId,
     payload: {
-      scope: 'workspace',
-      expectedRevision: phaseLayerRevision([]),
+      expectedRevision: harness.store.revisionOf('phase'),
       mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
       phases
     }
   } as unknown as SidebarCommand;
-  await router.dispatch(command, async (msg: CommandAckMessage) => {
+  await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = { status: msg.status, reason: msg.reason, result: msg.result };
     return true;
   });
@@ -162,7 +160,8 @@ async function dispatchSave(
 
 describe('Feature 059 T015 — untrusted-workspace ceiling cannot be widened', () => {
   it('rejects non-default CMD_SAVE_PHASES with resolvedScope=workspace-trust and emits the audit entry', async () => {
-    const { router, audit, updateConfigCalls } = buildHarness();
+    const harness = buildHarness();
+    const { audit, store } = harness;
     const nonDefaultPhases = [
       {
         id: 'speckit-specify',
@@ -172,7 +171,7 @@ describe('Feature 059 T015 — untrusted-workspace ceiling cannot be widened', (
       }
     ];
 
-    const ack = await dispatchSave(router, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhases);
 
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
@@ -181,7 +180,7 @@ describe('Feature 059 T015 — untrusted-workspace ceiling cannot be widened', (
     expect(err.capability).toBe('phases');
     expect(err.resolvedScope).toBe('workspace-trust');
 
-    expect(updateConfigCalls).toEqual([]);
+    expect(store.layerSaves).toEqual([]);
 
     await flushAuditChain(audit);
     const entries = await readAuditLog(tmpRoot);

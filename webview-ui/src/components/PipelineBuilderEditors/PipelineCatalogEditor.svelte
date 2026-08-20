@@ -8,14 +8,18 @@
   // mutation says otherwise (FR-029). Built-in rows are read-only (FR-024) and
   // a persisted `pipelineId` is immutable — duplicating is the way to a new
   // identity (FR-007).
+  //
+  // Feature 099 (T494a, FR-043/FR-046) — no scope. There is one layer, so no
+  // read-only `built-in` tier, no target-scope picker, and no per-capability
+  // trust banner: the Pipelines tab is gated by Workspace Trust alone, and the
+  // Builder reports that gate itself rather than rendering an empty list
+  // (T493c, FR-052).
   import type {
     PipelineInputPort,
     PipelineOutputPort,
-    WorkflowSnapshot,
-    WritablePipelineDefinitionScope
+    WorkflowSnapshot
   } from '../../lib/snapshot-types';
   import { exportPipelineYaml } from '../../lib/process-yaml-ipc';
-  import TrustBanner from '../TrustBanner.svelte';
   import PipelineFieldErrors from './PipelineFieldErrors.svelte';
   import PipelinePortsEditor from './PipelinePortsEditor.svelte';
   import {
@@ -26,8 +30,6 @@
   } from './pipeline-catalog-state';
   import type { MutablePhase, MutablePipeline, PipelinePortPatch } from './types';
 
-  const WRITABLE_SCOPES: readonly WritablePipelineDefinitionScope[] = ['workspace', 'user'];
-
   interface Props {
     snapshot: WorkflowSnapshot;
     pipelines: MutablePipeline[];
@@ -37,7 +39,6 @@
     historyLength: number;
     newPhaseId: string;
     trusted: boolean;
-    showTrustBanner: boolean;
     saveError: string | null;
     savePending: boolean;
     mutationActive: boolean;
@@ -70,7 +71,6 @@
     historyLength,
     newPhaseId,
     trusted,
-    showTrustBanner,
     saveError,
     savePending,
     mutationActive,
@@ -106,8 +106,7 @@
   const noEffectivePhase = $derived(phases.length === 0);
 
   const selectedReadOnly = $derived(
-    selectedPipeline?.scope === 'built-in' ||
-      !trusted ||
+    !trusted ||
       savePending ||
       (editableSourceKey !== null && selectedPipeline?.sourceKey !== editableSourceKey)
   );
@@ -117,12 +116,10 @@
   // consuming a round trip, and blocks the save button while it stands.
   const draftErrors = $derived(
     pipelines.flatMap((pipeline) =>
-      pipeline.scope === 'built-in'
-        ? []
-        : validatePipelineDraft(pipeline, pipelines).map((error) => ({
-            ...error,
-            sourceKey: pipeline.sourceKey
-          }))
+      validatePipelineDraft(pipeline, pipelines).map((error) => ({
+        ...error,
+        sourceKey: pipeline.sourceKey
+      }))
     )
   );
 
@@ -173,7 +170,7 @@
   const descriptionErrors = $derived(fieldErrorsOf('description'));
 
   function regionId(pipeline: MutablePipeline, region: string): string {
-    return `pipeline-errors-${pipeline.scope}-${pipeline.id}-${region}`;
+    return `pipeline-errors-${pipeline.id}-${region}`;
   }
 
   function describedBy(
@@ -263,7 +260,7 @@
   );
 
   function exportReasonId(pipeline: MutablePipeline): string {
-    return `pipeline-export-reason-${pipeline.scope}-${pipeline.id}`;
+    return `pipeline-export-reason-${pipeline.id}`;
   }
 
   /**
@@ -278,7 +275,7 @@
   let includeReferencedPhases = $state(false);
 
   function exportInclusionId(pipeline: MutablePipeline): string {
-    return `pipeline-export-inclusion-${pipeline.scope}-${pipeline.id}`;
+    return `pipeline-export-inclusion-${pipeline.id}`;
   }
 
   /**
@@ -304,9 +301,6 @@
   }
 </script>
 
-{#if showTrustBanner}
-  <TrustBanner variant="pipelines" />
-{/if}
 {#if !snapshot.pipelineCatalog}
   <div class="catalog-state" role="status" aria-live="polite" aria-busy="true" data-testid="pipeline-catalog-loading">
     Loading authoritative Pipeline catalog…
@@ -346,11 +340,12 @@
     <div class="phase-list">
       {#each pipelines as pipeline, index (pipeline.sourceKey)}
         <div class="phase-list-row">
-          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="pipelines-list-item-{pipeline.scope}-{pipeline.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
+          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="pipelines-list-item-{pipeline.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
             <div class="phase-list-title">{pipeline.name || 'Untitled Pipeline'}</div>
             <div class="phase-list-id">{pipeline.id}</div>
             <div class="phase-badges">
-              <span class="scope-badge">{pipeline.scope}</span>
+              <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
+                   only ever read one value is not a badge. -->
               <span class="status-badge status-{pipeline.sourceStatus}">{pipeline.sourceStatus}</span>
             </div>
           </button>
@@ -369,7 +364,7 @@
           <input class="title-input" data-testid="pipelines-title-{pipeline.id}" aria-label="Pipeline name" value={pipeline.name} readonly={selectedReadOnly} oninput={(event) => onpipelinechange(index, { name: event.currentTarget.value })} placeholder="Pipeline Name" />
           <div class="header-actions">
             <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
-            {#if pipeline.scope !== 'built-in'}<button class="btn btn-ghost" data-testid="pipelines-discard" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>{/if}
+            <button class="btn btn-ghost" data-testid="pipelines-discard" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>
             <button class="btn btn-ghost" data-testid="pipelines-duplicate" disabled={!trusted || savePending || mutationActive || noEffectivePhase} onclick={() => onduplicate(index)}>Duplicate Pipeline</button>
             <!-- FR-012 — the choice sits beside the control it changes, so it is
                  made before the document is produced rather than after. -->
@@ -400,16 +395,9 @@
               {#if pipeline.persisted}<span class="field-help">Duplicate this Pipeline to create a new identity.</span>{/if}
             </label>
             <PipelineFieldErrors id={regionId(pipeline, 'pipelineId')} errors={idErrors} />
-            {#if !pipeline.persisted}
-              <label class="form-field">
-                <span class="form-label">Target scope</span>
-                <select class="select-input" data-testid="pipelines-scope-select-{pipeline.id}" value={pipeline.scope} disabled={selectedReadOnly} onchange={(event) => onpipelinechange(index, { scope: event.currentTarget.value as WritablePipelineDefinitionScope })}>
-                  {#each WRITABLE_SCOPES as scope (scope)}
-                    <option value={scope}>{scope}</option>
-                  {/each}
-                </select>
-              </label>
-            {/if}
+            <!-- Feature 099 (T494a, FR-043) — no target-scope picker. A save has
+                 one destination, so there was nothing left for this control to
+                 choose between. -->
             <label class="form-field">
               <span class="form-label">Version</span>
               <input class="text-input" data-testid="pipelines-version-{pipeline.id}" value={pipeline.version} readonly aria-invalid={invalidFlag(versionErrors)} aria-describedby={describedBy(pipeline, 'version', versionErrors)} />

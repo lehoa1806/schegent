@@ -40,29 +40,20 @@
 // for real.
 
 import { pipelineSourceIdentity, resolvePipelineCatalog } from '../../config/pipeline-catalog';
-import type { PipelineDef } from '../../config/pipeline-config';
 import { validatePipelineDefinition } from '../../config/pipeline-definition-validator';
-import type {
-  PipelineDefinition,
-  PipelineDefinitionScope
-} from '../../contracts/pipeline-definitions';
+import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 
 export interface PipelineExportSelectionInput {
-  readonly builtIn: readonly PipelineDef[];
-  readonly user: readonly unknown[];
-  readonly workspace: readonly unknown[];
+  /** The stored Pipeline rows, at every status (FR-043). */
+  readonly rows: readonly unknown[];
   /** The effective Phase catalog, per the project rule on binding resolution. */
   readonly phaseCatalog: readonly PhaseDefinition[];
   readonly pipelineId: string;
 }
 
 export type PipelineExportSelection =
-  | {
-      readonly outcome: 'selected';
-      readonly definition: PipelineDefinition;
-      readonly scope: PipelineDefinitionScope;
-    }
+  | { readonly outcome: 'selected'; readonly definition: PipelineDefinition }
   | { readonly outcome: 'unavailable'; readonly reason: 'does-not-resolve' | 'not-found' };
 
 /**
@@ -94,9 +85,10 @@ export function selectPipelineForExport(
 ): PipelineExportSelection {
   const resolve = (phaseCatalog: readonly PhaseDefinition[]) =>
     resolvePipelineCatalog({
-      builtIn: input.builtIn,
-      user: input.user,
-      workspace: input.workspace,
+      rows: input.rows,
+      // An export reads; it never saves, so it has no revision to echo back and
+      // nothing here gates on one.
+      revision: '',
       phaseCatalog
     });
 
@@ -106,13 +98,7 @@ export function selectPipelineForExport(
   );
 
   if (!record?.definition) {
-    const referenced = [
-      ...input.builtIn
-        .filter((pipeline) => pipeline.id === input.pipelineId)
-        .flatMap((pipeline) => [...pipeline.phases]),
-      ...referencedPhaseIds(input.user, input.pipelineId),
-      ...referencedPhaseIds(input.workspace, input.pipelineId)
-    ];
+    const referenced = referencedPhaseIds(input.rows, input.pipelineId);
     const known = new Set(input.phaseCatalog.map((phase) => phase.phaseId));
     const placeholders = [...new Set(referenced)]
       .filter((phaseId) => !known.has(phaseId))
@@ -126,12 +112,12 @@ export function selectPipelineForExport(
   }
 
   if (record?.definition) {
-    return { outcome: 'selected', definition: record.definition, scope: record.scope };
+    return { outcome: 'selected', definition: record.definition };
   }
 
   // FR-015 — two different absences, told apart so the reason is stated rather
   // than guessed. A row that exists but carries no usable definition is
-  // `'does-not-resolve'`; an id no layer mentions at all is `'not-found'`.
+  // `'does-not-resolve'`; an id the catalog does not mention at all is `'not-found'`.
   return {
     outcome: 'unavailable',
     reason: strict.records.some((row) => row.pipelineId === input.pipelineId)

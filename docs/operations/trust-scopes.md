@@ -1,33 +1,36 @@
 # Per-Capability Trust Scopes
 
 VS Code's built-in Workspace Trust is a single on/off switch. Schegent
-adds four independently-configurable **trust scopes** on top of it so
-enterprise IT can grant workspace trust (which the seven built-in
-Spec Driven Development workflow phases require) while still denying operator-authored prompt
-overrides on the same workspace.
+adds two independently-configurable **trust scopes** on top of it so
+enterprise IT can grant workspace trust while still denying
+operator-authored prompt content on the same workspace.
 
-The four scopes are:
+The two scopes are:
 
 | Setting | Capability gated | Resets-to-defaults allowed? |
 |---|---|---|
-| `schegent.trust.allowCustomPhases` | Saving non-default phase definitions (`schegent.phases[]`) | Yes |
-| `schegent.trust.allowCustomRetryConditions` | Saving a non-default `retryCondition` expression on any phase row | Yes (the row's default retry-condition is unaffected) |
-| `schegent.trust.allowPipelineOverrides` | Saving non-default entries in the pipeline catalog (`schegent.pipelines`) | Yes |
-| `schegent.trust.allowWorkflowOverrides` | Saving non-default entries in the workflow catalog (`schegent.workflows`) | Yes |
+| `schegent.trust.allowCustomPhases` | Saving a phase definition | Yes |
+| `schegent.trust.allowCustomRetryConditions` | Saving a `retryCondition` expression on any phase | Yes |
 
-All four default to `null`, which means "follow Workspace Trust". When
+Both default to `null`, which means "follow Workspace Trust". When
 explicitly set to `true` or `false`, they are independent of each other
 but **never widen the Workspace Trust ceiling**.
 
-`allowPipelineOverrides` and `allowWorkflowOverrides` are deliberately separate
-capabilities: permitting pipeline-catalog edits does not thereby permit
-workflow-graph edits. A workflow decides which pipelines run and in what
-relation to each other, which is a broader authority than editing one pipeline's
-phase order.
+> **Retired in feature 099.** There were once four scopes.
+> `schegent.trust.allowPipelineOverrides` and
+> `schegent.trust.allowWorkflowOverrides` gated *which settings layer may
+> redefine what another declares* — and with definitions moved into a
+> single-layer catalog store there is no second layer to redefine anything.
+> Both settings are deleted; remove them from any settings file or MDM profile
+> that still sets them. The two that remain are keyed on document **content** —
+> a phase body, a retry-condition expression — which the collapse does not
+> touch. Editing pipelines and workflows is now gated by Workspace Trust
+> itself, which an untrusted workspace already denies wholesale: it activates
+> no catalog at all.
 
 Committing a [Phase YAML import](../features/phase-yaml-exchange.md) can require
-**two** of these scopes: `allowCustomPhases` always, because an imported Phase is
-a custom Phase, and `allowCustomRetryConditions` additionally when the imported
+**both** scopes: `allowCustomPhases` always, because an imported Phase is a
+custom Phase, and `allowCustomRetryConditions` additionally when the imported
 document declares a `retryCondition`. Both are read at commit time, never
 inherited from the earlier read-only preflight, so a scope changed between
 inspecting a document and confirming it is honored as of the confirm. A denial on
@@ -35,58 +38,35 @@ either is audited as the same `trust.capability-denied` event as any other
 refused catalog write.
 
 Importing a **Pipeline package** — one document carrying a Pipeline plus the
-Phases it references — can require a **third**: `allowPipelineOverrides`, for the
-Pipeline layer itself. The package commits as two separate writes, Phases first
-and then the Pipeline, each gated on its own capability. The practical
-consequence is that the two can disagree, and the outcome is reported as what it
-is: with `allowCustomPhases` granted and `allowPipelineOverrides` denied, the
-Phases land and the Pipeline does not. Nothing already written is rolled back —
-re-running the same document after granting the missing scope finishes the job.
-
-Importing a **Workflow package** — one document carrying a Workflow plus the
-Pipelines its nodes reference and, under those, their Phases — extends the same
-pattern to a **fourth** scope, `allowWorkflowOverrides`, and to three ordered
-writes: Phases, then Pipelines, then the Workflow. Each write is gated on its own
-capability, so the first denial stops the sequence where it stands and everything
-before it stays written. Two consequences are worth knowing before you grant or
-deny:
-
-- **Where the import stops tells you which scope is missing.** Phases written and
-  nothing else means `allowPipelineOverrides` is denied; Phases and Pipelines
-  written but no Workflow means `allowWorkflowOverrides` is. The commit reports
-  `partial` in both cases, and the `trust.capability-denied` audit entry names the
-  capability.
-- **Re-running is the recovery, at any depth.** Grant the missing scope and import
-  the same document again. Whatever already landed is detected as present and
-  skipped, so the retry finishes from where it stopped rather than starting over
-  or duplicating anything.
-
-Denying `allowWorkflowOverrides` while granting the other three is a coherent
-posture, not a misconfiguration: it lets operators receive and run someone else's
-Pipelines without letting a document decide which of them run in what relation to
-each other.
+Phases it references — commits as two ordered writes, Phases first and then the
+Pipeline. A **Workflow package** extends that to three: Phases, then Pipelines,
+then the Workflow. A denial stops the sequence where it stands and everything
+before it stays written; the commit reports `partial` and the
+`trust.capability-denied` audit entry names the capability. **Re-running is the
+recovery, at any depth**: grant the missing scope and import the same document
+again — whatever already landed is detected as present and skipped, so the retry
+finishes from where it stopped rather than starting over or duplicating
+anything.
 
 This page is the operator reference for the feature. See
 [specs/059-fine-grained-trust-scopes/](../../../specs/059-fine-grained-trust-scopes/)
 for the full specification and contract dossiers.
 
-## Why four scopes (and not one)
+## Why two scopes (and not one)
 
-Workspace Trust is workspace-wide: granting it enables every Schegent
-phase, including the built-ins (`speckit-specify`, `speckit-plan`,
-…). Operators who only need the built-ins shouldn't have to grant a
-blank cheque on custom phase prompts. The four scopes let your IT
-team approve the built-in flow on a per-workspace or per-user basis
-while still denying:
+Workspace Trust is workspace-wide: granting it lets Schegent run any
+phase the operator has authored. That is a blank cheque on two
+specific kinds of operator-authored content, and these two scopes let
+your IT team withhold it while still granting trust:
 
-- operator-authored phase **prompts** (which run as Claude CLI input on
-  the operator's workstation),
-- operator-authored retry-condition **DSL expressions** (sandboxed at
-  evaluation, but still operator-controlled looping logic),
-- operator-authored **pipeline catalogs** (which decide which phases
-  run in what order),
-- operator-authored **workflow graphs** (which decide which pipelines
-  relate to which, and under what conditions).
+- phase **prompts** (which run as CLI input on the operator's
+  workstation),
+- retry-condition **DSL expressions** (sandboxed at evaluation, but
+  still operator-controlled looping logic).
+
+Both are properties of a document's *content*, which is why they
+survived the settings-layer collapse: what they gate is what an author
+wrote, not which layer wrote it.
 
 The Workspace Trust ceiling guarantees a denied workspace can never be
 overridden by user-scope settings — see the resolution ladder below.
@@ -97,7 +77,7 @@ For each capability, Schegent runs four checks in order. The **first
 explicit answer wins**:
 
 ```text
-INPUT: capability ∈ { phases, retryConditions, pipelineOverrides, workflowOverrides }
+INPUT: capability ∈ { phases, retryConditions }
 
 STEP 1: if vscode.workspace.isTrusted === false  → return false
 STEP 2: read workspace-scope setting via .inspect(key).workspaceValue
@@ -121,7 +101,7 @@ Two consequences:
 ### 1. Default-allow (typical individual developer)
 
 - Workspace is trusted.
-- Neither workspace nor user setting set any of the four scopes.
+- Neither workspace nor user setting sets either scope.
 
 Step 1 passes. Steps 2 and 3 find no explicit value. Step 4 returns
 `true` for every capability. The webview shows no trust banners; every
@@ -142,15 +122,15 @@ scope as `workspace-trust` (the only layer that fired).
 
 Step 1 passes. Step 2 finds no value. Step 3 returns `false`. The
 PipelineBuilder shows the **phases** banner; the Save Phases and Add
-Phase buttons are disabled. Retry-conditions and pipelines are
-unaffected. The resolver reports `resolvedScope: 'user'`.
+Phase buttons are disabled. Retry-conditions are unaffected. The
+resolver reports `resolvedScope: 'user'`.
 
 ### 3. Workspace-scope override (enterprise IT denies for one repo)
 
 ```jsonc
 // <workspace>/.vscode/settings.json
 {
-  "schegent.trust.allowPipelineOverrides": false
+  "schegent.trust.allowCustomRetryConditions": false
 }
 ```
 
@@ -158,14 +138,14 @@ unaffected. The resolver reports `resolvedScope: 'user'`.
 - Workspace-scope: `false`. User-scope: any value.
 
 Step 1 passes. Step 2 returns `false`. The user-scope value never
-gets read. Save Pipelines and Add Pipeline are disabled; phases and
-retry-conditions remain enabled (default-allow). The resolver reports
+gets read. Saving a phase that declares a `retryCondition` is refused;
+phases without one still save (default-allow). The resolver reports
 `resolvedScope: 'workspace'`.
 
 ### 4. Workspace-trust ceiling (untrusted workspace)
 
 - Workspace is not trusted.
-- Any value at any scope for any of the four settings.
+- Any value at any scope for either setting.
 
 Step 1 returns `false` for every capability. The webview shows the
 **workspace-trust** banner; the per-capability banners are suppressed
@@ -173,7 +153,7 @@ Step 1 returns `false` for every capability. The webview shows the
 resolver reports `resolvedScope: 'workspace-trust'` for every
 capability.
 
-## The 16-row truth table
+## The 18-row truth table
 
 `isTrusted ∈ {true, false}` × `workspace-scope ∈ {true, false, null}` ×
 `user-scope ∈ {true, false, null}`. The `*` rows collapse three
@@ -225,8 +205,7 @@ Field guarantees (see the
 [`trust-capability-denied-audit-contract.md`](../../../specs/059-fine-grained-trust-scopes/contracts/trust-capability-denied-audit-contract.md)
 for the canonical invariants):
 
-- `capability` ∈ `{ phases, retryConditions, pipelineOverrides, workflowOverrides }` —
-  closed enum.
+- `capability` ∈ `{ phases, retryConditions }` — closed enum.
 - `resolvedScope` ∈ `{ user, workspace, workspace-trust }` — closed
   enum identifying the layer that produced the denial decision.
 - `reason` is one of the fixed templates in `TRUST_DENIED_REASONS` —
@@ -255,7 +234,7 @@ jq -c 'select(.eventType=="trust.capability-denied") |
 
 ## Recipes for enterprise IT
 
-### A. Allow only the built-in Spec Driven Development workflow phases on every workspace
+### A. Run only imported definitions, author none, on every workspace
 
 Add to your VS Code user-scope settings (or push via the VS Code Settings
 Sync / your MDM channel of choice):
@@ -263,13 +242,14 @@ Sync / your MDM channel of choice):
 ```jsonc
 {
   "schegent.trust.allowCustomPhases": false,
-  "schegent.trust.allowCustomRetryConditions": false,
-  "schegent.trust.allowPipelineOverrides": false
+  "schegent.trust.allowCustomRetryConditions": false
 }
 ```
 
-Operators can still grant Workspace Trust and run the built-in
-Spec Driven Development workflow pipeline; every operator-authored override is denied.
+Operators can still grant Workspace Trust and run whatever their
+catalog already holds; authoring a new phase definition is denied.
+Note that a Phase YAML import is itself a phase save, so this posture
+denies imports too — see recipe B for the per-workspace opt-in.
 
 ### B. Allow custom phases only on approved workspaces
 
@@ -279,8 +259,7 @@ workspace overrides in `<workspace>/.vscode/settings.json`:
 ```jsonc
 {
   "schegent.trust.allowCustomPhases": true,
-  "schegent.trust.allowCustomRetryConditions": true,
-  "schegent.trust.allowPipelineOverrides": true
+  "schegent.trust.allowCustomRetryConditions": true
 }
 ```
 
@@ -288,17 +267,18 @@ This is the explicit opt-in. The workspace setting wins over user
 scope, so even an operator who flipped these to `false` at user scope
 gets `true` on the approved workspace.
 
-### C. Block one capability project-wide while keeping the rest open
+### C. Block one capability project-wide while keeping the other open
 
 ```jsonc
 // User settings
 {
-  "schegent.trust.allowPipelineOverrides": false
+  "schegent.trust.allowCustomRetryConditions": false
 }
 ```
 
-Pipelines are denied everywhere; phases and retry-conditions follow
-workspace-trust default-allow.
+Retry-condition expressions are denied everywhere; ordinary phase
+definitions follow workspace-trust default-allow. A phase that declares
+no `retryCondition` is unaffected.
 
 ### D. Audit denials across all workspaces
 

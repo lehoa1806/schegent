@@ -47,7 +47,6 @@ export const handler: CommandHandler<ExportProcessYamlCommand> = async (ctx, com
     await appendExportAudit(ctx.deps, {
       resourceKind,
       resourceId,
-      scope: null,
       outcome: 'unavailable',
       correlationId
     });
@@ -68,7 +67,6 @@ export const handler: CommandHandler<ExportProcessYamlCommand> = async (ctx, com
     await appendExportAudit(ctx.deps, {
       resourceKind,
       resourceId,
-      scope: selection.scope,
       outcome: 'failed',
       correlationId,
       ...includedPhaseCount
@@ -97,7 +95,6 @@ export const handler: CommandHandler<ExportProcessYamlCommand> = async (ctx, com
   await appendExportAudit(ctx.deps, {
     resourceKind,
     resourceId,
-    scope: selection.scope,
     outcome: result.outcome,
     correlationId,
     ...includedPhaseCount

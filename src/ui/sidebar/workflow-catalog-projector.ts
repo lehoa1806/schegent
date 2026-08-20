@@ -34,6 +34,14 @@ import {
 
 const ERRORS_PER_RECORD_MAX = 20;
 const PORTS_PER_RECORD_MAX = 100;
+/**
+ * The record key, which is not an id (T489a). It is `${workflowId}::${index}`,
+ * and `ID_MAX` is the cap for the id alone — a legal 64-character id would fill
+ * it exactly and the `::index` that distinguishes two rows sharing one id would
+ * be truncated away, keying both records identically in the Builder's `{#each}`.
+ * Matches `phase-catalog-projection.ts`, which has always bounded the two apart.
+ */
+const KEY_MAX = 160;
 
 /**
  * Only recognized authored scalars reach the webview. An invalid row has no
@@ -54,17 +62,11 @@ function projectDisplay(
   return Object.freeze(projected);
 }
 
-/**
- * The contract keys a record `${scope}:${workflowId}`. Two rows in one scope may
- * still claim the same id (both are then invalid), so a repeat occurrence gets a
- * positional suffix and the key stays usable as a list key.
- */
-function projectionKey(scope: string, workflowId: string, seen: Map<string, number>): string {
-  const base = `${scope}:${workflowId}`;
-  const occurrence = seen.get(base) ?? 0;
-  seen.set(base, occurrence + 1);
-  return occurrence === 0 ? base : `${base}:${occurrence}`;
-}
+// Feature 099 (T489a, FR-043) — `projectionKey` stood here, composing
+// `${scope}:${workflowId}` and de-duplicating within a scope. The resolver's own
+// `key` is `${workflowId}::${index}`, unique by construction over the one layer,
+// so the projection carries it through rather than composing a second key from a
+// scope that no longer exists.
 
 export interface WorkflowCatalogProjectionOptions {
   readonly sanitize: Sanitize;
@@ -82,16 +84,14 @@ export function projectWorkflowCatalog(
   options: WorkflowCatalogProjectionOptions
 ): WorkflowCatalogProjection {
   const { sanitize } = options;
-  const seenKeys = new Map<string, number>();
   const records: WorkflowCatalogSourceProjection[] = catalog.records.map((record) => {
     const derived = record.definition
       ? deriveWorkflowPorts(record.definition, options.effectivePipelines)
       : { inputs: [], outputs: [] };
     const workflowId = text(record.workflowId, sanitize, ID_MAX);
     return Object.freeze({
-      key: projectionKey(record.scope, workflowId, seenKeys),
+      key: text(record.key, sanitize, KEY_MAX),
       workflowId,
-      scope: record.scope,
       status: record.status,
       definition: record.definition
         ? projectWorkflowDefinition(record.definition, sanitize)
@@ -143,10 +143,7 @@ export function projectWorkflowCatalog(
     effective: Object.freeze(
       catalog.effective.map((definition) => projectWorkflowDefinition(definition, sanitize))
     ),
-    revisions: Object.freeze({
-      user: catalog.revisions.user,
-      workspace: catalog.revisions.workspace
-    }),
+    revision: catalog.revision,
     warnings: Object.freeze(warnings)
   });
 }
@@ -163,7 +160,7 @@ function workflowCatalogFailureProjection(
     state: 'error' as const,
     records: Object.freeze([]),
     effective: Object.freeze([]),
-    revisions: Object.freeze({ user: '', workspace: '' }),
+    revision: '',
     warnings: Object.freeze([]),
     error: Object.freeze({
       code: 'workflow-catalog-unavailable',

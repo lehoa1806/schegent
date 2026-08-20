@@ -12,8 +12,17 @@
 //
 // Also pinned here: the stored row holds no run identifier, session value,
 // transcript, or workspace path (FR-006), and a superseded revision is refused
-// with the authoritative record and legal actions while both layers stay
-// untouched (FR-028, SC-005).
+// with the authoritative record and legal actions while nothing at all is
+// written (FR-028, SC-005).
+//
+// Feature 099 (T496f, FR-042/FR-042a) — the save port is the versioned catalog
+// store, not `updateConfig(key, rows, scope)`, and there is one layer rather than
+// three. Two harness facts follow. The write recorder is the store's `layerSaves`
+// list, so "wrote nothing" is an empty list of layer saves. And the old
+// "the lower-precedence layer stayed untouched" claim, which had no second layer
+// left to make, is carried by the two catalogs of the OTHER kinds: a Workflow save
+// that wrote a Phase or Pipeline record would fail exactly where the shadowed-layer
+// assertion used to fail.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,12 +44,14 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 }));
 
 import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
+import { FIXTURE_REVISION, snapshotOf } from '../fixtures/catalog-snapshot-fixture';
+import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
+import type { CatalogLayerSaveRequest } from '../../src/contracts/catalog-store';
 import type { CatalogConfigReader } from '../../src/config/pipeline-config-loader';
 import { loadCatalog } from '../../src/config/pipeline-config-loader';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
-import { resolveWorkflowCatalog, workflowLayerRevision } from '../../src/config/workflow-catalog';
+import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { deriveWorkflowPorts } from '../../src/config/workflow-derived-ports';
 import type {
   WorkflowCatalogMutation,
@@ -160,18 +171,25 @@ const edgeOrder = (
 const AUTHORED_NODE_ORDER = nodeOrder(AUTHORED_NODES);
 const AUTHORED_EDGE_ORDER = edgeOrder(AUTHORED_CONNECTIONS);
 
-interface WriteCall {
-  readonly key: string;
-  readonly value: unknown;
-  readonly scope: string | undefined;
-}
+/** The Pipeline rows every host in this file reads, store-side and reload-side. */
+const AUTHORED_PIPELINE_ROWS: readonly unknown[] = [DESIGN_PIPELINE, BUILD_PIPELINE];
 
 interface SaveOutcome {
   readonly ack: CommandAckMessage;
   readonly persisted: readonly unknown[];
-  readonly writes: readonly WriteCall[];
-  /** The lower-precedence layer, so a rejection can be shown to leave it alone. */
-  readonly userLayer: readonly unknown[];
+  /**
+   * Every `saveLayer` request the handler reached, in order. Feature 099 (T496f,
+   * FR-042a) — the successor of the `updateConfig` write recorder: the store's
+   * layer save is the write port now, so "wrote nothing" is an empty list here.
+   */
+  readonly layerSaves: readonly CatalogLayerSaveRequest[];
+  /**
+   * The store the handler ran against. Replaces `userLayer`, which named the
+   * lower-precedence layer a rejection had to leave alone; one catalog has no
+   * such layer, so what a rejection must leave alone is the Phase and Pipeline
+   * catalogs this exposes.
+   */
+  readonly store: FakeCatalogStore;
   /**
    * The dependency object the handler actually ran against, so a caller can ask
    * what it did *not* touch. Used by the US6 block to show that no seam capable
@@ -181,10 +199,16 @@ interface SaveOutcome {
 }
 
 interface SaveOptions {
-  readonly user?: readonly unknown[];
+  /**
+   * The revision the STORE reports for the Workflow catalog. Feature 099
+   * (FR-044/FR-044a) — a revision is the manifest's, not a hash over the rows, so
+   * a test about staleness now states what the host holds and what the window
+   * echoed as two independent values rather than deriving both from one array.
+   */
+  readonly storeRevision?: string;
   /**
    * Overrides the revision the window echoes. A second window that read the
-   * layer before someone else wrote it sends the revision it saw, not the one
+   * catalog before someone else wrote it sends the revision it saw, not the one
    * the host now holds (FR-028).
    */
   readonly expectedRevision?: string;
@@ -197,7 +221,7 @@ interface SaveOptions {
   readonly extraDeps?: Record<string, unknown>;
 }
 
-/** Runs the real save handler against an in-memory `workspace` layer. */
+/** Runs the real save handler against an in-memory catalog store. */
 async function save(
   currentLayer: readonly unknown[],
   mutation: WorkflowCatalogMutation,
@@ -205,9 +229,19 @@ async function save(
   options: SaveOptions = {}
 ): Promise<SaveOutcome> {
   const acks: CommandAckMessage[] = [];
-  const writes: WriteCall[] = [];
-  const userLayer = options.user ?? [];
-  let persisted: readonly unknown[] = currentLayer;
+  // One store holding all three catalogs, because the handler reads all three:
+  // the Workflow catalog it is about, and the Pipeline and Phase catalogs gates
+  // 5-7 resolve every `pipelineId` against. Seeding them here rather than from
+  // three separate doubles is what lets a rejection be shown to leave the other
+  // two byte-identical.
+  const store = new FakeCatalogStore({
+    phases: AUTHORED_PHASE_ROWS,
+    pipelines: AUTHORED_PIPELINE_ROWS,
+    workflows: currentLayer,
+    ...(options.storeRevision !== undefined
+      ? { revisions: { workflow: options.storeRevision } }
+      : {})
+  });
   const deps: Record<string, unknown> = {
     executeCommand: vi.fn(),
     queueRemover: { remove: vi.fn() },
@@ -219,17 +253,24 @@ async function save(
       sanitize: (value: string) => value
     },
     audit: { append: vi.fn() },
-    updateConfig: vi.fn(async (key: string, value: unknown, scope?: string) => {
-      writes.push({ key, value, scope });
-      persisted = value as readonly unknown[];
+    catalogStore: store,
+    refreshCatalog: vi.fn(async () => undefined),
+    readWorkflowConfig: () => ({
+      rows: store.rowsOf('workflow'),
+      revision: store.revisionOf('workflow')
     }),
-    readWorkflowConfig: () => ({ user: userLayer, workspace: currentLayer }),
     // Gates 5-7 resolve every `pipelineId` against the EFFECTIVE Pipeline
     // catalog, which is itself resolved against the effective Phase catalog,
-    // so both fixture layers have to be supplied — and they have to describe
-    // the same catalog `reload()` builds below.
-    readPipelineConfig: () => ({ user: [], workspace: [DESIGN_PIPELINE, BUILD_PIPELINE] }),
-    readPhaseConfig: () => ({ user: [], workspace: AUTHORED_PHASE_ROWS }),
+    // so both have to be supplied — and they have to describe the same catalog
+    // `reload()` builds below.
+    readPipelineConfig: () => ({
+      rows: store.rowsOf('pipeline'),
+      revision: store.revisionOf('pipeline')
+    }),
+    readPhaseConfig: () => ({
+      rows: store.rowsOf('phase'),
+      revision: store.revisionOf('phase')
+    }),
     ...(options.extraDeps ?? {})
   };
   const ctx = {
@@ -245,35 +286,37 @@ async function save(
     type: CMD_SAVE_WORKFLOWS,
     correlationId: 'test-correlation-1',
     payload: {
-      scope: 'workspace',
-      expectedRevision: options.expectedRevision ?? workflowLayerRevision(currentLayer),
+      expectedRevision: options.expectedRevision ?? store.revisionOf('workflow'),
       mutation,
       workflows: rows
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   await saveWorkflowsHandler(ctx, command);
-  return { ack: acks[0], persisted, writes, userLayer, deps };
+  return {
+    ack: acks[0],
+    persisted: store.rowsOf('workflow'),
+    layerSaves: store.layerSaves,
+    store,
+    deps
+  };
 }
 
 /** The same effective Pipeline catalog the save side resolves, for the reload. */
 const PIPELINE_CATALOG = resolvePipelineCatalog({
-  builtIn: BUILT_IN_PIPELINES,
-  user: [],
-  workspace: [DESIGN_PIPELINE, BUILD_PIPELINE],
+  rows: AUTHORED_PIPELINE_ROWS,
+  revision: FIXTURE_REVISION,
   phaseCatalog: resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: [],
-    workspace: AUTHORED_PHASE_ROWS
+    rows: AUTHORED_PHASE_ROWS,
+    revision: FIXTURE_REVISION
   }).effective
 });
 
-/** Reloads a persisted layer exactly as the host does on the next projection. */
-function reload(workspace: readonly unknown[]): WorkflowDefinition {
+/** Reloads a persisted catalog exactly as the host does on the next projection. */
+function reload(stored: readonly unknown[]): WorkflowDefinition {
   const catalog = resolveWorkflowCatalog({
-    builtIn: [],
-    user: [],
-    workspace,
+    rows: stored,
+    revision: FIXTURE_REVISION,
     pipelineCatalog: PIPELINE_CATALOG
   });
   const definition = catalog.effective.find((candidate) => candidate.workflowId === WORKFLOW_ID);
@@ -399,26 +442,21 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
     ]);
   });
 
-  it('rejects a superseded revision as stale-catalog and leaves both layers untouched (FR-028, SC-005)', async () => {
+  it('rejects a superseded revision as stale-catalog and writes nothing at all (FR-028, SC-005)', async () => {
     const created = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()]);
     expect(created.ack.status).toBe('accepted');
 
-    const otherLayer = [
-      {
-        id: 'unrelated',
-        name: 'Unrelated',
-        version: 1,
-        nodes: [],
-        connections: [],
-        startNodeIds: []
-      }
-    ];
-    // A second window echoes the revision it read before the create landed.
+    // The revision the host holds, and the one a second window read before the
+    // create landed. Feature 099 (FR-044a) — stated as two literals rather than
+    // derived from the rows: the store's revision comes from its manifest, so a
+    // window can be stale against a catalog whose rows it has read correctly.
+    const HOST_REVISION = 'rev-workflow-7';
+    const WINDOW_REVISION = 'rev-workflow-6';
     const stale = await save(
       created.persisted,
       { kind: 'edit', workflowId: WORKFLOW_ID },
       [authoredRow({ name: 'Renamed by the stale window' })],
-      { user: otherLayer, expectedRevision: workflowLayerRevision([]) }
+      { storeRevision: HOST_REVISION, expectedRevision: WINDOW_REVISION }
     );
 
     expect(stale.ack.status).toBe('rejected');
@@ -426,26 +464,31 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
     const result = stale.ack.result as {
       currentRevision: string;
       current: {
-        scope: string;
         workflowId: string;
         name: string;
         version: number;
         legalActions: readonly string[];
       };
     };
-    expect(result.currentRevision).toBe(workflowLayerRevision(created.persisted));
+    // The host's revision, not the echoed one — the point of reporting it at all.
+    expect(result.currentRevision).toBe(HOST_REVISION);
+    // An EXACT shape: `scope` used to be a member here and named the layer this
+    // record came from. A build that still emitted it — under any value — fails
+    // on this line rather than passing with a vestigial field.
     expect(result.current).toEqual({
-      scope: 'workspace',
       workflowId: WORKFLOW_ID,
       name: 'Design then Build',
       version: 1,
       legalActions: ['refresh', 'reapply']
     });
 
-    // No write of any kind: neither the targeted layer nor the other one moved.
-    expect(stale.writes).toEqual([]);
+    // No write of any kind. The Workflow catalog never reached the store's write
+    // port, and the two catalogs the handler only READ are byte-identical — the
+    // successor of "the other layer stayed untouched" now that there is one layer.
+    expect(stale.layerSaves).toEqual([]);
     expect(stale.persisted).toEqual(created.persisted);
-    expect(stale.userLayer).toEqual(otherLayer);
+    expect(stale.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
+    expect(stale.store.rowsOf('pipeline')).toEqual(AUTHORED_PIPELINE_ROWS);
     expect(reload(stale.persisted).name).toBe('Design then Build');
   });
 });
@@ -490,7 +533,7 @@ describe('Workflow catalog management — defect accumulation (US2, T041)', () =
   }
 
   it('reports every independent defect in one rejection (FR-019)', async () => {
-    const { ack, writes, persisted } = await save(
+    const { ack, layerSaves, persisted } = await save(
       [],
       { kind: 'create', workflowId: WORKFLOW_ID },
       [MULTI_DEFECT_ROW]
@@ -505,7 +548,7 @@ describe('Workflow catalog management — defect accumulation (US2, T041)', () =
     // One pass, not one defect per round trip.
     expect(errorsOf(ack).length).toBeGreaterThanOrEqual(3);
     expect((ack.result as { total: number }).total).toBe(errorsOf(ack).length);
-    expect(writes).toEqual([]);
+    expect(layerSaves).toEqual([]);
     expect(persisted).toEqual([]);
   });
 
@@ -838,10 +881,20 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     }
   }
 
-  /** The Pipeline and Phase layers every host in this block reads. */
+  /**
+   * The Phase and Pipeline definitions every host in this block reads.
+   *
+   * Feature 099 (T496f, FR-054) — these arrived through `getPhases(scope)` and
+   * `getPipelines(scope)` on the configuration reader; both are deleted, and
+   * definitions come from a store snapshot. What is left on the reader names what
+   * a Pipeline may select and which Pipeline to open on — neither is a definition.
+   */
+  const CATALOG_SNAPSHOT = snapshotOf({
+    phases: AUTHORED_PHASE_ROWS,
+    pipelines: AUTHORED_PIPELINE_ROWS
+  });
+
   const CATALOG_READER: CatalogConfigReader = {
-    getPhases: (scope) => (scope === 'workspace' ? AUTHORED_PHASE_ROWS : []),
-    getPipelines: (scope) => (scope === 'workspace' ? [DESIGN_PIPELINE, BUILD_PIPELINE] : []),
     getModels: () => [],
     getDefaultPipelineId: () => undefined
   };
@@ -868,11 +921,10 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     const store = new WorkspaceStateStore(memento);
     await store.initialize();
     const queue = new QueueManager(store);
-    const runtime = loadCatalog(CATALOG_READER);
+    const runtime = loadCatalog(CATALOG_SNAPSHOT, CATALOG_READER);
     const workflowCatalog = resolveWorkflowCatalog({
-      builtIn: [],
-      user: [],
-      workspace: workflowRows,
+      rows: workflowRows,
+      revision: FIXTURE_REVISION,
       pipelineCatalog: PIPELINE_CATALOG
     });
     const projector = new StateProjector({
@@ -897,10 +949,11 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   const pipelineIds = (snapshot: WorkflowSnapshot): string[] =>
     snapshot.availablePipelines.map((pipeline) => pipeline.id);
 
+  // Feature 099 (T496f, FR-042) — was `pipelineId === … && record.scope === 'workspace'`.
+  // One catalog has one record per id, so the scope half selected nothing the id
+  // half did not already select; keeping it would only assert the field exists.
   const recordFor = (snapshot: WorkflowSnapshot, pipelineId: string) =>
-    snapshot.pipelineCatalog?.records.find(
-      (record) => record.pipelineId === pipelineId && record.scope === 'workspace'
-    );
+    snapshot.pipelineCatalog?.records.find((record) => record.pipelineId === pipelineId);
 
   // ── FR-037 / SC-006 — the reference changes nothing about the Pipeline ──────
 
@@ -1014,8 +1067,10 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   // than circumstantial, because the handler has exactly two ways to affect
   // anything outside itself and both are observed here:
   //
-  //   * `updateConfig` — asserted to receive the `workflows` key and nothing
-  //     else, so no other layer and no state key was written;
+  //   * the catalog store — asserted to receive exactly one layer save, of kind
+  //     `workflow`, so no other catalog and no state key was written. Feature 099
+  //     (T496f, FR-042a): this was `updateConfig`, asserted to receive the
+  //     `workflows` settings key and nothing else. Same claim, current write port;
   //   * the router dependencies — every seam that can start, resume, retry, or
   //     re-order work, asserted uncalled.
   //
@@ -1023,13 +1078,17 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   // "zero runs, zero queue entries, zero sessions" follows from them. The
   // ambient host state is checked separately below as corroboration; on its own
   // it would prove little, since the handler holds no reference to that store.
-  it('writes only the Workflow layer and reaches no work-starting seam, on create, edit, and validate (FR-038, SC-007)', async () => {
+  it('writes only the Workflow catalog and reaches no work-starting seam, on create, edit, and validate (FR-038, SC-007)', async () => {
     const onCreate = workStartingSeams();
     const created = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()], {
       extraDeps: onCreate
     });
     expect(created.ack.status).toBe('accepted');
-    expect(created.writes.map((write) => write.key)).toEqual(['workflows']);
+    expect(created.layerSaves.map((request) => request.kind)).toEqual(['workflow']);
+    // The store holds all three catalogs, so "only the Workflow one" is checkable
+    // directly rather than inferred from the absence of a second write.
+    expect(created.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
+    expect(created.store.rowsOf('pipeline')).toEqual(AUTHORED_PIPELINE_ROWS);
     expectNoSeamReached(created.deps);
 
     const onEdit = workStartingSeams();
@@ -1040,13 +1099,15 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
       { extraDeps: onEdit }
     );
     expect(edited.ack.status).toBe('accepted');
-    expect(edited.writes.map((write) => write.key)).toEqual(['workflows']);
+    expect(edited.layerSaves.map((request) => request.kind)).toEqual(['workflow']);
+    expect(edited.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
+    expect(edited.store.rowsOf('pipeline')).toEqual(AUTHORED_PIPELINE_ROWS);
     expectNoSeamReached(edited.deps);
 
     // "Validating" has no command of its own — a save carries the graph through
     // the same validation pass and reports the defects, so a refused save *is*
     // the validate path, and it must be as inert as the two accepted ones. More
-    // so, in fact: it may not even write the layer.
+    // so, in fact: it may not even reach the store's write port.
     const onValidate = workStartingSeams();
     const validated = await save(
       edited.persisted,
@@ -1056,7 +1117,7 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     );
     expect(validated.ack.status).toBe('rejected');
     expect(validated.ack.reason).toBe('workflow-validation');
-    expect(validated.writes).toEqual([]);
+    expect(validated.layerSaves).toEqual([]);
     expectNoSeamReached(validated.deps);
   });
 

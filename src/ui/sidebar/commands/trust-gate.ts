@@ -30,14 +30,6 @@ export function reasonFor(
       return scope === 'workspace'
         ? TRUST_DENIED_REASONS.retryConditionsWorkspace
         : TRUST_DENIED_REASONS.retryConditionsUser;
-    case 'pipelineOverrides':
-      return scope === 'workspace'
-        ? TRUST_DENIED_REASONS.pipelineOverridesWorkspace
-        : TRUST_DENIED_REASONS.pipelineOverridesUser;
-    case 'workflowOverrides':
-      return scope === 'workspace'
-        ? TRUST_DENIED_REASONS.workflowOverridesWorkspace
-        : TRUST_DENIED_REASONS.workflowOverridesUser;
   }
 }
 

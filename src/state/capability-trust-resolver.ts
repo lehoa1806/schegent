@@ -28,14 +28,11 @@
 
 import * as vscode from 'vscode';
 
-export type TrustCapability =
-  | 'phases'
-  | 'retryConditions'
-  | 'pipelineOverrides'
-  // Feature 083 — a fourth capability, not a reuse of `pipelineOverrides`
-  // (research R8): permitting Pipeline edits does not thereby permit
-  // Workflow-graph edits, so the two resolve independently.
-  | 'workflowOverrides';
+// Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides` are
+// gone with the layer tier. Both asked which layer was permitted to redefine
+// another's row; one layer has no such question. The two survivors gate document
+// CONTENT, not layering, so the collapse leaves them exactly as they were.
+export type TrustCapability = 'phases' | 'retryConditions';
 
 export type ResolvedScope =
   | 'user'
@@ -46,15 +43,11 @@ export interface ResolvedCapabilities {
   readonly workspaceTrust: boolean;
   readonly phases: boolean;
   readonly retryConditions: boolean;
-  readonly pipelineOverrides: boolean;
-  readonly workflowOverrides: boolean;
 }
 
 const SETTING_KEYS: Record<TrustCapability, string> = {
   phases: 'schegent.trust.allowCustomPhases',
-  retryConditions: 'schegent.trust.allowCustomRetryConditions',
-  pipelineOverrides: 'schegent.trust.allowPipelineOverrides',
-  workflowOverrides: 'schegent.trust.allowWorkflowOverrides'
+  retryConditions: 'schegent.trust.allowCustomRetryConditions'
 };
 
 function isExplicitBoolean(value: unknown): value is boolean {
@@ -93,9 +86,7 @@ export function getResolvedCapabilities(): ResolvedCapabilities {
   return {
     workspaceTrust: vscode.workspace.isTrusted === true,
     phases: isCapabilityAllowed('phases'),
-    retryConditions: isCapabilityAllowed('retryConditions'),
-    pipelineOverrides: isCapabilityAllowed('pipelineOverrides'),
-    workflowOverrides: isCapabilityAllowed('workflowOverrides')
+    retryConditions: isCapabilityAllowed('retryConditions')
   };
 }
 

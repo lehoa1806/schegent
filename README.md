@@ -169,8 +169,9 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 |---|---|
 | **Runtime-only catalog** | The extension ships zero phases, pipelines, workflows, and models. Everything arrives by importing a YAML document; [examples/](examples/) carries `speckit-new-feature` (9 phases), `speckit-bugfix` (5 phases), and a model catalog to start from. |
 | **Import with a plan** | Every import shows one row per resource — import, skip, blocked, or invalid — before writing anything, and never overwrites an id you already hold. |
-| **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — merged across four precedence layers. |
-| **Custom phases & pipelines** | Define your own phases through `schegent.phases` / `schegent.pipelines`. Every phase runs through the same audit path; no id is reserved and none is privileged. |
+| **Versioned catalog** | Every save of a phase, pipeline, or workflow writes an immutable version record under `.schegent/catalog/`. History is bounded at 50 versions per definition, any past version can be read back, and saving unchanged content writes nothing. |
+| **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — declared on the definition itself. |
+| **Custom phases & pipelines** | Define your own phases and pipelines in the Builder, or import them from YAML. Every phase runs through the same audit path; no id is reserved and none is privileged. |
 | **Declared containment** | A phase declares what it may write (`sideEffects`) and how strictly evidence is enforced (`evidencePolicy`). Omitted, they are `workspace` and `required`; nothing is inferred from the phase's name. |
 | **Phase breakpoints** | Pause a run before a named phase to review state and intervene; consumed on fire. |
 | **Aggressive pause** | SIGTERM at click time with a 2s SIGKILL escalation; state is updated before the kill so the audit record never lies. |
@@ -262,16 +263,23 @@ Frequently used keys:
 | `schegent.multiRoot.suppressWarning` | boolean | `false` | Suppress the one-shot multi-root activation toast — see [The Workspace Lock → Multi-root workspaces](docs/concepts/workspace-lock.md#multi-root-workspaces). |
 | `schegent.trust.allowCustomPhases` | boolean\|null | `null` | Per-capability trust scope (feature 059). When `null`, follows Workspace Trust; when `false`, denies non-default phase prompts. See [Trust Scopes](docs/operations/trust-scopes.md). |
 | `schegent.trust.allowCustomRetryConditions` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `retryCondition` DSL expressions. See [Trust Scopes](docs/operations/trust-scopes.md). |
-| `schegent.trust.allowPipelineOverrides` | boolean\|null | `null` | Per-capability trust scope (feature 059) gating non-default `schegent.pipelines` entries. See [Trust Scopes](docs/operations/trust-scopes.md). |
-| `schegent.trust.allowWorkflowOverrides` | boolean\|null | `null` | Per-capability trust scope (feature 083) gating non-default `schegent.workflows` entries. A distinct capability from `allowPipelineOverrides`. See [Trust Scopes](docs/operations/trust-scopes.md). |
 
-The full schema (`schegent.phases`, `schegent.pipelines`,
-`schegent.workflows`, `schegent.models`, validation rules) is documented in
+Phase, pipeline, and workflow **definitions are not settings**. They live in the
+versioned catalog store under `.schegent/catalog/` and are edited in the Builder
+or imported from YAML; `schegent.phases`, `schegent.pipelines`, and
+`schegent.workflows` no longer exist. The two override trust scopes that gated
+them (`schegent.trust.allowPipelineOverrides`,
+`schegent.trust.allowWorkflowOverrides`) are retired with them — they answered
+which settings layer could redefine another, and there is one layer now.
+Workspace Trust remains the gate on the catalog as a whole: an untrusted
+workspace activates no catalog and says so.
+
+The full schema (`schegent.models`, validation rules) is documented in
 [`docs/reference/settings.md`](docs/reference/settings.md).
 
 ## On-disk layout
 
-Schegent writes to four sinks under your workspace, each with a
+Schegent writes to five sinks under your workspace, each with a
 distinct purpose, trust profile, and rotation policy:
 
 ```text
@@ -279,6 +287,11 @@ distinct purpose, trust profile, and rotation policy:
 ├── audit.log                          # sanitized, rotated, append-only evidence
 ├── audit.log.<rotation-stamp>         # rotated archives
 ├── syslog (or syslog.1, .2, ...)      # sanitized runtime log + rotations
+├── catalog/                           # versioned definition store
+│   ├── manifest.json                  # the only mutable file; active version per definition
+│   ├── phases/<id>/v<N>.json          # immutable version records
+│   ├── pipelines/<id>/v<N>.json
+│   └── workflows/<id>/v<N>.json
 └── sessions/
     ├── raw-<runId>.log                # raw transcript (unredacted, local-only)
     └── <runId>/
@@ -293,6 +306,13 @@ Schegent writes a best-effort `.schegent/.gitignore` on first
 runtime-directory use, and recommends adding `.schegent/sessions/raw-*.log`
 to your workspace `.gitignore` as well — the raw transcript and verbose
 diagnostics are unredacted by design.
+
+**The catalog store is local, not a shared artifact.** It is covered by the same
+ignore rule as the rest of `.schegent/` and is deliberately not committed: its
+on-disk format is an internal detail that can change behind a migration. To
+share a phase, pipeline, or workflow with a teammate, **export the YAML
+document** and commit that — export, commit, teammate imports. That is the
+reviewable artifact, and it is the one with a stable format.
 
 ## Security posture
 

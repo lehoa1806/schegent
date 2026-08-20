@@ -41,7 +41,10 @@ async function preflight(documentBytes: Uint8Array): Promise<CommandAckMessage> 
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: [], workspace: [] }),
+      // Feature 099 (T496f, FR-042) — an empty stored catalog, where this was an
+      // empty pair of layers. Every document in this file is refused before the
+      // presence rule is reached, so the rows stay empty for the same reason.
+      readPhaseConfig: () => ({ rows: [], revision: 'empty-store' }),
       openProcessYamlDocument: async () => ({ outcome: 'read' as const, bytes: documentBytes }),
       audit: { append: async () => undefined },
       logger: {

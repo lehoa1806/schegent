@@ -3,6 +3,12 @@
 // semantics, and disposal per
 // `specs/059-fine-grained-trust-scopes/contracts/capability-trust-resolver-contract.md`.
 //
+// Feature 099 (T496f, FR-046) — the ladder had four capabilities and now has
+// two: `pipelineOverrides` and `workflowOverrides` are deleted with the layer
+// tier, because each asked which layer was permitted to redefine another's row.
+// The ladder itself is untouched, so every case below is the same case over the
+// two capabilities that gate document CONTENT rather than layering.
+//
 // Mock pattern mirrors `workspace-folder-picker.test.ts`: a `vi.hoisted`
 // state record carrying `isTrusted`, a per-key `inspect()` map, and two
 // listener sets (one for `onDidGrantWorkspaceTrust`, one for
@@ -62,10 +68,18 @@ import {
 
 const KEYS: Record<TrustCapability, string> = {
   phases: 'schegent.trust.allowCustomPhases',
-  retryConditions: 'schegent.trust.allowCustomRetryConditions',
-  pipelineOverrides: 'schegent.trust.allowPipelineOverrides',
-  workflowOverrides: 'schegent.trust.allowWorkflowOverrides'
+  retryConditions: 'schegent.trust.allowCustomRetryConditions'
 };
+
+/**
+ * The two keys feature 099 removed from the ladder. Held here so the listener
+ * can be asked about them: they must now be as uninteresting as any unrelated
+ * setting, which a list that merely omits them could not assert.
+ */
+const DELETED_TRUST_KEYS = [
+  'schegent.trust.allowPipelineOverrides',
+  'schegent.trust.allowWorkflowOverrides'
+] as const;
 
 function setScope(
   capability: TrustCapability,
@@ -96,12 +110,7 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
   // every capability. Expected values match `data-model.md §2`.
   const trustValues = [true, false] as const;
   const settingValues = [true, false, null] as const;
-  const capabilities: TrustCapability[] = [
-    'phases',
-    'retryConditions',
-    'pipelineOverrides',
-    'workflowOverrides'
-  ];
+  const capabilities: TrustCapability[] = ['phases', 'retryConditions'];
 
   function expectedAllowed(
     isTrusted: boolean,
@@ -147,32 +156,37 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
 });
 
 describe('capability-trust-resolver — getResolvedCapabilities composition', () => {
-  it('returns workspaceTrust=true and four booleans aligned with the ladder', () => {
+  it('returns workspaceTrust=true and both booleans aligned with the ladder', () => {
+    // Each capability is given a DIFFERENT rung so the composition cannot pass
+    // by reading one key twice: `phases` is decided at workspace scope, and
+    // `retryConditions` falls through to user scope.
     mocks.state.isTrusted = true;
     setScope('phases', false, null);
     setScope('retryConditions', null, true);
-    setScope('pipelineOverrides', null, null);
-    setScope('workflowOverrides', false, true);
     const out = getResolvedCapabilities();
     expect(out.workspaceTrust).toBe(true);
     expect(out.phases).toBe(false);
     expect(out.retryConditions).toBe(true);
-    expect(out.pipelineOverrides).toBe(true);
-    expect(out.workflowOverrides).toBe(false);
   });
 
-  it('untrusted workspace forces all four to false', () => {
+  it('untrusted workspace forces both to false', () => {
     mocks.state.isTrusted = false;
     setScope('phases', true, true);
     setScope('retryConditions', true, true);
-    setScope('pipelineOverrides', true, true);
-    setScope('workflowOverrides', true, true);
     const out = getResolvedCapabilities();
     expect(out.workspaceTrust).toBe(false);
     expect(out.phases).toBe(false);
     expect(out.retryConditions).toBe(false);
-    expect(out.pipelineOverrides).toBe(false);
-    expect(out.workflowOverrides).toBe(false);
+  });
+
+  it('carries no key for a capability the ladder no longer has', () => {
+    // Feature 099 (T496f, FR-046) — the projection is read by the webview
+    // TrustBanner, so a leftover key would keep a deleted capability alive in
+    // the surface even with the ladder collapsed.
+    const out = getResolvedCapabilities();
+    for (const removed of ['pipelineOverrides', 'workflowOverrides']) {
+      expect(out).not.toHaveProperty(removed);
+    }
   });
 });
 
@@ -222,17 +236,12 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
     expect(onInvalidate).not.toHaveBeenCalled();
   });
 
-  it('config change for any of the four trust keys (separately) fires once each', () => {
+  it('config change for each remaining trust key (separately) fires once each', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
-    const trustKeys = [
-      'schegent.trust.allowCustomPhases',
-      'schegent.trust.allowCustomRetryConditions',
-      'schegent.trust.allowPipelineOverrides',
-      'schegent.trust.allowWorkflowOverrides'
-    ];
+    const trustKeys = Object.values(KEYS);
     for (const targetKey of trustKeys) {
       for (const listener of mocks.state.configListeners) {
         listener({
@@ -241,6 +250,24 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
       }
     }
     expect(onInvalidate).toHaveBeenCalledTimes(trustKeys.length);
+  });
+
+  it('config change for a deleted trust key does NOT call onInvalidate', () => {
+    // Feature 099 (T496f, FR-046) — the pair above used to sit in this list. A
+    // list that simply drops them would still pass if the listener kept
+    // watching them; this asserts the watch went with the capability, so a
+    // stale `schegent.trust.allowPipelineOverrides` left in a user's settings
+    // cannot churn the projection.
+    const ctx = makeContext();
+    const onInvalidate = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    initCapabilityTrustResolver(ctx as any, onInvalidate);
+    for (const removed of DELETED_TRUST_KEYS) {
+      for (const listener of mocks.state.configListeners) {
+        listener({ affectsConfiguration: (k: string) => k === removed });
+      }
+    }
+    expect(onInvalidate).not.toHaveBeenCalled();
   });
 });
 
@@ -268,41 +295,50 @@ describe('capability-trust-resolver — no-cache invariant (I-1)', () => {
 // Feature 083 (US1, T021) — `workflowOverrides` is a fourth capability, not a
 // reuse of `pipelineOverrides`: permitting Pipeline edits in an untrusted
 // workspace does not thereby permit Workflow-graph edits (research R8).
-describe('capability-trust-resolver — workflowOverrides (083)', () => {
-  it('reads schegent.trust.allowWorkflowOverrides and no other key', () => {
+//
+// Feature 099 (T496f, FR-046) — that pair is deleted, but the property this
+// block defends is not about either of them: it is that a capability reads its
+// OWN key and resolves on its OWN rung, so one capability cannot be satisfied
+// by another's setting. With two capabilities left there is still a pair to
+// assert it over, so every case below is re-anchored on `retryConditions`
+// against `phases` rather than dropped.
+describe('capability-trust-resolver — each capability reads only its own key', () => {
+  it('reads schegent.trust.allowCustomRetryConditions and no other key', () => {
     mocks.state.isTrusted = true;
-    setScope('pipelineOverrides', false, false);
-    mocks.state.inspectMap.set('schegent.trust.allowWorkflowOverrides', { workspaceValue: true });
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
-    expect(isCapabilityAllowed('pipelineOverrides')).toBe(false);
+    setScope('phases', false, false);
+    mocks.state.inspectMap.set('schegent.trust.allowCustomRetryConditions', {
+      workspaceValue: true
+    });
+    expect(isCapabilityAllowed('retryConditions')).toBe(true);
+    expect(isCapabilityAllowed('phases')).toBe(false);
   });
 
-  it('stays independent of pipelineOverrides in both directions', () => {
+  it('stays independent of phases in both directions', () => {
     mocks.state.isTrusted = true;
-    setScope('pipelineOverrides', null, true);
-    setScope('workflowOverrides', null, false);
-    expect(isCapabilityAllowed('pipelineOverrides')).toBe(true);
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
-    expect(getResolvedScope('workflowOverrides')).toBe('user');
+    setScope('phases', null, true);
+    setScope('retryConditions', null, false);
+    expect(isCapabilityAllowed('phases')).toBe(true);
+    expect(isCapabilityAllowed('retryConditions')).toBe(false);
+    expect(getResolvedScope('retryConditions')).toBe('user');
   });
 
-  it('honors the untrusted ceiling even with both overrides set to true (I-2)', () => {
+  it('honors the untrusted ceiling even with both capabilities set to true (I-2)', () => {
     mocks.state.isTrusted = false;
-    setScope('workflowOverrides', true, true);
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
-    expect(getResolvedScope('workflowOverrides')).toBe('workspace-trust');
+    setScope('retryConditions', true, true);
+    expect(isCapabilityAllowed('retryConditions')).toBe(false);
+    expect(getResolvedScope('retryConditions')).toBe('workspace-trust');
   });
 
   it('is read fresh on every call rather than cached (I-1)', () => {
     mocks.state.isTrusted = true;
-    setScope('workflowOverrides', null, null);
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
-    setScope('workflowOverrides', false, null);
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
-    setScope('workflowOverrides', true, null);
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(true);
+    setScope('retryConditions', null, null);
+    expect(isCapabilityAllowed('retryConditions')).toBe(true);
+    setScope('retryConditions', false, null);
+    expect(isCapabilityAllowed('retryConditions')).toBe(false);
+    setScope('retryConditions', true, null);
+    expect(isCapabilityAllowed('retryConditions')).toBe(true);
     mocks.state.isTrusted = false;
-    expect(isCapabilityAllowed('workflowOverrides')).toBe(false);
+    expect(isCapabilityAllowed('retryConditions')).toBe(false);
   });
 
   it('invalidates the projection when its own key changes', () => {
@@ -312,7 +348,8 @@ describe('capability-trust-resolver — workflowOverrides (083)', () => {
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const listener of mocks.state.configListeners) {
       listener({
-        affectsConfiguration: (k: string) => k === 'schegent.trust.allowWorkflowOverrides'
+        affectsConfiguration: (k: string) =>
+          k === 'schegent.trust.allowCustomRetryConditions'
       });
     }
     expect(onInvalidate).toHaveBeenCalledTimes(1);

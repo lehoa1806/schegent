@@ -1,5 +1,15 @@
+// Feature 099 (T496f, FR-042) — the envelope loses `scope` with the layer tier.
+// It named the layer a write landed in; there is one catalog per kind now, so the
+// field has no referent. The required-key case for it is not dropped but inverted:
+// an envelope still carrying `scope` comes from a caller that believes in layers,
+// and the ingress gate refuses it as an undeclared key rather than ignoring it.
+//
+// `expectedRevision` was `phaseLayerRevision(rows)` — a hash of the layer the
+// webview held. A revision is the store's now, opaque to both ends, so this gate
+// checks only that one is present and is a string; what a real one looks like is
+// pinned in `tests/unit/catalog/`.
+
 import { describe, expect, it } from 'vitest';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
 import { CMD_SAVE_PHASES } from '../../src/contracts/sidebar-ipc';
 
@@ -7,19 +17,18 @@ const valid = {
   type: CMD_SAVE_PHASES,
   correlationId: 'scoped-save',
   payload: {
-    scope: 'user',
-    expectedRevision: phaseLayerRevision([]),
+    expectedRevision: 'rev-phase-0',
     mutation: { kind: 'create', phaseId: 'custom-phase' },
     phases: [{ id: 'custom-phase', name: 'Custom', version: 1, skill: 'skill-a' }]
   }
 };
 
-describe('scoped Phase save IPC contract', () => {
+describe('revisioned Phase save IPC contract', () => {
   it('accepts an exact revisioned mutation envelope', () => {
     expect(validateInboundMessage(valid)).toMatchObject({ ok: true, command: valid });
   });
 
-  it.each(['scope', 'expectedRevision', 'mutation', 'phases'])(
+  it.each(['expectedRevision', 'mutation', 'phases'])(
     'rejects an envelope missing %s',
     (key) => {
       const payload = { ...valid.payload } as Record<string, unknown>;
@@ -30,6 +39,23 @@ describe('scoped Phase save IPC contract', () => {
       });
     }
   );
+
+  it('rejects a non-string revision', () => {
+    expect(validateInboundMessage({
+      ...valid,
+      payload: { ...valid.payload, expectedRevision: 3 }
+    })).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
+
+  it('rejects an envelope that still carries a scope (FR-042)', () => {
+    // The successor of `rejects an envelope missing scope`. A caller pinned to
+    // the layer tier must fail loudly at the boundary, not have its extra field
+    // quietly dropped on the way to a handler that would ignore it.
+    expect(validateInboundMessage({
+      ...valid,
+      payload: { ...valid.payload, scope: 'user' }
+    })).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
 
   it('rejects undeclared payload keys', () => {
     expect(validateInboundMessage({

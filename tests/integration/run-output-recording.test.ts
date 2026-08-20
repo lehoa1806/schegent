@@ -46,14 +46,12 @@ const COMPOSE: PhaseDef = {
   name: 'Compose',
   version: 1,
   instruction: 'Compose the thing.',
-  sourceScope: 'built-in'
 };
 
 const REPORTING_FLOW: PipelineDef = {
   id: 'reporting-flow',
   name: 'Reporting Flow',
   phases: ['compose'],
-  sourceScope: 'workspace',
   inputs: [],
   outputs: [
     { portId: 'report', label: 'Report', type: 'markdown' },

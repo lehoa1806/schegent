@@ -26,16 +26,23 @@ import type {
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
   | { outcome: 'canceled' }
   | { outcome: 'failed'; message: string };
 
+/**
+ * Seeded so a plan's revision can be asserted against a value this file names,
+ * rather than against whatever the read happened to return.
+ */
+const SEEDED_PHASE_REVISION = 'rev-phase-preflight-seed';
+
 interface Harness {
   readonly ctx: Parameters<typeof preflightHandler>[0];
   readonly acks: CommandAckMessage[];
-  readonly writePhaseConfig: ReturnType<typeof vi.fn>;
+  readonly store: FakeCatalogStore;
   readonly updateConfig: ReturnType<typeof vi.fn>;
   readonly executeCommand: ReturnType<typeof vi.fn>;
 }
@@ -48,7 +55,7 @@ function buildHarness(
   } = {}
 ): Harness {
   const acks: CommandAckMessage[] = [];
-  const writePhaseConfig = vi.fn();
+  const store = new FakeCatalogStore({ revisions: { phase: SEEDED_PHASE_REVISION } });
   const updateConfig = vi.fn();
   const executeCommand = vi.fn();
 
@@ -59,9 +66,10 @@ function buildHarness(
 
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: [], workspace: [] }),
+      readPhaseConfig: () => ({ rows: [], revision: store.revisionOf('phase') }),
       ...(opts.withModelsReader === false ? {} : { readModelsConfig: () => opts.models ?? {} }),
-      writePhaseConfig,
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       updateConfig,
       executeCommand,
       openProcessYamlDocument,
@@ -82,7 +90,7 @@ function buildHarness(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  return { ctx, acks, writePhaseConfig, updateConfig, executeCommand };
+  return { ctx, acks, store, updateConfig, executeCommand };
 }
 
 /** No resource kind, no scope, no bytes — the document says what it is. */
@@ -135,7 +143,7 @@ describe('Feature 096 — Model Catalog preflight dispatches on the declared kin
   it('writes nothing while planning a Model Catalog import', async () => {
     const { harness } = await preflight({ text: MODEL_CATALOG_DOCUMENT });
 
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
     expect(harness.executeCommand).not.toHaveBeenCalled();
   });
@@ -221,7 +229,10 @@ describe("Feature 096 — a ModelCatalog plan carries the models layer's own rev
     expect(Object.keys(result.plan).sort()).toEqual(
       ['rows', 'counts', 'computedAgainstRevision', 'computedAgainstModelsRevision'].sort()
     );
-    expect(Object.keys(result.plan.computedAgainstRevision).sort()).toEqual(['user', 'workspace']);
+    // Feature 099 (FR-042) — the Phase catalog reports one revision, not a map of
+    // layer names. The Model catalog is out of scope for that collapse and keeps
+    // its own layer revision, asserted exactly below.
+    expect(result.plan.computedAgainstRevision).toBe(SEEDED_PHASE_REVISION);
     // The exact revision the config layer would compute from the same input,
     // not merely a non-empty string — a stale-looking token would still pass
     // a weaker assertion.
@@ -267,7 +278,7 @@ describe('Feature 096 — a ModelCatalog document refusal survives the whole com
 
   it('writes nothing, because a refusal never reaches a save', async () => {
     const { harness } = await preflight({ text: MISSING_BACKEND });
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 });

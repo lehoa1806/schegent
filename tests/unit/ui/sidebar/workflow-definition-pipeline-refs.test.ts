@@ -4,23 +4,23 @@
 // Contract: `specs/083-workflow-graph-builder/contracts/save-workflows-ipc.md`.
 //
 // The one property that makes this collector correct is counter-intuitive
-// enough to be worth stating: **its input is every stored source layer, not the
-// effective catalog**. Everywhere else in this feature, resolution runs against
-// the effective catalog — the repository hard rule. Here it deliberately does
-// not, because FR-041 blocks on any *stored* reference:
+// enough to be worth stating: **its input is every stored row, not the effective
+// catalog**. Everywhere else in this feature, resolution runs against the
+// effective catalog — the repository hard rule. Here it deliberately does not,
+// because FR-041 blocks on any *stored* reference: a row retained as `invalid`
+// under FR-031 holds one that goes live the moment its defects are corrected.
 //
-//   * a record shadowed by a higher-precedence scope holds a reference that goes
-//     live the moment the shadow is deleted;
-//   * a record retained as `invalid` under FR-031 holds one that goes live the
-//     moment its defects are corrected.
+// Resolving first would drop it and let a removal strand a definition the
+// operator can restore with a single edit. So the tests below assert the invalid
+// cases as hard requirements, not as tolerated noise.
 //
-// Resolving first would drop both and let a removal strand a definition that the
-// operator can restore with a single edit. So the tests below assert the
-// shadowed and invalid cases as hard requirements, not as tolerated noise.
-//
-// The refusal names each blocking Workflow with its scope, since the same
-// identifier may exist in more than one layer — hence one reference per
-// `(workflowId, scope, pipelineId)` triple rather than per identifier.
+// Feature 099 (T496f, FR-042/FR-043) — the second reason used to be shadowing: a
+// row hidden by a higher-precedence scope held a live-on-deletion reference too.
+// That arm is gone with the layer tier, and with it the `scope` field the
+// refusal carried to say WHICH record blocked. One layer names it with
+// `(workflowId, pipelineId)`, so every expectation below drops `scope` and the
+// two cases that were about cross-layer identity are replaced by the same-layer
+// duplicate-id pair, which is the one way an identifier can still appear twice.
 
 import { describe, expect, it } from 'vitest';
 import type {
@@ -43,9 +43,8 @@ const pipeline = (pipelineId: string): PipelineDefinition => ({
 });
 
 const effectiveRecord = (definition: PipelineDefinition): PipelineSourceRecord => ({
-  key: `user::${definition.pipelineId}::0`,
+  key: `${definition.pipelineId}::0`,
   pipelineId: definition.pipelineId,
-  scope: 'user',
   status: 'effective',
   definition,
   display: {},
@@ -70,35 +69,25 @@ const row = (id: string, overrides: Record<string, unknown> = {}): Record<string
   ...overrides
 });
 
-const records = (input: {
-  builtIn?: readonly unknown[];
-  user?: readonly unknown[];
-  workspace?: readonly unknown[];
-}): readonly WorkflowSourceRecord[] =>
-  resolveWorkflowCatalog({
-    builtIn: input.builtIn ?? [],
-    user: input.user,
-    workspace: input.workspace,
-    pipelineCatalog: PIPELINES
-  }).records;
+const records = (rows: readonly unknown[]): readonly WorkflowSourceRecord[] =>
+  resolveWorkflowCatalog({ rows, revision: 'rev-1', pipelineCatalog: PIPELINES }).records;
 
-const refs = (input: Parameters<typeof records>[0]) =>
-  collectWorkflowDefinitionPipelineRefs(records(input));
+const refs = (rows: readonly unknown[]) =>
+  collectWorkflowDefinitionPipelineRefs(records(rows));
 
-const statusOf = (input: Parameters<typeof records>[0], key: string) =>
-  records(input).find((record) => record.key === key)?.status;
+const statusOf = (rows: readonly unknown[], key: string) =>
+  records(rows).find((record) => record.key === key)?.status;
 
 describe('collectWorkflowDefinitionPipelineRefs', () => {
   it('reports nothing for an empty catalog', () => {
-    expect(refs({})).toEqual([]);
+    expect(refs([])).toEqual([]);
   });
 
-  it('emits one reference per node Pipeline, stamped with kind and scope', () => {
-    expect(refs({ user: [row('release')] })).toEqual([
+  it('emits one reference per node Pipeline, stamped with its kind', () => {
+    expect(refs([row('release')])).toEqual([
       {
         workflowId: 'release',
         pipelineId: 'standard',
-        scope: 'user',
         kind: 'workflow-definition'
       }
     ]);
@@ -115,11 +104,10 @@ describe('collectWorkflowDefinitionPipelineRefs', () => {
       ],
       startNodeIds: ['a']
     });
-    expect(refs({ user: [twoNodes] })).toEqual([
+    expect(refs([twoNodes])).toEqual([
       {
         workflowId: 'release',
         pipelineId: 'standard',
-        scope: 'user',
         kind: 'workflow-definition'
       }
     ]);
@@ -136,62 +124,32 @@ describe('collectWorkflowDefinitionPipelineRefs', () => {
       ],
       startNodeIds: ['a']
     });
-    expect(refs({ user: [mixed] }).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
+    expect(refs([mixed]).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
   });
 
-  it('counts a built-in record, so a shipped Workflow blocks a removal too', () => {
-    expect(refs({ builtIn: [row('shipped')] })).toEqual([
-      {
-        workflowId: 'shipped',
-        pipelineId: 'standard',
-        scope: 'built-in',
-        kind: 'workflow-definition'
-      }
-    ]);
-  });
+  // Feature 099 (T496f, FR-042) — 'counts a built-in record, so a shipped
+  // Workflow blocks a removal too' is gone with the layer that held shipped rows.
+  // Every row is now an operator's, and the case above already pins that an
+  // ordinary row produces a reference.
 });
 
 describe('stored means stored, not effective (FR-041, FR-031)', () => {
-  it('counts a shadowed record — its reference goes live when the shadow is deleted', () => {
-    const input = {
-      user: [row('release', { nodes: [{ nodeId: 'a', pipelineId: 'review' }] })],
-      workspace: [row('release')]
-    };
-    // Precondition: the workspace row wins, so the user row is genuinely hidden.
-    expect(statusOf(input, 'workspace::release::0')).toBe('effective');
-    expect(statusOf(input, 'user::release::0')).toBe('shadowed');
-
-    expect(refs(input)).toEqual([
-      {
-        workflowId: 'release',
-        pipelineId: 'review',
-        scope: 'user',
-        kind: 'workflow-definition'
-      },
-      {
-        workflowId: 'release',
-        pipelineId: 'standard',
-        scope: 'workspace',
-        kind: 'workflow-definition'
-      }
-    ]);
-  });
-
-  it('keeps the same identifier in two scopes as two references', () => {
-    const input = { user: [row('release')], workspace: [row('release')] };
-    expect(refs(input).map((ref) => ref.scope)).toEqual(['user', 'workspace']);
-  });
-
+  // Feature 099 (T496f, FR-040) — the two cases that opened this block asserted
+  // that a SHADOWED row still contributes a reference, and that one identifier in
+  // two scopes contributes two. Neither has a referent under one catalog. What
+  // survives them is the property they were the second example of, and the block
+  // is named for it: an unresolved row is not a dropped row. The duplicate-id case
+  // at the foot of the block now carries the "one identifier, two references" half
+  // on its own, since duplicate rows are the only way that still happens.
   it('counts an invalid record — its reference goes live when the defects are fixed', () => {
     // Invalid for a reason that has nothing to do with the nodes: no name.
-    const input = { user: [row('release', { name: '' })] };
-    expect(statusOf(input, 'user::release::0')).toBe('invalid');
+    const rows = [row('release', { name: '' })];
+    expect(statusOf(rows, 'release::0')).toBe('invalid');
 
-    expect(refs(input)).toEqual([
+    expect(refs(rows)).toEqual([
       {
         workflowId: 'release',
         pipelineId: 'standard',
-        scope: 'user',
         kind: 'workflow-definition'
       }
     ]);
@@ -210,23 +168,21 @@ describe('stored means stored, not effective (FR-041, FR-031)', () => {
       ],
       startNodeIds: ['a']
     });
-    const input = { user: [cyclic] };
-    expect(statusOf(input, 'user::release::0')).toBe('invalid');
-    expect(refs(input).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
+    const rows = [cyclic];
+    expect(statusOf(rows, 'release::0')).toBe('invalid');
+    expect(refs(rows).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
   });
 
   it('counts both rows of a duplicate-id pair, which the resolver invalidates together', () => {
-    const input = {
-      user: [row('release'), row('release', { nodes: [{ nodeId: 'a', pipelineId: 'review' }] })]
-    };
-    expect(statusOf(input, 'user::release::0')).toBe('invalid');
-    expect(statusOf(input, 'user::release::1')).toBe('invalid');
-    expect(refs(input).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
+    const rows = [row('release'), row('release', { nodes: [{ nodeId: 'a', pipelineId: 'review' }] })];
+    expect(statusOf(rows, 'release::0')).toBe('invalid');
+    expect(statusOf(rows, 'release::1')).toBe('invalid');
+    expect(refs(rows).map((ref) => ref.pipelineId)).toEqual(['standard', 'review']);
   });
 });
 
 describe('best-effort node parse invents nothing (FR-041)', () => {
-  const nodesOf = (nodes: readonly unknown[]) => refs({ user: [row('release', { nodes })] });
+  const nodesOf = (nodes: readonly unknown[]) => refs([row('release', { nodes })]);
 
   it('recovers the well-formed nodes of a row whose other nodes are malformed', () => {
     expect(
@@ -265,13 +221,13 @@ describe('best-effort node parse invents nothing (FR-041)', () => {
   });
 
   it('reports nothing for a row whose nodes field is not an array', () => {
-    expect(refs({ user: [row('release', { nodes: 'standard' })] })).toEqual([]);
-    expect(refs({ user: [row('release', { nodes: {} })] })).toEqual([]);
-    expect(refs({ user: [row('release', { nodes: [] })] })).toEqual([]);
+    expect(refs([row('release', { nodes: 'standard' })])).toEqual([]);
+    expect(refs([row('release', { nodes: {} })])).toEqual([]);
+    expect(refs([row('release', { nodes: [] })])).toEqual([]);
   });
 
   it('reports nothing for a row that is not an object', () => {
-    expect(refs({ user: ['standard', null, 7] })).toEqual([]);
+    expect(refs(['standard', null, 7])).toEqual([]);
   });
 
   it('trims a padded pipelineId the way the definition validator does', () => {
@@ -279,7 +235,6 @@ describe('best-effort node parse invents nothing (FR-041)', () => {
       {
         workflowId: 'release',
         pipelineId: 'standard',
-        scope: 'user',
         kind: 'workflow-definition'
       }
     ]);

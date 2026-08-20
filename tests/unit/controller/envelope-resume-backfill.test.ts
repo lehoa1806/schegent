@@ -52,13 +52,12 @@ class FakeMemento implements Memento {
 
 const COMPOSE: PhaseDef = {
   id: 'compose', name: 'Compose', version: 1, instruction: 'Write the report.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 const FLOW: PipelineDef = {
-  id: 'envelope-flow', name: 'Envelope Flow', phases: ['compose'], sourceScope: 'workspace'
+  id: 'envelope-flow', name: 'Envelope Flow', phases: ['compose']
 };
 
 /** What `validateRunRequest()` produces, reduced to what this seam reads. */

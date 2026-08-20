@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
 import { isPhaseDef } from '../../../src/config/pipeline-config';
-import { pipelineLayerRevision } from '../../../src/config/pipeline-catalog';
 import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
 // Feature 098 (T080) — the Pipelines these tests author name `speckit-specify`,
 // `speckit-clarify` and `finalize`, which used to resolve out of the built-in
@@ -10,24 +9,37 @@ import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
 // `unknown-phase` and reports `pipeline-validation` instead of the gate under
 // test. See the fixture header for why the ids are the real Spec Kit ones.
 import { SPECKIT_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
+// Feature 099 (T496f, FR-042/FR-054) — definitions arrive as a store snapshot,
+// not as configuration. `getPhases`/`getPipelines` are gone from the reader, so a
+// test that used to seed a layer now seeds the store; `getModels` and
+// `getDefaultPipelineId` are the two keys the store does not own and they keep
+// both settings scopes, which is why `userDefault`/`workspaceDefault` survive
+// below while `userPhases`/`workspacePhases` do not.
+import { EMPTY_SNAPSHOT, snapshotOf } from '../../fixtures/catalog-snapshot-fixture';
 
-/** The Phase rows the Pipelines below reference, as a settings layer supplies them. */
+/** The Phase rows the Pipelines below reference, as the store supplies them. */
 const REFERENCED_PHASES = SPECKIT_PHASE_DEFS;
 
-function makeReader(opts: {
-  userPhases?: readonly unknown[];
-  userPipelines?: readonly unknown[];
-  userDefault?: string;
-  workspacePhases?: readonly unknown[];
-  workspacePipelines?: readonly unknown[];
-  workspaceDefault?: string;
-}): CatalogConfigReader {
+interface LoadOptions {
+  readonly phases?: readonly unknown[];
+  readonly pipelines?: readonly unknown[];
+  readonly userDefault?: string;
+  readonly workspaceDefault?: string;
+}
+
+function makeReader(opts: LoadOptions): CatalogConfigReader {
   return {
-    getPhases: (scope) => (scope === 'user' ? opts.userPhases : opts.workspacePhases),
-    getPipelines: (scope) => (scope === 'user' ? opts.userPipelines : opts.workspacePipelines),
     getDefaultPipelineId: (scope) => (scope === 'user' ? opts.userDefault : opts.workspaceDefault),
     getModels: () => undefined
   };
+}
+
+/** One store snapshot plus the two surviving configuration keys. */
+function load(opts: LoadOptions) {
+  return loadCatalog(
+    snapshotOf({ phases: opts.phases, pipelines: opts.pipelines }),
+    makeReader(opts)
+  );
 }
 
 describe('loadCatalog (T044, T045, US3)', () => {
@@ -40,7 +52,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
   // `models` is deliberately excluded from the sweep: the manifest default is
   // already empty and this feature does not touch it.
   it('returns an empty catalog when no reader is supplied', () => {
-    const result = loadCatalog();
+    const result = loadCatalog(EMPTY_SNAPSHOT);
 
     expect(result.catalog.phases).toEqual([]);
     expect(result.catalog.pipelines).toEqual([]);
@@ -52,11 +64,48 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.usedFallback).toBe(false);
   });
 
+  it('reads the store the same way whether or not a reader is supplied', () => {
+    // Feature 099 (T494, FR-042/FR-054) — the reader used to carry the definitions,
+    // so "no reader" meant "no catalog" and the branch answering it could be a
+    // constant. The store carries them now, and the reader is down to two keys
+    // that name neither a Phase nor a Pipeline. Its absence must therefore change
+    // exactly those two answers and nothing else — in particular it must not
+    // decide whether the resolved catalog is validated at all, which is how a load
+    // comes to report a clean catalog that a load one argument longer would not.
+    //
+    // Twenty-one Pipelines because the soft cap is twenty: the divergence is only
+    // observable on a catalog big enough for `validateCatalog` to have something to
+    // say about it, and an empty store is the one input on which any two code paths
+    // agree.
+    const pipelines = Array.from({ length: 21 }, (_unused, index) => ({
+      id: `pipeline-${index}`,
+      name: `Pipeline ${index}`,
+      phases: ['speckit-specify']
+    }));
+    const snapshot = snapshotOf({ phases: REFERENCED_PHASES, pipelines });
+    const supplyingNothing: CatalogConfigReader = {
+      getModels: () => undefined,
+      getDefaultPipelineId: () => undefined
+    };
+
+    const withoutReader = loadCatalog(snapshot);
+    const withEmptyReader = loadCatalog(snapshot, supplyingNothing);
+
+    expect(withoutReader.warnings).toEqual(withEmptyReader.warnings);
+    expect(withoutReader.errors).toEqual(withEmptyReader.errors);
+    expect(withoutReader.usedFallback).toBe(withEmptyReader.usedFallback);
+    expect(withoutReader.defaultPipelineId).toBe(withEmptyReader.defaultPipelineId);
+    expect(withoutReader.catalog.pipelines).toEqual(withEmptyReader.catalog.pipelines);
+    // The vacuity guard: an assertion that two warning lists match is worth
+    // nothing if both are empty.
+    expect(withEmptyReader.warnings.length).toBeGreaterThan(0);
+  });
+
   it('substitutes no definition of its own for the reader it does not have', () => {
     // The specific substitution FR-027 removes, named rather than implied: with
     // no reader the loader reached for the built-in layer by constant, not
     // through layer resolution, so emptying the layer would not have reached it.
-    const result = loadCatalog();
+    const result = loadCatalog(EMPTY_SNAPSHOT);
 
     // The ids are spelled out rather than read off `BUILT_IN_PIPELINE_ID`: the
     // constant is itself scheduled for deletion, and a test that the host supplies
@@ -65,95 +114,27 @@ describe('loadCatalog (T044, T045, US3)', () => {
     expect(result.catalog.pipelinesById.has('speckit-new-feature')).toBe(false);
   });
 
-  it('workspace settings shadow user settings for shared Phase ids (081 FR-003)', () => {
-    const userPhase = {
-      id: 'security-audit',
-      name: 'User Security Audit',
-      instruction: 'User-level instruction (wins).',
-      
-    };
-    const workspacePhase = {
-      id: 'security-audit',
-      name: 'Workspace Security Audit',
-      instruction: 'Workspace-level instruction.',
-      
-      model: 'claude-opus-4-7',
-      effort: 'high' as const
-    };
-    const reader = makeReader({
-      userPhases: [userPhase],
-      workspacePhases: [workspacePhase]
-    });
-    const result = loadCatalog(reader);
-    expect(result.errors).toEqual([]);
-    const phase = result.catalog.phasesById.get('security-audit');
-    expect(phase).toBeDefined();
-    expect(phase!.name).toBe('Workspace Security Audit');
-    expect(phase!.instruction).toBe('Workspace-level instruction.');
-    expect(phase!.model).toBe('claude-opus-4-7');
-    expect(phase!.effort).toBe('high');
-  });
+  // Feature 099 (T496f, FR-043) — three cases stood here: workspace shadowing
+  // user for a shared Phase id, the same for a Pipeline id, and user shadowing
+  // built-in. All three asserted precedence between layers, and there is one
+  // layer. They are deleted rather than reduced to a single-layer variant: "the
+  // only row wins" is not a precedence rule, it is the absence of one, and a test
+  // asserting it would pass on any implementation at all. What a shared id now
+  // produces — two rows claiming one id, both invalidated — is the duplicate case
+  // further down, which is a different rule and already has its own test.
 
-  // Feature 082 FR-003 supersedes the earlier BUG-003 pipeline merge order:
-  // Pipeline precedence is now workspace over user over built-in, matching the
-  // Phase catalog precedence established by feature 081.
-  it('workspace settings shadow user settings for shared pipeline ids (082 FR-003)', () => {
-    const userPipeline = {
-      id: 'security',
-      name: 'User Security Pipeline',
-      phases: ['speckit-specify', 'finalize']
-    };
-    const workspacePipeline = {
-      id: 'security',
-      name: 'Workspace Security Pipeline',
-      phases: ['speckit-specify', 'speckit-clarify', 'finalize']
-    };
-    const reader = makeReader({
-      userPipelines: [userPipeline],
-      workspacePipelines: [workspacePipeline],
-      workspacePhases: REFERENCED_PHASES
-    });
-    const result = loadCatalog(reader);
-    expect(result.errors).toEqual([]);
-    const pipeline = result.catalog.pipelinesById.get('security');
-    expect(pipeline).toBeDefined();
-    expect(pipeline!.name).toBe('Workspace Security Pipeline');
-    expect(pipeline!.phases).toEqual(['speckit-specify', 'speckit-clarify', 'finalize']);
-    expect(
-      result.pipelineCatalog.records.find(
-        (record) => record.pipelineId === 'security' && record.scope === 'user'
-      )?.status
-    ).toBe('shadowed');
-  });
-
-  it('user settings shadow built-in defaults for shared ids (T044)', () => {
-    const userOverride = {
-      id: 'speckit-specify',
-      name: 'Custom Specify',
-      instruction: 'User-overridden specify instruction.',
-      
-    };
-    const reader = makeReader({
-      userPhases: [userOverride]
-    });
-    const result = loadCatalog(reader);
-    expect(result.errors).toEqual([]);
-    const phase = result.catalog.phasesById.get('speckit-specify');
-    expect(phase!.name).toBe('Custom Specify');
-    expect(phase!.instruction).toBe('User-overridden specify instruction.');
-  });
-
+  // `defaultPipelineId` is NOT a definition, so it keeps both settings scopes and
+  // keeps this precedence (FR-054). The Pipelines it names come from the store.
   it('workspace defaultPipelineId shadows user defaultPipelineId for scalar setting precedence', () => {
-    const reader = makeReader({
+    const result = load({
       userDefault: 'user-default',
       workspaceDefault: 'workspace-default',
-      userPipelines: [{ id: 'user-default', name: 'User Default', phases: ['speckit-specify'] }],
-      workspacePipelines: [
+      pipelines: [
+        { id: 'user-default', name: 'User Default', phases: ['speckit-specify'] },
         { id: 'workspace-default', name: 'Workspace Default', phases: ['speckit-specify'] }
       ],
-      workspacePhases: REFERENCED_PHASES
+      phases: REFERENCED_PHASES
     });
-    const result = loadCatalog(reader);
     expect(result.errors).toEqual([]);
     expect(result.catalog.defaultPipelineId).toBe('workspace-default');
   });
@@ -165,12 +146,9 @@ describe('loadCatalog (T044, T045, US3)', () => {
       instruction: 'x',
       
     };
-    const reader = makeReader({
-      userPhases: [badPhase],
-      workspacePhases: REFERENCED_PHASES
-    });
-    expect(() => loadCatalog(reader)).not.toThrow();
-    const result = loadCatalog(reader);
+    const opts = { phases: [badPhase, ...REFERENCED_PHASES] };
+    expect(() => load(opts)).not.toThrow();
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     expect(result.usedFallback).toBe(false);
     // Feature 098 (T028) — an unresolvable default re-anchors to `''` rather than
@@ -186,8 +164,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
   // row that references an unknown Phase is quarantined as an invalid source
   // record instead of discarding the whole configured layer.
   it('quarantines a pipeline that references an unknown phase id without falling back', () => {
-    const reader = makeReader({
-      userPipelines: [
+    const opts = {
+      pipelines: [
         {
           id: 'broken',
           name: 'Broken Pipeline',
@@ -199,9 +177,9 @@ describe('loadCatalog (T044, T045, US3)', () => {
           phases: ['speckit-specify', 'finalize']
         }
       ],
-      workspacePhases: REFERENCED_PHASES
-    });
-    const result = loadCatalog(reader);
+      phases: REFERENCED_PHASES
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     expect(result.usedFallback).toBe(false);
     expect(result.catalog.pipelinesById.has('broken')).toBe(false);
@@ -213,10 +191,10 @@ describe('loadCatalog (T044, T045, US3)', () => {
   });
 
   it('reports no default when defaultPipelineId references an unknown pipeline (T045)', () => {
-    const reader = makeReader({
+    const opts = {
       userDefault: 'phantom-pipeline'
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     // Feature 098 (T028, FR-026) — the phantom does not resolve, and the loader
     // used to re-anchor to `BUILT_IN_PIPELINE_ID`: a default the operator never
     // named, offered as though they had. It reports no default instead, and still
@@ -226,8 +204,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
   });
 
   it('coerces malformed phase/pipeline entries silently (T045)', () => {
-    const reader = makeReader({
-      userPhases: [
+    const opts = {
+      phases: [
         null,
         'not-an-object',
         42,
@@ -240,7 +218,7 @@ describe('loadCatalog (T044, T045, US3)', () => {
           
         }
       ] as readonly unknown[],
-      userPipelines: [
+      pipelines: [
         null,
         { id: 'no-phases-array' },
         {
@@ -249,79 +227,92 @@ describe('loadCatalog (T044, T045, US3)', () => {
           phases: ['valid-phase']
         }
       ] as readonly unknown[]
-    });
-    expect(() => loadCatalog(reader)).not.toThrow();
-    const result = loadCatalog(reader);
+    };
+    expect(() => load(opts)).not.toThrow();
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     expect(result.catalog.phasesById.has('valid-phase')).toBe(true);
     expect(result.catalog.pipelinesById.has('valid-pipeline')).toBe(true);
   });
 
-  it('emits duplicate warnings when the same workspace setting defines an id twice (T044)', () => {
-    const reader = makeReader({
-      workspacePhases: [
+  it('emits duplicate warnings when the catalog holds an id twice (T044)', () => {
+    const opts = {
+      phases: [
         { id: 'twin', name: 'First', instruction: 'a' },
         { id: 'twin', name: 'Second', instruction: 'b' }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     expect(result.warnings.some((w) => w.id === 'twin')).toBe(true);
     expect(result.catalog.phasesById.has('twin')).toBe(false);
     expect(
       result.phaseCatalog.records
-        .filter((record) => record.scope === 'workspace' && record.phaseId === 'twin')
+        .filter((record) => record.phaseId === 'twin')
         .every((record) => record.status === 'invalid')
     ).toBe(true);
   });
 });
 
 describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () => {
-  it('exposes a pipelineCatalog resolution with per-scope revisions', () => {
-    const userPipelines = [{ id: 'custom', name: 'Custom', phases: ['finalize'] }];
-    const result = loadCatalog(makeReader({ userPipelines }));
-    expect(result.pipelineCatalog.revisions.user).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.pipelineCatalog.revisions.workspace).toBe(pipelineLayerRevision([]));
-    expect(result.pipelineCatalog.revisions.user).toBe(pipelineLayerRevision(userPipelines));
+  // Feature 099 (T496f, FR-044a) — was "per-scope revisions", asserting a hash
+  // per layer computed from that layer's rows. There is one catalog and the
+  // revision is the store's, so the claim that survives is the one that matters
+  // to the Builder: whatever the store said, the resolution reports back
+  // unchanged. It is deliberately NOT re-derived here — a test that recomputed
+  // the revision would pass against a value the store never issued.
+  it('reports the store revision the snapshot carried', () => {
+    const result = loadCatalog(
+      snapshotOf({
+        pipelines: [{ id: 'custom', name: 'Custom', phases: ['finalize'] }],
+        revisions: { pipeline: 'rev-from-store', phase: 'rev-phase-from-store' }
+      })
+    );
+    expect(result.pipelineCatalog.revision).toBe('rev-from-store');
+    expect(result.phaseCatalog.revision).toBe('rev-phase-from-store');
   });
 
   // Feature 098 (T036, FR-027) — this used to assert that a reader-less load still
   // exposed a built-in Pipeline in the effective set. The built-in layer ships no
-  // rows, so the resolution a reader-less load exposes is the empty one: no
-  // records at all, in any scope, and nothing effective.
-  it('exposes an empty resolution when no reader is supplied', () => {
-    const result = loadCatalog();
+  // rows; feature 099 (FR-001a) makes the same case reachable through an empty
+  // store, which is what a workspace nobody has saved into presents.
+  it('exposes an empty resolution for an empty store', () => {
+    const result = loadCatalog(EMPTY_SNAPSHOT);
     expect(result.pipelineCatalog.records).toEqual([]);
     expect(result.pipelineCatalog.effective).toEqual([]);
   });
 
-  it('retains every configured row as a record, including malformed ones', () => {
-    const result = loadCatalog(
-      makeReader({
-        userPipelines: [
-          null,
+  it('retains every stored row as a record, including malformed ones', () => {
+    // Feature 099 (T496f) — the first row was `null` while the layer was a
+    // settings array, where `null` is a value an operator can type. A stored
+    // definition with a `null` body is a different thing entirely: `storedRows`
+    // skips it because it means the record is unreadable (an integrity fault,
+    // FR-027) or holds a draft and no active version, neither of which is a
+    // malformed row for the resolver to quarantine. `42` is the degenerate body
+    // the store CAN hold, so it carries the same "not even an object" case
+    // without asserting a claim about faults that belongs elsewhere.
+    const result = load({
+        pipelines: [
+          42,
           { id: 'no-phases-array' },
           { id: 'good', name: 'Good', phases: ['finalize'] }
         ] as readonly unknown[],
-        workspacePhases: REFERENCED_PHASES
-      })
-    );
-    const userRecords = result.pipelineCatalog.records.filter((record) => record.scope === 'user');
-    expect(userRecords).toHaveLength(3);
-    expect(userRecords.filter((record) => record.status === 'invalid')).toHaveLength(2);
-    expect(userRecords.find((record) => record.pipelineId === 'good')?.status).toBe('effective');
+        phases: REFERENCED_PHASES
+      });
+    const records = result.pipelineCatalog.records;
+    expect(records).toHaveLength(3);
+    expect(records.filter((record) => record.status === 'invalid')).toHaveLength(2);
+    expect(records.find((record) => record.pipelineId === 'good')?.status).toBe('effective');
   });
 
   it('places only effective valid definitions in catalog.pipelines', () => {
-    const result = loadCatalog(
-      makeReader({
-        userPipelines: [
+    const result = load({
+        pipelines: [
           { id: 'good', name: 'Good', phases: ['finalize'] },
           { id: 'bad', name: 'Bad', phases: [] }
         ] as readonly unknown[],
-        workspacePhases: REFERENCED_PHASES
-      })
-    );
+        phases: REFERENCED_PHASES
+      });
     const ids = result.catalog.pipelines.map((pipeline) => pipeline.id);
     expect(ids).toContain('good');
     expect(ids).not.toContain('bad');
@@ -332,52 +323,39 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
     ).toBe(true);
   });
 
-  it('stamps the resolved sourceScope onto each effective pipeline', () => {
-    const result = loadCatalog(
-      makeReader({
-        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
-        userPhases: REFERENCED_PHASES
-      })
-    );
-    expect(result.catalog.pipelinesById.get('scoped')?.sourceScope).toBe('workspace');
-    // Feature 098 (T036) — the second half of this assertion used to name a
-    // built-in Pipeline id and expect `built-in`. No row carries that scope now,
-    // so the stamp is only observable across the two configured layers.
-    expect(result.catalog.pipelines.every((pipeline) => pipeline.sourceScope !== 'built-in')).toBe(
-      true
-    );
-  });
+  // Feature 099 (T496f, FR-043) — the `sourceScope` stamp is deleted with the
+  // field. It named which of three layers a definition resolved out of, and the
+  // answer is now the same for every row by construction, so there is nothing
+  // left for a resolver to get wrong. Nothing weaker is asserted in its place:
+  // that a definition came out of the store is what every other case here
+  // already relies on.
 
   it('surfaces resolver warnings without producing catalog errors', () => {
-    const result = loadCatalog(
-      makeReader({
-        userPipelines: [
+    const result = load({
+        pipelines: [
           { id: 'suggester', name: 'Suggester', phases: ['finalize'], recommendedNext: ['ghost'] }
         ] as readonly unknown[],
-        workspacePhases: REFERENCED_PHASES
-      })
-    );
+        phases: REFERENCED_PHASES
+      });
     expect(result.errors).toEqual([]);
     expect(result.usedFallback).toBe(false);
     expect(result.warnings.some((warning) => /ghost/.test(warning.message))).toBe(true);
   });
 
-  it('keeps a defaultPipelineId that only a configured layer supplies', () => {
-    const result = loadCatalog(
-      makeReader({
+  it('keeps a defaultPipelineId naming a Pipeline only the store supplies', () => {
+    const result = load({
         workspaceDefault: 'scoped',
-        workspacePipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
-        userPhases: REFERENCED_PHASES
-      })
-    );
+        pipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
+        phases: REFERENCED_PHASES
+      });
     expect(result.defaultPipelineId).toBe('scoped');
   });
 });
 
 describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
   it('preserves a valid retryCondition on the loaded PhaseDef (FR-014)', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'security-audit',
           name: 'Security Audit',
@@ -386,16 +364,16 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           retryCondition: 'open_questions > 0'
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('security-audit');
     expect(phase?.retryCondition).toBe('open_questions > 0');
   });
 
   it('quarantines a syntactically invalid retryCondition row', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'broken',
           name: 'Broken',
@@ -404,8 +382,8 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           retryCondition: 'open_questions > 0 AND broken'
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('broken');
     expect(phase).toBeUndefined();
@@ -415,8 +393,8 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
   });
 
   it('emits exactly one warning per load naming the offending phase id', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'broken',
           name: 'Broken',
@@ -425,16 +403,16 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           retryCondition: '@@invalid'
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     const matches = result.warnings.filter((w) => w.id === 'broken');
     expect(matches.length).toBe(1);
     expect(matches[0].message ?? '').toMatch(/retry condition/i);
   });
 
   it('keeps extension activation alive when a retryCondition is invalid', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'broken',
           name: 'Broken',
@@ -449,16 +427,16 @@ describe('loadCatalog — retryCondition validation (010, T022, US2)', () => {
           
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.usedFallback).toBe(false);
   });
 });
 
 describe('loadCatalog — runner validation (074, T033)', () => {
   it.each([true, false])('preserves isRequired: %s', (isRequired) => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'optional-policy',
           name: 'Optional Policy',
@@ -466,26 +444,26 @@ describe('loadCatalog — runner validation (074, T033)', () => {
           isRequired
         }
       ]
-    });
+    };
 
-    const result = loadCatalog(reader);
+    const result = load(opts);
 
     expect(result.errors).toEqual([]);
     expect(result.catalog.phasesById.get('optional-policy')?.isRequired).toBe(isRequired);
   });
 
   it('leaves isRequired absent for legacy phase definitions', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'legacy-required',
           name: 'Legacy Required',
           instruction: 'Run as required.'
         }
       ]
-    });
+    };
 
-    expect(loadCatalog(reader).catalog.phasesById.get('legacy-required')?.isRequired)
+    expect(load(opts).catalog.phasesById.get('legacy-required')?.isRequired)
       .toBeUndefined();
   });
 
@@ -497,8 +475,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
   // `sideEffects`-keyed block further down is the successor.
 
   it.each(SUPPORTED_BACKENDS)('accepts phase definitions with runner: %s', (runner) => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'test-runner-1',
           name: 'Test Runner',
@@ -506,8 +484,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
           runner
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('test-runner-1');
     expect(phase?.runner).toBe(runner);
@@ -515,8 +493,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
   });
 
   it('rejects phase definitions with invalid runner', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'test-runner-2',
           name: 'Test Runner',
@@ -524,8 +502,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
           runner: 'invalid-runner-name'
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.warnings.filter((warning) => warning.id === 'test-runner-2')).toHaveLength(1);
     // Invalid runner causes the phase to fail schema validation, meaning it doesn't get loaded
     expect(result.catalog.phasesById.has('test-runner-2')).toBe(false);
@@ -538,24 +516,24 @@ describe('loadCatalog — runner validation (074, T033)', () => {
   });
 
   it('accepts phase definitions with omitted runner', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'test-runner-3',
           name: 'Test Runner',
           instruction: 'inst'
         }
       ]
-    });
-    const result = loadCatalog(reader);
+    };
+    const result = load(opts);
     expect(result.errors).toEqual([]);
     const phase = result.catalog.phasesById.get('test-runner-3');
     expect(phase?.runner).toBeUndefined();
   });
 
   it('preserves the deprecated loopable compatibility field', () => {
-    const reader = makeReader({
-      workspacePhases: [
+    const opts = {
+      phases: [
         {
           id: 'legacy-loopable',
           name: 'Legacy loopable',
@@ -563,9 +541,9 @@ describe('loadCatalog — runner validation (074, T033)', () => {
           loopable: true
         }
       ]
-    });
+    };
 
-    const result = loadCatalog(reader);
+    const result = load(opts);
 
     expect(result.errors).toEqual([]);
     expect(result.catalog.phasesById.get('legacy-loopable')?.loopable).toBe(true);
@@ -589,14 +567,13 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       name: 'Git phase override',
       instruction: 'Create or close the branch.'
     };
-    const reader = makeReader({ workspacePhases: [phase] });
+    const opts = { phases: [phase] };
 
-    const result = loadCatalog(reader);
+    const result = load(opts);
 
     expect(result.usedFallback).toBe(false);
     expect(result.errors).toEqual([]);
     expect(result.catalog.phasesById.get(id)?.runner).toBeUndefined();
-    expect(result.catalog.phasesById.get(id)?.sourceScope).toBe('workspace');
     expect(isPhaseDef(phase)).toBe(true);
   });
 
@@ -615,8 +592,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
       runner: 'codex' as const,
       sideEffects: 'git' as const
     };
-    const reader = makeReader({ workspacePhases: [phase] });
-    const result = loadCatalog(reader);
+    const opts = { phases: [phase] };
+    const result = load(opts);
 
     expect(result.usedFallback).toBe(false);
     expect(result.warnings).toEqual(expect.arrayContaining([
@@ -634,8 +611,8 @@ describe('loadCatalog — runner validation (074, T033)', () => {
   it.each(['claude', 'agy'] as const)(
     'accepts Git-mutating overrides with explicit %s runner',
     (runner) => {
-      const reader = makeReader({
-        workspacePhases: [
+      const opts = {
+        phases: [
           {
             id: 'finalize',
             name: 'Finalize override',
@@ -644,9 +621,9 @@ describe('loadCatalog — runner validation (074, T033)', () => {
             sideEffects: 'git' as const
           }
         ]
-      });
+      };
 
-      const result = loadCatalog(reader);
+      const result = load(opts);
 
       expect(result.errors).toEqual([]);
       expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);

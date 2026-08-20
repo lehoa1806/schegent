@@ -36,7 +36,7 @@ import {
 import { WorkflowRunFactory } from '../../../src/services/workflow-run-factory';
 
 const SPECIFY: PhaseDef = {
-  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.', sourceScope: 'built-in'
+  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.'
 };
 /**
  * The loop phase, whose weight in `maxPhaseInvocations` is the frozen cap.
@@ -49,15 +49,14 @@ const LOOPING: PhaseDef = {
   name: 'Beta',
   version: 1,
   instruction: 'Beta prompt.',
-  sourceScope: 'built-in',
   retryCondition: 'open_questions > 0'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 const AB_FLOW: PipelineDef = {
-  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta'], sourceScope: 'workspace'
+  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta']
 };
 
 function catalog(): PipelineCatalog {

@@ -52,7 +52,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
+import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
   CMD_SAVE_PHASES,
@@ -66,11 +66,10 @@ import {
   type TrustDeniedReason
 } from '../../src/contracts/sidebar-ipc';
 
-const VALID_CAPABILITIES: readonly TrustCapability[] = [
-  'phases',
-  'retryConditions',
-  'pipelineOverrides'
-];
+// Feature 099 (T496f, FR-046) — `pipelineOverrides` left with the layer tier it
+// gated: it asked whether one layer could redefine what another declares, and one
+// layer poses no such question. The two that remain are keyed on document content.
+const VALID_CAPABILITIES: readonly TrustCapability[] = ['phases', 'retryConditions'];
 const VALID_SCOPES: readonly ResolvedScope[] = [
   'user',
   'workspace',
@@ -122,11 +121,11 @@ afterEach(async () => {
 function buildHarness(): {
   router: MessageRouter;
   audit: AuditLogWriter;
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
 } {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
+  const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -135,16 +134,15 @@ function buildHarness(): {
     notifyWarning: vi.fn(),
     logger,
     audit,
-    updateConfig: async (key, value) => {
-      updateConfigCalls.push({ key, value });
-    },
-    readPhaseConfig: () => ({ user: [], workspace: [] })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
-  return { router: new MessageRouter(deps), audit, updateConfigCalls };
+  return { router: new MessageRouter(deps), audit, store };
 }
 
 async function dispatchSave(
-  router: MessageRouter,
+  harness: { readonly router: MessageRouter; readonly store: FakeCatalogStore },
   phases: readonly unknown[],
   correlationId: string
 ): Promise<CommandAckMessage> {
@@ -153,13 +151,12 @@ async function dispatchSave(
     type: CMD_SAVE_PHASES,
     correlationId,
     payload: {
-      scope: 'workspace',
-      expectedRevision: phaseLayerRevision([]),
+      expectedRevision: harness.store.revisionOf('phase'),
       mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
       phases
     }
   } as unknown as SidebarCommand;
-  await router.dispatch(command, async (msg: CommandAckMessage) => {
+  await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = msg;
     return true;
   });
@@ -171,7 +168,8 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
   it('writes exactly one trust.capability-denied entry for a denied CMD_SAVE_PHASES', async () => {
     mocks.state.capabilities.set('phases', false);
     mocks.state.scopes.set('phases', 'user');
-    const { router, audit } = buildHarness();
+    const harness = buildHarness();
+    const { audit } = harness;
     const phases = [
       {
         id: 'speckit-specify',
@@ -182,7 +180,7 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
     ];
     const correlationId = 'corr-audit-trust-1';
 
-    const ack = await dispatchSave(router, phases, correlationId);
+    const ack = await dispatchSave(harness, phases, correlationId);
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
 
@@ -214,7 +212,8 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
     mocks.state.scopes.set('phases', 'workspace');
     mocks.state.capabilities.set('retryConditions', false);
     mocks.state.scopes.set('retryConditions', 'user');
-    const { router, audit } = buildHarness();
+    const harness = buildHarness();
+    const { audit } = harness;
     const phases = [
       {
         id: 'speckit-clarify',
@@ -225,7 +224,7 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
       }
     ];
 
-    const ack = await dispatchSave(router, phases, 'corr-audit-trust-2');
+    const ack = await dispatchSave(harness, phases, 'corr-audit-trust-2');
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
 

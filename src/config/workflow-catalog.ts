@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   PipelineDefinition,
   PipelineSourceRecord
@@ -7,11 +6,9 @@ import type {
   WorkflowCatalogResolution,
   WorkflowCatalogWarning,
   WorkflowDefinition,
-  WorkflowDefinitionScope,
   WorkflowFieldError,
   WorkflowSourceRecord,
-  WorkflowSourceStatus,
-  WritableWorkflowDefinitionScope
+  WorkflowSourceStatus
 } from '../contracts/workflow-definitions';
 import { PIPELINE_ID_PATTERN } from './pipeline-definition-validator';
 import { validateWorkflowGraph } from './workflow-graph-validator';
@@ -21,7 +18,7 @@ import {
   workflowFieldError
 } from './workflow-definition-validator';
 
-/** Advisory ceiling on Workflow definitions in one scope; exceeding it warns, never blocks (FR-032). */
+/** Advisory ceiling on stored Workflow definitions; exceeding it warns, never blocks (FR-032). */
 export const WORKFLOW_CATALOG_SOFT_CAP = 20;
 /** Advisory ceiling on one Workflow's node count (FR-032). */
 export const WORKFLOW_NODE_SOFT_CAP = 20;
@@ -29,9 +26,9 @@ export const WORKFLOW_NODE_SOFT_CAP = 20;
 const SYNTHETIC_WORKFLOW_ID_PREFIX = '?invalid-';
 
 /**
- * The stable per-row identity used to group source rows across layers. A row that cannot supply
- * one keeps its slot under a synthetic id so it stays visible for repair without ever resolving
- * (FR-002, FR-031). `id` is the authored key (§9); `workflowId` is accepted and normalized.
+ * The stable per-row identity. A row that cannot supply one keeps its slot under a synthetic id so
+ * it stays visible for repair without ever resolving (FR-002, FR-031). `id` is the authored key
+ * (§9); `workflowId` is accepted and normalized.
  */
 export function workflowSourceIdentity(row: unknown, index: number): string {
   if (row && typeof row === 'object' && !Array.isArray(row)) {
@@ -51,7 +48,6 @@ export function workflowSourceIdentity(row: unknown, index: number): string {
 interface MutableSourceRecord {
   readonly key: string;
   readonly workflowId: string;
-  readonly scope: WorkflowDefinitionScope;
   status: WorkflowSourceStatus;
   definition: WorkflowDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -96,24 +92,6 @@ export interface WorkflowPipelineContext {
   readonly records: readonly PipelineSourceRecord[];
 }
 
-function stableJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(record[key])}`)
-    .join(',')}}`;
-}
-
-/** SHA-256 fingerprint of one writable layer, echoed as `expectedRevision` on save (FR-029). */
-export function workflowLayerRevision(raw: readonly unknown[] | undefined): string {
-  return createHash('sha256')
-    .update(stableJsonStringify(raw ?? []), 'utf8')
-    .digest('hex');
-}
-
 function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
@@ -139,8 +117,14 @@ export function invalidPipelineCauses(
   return causes;
 }
 
-function parseLayer(
-  scope: WorkflowDefinitionScope,
+/**
+ * Parse the stored rows into source records.
+ *
+ * Feature 099 (T489, FR-042) — formerly `parseLayer`, called three times. See
+ * `parseRows` in `process-catalog.ts` for why `key` drops its scope segment and
+ * why a clean row now starts `effective` rather than `shadowed`.
+ */
+function parseRows(
   rows: readonly unknown[],
   pipelineCatalog: WorkflowPipelineContext,
   invalidPipelines: ReadonlyMap<string, string>
@@ -155,10 +139,9 @@ function parseLayer(
       if (errors.length > 0) definition = null;
     }
     return {
-      key: `${scope}::${workflowId}::${index}`,
+      key: `${workflowId}::${index}`,
       workflowId,
-      scope,
-      status: errors.length === 0 ? 'shadowed' : 'invalid',
+      status: errors.length === 0 ? 'effective' : 'invalid',
       definition,
       display: result.display,
       nodePipelineIds: readNodePipelineIds(row),
@@ -172,7 +155,7 @@ function duplicateError(workflowId: string): WorkflowFieldError {
     workflowId,
     'workflowId',
     'duplicate-in-scope',
-    `Workflow id '${bounded(workflowId, WORKFLOW_ID_MAX_LEN)}' appears more than once in this scope`
+    `Workflow id '${bounded(workflowId, WORKFLOW_ID_MAX_LEN)}' appears more than once in the catalog`
   );
 }
 
@@ -196,21 +179,23 @@ function invalidateDuplicates(records: MutableSourceRecord[]): void {
 
 /**
  * Both thresholds are code-fixed and advisory (FR-032): they are never read from a setting or from
- * an authored row, and a breach never refuses a save. The scope cap counts stored rows because it
- * is about layer size; the node cap counts effective definitions because a shadowed row's size is
- * not what the operator is working in.
+ * an authored row, and a breach never refuses a save. The catalog cap counts stored rows because it
+ * is about how much the operator is carrying; the node cap counts effective definitions because an
+ * invalid row's size is not what the operator is working in.
+ *
+ * Feature 099 (T489, FR-042) — the cap was per scope and reported the scope's name. There is one
+ * layer, so the code loses its `-scope` suffix along with the enumeration.
  */
 function softCapWarnings(
-  layers: readonly (readonly [WorkflowDefinitionScope, readonly unknown[]])[],
+  rows: readonly unknown[],
   effective: readonly WorkflowDefinition[]
 ): WorkflowCatalogWarning[] {
   const warnings: WorkflowCatalogWarning[] = [];
-  for (const [scope, rows] of layers) {
-    if (rows.length <= WORKFLOW_CATALOG_SOFT_CAP) continue;
+  if (rows.length > WORKFLOW_CATALOG_SOFT_CAP) {
     warnings.push(
       Object.freeze({
-        code: 'workflow-soft-cap-scope',
-        message: `Scope '${scope}' holds ${rows.length} Workflow definitions; advisory limit is ${WORKFLOW_CATALOG_SOFT_CAP}`
+        code: 'workflow-soft-cap',
+        message: `Catalog holds ${rows.length} Workflow definitions; advisory limit is ${WORKFLOW_CATALOG_SOFT_CAP}`
       })
     );
   }
@@ -227,58 +212,36 @@ function softCapWarnings(
 }
 
 /**
- * Resolves the three Workflow layers in the fixed order of data-model.md §10: parse, reject
- * in-scope duplicates, select precedence, then graph-validate against the **effective** Pipeline
- * catalog. Graph validation runs during parsing rather than after selection so a shadowed row
- * carries its own defects for repair instead of appearing clean until it is promoted.
+ * Resolves the one Workflow layer in the fixed order of data-model.md §10: parse, reject duplicate
+ * ids, then graph-validate against the **effective** Pipeline catalog. Graph validation runs during
+ * parsing rather than after selection so an unresolved row carries its own defects for repair
+ * instead of appearing clean.
+ *
+ * Feature 099 (T489, FR-042) — `rows` is the stored catalog and `revision` is the store's manifest
+ * revision (FR-044a). The precedence walk over `['workspace', 'user', 'built-in']` is gone: a clean
+ * row is effective by existing.
  */
 export function resolveWorkflowCatalog(input: {
-  readonly builtIn: readonly unknown[];
-  readonly user: readonly unknown[] | undefined;
-  readonly workspace: readonly unknown[] | undefined;
+  readonly rows: readonly unknown[] | undefined;
+  readonly revision: string;
   readonly pipelineCatalog: WorkflowPipelineContext;
 }): WorkflowCatalogResolution {
   const invalidPipelines = invalidPipelineCauses(input.pipelineCatalog);
-  const layer = (scope: WorkflowDefinitionScope, rows: readonly unknown[]) =>
-    parseLayer(scope, rows, input.pipelineCatalog, invalidPipelines);
+  const rows = input.rows ?? [];
+  const records = parseRows(rows, input.pipelineCatalog, invalidPipelines);
+  invalidateDuplicates(records);
 
-  const builtInRows = input.builtIn;
-  const userRows = input.user ?? [];
-  const workspaceRows = input.workspace ?? [];
-  const builtInRecords = layer('built-in', builtInRows);
-  const userRecords = layer('user', userRows);
-  const workspaceRecords = layer('workspace', workspaceRows);
-  invalidateDuplicates(userRecords);
-  invalidateDuplicates(workspaceRecords);
-
-  const records = [...builtInRecords, ...userRecords, ...workspaceRecords];
-  const workflowIds = new Set(records.map((record) => record.workflowId));
   const effective: WorkflowDefinition[] = [];
-  const scopeOrder: readonly WorkflowDefinitionScope[] = ['workspace', 'user', 'built-in'];
-
-  for (const workflowId of workflowIds) {
-    if (workflowId.startsWith(SYNTHETIC_WORKFLOW_ID_PREFIX)) continue;
-    let selected: MutableSourceRecord | undefined;
-    for (const scope of scopeOrder) {
-      selected = records.find(
-        (record) =>
-          record.workflowId === workflowId &&
-          record.scope === scope &&
-          record.status !== 'invalid' &&
-          record.definition !== null
-      );
-      if (selected) break;
-    }
-    if (!selected?.definition) continue;
-    selected.status = 'effective';
-    effective.push(selected.definition);
+  for (const record of records) {
+    if (record.workflowId.startsWith(SYNTHETIC_WORKFLOW_ID_PREFIX)) continue;
+    if (record.status !== 'effective' || record.definition === null) continue;
+    effective.push(record.definition);
   }
 
   const frozenRecords: WorkflowSourceRecord[] = records.map((record) =>
     Object.freeze({
       key: record.key,
       workflowId: record.workflowId,
-      scope: record.scope,
       status: record.status,
       definition: record.definition,
       display: record.display,
@@ -287,23 +250,10 @@ export function resolveWorkflowCatalog(input: {
     })
   );
 
-  const revisions: Record<WritableWorkflowDefinitionScope, string> = {
-    user: workflowLayerRevision(input.user),
-    workspace: workflowLayerRevision(input.workspace)
-  };
   return Object.freeze({
     records: Object.freeze(frozenRecords),
     effective: Object.freeze(effective),
-    revisions: Object.freeze(revisions),
-    warnings: Object.freeze(
-      softCapWarnings(
-        [
-          ['built-in', builtInRows],
-          ['user', userRows],
-          ['workspace', workspaceRows]
-        ],
-        effective
-      )
-    )
+    revision: input.revision,
+    warnings: Object.freeze(softCapWarnings(rows, effective))
   });
 }

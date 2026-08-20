@@ -1,12 +1,9 @@
-import { createHash } from 'node:crypto';
 import type {
   PhaseCatalogResolution,
   PhaseDefinition,
-  PhaseDefinitionScope,
   PhaseFieldError,
   PhaseSourceRecord,
-  PhaseSourceStatus,
-  WritablePhaseDefinitionScope
+  PhaseSourceStatus
 } from '../contracts/process-definitions';
 import type { PhaseDef } from './pipeline-config';
 import { validatePhaseDefinition } from './process-definition-validator';
@@ -30,7 +27,6 @@ export function phaseSourceIdentity(row: unknown, index: number): string {
 interface MutableSourceRecord {
   readonly key: string;
   readonly phaseId: string;
-  readonly scope: PhaseDefinitionScope;
   status: PhaseSourceStatus;
   definition: PhaseDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -41,49 +37,20 @@ export interface ResolvedPhaseCatalog extends PhaseCatalogResolution {
   readonly effectivePhaseDefs: readonly PhaseDef[];
 }
 
-function stableJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(record[key])}`)
-    .join(',')}}`;
-}
-
-export function phaseLayerRevision(raw: readonly unknown[] | undefined): string {
-  return createHash('sha256')
-    .update(stableJsonStringify(raw ?? []), 'utf8')
-    .digest('hex');
-}
-
-function authoredBuiltInRow(phase: PhaseDef): Record<string, unknown> {
-  return {
-    id: phase.id,
-    name: phase.name,
-    version: phase.version ?? 1,
-    ...(phase.description !== undefined ? { description: phase.description } : {}),
-    ...(phase.instruction !== undefined ? { instruction: phase.instruction } : {}),
-    ...(phase.skill !== undefined ? { skill: phase.skill } : {}),
-    ...(phase.model !== undefined ? { model: phase.model } : {}),
-    ...(phase.effort !== undefined ? { effort: phase.effort } : {}),
-    ...(phase.timeoutSeconds !== undefined ? { timeoutSeconds: phase.timeoutSeconds } : {}),
-    ...(phase.loopable !== undefined ? { loopable: phase.loopable } : {}),
-    ...(phase.retryCondition !== undefined ? { retryCondition: phase.retryCondition } : {}),
-    ...(phase.isRequired !== undefined ? { isRequired: phase.isRequired } : {}),
-    ...(phase.forceContinueOnRetryCap !== undefined
-      ? { forceContinueOnRetryCap: phase.forceContinueOnRetryCap }
-      : {}),
-    ...(phase.runner !== undefined ? { runner: phase.runner } : {})
-  };
-}
-
-function parseLayer(
-  scope: PhaseDefinitionScope,
-  rows: readonly unknown[],
-  defaultVersion: number
-): MutableSourceRecord[] {
+/**
+ * Parse the stored rows into source records.
+ *
+ * Feature 099 (T489, FR-042) — formerly `parseLayer(scope, rows, defaultVersion)`,
+ * called three times and merged. Two things changed with the collapse:
+ *
+ *   - `key` no longer embeds a scope. `<phaseId>::<index>` is unique within the
+ *     one layer, which is all a key has ever had to be — it addresses a row for
+ *     the Library's repair affordance, not a layer.
+ *   - a clean row starts `effective`, not `shadowed`. `shadowed` was the initial
+ *     state precisely because a row was hidden until precedence selected it, and
+ *     with one layer a clean row is selected by existing (FR-040).
+ */
+function parseRows(rows: readonly unknown[], defaultVersion: number): MutableSourceRecord[] {
   return rows.map((row, index) => {
     const result = validatePhaseDefinition(row, { allowLegacyId: true, defaultVersion });
     const phaseId = phaseSourceIdentity(row, index);
@@ -104,10 +71,9 @@ function parseLayer(
       }
     }
     return {
-      key: `${scope}::${phaseId}::${index}`,
+      key: `${phaseId}::${index}`,
       phaseId,
-      scope,
-      status: errors.length === 0 ? 'shadowed' : 'invalid',
+      status: errors.length === 0 ? 'effective' : 'invalid',
       definition,
       display: result.display,
       errors
@@ -120,7 +86,7 @@ function duplicateError(phaseId: string): PhaseFieldError {
     phaseId,
     field: 'phaseId',
     code: 'duplicate-in-scope',
-    message: `Phase id '${phaseId}' appears more than once in this scope`
+    message: `Phase id '${phaseId}' appears more than once in the catalog`
   });
 }
 
@@ -142,20 +108,25 @@ function invalidateDuplicates(records: MutableSourceRecord[]): void {
   }
 }
 
-export function phaseDefinitionToPhaseDef(
-  definition: PhaseDefinition,
-  scope: PhaseDefinitionScope,
-  builtInById: ReadonlyMap<string, PhaseDef>
-): PhaseDef {
-  const builtIn = scope === 'built-in' ? builtInById.get(definition.phaseId) : undefined;
-  const pinnedRunner = definition.runner ?? builtIn?.runner;
-  const sideEffects = definition.sideEffects ?? builtIn?.sideEffects;
-  const evidencePolicy = definition.evidencePolicy ?? builtIn?.evidencePolicy;
+/**
+ * Project a resolved definition onto the runtime `PhaseDef` shape.
+ *
+ * Feature 099 (T489, FR-039) — the `scope` parameter and the `builtInById` map
+ * are gone with the layer tier. They existed to graft a built-in row's
+ * `promptVersion` and pinned `runner`/`sideEffects` onto a definition resolved at
+ * `built-in` scope; the built-in layer has held no rows since feature 098, so
+ * that graft has had nothing to read from for a release, and `sourceScope` is no
+ * longer a field a `PhaseDef` carries.
+ *
+ * Absence stays absence. The FR-005 containment default belongs to
+ * `snapshotPhaseDef`, and resolving it here would make an omission
+ * indistinguishable from a declaration one layer earlier than intended.
+ */
+export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef {
   return Object.freeze({
     id: definition.phaseId,
     name: definition.name,
     version: definition.version,
-    sourceScope: scope,
     ...(definition.description !== undefined ? { description: definition.description } : {}),
     ...(definition.instruction !== undefined ? { instruction: definition.instruction } : {}),
     ...(definition.skill !== undefined ? { skill: definition.skill } : {}),
@@ -172,67 +143,44 @@ export function phaseDefinitionToPhaseDef(
     ...(definition.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
       : {}),
-    ...(pinnedRunner !== undefined ? { runner: pinnedRunner } : {}),
-    // Feature 098 T016 — the declaration wins, then the built-in row, then
-    // absence. This used to read `builtIn?.sideEffects` alone, and `builtIn` is
-    // non-`undefined` only at `built-in` scope, so an imported Phase's declared
-    // containment class was discarded HERE — one layer before the snapshot could
-    // see it. Fixing the freeze alone would not have helped: the field arrived at
-    // the freeze already absent, and the freeze would have applied its default to
-    // a Phase that had in fact declared something (research.md R3, FR-004).
-    //
-    // Absence stays absence. The FR-005 default belongs to `snapshotPhaseDef`,
-    // and resolving it here would make an omission indistinguishable from a
-    // declaration one layer earlier than intended.
-    ...(sideEffects !== undefined ? { sideEffects } : {}),
-    ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
-    ...(builtIn?.promptVersion !== undefined ? { promptVersion: builtIn.promptVersion } : {})
+    ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
+    ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    ...(definition.evidencePolicy !== undefined
+      ? { evidencePolicy: definition.evidencePolicy }
+      : {})
   });
 }
 
+/**
+ * Resolve the one Phase layer.
+ *
+ * Feature 099 (T489, FR-042) — formerly `{ builtIn, user, workspace }` parsed
+ * into three record sets, merged, and walked in `['workspace', 'user',
+ * 'built-in']` precedence order to select a winner per id. `rows` is the stored
+ * catalog and `revision` is the store's manifest revision (FR-044a); selection is
+ * "the row parsed cleanly and its id is not duplicated", which
+ * `invalidateDuplicates` has already decided by the time the loop runs.
+ */
 export function resolvePhaseCatalog(input: {
-  readonly builtIn: readonly PhaseDef[];
-  readonly user: readonly unknown[] | undefined;
-  readonly workspace: readonly unknown[] | undefined;
+  readonly rows: readonly unknown[] | undefined;
+  readonly revision: string;
 }): ResolvedPhaseCatalog {
-  const builtInRows = input.builtIn.map(authoredBuiltInRow);
-  const builtInRecords = parseLayer('built-in', builtInRows, 1);
-  const userRecords = parseLayer('user', input.user ?? [], 1);
-  const workspaceRecords = parseLayer('workspace', input.workspace ?? [], 1);
-  invalidateDuplicates(userRecords);
-  invalidateDuplicates(workspaceRecords);
+  const records = parseRows(input.rows ?? [], 1);
+  invalidateDuplicates(records);
 
-  const records = [...builtInRecords, ...userRecords, ...workspaceRecords];
-  const phaseIds = new Set(records.map((record) => record.phaseId));
   const effective: PhaseDefinition[] = [];
   const effectivePhaseDefs: PhaseDef[] = [];
-  const builtInById = new Map(input.builtIn.map((phase) => [phase.id, phase]));
-  const scopeOrder: readonly PhaseDefinitionScope[] = ['workspace', 'user', 'built-in'];
-
-  for (const phaseId of phaseIds) {
-    if (phaseId.startsWith(SYNTHETIC_PHASE_ID_PREFIX)) continue;
-    let selected: MutableSourceRecord | undefined;
-    for (const scope of scopeOrder) {
-      selected = records.find(
-        (record) =>
-          record.phaseId === phaseId &&
-          record.scope === scope &&
-          record.status !== 'invalid' &&
-          record.definition !== null
-      );
-      if (selected) break;
-    }
-    if (!selected?.definition) continue;
-    selected.status = 'effective';
-    effective.push(selected.definition);
-    effectivePhaseDefs.push(phaseDefinitionToPhaseDef(selected.definition, selected.scope, builtInById));
+  for (const record of records) {
+    if (record.phaseId.startsWith(SYNTHETIC_PHASE_ID_PREFIX)) continue;
+    if (record.status !== 'effective' || record.definition === null) continue;
+    effective.push(record.definition);
+    effectivePhaseDefs.push(phaseDefinitionToPhaseDef(record.definition));
   }
 
   const frozenRecords: PhaseSourceRecord[] = records.map((record) =>
     Object.freeze({
       key: record.key,
       phaseId: record.phaseId,
-      scope: record.scope,
       status: record.status,
       definition: record.definition,
       display: record.display,
@@ -258,15 +206,11 @@ export function resolvePhaseCatalog(input: {
     );
   }
 
-  const revisions: Record<WritablePhaseDefinitionScope, string> = {
-    user: phaseLayerRevision(input.user),
-    workspace: phaseLayerRevision(input.workspace)
-  };
   return Object.freeze({
     records: Object.freeze(frozenRecords),
     effective: Object.freeze(effective),
     effectivePhaseDefs: Object.freeze(effectivePhaseDefs),
-    revisions: Object.freeze(revisions),
+    revision: input.revision,
     warnings: Object.freeze(warnings)
   });
 }
