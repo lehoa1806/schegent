@@ -40,7 +40,7 @@
     history: () => import('../components/HistoryDashboard.svelte'),
     metrics: () => import('../components/MetricsDashboard/MetricsDashboard.svelte'),
     system: () => import('../components/SystemTab.svelte'),
-    'pipeline-builder': () => import('../components/PipelineBuilder.svelte'),
+    builder: () => import('../components/PipelineBuilder.svelte'),
     settings: () => import('../components/SettingsSurface.svelte')
   };
   const routeCache = new Map<LazyRoute, Promise<LazyRouteComponent>>();
@@ -122,7 +122,7 @@
                 <path d="M4 19V9"></path><path d="M10 19V5"></path><path d="M16 19v-7"></path><path d="M22 19V3"></path>
               {:else if r === 'system'}
                 <path d="m4 6 5 5-5 5"></path><path d="M11 18h9"></path>
-              {:else if r === 'pipeline-builder'}
+              {:else if r === 'builder'}
                 <circle cx="5" cy="6" r="2"></circle><circle cx="19" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M7 6h10"></path><path d="m6.5 8 4.5 8"></path><path d="m17.5 8-4.5 8"></path>
               {:else}
                 <circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
@@ -145,7 +145,7 @@
           <ActiveRouteComponent active={true} />
         {:else if route === 'history'}
           <ActiveRouteComponent history={snapshot.history} isPrimary={snapshot.isPrimary} />
-        {:else if route === 'pipeline-builder' || route === 'settings' || route === 'runs'}
+        {:else if route === 'builder' || route === 'settings' || route === 'runs'}
           <ActiveRouteComponent {snapshot} />
         {:else}
           <ActiveRouteComponent />

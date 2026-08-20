@@ -39,6 +39,7 @@ import {
   CMD_RESTORE_DEFINITION_VERSION,
   CMD_DISCARD_DEFINITION_DRAFT,
   CMD_PUBLISH_PACKAGE,
+  CMD_READ_DEFINITION_VERSION,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
@@ -112,6 +113,7 @@ import {
   validateRestoreDefinitionVersion,
   validateSaveDefinitionDraft
 } from './validators/catalog-lifecycle';
+import { validateReadDefinitionVersion } from './validators/catalog-history';
 import {
   CORRELATION_ID_MAX,
   QUEUE_ID_MAX,
@@ -122,6 +124,7 @@ import {
 } from './validators/shared';
 
 export { isValidReadMetricsResponse } from './validators/metrics';
+export { isValidReadDefinitionVersionResponse } from './validators/catalog-history';
 export { isValidResolveAuditPointerResponse } from './validators/history-evidence';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
@@ -207,6 +210,10 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateDiscardDefinitionDraft(obj, correlationId);
     case CMD_PUBLISH_PACKAGE:
       return validatePublishPackage(obj, correlationId);
+    // Feature 101 (T051) — the history panel's only pull. A read, so it is
+    // absent from `MUTATING_COMMANDS` by the rule rather than by exception.
+    case CMD_READ_DEFINITION_VERSION:
+      return validateReadDefinitionVersion(obj, correlationId);
     case CMD_SAVE_MODELS:
       return validateSaveModels(obj, correlationId);
     case CMD_SAVE_GENERAL_SETTINGS:

@@ -121,6 +121,15 @@ describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (S
     // twice over: no write command mentions importing at all, and the set of
     // commands that write a definition is exactly the lifecycle's six. A seventh
     // appearing is the divergence this test exists to catch.
+    //
+    // Feature 101 (T082) — the claim is about commands that *write* a definition,
+    // and the name-shaped scan below could not tell a write from a read until
+    // there was a read to tell it from. `CMD_READ_DEFINITION_VERSION` is that
+    // read. Appending it to the list would have been the wrong repair: the list
+    // would then mean "constants whose name contains DEFINITION", and a genuinely
+    // writing seventh command could be waved through by the same reflex. So the
+    // scan excludes `CMD_READ_*` and the exclusion is itself pinned below —
+    // widening it needs a second edit, in a test that says why.
     const contracts = readFileSync(
       resolve(REPO_ROOT, 'src', 'contracts', 'sidebar-ipc.ts'),
       'utf8'
@@ -129,7 +138,7 @@ describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (S
       [...contracts.matchAll(pattern)].map((match) => match[1]!);
 
     expect(literals(/export const (CMD_[A-Z_]*(?:IMPORT|EXCHANGE)[A-Z_]*)\b/g)).toEqual([]);
-    expect(literals(/export const (CMD_[A-Z_]*(?:DEFINITION|PACKAGE)[A-Z_]*)\b/g)).toEqual([
+    expect(literals(/export const (CMD_(?!READ_)[A-Z_]*(?:DEFINITION|PACKAGE)[A-Z_]*)\b/g)).toEqual([
       'CMD_SAVE_DEFINITION_DRAFT',
       'CMD_PUBLISH_DEFINITION',
       'CMD_DEACTIVATE_DEFINITION',
@@ -137,5 +146,18 @@ describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (S
       'CMD_DISCARD_DEFINITION_DRAFT',
       'CMD_PUBLISH_PACKAGE'
     ]);
+
+    // Everything the `CMD_READ_*` guard hides, and the proof each one is a read.
+    // A command is a write iff it carries a reason in the mutation metadata —
+    // that registry, not this file's regex, is what the router gates on.
+    const excluded = literals(/export const (CMD_READ_[A-Z_]*(?:DEFINITION|PACKAGE)[A-Z_]*)\b/g);
+    expect(excluded).toEqual(['CMD_READ_DEFINITION_VERSION']);
+    const metadata = readFileSync(
+      resolve(REPO_ROOT, 'src', 'contracts', 'sidebar-command-metadata.ts'),
+      'utf8'
+    );
+    for (const command of excluded) {
+      expect(metadata.includes(command), `${command} is excluded as a read but mutates`).toBe(false);
+    }
   });
 });

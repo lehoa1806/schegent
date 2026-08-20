@@ -2,12 +2,19 @@
 // dashboard route enum.
 //
 // The Dashboard surface exposes seven sibling routes (was three under Feature
-// 012). Feature 064 introduced `system` as a peer between `pipeline-builder`
+// 012). Feature 064 introduced `system` as a peer between the Builder route
 // and `settings` to host the new System tab (audit entries tagged
 // `scope === 'system'`). Feature 091 added `runs` directly after `operations`
 // to mount the connected-run view and the Run composer, which shipped with no
 // entry point able to reach them (FR-018). The legacy two-tier nav is gone —
 // every route is a flat sibling.
+//
+// Feature 101 (US8, T072, FR-035/FR-036) — `pipeline-builder` became `builder`,
+// labelled "Builder". The route is not persisted anywhere: `App.svelte` holds it
+// in component state and every session opens on `operations`, so the rename
+// needs no migration. The stylesheet `pipeline-builder.css` and the
+// `pipeline-builder-root` test id keep their names on purpose (T073) — neither
+// is a route id nor a navigation target.
 //
 // `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition: a
 // new surface earns its place in the nav, not on someone's landing page.
@@ -22,7 +29,7 @@ export type DashboardRoute =
   | 'history'
   | 'metrics'
   | 'system'
-  | 'pipeline-builder'
+  | 'builder'
   | 'settings';
 
 export const DASHBOARD_ROUTES: readonly DashboardRoute[] = [
@@ -31,7 +38,7 @@ export const DASHBOARD_ROUTES: readonly DashboardRoute[] = [
   'history',
   'metrics',
   'system',
-  'pipeline-builder',
+  'builder',
   'settings'
 ] as const;
 
@@ -44,7 +51,7 @@ export const DASHBOARD_ROUTE_LABELS: Readonly<Record<DashboardRoute, string>> =
     history: 'History',
     metrics: 'Metrics',
     system: 'System Log',
-    'pipeline-builder': 'Process Library',
+    builder: 'Builder',
     settings: 'Settings'
   });
 

@@ -16,7 +16,14 @@
 .pb .phase-list-item.selected { background: var(--schegent-surface-active); border-color: var(--vscode-focusBorder); }
 .pb .phase-list-title { font-weight: 500; margin-bottom: 4px; }
 .pb .phase-list-id { font-size: 0.85em; color: var(--schegent-muted-fg); }
-.pb .phase-list-row { display: flex; align-items: center; gap: 4px; }
+/* Feature 101 (US1, T037) — the row stacks: the selection button and its move
+   controls on one line, the lifecycle chrome beneath them. `.phase-list-main`
+   is the line the row used to be, so the flex rule below moved onto it
+   unchanged; only the outer container turned into a column. The Workflow list
+   has no move controls and one child on that line, which the same rule
+   handles. */
+.pb .phase-list-row { display: flex; flex-direction: column; gap: 2px; }
+.pb .phase-list-main { display: flex; align-items: center; gap: 4px; }
 .pb .phase-list-row .phase-list-item { flex: 1; }
 .pb .phase-list-actions { display: flex; flex-direction: column; gap: 2px; }
 .pb .empty-selection { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--schegent-muted-fg); font-style: italic; padding: 16px; }

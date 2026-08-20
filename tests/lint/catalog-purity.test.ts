@@ -51,6 +51,11 @@ const ANCHORS = [
   'catalog-paths',
   'catalog-retention',
   'catalog-store',
+  // Feature 101 (T011) — the changed-field summary. Anchored rather than left to
+  // directory discovery because it is the first module here written for a UI
+  // surface, and the pull toward reading a workspace path or a clock to answer
+  // "what changed" is exactly what this lint exists to refuse.
+  'changed-fields',
   'index',
   'ports',
   'version-record'

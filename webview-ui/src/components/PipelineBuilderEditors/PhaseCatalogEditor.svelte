@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import type { BuilderLifecycle, PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
+  import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
   import ProcessExportButton from '../ProcessImport/ProcessExportButton.svelte';
   import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
   import {
@@ -22,9 +24,9 @@
   // (FR-007) and FR-008 permits **no replacement id list** anywhere, webview
   // copies included. `MutablePhase` carries no declared containment class, so
   // this surface cannot answer the re-keyed question and does not guess at it —
-  // the save gate in `cmd-save-phases.ts` and the launch assertion in
-  // `phase-runner.ts` are the authoritative refusals, and a save that violates
-  // the rule comes back as a field error on `runner`.
+  // the host's lifecycle save gate and the launch assertion in `phase-runner.ts`
+  // are the authoritative refusals, and a save that violates the rule comes back
+  // as a field error on `runner`.
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -184,6 +186,22 @@
   const importUnavailable = $derived(
     importDisabledReason({ trusted, savePending, mutationActive })
   );
+
+  /**
+   * Feature 101 (US1, T037, FR-013) — lifecycle facts, keyed by the projection
+   * record they came from.
+   *
+   * Read off the record and never carried on `MutablePhase`. The mutable row is
+   * the editable copy, and every field on it has to be stripped before a save
+   * body goes out; a lifecycle field there would be one more strip to remember,
+   * and the one that got missed would send a projected view field back to the
+   * host — exactly what FR-010 forbids. Off the record, it cannot reach a write.
+   */
+  const lifecycleByKey = $derived(
+    new Map<string, BuilderLifecycle | undefined>(
+      (snapshot.phaseCatalog?.records ?? []).map((record) => [record.key, record.lifecycle])
+    )
+  );
 </script>
 
 {#if showTrustBanner}
@@ -221,32 +239,61 @@
     <button class="save-error-dismiss" aria-label="Dismiss Phase save error" onclick={ondismisssaveerror}>✕</button>
   </div>
 {/if}
-<!-- FR-053 — the import entry point. Its own region rather than a toolbar button,
-     because the preflight it opens renders in place: the plan, the scope choice,
-     and the per-row result all belong to this landmark. -->
-<ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
+<!-- Feature 101 (US6, T065, FR-032/FR-033) — the front door, and it brings its
+     own import region. Ordered after the trust check by construction: an
+     untrusted workspace never renders this editor at all (PipelineBuilder gates
+     the three definition tabs), so guidance can never point at an action that
+     cannot succeed. It self-guards on the count, so the condition for showing it
+     is stated once, in the component that owns it. -->
+<CatalogEmptyState kind="phase" count={phases.length} disabledReason={importUnavailable} />
+{#if phases.length > 0}
+  <!-- FR-053 — the import entry point. Its own region rather than a toolbar button,
+       because the preflight it opens renders in place: the plan, the scope choice,
+       and the per-row result all belong to this landmark. Withheld while the
+       catalog is empty because the empty state above already offers one, and two
+       import regions on one screen is two answers to one question. -->
+  <ProcessImportPreflight layers={importLayers} disabledReason={importUnavailable} />
+{/if}
 <div class="split-pane">
   <div class="pane-left">
     <div class="phase-list">
       {#each phases as phase, index (phase.sourceKey)}
         <div class="phase-list-row">
-          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
-            <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
-            <div class="phase-list-id">{phase.id}</div>
-            <div class="phase-badges">
+          <div class="phase-list-main">
+            <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
+              <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
+              <div class="phase-list-id">{phase.id}</div>
               <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
-                   only ever read one value is not a badge. -->
-              <span class="status-badge status-{phase.sourceStatus}">{phase.sourceStatus}</span>
-              {#if phase.modelAvailable === false}<span class="status-badge">model unavailable</span>{/if}
+                   only ever read one value is not a badge.
+                   Feature 101 (T037) — the validity badge left with the lifecycle
+                   chrome below. Model availability is a runtime fact about the
+                   backend, not a lifecycle state, so it stayed. -->
+              {#if phase.modelAvailable === false}
+                <div class="phase-badges"><span class="status-badge">model unavailable</span></div>
+              {/if}
+            </button>
+            <div class="phase-list-actions">
+              <!-- Feature 099 (T494a, FR-043) — the two guards these lost asked
+                   whether the row or its neighbour sat in a different layer. One
+                   layer, so every row is reorderable against every other. -->
+              <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0} onclick={() => onmoveup(index)}>↑</button>
+              <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1} onclick={() => onmovedown(index)}>↓</button>
             </div>
-          </button>
-          <div class="phase-list-actions">
-            <!-- Feature 099 (T494a, FR-043) — the two guards these lost asked
-                 whether the row or its neighbour sat in a different layer. One
-                 layer, so every row is reorderable against every other. -->
-            <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0} onclick={() => onmoveup(index)}>↑</button>
-            <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1} onclick={() => onmovedown(index)}>↓</button>
           </div>
+          <!-- Outside the selection button, not inside it: T042 hung the
+               lifecycle actions off this row, and a control nested in a button is
+               invalid markup and unreachable by keyboard.
+               `definitionName` falls back the same way the title above does: the
+               confirmations name what the operator sees, and an untitled row shows
+               that placeholder, not an empty string. -->
+          <DefinitionLifecycleRow
+            kind="phase"
+            definitionId={phase.id}
+            definitionName={phase.name || 'Untitled Phase'}
+            lifecycle={lifecycleByKey.get(phase.sourceKey)}
+            validity={phase.sourceStatus}
+            defects={phase.sourceErrors}
+          />
         </div>
       {/each}
     </div>

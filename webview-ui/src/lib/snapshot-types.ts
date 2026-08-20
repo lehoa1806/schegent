@@ -399,6 +399,85 @@ export interface PortablePhaseDefinition {
   readonly runner?: BackendRunnerKind;
 }
 
+// Feature 101 (FR-R3-017) T018 — the Builder's lifecycle chrome, mirrored from
+// `src/ui/sidebar/snapshot.ts`. Structural copies, as everything in this file is:
+// the webview does not import host modules, and `tests/contract/` pins the two
+// together so a drift is a failing test rather than a silently missing badge.
+
+/** One of a definition's lifecycle states, derived by the host and only there (FR-005). */
+export type DefinitionState = 'draft' | 'active' | 'active-with-draft';
+
+/** A scalar field whose value differs between the draft and the active version. */
+export interface ChangedScalarField {
+  readonly field: string;
+  readonly change: 'differs';
+}
+
+/**
+ * An ordered collection field, described by what moved into, out of, and around it.
+ *
+ * All three lists empty means an entry changed in place — there is no `modified`
+ * bucket, because an entry that was edited is neither added nor removed and the
+ * summary's job is to say *which field* to look at, not to diff it.
+ */
+export interface ChangedCollectionField {
+  readonly field: string;
+  readonly change: 'collection';
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+  readonly reordered: readonly string[];
+}
+
+export type ChangedField = ChangedScalarField | ChangedCollectionField;
+
+/**
+ * What publishing this draft would change (FR-008, FR-011).
+ *
+ * `no-prior-version` is a first publish and `unchanged` a draft that canonicalises
+ * to the active body; neither carries fields, because in both cases there is
+ * nothing for the operator to review before confirming.
+ */
+export type ChangedFieldSummary =
+  | { readonly kind: 'no-prior-version' }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'changed'; readonly fields: readonly ChangedField[] };
+
+/** One retained version, as the history panel lists it (FR-027). */
+export interface BuilderVersionEntry {
+  readonly versionId: string;
+  readonly createdAt: number;
+  readonly publishedAt: number | null;
+  readonly isActive: boolean;
+  readonly note: string | null;
+}
+
+/**
+ * The lifecycle facts for one definition.
+ *
+ * Optional on every record and nested rather than flattened: a host with no
+ * catalog store wired has no honest value for `state`, `versions`, or
+ * `activeVersionId`, and six flat fields would force one to be invented. Present
+ * together or not at all is the invariant, so the shape enforces it.
+ */
+export interface BuilderLifecycle {
+  readonly state: DefinitionState;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  /** Absent, never `''`, when nothing is published yet (FR-006). */
+  readonly activeVersionId?: string;
+  /**
+   * The token every lifecycle write echoes back as `expectedDraftVersion` (FR-012).
+   *
+   * Opaque. The host folded the absent draft into it already; parsing it here, or
+   * comparing it to `'no-draft'`, re-creates the fold this field exists to remove.
+   */
+  readonly expectedDraftVersion: string;
+  /** Newest first, already ordered by the host (FR-012). */
+  readonly versions: readonly BuilderVersionEntry[];
+  /** Present only for `active-with-draft` (FR-011). */
+  readonly changedFields?: ChangedFieldSummary;
+}
+
 export interface PhaseCatalogSourceRecord {
   readonly key: string;
   readonly phaseId: string;
@@ -411,6 +490,8 @@ export interface PhaseCatalogSourceRecord {
     readonly message: string;
   }[];
   readonly modelAvailable?: boolean;
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface PhaseCatalogProjection {
@@ -522,8 +603,9 @@ export type PipelineCatalogMutation =
   | { readonly kind: 'create'; readonly pipelineId: string }
   /**
    * Feature 085 (FR-043) — the Pipeline half of a package import, written after
-   * the Phase layer (FR-038) and gated on its own expected revision. Mirrors
-   * `SavePhasesMutation['import-package']`.
+   * the Phase layer (FR-038) and gated on its own expected revision. Mirrored
+   * `PhaseCatalogMutation`'s arm of the same name; Feature 101 (T030) deleted
+   * the transport both were declared to, so neither reaches the host any more.
    */
   | { readonly kind: 'import-package'; readonly pipelineIds: readonly string[] }
   | { readonly kind: 'edit'; readonly pipelineId: string }
@@ -553,6 +635,8 @@ export interface PipelineCatalogSourceRecord {
    * empty list rather than asserting there are none.
    */
   readonly consumingWorkflowIds?: readonly string[];
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface PipelineCatalogProjection {
@@ -711,6 +795,8 @@ export interface WorkflowCatalogSourceProjection {
   readonly errors: readonly WorkflowCatalogFieldErrorProjection[];
   readonly derivedInputs: readonly WorkflowCatalogPortProjection[];
   readonly derivedOutputs: readonly WorkflowCatalogPortProjection[];
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface WorkflowCatalogProjection {

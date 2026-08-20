@@ -138,7 +138,7 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
  * seconds this family's other helpers use.
  *
  * Decision (084, autonomous): there is no injected `postMessage` parameter, even
- * though `saveWorkflows` takes one. That helper had to hand-roll a UUIDv4 to keep
+ * though the lifecycle senders take one. Those had to hand-roll a UUIDv4 to keep
  * the injected path's envelope id observable, and a second copy of that generator
  * is worse than the seam it buys. Tests observe the
  * envelope through `setHostTransport`, which is the transport-level injection

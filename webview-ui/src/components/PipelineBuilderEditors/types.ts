@@ -82,6 +82,14 @@ export type MutablePhase = {
   [key: string]: unknown;
 };
 
+/**
+ * The Builder's four top-level tabs. Feature 101 (T004) moved the tab strip
+ * into `Builder/BuilderTabs.svelte`; the union lives here rather than in either
+ * component because both the shell that owns `activeTab` and the strip that
+ * renders it need to name the same closed set.
+ */
+export type BuilderTab = 'pipelines' | 'phases' | 'workflows' | 'models';
+
 export type PhaseEditState = {
   rawJsonMode: boolean;
 };

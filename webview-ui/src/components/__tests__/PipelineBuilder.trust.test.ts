@@ -41,8 +41,12 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
     onceAck: vi.fn()
   }
 }));
-vi.mock('../../lib/save-phases', () => ({
-  savePhases: vi.fn(async () => ({ status: 'accepted' as const }))
+// Feature 101 (T030) — `save-phases.ts` folded into `catalog-lifecycle.ts`.
+// Only the sender is stubbed; `draftTokenOfRecord` keeps its real body because
+// the editor derives its write token through it.
+vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
+  saveDefinitionDraft: vi.fn(async () => ({ status: 'accepted' as const }))
 }));
 
 afterEach(() => cleanup());
@@ -240,5 +244,37 @@ describe('PipelineBuilder trust gating (059, T022) — re-render on toggle', () 
     expect(addBtn?.hasAttribute('disabled')).toBe(false);
     expect(saveBtn?.hasAttribute('disabled')).toBe(true);
     expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+  });
+});
+
+describe('PipelineBuilder — untrusted beats empty (101 US6, T063, FR-032)', () => {
+  // An untrusted workspace activates no catalog, so every definition tab is
+  // empty for a reason that has nothing to do with the catalog being empty.
+  // "Import one to get started" would point at an action that cannot succeed,
+  // and the operator would go looking for a document to import when what they
+  // need is to trust the workspace. The trust check is ordered first for that
+  // reason, and this pins the order rather than the wording.
+  const EMPTY_TAB_STATES = ['pipelines', 'phases', 'workflows'] as const;
+
+  for (const initialTab of EMPTY_TAB_STATES) {
+    it(`shows the trust banner and no empty-catalog guidance on the ${initialTab} tab`, () => {
+      const { container } = render(PipelineBuilder, {
+        props: { snapshot: buildSnapshot({ workspaceTrust: false }), initialTab }
+      });
+      expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="builder-trust-gated"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid^="catalog-empty-state-"]')).toBeNull();
+    });
+  }
+
+  it('shows the empty-catalog guidance once the workspace is trusted', () => {
+    // The other half: withholding it when untrusted is only correct if it does
+    // appear when the reason for the emptiness really is an empty catalog. The
+    // fixture's Pipeline catalog projects no records.
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ workspaceTrust: true }), initialTab: 'pipelines' }
+    });
+    expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
   });
 });

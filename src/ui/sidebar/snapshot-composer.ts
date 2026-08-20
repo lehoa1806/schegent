@@ -23,6 +23,7 @@ import {
   projectRunProgress
 } from './run-projector';
 import type { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
+import { NO_BUILDER_LIFECYCLE_BY_KIND } from './builder-lifecycle';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
@@ -199,15 +200,18 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // reads, and it refreshes on the `schegent.models` reload already wired in
   // `extension.ts`.
   const configuredModels = catalog.models;
+  const lifecycle = deps.getBuilderLifecycle?.() ?? NO_BUILDER_LIFECYCLE_BY_KIND;
   const phaseCatalogProjection = composePhaseCatalogProjection(phaseCatalog, {
     sanitize,
     availableModels,
-    defaultRunnerKind: ctx.defaultRunnerKind
+    defaultRunnerKind: ctx.defaultRunnerKind,
+    lifecycle: lifecycle.phase
   });
   const pipelineCatalogProjection = composePipelineCatalogProjection(deps.getPipelineCatalog, {
     sanitize,
     availableModels,
     defaultRunnerKind: ctx.defaultRunnerKind,
+    lifecycle: lifecycle.pipeline,
     ...(deps.getWorkflowPipelineRefs !== undefined
       ? { workflowRefs: deps.getWorkflowPipelineRefs() }
       : {}),
