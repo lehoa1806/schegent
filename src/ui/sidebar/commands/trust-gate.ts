@@ -1,6 +1,14 @@
-// Feature 059 — shared helpers for the per-capability trust gate used by
-// `cmd-save-phases.ts`, `cmd-save-pipelines.ts`, and `cmd-save-workflows.ts`.
+// Feature 059 — shared helpers for the per-capability trust gate.
 // Contract: specs/059-fine-grained-trust-scopes/contracts/save-command-trust-gate-contract.md
+//
+// Feature 100 (T513b) — the three save commands this was written for are gone
+// with the whole-array save (T509). The callers are now
+// `cmd-catalog-lifecycle.ts` and `cmd-save-models.ts`. The contract above is
+// unchanged and is why this module moved rather than being rewritten: the gate's
+// terms are per-capability, not per-command, and the lifecycle asks the same
+// question about the same capabilities. What did change is when it is asked —
+// `cmd-catalog-lifecycle.ts` checks the staleness token first, so a stale
+// untrusted write reports `stale-draft` rather than `trust-denied`.
 
 import * as path from 'node:path';
 import { getResolvedScope } from '../../../state/capability-trust-resolver';

@@ -101,8 +101,10 @@ function bounded(value: string, max: number): string {
  * `pipeline-invalid` can name the transitive cause. An id that also resolves somewhere is
  * omitted: a broken shadowed copy is not drift for a Workflow that reads the effective one.
  *
- * Exported so `cmd-save-workflows.ts` builds this map the same way resolution does — a row the
- * save accepts must be a row the next reload resolves.
+ * Exported so the write path builds this map the same way resolution does — a row the write
+ * accepts must be a row the next reload resolves. Its original caller was
+ * `cmd-save-workflows.ts`; feature 100 moved the property to the publish path, where
+ * `src/config/definition-semantics.ts` reaches the same resolver rather than re-deriving it.
  */
 export function invalidPipelineCauses(
   pipelineCatalog: WorkflowPipelineContext
@@ -220,6 +222,13 @@ function softCapWarnings(
  * Feature 099 (T489, FR-042) — `rows` is the stored catalog and `revision` is the store's manifest
  * revision (FR-044a). The precedence walk over `['workspace', 'user', 'built-in']` is gone: a clean
  * row is effective by existing.
+ *
+ * **Feature 100 (FR-R3-016) T505 — the effective catalog is the set of ACTIVE versions** (FR-007).
+ * "A clean row is effective by existing" still holds; what changed is which definitions produce a
+ * row. `storedRows` reads the active body only, so a Workflow held as an unpublished draft never
+ * reaches this function, and neither does a draft Pipeline the graph validator would otherwise
+ * resolve a node against. Publication is the single event that admits a body to the effective
+ * catalog (FR-008, FR-009).
  */
 export function resolveWorkflowCatalog(input: {
   readonly rows: readonly unknown[] | undefined;

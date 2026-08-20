@@ -10,17 +10,21 @@
 // unbounded history open, and the difference is invisible in the common case where
 // nothing is exempt.
 //
-// Two exemptions, and they are not the same kind of thing:
+// Three exemptions, and they are not the same kind of thing:
 //
 //   - **active** (FR-036) is decidable from the manifest alone, and is checked first
 //     because it costs nothing.
+//   - **draft** (feature 100, FR-021) is decidable the same way. Feature 099 already
+//     exempted the draft pointer and reported it as `active`, which was harmless
+//     while the pointer was inert and is wrong now that FR-021 makes the reported
+//     reason observable. Only the label moves; the pruning logic is untouched.
 //   - **run-referenced** (FR-037) is a port call, so it is asked only about versions
 //     that are otherwise about to be pruned. Asking about all 50 would make every
 //     save pay for a question about versions nothing was going to touch.
 
 import { CATALOG_RETENTION_BOUND, type CatalogManifestEntry } from '../contracts/catalog-store';
 
-export type RetentionExemption = 'active' | 'run-referenced';
+export type RetentionExemption = 'active' | 'draft' | 'run-referenced';
 
 export interface RetentionPlan {
   /** Version ids to remove, oldest first. Empty when nothing is over the bound or all is exempt. */
@@ -58,10 +62,11 @@ export async function planRetention(
       exempt.push({ versionId: version.versionId, why: 'active' });
       continue;
     }
-    // The draft is inert in this feature (always null), but exempting it costs one
-    // comparison and means FR-R3-016 does not have to remember to add it.
+    // Live since feature 100. A pending draft is work in progress that nothing else
+    // holds a copy of, so pruning it would discard an edit the operator has not
+    // published and cannot recover (FR-021).
     if (version.versionId === entry.draftVersionId) {
-      exempt.push({ versionId: version.versionId, why: 'active' });
+      exempt.push({ versionId: version.versionId, why: 'draft' });
       continue;
     }
     if (await isReferenced(version.versionId)) {

@@ -1,18 +1,29 @@
 // Feature 083 (US1, T033) — saveWorkflows helper behavior.
+// Feature 100 (FR-R3-016) T509b — narrowed to the translation.
 //
-// Contract: specs/083-workflow-graph-builder/contracts/save-workflows-ipc.md
-// § "Webview helper" — structurally identical to `savePipelines`: UUIDv4
-// correlation, `snapshotStore.markPending`, one-shot `onceAck`, 5-second
-// timeout, and no cross-resolution between concurrent saves.
+// The transport half moved to `catalog-lifecycle.test.ts`; see
+// `save-phases.test.ts` for why. What is Workflow-specific and stays here:
 //
-// The graph fields are what make the verbatim-forwarding assertions load-bearing
-// here: node and connection **authored order**, conditions, and selection rules
-// all have to reach the host untouched, because the host validator is the only
-// thing entitled to reject them (FR-049).
+//   - Authored node and connection **order** is part of the payload's meaning
+//     (FR-049). The row becomes the definition body unchanged, and the store keeps
+//     a body verbatim (099 FR-010) without validating it, so this helper is both
+//     the last place order could be lost and the last place a graph could be
+//     silently normalised.
+//   - `reset` has no successor operation. It emptied the whole layer in one write,
+//     which a package cannot express — a package says what each named definition
+//     becomes and nothing about the rest (FR-039b). The union arm survives because
+//     it is declared in the shared snapshot types, so what it does now has to be
+//     pinned rather than assumed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { saveWorkflows, type SaveWorkflowsRequest } from '../save-workflows';
-import { CMD_SAVE_WORKFLOWS } from '../messages';
+import { CMD_DEACTIVATE_DEFINITION, CMD_PUBLISH_PACKAGE } from '../messages';
+import { NO_DRAFT } from '../../../../src/contracts/catalog-lifecycle';
+
+// Bound, not named inline — see the note in `save-phases.test.ts`.
+const WIRE = {
+  package: CMD_PUBLISH_PACKAGE,
+  deactivate: CMD_DEACTIVATE_DEFINITION
+} as const;
 
 type AckListener = (ack: {
   status: 'accepted' | 'rejected';
@@ -21,13 +32,10 @@ type AckListener = (ack: {
 }) => void;
 
 const ackListeners = new Map<string, AckListener>();
-const pendingSet = new Set<string>();
 
 vi.mock('../snapshot-store.svelte', () => ({
   snapshotStore: {
-    markPending(id: string): void {
-      pendingSet.add(id);
-    },
+    markPending(): void {},
     onceAck(id: string, fn: AckListener): () => void {
       ackListeners.set(id, fn);
       return () => ackListeners.delete(id);
@@ -35,22 +43,45 @@ vi.mock('../snapshot-store.svelte', () => ({
   }
 }));
 
-function fireAck(
-  id: string,
-  status: 'accepted' | 'rejected',
-  reason?: string,
-  result?: unknown
-): void {
-  const fn = ackListeners.get(id);
-  expect(fn, `no listener registered for ${id}`).toBeDefined();
-  ackListeners.delete(id);
-  fn!({ status, reason, result });
+const confirmCalls: { readonly actionKey: string; readonly context: unknown }[] = [];
+let confirmAnswer = true;
+
+vi.mock('../use-confirm', () => ({
+  useConfirm(actionKey: string, options?: { context?: unknown }): Promise<boolean> {
+    confirmCalls.push({ actionKey, context: options?.context });
+    return Promise.resolve(confirmAnswer);
+  }
+}));
+
+const { saveWorkflows } = await import('../save-workflows');
+const { EMPTY_LAYER } = await import('../catalog-lifecycle');
+type SaveWorkflowsRequest = import('../save-workflows').SaveWorkflowsRequest;
+type SaveWorkflowRow = import('../save-workflows').SaveWorkflowRow;
+
+interface Envelope {
+  readonly type: string;
+  readonly correlationId: string;
+  readonly payload: unknown;
+}
+
+interface PackagePayload {
+  readonly layers: readonly {
+    readonly kind: string;
+    readonly expectedRevision: string;
+    readonly definitions: readonly { readonly id: string; readonly body: SaveWorkflowRow }[];
+  }[];
+}
+
+function ack(envelope: Envelope): void {
+  const fn = ackListeners.get(envelope.correlationId);
+  expect(fn, `no listener registered for ${envelope.correlationId}`).toBeDefined();
+  ackListeners.delete(envelope.correlationId);
+  fn!({ status: 'accepted' });
 }
 
 // A fully authored graph: two nodes, a conditional connection, a default
-// connection, a selection rule, and an unrecognized-by-this-type field is
-// deliberately absent — the row type is the authored surface, and the deep
-// equality below fails if the helper reshapes any of it.
+// connection, and a selection rule. The deep equality below fails if the helper
+// reshapes any of it.
 const AUTHORED_ROW = {
   workflowId: 'release-train',
   name: 'Release Train',
@@ -88,7 +119,8 @@ const SAMPLE_REQUEST: SaveWorkflowsRequest = {
 
 beforeEach(() => {
   ackListeners.clear();
-  pendingSet.clear();
+  confirmCalls.length = 0;
+  confirmAnswer = true;
   vi.useFakeTimers();
 });
 
@@ -96,162 +128,174 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('Feature 083 T033 — saveWorkflows helper', () => {
-  it('posts exactly one CMD_SAVE_WORKFLOWS envelope carrying the request verbatim', async () => {
-    const posted: unknown[] = [];
-    const postMessage = (msg: unknown): void => {
-      posted.push(msg);
-    };
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
+describe('saveWorkflows — the authored graph becomes one publication', () => {
+  it('publishes one workflow layer with the whole authored graph as the body', async () => {
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
 
-    expect(posted.length).toBe(1);
-    const env = posted[0] as { type: string; correlationId: string; payload: unknown };
-    expect(env.type).toBe(CMD_SAVE_WORKFLOWS);
-    expect(typeof env.correlationId).toBe('string');
-    expect(env.correlationId.length).toBeGreaterThan(0);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.type).toBe(WIRE.package);
     // Deep equality, not a subset check: nodes, connections, conditions,
-    // selection rules, and allowed starts must survive the trip to the host.
-    expect(env.payload).toEqual(SAMPLE_REQUEST);
+    // selection rules, and allowed starts must survive the trip to the store.
+    expect(posted[0]!.payload).toEqual({
+      layers: [
+        {
+          kind: 'workflow',
+          expectedRevision: 'a'.repeat(64),
+          definitions: [{ id: 'release-train', body: AUTHORED_ROW }]
+        }
+      ]
+    });
 
-    fireAck(env.correlationId, 'accepted');
-    await promise;
+    ack(posted[0]!);
+    await expect(promise).resolves.toEqual({ status: 'accepted' });
   });
 
   it('preserves authored node and connection order (FR-049)', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { payload: SaveWorkflowsRequest; correlationId: string };
-    expect(env.payload.workflows[0].nodes.map((node) => node.nodeId)).toEqual(['draft', 'ship']);
-    expect(env.payload.workflows[0].connections.map((edge) => edge.from.portId)).toEqual([
-      'spec',
-      'notes'
+    // Order is meaning here: `startNodeIds` and the first-matching-connection rule
+    // both read positionally, so a helper that sorted or deduped the graph would
+    // change which node runs first without changing anything the operator sees.
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
+
+    const body = (posted[0]!.payload as PackagePayload).layers[0]!.definitions[0]!.body;
+    expect(body.nodes.map((node) => node.nodeId)).toEqual(['draft', 'ship']);
+    expect(body.connections.map((edge) => edge.from.portId)).toEqual(['spec', 'notes']);
+    expect(body.startNodeIds).toEqual(['draft']);
+
+    ack(posted[0]!);
+    await promise;
+  });
+
+  it('addresses each workflow by its workflowId, the only identity spelling', async () => {
+    // Unlike a Pipeline row there is no legacy `id` form to fall back to, so the
+    // extraction is unconditional — which makes it worth pinning that it reads
+    // `workflowId` and not `id`, since a row carrying a stray `id` must not win.
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(
+      {
+        ...SAMPLE_REQUEST,
+        mutation: { kind: 'import-package', workflowIds: ['release-train', 'hotfix'] },
+        workflows: [AUTHORED_ROW, { ...AUTHORED_ROW, workflowId: 'hotfix', name: 'Hotfix' }]
+      },
+      (msg) => posted.push(msg as Envelope)
+    );
+
+    const layer = (posted[0]!.payload as PackagePayload).layers[0]!;
+    expect(layer.definitions.map((definition) => definition.id)).toEqual([
+      'release-train',
+      'hotfix'
     ]);
-    fireAck(env.correlationId, 'accepted');
+
+    ack(posted[0]!);
     await promise;
   });
 
-  it('marks the correlation id pending so the snapshot store can gate the UI', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    expect(pendingSet.has(env.correlationId)).toBe(true);
-    fireAck(env.correlationId, 'accepted');
+  it('never sends the mutation tag', async () => {
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
+    expect(Object.keys(posted[0]!.payload as object)).toEqual(['layers']);
+    expect(JSON.stringify(posted[0]!.payload)).not.toContain('mutation');
+    ack(posted[0]!);
     await promise;
   });
 
-  it('resolves accepted and preserves the { revision, mutation } ack result', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = { revision: 'b'.repeat(64), mutation: 'edit' };
-    fireAck(env.correlationId, 'accepted', undefined, result);
-    await expect(promise).resolves.toEqual({ status: 'accepted', result });
-  });
-
-  it('resolves rejected with the reason from a matching rejected ack', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    fireAck(env.correlationId, 'rejected', 'workflow-validation');
-    await expect(promise).resolves.toEqual({
-      status: 'rejected',
-      reason: 'workflow-validation'
-    });
-  });
-
-  it('preserves structured recovery details from a stale-catalog rejection', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = {
-      currentRevision: 'c'.repeat(64),
-      current: [{ workflowId: 'release-train', version: 3 }]
-    };
-    fireAck(env.correlationId, 'rejected', 'stale-catalog', result);
-    await expect(promise).resolves.toEqual({
-      status: 'rejected',
-      reason: 'stale-catalog',
-      result
-    });
-  });
-
-  it('resolves { status: rejected, reason: timeout } after 5 seconds without an ack', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    vi.advanceTimersByTime(5000);
-    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
-  });
-
-  it('does NOT cross-resolve mismatched correlation ids when two saves are in flight', async () => {
-    const postMessage = vi.fn();
-    const p1 = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const p2 = saveWorkflows(
-      { ...SAMPLE_REQUEST, mutation: { kind: 'remove', workflowId: 'release-train' } },
-      postMessage
-    );
-    expect(postMessage).toHaveBeenCalledTimes(2);
-    const env1 = postMessage.mock.calls[0][0] as { correlationId: string };
-    const env2 = postMessage.mock.calls[1][0] as { correlationId: string };
-    expect(env1.correlationId).not.toBe(env2.correlationId);
-
-    // Ack out of order — the second save must not settle the first.
-    fireAck(env2.correlationId, 'rejected', 'workflow-validation');
-    await expect(p2).resolves.toEqual({
-      status: 'rejected',
-      reason: 'workflow-validation'
-    });
-    fireAck(env1.correlationId, 'accepted');
-    await expect(p1).resolves.toEqual({ status: 'accepted' });
-  });
-
-  it('ignores a late ack after the timeout has already settled the promise', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    vi.advanceTimersByTime(5000);
-    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
-    // The one-shot listener is unsubscribed on settle, so no listener remains
-    // to deliver a stale accepted ack into a resolved promise.
-    expect(ackListeners.has(env.correlationId)).toBe(false);
-  });
-
-  it('uses crypto-grade UUIDv4 correlation ids (RFC 4122 layout) when not injected', async () => {
-    const postMessage = vi.fn();
-    const promise = saveWorkflows(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    expect(env.correlationId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-    );
-    fireAck(env.correlationId, 'accepted');
-    await promise;
-  });
-
-  const MUTATIONS: readonly SaveWorkflowsRequest['mutation'][] = [
+  const PUBLISHING_MUTATIONS: readonly SaveWorkflowsRequest['mutation'][] = [
     { kind: 'create', workflowId: 'release-train' },
+    { kind: 'import-package', workflowIds: ['release-train'] },
     { kind: 'edit', workflowId: 'release-train' },
-    { kind: 'duplicate', sourceWorkflowId: 'release-train', workflowId: 'release-train-copy' },
-    { kind: 'remove', workflowId: 'release-train' },
-    { kind: 'reset' }
+    { kind: 'duplicate', sourceWorkflowId: 'release-train', workflowId: 'release-train' }
   ];
 
-  it.each(MUTATIONS.map((mutation) => [mutation.kind, mutation] as const))(
-    'forwards a %s mutation unchanged',
-    async (_kind, mutation) => {
-      const postMessage = vi.fn();
-      const request: SaveWorkflowsRequest = {
-        ...SAMPLE_REQUEST,
-        mutation,
-        workflows: mutation.kind === 'reset' ? [] : SAMPLE_REQUEST.workflows
-      };
-      const promise = saveWorkflows(request, postMessage);
-      const env = postMessage.mock.calls[0][0] as {
-        payload: SaveWorkflowsRequest;
-        correlationId: string;
-      };
-      expect(env.payload.mutation).toEqual(mutation);
-      expect(env.payload.workflows).toEqual(request.workflows);
-      fireAck(env.correlationId, 'accepted');
+  it.each(PUBLISHING_MUTATIONS)(
+    'a $kind mutation produces the same publication as every other',
+    async (mutation) => {
+      const posted: Envelope[] = [];
+      const promise = saveWorkflows({ ...SAMPLE_REQUEST, mutation }, (msg) =>
+        posted.push(msg as Envelope)
+      );
+
+      expect(posted).toHaveLength(1);
+      expect(posted[0]!.type).toBe(WIRE.package);
+      expect(posted[0]!.payload).toEqual({
+        layers: [
+          {
+            kind: 'workflow',
+            expectedRevision: 'a'.repeat(64),
+            definitions: [{ id: 'release-train', body: AUTHORED_ROW }]
+          }
+        ]
+      });
+      expect(confirmCalls).toEqual([]);
+
+      ack(posted[0]!);
       await promise;
     }
   );
+
+  it('a reset with no rows empties nothing, because emptying is no longer one write', async () => {
+    // The Reset action is gone from the editor for this reason (FR-051): a package
+    // publish of zero definitions says nothing at all, so a helper that sent it
+    // would report success having changed nothing. Refused by name instead.
+    const postMessage = vi.fn();
+    await expect(
+      saveWorkflows({ ...SAMPLE_REQUEST, mutation: { kind: 'reset' }, workflows: [] }, postMessage)
+    ).resolves.toEqual(EMPTY_LAYER);
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(confirmCalls).toEqual([]);
+  });
+});
+
+describe('saveWorkflows — a removal is not a publication', () => {
+  it('deactivates the named workflow and leaves the surviving graphs alone', async () => {
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(
+      {
+        ...SAMPLE_REQUEST,
+        mutation: { kind: 'remove', workflowId: 'release-train' },
+        removedName: 'Release Train'
+      },
+      (msg) => posted.push(msg as Envelope)
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.type).toBe(WIRE.deactivate);
+    expect(posted[0]!.payload).toEqual({
+      kind: 'workflow',
+      id: 'release-train',
+      expectedDraftVersion: NO_DRAFT
+    });
+    expect(confirmCalls).toEqual([
+      {
+        actionKey: 'catalog.deactivate-definition',
+        context: {
+          kindLabel: 'Workflow',
+          definitionName: 'Release Train',
+          definitionId: 'release-train'
+        }
+      }
+    ]);
+
+    ack(posted[0]!);
+    await expect(promise).resolves.toEqual({ status: 'accepted' });
+  });
+
+  it('removes by the mutation id, not by whichever row happens to be first', async () => {
+    const posted: Envelope[] = [];
+    const promise = saveWorkflows(
+      { ...SAMPLE_REQUEST, mutation: { kind: 'remove', workflowId: 'gone-train' } },
+      (msg) => posted.push(msg as Envelope)
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(posted[0]!.payload).toEqual({
+      kind: 'workflow',
+      id: 'gone-train',
+      expectedDraftVersion: NO_DRAFT
+    });
+
+    ack(posted[0]!);
+    await promise;
+  });
 });

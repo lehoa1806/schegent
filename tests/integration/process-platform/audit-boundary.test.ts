@@ -14,8 +14,8 @@
 //               file nobody has written yet, and recording every dialog the
 //               operator opened would make the log a browsing history
 //   import      one `process-exchange-import-committed` or `-refused` per LAYER
-//               of an `import-package`, because a package can land in pieces and
-//               the catalog alone can no longer say which pieces those were
+//               of a package publication, because a package can land in pieces
+//               and the catalog alone can no longer say which pieces those were
 //   export      one `process-exchange-export`, saved or unavailable
 //   launch      nothing
 //   continuation nothing
@@ -27,6 +27,30 @@
 // is asserted over a recorder proven live by an emitting command dispatched
 // through the SAME dependency bag, because "the list is empty" is a claim any
 // dead recorder satisfies.
+//
+// **Feature 100 (T514i, FR-052 - FR-054, SC-010) — a second family, and a second
+// set of zeros.** The three layer saves that emitted the `import` line above are
+// one `CMD_PUBLISH_PACKAGE`, so that line is unchanged in substance: the records
+// are still per layer, emitted now by `catalog-lifecycle-commit.ts` rather than by
+// three handlers. What is new is the per-definition lifecycle, whose emission map
+// is its own:
+//
+//   save-draft      nothing
+//   discard-draft   nothing
+//   publish         one `definition-published`
+//   deactivate      one `definition-deactivated`
+//   restore         one `definition-restored`
+//
+// The two zeros are the requirement (FR-054), not an omission: an audit event per
+// draft would turn the log into a keystroke record of an operator's unfinished
+// work, and a draft is by construction the thing nobody has committed to. They are
+// asserted the same way `launch` and `continuation` are — against a recorder proven
+// live by the publish that follows through the same bag.
+//
+// The lifecycle payload is `{resourceKind, resourceId, versionId}`: a kind, an id,
+// and a `v<N>`. It has no field a definition body, an operator's note, or a
+// workspace root could ride out in, and the classifier below asserts that by
+// exact key set rather than by reading the three fields it happens to have today.
 //
 // **Why the classification is written as a closed vocabulary rather than a field
 // list.** FR-033 permits bounded identifiers, versions, statuses, outcomes,
@@ -71,7 +95,16 @@ import { loadCatalog } from '../../../src/config/pipeline-config-loader';
 import { PIPELINE_ID_MAX_LEN } from '../../../src/config/pipeline-definition-validator';
 import { PHASE_ID_MAX_LEN } from '../../../src/config/process-definition-validator';
 import { WORKFLOW_ID_MAX_LEN } from '../../../src/config/workflow-definition-validator';
-import { PROCESS_EXCHANGE_EVENT_TYPES } from '../../../src/contracts/audit-events';
+import {
+  CATALOG_LIFECYCLE_EVENT_TYPES,
+  PROCESS_EXCHANGE_EVENT_TYPES
+} from '../../../src/contracts/audit-events';
+import { NO_DRAFT } from '../../../src/contracts/catalog-lifecycle';
+import type {
+  PackagePublishOutcome,
+  PackagePublishRequest,
+  PackagePublishedLayer
+} from '../../../src/contracts/catalog-lifecycle';
 import type { RunRequest } from '../../../src/contracts/run-request';
 import {
   CMD_CONTINUE_WORKFLOW,
@@ -87,6 +120,7 @@ import {
   exportProcessDefinitions,
   importProcessDocument,
   previewProcessDocument,
+  type ImportWritePort,
   type LayerSaveAck
 } from '../../../src/headless/process-yaml-api';
 import { launchPipelineRun } from '../../../src/headless/pipeline-run-api';
@@ -104,16 +138,20 @@ import type { HandlerContext } from '../../../src/ui/sidebar/commands/handler-co
 import { auditImportCommitted } from '../../../src/ui/sidebar/commands/process-exchange-commit-audit';
 import { MessageRouter, type RouterDeps } from '../../../src/ui/sidebar/message-router';
 import {
+  CMD_DEACTIVATE_DEFINITION,
+  CMD_DISCARD_DEFINITION_DRAFT,
   CMD_EXPORT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_PREFLIGHT_PROCESS_YAML,
-  CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_WORKFLOWS
+  CMD_PUBLISH_DEFINITION,
+  CMD_PUBLISH_PACKAGE,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_SAVE_MODELS
 } from '../../../src/ui/sidebar/messages';
 import { RecordingQueue, makeWorkspaceRoot, removeWorkspaceRoot, storedCatalog } from './run-harness';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, tokenFor } from '../../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 
 // ---------------------------------------------------------------------------
 // The canaries
@@ -134,6 +172,16 @@ const CANARY_TASK = 'Quarterly Delta-Foxtrot-7719 Attestation';
 const CANARY_SECRET = 'sk-live-9f3c2a7d41b8e05612d4c9ab7e3f10d8';
 /** An absolute path an operator wrote by hand, distinct from the workspace root. */
 const CANARY_PATH = '/Users/audit-canary-operator/ledger/private-notes.md';
+/**
+ * An operator's change note (feature 100, T514i).
+ *
+ * Its own canary rather than a reuse of the instruction, because it is a field
+ * only the draft commands carry: `SaveDraftRequest.note` is what an operator
+ * writes ABOUT a change, and a per-draft audit event is exactly where it would
+ * have gone. A shared canary would still fail, but the failure would not say
+ * which field leaked.
+ */
+const CANARY_NOTE = 'Delta-Foxtrot-7719 revision note for the escrow attestation';
 
 const CANARY_TEXT = `${CANARY_INSTRUCTION} at ${CANARY_PATH} with key ${CANARY_SECRET}`;
 
@@ -237,15 +285,6 @@ function makeStore(): Store {
   return new FakeCatalogStore();
 }
 
-/** The stored rows each catalog holds — what an import appends to (FR-041). */
-function heldLayers(store: Store) {
-  return {
-    phases: store.rowsOf('phase'),
-    pipelines: store.rowsOf('pipeline'),
-    workflows: store.rowsOf('workflow')
-  };
-}
-
 /** The envelope as it crosses `RouterDeps['audit'].append`, before the writer mints id and timestamp. */
 interface AuditEnvelope {
   readonly runId: string;
@@ -301,7 +340,15 @@ function depsFor(store: Store, audit: Recorder, bytes?: Uint8Array): RouterDeps 
     // the fixture holds one rather than reimplementing it. `refreshCatalog` is a
     // no-op because nothing here reads the resolved catalog back: the claim is
     // about what the audit envelope carries, not about what the surface is shown.
+    //
+    // Feature 100 (T514i) — the store alone is no longer enough. A lifecycle
+    // command is a read, a decision, and a gated write, and the handlers reach
+    // the middle step through `catalogLifecycle`; a bag without one acks
+    // `config-ops-unavailable` and emits nothing, which is the one way this file
+    // could pass for the wrong reason. It is the REAL service over the fake
+    // store, so every event below is emitted by the shipped commit path.
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     executeCommand: vi.fn(),
     queueRemover: { remove: vi.fn() },
@@ -398,32 +445,57 @@ async function planFor(store: Store, audit: Recorder): Promise<ImportPlan> {
 }
 
 /**
- * Import, through the real save handlers.
+ * The write port `importProcessDocument` takes, wired to the real router.
  *
- * The write port is the router — the same three `CMD_SAVE_*` an operator's
- * confirmation reaches — because the commit record is emitted by those handlers
- * and a stubbed port would record nothing at all.
+ * Feature 100 (T514i) — this was three `CMD_SAVE_*` sends and is one
+ * `CMD_PUBLISH_PACKAGE`. It is still the router rather than a stub, for the
+ * original reason: the commit records are emitted by the handler behind it, and a
+ * stubbed port would record nothing at all. `saveModels` is untouched — the Model
+ * Catalog is the one catalog still written through configuration.
+ *
+ * The ack is read back as an outcome because `ImportWritePort` speaks outcomes
+ * while the router speaks acks; in production the automation adapter holds
+ * `lifecycle.publishPackage` directly and never crosses this seam. Only the
+ * accepted arm is reconstructed in any detail. A refusal is reported as one so
+ * the fixture's own outcome assertion fails loudly, and it is deliberately NOT
+ * where the refusal arm below is observed — that one is dispatched through the
+ * router directly, so the reason the log records is the handler's own.
+ */
+function packageWritePort(deps: RouterDeps): ImportWritePort {
+  return {
+    publishPackage: async (request: PackagePublishRequest): Promise<PackagePublishOutcome> => {
+      const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, request);
+      if (ack.status !== 'accepted') {
+        return {
+          outcome: 'refused',
+          refusal: { reason: 'store-refused', kind: null, defects: [], storeReason: ack.reason }
+        };
+      }
+      const result = ack.result as { readonly published: readonly PackagePublishedLayer[] };
+      return { outcome: 'published', published: result.published, pruned: [] };
+    },
+    saveModels: async (payload): Promise<LayerSaveAck> => {
+      const ack = await dispatch(deps, CMD_SAVE_MODELS, payload);
+      return ack.status === 'accepted'
+        ? { status: 'accepted', result: ack.result }
+        : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
+    }
+  };
+}
+
+/**
+ * Import, through the real publication handler.
+ *
+ * One command now covers all three layers, and the per-layer records come from
+ * `commitPackagePublish` walking the layers the request declared in rank order —
+ * which is why the committed assertion below is still a per-kind list.
  */
 async function driveImport(): Promise<readonly Emission[]> {
   const committed = auditRecorder();
   const store = makeStore();
   const deps = depsFor(store, committed);
   const plan = await planFor(store, committed);
-  const send = async (type: string, payload: unknown): Promise<LayerSaveAck> => {
-    const ack = await dispatch(deps, type, payload);
-    return ack.status === 'accepted'
-      ? { status: 'accepted', result: ack.result }
-      : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
-  };
-  const imported = await importProcessDocument(
-    {
-      savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
-      savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
-      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
-    },
-    { plan, layers: heldLayers(store) }
-  );
+  const imported = await importProcessDocument(packageWritePort(deps), { plan });
   expect(imported.outcome, `import fixture failed: ${JSON.stringify(imported)}`).toBe('imported');
 
   // A refused layer write, so the `-refused` commit arm is covered too. The
@@ -433,14 +505,23 @@ async function driveImport(): Promise<readonly Emission[]> {
   // Feature 099 (T496f, FR-042) — that used to be spelled `expectedRevision: 0`,
   // a number no layer revision could equal. A revision is an opaque string the
   // store mints, so staleness is spelled as a revision the store never minted.
+  //
+  // Feature 100 (T514i) — one layer, not the whole document, because the request
+  // shape decides how many records a refusal writes: `commitPackagePublish`
+  // reports every confirmed layer, so a three-layer request would record three
+  // refusals and say nothing more than one does.
   const refused = auditRecorder();
   const refusedDeps = depsFor(store, refused);
-  const ack = await dispatch(refusedDeps, CMD_SAVE_PHASES, {
-    expectedRevision: 'rev-phase-never-minted',
-    mutation: { kind: 'import-package', phaseIds: ['audit-specify'] },
-    phases: store.rowsOf('phase')
+  const ack = await dispatch(refusedDeps, CMD_PUBLISH_PACKAGE, {
+    layers: [
+      {
+        kind: 'phase',
+        expectedRevision: 'rev-phase-never-minted',
+        definitions: [{ id: 'audit-specify', body: { id: 'audit-specify' } }]
+      }
+    ]
   });
-  expect(ack.status, 'stale save was accepted').toBe('rejected');
+  expect(ack.status, 'stale publication was accepted').toBe('rejected');
 
   return [
     { label: 'import committed', events: committed.events },
@@ -455,21 +536,7 @@ async function driveExport(): Promise<readonly Emission[]> {
   const store = makeStore();
   const deps = depsFor(store, setup);
   const plan = await planFor(store, setup);
-  const send = async (type: string, payload: unknown): Promise<LayerSaveAck> => {
-    const ack = await dispatch(deps, type, payload);
-    return ack.status === 'accepted'
-      ? { status: 'accepted', result: ack.result }
-      : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
-  };
-  const imported = await importProcessDocument(
-    {
-      savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
-      savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
-      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
-    },
-    { plan, layers: heldLayers(store) }
-  );
+  const imported = await importProcessDocument(packageWritePort(deps), { plan });
   expect(imported.outcome, 'export fixture failed to import').toBe('imported');
 
   const selection: ExportProcessYamlRequest = {
@@ -499,6 +566,120 @@ async function driveExport(): Promise<readonly Emission[]> {
     { label: 'export saved', events: saved.events },
     { label: 'export unavailable', events: unavailable.events }
   ];
+}
+
+// -- The per-definition lifecycle (T514i) -----------------------------------
+
+const LIFECYCLE_ID = 'audit-lifecycle-phase';
+
+/** Every free-text field a Phase has, carrying a canary. */
+function lifecyclePhaseBody(instruction: string): Record<string, unknown> {
+  return { id: LIFECYCLE_ID, name: CANARY_TASK, version: 1, instruction };
+}
+
+/** One operation that must have recorded nothing, and what the log held when it ran. */
+interface SilentOperation {
+  readonly operation: string;
+  readonly events: number;
+  /** Pointer moves so far — what the log legitimately held at that moment. */
+  readonly moves: number;
+}
+
+interface LifecycleTrail {
+  readonly emission: Emission;
+  readonly silent: readonly SilentOperation[];
+  /**
+   * One entry per pointer move, in order, taken from the ACK rather than
+   * restated here — so the claim is "the record names the version the operator
+   * was told about" rather than "the record names v2".
+   */
+  readonly expected: readonly { readonly eventType: string; readonly versionId: string }[];
+}
+
+/**
+ * The five per-definition operations over one Phase, through the real handlers.
+ *
+ * Deliberately one recorder for the whole sequence rather than one per operation.
+ * The two silent operations (FR-054) are the claim, and "the recorder is empty" is
+ * satisfied by any dead port; run against a shared log, each zero is instead
+ * "the log grew by nothing *while the publishes around it grew it*".
+ *
+ * The order is also the one that makes each event's version id distinguishable: two
+ * publishes, so `definition-published` is not asserted against a single v1 that
+ * every field of every event happens to equal.
+ */
+async function driveLifecycle(): Promise<LifecycleTrail> {
+  const audit = auditRecorder();
+  const store = makeStore();
+  const deps = depsFor(store, audit);
+  const silent: SilentOperation[] = [];
+  const expected: { eventType: string; versionId: string }[] = [];
+
+  /** The target, re-read each time: the token is what the last operation left. */
+  const target = () => ({
+    kind: 'phase' as const,
+    id: LIFECYCLE_ID,
+    expectedDraftVersion: tokenFor(store, 'phase', LIFECYCLE_ID)
+  });
+  const send = async (type: string, payload: Record<string, unknown>) => {
+    const ack = await dispatch(deps, type, payload);
+    expect(ack.status, `${type} was rejected: ${ack.reason}`).toBe('accepted');
+    return (ack.result ?? {}) as Record<string, unknown>;
+  };
+  const silently = async (operation: string, type: string, payload: Record<string, unknown>) => {
+    await send(type, payload);
+    silent.push({ operation, events: audit.events.length, moves: expected.length });
+  };
+
+  // The first draft is written under the sentinel — there is no version to name yet.
+  expect(target().expectedDraftVersion, 'the fixture store already holds this id').toBe(NO_DRAFT);
+  await silently('save-draft (first)', CMD_SAVE_DEFINITION_DRAFT, {
+    ...target(),
+    body: lifecyclePhaseBody(CANARY_TEXT),
+    note: CANARY_NOTE
+  });
+
+  const firstPublish = await send(CMD_PUBLISH_DEFINITION, target());
+  expected.push({
+    eventType: 'definition-published',
+    versionId: String(firstPublish['activeVersionId'])
+  });
+
+  await silently('save-draft (edit)', CMD_SAVE_DEFINITION_DRAFT, {
+    ...target(),
+    body: lifecyclePhaseBody(`${CANARY_TEXT} (revised)`),
+    note: CANARY_NOTE
+  });
+
+  const secondPublish = await send(CMD_PUBLISH_DEFINITION, target());
+  expected.push({
+    eventType: 'definition-published',
+    versionId: String(secondPublish['activeVersionId'])
+  });
+
+  // Restore records the version restored FROM, not the draft it produced: the
+  // source is the operator's selection and the only thing that tells two
+  // restores of one definition apart.
+  const restored = await send(CMD_RESTORE_DEFINITION_VERSION, {
+    ...target(),
+    fromVersionId: String(firstPublish['activeVersionId'])
+  });
+  expected.push({
+    eventType: 'definition-restored',
+    versionId: String(restored['fromVersionId'])
+  });
+
+  await silently('discard-draft', CMD_DISCARD_DEFINITION_DRAFT, target());
+
+  // Deactivation records the version that stopped being live, which it retains as
+  // the definition's draft rather than writing a new record (FR-024a).
+  const deactivated = await send(CMD_DEACTIVATE_DEFINITION, target());
+  expected.push({
+    eventType: 'definition-deactivated',
+    versionId: String(deactivated['draftVersionId'])
+  });
+
+  return { emission: { label: 'lifecycle', events: audit.events }, silent, expected };
 }
 
 // -- Launch -----------------------------------------------------------------
@@ -638,6 +819,32 @@ function continuePayload(): ContinueWorkflowPayload {
   } as ContinueWorkflowPayload;
 }
 
+/**
+ * The emitting command the two "nothing was recorded" cases prove their recorder
+ * with (feature 100, T514i).
+ *
+ * A package publication rather than a per-definition one because it is a single
+ * dispatch that records — the per-definition path needs a draft first, and the
+ * draft is one of the operations that deliberately records nothing, so the
+ * control would have been two commands the first of which proves nothing.
+ */
+function controlPackage(store: Store): PackagePublishRequest {
+  return {
+    layers: [
+      {
+        kind: 'phase',
+        expectedRevision: store.revisionOf('phase'),
+        definitions: [
+          {
+            id: 'audit-control',
+            body: { id: 'audit-control', name: 'Audit Control', version: 1, instruction: 'Control.' }
+          }
+        ]
+      }
+    ]
+  };
+}
+
 function continueDeps(store: Store, audit: Recorder, queue: RecordingQueue) {
   const current = storedContinueRun();
   const connectedRuns = {
@@ -669,11 +876,22 @@ const ENVELOPE_OPTIONAL = ['correlationId'];
 // nulled-out stand-in for it.
 const PAYLOAD_KEYS = ['operation', 'resourceKind', 'resourceIds', 'outcomes', 'counts'];
 
+// Feature 100 (T514i, FR-053) — the second family's payload, whose key set is
+// asserted for exact equality for the same reason: three fields today, and a
+// fourth must be classified here before it can ship.
+const LIFECYCLE_PAYLOAD_KEYS = ['resourceKind', 'resourceId', 'versionId'];
+
+/** The two `phase` literals the families are partitioned by. */
+const EXCHANGE_PHASE = 'process-exchange';
+const LIFECYCLE_PHASE = 'catalog-lifecycle';
+
 /** The catalogs' own identifier bound. See T038 for why there is no second one. */
 const ID_MAX = 64;
 const IDS_MAX = 20;
 const CORRELATION_ID_MAX = 128;
-const RUN_ID_PREFIX = 'process-exchange:';
+const RUN_ID_PREFIX = `${EXCHANGE_PHASE}:`;
+/** A store-minted version id, and a shape no operator-authored text satisfies. */
+const VERSION_ID = /^v[1-9][0-9]*$/;
 
 /**
  * A literal this build chose: lower-kebab, bounded, no whitespace. Any quoted
@@ -728,18 +946,41 @@ function expectCount(value: unknown, where: string): void {
 }
 
 /**
- * Every leaf of one event, placed in FR-033's vocabulary.
+ * The envelope both families share, and the whole of what they share.
  *
- * Key sets are asserted for EXACT equality rather than containment: a field
- * added later must be classified here deliberately, not inherited silently.
+ * Split out when the lifecycle family arrived (feature 100, T514i) rather than
+ * widening `classify`: a single classifier over both would have to accept the
+ * UNION of the two payload key sets, and a union is precisely the containment
+ * check the header rejects — an exchange event that grew a `versionId` would
+ * pass it, and so would a lifecycle event that grew an `outcomes` list.
  */
-function classify(event: AuditEnvelope, where: string): void {
+function expectEnvelopeShape(event: AuditEnvelope, where: string): void {
   const keys = Object.keys(event).sort();
   const allowed = [...ENVELOPE_REQUIRED, ...ENVELOPE_OPTIONAL].sort();
   expect(keys.filter((key) => !allowed.includes(key)), `${where} has unclassified envelope fields`).toEqual([]);
   for (const required of ENVELOPE_REQUIRED) {
     expect(keys, `${where} is missing ${required}`).toContain(required);
   }
+  expectCount(event.iteration, `${where}.iteration`);
+  if (event.correlationId !== undefined) {
+    expect(typeof event.correlationId, `${where}.correlationId is not a string`).toBe('string');
+    expect(event.correlationId.length, `${where}.correlationId is unbounded`).toBeLessThanOrEqual(
+      CORRELATION_ID_MAX
+    );
+    expect(hasControlChar(event.correlationId), `${where}.correlationId has control chars`).toBe(false);
+  }
+  const payload = event.payload;
+  expect(payload !== null && typeof payload === 'object' && !Array.isArray(payload), `${where}.payload`).toBe(true);
+}
+
+/**
+ * Every leaf of one event, placed in FR-033's vocabulary.
+ *
+ * Key sets are asserted for EXACT equality rather than containment: a field
+ * added later must be classified here deliberately, not inherited silently.
+ */
+function classify(event: AuditEnvelope, where: string): void {
+  expectEnvelopeShape(event, where);
 
   // `runId` is the one envelope field that carries an operator-chosen id: the
   // exchange namespace prefix, then either a fixed operation literal or the
@@ -748,20 +989,11 @@ function classify(event: AuditEnvelope, where: string): void {
   expect(event.runId.startsWith(RUN_ID_PREFIX), `${where}.runId is outside the exchange namespace`).toBe(true);
   expectBoundedId(event.runId.slice(RUN_ID_PREFIX.length), `${where}.runId suffix`);
 
-  expect(event.phase, `${where}.phase`).toBe('process-exchange');
-  expectCount(event.iteration, `${where}.iteration`);
+  expect(event.phase, `${where}.phase`).toBe(EXCHANGE_PHASE);
   expect(PROCESS_EXCHANGE_EVENT_TYPES, `${where}.eventType`).toContain(event.eventType);
   expect(OUTCOMES, `${where}.outcome`).toContain(event.outcome);
-  if (event.correlationId !== undefined) {
-    expect(typeof event.correlationId, `${where}.correlationId is not a string`).toBe('string');
-    expect(event.correlationId.length, `${where}.correlationId is unbounded`).toBeLessThanOrEqual(
-      CORRELATION_ID_MAX
-    );
-    expect(hasControlChar(event.correlationId), `${where}.correlationId has control chars`).toBe(false);
-  }
 
   const payload = event.payload;
-  expect(payload !== null && typeof payload === 'object' && !Array.isArray(payload), `${where}.payload`).toBe(true);
   expect(Object.keys(payload).sort(), `${where}.payload key set`).toEqual([...PAYLOAD_KEYS].sort());
 
   expect(OPERATIONS, `${where}.payload.operation`).toContain(payload['operation']);
@@ -787,6 +1019,42 @@ function classify(event: AuditEnvelope, where: string): void {
     expect(COUNT_KEY.test(key), `${where}.payload.counts has a free-form key: "${key}"`).toBe(true);
     expectCount(value, `${where}.payload.counts.${key}`);
   }
+}
+
+/**
+ * Every leaf of one lifecycle event, placed in FR-053's vocabulary (T514i).
+ *
+ * Three fields, and the reason the whole family is safe by construction: a kind
+ * from the store's own closed union, an id bounded at the catalog's own limit, and
+ * a `v<N>` the store minted. There is no list, no message, and no free-text field
+ * — so a body, a note, or a workspace root has nowhere to go, and the exact key
+ * set above is what keeps that true of the next field somebody adds.
+ */
+function classifyLifecycle(event: AuditEnvelope, where: string): void {
+  expectEnvelopeShape(event, where);
+
+  // A literal rather than a run id: these events belong to no run, so `runId`
+  // carries nothing an operator chose. That is why there is no namespace-plus-
+  // suffix check here — there is no suffix.
+  expect(event.runId, `${where}.runId`).toBe(LIFECYCLE_PHASE);
+  expect(event.phase, `${where}.phase`).toBe(LIFECYCLE_PHASE);
+  expect(CATALOG_LIFECYCLE_EVENT_TYPES, `${where}.eventType`).toContain(event.eventType);
+  // Not `OUTCOMES`: a pointer move is recorded only once it has happened, so
+  // `info` is the only entry outcome this family can produce.
+  expect(event.outcome, `${where}.outcome`).toBe('info');
+
+  const payload = event.payload;
+  expect(Object.keys(payload).sort(), `${where}.payload key set`).toEqual(
+    [...LIFECYCLE_PAYLOAD_KEYS].sort()
+  );
+  expect(RESOURCE_KINDS, `${where}.payload.resourceKind`).toContain(payload['resourceKind']);
+  expectBoundedId(payload['resourceId'], `${where}.payload.resourceId`);
+  const versionId = payload['versionId'];
+  expect(typeof versionId, `${where}.payload.versionId is not a string`).toBe('string');
+  expect(
+    VERSION_ID.test(versionId as string),
+    `${where}.payload.versionId is not a store-minted v<N>: "${String(versionId)}"`
+  ).toBe(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -910,11 +1178,21 @@ function handlerContext(audit: Recorder): HandlerContext {
 describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
   let root: string;
   let emissions: readonly Emission[];
+  let lifecycle: LifecycleTrail;
 
   beforeAll(async () => {
     root = await makeWorkspaceRoot();
     workspaceRoot.path = root;
-    emissions = [...(await drivePreview()), ...(await driveImport()), ...(await driveExport())];
+    lifecycle = await driveLifecycle();
+    emissions = [
+      ...(await drivePreview()),
+      ...(await driveImport()),
+      ...(await driveExport()),
+      // Folded into the shared set on purpose: the privacy scans below are the
+      // ones this family most needs, and a second scan over a second list is a
+      // second place for one of them to be forgotten.
+      lifecycle.emission
+    ];
   });
 
   afterAll(async () => {
@@ -980,12 +1258,27 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
     });
 
     it('carries only bounded ids, statuses, outcomes, and counts', () => {
-      const all = emissions.flatMap((emission) =>
-        emission.events.map((event, index) => ({ event, where: `${emission.label}[${index}]` }))
-      );
+      const all = everyEvent();
       // The classifier is only worth running over a non-empty set.
       expect(all.length, 'no audit events were captured at all').toBeGreaterThan(0);
-      for (const { event, where } of all) classify(event, where);
+
+      // Feature 100 (T514i) — the partition is asserted BEFORE either half is
+      // classified. Two classifiers selected by `phase` means an event in
+      // neither family is classified by nobody, and a test that simply filtered
+      // for the two it knows would report that as a pass.
+      const exchange = all.filter(({ event }) => event.phase === EXCHANGE_PHASE);
+      const lifecycleEvents = all.filter(({ event }) => event.phase === LIFECYCLE_PHASE);
+      expect(
+        all
+          .filter(({ event }) => event.phase !== EXCHANGE_PHASE && event.phase !== LIFECYCLE_PHASE)
+          .map(({ where, event }) => `${where} is phase "${event.phase}"`),
+        'an emitted event belongs to neither audited family'
+      ).toEqual([]);
+      expect(exchange.length, 'no exchange events were captured').toBeGreaterThan(0);
+      expect(lifecycleEvents.length, 'no lifecycle events were captured').toBeGreaterThan(0);
+
+      for (const { event, where } of exchange) classify(event, where);
+      for (const { event, where } of lifecycleEvents) classifyLifecycle(event, where);
     });
 
     it('adds no audit event of its own when a Pipeline run is launched', async () => {
@@ -1002,16 +1295,10 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       expect(sidebar.status).toBe('accepted');
       expect(audit.events, 'a launch wrote an audit event').toEqual([]);
 
-      // The recorder in that same bag is live: a package save through it records.
-      // Without this, "the list is empty" would also be true of a dead port.
-      const ack = await dispatch(deps, CMD_SAVE_PHASES, {
-        expectedRevision: store.revisionOf('phase'),
-        mutation: { kind: 'import-package', phaseIds: ['audit-control'] },
-        phases: [
-          { id: 'audit-control', name: 'Audit Control', version: 1, instruction: 'Control.' }
-        ]
-      });
-      expect(ack.status, `control save rejected: ${ack.reason}`).toBe('accepted');
+      // The recorder in that same bag is live: a package publication through it
+      // records. Without this, "the list is empty" would also be true of a dead port.
+      const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, controlPackage(store));
+      expect(ack.status, `control publication rejected: ${ack.reason}`).toBe('accepted');
       expect(audit.events.length, 'the audit port was never live').toBeGreaterThan(0);
     });
 
@@ -1029,15 +1316,48 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       expect(sidebar.status).toBe('accepted');
       expect(audit.events, 'a continuation wrote an audit event').toEqual([]);
 
-      const ack = await dispatch(deps, CMD_SAVE_PHASES, {
-        expectedRevision: store.revisionOf('phase'),
-        mutation: { kind: 'import-package', phaseIds: ['audit-control'] },
-        phases: [
-          { id: 'audit-control', name: 'Audit Control', version: 1, instruction: 'Control.' }
-        ]
-      });
-      expect(ack.status, `control save rejected: ${ack.reason}`).toBe('accepted');
+      const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, controlPackage(store));
+      expect(ack.status, `control publication rejected: ${ack.reason}`).toBe('accepted');
       expect(audit.events.length, 'the audit port was never live').toBeGreaterThan(0);
+    });
+  });
+
+  describe('The lifecycle emission map (T514i, FR-052 - FR-054, SC-010)', () => {
+    it('records nothing for a draft write and nothing for a discard (FR-054)', () => {
+      // NOT "the recorder is empty" — that is also true of a port nobody wired,
+      // and this file's whole subject is the difference. Each silent operation is
+      // checked against the number of pointer moves that had already happened, so
+      // a stray record fails even in the middle of a trail that legitimately
+      // holds four, and the order of the trail is not an escape hatch.
+      expect(lifecycle.silent.length, 'no silent operation was exercised').toBeGreaterThan(0);
+      for (const { operation, events, moves } of lifecycle.silent) {
+        expect(events, `${operation} emitted an audit event`).toBe(moves);
+      }
+      // And the recorder those zeros were read off did record, four times.
+      expect(lifecycle.emission.events.length, 'the audit port was never live').toBe(
+        lifecycle.expected.length
+      );
+      expect(lifecycle.expected.length, 'no pointer move was exercised').toBeGreaterThan(0);
+    });
+
+    it('records one event per pointer move, naming the version the ack named (FR-052)', () => {
+      // The expected version ids are read off the ACKS, never hardcoded: the claim
+      // is that the record names the version the operator was told about. A
+      // publish names the version that became active, a restore the version it
+      // copied FROM (the operator's selection), a deactivation the draft it left.
+      expect(
+        lifecycle.emission.events.map((event) => ({
+          eventType: event.eventType,
+          versionId: event.payload['versionId']
+        }))
+      ).toEqual(lifecycle.expected);
+    });
+
+    it('names the definition that moved, and nothing else about it (FR-053)', () => {
+      for (const event of lifecycle.emission.events) {
+        expect(event.payload['resourceKind']).toBe('phase');
+        expect(event.payload['resourceId']).toBe(LIFECYCLE_ID);
+      }
     });
   });
 
@@ -1046,7 +1366,11 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       { label: 'the instruction text', text: CANARY_INSTRUCTION },
       { label: 'the task name', text: CANARY_TASK },
       { label: 'the credential-shaped token', text: CANARY_SECRET },
-      { label: 'the operator-authored path', text: CANARY_PATH }
+      { label: 'the operator-authored path', text: CANARY_PATH },
+      // Feature 100 (T514i) — the field the draft commands added. It is scanned
+      // over the same list of events as the other four, because the lifecycle
+      // emission joined `emissions` rather than getting a scan of its own.
+      { label: 'the operator-authored note', text: CANARY_NOTE }
     ];
 
     it("carries none of the document's operator-authored text (FR-034)", () => {
@@ -1077,7 +1401,8 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
         payload: {
           operation: 'import-preflight',
           resourceKind: 'phase',
-          resourceIds: [CANARY_INSTRUCTION],
+          // Two entries, so the walker is shown to descend past index 0.
+          resourceIds: [CANARY_INSTRUCTION, CANARY_NOTE],
           outcomes: [CANARY_SECRET],
           // In the KEY position, which is the half a value-only walker misses.
           counts: { [CANARY_PATH]: 1 }

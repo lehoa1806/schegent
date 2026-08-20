@@ -129,7 +129,52 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       // and `mutation` are the import-confirm call site's fields (contracts/
       // model-catalog-exchange.md §4); the existing manual add/remove call
       // site's minimal command correctly omits both.
-      [Authoritative.CMD_SAVE_MODELS]: { models: {} }
+      [Authoritative.CMD_SAVE_MODELS]: { models: {} },
+      // Feature 100 — the six lifecycle commands. All five per-definition ones
+      // carry the same three control fields; only what they add differs. `body:
+      // null` is the minimal body for a draft write, because the guard checks the
+      // key's presence and never its shape: the store holds a body verbatim (099
+      // FR-010) and a half-finished edit is exactly what a draft exists for.
+      [Authoritative.CMD_SAVE_DEFINITION_DRAFT]: {
+        kind: 'phase',
+        id: 'specify',
+        expectedDraftVersion: 'no-draft',
+        body: null
+      },
+      [Authoritative.CMD_PUBLISH_DEFINITION]: {
+        kind: 'phase',
+        id: 'specify',
+        expectedDraftVersion: 'v1'
+      },
+      [Authoritative.CMD_DEACTIVATE_DEFINITION]: {
+        kind: 'phase',
+        id: 'specify',
+        expectedDraftVersion: 'v1'
+      },
+      [Authoritative.CMD_DISCARD_DEFINITION_DRAFT]: {
+        kind: 'phase',
+        id: 'specify',
+        expectedDraftVersion: 'v1'
+      },
+      [Authoritative.CMD_RESTORE_DEFINITION_VERSION]: {
+        kind: 'phase',
+        id: 'specify',
+        expectedDraftVersion: 'v1',
+        fromVersionId: 'v1'
+      },
+      // The one envelope that still addresses a whole kind, because a package is
+      // one imported document published in kind order (FR-035). The guard admits
+      // an empty `layers` as a matter of shape; the ingress validator refuses it,
+      // so the fixture is a document both would accept.
+      [Authoritative.CMD_PUBLISH_PACKAGE]: {
+        layers: [
+          {
+            kind: 'phase',
+            expectedRevision: 'rev-phase-0',
+            definitions: [{ id: 'specify', body: null }]
+          }
+        ]
+      }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
       const guard = Authoritative.COMMAND_GUARDS[literal];
@@ -296,50 +341,80 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     });
   });
 
-  // Feature 082 (US1, T019) — the two catalog saves are one contract shape.
-  // If CMD_SAVE_PIPELINES ever drifts back to the bare `{ pipelines }` payload,
-  // the Builder and the Phase editor stop agreeing on what a revisioned
-  // complete-layer save is, and the shared save-layer-intent algebra loses its
-  // second consumer.
+  // Feature 082 (US1, T019) — the catalog write commands are one contract shape.
+  // The original drift this guard caught was a save forgetting its revision or its
+  // mutation, which would have left the Builder and the Phase editor disagreeing
+  // about what a revisioned complete-layer save is.
   //
-  // Feature 099 (T496f, FR-042/FR-043) — `scope` leaves the envelope with the
-  // layer tier: there is one catalog, so a save has nowhere to aim. The drift
-  // this guard exists to catch is unchanged (a save that forgets its revision or
-  // its mutation), and the check gains the mirror arm so the retired field
-  // cannot come back on one command and not the other.
-  it('SavePipelinesCommand declares the same save envelope as SavePhasesCommand', () => {
-    // The two save shapes are declared together in the focused catalog-save
-    // module; the barrel re-exports them so `sidebar-ipc.ts` remains the single
-    // import site for the wire contract.
+  // Feature 099 (T496f, FR-042/FR-043) — `scope` left the envelope with the layer
+  // tier: there is one catalog, so a save has nowhere to aim.
+  //
+  // Feature 100 (T514, FR-051) — and the layer save itself is gone. What replaces
+  // it is six commands whose payload IS the lifecycle-service request, so the
+  // property to guard inverted: a payload must **not** re-declare its own fields.
+  // A second declaration of the same five fields would be a second place for the
+  // wire and the service to drift silently, both sides being structural. `scope`
+  // and `mutation` are checked as retired fields rather than required ones.
+  it('every lifecycle command payload is the service request, re-declared nowhere', () => {
+    // Declared together in the focused lifecycle module; the barrel re-exports
+    // them so `sidebar-ipc.ts` remains the single import site for the wire
+    // contract.
     const barrel = fs.readFileSync(path.join(REPO_ROOT, 'src/contracts/sidebar-ipc.ts'), 'utf8');
-    expect(barrel, 'sidebar-ipc.ts must re-export SavePipelinesCommand').toMatch(
-      /export type \{[^}]*SavePipelinesCommand[^}]*\} from '\.\/sidebar-ipc\/catalog-save'/
-    );
     const source = fs.readFileSync(
-      path.join(REPO_ROOT, 'src/contracts/sidebar-ipc/catalog-save.ts'),
+      path.join(REPO_ROOT, 'src/contracts/sidebar-ipc/catalog-lifecycle.ts'),
       'utf8'
     );
-    const declaration = source.match(
-      /export interface SavePipelinesCommand[\s\S]*?\n\}/
-    )?.[0];
-    expect(declaration, 'SavePipelinesCommand must declare a payload').toBeDefined();
-    for (const field of ['expectedRevision', 'mutation', 'pipelines']) {
-      expect(declaration, `SavePipelinesCommand payload must carry '${field}'`).toContain(field);
-    }
-    const phases = source.match(/export interface SavePhasesCommand[\s\S]*?\n\}/)?.[0];
-    expect(phases, 'SavePhasesCommand must declare a payload').toBeDefined();
-    for (const shape of [declaration, phases]) {
-      expect(shape, 'a save payload must carry no scope').not.toMatch(
-        /^\s*(readonly\s+)?scope\s*[?:]/m
+    const REQUESTS: Readonly<Record<string, string>> = {
+      SaveDefinitionDraftCommand: 'SaveDraftRequest',
+      PublishDefinitionCommand: 'PublishRequest',
+      DeactivateDefinitionCommand: 'DeactivateRequest',
+      RestoreDefinitionVersionCommand: 'RestoreRequest',
+      DiscardDefinitionDraftCommand: 'DiscardDraftRequest',
+      PublishPackageCommand: 'PackagePublishRequest'
+    };
+
+    for (const [command, request] of Object.entries(REQUESTS)) {
+      expect(barrel, `sidebar-ipc.ts must re-export ${command}`).toMatch(
+        new RegExp(`export type \\{[^}]*${command}[^}]*\\} from '\\./sidebar-ipc/catalog-lifecycle'`)
       );
+      const declaration = source.match(
+        new RegExp(`export interface ${command}[\\s\\S]*?\\n\\}`)
+      )?.[0];
+      expect(declaration, `${command} must declare a payload`).toBeDefined();
+      // One line, naming the request. Anything else is a re-declaration.
+      expect(declaration, `${command} payload must be ${request} itself`).toMatch(
+        new RegExp(`readonly payload:\\s*${request};`)
+      );
+      for (const retired of ['scope', 'mutation', 'expectedRevision']) {
+        expect(declaration, `${command} must not carry '${retired}'`).not.toMatch(
+          new RegExp(`^\\s*(readonly\\s+)?${retired}\\s*[?:]`, 'm')
+        );
+      }
     }
   });
 
-  it('host shim re-exports the identical CMD_SAVE_PIPELINES guard', () => {
-    expect(HostShim.isCmdSavePipelines).toBe(Authoritative.isCmdSavePipelines);
-    expect(Authoritative.COMMAND_GUARDS[Authoritative.CMD_SAVE_PIPELINES]).toBe(
-      Authoritative.isCmdSavePipelines
-    );
+  it('host shim re-exports the identical lifecycle guards', () => {
+    // Six commands, six guards, one guard table. A command added to the table
+    // under a guard the shim does not re-export would let the host and the webview
+    // disagree about whether a message is well-formed.
+    const GUARDS = [
+      ['CMD_SAVE_DEFINITION_DRAFT', 'isCmdSaveDefinitionDraft'],
+      ['CMD_PUBLISH_DEFINITION', 'isCmdPublishDefinition'],
+      ['CMD_DEACTIVATE_DEFINITION', 'isCmdDeactivateDefinition'],
+      ['CMD_RESTORE_DEFINITION_VERSION', 'isCmdRestoreDefinitionVersion'],
+      ['CMD_DISCARD_DEFINITION_DRAFT', 'isCmdDiscardDefinitionDraft'],
+      ['CMD_PUBLISH_PACKAGE', 'isCmdPublishPackage']
+    ] as const;
+
+    for (const [command, guard] of GUARDS) {
+      const authoritative = (Authoritative as unknown as Record<string, unknown>)[guard];
+      expect(authoritative, `sidebar-ipc must export ${guard}`).toBeTypeOf('function');
+      expect((HostShim as unknown as Record<string, unknown>)[guard]).toBe(authoritative);
+      const type = (Authoritative as unknown as Record<string, string>)[command];
+      expect(
+        (Authoritative.COMMAND_GUARDS as unknown as Record<string, unknown>)[type]
+      ).toBe(authoritative);
+    }
   });
 
   it('SCHEMA_VERSION is a numeric integer constant', () => {

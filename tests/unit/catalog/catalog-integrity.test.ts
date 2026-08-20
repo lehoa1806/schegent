@@ -21,23 +21,61 @@
 // rather than hand-authoring a manifest. A hand-authored manifest can encode a shape
 // the writer never produces, and then the test proves something about a store that
 // does not exist.
+//
+// Feature 100 (T514) — one claim in here inverted. A save over a definition whose
+// record is missing used to be refused by name (`definition-invalid`); it is now the
+// **repair** (FR-011a). "Do not compound the fault" survives as the claim that
+// mattered — the broken record is not overwritten, nothing is deleted, and the scan
+// keeps reporting it — but the mechanism is a new version rather than a refusal,
+// because refusing would make a broken definition a dead end no save could get out
+// of. Everything else in this suite is unchanged: integrity is a property of records
+// and manifest entries, and neither changed shape.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { versionSegments } from '../../../src/catalog/catalog-paths';
+import { draftTokenOf, type ExpectedDraftVersion } from '../../../src/contracts/catalog-lifecycle';
 import type { CatalogKind, CatalogSnapshot } from '../../../src/contracts/catalog-store';
 import { createTestStore, type TestStore } from '../../fixtures/catalog-memory-fs';
 
 const MANIFEST = ['manifest.json'];
 
-async function revisionOf(test: TestStore, kind: CatalogKind): Promise<string> {
+/** The draft token the store currently holds for one definition (FR-012). */
+async function tokenOf(
+  test: TestStore,
+  kind: CatalogKind,
+  id: string
+): Promise<ExpectedDraftVersion> {
   const result = await test.store.read();
   if (result.outcome !== 'read') throw new Error(`store unreadable: ${result.fault.fault}`);
-  return result.snapshot.revisions[kind];
+  const found = result.snapshot.definitions.find(
+    (definition) => definition.kind === kind && definition.id === id
+  );
+  return draftTokenOf(found?.draftVersionId ?? null);
 }
 
-async function save(test: TestStore, id: string, body: unknown, kind: CatalogKind = 'phase') {
-  return test.store.save({ kind, id, body, expectedRevision: await revisionOf(test, kind) });
+/**
+ * A definition saved and then published, which is what "the catalog holds this" means.
+ *
+ * Two writes rather than one (FR-016): a draft save produces a version no resolver
+ * sees, and every case in this suite is about a definition that IS resolved — an
+ * `effective` row with a body, or the same row broken. Arranging with the draft write
+ * alone would leave `activeVersionId` null and the fault cases would assert nothing.
+ */
+async function activate(test: TestStore, id: string, body: unknown, kind: CatalogKind = 'phase') {
+  await test.store.applyLifecycleWrite({
+    op: 'save-draft',
+    kind,
+    id,
+    body,
+    expectedDraftVersion: await tokenOf(test, kind, id)
+  });
+  return test.store.applyLifecycleWrite({
+    op: 'publish',
+    kind,
+    id,
+    expectedDraftVersion: await tokenOf(test, kind, id)
+  });
 }
 
 /** Read, insisting the store was readable — the fault cases assert `unavailable` themselves. */
@@ -52,8 +90,8 @@ describe('catalog integrity: a manifest entry naming an absent record', () => {
 
   beforeEach(async () => {
     test = createTestStore();
-    await save(test, 'implement', { name: 'Implement' });
-    await save(test, 'plan', { name: 'Plan' });
+    await activate(test, 'implement', { name: 'Implement' });
+    await activate(test, 'plan', { name: 'Plan' });
   });
 
   it('reports a dangling record and presents that definition as unreadable', async () => {
@@ -99,15 +137,48 @@ describe('catalog integrity: a manifest entry naming an absent record', () => {
     expect(test.fs.files.get('manifest.json')).toBe(manifestBefore);
   });
 
-  it('refuses a save over the broken definition rather than compounding the fault', async () => {
+  it('repairs the broken definition with a new version rather than compounding the fault', async () => {
+    // Feature 100 inverted this. Under a single pointer a save over a missing record
+    // was refused; under draft-and-publish that would be a dead end — the pointer's
+    // record cannot be restored, so no save could ever get the definition out of
+    // `invalid`. The write now proceeds, and the two things that made the refusal
+    // worth having are asserted directly instead: the broken record is not written
+    // over (records are write-once, FR-030) and nothing is deleted.
     test.fs.unlink(versionSegments('phase', 'implement', 'v1'));
+    const token = await tokenOf(test, 'phase', 'implement');
     test.fs.calls.length = 0;
 
-    expect(await save(test, 'implement', { name: 'Repaired' })).toEqual({
-      outcome: 'refused',
-      reason: 'definition-invalid'
+    expect(
+      await test.store.applyLifecycleWrite({
+        op: 'save-draft',
+        kind: 'phase',
+        id: 'implement',
+        body: { name: 'Repaired' },
+        expectedDraftVersion: token
+      })
+    ).toMatchObject({ outcome: 'written', writtenVersionId: 'v2', draftVersionId: 'v2' });
+
+    // v1's segment is untouched: the repair is a new version beside the fault, not a
+    // rewrite of it.
+    expect(test.fs.writeCalls.map((call) => call.key)).toEqual([
+      'phases/implement/v2.json',
+      'manifest.json'
+    ]);
+    expect(test.fs.callsOf('remove')).toEqual([]);
+
+    // And the fault is still reported. A definition with a pending repair is still an
+    // unreadable definition until that draft is published — the operator is told, not
+    // quietly shown a healthy catalog.
+    const snapshot = await snapshotOf(test);
+    expect(snapshot.faults).toEqual([
+      { fault: 'dangling-record', kind: 'phase', id: 'implement', versionId: 'v1' }
+    ]);
+    expect(snapshot.definitions.find((row) => row.id === 'implement')).toMatchObject({
+      status: 'invalid',
+      body: null,
+      activeVersionId: 'v1',
+      draftVersionId: 'v2'
     });
-    expect(test.fs.writeCalls).toEqual([]);
   });
 });
 
@@ -116,7 +187,7 @@ describe('catalog integrity: a record that is not what the manifest describes', 
 
   beforeEach(async () => {
     test = createTestStore();
-    await save(test, 'implement', { name: 'Implement' });
+    await activate(test, 'implement', { name: 'Implement' });
   });
 
   it('reports a hash mismatch when the body was edited underneath the store', async () => {
@@ -161,7 +232,7 @@ describe('catalog integrity: a record that is not what the manifest describes', 
     // Past versions are verified in `readVersion` rather than in the activation
     // scan, so every body the store hands out has been checked — just not all of
     // them up front.
-    await save(test, 'implement', { name: 'Second' });
+    await activate(test, 'implement', { name: 'Second' });
     test.fs.seed(
       versionSegments('phase', 'implement', 'v1'),
       JSON.stringify({ versionId: 'v1', kind: 'phase', id: 'implement', body: { name: 'Tampered' } })
@@ -193,7 +264,7 @@ describe('catalog integrity: a record the manifest does not name', () => {
 
   beforeEach(async () => {
     test = createTestStore();
-    await save(test, 'implement', { name: 'Implement' });
+    await activate(test, 'implement', { name: 'Implement' });
   });
 
   it('reports it as collectable and not as a fault', async () => {
@@ -394,11 +465,14 @@ describe('catalog integrity: the manifest itself', () => {
     test.fs.calls.length = 0;
 
     await test.store.read();
-    const outcome = await test.store.save({
+    const outcome = await test.store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: 'anything'
+      // Any token at all: the manifest is what cannot be read, so there is nothing to
+      // compare a token against and the refusal must land before the comparison.
+      expectedDraftVersion: 'no-draft'
     });
 
     expect(outcome).toEqual({ outcome: 'refused', reason: 'store-unreadable' });
@@ -417,11 +491,12 @@ describe('catalog integrity: the manifest itself', () => {
       fault: { fault: 'unsupported-format', found: 2, supported: 1 }
     });
     expect(
-      await test.store.save({
+      await test.store.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'implement',
         body: { n: 1 },
-        expectedRevision: 'anything'
+        expectedDraftVersion: 'no-draft'
       })
     ).toEqual({ outcome: 'refused', reason: 'unsupported-format' });
     expect(test.fs.writeCalls).toEqual([]);

@@ -1,9 +1,14 @@
 // Feature 063 T012 — unit coverage for the action-copy table and the
-// `renderActionBody` placeholder resolver. The 11-entry ActionKey
-// union is the single source of truth for every confirmation prompt
-// (FR-022b); this test pins both the table membership and the
-// authoritative render output per the contract in
+// `renderActionBody` placeholder resolver. The ActionKey union is the
+// single source of truth for every confirmation prompt (FR-022b); this
+// test pins both the table membership and the authoritative render
+// output per the contract in
 // specs/063-clean-all-confirmations/contracts/action-copy-table.md.
+//
+// The union's size is deliberately not stated here. It has changed with every
+// feature that added or retired a confirmed action, and a number in a comment
+// goes stale silently — the membership assertion below is the live statement of
+// it.
 import { describe, expect, it } from 'vitest';
 import {
   ACTION_COPY,
@@ -16,16 +21,16 @@ import {
 } from '../action-copy';
 
 const EXPECTED_KEYS: readonly ActionKey[] = [
-  'catalog.remove-phase',
-  // Feature 082 — Pipeline removal is destructive in the same way Phase
-  // removal is: it drops an authored layer row and may promote a
-  // lower-precedence definition.
-  'catalog.remove-pipeline',
-  // Feature 083 — a Workflow removal drops an authored layer row exactly as a
-  // Pipeline removal does, and the layer reset drops every row in the scope at
-  // once, so both are destructive and both carry their own copy.
-  'catalog.remove-workflow',
-  'catalog.reset-workflows',
+  // Feature 100 (T509a, FR-049) — two keys where features 082/083 had four. The
+  // four were one per kind plus a whole-layer reset, because a removal was an
+  // omission from a per-kind whole-array write. A lifecycle operation names one
+  // definition of any kind, so the kind became a parameter rather than part of
+  // the key; and a layer reset is no longer a write the store can make, so it is
+  // no longer a decision the operator can take. The second key is new rather
+  // than renamed: discarding a draft is a different loss from deactivating an
+  // active definition, and the prompt has to say which.
+  'catalog.deactivate-definition',
+  'catalog.discard-draft',
   'queue.clean-all',
   'queue.clear-done',
   'queue.remove-item',
@@ -67,12 +72,13 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
   it('destructive severity covers irreversible catalog and workspace actions', () => {
     const destructive = EXPECTED_KEYS.filter((k) => ACTION_COPY[k].severity === 'destructive');
     expect(destructive.sort()).toEqual([
-      'catalog.remove-phase',
-      'catalog.remove-pipeline',
-      // Feature 083 — both drop authored layer rows with no undo, which is what
-      // `destructive` means here; `caution` is for actions that only interrupt.
-      'catalog.remove-workflow',
-      'catalog.reset-workflows',
+      // Feature 100 — both remain destructive, for two different reasons. A
+      // deactivation drops the definition from the launchable catalog; a discard
+      // drops an edit that was never published, and of a never-published
+      // definition it drops the entry itself. `caution` is for actions that only
+      // interrupt, and neither of these does.
+      'catalog.deactivate-definition',
+      'catalog.discard-draft',
       'queue.clean-all',
       // Feature 095 — dropping a queue drops the pending Tasks on it. Sorts
       // after `queue.clean-all` and before `run.overwrite-output`.
@@ -189,6 +195,54 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(renderActionBody('workspace.reset', {})).toBe(
       ACTION_COPY['workspace.reset'].bodyTemplate
     );
+  });
+
+  // Feature 100 (T509a, FR-049) — the two catalog prompts, which the four retired
+  // keys never had render coverage for. They need it now: `kindLabel` is a
+  // parameter where it used to be part of the key, so a resolver that dropped it
+  // would leave the operator reading "the active catalog" with no idea which one,
+  // and the discard body chooses between two different losses at render time.
+  it('catalog.deactivate-definition: names the definition and its kind', () => {
+    const body = renderActionBody('catalog.deactivate-definition', {
+      kindLabel: 'Pipeline',
+      definitionName: 'Spec Kit',
+      definitionId: 'speckit'
+    });
+    expect(body).toContain('**Spec Kit**');
+    expect(body).toContain('`speckit`');
+    expect(body).toContain('active Pipeline catalog');
+    // The half an operator has to be told, or "remove" reads as "delete forever":
+    // the history survives and publishing again brings it back.
+    expect(body).toContain('version history is kept');
+    expect(body).not.toContain('{');
+  });
+
+  it('catalog.discard-draft: describes the whole-definition loss when nothing is published', () => {
+    const body = renderActionBody('catalog.discard-draft', {
+      kindLabel: 'Workflow',
+      definitionName: 'Draft Flow',
+      definitionId: 'draft-flow',
+      removesEntry: true
+    });
+    expect(body).toContain('**Draft Flow**');
+    expect(body).toContain('never been published');
+    expect(body).toContain('removes it entirely');
+    expect(body).not.toContain('{');
+  });
+
+  it('catalog.discard-draft: says the published definition survives when one exists', () => {
+    // The other arm, asserted separately because the two are the difference
+    // between losing an edit and losing the definition (FR-030) — a resolver that
+    // rendered one body for both would pass a single-arm test.
+    const body = renderActionBody('catalog.discard-draft', {
+      kindLabel: 'Phase',
+      definitionName: 'Specify',
+      definitionId: 'specify',
+      removesEntry: false
+    });
+    expect(body).toContain('published Phase stays active');
+    expect(body).not.toContain('removes it entirely');
+    expect(body).not.toContain('{');
   });
 
   it('run.overwrite-output: substitutes the port name and the relative target', () => {

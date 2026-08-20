@@ -32,12 +32,15 @@ import {
   CMD_CANCEL,
   CMD_RESUME,
   CMD_RESET,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_PHASES,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
-  CMD_SAVE_WORKFLOWS,
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_PUBLISH_DEFINITION,
+  CMD_DEACTIVATE_DEFINITION,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_DISCARD_DEFINITION_DRAFT,
+  CMD_PUBLISH_PACKAGE,
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
   CMD_CONTINUE_WORKFLOW,
@@ -87,12 +90,22 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   // Feature 056 Track 1 (FR-001..FR-005). Catalog and general-settings
   // saves write VS Code configuration / workspace state.
   CMD_SAVE_GENERAL_SETTINGS,
+  // Feature 100 (T509) — `CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`, and
+  // `CMD_SAVE_WORKFLOWS` were removed with the whole-array layer envelope.
+  // The Model Catalog is the last catalog still written through configuration.
   CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  // Feature 083 — the Workflow catalog layer. It writes VS Code configuration
-  // exactly as the three saves above do, and belongs to the same gate.
-  CMD_SAVE_WORKFLOWS,
+  // Feature 100 (T507) — the per-definition lifecycle. Every one of the six
+  // writes the catalog store: the first three write a version record and move
+  // the draft pointer, the publications move the active pointer, and the
+  // deactivation and the discard move a pointer off. Five of the six carry no
+  // verb the naming-convention lint recognises, so this fixture is what proves
+  // they are gated.
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_DISCARD_DEFINITION_DRAFT,
+  CMD_PUBLISH_DEFINITION,
+  CMD_PUBLISH_PACKAGE,
+  CMD_DEACTIVATE_DEFINITION,
   // Feature 087 (T009) — Pipeline run composition. Admits a queue item and a
   // Run: appends to the queue memento and creates durable state.
   CMD_LAUNCH_PIPELINE,
@@ -171,7 +184,7 @@ const NON_MUTATING_BY_DESIGN: ReadonlyArray<readonly [string, string]> = [
   [
     CMD_PREFLIGHT_PROCESS_YAML,
     'Feature 084 — reads the chosen document once and returns a plan; the ' +
-      'write it precedes goes through CMD_SAVE_PHASES, which is gated.'
+      'write it precedes goes through CMD_PUBLISH_PACKAGE, which is gated.'
   ]
 ];
 
@@ -185,10 +198,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   });
 
   it('config save commands ARE mutating (Feature 056 Track 1, FR-001..FR-005)', () => {
-    expect(isMutatingCommand(CMD_SAVE_PIPELINES)).toBe(true);
-    expect(isMutatingCommand(CMD_SAVE_PHASES)).toBe(true);
     expect(isMutatingCommand(CMD_SAVE_MODELS)).toBe(true);
     expect(isMutatingCommand(CMD_SAVE_GENERAL_SETTINGS)).toBe(true);
+  });
+
+  // Feature 100 (T509) — the three layer saves became six per-definition
+  // operations, and every one of the six is gated. The count below moved 43 -> 49
+  // -> 46 across features 099 and 100 for exactly that reason.
+  it('every lifecycle command IS mutating (Feature 100, FR-047, FR-048)', () => {
+    expect(isMutatingCommand(CMD_SAVE_DEFINITION_DRAFT)).toBe(true);
+    expect(isMutatingCommand(CMD_PUBLISH_DEFINITION)).toBe(true);
+    expect(isMutatingCommand(CMD_DEACTIVATE_DEFINITION)).toBe(true);
+    expect(isMutatingCommand(CMD_RESTORE_DEFINITION_VERSION)).toBe(true);
+    expect(isMutatingCommand(CMD_DISCARD_DEFINITION_DRAFT)).toBe(true);
+    expect(isMutatingCommand(CMD_PUBLISH_PACKAGE)).toBe(true);
   });
 
   it('still gates CMD_RETRY_PHASE_NOW as a mutating command', () => {
@@ -204,22 +227,22 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // state, so it is deliberately absent from MUTATING_COMMANDS: gating it
   // there would block export from a secondary window and from an untrusted
   // workspace for no safety gain. Import commits through the existing
-  // CMD_SAVE_PHASES, which IS gated, so the exchange feature adds no
+  // CMD_PUBLISH_PACKAGE, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 46', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(46);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
-  // through CMD_SAVE_PHASES, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
+  // through CMD_PUBLISH_PACKAGE, which is gated.
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 46', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(46);
   });
 });
 

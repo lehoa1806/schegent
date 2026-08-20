@@ -55,13 +55,18 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
-import { CMD_PREFLIGHT_PROCESS_YAML, CMD_SAVE_MODELS } from '../../../src/contracts/sidebar-ipc';
+import {
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_PACKAGE,
+  CMD_SAVE_MODELS
+} from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ImportPlan,
   ImportPlanRow,
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult,
+  PublishPackageCommand,
   SaveModelsCommand
 } from '../../../src/contracts/sidebar-ipc';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
@@ -69,12 +74,10 @@ import type { PhaseDefinition } from '../../../src/contracts/process-definitions
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
 import type { YamlNode } from '../../../src/services/process-yaml/types';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as saveModelsHandler } from '../../../src/ui/sidebar/commands/cmd-save-models';
-import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
-import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 const EXAMPLES_DIR = resolve(__dirname, '..', '..', '..', 'examples');
@@ -200,20 +203,21 @@ function logger() {
   };
 }
 
+/**
+ * Feature 100 (T512, FR-043) — each definition layer carries `ids` (every entry at
+ * every state) beside `rows` (the active bodies), because the presence gate reads
+ * the former and the catalogs resolve from the latter.
+ */
 function readDeps(inst: Installation) {
+  const layer = (kind: 'phase' | 'pipeline' | 'workflow') => () => ({
+    rows: inst.store.rowsOf(kind),
+    revision: inst.store.revisionOf(kind),
+    ids: new Set(inst.store.idsOf(kind))
+  });
   return {
-    readPhaseConfig: () => ({
-      rows: inst.store.rowsOf('phase'),
-      revision: inst.store.revisionOf('phase')
-    }),
-    readPipelineConfig: () => ({
-      rows: inst.store.rowsOf('pipeline'),
-      revision: inst.store.revisionOf('pipeline')
-    }),
-    readWorkflowConfig: () => ({
-      rows: inst.store.rowsOf('workflow'),
-      revision: inst.store.revisionOf('workflow')
-    }),
+    readPhaseConfig: layer('phase'),
+    readPipelineConfig: layer('pipeline'),
+    readWorkflowConfig: layer('workflow'),
     readModelsConfig: () => inst.models,
     audit: { append: async () => undefined },
     logger: logger()
@@ -286,10 +290,14 @@ function modelDelta(plan: ImportPlan): Record<string, readonly string[]> {
 }
 
 /**
- * Commit a planned document through the real save handlers, in the order a
- * confirmed import writes: Phases, then Pipelines, then models. Nothing is
- * stubbed at a write gate, so a Pipeline whose Phases had not landed is rejected
- * here rather than silently accepted.
+ * Commit a planned document through the real handlers: the definitions as one
+ * package, then the models. Nothing is stubbed at a write gate, so a Pipeline
+ * whose Phases had not landed is rejected here rather than silently accepted.
+ *
+ * Feature 100 (T514) — the Phases-then-Pipelines ordering is inside the host now
+ * (it ranks the layers), so this harness no longer has to get it right for the
+ * import to work. The Model Catalog is still its own command: it is a settings key
+ * that feature 096 left alone, not a catalog layer.
  */
 async function commit(inst: Installation, plan: ImportPlan): Promise<readonly CommandAckMessage[]> {
   const acks: CommandAckMessage[] = [];
@@ -297,6 +305,7 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
     deps: {
       ...readDeps(inst),
       catalogStore: inst.store,
+      catalogLifecycle: fakeCatalogLifecycle(inst.store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       // The Model Catalog is the one kind still written through settings
@@ -316,32 +325,40 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
+  const layers: PublishPackageCommand['payload']['layers'][number][] = [];
+
   const phases = imported<PhaseDefinition>(plan, 'phase');
   if (phases.length > 0) {
-    await savePhasesHandler(ctx, {
-      type: CMD_SAVE_PHASES,
-      correlationId: CORRELATION,
-      payload: {
-        expectedRevision: plan.computedAgainstRevision,
-        mutation: { kind: 'import-package', phaseIds: phases.map((d) => d.phaseId) },
-        phases: [...inst.store.rowsOf('phase'), ...phases.map(phaseRow)]
-      }
-    } as SavePhasesCommand);
+    layers.push({
+      kind: 'phase',
+      expectedRevision: plan.computedAgainstRevision,
+      definitions: phases.map((definition) => ({
+        id: definition.phaseId,
+        body: phaseRow(definition)
+      }))
+    });
   }
 
   const pipelines = imported<PipelineDefinition>(plan, 'pipeline');
   if (pipelines.length > 0) {
-    const revisions = plan.computedAgainstPipelineRevision;
-    expect(revisions).toBeDefined();
-    await savePipelinesHandler(ctx, {
-      type: CMD_SAVE_PIPELINES,
+    const revision = plan.computedAgainstPipelineRevision;
+    expect(revision).toBeDefined();
+    layers.push({
+      kind: 'pipeline',
+      expectedRevision: revision!,
+      definitions: pipelines.map((definition) => ({
+        id: definition.pipelineId,
+        body: pipelineRow(definition)
+      }))
+    });
+  }
+
+  if (layers.length > 0) {
+    await publishDefinitionPackage(ctx, {
+      type: CMD_PUBLISH_PACKAGE,
       correlationId: CORRELATION,
-      payload: {
-        expectedRevision: revisions!,
-        mutation: { kind: 'import-package', pipelineIds: pipelines.map((d) => d.pipelineId) },
-        pipelines: [...inst.store.rowsOf('pipeline'), ...pipelines.map(pipelineRow)]
-      }
-    } as SavePipelinesCommand);
+      payload: { layers }
+    } satisfies PublishPackageCommand);
   }
 
   const models = modelDelta(plan);

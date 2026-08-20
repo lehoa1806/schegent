@@ -148,11 +148,18 @@ describe('Feature 083 T043 — validateWorkflowGraph takes only the effective Pi
   it('finds the call sites it is meant to guard', () => {
     // Guards the scanner: a parser change that silently matched nothing would
     // turn every assertion below into a vacuous pass.
+    //
+    // Feature 100 (T509) — the third named site was the `cmd-save-workflows`
+    // handler, and the whole-array Workflow save is gone with it: the lifecycle
+    // validates through
+    // `DefinitionSemantics.defectsOf` before it writes. The headless definition
+    // API is named in its place, which keeps three real sites under the scanner
+    // guard. Naming a deleted file here would fail the anchor-grounding lint,
+    // and dropping the row without a replacement would weaken the guard to
+    // "some site exists".
     const sites = callSites();
     expect(sites.length).toBeGreaterThan(0);
-    expect(sites.map((site) => site.file)).toContain(
-      'src/ui/sidebar/commands/cmd-save-workflows.ts'
-    );
+    expect(sites.map((site) => site.file)).toContain('src/headless/process-definition-api.ts');
     expect(sites.map((site) => site.file)).toContain('src/config/workflow-catalog.ts');
     expect(sites.map((site) => site.file)).toContain(AUGMENTED_SITE);
   });
@@ -231,8 +238,11 @@ describe('Feature 083 T043 — validateWorkflowGraph takes only the effective Pi
   );
 
   it('does not admit the named augmentation outside the preflight file', () => {
+    // A real non-preflight call site, not an invented path: feature 100 deleted
+    // the handler this fixture used to name, and a lint that names a file the
+    // tree no longer has pre-excuses whatever lands at that path next.
     const elsewhere = {
-      file: 'src/ui/sidebar/commands/cmd-save-workflows.ts',
+      file: 'src/config/workflow-catalog.ts',
       line: 1,
       secondArgument: 'prospectivePipelineCatalog(context)'
     };

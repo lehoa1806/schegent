@@ -83,11 +83,15 @@ function validatePipeline(
 ): PipelineDefinitionValidationResult {
   const shape = validatePipelineDefinition(definition, SIDEBAR_OPTIONS);
   if (!shape.ok || shape.definition === null) return shape;
-  // Both cross-reference checks, in the order and pairing of `crossReferenceErrors`
-  // in `cmd-save-pipelines.ts` gate 5 — a `phaseIds` entry with no effective
-  // definition is as much a defect as a binding that cannot resolve, and applying
-  // only the second would report a Pipeline clean here that the operator's save
-  // refuses (FR-011, FR-015, FR-016).
+  // Both cross-reference checks, in the order and pairing the Pipeline save gate
+  // used — a `phaseIds` entry with no effective definition is as much a defect as
+  // a binding that cannot resolve, and applying only the second would report a
+  // Pipeline clean here that the operator's write refuses (FR-011, FR-015,
+  // FR-016). Feature 100 (T513b) moved the counterpart gate off
+  // `cmd-save-pipelines.ts` and onto the publish path, where
+  // `src/config/definition-semantics.ts` reports whatever the resolvers found —
+  // which is where both of these checks live, so the pairing still holds without
+  // this module restating it.
   //
   // Bound to a name that states the invariant `ProcessDefinitionCatalog` declares:
   // the bindings resolve against the caller's already-resolved effective Phase

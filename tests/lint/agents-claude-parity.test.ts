@@ -96,18 +96,31 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   'emit the literal `\'running\'` as a `queuelifecycle`',
   // Feature 082 — Pipeline contract hard-rule anchors.
   'resolve a pipeline binding',
-  'write a pipeline layer',
+  // Feature 100 re-pointed two anchors into one, on the 092 precedent above.
+  // `write a pipeline layer` (082) and `write a workflow layer` (083) named two
+  // copies of one rule — each whole-array layer save required its own
+  // `expectedRevision` and its own single declared intent. The lifecycle retired
+  // all three saves and the intent algebra with them, and the rule they shared
+  // was rewritten once, for the two layer writes that remain. One rule takes one
+  // anchor. Its second half is anchored separately: the ordering against the
+  // trust gate is what feature 100 added to the rule, and it is the half a
+  // reordering would break silently.
+  'write a catalog layer without a matching',
+  'never let the trust gate run before the staleness check',
   // Feature 083 — Workflow graph hard-rule anchors.
   'give a workflow condition a string form',
   'convert a workflow connection endpoint to index addressing',
   "store a workflow's inputs or outputs",
-  'write a workflow layer',
   // Feature 086 — Workflow package exchange hard-rule anchors. Each phrase is
   // one 086 amended into an existing rule rather than adding a bullet, so the
   // anchor names the amended clause: the ordered-writes rule now spans three
   // layers, the no-compensating-delete rule now covers every partial prefix,
   // and the preflight carve-out now reaches the Workflow graph validator.
-  "write a package's catalog layers under one intent",
+  // Feature 100 re-pointed this one too: the per-layer `import-package` intent
+  // went with the intent algebra, so the rule now forbids the merge itself —
+  // "as one layer" rather than "under one intent". The ordered-writes property
+  // it guards is unchanged.
+  "write a package's catalog layers as one layer",
   'compensate a failed package write with a delete',
   'extends one level up to `validateworkflowgraph`',
   // Feature 093 — per-queue Run execution. Four new rules, four new anchors.

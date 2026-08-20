@@ -6,13 +6,16 @@
 // would importing it do.
 //
 // THE PRESENCE ORACLE (FR-030, data-model "PhaseIdPresence"). Presence is
-// computed from the STORED ROWS OF EVERY LAYER, whatever each row's
-// `PhaseSourceStatus` — `'effective'`, `'shadowed'`, or `'invalid'`. It is NOT
-// computed from the resolved effective catalog. A shadowed or malformed row
-// still claims its id, so an import cannot take an id the operator is part-way
-// through repairing. The rows are the argument, and `PhaseSourceRecord` is the
-// only shape this module accepts, so a later change cannot pass
-// `resolution.effective` here without failing to typecheck.
+// computed from the STORED DEFINITIONS AT EVERY STATE. It is NOT computed from
+// the resolved effective catalog. A malformed row still claims its id, so an
+// import cannot take an id the operator is part-way through repairing.
+//
+// Feature 100 (FR-R3-016) T512 — "every state" now has two halves, because a
+// definition can be stored without being effective. The rows carry the ones with
+// an active body and report `'effective'` or `'invalid'`; a per-kind id set
+// carries the rest and reports `'draft'`. Both are arguments, and the row lists
+// are still typed as `PhaseSourceRecord` and its two siblings, so a later change
+// cannot pass `resolution.effective` here without failing to typecheck.
 //
 // Note the deliberate asymmetry with export, which reads the EFFECTIVE catalog
 // (FR-014) because it must describe what this installation would actually run.
@@ -58,11 +61,7 @@ import type {
   PipelineDefinition,
   PipelineSourceRecord
 } from '../../contracts/pipeline-definitions';
-import type {
-  PhaseDefinition,
-  PhaseSourceRecord,
-  PhaseSourceStatus
-} from '../../contracts/process-definitions';
+import type { PhaseDefinition, PhaseSourceRecord } from '../../contracts/process-definitions';
 import type { WorkflowDefinition, WorkflowSourceRecord } from '../../contracts/workflow-definitions';
 import { resolvePipelineDependencies, resolveWorkflowDependencies } from './package-resolver';
 import { phaseDefinitionFromDocument } from './phase-yaml-mapper';
@@ -89,7 +88,12 @@ import type { WorkflowPackageResource, WorkflowPackageResult } from './workflow-
 // rows at every status, never the effective catalog (FR-050).
 
 export interface PhaseIdPresence {
-  readonly status: PhaseSourceStatus;
+  /**
+   * Feature 100 (T512) — widened from `PhaseSourceStatus` to the shared presence
+   * union, which is the same three catalog statuses plus `'draft'`. A draft-only
+   * entry produces no source record, so no `SourceStatus` can describe it.
+   */
+  readonly status: ProcessYamlPresenceStatus;
 }
 
 /** The same evidence for a Pipeline id, from the Pipeline catalog's stored rows. */
@@ -127,6 +131,18 @@ export type ProcessImportPlanResult =
 export interface PackageImportContext {
   readonly phaseRows: readonly PhaseSourceRecord[];
   readonly pipelineRows: readonly PipelineSourceRecord[];
+  /**
+   * Feature 100 (T512) — the presence half of the Phase oracle, carrying the ids
+   * `phaseRows` cannot: a definition holding only a Draft has no active body and
+   * therefore no row (FR-006, FR-007), but still claims its id (FR-043).
+   *
+   * Beside `phaseRows` rather than replacing it, because the two answer different
+   * questions and the file's standing rule is that no oracle here substitutes for
+   * another: the set says *whether* the id is taken, the rows say *how*.
+   */
+  readonly phaseIds: StoredDefinitionIds;
+  /** The same, for the Pipeline kind. */
+  readonly pipelineIds: StoredDefinitionIds;
   /** Read by the US4 resolver; carried here so the two oracles arrive together. */
   readonly effectivePhases: readonly PhaseDefinition[];
   /** The Phase kind's store revision (FR-044a). */
@@ -153,6 +169,8 @@ export interface PackageImportContext {
 export interface WorkflowPackageImportContext extends PackageImportContext {
   /** STORED Workflow rows at every status — presence, never resolution. */
   readonly workflowRows: readonly WorkflowSourceRecord[];
+  /** The third id set, for the reason there is a second (Feature 100, T512). */
+  readonly workflowIds: StoredDefinitionIds;
   /**
    * The RESOLVED Pipeline catalog — pass 3's resolution oracle (FR-036), the twin
    * of `effectivePhases` one level up. Separate from `pipelineRows` for the reason
@@ -178,20 +196,43 @@ export interface WorkflowPackageImportContext extends PackageImportContext {
   readonly workflowRevision: ProcessYamlCatalogRevision;
 }
 
+// Feature 100 (FR-R3-016) T512 — the second half of every presence scan.
+//
+// Through feature 099 a stored row and a stored definition were the same thing:
+// a save wrote an active version, so every manifest entry had a body and every
+// body produced a row. FR-006 breaks that. A definition can now hold a Draft and
+// no active version, and `storedRows` deliberately omits it — its body is not
+// active, so it is not in the effective catalog (FR-007). A presence scan that
+// saw only rows would therefore report an operator's unpublished draft as absent
+// and plan an import straight over the top of it, which is exactly what FR-044
+// forbids. The rule was always "stored definitions at every state"; the states
+// grew, so the scan has to.
+//
+// The id set answers presence and the row answers *status*, which is why both are
+// passed rather than the set alone: a row that resolved and a row the resolver
+// rejected are different pieces of evidence for the operator, and only the rows
+// carry that distinction. A draft-only id has no row and so reports `'draft'`.
+
+/** Every id one kind's manifest holds an entry for, at any state (FR-043). */
+export type StoredDefinitionIds = ReadonlySet<string>;
+
 /**
- * Does any stored row claim `phaseId`?
+ * Does any stored definition claim `phaseId`?
  *
  * Exported so the rule has a name and a direct test, rather than being an
- * anonymous `.some(...)` inside the planner. Still every stored row at every
- * status, never the effective catalog (FR-050) — a row that is `invalid` claims
- * its id just as firmly as one that resolves, which is the whole point.
+ * anonymous `.some(...)` inside the planner. Still every stored definition at
+ * every state, never the effective catalog (FR-050, FR-043) — a row that is
+ * `invalid` claims its id just as firmly as one that resolves, and so does an
+ * entry holding nothing but a draft.
  */
 export function findPhaseIdPresence(
   storedRows: readonly PhaseSourceRecord[],
-  phaseId: string
+  phaseId: string,
+  storedIds: StoredDefinitionIds
 ): PhaseIdPresence | null {
   const claimant = storedRows.find((row) => row.phaseId === phaseId);
-  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
+  if (claimant !== undefined) return Object.freeze({ status: claimant.status });
+  return storedIds.has(phaseId) ? Object.freeze({ status: 'draft' as const }) : null;
 }
 
 /**
@@ -202,10 +243,12 @@ export function findPhaseIdPresence(
  */
 export function findPipelineIdPresence(
   storedRows: readonly PipelineSourceRecord[],
-  pipelineId: string
+  pipelineId: string,
+  storedIds: StoredDefinitionIds
 ): PipelineIdPresence | null {
   const claimant = storedRows.find((row) => row.pipelineId === pipelineId);
-  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
+  if (claimant !== undefined) return Object.freeze({ status: claimant.status });
+  return storedIds.has(pipelineId) ? Object.freeze({ status: 'draft' as const }) : null;
 }
 
 /**
@@ -217,14 +260,16 @@ export function findPipelineIdPresence(
  * `ship-it-flow` claims nothing about the Workflow of that name. One scan
  * parameterized over "rows and an id accessor" would make it possible to pass one
  * catalog's rows while asking about another catalog's id, and the mistake would
- * typecheck.
+ * typecheck. The id sets are per-kind for the same reason.
  */
 export function findWorkflowIdPresence(
   storedRows: readonly WorkflowSourceRecord[],
-  workflowId: string
+  workflowId: string,
+  storedIds: StoredDefinitionIds
 ): WorkflowIdPresence | null {
   const claimant = storedRows.find((row) => row.workflowId === workflowId);
-  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
+  if (claimant !== undefined) return Object.freeze({ status: claimant.status });
+  return storedIds.has(workflowId) ? Object.freeze({ status: 'draft' as const }) : null;
 }
 
 function countRows(rows: readonly ImportPlanRow[]): ImportPlanCounts {
@@ -319,10 +364,11 @@ function invalidRow(
  */
 function phaseSkipOrImportRow(
   document: PhaseYamlDocument,
-  storedRows: readonly PhaseSourceRecord[]
+  storedRows: readonly PhaseSourceRecord[],
+  storedIds: StoredDefinitionIds
 ): ImportPlanRow {
   const { metadata, spec } = document;
-  const presence = findPhaseIdPresence(storedRows, metadata.phaseId);
+  const presence = findPhaseIdPresence(storedRows, metadata.phaseId, storedIds);
   if (presence !== null) {
     // Never overwritten, merged, renamed, or versioned (FR-024).
     return Object.freeze({
@@ -366,7 +412,11 @@ function pipelineRow(
   context: PackageImportContext,
   plannedPhaseRows: readonly ImportPlanRow[]
 ): ImportPlanRow {
-  const presence = findPipelineIdPresence(context.pipelineRows, definition.pipelineId);
+  const presence = findPipelineIdPresence(
+    context.pipelineRows,
+    definition.pipelineId,
+    context.pipelineIds
+  );
   if (presence !== null) {
     return Object.freeze({
       outcome: 'skip' as const,
@@ -423,7 +473,8 @@ function pipelineRow(
 export function planPhaseImport(
   validation: PhaseYamlValidationResult,
   storedRows: readonly PhaseSourceRecord[],
-  revision: ProcessYamlCatalogRevision
+  revision: ProcessYamlCatalogRevision,
+  storedIds: StoredDefinitionIds
 ): ProcessImportPlanResult {
   if (!validation.ok && validation.kind === 'document') {
     return { outcome: 'refused', refusal: validation.refusal };
@@ -433,7 +484,7 @@ export function planPhaseImport(
     return planned([invalidRow('phase', validation.resourceId, validation.defects)], revision);
   }
 
-  return planned([phaseSkipOrImportRow(validation.document, storedRows)], revision);
+  return planned([phaseSkipOrImportRow(validation.document, storedRows, storedIds)], revision);
 }
 
 /** One row per declared resource, whatever that resource turned out to be (FR-024). */
@@ -448,7 +499,7 @@ function planPackageResource(
   if (resource.resourceKind === 'pipeline') {
     return pipelineRow(resource.definition, context, plannedPhaseRows);
   }
-  return phaseSkipOrImportRow(resource.document, context.phaseRows);
+  return phaseSkipOrImportRow(resource.document, context.phaseRows, context.phaseIds);
 }
 
 /**
@@ -462,12 +513,13 @@ function planPackageResource(
  */
 function plannedPhaseRowsOf(
   resources: readonly PipelinePackageResource[],
-  storedRows: readonly PhaseSourceRecord[]
+  storedRows: readonly PhaseSourceRecord[],
+  storedIds: StoredDefinitionIds
 ): readonly ImportPlanRow[] {
   const rows: ImportPlanRow[] = [];
   for (const resource of resources) {
     if (!resource.ok || resource.resourceKind !== 'phase') continue;
-    rows.push(phaseSkipOrImportRow(resource.document, storedRows));
+    rows.push(phaseSkipOrImportRow(resource.document, storedRows, storedIds));
   }
   return rows;
 }
@@ -498,7 +550,11 @@ export function planPipelineImport(
     return { outcome: 'refused', refusal: result.refusal };
   }
 
-  const plannedPhaseRows = plannedPhaseRowsOf(result.resources, context.phaseRows);
+  const plannedPhaseRows = plannedPhaseRowsOf(
+    result.resources,
+    context.phaseRows,
+    context.phaseIds
+  );
 
   return planned(
     result.resources.map((resource) => planPackageResource(resource, context, plannedPhaseRows)),
@@ -531,7 +587,11 @@ function workflowRow(
   plannedPhaseRows: readonly ImportPlanRow[],
   plannedPipelineRows: readonly ImportPlanRow[]
 ): ImportPlanRow {
-  const presence = findWorkflowIdPresence(context.workflowRows, definition.workflowId);
+  const presence = findWorkflowIdPresence(
+    context.workflowRows,
+    definition.workflowId,
+    context.workflowIds
+  );
   if (presence !== null) {
     // Never overwritten, merged, renamed, or versioned (FR-024). FR-025b is the
     // other half and needs no code: a skipped root is one row, so the resources it
@@ -632,7 +692,7 @@ function planWorkflowPackageResource(
     // it does there (FR-008, FR-035).
     return pipelineRow(resource.definition, context, plannedPhaseRows);
   }
-  return phaseSkipOrImportRow(resource.document, context.phaseRows);
+  return phaseSkipOrImportRow(resource.document, context.phaseRows, context.phaseIds);
 }
 
 /**
@@ -646,12 +706,13 @@ function planWorkflowPackageResource(
  */
 function workflowPackagePhaseRows(
   resources: readonly WorkflowPackageResource[],
-  storedRows: readonly PhaseSourceRecord[]
+  storedRows: readonly PhaseSourceRecord[],
+  storedIds: StoredDefinitionIds
 ): readonly ImportPlanRow[] {
   const rows: ImportPlanRow[] = [];
   for (const resource of resources) {
     if (!resource.ok || resource.resourceKind !== 'phase') continue;
-    rows.push(phaseSkipOrImportRow(resource.document, storedRows));
+    rows.push(phaseSkipOrImportRow(resource.document, storedRows, storedIds));
   }
   return rows;
 }
@@ -717,7 +778,11 @@ export function planWorkflowImport(
     return { outcome: 'refused', refusal: result.refusal };
   }
 
-  const plannedPhaseRows = workflowPackagePhaseRows(result.resources, context.phaseRows);
+  const plannedPhaseRows = workflowPackagePhaseRows(
+    result.resources,
+    context.phaseRows,
+    context.phaseIds
+  );
   const plannedPipelineRows = workflowPackagePipelineRows(
     result.resources,
     context,

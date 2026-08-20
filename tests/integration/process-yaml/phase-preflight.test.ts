@@ -22,7 +22,7 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
@@ -193,7 +193,7 @@ describe('Feature 084 — Phase import preflight', () => {
     // Feature 099 (T496f) — the write seam a preflight must not reach is the
     // catalog store. A save would leave a request behind AND move the revision;
     // both are checked, because a refused save still records its request.
-    expect(h.store.layerSaves).toEqual([]);
+    expect(writesOf(h.store)).toEqual(NO_WRITES);
     expect(h.store.revisionOf('phase')).toBe(before);
     expect(h.executeCommand).not.toHaveBeenCalled();
     expect(h.notifyWarning).not.toHaveBeenCalled();

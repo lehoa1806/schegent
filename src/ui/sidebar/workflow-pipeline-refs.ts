@@ -1,11 +1,19 @@
 // Feature 082 (US1 FR-002, US7 FR-022a) — the single definition of "a Workflow
 // that consumes a Pipeline".
 //
-// Two surfaces need the same answer and must never disagree:
+// Two surfaces needed the same answer and had to never disagree:
 //   * the Library, which lists each Pipeline's consuming Workflows so an
 //     operator can see what a change would affect (FR-002);
-//   * gate 13 in `commands/cmd-save-pipelines.ts`, which refuses a removal that
+//   * gate 13 in `commands/cmd-save-pipelines.ts`, which refused a removal that
 //     would leave one of those references unresolved (FR-022a).
+//
+// Feature 100 (T513b) — the second is gone with the whole-array save (T509), so
+// the Library is the only caller. What replaced the gate — the `referenced`
+// refusal on deactivate — deliberately asks a narrower question: FR-025b scopes
+// it to direct references from *active stored definitions*, and a queued request
+// that has not frozen its plan is covered by FR-026 instead. The queue-derived
+// answer below is therefore still correct for what it is used for, and is no
+// longer load-bearing for a refusal.
 //
 // A queued request is a consumer only while it still resolves its Pipeline from
 // the catalog. Two things end that, and both must be checked:

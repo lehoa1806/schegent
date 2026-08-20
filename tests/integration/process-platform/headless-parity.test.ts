@@ -5,8 +5,8 @@
 //   1. automation — `previewProcessDocument`, `importProcessDocument`, and
 //      `exportProcessDefinitions` from `src/headless/process-yaml-api.ts`
 //   2. operator   — `MessageRouter.dispatch` of `CMD_PREFLIGHT_PROCESS_YAML`,
-//      then of `CMD_SAVE_PHASES` / `CMD_SAVE_PIPELINES` / `CMD_SAVE_WORKFLOWS`,
-//      and of `CMD_EXPORT_PROCESS_YAML` — the real router running the real handlers
+//      then of `CMD_PUBLISH_PACKAGE`, and of `CMD_EXPORT_PROCESS_YAML` — the real
+//      router running the real handlers
 //
 // The same bytes go in both, and what comes out is compared row by row on the
 // four things an operator or a client acts on: the action, the reason, the
@@ -16,20 +16,37 @@
 // that both wrote the same wrong thing; comparing what the catalog then resolves
 // is the property the requirement is about.
 //
-// **What is shared and what is mirrored, stated plainly.** The three save
-// handlers ARE shared — both arms dispatch the same `CMD_SAVE_*` through the same
-// router, so the revision gate, the trust gate, the intent algebra, and the audit
-// envelope are one implementation and cannot diverge. The plan-to-request
-// composer is not: the operator's lives in the webview
+// **What is shared and what is mirrored, stated plainly.** The publication
+// handler IS shared — both arms dispatch the same `CMD_PUBLISH_PACKAGE` through
+// the same router, so the per-layer revision gate, the trust gate, the two-pass
+// write order, and the audit envelope are one implementation and cannot diverge.
+// The plan-to-request composer is not: the operator's lives in the webview
 // (`webview-ui/src/components/ProcessImport/process-import-state.ts`,
 // `buildImportWrites`) and is pinned as pure logic by the webview's own unit
 // test, and the webview is a separate program that a host test does not import —
 // the same rule `pipeline-package-import.test.ts` and `workflow-package-import.
 // test.ts` already follow. It is mirrored below, and `SIDEBAR_COMPOSER_SOURCE`
 // records where the original lives so a reader can check the mirror rather than
-// take it on faith. What this file therefore proves about the import half is that
-// `importProcessDocument` sends the same three payloads the operator's path sends,
-// in the same order, and that the catalogs afterwards are the same.
+// take it on faith.
+//
+// **Feature 100 (T514, FR-035, FR-039a) — one call against three.** The two arms
+// no longer send the same NUMBER of commands, and pretending they do would be the
+// easy way to make this file compile rather than hold. Automation sends one
+// `CMD_PUBLISH_PACKAGE` carrying all three layers, because `importProcessDocument`
+// hands the whole plan to a single operation whose own two passes own the order.
+// The operator's confirmation walks the composer's writes and sends each through
+// its own `savePhases`/`savePipelines`/`saveWorkflows`, so three single-layer
+// publications go out, each gated and each stopping the sequence if it refuses.
+//
+// So the claim is restated rather than dropped: the CONCATENATION of the layers in
+// the operator's requests equals the layers in automation's one request — same
+// kinds, same order, same revisions, same bodies, same ids — and the catalogs
+// afterwards resolve to the same definitions. What each layer NAMES is the half
+// that matters most here (FR-039a): a publication publishes the head of every id
+// it names, so a surface that appended the stored rows to its layers would promote
+// an operator's untouched pending draft as a side effect of an import that says
+// nothing about it. Both arms must name exactly the document's own ids, and
+// `published` below is the recorder that says whether they do.
 //
 // The document is a three-layer Workflow package because that is the shape with
 // the most to be wrong about: a two-layer package cannot catch a Workflow write
@@ -100,7 +117,7 @@ import {
   importProcessDocument,
   previewProcessDocument,
   type ImportProcessDocumentResult,
-  type ImportTargetLayers,
+  type ImportWritePort,
   type LayerSaveAck
 } from '../../../src/headless/process-yaml-api';
 import { launchPipelineRun } from '../../../src/headless/pipeline-run-api';
@@ -112,11 +129,16 @@ import {
   CMD_EXPORT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_PREFLIGHT_PROCESS_YAML,
-  CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_WORKFLOWS
+  CMD_SAVE_MODELS
 } from '../../../src/ui/sidebar/messages';
+import { CMD_PUBLISH_PACKAGE } from '../../../src/contracts/sidebar-ipc';
+import type { PublishPackageCommand } from '../../../src/contracts/sidebar-ipc';
+import type {
+  PackagePublishOutcome,
+  PackagePublishRequest,
+  PackagePublishedLayer
+} from '../../../src/contracts/catalog-lifecycle';
+import { createHostCatalogLifecycle } from '../../../src/activation/catalog-store-wiring';
 import {
   RecordingQueue,
   makeWorkspaceRoot,
@@ -374,6 +396,18 @@ interface Store {
   models: ModelsLayer;
   /** Layers written, in the order the commit points saw them. */
   readonly writes: RecordedLayerKey[];
+  /**
+   * Layers made live, and the ids each publication NAMED (feature 100, FR-039a).
+   *
+   * Separate from {@link writes} because a package publish has two passes and they
+   * answer different questions. `writes` is the draft pass: what was durably
+   * written, and so what "refused before any write" is read off. This is the
+   * publish pass: which ids each surface promoted to Active. A layer can appear in
+   * the first and not the second — that is what a partial import IS — and the ids
+   * are carried because publishing an id it should not have named is the one
+   * divergence a kind-only comparison would agree with.
+   */
+  readonly published: { readonly kind: CatalogKind; readonly ids: readonly string[] }[];
 }
 
 function makeStore(
@@ -389,40 +423,56 @@ function makeStore(
       pipelines: seed.pipelines ?? []
     }),
     models: seed.models ?? { claude: [], codex: [], agy: [] },
-    writes: []
+    writes: [],
+    published: []
   };
 }
 
 /**
- * The store the router writes through: the fixture's own, plus the recorder.
+ * The store the router writes through: the fixture's own, plus the two recorders.
  *
  * Wrapped rather than recorded inside {@link FakeCatalogStore} so a write the
  * *fixture* performs — the intruder below — is not counted as a write this
- * surface performed. `saveLayer` is the recording point because it is the commit
- * point (`catalog-layer-commit.ts`): a save refused at the revision gate never
- * reaches it, which is what makes `writes` still able to say "refused before any
- * write" the way the `updateConfig` recorder it replaces could.
+ * surface performed.
+ *
+ * **Feature 100 (T514) — the recording points, and why they are these.** `saveLayer`
+ * was one call and the recorder sat on it. A package publish is two passes, so
+ * there are two:
+ *
+ *   `saveDraftLayer`  the draft pass, recorded only when the verdict says a record
+ *                     LANDED. The call is not the write any more: the revision gate
+ *                     moved inside the store, so a stale layer is a call that
+ *                     returns `stale` having written nothing, and recording the call
+ *                     would report a write that never happened. `unchanged` writes
+ *                     nothing either, by FR-011a, so it is not a write here.
+ *   `publishLayer`    the publish pass, recorded with the ids it named, because
+ *                     FR-039a is a claim about which ids a publication carries and
+ *                     nothing weaker can catch a layer that named one too many.
+ *
+ * That is what keeps `writes` able to say "refused before any write" the way the
+ * `updateConfig` recorder it replaces could.
  */
 function recordingStore(store: Store): CatalogStore {
   return {
     read: () => store.catalog.read(),
-    save: (request) => store.catalog.save(request),
-    saveLayer: (request) => {
-      store.writes.push(RECORDED_KEY_OF[request.kind]);
-      return store.catalog.saveLayer(request);
+    applyLifecycleWrite: (write) => store.catalog.applyLifecycleWrite(write),
+    saveDraftLayer: async (request) => {
+      const outcome = await store.catalog.saveDraftLayer(request);
+      if (outcome.outcome === 'saved' || outcome.outcome === 'partial') {
+        store.writes.push(RECORDED_KEY_OF[request.kind]);
+      }
+      return outcome;
+    },
+    publishLayer: async (request) => {
+      const outcome = await store.catalog.publishLayer(request);
+      if (outcome.outcome === 'published') {
+        store.published.push({ kind: request.kind, ids: [...request.ids] });
+      }
+      return outcome;
     },
     readVersion: (kind, id, versionId) => store.catalog.readVersion(kind, id, versionId),
     listVersions: (kind, id) => store.catalog.listVersions(kind, id),
     listDefinitions: (kind) => store.catalog.listDefinitions(kind)
-  };
-}
-
-/** The stored rows each catalog holds — what an import appends to (FR-041). */
-function heldLayers(store: Store): ImportTargetLayers {
-  return {
-    phases: store.catalog.rowsOf('phase'),
-    pipelines: store.catalog.rowsOf('pipeline'),
-    workflows: store.catalog.rowsOf('workflow')
   };
 }
 
@@ -444,9 +494,16 @@ const INTRUDER_PHASE = Object.freeze({
  * directly rather than through {@link recordingStore}: it is not a write either
  * surface performed, and counting it would make the `writes` assertions read an
  * intrusion as a save the import made.
+ *
+ * Feature 100 (T514) — a DRAFT write, which is the sharper form of the same
+ * intrusion. It moves the Phase manifest revision, which is all the staleness gate
+ * reads, while leaving the Active pointer where it was — so the effective catalog
+ * the cases compare afterwards is untouched and the refusal cannot be confused
+ * with a disagreement about rows. It is also what the other window would really
+ * have done: the Builder's own edits land as drafts (FR-041).
  */
 async function intrudeOnPhases(store: Store): Promise<void> {
-  const outcome = await store.catalog.saveLayer({
+  const outcome = await store.catalog.saveDraftLayer({
     kind: 'phase',
     definitions: [{ id: INTRUDER_PHASE.id, body: INTRUDER_PHASE }],
     expectedRevision: store.catalog.revisionOf('phase')
@@ -473,7 +530,18 @@ function logger() {
  * shaped fixtures.
  */
 function depsFor(store: Store, bytes?: Uint8Array) {
+  // Feature 100 (T514, FR-047) — the real six operations over the RECORDING store,
+  // not over the fixture's own. The recorders are what the write assertions read,
+  // and a lifecycle built over the bare store would write past them; building it
+  // here rather than with `fakeCatalogLifecycle` is what puts the wrapper
+  // underneath. Everything above the disk — the validation, the reference scan,
+  // the two-pass publish — is the shipped code, which is the point: both surfaces
+  // reach one implementation of it.
+  const recording = recordingStore(store);
+  const lifecycle = createHostCatalogLifecycle(recording, () => '');
+  if (lifecycle === null) throw new Error('unreachable: a store was supplied');
   return {
+    catalogLifecycle: lifecycle,
     // Feature 099 (T496f, FR-041) — the three readers answered a `{user,
     // workspace}` pair whose revision the reader derived; they answer the store's
     // rows and the store's revision now. Both surfaces read through the same
@@ -491,7 +559,7 @@ function depsFor(store: Store, bytes?: Uint8Array) {
       revision: store.catalog.revisionOf('workflow')
     }),
     readModelsConfig: () => store.models,
-    catalogStore: recordingStore(store),
+    catalogStore: recording,
     // A store write raises no configuration event, so the handler re-reads
     // explicitly (T493b). Nothing in this fixture caches a catalog across a
     // write, so the re-read has nothing to do — but the port must be present, or
@@ -568,30 +636,87 @@ async function headlessPreview(store: Store, text: string): Promise<ImportPlan> 
 }
 
 /**
- * The write port is the router, so the headless import reaches the same three
- * handlers the operator's does. Injecting a stub here instead would leave the two
- * arms comparing a real save against a fake one.
+ * The write port is the router, so the headless import reaches the same handler
+ * the operator's does. Injecting a stub here instead would leave the two arms
+ * comparing a real publication against a fake one.
+ *
+ * **The ack-to-outcome seam.** `ImportWritePort` speaks `PackagePublishOutcome`
+ * while the router speaks `CommandAckMessage`, so this reads one back as the other.
+ * In production nothing crosses that seam: the automation adapter holds
+ * `lifecycle.publishPackage` directly and the outcome never becomes an ack first.
+ * It is done here anyway, rather than handing the port the lifecycle, because the
+ * whole subject of this file is that both surfaces reach the same HANDLER — the
+ * pre-checks, the trust gate, and the audit envelope all live there, and a port
+ * wired past them would compare two different amounts of code.
+ *
+ * The mapping is faithful in the direction that matters — which arm — and lossy in
+ * two details it names. A `partial` ack reports per-layer COUNTS, not ids, so the
+ * reconstructed `published` layers carry their kinds and empty id lists. And no ack
+ * carries `pruned` at all: what retention removed reaches the operator through the
+ * handler's log, not through the reply, so a reconstruction cannot recover it and
+ * says so with an empty list rather than a guess.
+ * {@link packageResults} reads only the kinds, so nothing downstream sees either gap,
+ * and the raw acks are returned alongside for the assertions that need the
+ * handler's own words.
  */
-async function headlessImport(
-  store: Store,
-  plan: ImportPlan
-): Promise<ImportProcessDocumentResult> {
-  const deps = depsFor(store);
-  const send = async (type: string, payload: unknown): Promise<LayerSaveAck> => {
-    const ack = await dispatch(deps, type, payload);
-    return ack.status === 'accepted'
-      ? { status: 'accepted', result: ack.result }
-      : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
-  };
-  return importProcessDocument(
-    {
-      savePhases: (payload) => send(CMD_SAVE_PHASES, payload),
-      savePipelines: (payload) => send(CMD_SAVE_PIPELINES, payload),
-      saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
-      saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
+function packageWritePort(deps: RouterDeps, acks: CommandAckMessage[]): ImportWritePort {
+  return {
+    publishPackage: async (request: PackagePublishRequest): Promise<PackagePublishOutcome> => {
+      const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, request);
+      acks.push(ack);
+      if (ack.status === 'accepted') {
+        const result = ack.result as { readonly published: readonly PackagePublishedLayer[] };
+        return { outcome: 'published', published: result.published, pruned: [] };
+      }
+      if (ack.reason === 'package-partial') {
+        const result = ack.result as {
+          readonly published: readonly { readonly kind: CatalogKind }[];
+          readonly draftedOnly: readonly CatalogKind[];
+          readonly failedKind: CatalogKind;
+          readonly cause: string;
+        };
+        return {
+          outcome: 'partial',
+          published: result.published.map((layer) => ({ kind: layer.kind, ids: [] })),
+          draftedOnly: result.draftedOnly,
+          failedKind: result.failedKind,
+          cause: result.cause,
+          pruned: []
+        };
+      }
+      const reason =
+        ack.reason === 'stale-catalog'
+          ? 'stale-layer'
+          : ack.reason === 'validation-failed'
+            ? 'validation-failed'
+            : 'store-refused';
+      return {
+        outcome: 'refused',
+        refusal: { reason, kind: null, defects: [], storeReason: ack.reason }
+      };
     },
-    { plan, layers: heldLayers(store) }
-  );
+    saveModels: async (payload): Promise<LayerSaveAck> => {
+      const ack = await dispatch(deps, CMD_SAVE_MODELS, payload);
+      acks.push(ack);
+      return ack.status === 'accepted'
+        ? { status: 'accepted', result: ack.result }
+        : { status: 'rejected', reason: ack.reason ?? 'unknown', result: ack.result };
+    }
+  };
+}
+
+/** What one arm's confirmation did: the port's report, and the acks behind it. */
+interface HeadlessCommit {
+  readonly result: ImportProcessDocumentResult;
+  /** The router's own acks, in send order — the handler's words, not derived ones. */
+  readonly acks: readonly CommandAckMessage[];
+}
+
+async function headlessImport(store: Store, plan: ImportPlan): Promise<HeadlessCommit> {
+  const deps = depsFor(store);
+  const acks: CommandAckMessage[] = [];
+  const result = await importProcessDocument(packageWritePort(deps, acks), { plan });
+  return { result, acks };
 }
 
 // ---------------------------------------------------------------------------
@@ -621,41 +746,39 @@ function importRows<K extends ImportPlanRow['resourceKind']>(
   );
 }
 
+/** One layer's publication, as the operator's confirmation sends it. */
 interface LayerWrite {
   readonly key: LayerKey;
-  readonly type: string;
-  readonly payload: Record<string, unknown>;
+  readonly payload: PublishPackageCommand['payload'];
 }
 
-/**
- * `LayerWrite` plus the one key it has no arm for. `sidebarWrites()` below
- * returns `LayerWrite[]` because it mirrors the pre-096 sidebar composer
- * byte-for-byte and has no `models` arm to mirror yet (T013). The recorder in
- * the `importProcessDocument` parity test, below, drives the real four-port
- * `ImportWritePort` and needs the wider key so its `saveModels` stub type-checks.
- */
-interface RecordedLayerWrite {
-  readonly key: RecordedLayerKey;
-  readonly type: string;
-  readonly payload: Record<string, unknown>;
-}
+/** The layers a request declares — the unit the two surfaces are compared on. */
+type PackageLayers = PublishPackageCommand['payload']['layers'];
 
 /**
- * `buildImportWrites`, mirrored from {@link SIDEBAR_COMPOSER_SOURCE}.
+ * `buildImportWrites` plus the three `save*` functions it feeds, mirrored from
+ * {@link SIDEBAR_COMPOSER_SOURCE} and `webview-ui/src/lib/save-{phases,pipelines,
+ * workflows}.ts`.
  *
- * Kept structurally identical to the original rather than tidied: the standalone
- * `import` intent for the single-Phase case, each layer carrying the revision the
- * PLAN was computed against, and nothing at all returned when a layer has rows
- * but no revision to gate them with.
+ * Kept structurally identical to the originals rather than tidied: each layer
+ * carries the revision the PLAN was computed against, and nothing at all is
+ * returned when a layer has rows but no revision to gate them with.
  *
  * Feature 099 (T496f, T489a, FR-043/FR-044) — the original's `scope` parameter
  * and the `scope` field on all three payloads are gone, and each layer's revision
  * is read as the plain string the plan now carries rather than indexed out of a
- * per-scope pair. The mirror follows the original exactly, which is the whole
- * point of it: a mirror that kept a field the original dropped would compare the
- * headless composer against a shape no operator can send.
+ * per-scope pair.
+ *
+ * **Feature 100 (T514, FR-039a, FR-039b) — two changes, and the mirror follows
+ * both.** The composer's rows no longer carry the held layer: a publication is a
+ * merge, and naming a stored id would publish that id's head, so the concatenation
+ * is gone from the original and from here. And the three `CMD_SAVE_*` commands are
+ * gone — each `save*` wraps its layer in a single-layer `CMD_PUBLISH_PACKAGE`. The
+ * composer's `mutation` intent stops at those functions and is never sent, so the
+ * mirror does not carry it: mirroring a field no operator's request contains would
+ * compare the headless composer against a shape the host has no arm for.
  */
-function sidebarWrites(plan: ImportPlan, layers: ImportTargetLayers) {
+function sidebarWrites(plan: ImportPlan): readonly LayerWrite[] {
   const phases = importRows(plan, 'phase');
   const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
@@ -666,21 +789,18 @@ function sidebarWrites(plan: ImportPlan, layers: ImportTargetLayers) {
 
   const writes: LayerWrite[] = [];
   if (phases.length > 0) {
-    const standalone = phases.length === 1 && pipelines.length === 0 && workflows.length === 0;
     writes.push({
       key: 'phases',
-      type: CMD_SAVE_PHASES,
       payload: {
-        expectedRevision: plan.computedAgainstRevision,
-        mutation: standalone
-          ? { kind: 'import', phaseId: phases[0].resourceId }
-          : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
-        phases: [
-          ...layers.phases,
-          ...phases.map(({ definition }) => {
-            const { phaseId, ...declared } = definition;
-            return { id: phaseId, ...declared };
-          })
+        layers: [
+          {
+            kind: 'phase',
+            expectedRevision: plan.computedAgainstRevision,
+            definitions: phases.map(({ definition }) => {
+              const { phaseId, ...declared } = definition;
+              return { id: phaseId, body: { id: phaseId, ...declared } };
+            })
+          }
         ]
       }
     });
@@ -688,16 +808,19 @@ function sidebarWrites(plan: ImportPlan, layers: ImportTargetLayers) {
   if (pipelines.length > 0 && pipelineRevision !== undefined) {
     writes.push({
       key: 'pipelines',
-      type: CMD_SAVE_PIPELINES,
       payload: {
-        expectedRevision: pipelineRevision,
-        mutation: { kind: 'import-package', pipelineIds: pipelines.map((row) => row.resourceId) },
-        pipelines: [
-          ...layers.pipelines,
-          ...pipelines.map(({ definition }) => {
-            const { pipelineId, phaseIds, ...declared } = definition;
-            return { id: pipelineId, phases: [...phaseIds], ...declared };
-          })
+        layers: [
+          {
+            kind: 'pipeline',
+            expectedRevision: pipelineRevision,
+            definitions: pipelines.map(({ definition }) => {
+              const { pipelineId, phaseIds, ...declared } = definition;
+              return {
+                id: pipelineId,
+                body: { id: pipelineId, phases: [...phaseIds], ...declared }
+              };
+            })
+          }
         ]
       }
     });
@@ -705,18 +828,26 @@ function sidebarWrites(plan: ImportPlan, layers: ImportTargetLayers) {
   if (workflows.length > 0 && workflowRevision !== undefined) {
     writes.push({
       key: 'workflows',
-      type: CMD_SAVE_WORKFLOWS,
       payload: {
-        expectedRevision: workflowRevision,
-        mutation: { kind: 'import-package', workflowIds: workflows.map((row) => row.resourceId) },
-        workflows: [
-          ...layers.workflows,
-          ...workflows.map(({ definition }) => ({ ...definition }))
+        layers: [
+          {
+            kind: 'workflow',
+            expectedRevision: workflowRevision,
+            definitions: workflows.map(({ definition }) => ({
+              id: definition.workflowId,
+              body: { ...definition }
+            }))
+          }
         ]
       }
     });
   }
   return writes;
+}
+
+/** Every layer the operator's requests declared, concatenated in send order. */
+function sentLayers(writes: readonly LayerWrite[]): PackageLayers {
+  return writes.flatMap((write) => write.payload.layers);
 }
 
 interface SidebarCommit {
@@ -727,10 +858,10 @@ interface SidebarCommit {
 
 async function sidebarImport(store: Store, plan: ImportPlan): Promise<SidebarCommit> {
   const deps = depsFor(store);
-  const sent = sidebarWrites(plan, heldLayers(store));
+  const sent = sidebarWrites(plan);
   const results: { key: LayerKey; ack: CommandAckMessage }[] = [];
   for (const write of sent) {
-    const ack = await dispatch(deps, write.type, write.payload);
+    const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, write.payload);
     results.push({ key: write.key, ack });
     // A rejection stops the sequence. The order exists so a layer never lands
     // ahead of its dependency; carrying on past a refusal would be exactly that.
@@ -796,7 +927,7 @@ async function headlessExport(
 async function storeWithPackage(): Promise<Store> {
   const store = makeStore({ models: MODEL_CATALOG_SEED });
   const plan = await headlessPreview(store, SELF_CONTAINED);
-  const result = await headlessImport(store, plan);
+  const { result } = await headlessImport(store, plan);
   expect(result.outcome, 'export fixture failed to import').toBe('imported');
   return store;
 }
@@ -1017,10 +1148,19 @@ describe('the fixture drives both surfaces for real (positive controls)', () => 
     // agree on an empty catalog and every assertion below would hold vacuously.
     const store = makeStore();
     const plan = await headlessPreview(store, SELF_CONTAINED);
-    const result = await headlessImport(store, plan);
+    const { result } = await headlessImport(store, plan);
 
     expect(result.outcome).toBe('imported');
     expect(store.writes).toEqual(['phases', 'pipelines', 'workflows']);
+    // Feature 100 (T514, FR-035) — and every drafted layer was then PUBLISHED, in
+    // the same dependency order. Without this the `writes` line above would be
+    // satisfied by an import that left the whole document as drafts, which is a
+    // different outcome the operator reads differently.
+    expect(store.published.map((layer) => layer.kind)).toEqual([
+      'phase',
+      'pipeline',
+      'workflow'
+    ]);
     const catalogs = effectiveCatalogs(store);
     expect(catalogs.phases.map((row) => row.phaseId)).toContain(IMPORTED_IDS.phases);
     expect(catalogs.pipelines.map((row) => row.pipelineId)).toContain(IMPORTED_IDS.pipelines);
@@ -1114,37 +1254,75 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
    * single-document form could not tell a correct write from one gated on another
    * layer's revision — see the seeded control in the positive-controls block.
    */
-  it.each(DOCUMENTS)('sends the same per-layer payloads, in order, for $label', async ({ text }) => {
+  it.each(DOCUMENTS)('declares the same layers, in order, for $label', async ({ text }) => {
     const headlessStore = makeStore(SEEDED);
     const sidebarStore = makeStore(SEEDED);
     const headlessPlan = await headlessPreview(headlessStore, text);
     const sidebarPlan = await sidebarPreview(sidebarStore, text);
 
-    // The operator's payloads, from the mirrored composer.
-    const operator = sidebarWrites(sidebarPlan, heldLayers(sidebarStore));
+    // The operator's requests, from the mirrored composer, flattened to the layers
+    // they declare. Three single-layer publications against automation's one
+    // three-layer publication (see the header) — so the comparison is over the
+    // layers, which is the unit both surfaces address a catalog in.
+    const operator = sentLayers(sidebarWrites(sidebarPlan));
 
-    // The automation payloads, recorded at the port rather than inferred. The
-    // acks are stubbed accepted so the whole sequence is observed: a real write
-    // here would refuse the second layer and the comparison would stop early.
-    const sent: RecordedLayerWrite[] = [];
-    const record =
-      (key: RecordedLayerKey, type: string) =>
-      async (payload: unknown): Promise<LayerSaveAck> => {
-        sent.push({ key, type, payload: payload as Record<string, unknown> });
-        return { status: 'accepted' };
-      };
+    // The automation request, recorded at the port rather than inferred. The
+    // outcome is stubbed published so the call is observed rather than gated: a
+    // real store here would refuse nothing, but stubbing keeps this case about the
+    // request and leaves the write behaviour to the cases below.
+    let sent: PackageLayers | null = null;
     await importProcessDocument(
       {
-        savePhases: record('phases', CMD_SAVE_PHASES),
-        savePipelines: record('pipelines', CMD_SAVE_PIPELINES),
-        saveWorkflows: record('workflows', CMD_SAVE_WORKFLOWS),
-        saveModels: record('models', CMD_SAVE_MODELS)
+        publishPackage: async (request): Promise<PackagePublishOutcome> => {
+          sent = request.layers;
+          return { outcome: 'published', published: [], pruned: [] };
+        },
+        saveModels: async (): Promise<LayerSaveAck> => ({ status: 'accepted' })
       },
-      { plan: headlessPlan, layers: heldLayers(headlessStore) }
+      { plan: headlessPlan }
     );
 
-    expect(sent.map((write) => write.key)).toEqual(operator.map((write) => write.key));
-    expect(sent.map((write) => write.payload)).toEqual(operator.map((write) => write.payload));
+    expect(sent, 'automation sent no publication at all').not.toBeNull();
+    // Exact, not `objectContaining`: a field one surface carries and the other
+    // does not is precisely the divergence this file exists to catch, and the
+    // per-layer `expectedRevision` is one an operator's recovery depends on.
+    expect(sent).toEqual(operator);
+  });
+
+  it('names the document its own ids in every layer, on both surfaces (FR-039a)', async () => {
+    // The narrow claim behind the payload comparison, stated as its own case
+    // because the comparison alone would agree on two surfaces that BOTH named a
+    // stored id. A publication publishes the head of every id it names, so a layer
+    // carrying the held rows would promote an operator's pending draft of a
+    // definition this document says nothing about.
+    const headlessStore = makeStore(SEEDED);
+    const sidebarStore = makeStore(SEEDED);
+    const headlessPlan = await headlessPreview(headlessStore, SELF_CONTAINED);
+    const sidebarPlan = await sidebarPreview(sidebarStore, SELF_CONTAINED);
+
+    await headlessImport(headlessStore, headlessPlan);
+    await sidebarImport(sidebarStore, sidebarPlan);
+
+    // Read off the store, not off the request: what FR-039a bounds is what the
+    // publish pass was asked to make live, and that is the last thing the ids
+    // pass through before the pointer moves. Expected from the PLAN's import rows
+    // rather than a literal list, so the claim is "exactly what this document said
+    // to import" and cannot be satisfied by a hand-kept list drifting alongside
+    // the fixture document.
+    const expected = [
+      { kind: 'phase', ids: importRows(headlessPlan, 'phase').map((row) => row.resourceId) },
+      { kind: 'pipeline', ids: importRows(headlessPlan, 'pipeline').map((row) => row.resourceId) },
+      { kind: 'workflow', ids: importRows(headlessPlan, 'workflow').map((row) => row.resourceId) }
+    ];
+    expect(expected.every((layer) => layer.ids.length > 0), 'a layer imported nothing').toBe(true);
+    expect(headlessStore.published).toEqual(expected);
+    expect(sidebarStore.published).toEqual(headlessStore.published);
+    // And the seeded rows are still exactly where they were: untouched by a write
+    // that never named them (FR-039b), and never published by one (FR-039a).
+    for (const store of [headlessStore, sidebarStore]) {
+      expect(store.catalog.stateOf('phase', HELD_PHASE.id)).toBe('active');
+      expect(store.catalog.stateOf('pipeline', HELD_PIPELINE.id)).toBe('active');
+    }
   });
 
   it.each([
@@ -1163,11 +1341,18 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
       await sidebarPreview(sidebarStore, text)
     );
 
-    expect(headlessResult.outcome).toBe(sidebarResult.outcome);
-    expect(headlessResult.results.map((result) => [result.key, result.ack.status])).toEqual(
+    expect(headlessResult.result.outcome).toBe(sidebarResult.outcome);
+    // Feature 100 (T514) — per-layer results still line up one-for-one on a
+    // document that lands, because automation reports one result per declared
+    // layer and the operator sends one layer per request. They would NOT line up
+    // on a refusal: automation's single request refuses every declared layer at
+    // once while the operator's sequence stops at the first, which is the shape
+    // the staleness case below asserts on the acks instead.
+    expect(headlessResult.result.results.map((result) => [result.key, result.ack.status])).toEqual(
       sidebarResult.results.map((result) => [result.key, result.ack.status])
     );
     expect(headlessStore.writes).toEqual(sidebarStore.writes);
+    expect(headlessStore.published).toEqual(sidebarStore.published);
     // The property the requirement is about: not that the two wrote the same
     // bytes, but that the catalog afterwards resolves to the same definitions.
     expect(effectiveCatalogs(headlessStore)).toEqual(effectiveCatalogs(sidebarStore));
@@ -1202,16 +1387,28 @@ describe('importProcessDocument matches the sidebar commit (T032, FR-008, SC-001
     const headlessResult = await headlessImport(headlessStore, headlessPlan);
     const sidebarResult = await sidebarImport(sidebarStore, sidebarPlan);
 
-    expect(headlessResult.outcome).toBe('failed');
+    expect(headlessResult.result.outcome).toBe('failed');
     expect(sidebarResult.outcome).toBe('failed');
-    const headlessAck = headlessResult.results[0]?.ack;
-    expect(headlessAck?.status).toBe('rejected');
-    expect(headlessAck && 'reason' in headlessAck ? headlessAck.reason : undefined).toBe(
+    // Feature 100 (T514) — read off the ROUTER's acks, not off the port's report.
+    // The two arms no longer send the same number of commands, so the derived
+    // per-layer results differ in length by construction and comparing them would
+    // be comparing the derivation rather than the refusal. What parity means here
+    // is that the same handler refused both for the same reason, and its own ack
+    // is where that is stated. Automation sends one request and gets one refusal;
+    // the operator's sequence sends the Phase layer, is refused, and stops.
+    const reasonsOf = (acks: readonly CommandAckMessage[]) =>
+      acks.map((ack) => (ack.status === 'accepted' ? 'accepted' : ack.reason));
+    expect(reasonsOf(headlessResult.acks)).toEqual(['stale-catalog']);
+    expect(reasonsOf(sidebarResult.results.map((result) => result.ack))).toEqual([
       'stale-catalog'
-    );
-    expect(sidebarResult.results[0]?.ack.reason).toBe('stale-catalog');
+    ]);
+    // Refused before any write, on both: the revision gate lives inside the store
+    // now, so this also says the store never drafted a row it then had to leave
+    // behind (FR-036), and never published one (FR-039a).
     expect(headlessStore.writes).toEqual([]);
     expect(sidebarStore.writes).toEqual([]);
+    expect(headlessStore.published).toEqual([]);
+    expect(sidebarStore.published).toEqual([]);
   });
 });
 
@@ -1365,23 +1562,22 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
     const store = makeStore({ models: MODEL_CATALOG_SEED });
     const plan = await headlessPreview(store, MODEL_CATALOG_DOCUMENT);
 
-    const refuse =
-      (label: string) =>
-      async (): Promise<LayerSaveAck> => {
-        throw new Error(`${label} must not be called for a Model-Catalog-only document`);
-      };
+    // Feature 100 (T514, FR-035) — one seam to refuse instead of three. The three
+    // per-kind saves collapsed into a single publication, so "touches no other
+    // layer" is now the claim that the publication is never sent at all: a
+    // Model-Catalog-only document declares no layer for it to carry.
     let sentPayload: unknown;
     const result = await importProcessDocument(
       {
-        savePhases: refuse('savePhases'),
-        savePipelines: refuse('savePipelines'),
-        saveWorkflows: refuse('saveWorkflows'),
+        publishPackage: async (): Promise<PackagePublishOutcome> => {
+          throw new Error('publishPackage must not be called for a Model-Catalog-only document');
+        },
         saveModels: async (payload) => {
           sentPayload = payload;
           return { status: 'accepted' };
         }
       },
-      { plan, layers: heldLayers(store) }
+      { plan }
     );
 
     expect(result.outcome).toBe('imported');
@@ -1401,7 +1597,7 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
     const store = makeStore({ models: MODEL_CATALOG_SEED });
     const plan = await headlessPreview(store, MODEL_CATALOG_DOCUMENT);
 
-    const result = await headlessImport(store, plan);
+    const { result } = await headlessImport(store, plan);
 
     expect(result.outcome).toBe('imported');
     expect(store.models).toEqual({
@@ -1419,7 +1615,7 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
     const viaRouter = makeStore({ models: MODEL_CATALOG_SEED });
 
     const portResult = await headlessImport(viaPort, plan);
-    const portAck = portResult.results.find((result) => result.key === 'models')?.ack;
+    const portAck = portResult.result.results.find((result) => result.key === 'models')?.ack;
 
     const routerAck = await dispatch(depsFor(viaRouter), CMD_SAVE_MODELS, {
       models: { claude: ['parity-model-new'] },
@@ -1452,7 +1648,7 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
     viaRouter.models = intruder;
 
     const portResult = await headlessImport(viaPort, plan);
-    const portAck = portResult.results.find((result) => result.key === 'models')?.ack;
+    const portAck = portResult.result.results.find((result) => result.key === 'models')?.ack;
 
     const routerAck = await dispatch(depsFor(viaRouter), CMD_SAVE_MODELS, {
       models: { claude: ['parity-model-new'] },
@@ -1460,7 +1656,7 @@ describe('importProcessDocument reaches the shared CMD_SAVE_MODELS handler — M
       mutation: { kind: 'import-package' }
     });
 
-    expect(portResult.outcome).toBe('failed');
+    expect(portResult.result.outcome).toBe('failed');
     expect(portAck?.status).toBe('rejected');
     expect(portAck && 'reason' in portAck ? portAck.reason : undefined).toBe('stale-catalog');
     expect(routerAck.status).toBe('rejected');
@@ -1629,19 +1825,26 @@ describe('Pipeline launch parity (T034, US2, FR-010, FR-013)', () => {
     // dead recorder satisfies. This proves the recorder in `launchDeps` is the
     // one the handlers reach: the same bag, and a command that does audit.
     //
-    // A package import specifically, because that is the phase save that emits a
-    // commit event — `cmd-save-phases.ts` builds its `ImportCommitTarget` only
-    // for `import-package`, so a `create` would have been accepted and recorded
-    // nothing, and the control would have proved the opposite of what it claims.
+    // A package publication specifically, because that is the write that emits a
+    // commit event. Feature 100 (T514) — it no longer has to be ASKED to: the
+    // `import-package` mutation intent used to be what turned auditing on, and
+    // `cmd-save-phases.ts` built its `ImportCommitTarget` only when it saw one, so
+    // this control had to send the intent or prove the opposite of what it claims.
+    // A publication IS the commit, so `exchangeTargets` builds one target per
+    // declared layer and the intent is gone.
     const audit = auditRecorder();
     const store = makeStore();
     const deps = launchDeps(new RecordingQueue(), audit, store);
-    const ack = await dispatch(deps, CMD_SAVE_PHASES, {
-      expectedRevision: store.catalog.revisionOf('phase'),
-      mutation: { kind: 'import-package', phaseIds: [HELD_PHASE.id] },
-      phases: [HELD_PHASE]
+    const ack = await dispatch(deps, CMD_PUBLISH_PACKAGE, {
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: store.catalog.revisionOf('phase'),
+          definitions: [{ id: HELD_PHASE.id, body: HELD_PHASE }]
+        }
+      ]
     });
-    expect(ack.status, `save rejected: ${ack.reason}`).toBe('accepted');
+    expect(ack.status, `publish rejected: ${ack.reason}`).toBe('accepted');
     expect(audit.events.length).toBeGreaterThan(0);
   });
 

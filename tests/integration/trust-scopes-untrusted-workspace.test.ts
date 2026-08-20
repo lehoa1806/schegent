@@ -9,7 +9,7 @@
 //   - Workspace-scope `schegent.trust.allowCustomPhases: true` (would
 //     widen the user-scope value on a trusted workspace, but cannot
 //     widen the ceiling).
-//   - `CMD_SAVE_PHASES` with a NON-default payload MUST be rejected with
+//   - A draft save carrying a NON-default body MUST be rejected with
 //     `trust-denied`, `resolvedScope: 'workspace-trust'`. No persistence,
 //     audit entry emitted.
 //
@@ -20,6 +20,11 @@
 // resolver (which models `isTrusted === false` at the capability layer)
 // produce the rejection. This proves the per-capability gate is
 // independently sufficient, satisfying FR-002 in isolation.
+//
+// Feature 100 (T514) — the command carrying the non-default body is now
+// `CMD_SAVE_DEFINITION_DRAFT`. The claim is untouched: the 059 gate is keyed on
+// the capability, not on the command that asks for it, and `phases` still gates
+// authoring a Phase (`cmd-catalog-lifecycle.ts`).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
@@ -54,10 +59,11 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, tokenFor, writesOf } from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
-  CMD_SAVE_PHASES,
+  CMD_SAVE_DEFINITION_DRAFT,
   type SidebarCommand,
   type CommandAckMessage,
   type TrustDeniedError
@@ -123,12 +129,13 @@ function buildHarness(): Harness {
     // The router-level workspace-trust gate is exercised by a separate
     // test. Here we route the command through to the handler so the
     // per-capability gate is the only thing standing between the payload
-    // and `updateConfig`.
+    // and the store.
     isTrusted: () => true,
     notifyWarning: vi.fn(),
     logger,
     audit,
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
@@ -137,17 +144,21 @@ function buildHarness(): Harness {
 
 async function dispatchSave(
   harness: Harness,
-  phases: readonly unknown[],
+  body: { readonly id: string },
   correlationId = 'integ-untrusted-1'
 ): Promise<CapturedAck> {
   let captured: CapturedAck | undefined;
+  // The token is read from the store, not written out: the trust gate runs after
+  // the staleness pre-check (FR-014), so a token that did not match would report
+  // `stale-catalog` and this test would never reach the gate it is about.
   const command = {
-    type: CMD_SAVE_PHASES,
+    type: CMD_SAVE_DEFINITION_DRAFT,
     correlationId,
     payload: {
-      expectedRevision: harness.store.revisionOf('phase'),
-      mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
-      phases
+      kind: 'phase',
+      id: body.id,
+      expectedDraftVersion: tokenFor(harness.store, 'phase', body.id),
+      body
     }
   } as unknown as SidebarCommand;
   await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
@@ -159,19 +170,17 @@ async function dispatchSave(
 }
 
 describe('Feature 059 T015 — untrusted-workspace ceiling cannot be widened', () => {
-  it('rejects non-default CMD_SAVE_PHASES with resolvedScope=workspace-trust and emits the audit entry', async () => {
+  it('rejects a non-default draft save with resolvedScope=workspace-trust and emits the audit entry', async () => {
     const harness = buildHarness();
     const { audit, store } = harness;
-    const nonDefaultPhases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Operator-authored override',
-        loopable: false
-      }
-    ];
+    const nonDefaultPhase = {
+      id: 'speckit-specify',
+      name: 'Modified Specify',
+      instruction: 'Operator-authored override',
+      loopable: false
+    };
 
-    const ack = await dispatchSave(harness, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhase);
 
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
@@ -180,7 +189,7 @@ describe('Feature 059 T015 — untrusted-workspace ceiling cannot be widened', (
     expect(err.capability).toBe('phases');
     expect(err.resolvedScope).toBe('workspace-trust');
 
-    expect(store.layerSaves).toEqual([]);
+    expect(writesOf(store)).toEqual(NO_WRITES);
 
     await flushAuditChain(audit);
     const entries = await readAuditLog(tmpRoot);

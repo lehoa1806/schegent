@@ -206,7 +206,7 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
   // untouched. It is the value the commit writes, and FR-046a forbids rewriting
   // a declared value — sanitizing it would silently alter what round-trips, and
   // the caps above would truncate an `instruction`. Nothing renders it: the
-  // webview forwards it to `CMD_SAVE_PHASES` / `CMD_SAVE_PIPELINES`, whose own
+  // webview forwards it to `CMD_PUBLISH_PACKAGE`, whose own
   // validators are the gate, and which it can already reach through the catalog
   // managers. The bounded `resourceId` and `name` are the rendered fields.
   const common = {
@@ -399,13 +399,38 @@ function resolvedPipelineCatalog(
   });
 }
 
+/**
+ * Feature 100 (T512, FR-043) — the id half of a presence oracle.
+ *
+ * A reader that supplies no ids gets the ids of the rows it did supply, which is
+ * the pre-lifecycle answer and the right one for a store with no drafts: presence
+ * is then decided entirely by the rows, exactly as it was. The fallback is
+ * deliberately not an empty set — that would make a missing `ids` mean "nothing is
+ * present" and quietly turn every skip into an import.
+ */
+function presentIds(
+  stored: { readonly ids?: ReadonlySet<string> } | undefined,
+  rowIds: readonly string[]
+): ReadonlySet<string> {
+  return stored?.ids ?? new Set(rowIds);
+}
+
 function packageContext(
+  deps: PreflightDeps,
   phaseCatalog: ReturnType<typeof resolvePhaseCatalog>,
   pipelineCatalog: ReturnType<typeof resolvePipelineCatalog>
 ): PackageImportContext {
   return {
     phaseRows: phaseCatalog.records,
     pipelineRows: pipelineCatalog.records,
+    phaseIds: presentIds(
+      deps.readPhaseConfig?.(),
+      phaseCatalog.records.map((record) => record.phaseId)
+    ),
+    pipelineIds: presentIds(
+      deps.readPipelineConfig?.(),
+      pipelineCatalog.records.map((record) => record.pipelineId)
+    ),
     effectivePhases: phaseCatalog.effective,
     revision: phaseCatalog.revision,
     // Read here, from the same resolve the presence oracle came from, so the
@@ -447,8 +472,12 @@ function workflowContext(
     pipelineCatalog: pipelineContext
   });
   return {
-    ...packageContext(phaseCatalog, pipelineCatalog),
+    ...packageContext(deps, phaseCatalog, pipelineCatalog),
     workflowRows: workflowCatalog.records,
+    workflowIds: presentIds(
+      stored,
+      workflowCatalog.records.map((record) => record.workflowId)
+    ),
     workflowRevision: workflowCatalog.revision,
     effectivePipelines: pipelineCatalog.effective,
     // The catalog's own exported map, not a second implementation: a transitive
@@ -503,13 +532,17 @@ export async function preflightProcessDocument(
       planned = planPhaseImport(
         validatePhaseDocument(parsed.node),
         phaseCatalog.records,
-        phaseCatalog.revision
+        phaseCatalog.revision,
+        presentIds(
+          phaseStored,
+          phaseCatalog.records.map((record) => record.phaseId)
+        )
       );
       break;
     case 'pipeline':
       planned = planPipelineImport(
         parsePipelinePackage(parsed.node),
-        packageContext(phaseCatalog, resolvedPipelineCatalog(deps, phaseCatalog))
+        packageContext(deps, phaseCatalog, resolvedPipelineCatalog(deps, phaseCatalog))
       );
       break;
     case 'workflow':

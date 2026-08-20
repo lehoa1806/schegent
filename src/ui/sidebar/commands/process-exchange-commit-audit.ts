@@ -1,5 +1,7 @@
 // Feature 085 T067 (FR-059, FR-060, FR-061) — what a confirmed package import
-// records about itself, shared by `cmd-save-phases.ts` and `cmd-save-pipelines.ts`.
+// records about itself. Feature 100 (T513b): the two save commands it was shared
+// by are gone, and the callers are now `catalog-lifecycle-commit.ts` (the package
+// publish arm) and `cmd-save-models.ts`.
 //
 // Feature 084 audited a document refusal and a capability denial and deliberately
 // audited neither a plan nor a write: one Phase either landed or it did not, and
@@ -13,10 +15,19 @@
 // is what FR-060 rests on — it has no field an instruction, a port label, a file
 // name, or a workspace root could ride out in, and that stays true here.
 //
-// Scoped to the `import-package` intent on purpose. A save handler that audited
-// every write would turn the exchange log into a second copy of the catalog's
-// history, and 084's single-Phase `import` still records nothing at commit: one
-// write cannot be partial, so the catalog still describes it.
+// Scoped to the package import on purpose. A handler that audited every write
+// would turn the exchange log into a second copy of the catalog's history, and
+// 084's single-Phase `import` still records nothing at commit: one write cannot
+// be partial, so the catalog still describes it.
+//
+// Feature 100 (T513b) kept that scoping through the lifecycle rewrite, and it is
+// what decided the package publish arm's audit shape: a `definition-published`
+// per definition alongside this record would be exactly the second copy the
+// paragraph above rules out. The per-definition lifecycle events fire on the five
+// per-definition operations only. The `import-package` mutation intent itself no
+// longer travels on the three definition layers — a layer is identified by its
+// `kind` — and this record's scope is now "the publish came from an import",
+// which is the property it always meant.
 //
 // A capability denial is NOT one of these. It keeps `trust.capability-denied` —
 // a different decision, taken at a different time, about a different thing

@@ -494,14 +494,27 @@ export type BlockedReason =
 export type ProcessYamlPresenceStatus =
   | PhaseSourceStatus
   | PipelineSourceStatus
-  | WorkflowSourceStatus;
+  | WorkflowSourceStatus
+  /**
+   * Feature 100 (FR-R3-016) T512 — a definition that exists only as an
+   * unpublished draft (FR-043).
+   *
+   * A fourth member rather than a reuse of `invalid`: the three `SourceStatus`
+   * unions describe a row the resolver saw, and a draft-only entry produces no
+   * row at all — its body is not active, so `storedRows` skips it and the
+   * effective catalog does not contain it (FR-007). It is nonetheless a claim on
+   * its id, and the strongest one there is: an operator is mid-way through
+   * authoring it. Reporting it as `invalid` would tell them their draft is
+   * broken; reporting nothing would let the import overwrite it (FR-044).
+   */
+  | 'draft';
 
 /**
  * The definition an import row carries, verbatim, keyed by the row's kind
  * (FR-029a/b).
  *
- * The plan carries it because the commit is a `CMD_SAVE_PHASES` /
- * `CMD_SAVE_PIPELINES` sent by the webview (research R2) and the host retains
+ * The plan carries it because the commit is a `CMD_PUBLISH_PACKAGE` sent by the
+ * webview (research R2) and the host retains
  * nothing past the single read that produced this plan (FR-031). The
  * alternatives were a host-side cache between preflight and commit, which is the
  * thing FR-031 forbids, and a second read at commit, which is a second dialog

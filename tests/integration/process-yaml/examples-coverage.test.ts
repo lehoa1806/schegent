@@ -41,21 +41,23 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
-import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
+import {
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_PACKAGE
+} from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ImportPlan,
   PreflightProcessYamlCommand,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
-import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
-import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
 
 const EXAMPLES_DIR = path.resolve(__dirname, '../../../examples');
 const CORRELATION = 'examples-coverage-1';
@@ -101,21 +103,24 @@ interface Installation {
 
 const emptyInstallation = (): Installation => ({ store: new FakeCatalogStore() });
 
-/** The `{ rows, revision }` seams every handler in this file reads through. */
+/**
+ * The `{ rows, revision, ids }` seams every handler in this file reads through.
+ *
+ * Feature 100 (T512, FR-043) — `ids` is every entry at every state, which is what
+ * the presence gate reads; `rows` stays the active bodies the catalogs resolve
+ * from. The examples publish outright, so the two agree here — supplying both is
+ * what makes that agreement a fact about the store rather than about the harness.
+ */
 function readDeps(inst: Installation) {
+  const layer = (kind: 'phase' | 'pipeline' | 'workflow') => () => ({
+    rows: inst.store.rowsOf(kind),
+    revision: inst.store.revisionOf(kind),
+    ids: new Set(inst.store.idsOf(kind))
+  });
   return {
-    readPhaseConfig: () => ({
-      rows: inst.store.rowsOf('phase'),
-      revision: inst.store.revisionOf('phase')
-    }),
-    readPipelineConfig: () => ({
-      rows: inst.store.rowsOf('pipeline'),
-      revision: inst.store.revisionOf('pipeline')
-    }),
-    readWorkflowConfig: () => ({
-      rows: inst.store.rowsOf('workflow'),
-      revision: inst.store.revisionOf('workflow')
-    })
+    readPhaseConfig: layer('phase'),
+    readPipelineConfig: layer('pipeline'),
+    readWorkflowConfig: layer('workflow')
   };
 }
 
@@ -173,9 +178,15 @@ function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
 }
 
 /**
- * Commit one planned document, Phases before Pipelines (FR-038/FR-045), through
- * the real handlers. Nothing is stubbed at the write gate: a Pipeline whose
- * Phases had not landed would be rejected here rather than silently accepted.
+ * Commit one planned document through the real handler. Nothing is stubbed at the
+ * write gate: a Pipeline whose Phases had not landed would be rejected here rather
+ * than silently accepted.
+ *
+ * Feature 100 (T514) — one command carrying both layers, rather than a Phase write
+ * followed by a Pipeline write. The ordering claim of FR-038/FR-045 is now the
+ * host's (it ranks the layers itself), and the document's own consistency is
+ * checked over the whole request before anything is written, so an example that
+ * referenced a Phase it did not ship would refuse instead of half-landing.
  */
 async function commit(inst: Installation, plan: ImportPlan): Promise<readonly string[]> {
   const acks: CommandAckMessage[] = [];
@@ -183,6 +194,7 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
     deps: {
       ...readDeps(inst),
       catalogStore: inst.store,
+      catalogLifecycle: fakeCatalogLifecycle(inst.store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
@@ -198,33 +210,41 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
+  const layers: PublishPackageCommand['payload']['layers'][number][] = [];
+
   const phases = imported<PhaseDefinition>(plan, 'phase');
   if (phases.length > 0) {
-    await savePhasesHandler(ctx, {
-      type: CMD_SAVE_PHASES,
-      correlationId: CORRELATION,
-      payload: {
-        expectedRevision: plan.computedAgainstRevision,
-        mutation: { kind: 'import-package', phaseIds: phases.map((d) => d.phaseId) },
-        phases: [...inst.store.rowsOf('phase'), ...phases.map(phaseRow)]
-      }
-    } as SavePhasesCommand);
+    layers.push({
+      kind: 'phase',
+      expectedRevision: plan.computedAgainstRevision,
+      definitions: phases.map((definition) => ({
+        id: definition.phaseId,
+        body: phaseRow(definition)
+      }))
+    });
   }
 
   const pipelines = imported<PipelineDefinition>(plan, 'pipeline');
   if (pipelines.length > 0) {
-    const revisions = plan.computedAgainstPipelineRevision;
-    expect(revisions).toBeDefined();
-    await savePipelinesHandler(ctx, {
-      type: CMD_SAVE_PIPELINES,
-      correlationId: CORRELATION,
-      payload: {
-        expectedRevision: revisions!,
-        mutation: { kind: 'import-package', pipelineIds: pipelines.map((d) => d.pipelineId) },
-        pipelines: [...inst.store.rowsOf('pipeline'), ...pipelines.map(pipelineRow)]
-      }
-    } as SavePipelinesCommand);
+    const revision = plan.computedAgainstPipelineRevision;
+    expect(revision).toBeDefined();
+    layers.push({
+      kind: 'pipeline',
+      expectedRevision: revision!,
+      definitions: pipelines.map((definition) => ({
+        id: definition.pipelineId,
+        body: pipelineRow(definition)
+      }))
+    });
   }
+
+  if (layers.length === 0) return [];
+  const command: PublishPackageCommand = {
+    type: CMD_PUBLISH_PACKAGE,
+    correlationId: CORRELATION,
+    payload: { layers }
+  };
+  await publishDefinitionPackage(ctx, command);
 
   return acks.map((ack) => ack.status);
 }

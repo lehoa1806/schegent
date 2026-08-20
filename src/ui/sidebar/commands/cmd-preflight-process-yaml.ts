@@ -4,7 +4,7 @@
 // Read-only by construction (FR-031, FR-032). It writes no configuration, moves
 // no layer revision, takes no lock, and retains nothing past the read, so it is
 // deliberately NOT a member of `MUTATING_COMMANDS`. The write happens later,
-// through the existing `CMD_SAVE_PHASES`, which IS gated.
+// through `CMD_PUBLISH_PACKAGE`, which IS gated.
 //
 // This directory imports no `vscode`: the open dialog and the read are an
 // injected dependency (`openProcessYamlDocument`) wired in `src/extension.ts`,

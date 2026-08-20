@@ -45,10 +45,13 @@ import { ack } from './handler-helpers';
  * The effective Pipeline catalog the Workflow catalog resolves against, built the
  * way `loadCatalog` builds it: Phases first, then Pipelines against those Phases.
  *
- * A local copy rather than a shared helper, matching `cmd-save-workflows.ts`,
- * `cmd-preflight-process-yaml.ts`, and `cmd-export-process-yaml.ts`, which each
- * hold their own. Extracting the four is a refactor this feature has no mandate
- * for; what matters is that every one of them resolves the *effective* layer.
+ * A local copy rather than a shared helper, matching
+ * `cmd-preflight-process-yaml.ts` and `cmd-export-process-yaml.ts`, which each
+ * hold their own. Extracting them is a refactor this feature has no mandate for;
+ * what matters is that every one of them resolves the *effective* layer.
+ * (`cmd-save-workflows.ts` held a fourth copy until feature 100 deleted it with
+ * the whole-array save; the lifecycle path resolves through
+ * `src/config/definition-semantics.ts` instead.)
  */
 function effectivePipelineContext(ctx: HandlerContext): WorkflowPipelineContext {
   const storedPhases = ctx.deps.readPhaseConfig?.() ?? { rows: [], revision: '' };

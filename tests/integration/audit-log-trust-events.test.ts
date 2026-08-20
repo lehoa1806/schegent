@@ -2,8 +2,8 @@
 // Contract: specs/059-fine-grained-trust-scopes/contracts/save-command-trust-gate-contract.md
 //
 // Verifies:
-//   - A denied CMD_SAVE_PHASES results in EXACTLY ONE
-//     `trust.capability-denied` entry in `<workspaceRoot>/.schegent/audit.log`.
+//   - A denied draft save results in EXACTLY ONE `trust.capability-denied`
+//     entry in `<workspaceRoot>/.schegent/audit.log`.
 //   - `capability`, `resolvedScope`, and `reason` are members of their
 //     respective closed enums.
 //   - `workspaceBasename` is the basename only (no `/` or `\`).
@@ -16,6 +16,22 @@
 // for trust-denied events that downstream monitoring or SIEM tooling
 // consumes (FR-007). The mock-resolver pattern matches the existing
 // integration tests.
+//
+// Feature 100 (T514) — the gate is unchanged and so is the entry it writes; only
+// the commands that ask it moved. The 059 contract is per-capability rather than
+// per-command (`trust-gate.ts`), so the two claims re-seat rather than being
+// rewritten — but they seat on *different* commands, and that is the one thing
+// worth reading twice:
+//
+//   - `phases` is asked of every Phase write, so a draft save carries it;
+//   - `retryConditions` carries a `rowIndex`, and a row index needs rows. A
+//     per-definition operation has no row to number, so the denial that names one
+//     is now the package publish, which addresses a whole layer at once
+//     (`cmd-catalog-lifecycle.ts` `packageCapabilities`).
+//
+// Asserting `rowIndex` against a draft save would have meant asserting it absent,
+// which is a weaker claim about a different requirement (FR-046 wants the
+// operator pointed at the line of the document they have to fix).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
@@ -52,10 +68,12 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
+import { FakeCatalogStore, tokenFor } from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
-  CMD_SAVE_PHASES,
+  CMD_PUBLISH_PACKAGE,
+  CMD_SAVE_DEFINITION_DRAFT,
   type SidebarCommand,
   type CommandAckMessage
 } from '../../src/ui/sidebar/messages';
@@ -135,52 +153,89 @@ function buildHarness(): {
     logger,
     audit,
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
   return { router: new MessageRouter(deps), audit, store };
 }
 
-async function dispatchSave(
-  harness: { readonly router: MessageRouter; readonly store: FakeCatalogStore },
-  phases: readonly unknown[],
-  correlationId: string
+type Harness = { readonly router: MessageRouter; readonly store: FakeCatalogStore };
+
+async function dispatch(
+  harness: Harness,
+  command: SidebarCommand
 ): Promise<CommandAckMessage> {
   let captured: CommandAckMessage | undefined;
-  const command = {
-    type: CMD_SAVE_PHASES,
-    correlationId,
-    payload: {
-      expectedRevision: harness.store.revisionOf('phase'),
-      mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
-      phases
-    }
-  } as unknown as SidebarCommand;
   await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = msg;
     return true;
   });
-  if (!captured) throw new Error('router did not ack the save');
+  if (!captured) throw new Error('router did not ack the command');
   return captured;
 }
 
+/**
+ * A draft save of one Phase — the operation the `phases` capability gates.
+ *
+ * The token comes from the store rather than being written out, because the gate
+ * this suite is about runs *after* the staleness pre-check (FR-014): a hand-written
+ * token that happened not to match would report `stale-catalog` and the trust
+ * denial under test would never be reached.
+ */
+async function dispatchSave(
+  harness: Harness,
+  body: { readonly id: string },
+  correlationId: string
+): Promise<CommandAckMessage> {
+  return dispatch(harness, {
+    type: CMD_SAVE_DEFINITION_DRAFT,
+    correlationId,
+    payload: {
+      kind: 'phase',
+      id: body.id,
+      expectedDraftVersion: tokenFor(harness.store, 'phase', body.id),
+      body
+    }
+  } as unknown as SidebarCommand);
+}
+
+/** A package publish of a Phase layer — the operation whose denial can name a row. */
+async function dispatchPackage(
+  harness: Harness,
+  phases: readonly { readonly id: string }[],
+  correlationId: string
+): Promise<CommandAckMessage> {
+  return dispatch(harness, {
+    type: CMD_PUBLISH_PACKAGE,
+    correlationId,
+    payload: {
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: harness.store.revisionOf('phase'),
+          definitions: phases.map((body) => ({ id: body.id, body }))
+        }
+      ]
+    }
+  } as unknown as SidebarCommand);
+}
+
 describe('Feature 059 T028 — audit log trust-event shape', () => {
-  it('writes exactly one trust.capability-denied entry for a denied CMD_SAVE_PHASES', async () => {
+  it('writes exactly one trust.capability-denied entry for a denied draft save', async () => {
     mocks.state.capabilities.set('phases', false);
     mocks.state.scopes.set('phases', 'user');
     const harness = buildHarness();
     const { audit } = harness;
-    const phases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Operator-authored override',
-        loopable: false
-      }
-    ];
+    const phase = {
+      id: 'speckit-specify',
+      name: 'Modified Specify',
+      instruction: 'Operator-authored override',
+      loopable: false
+    };
     const correlationId = 'corr-audit-trust-1';
 
-    const ack = await dispatchSave(harness, phases, correlationId);
+    const ack = await dispatchSave(harness, phase, correlationId);
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
 
@@ -224,13 +279,15 @@ describe('Feature 059 T028 — audit log trust-event shape', () => {
       }
     ];
 
-    const ack = await dispatchSave(harness, phases, 'corr-audit-trust-2');
+    const ack = await dispatchPackage(harness, phases, 'corr-audit-trust-2');
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
 
     await flushAuditChain(audit);
     const entries = await readAuditLog(tmpRoot);
     const trustEntries = entries.filter((e) => e.eventType === 'trust.capability-denied');
+    // One entry, not two: `phases` was allowed, so only the capability that was
+    // actually denied is recorded. The gate returns at the first denial.
     expect(trustEntries).toHaveLength(1);
     const payload = trustEntries[0].payload as Record<string, unknown>;
     expect(payload.capability).toBe('retryConditions');

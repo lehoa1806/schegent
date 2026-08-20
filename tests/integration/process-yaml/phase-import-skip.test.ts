@@ -32,7 +32,7 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import type { PhaseSourceStatus } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -240,7 +240,7 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
       );
 
       // Nothing that could write was reached, and a skip is not an audited event.
-      expect(h.store.layerSaves).toEqual([]);
+      expect(writesOf(h.store)).toEqual(NO_WRITES);
       expect(h.executeCommand).not.toHaveBeenCalled();
       expect(h.notifyWarning).not.toHaveBeenCalled();
       expect(h.audits).toEqual([]);
@@ -380,7 +380,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     const h = buildPackageHarness();
     await preflightHandler(h.ctx, COMMAND);
 
-    expect(h.store.layerSaves).toEqual([]);
+    expect(writesOf(h.store)).toEqual(NO_WRITES);
     expect(h.audits).toEqual([]);
   });
 });
