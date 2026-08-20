@@ -30,6 +30,8 @@ import { join, posix, sep } from 'node:path';
 import { nodeDigest, systemClock } from '../../src/activation/catalog-store-wiring';
 import { createCatalogStore, runProvenanceNone, type CatalogStore } from '../../src/catalog';
 import type { RunProvenance } from '../../src/catalog';
+import { draftTokenOf, type ExpectedDraftVersion } from '../../src/contracts/catalog-lifecycle';
+import type { CatalogKind, LifecycleWriteOutcome } from '../../src/contracts/catalog-store';
 import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../../src/lib/catalog-fs-adapter';
 
 /** Everything under the workspace root, relative and sorted. */
@@ -81,6 +83,57 @@ export function openStoreWithoutWorkspace(): CatalogStore {
     clock: systemClock,
     digest: nodeDigest,
     provenance: runProvenanceNone
+  });
+}
+
+/**
+ * The draft token this window would present on its next write (FR-012).
+ *
+ * Read out of the store every time rather than remembered from the caller's own
+ * last write, because that is what a window actually does — the token is a fact
+ * about the manifest on disk. A helper that cached it would stop noticing the other
+ * window, which is the entire subject of the concurrency suite.
+ */
+export async function draftTokenFor(
+  store: CatalogStore,
+  kind: CatalogKind,
+  id: string
+): Promise<ExpectedDraftVersion> {
+  const result = await store.read();
+  if (result.outcome !== 'read') throw new Error(`store unreadable: ${result.fault.fault}`);
+  const found = result.snapshot.definitions.find(
+    (definition) => definition.kind === kind && definition.id === id
+  );
+  return draftTokenOf(found?.draftVersionId ?? null);
+}
+
+/**
+ * A definition saved and then published — what "the catalog holds this" means.
+ *
+ * Two writes rather than one (FR-016): a draft save alone produces a version no
+ * resolver sees, so a suite arranging a *live* definition with the draft write
+ * alone would leave `activeVersionId` null and assert against the wrong state.
+ * Returns the publication's outcome; the draft write's is asserted by the suites
+ * that are about the draft write.
+ */
+export async function activate(
+  store: CatalogStore,
+  kind: CatalogKind,
+  id: string,
+  body: unknown
+): Promise<LifecycleWriteOutcome> {
+  await store.applyLifecycleWrite({
+    op: 'save-draft',
+    kind,
+    id,
+    body,
+    expectedDraftVersion: await draftTokenFor(store, kind, id)
+  });
+  return await store.applyLifecycleWrite({
+    op: 'publish',
+    kind,
+    id,
+    expectedDraftVersion: await draftTokenFor(store, kind, id)
   });
 }
 

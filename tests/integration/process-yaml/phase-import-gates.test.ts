@@ -1,13 +1,11 @@
 // Feature 084 T057..T062 — the gates the import commit passes through, and the
 // order they run in.
 //
-// Covers QS-28 through QS-33. The commit reuses the shipped `CMD_SAVE_PHASES`,
+// Covers QS-28 through QS-33. The commit reuses a shipped catalog-write command,
 // so what these tests pin is not new gate code but that an import is subject to
-// every gate an authored Phase is, in the same order:
+// every gate an authored Phase is, in the same order.
 //
-//   revision  →  validation  →  mutation intent  →  trust
-//
-// FR-039 makes that order load-bearing rather than incidental: a stale write by
+// FR-039 makes the first pair load-bearing rather than incidental: a stale write by
 // an untrusted operator must report staleness. If the trust gate ran first, the
 // operator would be told to fix their trust settings and would still be stale
 // afterwards.
@@ -20,6 +18,19 @@
 // settings key, and there is one catalog rather than a user/workspace pair. The
 // gate order above is unchanged, and so is every claim below; what moved is the
 // write seam each is asserted against.
+//
+// Feature 100 (T514, FR-047) — the command is `CMD_PUBLISH_PACKAGE`, and the order
+// reads:
+//
+//   revision  →  trust  →  validation
+//
+// The `mutation intent` gate is gone with the intent algebra (FR-051): the operation
+// IS the intent. Validation moved *behind* trust, because it now happens inside
+// `publishPackage` where the whole document is validated at once against the active
+// catalog with every candidate overlaid (FR-016, FR-017) — a check the handler cannot
+// make on its own. That reordering is safe in the direction FR-039 cares about: the
+// gate that answers first is still the revision, and a denial still writes nothing.
+// Every test below that asserted an order asserts the same order.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -38,20 +49,23 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 }));
 
 import { SanitizedLogger } from '../../../src/lib/logger';
-import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
+import {
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_PACKAGE
+} from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ImportPlan,
   PreflightProcessYamlCommand,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
 import { MessageRouter } from '../../../src/ui/sidebar/message-router';
 import type { RouterDeps } from '../../../src/ui/sidebar/message-router';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
+import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 
 interface AuditEntry {
   readonly eventType: string;
@@ -67,12 +81,18 @@ async function concurrentWrite(
   store: FakeCatalogStore,
   rows: readonly Record<string, unknown>[]
 ): Promise<void> {
-  const outcome = await store.saveLayer({
+  const outcome = await store.saveDraftLayer({
     kind: 'phase',
     expectedRevision: store.revisionOf('phase'),
     definitions: rows.map((row) => ({ id: row.id as string, body: row }))
   });
   expect(outcome.outcome).toBe('saved');
+  const published = await store.publishLayer({
+    kind: 'phase',
+    ids: rows.map((row) => row.id as string),
+    expectedRevision: store.revisionOf('phase')
+  });
+  expect(published.outcome).toBe('published');
 }
 
 function bytes(text: string): Uint8Array {
@@ -162,9 +182,8 @@ async function planFor(text: string, store: FakeCatalogStore): Promise<ImportPla
  */
 function commitCommand(
   plan: ImportPlan,
-  layer: readonly unknown[],
   overrides: { readonly expectedRevision?: string } = {}
-): SavePhasesCommand {
+): PublishPackageCommand {
   const row = plan.rows.find(
     (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
   );
@@ -174,12 +193,16 @@ function commitCommand(
   }
   const { phaseId, ...declared } = row.definition;
   return {
-    type: CMD_SAVE_PHASES,
+    type: CMD_PUBLISH_PACKAGE,
     correlationId: 'gates-1',
     payload: {
-      expectedRevision: overrides.expectedRevision ?? plan.computedAgainstRevision,
-      mutation: { kind: 'import', phaseId },
-      phases: [...layer, { id: phaseId, ...declared }]
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: overrides.expectedRevision ?? plan.computedAgainstRevision,
+          definitions: [{ id: phaseId, body: { id: phaseId, ...declared } }]
+        }
+      ]
     }
   };
 }
@@ -187,13 +210,19 @@ function commitCommand(
 interface CommitRun {
   readonly ack: CommandAckMessage;
   readonly audits: readonly AuditEntry[];
+  /** Requests that reached any of the three write ports, accepted or refused. */
   readonly writes: number;
 }
 
-async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Promise<CommitRun> {
+function writeTotal(store: FakeCatalogStore): number {
+  const counts = writesOf(store);
+  return counts.lifecycle + counts.draftLayers + counts.publishLayers;
+}
+
+async function commit(command: PublishPackageCommand, store: FakeCatalogStore): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
-  const savesBefore = store.layerSaves.length;
+  const writesBefore = writeTotal(store);
   const ctx = {
     deps: {
       readPhaseConfig: () => ({
@@ -201,6 +230,7 @@ async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Prom
         revision: store.revisionOf('phase')
       }),
       catalogStore: store,
+      catalogLifecycle: fakeCatalogLifecycle(store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
@@ -226,11 +256,11 @@ async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Prom
     correlationId: 'gates-1'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
-  await saveHandler(ctx, command);
+  await publishDefinitionPackage(ctx, command);
   expect(acks).toHaveLength(1);
   // A store request counts as a write whether the store accepted it or not: the
   // gates below are all asserted to stop BEFORE the store is reached.
-  return { ack: acks[0]!, audits, writes: store.layerSaves.length - savesBefore };
+  return { ack: acks[0]!, audits, writes: writeTotal(store) - writesBefore };
 }
 
 beforeEach(() => {
@@ -252,7 +282,7 @@ describe('Feature 084 — the revision gate (T057, QS-28, FR-038, SC-011)', () =
     await concurrentWrite(store, [HELD_ROW]);
     const revisionBefore = store.revisionOf('phase');
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.status).toBe('rejected');
     expect(run.ack.reason).toBe('stale-catalog');
@@ -260,13 +290,12 @@ describe('Feature 084 — the revision gate (T057, QS-28, FR-038, SC-011)', () =
     expect(store.rowsOf('phase')).toEqual([HELD_ROW]);
     expect(store.revisionOf('phase')).toBe(revisionBefore);
 
-    // The operator is told what to do about it, and against which revision.
-    const result = run.ack.result as {
-      currentRevision: string;
-      current: { legalActions: readonly string[] };
-    };
-    expect(result.currentRevision).toBe(revisionBefore);
-    expect(result.current.legalActions).toContain('reapply');
+    // Feature 100 — the operator is told which LAYER went stale rather than which
+    // revision now holds. A package names several kinds and only some of them can
+    // be stale, so the actionable fact is the kind: recompute the plan and the
+    // fresh revision comes with it. There is no per-definition token to report
+    // either, which is why this refusal carries no `current` record.
+    expect(run.ack.result).toEqual({ kind: 'phase' });
   });
 
   // Feature 099 (T496f, FR-044) — this was "a change to the OTHER layer does not
@@ -277,16 +306,19 @@ describe('Feature 084 — the revision gate (T057, QS-28, FR-038, SC-011)', () =
   it('is scoped per catalog — a Pipeline write does not stale a Phase commit', async () => {
     const store = newStore();
     const plan = await planFor(PLAIN_DOCUMENT, store);
-    const pipelineWrite = await store.saveLayer({
+    const pipelineWrite = await store.saveDraftLayer({
       kind: 'pipeline',
       expectedRevision: store.revisionOf('pipeline'),
       definitions: [{ id: HELD_PIPELINE_ROW.id, body: HELD_PIPELINE_ROW }]
     });
     expect(pipelineWrite.outcome).toBe('saved');
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
     expect(run.ack.status).toBe('accepted');
-    expect(run.writes).toBe(1);
+    // Feature 100 — two writes, not one: a package publish drafts every layer and
+    // then publishes every layer (FR-041). The count is the assertion that both
+    // passes ran, which is what makes the imported Phase reachable at all.
+    expect(run.writes).toBe(2);
   });
 
   it('reports staleness, not untrustedness, when both gates would fire (T057, QS-29, FR-039)', async () => {
@@ -295,15 +327,27 @@ describe('Feature 084 — the revision gate (T057, QS-28, FR-038, SC-011)', () =
     const plan = await planFor(PLAIN_DOCUMENT, store);
     await concurrentWrite(store, [HELD_ROW]);
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     // Both conditions hold. The revision gate is the one that answers.
     expect(run.ack.reason).toBe('stale-catalog');
     expect(run.ack.reason).not.toBe('trust-denied');
     expect(run.writes).toBe(0);
-    // And no denial was recorded, because the trust gate was never reached —
-    // the log agrees with the answer the operator got.
-    expect(run.audits).toEqual([]);
+    // The log agrees with the answer the operator got. Feature 100 (FR-042)
+    // changed how it agrees rather than whether it does: the refused arm now
+    // audits every layer it declined, so the claim is no longer "nothing was
+    // recorded" but "what was recorded names the staleness". The trust denial is
+    // the record that must still be absent — the gate was never reached, and a
+    // `trust.capability-denied` here would say the operator was refused for a
+    // reason they were not.
+    expect(run.audits.map((entry) => entry.eventType)).toEqual([
+      'process-exchange-import-refused'
+    ]);
+    expect(run.audits.map((entry) => entry.eventType)).not.toContain(
+      'trust.capability-denied'
+    );
+    const refusal = run.audits[0]!.payload as { readonly outcomes: readonly string[] };
+    expect(refusal.outcomes).toEqual(['stale-catalog']);
   });
 });
 
@@ -317,7 +361,7 @@ describe('Feature 084 — the phases capability (T058, QS-30, FR-040)', () => {
     const store = newStore();
     const plan = await planFor(PLAIN_DOCUMENT, store);
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.status).toBe('rejected');
     expect(run.ack.reason).toBe('trust-denied');
@@ -337,7 +381,7 @@ describe('Feature 084 — the phases capability (T058, QS-30, FR-040)', () => {
     capabilities.set('phases', true);
     const store = newStore();
     const plan = await planFor(PLAIN_DOCUMENT, store);
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
     expect(run.ack.status).toBe('accepted');
     expect(store.rowsOf('phase')).toHaveLength(1);
   });
@@ -353,7 +397,7 @@ describe('Feature 084 — the retryConditions capability (T059, QS-31, FR-012a, 
     const store = newStore();
     const plan = await planFor(RETRYING_DOCUMENT, store);
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.reason).toBe('trust-denied');
     const err = run.ack.result as { capability: string; rowIndex?: number };
@@ -368,7 +412,7 @@ describe('Feature 084 — the retryConditions capability (T059, QS-31, FR-012a, 
     const store = newStore();
     const plan = await planFor(RETRYING_DOCUMENT, store);
 
-    await commit(commitCommand(plan, []), store);
+    await commit(commitCommand(plan), store);
 
     // SC-018: the refusal is total. A Phase that quietly lost its retry
     // condition would run differently from the one the operator imported.
@@ -381,7 +425,7 @@ describe('Feature 084 — the retryConditions capability (T059, QS-31, FR-012a, 
     const store = newStore();
     const plan = await planFor(RETRYING_DOCUMENT, store);
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.status).toBe('accepted');
     expect(store.rowsOf('phase')).toEqual([
@@ -403,7 +447,7 @@ describe('Feature 084 — the retryConditions capability (T059, QS-31, FR-012a, 
     const plan = await planFor(RETRYING_DOCUMENT, store);
 
     capabilities.set('retryConditions', false);
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.reason).toBe('trust-denied');
     expect((run.ack.result as { capability: string }).capability).toBe('retryConditions');
@@ -415,7 +459,7 @@ describe('Feature 084 — the retryConditions capability (T059, QS-31, FR-012a, 
     const store = newStore();
     const plan = await planFor(PLAIN_DOCUMENT, store);
 
-    const run = await commit(commitCommand(plan, []), store);
+    const run = await commit(commitCommand(plan), store);
     expect(run.ack.status).toBe('accepted');
   });
 });
@@ -461,19 +505,26 @@ describe('Feature 084 — requiresRetryConditionCapability is advisory (T062, FR
     // `retryCondition`, so there is nothing here for a forged flag to bypass.
     capabilities.set('retryConditions', false);
     const store = newStore();
-    const forged: SavePhasesCommand = {
-      type: CMD_SAVE_PHASES,
+    const forged: PublishPackageCommand = {
+      type: CMD_PUBLISH_PACKAGE,
       correlationId: 'gates-1',
       payload: {
-        expectedRevision: store.revisionOf('phase'),
-        mutation: { kind: 'import', phaseId: 'brought-in' },
-        phases: [
+        layers: [
           {
-            id: 'brought-in',
-            name: 'Brought In',
-            version: 2,
-            instruction: 'Do the thing.',
-            retryCondition: 'open_questions > 0'
+            kind: 'phase',
+            expectedRevision: store.revisionOf('phase'),
+            definitions: [
+              {
+                id: 'brought-in',
+                body: {
+                  id: 'brought-in',
+                  name: 'Brought In',
+                  version: 2,
+                  instruction: 'Do the thing.',
+                  retryCondition: 'open_questions > 0'
+                }
+              }
+            ]
           }
         ]
       }
@@ -509,8 +560,37 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
       isPrimary: () => false,
       isTrusted: () => true,
       logger: new SanitizedLogger(),
+      // Feature 100 — the commit is a lifecycle operation now, so the router
+      // needs the service as well as the store. Wired unconditionally, including
+      // on the secondary window: the point of that case is that the gate answers
+      // BEFORE the handler is reachable, which is only demonstrated when the
+      // handler would otherwise have succeeded.
+      catalogLifecycle: fakeCatalogLifecycle(store),
+      audit: { append: async () => undefined },
       ...overrides
     } as unknown as RouterDeps;
+  }
+
+  /** The forged-free commit the router is asked to carry, in both cases. */
+  function packageEnvelope(store: FakeCatalogStore, correlationId: string): PublishPackageCommand {
+    return {
+      type: CMD_PUBLISH_PACKAGE,
+      correlationId,
+      payload: {
+        layers: [
+          {
+            kind: 'phase',
+            expectedRevision: store.revisionOf('phase'),
+            definitions: [
+              {
+                id: 'brought-in',
+                body: { id: 'brought-in', name: 'Brought In', version: 2, instruction: 'Do.' }
+              }
+            ]
+          }
+        ]
+      }
+    };
   }
 
   it('refuses the import commit with a stated reason and writes nothing', async () => {
@@ -520,15 +600,7 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
     const posted: CommandAckMessage[] = [];
 
     await router.dispatch(
-      {
-        type: CMD_SAVE_PHASES,
-        correlationId: 'gates-secondary',
-        payload: {
-          expectedRevision: store.revisionOf('phase'),
-          mutation: { kind: 'import', phaseId: 'brought-in' },
-          phases: [{ id: 'brought-in', name: 'Brought In', version: 2, instruction: 'Do.' }]
-        }
-      },
+      packageEnvelope(store, 'gates-secondary'),
       async (msg: CommandAckMessage) => {
         posted.push(msg);
         return true;
@@ -538,7 +610,7 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
     expect(posted).toHaveLength(1);
     expect(posted[0]!.status).toBe('rejected');
     expect(posted[0]!.reason).toBe('secondary-window-readonly');
-    expect(store.layerSaves).toEqual([]);
+    expect(writesOf(store)).toEqual(NO_WRITES);
     // FR-041 requires a STATED reason, and the ack reason alone is not what an
     // operator sees; the router also surfaces it.
     expect(notifyWarning).toHaveBeenCalledTimes(1);
@@ -551,15 +623,7 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
     const posted: CommandAckMessage[] = [];
 
     await router.dispatch(
-      {
-        type: CMD_SAVE_PHASES,
-        correlationId: 'gates-primary',
-        payload: {
-          expectedRevision: store.revisionOf('phase'),
-          mutation: { kind: 'import', phaseId: 'brought-in' },
-          phases: [{ id: 'brought-in', name: 'Brought In', version: 2, instruction: 'Do.' }]
-        }
-      },
+      packageEnvelope(store, 'gates-primary'),
       async (msg: CommandAckMessage) => {
         posted.push(msg);
         return true;

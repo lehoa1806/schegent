@@ -74,8 +74,10 @@ export function checkIdLegality(id: string, existing: readonly string[]): IdLega
   // manifest reader applies the same pattern, so `existing` holds no spelling this
   // build would refuse. It stays because the guarantee is then wholly one line in
   // another module, and `checkIdLegality` is a boundary that should not have to
-  // assume its caller filtered the list. Its one reachable caller is `saveLayer`,
-  // which passes the ids claimed earlier in the same layer.
+  // assume its caller filtered the list. Feature 100 (T514) — `saveLayer` was that
+  // caller; there are two now, and only one of them reads the manifest at all: the
+  // per-definition lifecycle write passes the manifest's ids, and the layer publish
+  // passes the ids claimed earlier in the same layer, which no reader has filtered.
   const folded = id.toLowerCase();
   for (const other of existing) {
     if (other === id) continue;

@@ -11,11 +11,15 @@ import * as vscode from 'vscode';
 
 import {
   createCatalogStore,
+  createLifecycleService,
+  publishPackage,
   runProvenanceNone,
+  type CatalogLifecycleOps,
   type CatalogStore,
   type Clock,
   type Digest
 } from '../catalog';
+import { createDefinitionSemantics } from '../config/definition-semantics';
 import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../lib/catalog-fs-adapter';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 
@@ -80,4 +84,41 @@ function catalogStoreRoot(): string | null {
   const folder = getCanonicalWorkspaceRoot();
   if (folder === undefined) return null;
   return vscode.Uri.joinPath(folder.uri, ...CATALOG_DIRECTORY_SEGMENTS).fsPath;
+}
+
+/**
+ * The six lifecycle operations, or `null` in an untrusted workspace.
+ *
+ * Feature 100 (FR-R3-016) T509c — one dependency for the six commands, built
+ * here for the same reason the store is: the pieces it needs are impure. The
+ * store carries the workspace root and the clock; the semantics carry a
+ * configuration read. A handler that assembled this itself would read
+ * configuration on every keystroke-driven save.
+ *
+ * `null` tracks the store's `null` exactly, and by construction rather than by
+ * a second trust check: with no store there is nothing to run an operation
+ * against, and a lifecycle service over a store that does not exist would refuse
+ * every command for the wrong reason.
+ *
+ * `publishPackage` is bound on here rather than being a sixth method of the
+ * service. It is a sequence over the store (FR-035), not a per-definition
+ * operation, and `CatalogLifecycleOps` exists precisely so the two halves are
+ * wired together and never apart.
+ *
+ * @param store             The host store, or `null` in an untrusted workspace.
+ * @param defaultPipelineId Reads `schegent.defaultPipelineId` fresh per call, so
+ *                          the FR-059 advisory cannot go stale (see
+ *                          `DefinitionSemanticsOptions`).
+ */
+export function createHostCatalogLifecycle(
+  store: CatalogStore | null,
+  defaultPipelineId: () => string
+): CatalogLifecycleOps | null {
+  if (store === null) return null;
+  const semantics = createDefinitionSemantics({ defaultPipelineId });
+  const service = createLifecycleService({ store, semantics });
+  return {
+    ...service,
+    publishPackage: (request) => publishPackage({ store, semantics }, request)
+  };
 }

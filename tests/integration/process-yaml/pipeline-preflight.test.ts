@@ -29,7 +29,7 @@ import type {
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
@@ -239,7 +239,7 @@ describe('Feature 085 — package preflight dispatches on the declared kind (FR-
   it('writes nothing while planning a package', async () => {
     const { harness } = await preflight({ text: PACKAGE_DOCUMENT });
 
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
     expect(harness.updateConfig).not.toHaveBeenCalled();
     expect(harness.executeCommand).not.toHaveBeenCalled();
   });
@@ -380,7 +380,7 @@ describe('Feature 085 — a package cannot declare one id twice (FR-031)', () =>
   it('writes nothing, because a refusal never reaches a save', async () => {
     const harness = buildHarness({ text: DUPLICATED });
     await preflightHandler(harness.ctx, COMMAND);
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 

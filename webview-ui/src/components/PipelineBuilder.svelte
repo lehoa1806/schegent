@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import { savePhases as savePhasesHelper, type SavePhasesMutation } from '../lib/save-phases';
-  import { useConfirm } from '../lib/use-confirm';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
@@ -125,7 +124,8 @@
   });
   function submitPhaseMutation(
     mutation: SavePhasesMutation,
-    sourceRows: readonly MutablePhase[] = phases
+    sourceRows: readonly MutablePhase[] = phases,
+    prompt: { removedName?: string; originatingElement?: HTMLElement | null } = {}
   ): void {
     const catalog = snapshot.phaseCatalog;
     if (!catalog || catalog.state !== 'ready' || phaseSavePending) return;
@@ -134,10 +134,17 @@
     void savePhasesHelper({
       expectedRevision: adoptedPhaseRevision,
       mutation,
-      phases: payload
+      phases: payload,
+      ...prompt
     }).then((result) => {
       if (result.status === 'rejected') {
         phaseSavePending = false;
+        // Feature 100 (T509b) — the operator closed the removal prompt. Nothing
+        // was sent and nothing failed, so no error is reported.
+        if (result.reason === 'declined') {
+          phaseMutation = null; phaseMutationSourceKey = null;
+          return;
+        }
         const stale = result.result as { currentRevision?: unknown } | undefined;
         if (result.reason === 'stale-catalog' && typeof stale?.currentRevision === 'string') stalePhaseRevision = stale.currentRevision;
         showSaveError(formatPhaseSaveRejection(result.reason, result.result));
@@ -214,18 +221,19 @@
     };
     phaseMutationSourceKey = duplicate.sourceKey;
   }
-  async function removePhase(index: number, originatingElement?: HTMLElement | null): Promise<void> {
+  // Feature 100 (T509b) — the confirmation moved into `deactivateDefinition`,
+  // the only function that can post the command it authorises (FR-049). This
+  // handler supplies what the prompt needs to say and no longer asks itself.
+  function removePhase(index: number, originatingElement?: HTMLElement | null): void {
     const phase = phases[index];
     if (!phase || !phaseMutationsAllowed) return;
-    const confirmed = await useConfirm('catalog.remove-phase', {
-      originatingElement,
-      context: { phaseName: phase.name, phaseId: phase.id }
-    });
-    if (!confirmed) return;
     const proposed = phases.filter((_, rowIndex) => rowIndex !== index);
     phaseMutation = { kind: 'remove', phaseId: phase.id };
     phaseMutationSourceKey = phase.sourceKey;
-    submitPhaseMutation(phaseMutation, proposed);
+    submitPhaseMutation(phaseMutation, proposed, {
+      removedName: phase.name,
+      originatingElement: originatingElement ?? null
+    });
   }
   function movePhaseListUp(index: number): void {
     if (index <= 0 || phaseMutation) return;

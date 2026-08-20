@@ -76,7 +76,11 @@ import {
   createCatalogReader,
   createCatalogSettingsWriter
 } from './activation/catalog-settings-wiring';
-import { createHostCatalogStore, nodeDigest } from './activation/catalog-store-wiring';
+import {
+  createHostCatalogLifecycle,
+  createHostCatalogStore,
+  nodeDigest
+} from './activation/catalog-store-wiring';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
@@ -341,6 +345,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     digest: nodeDigest,
     logger
   });
+  // Feature 100 (T509c, FR-047) — the six lifecycle commands' one dependency,
+  // built once beside the store it operates on. The default is read through the
+  // session rather than captured, so the FR-059 advisory sees the value in force
+  // at the moment of a deactivation; `refreshCatalog` already re-resolves the
+  // session when `schegent.defaultPipelineId` changes.
+  const catalogLifecycle = createHostCatalogLifecycle(
+    catalogStore,
+    () => catalogSession.catalog.defaultPipelineId
+  );
   // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
   // can both see, now that the workspace root is known. Until this call the store
   // arbitrates through a `Memento`-backed adapter, which is correct for one host
@@ -872,8 +885,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
     getPipelineCatalog: () => catalogSession.pipelineCatalog,
     // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
-    // so the Library can show what a change would affect. Same collector as the
-    // removal gate's `readWorkflowPipelineRefs` (FR-022a, 083 FR-041).
+    // so the Library can show what a change would affect. Feature 100 (T513b)
+    // left this as the collector's only consumer: the Pipeline removal gate it
+    // used to share went with the whole-array save, and the deactivate blocker
+    // that replaced it reads active stored definitions instead (FR-025b).
     getWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
     // Feature 083 — authoritative Workflow catalog (the definition sense) for
     // the Library and Builder. Re-resolved with the Pipeline catalog it was
@@ -1014,6 +1029,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // `null` in an untrusted workspace, where a save has nowhere legitimate to
     // land and is refused by name rather than silently doing nothing.
     catalogStore,
+    // Feature 100 (T509c, FR-047) — the lifecycle service, `null` on exactly the
+    // condition the store is. Separate from `catalogStore` because building it
+    // needs a configuration read the handlers must not perform themselves.
+    catalogLifecycle,
     // Feature 099 (T493b, T493d, FR-042a, FR-044) — served from the snapshot this
     // window last read, not from a fresh read per call: the store's own
     // compare-and-swap is the authoritative gate (FR-030a), so these three feed the
@@ -1034,11 +1053,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getCatalog: () => catalogSession.catalog,
     guardedRun: guardedRunService,
     defaultRunnerKind: backendKind,
-    // Feature 082 (US7, FR-022a) / 083 (FR-041) — the consumer side of the
-    // Pipeline removal gate, from the same collector that feeds the Library's
-    // consuming-Workflow list (FR-002) so the two can never disagree about who
-    // a consumer is.
-    readWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
     // Feature 091 (T014, FR-010/FR-011) — the supply the command router was
     // declared to take and never received, so every `prior-output` reference
     // refused as `prior-run-not-found` regardless of what the Run recorded.

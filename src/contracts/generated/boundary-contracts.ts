@@ -22,10 +22,13 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_RERUN_FROM_HISTORY",
   "CMD_OPEN_QUEUE_ITEM_DETAILS",
   "CMD_OPEN_HISTORY_ITEM_DETAILS",
-  "CMD_SAVE_PIPELINES",
-  "CMD_SAVE_PHASES",
   "CMD_SAVE_MODELS",
-  "CMD_SAVE_WORKFLOWS",
+  "CMD_SAVE_DEFINITION_DRAFT",
+  "CMD_PUBLISH_DEFINITION",
+  "CMD_DEACTIVATE_DEFINITION",
+  "CMD_RESTORE_DEFINITION_VERSION",
+  "CMD_DISCARD_DEFINITION_DRAFT",
+  "CMD_PUBLISH_PACKAGE",
   "CMD_SAVE_GENERAL_SETTINGS",
   "CMD_RETRY_PHASE_NOW",
   "CMD_PAUSE_PHASE",
@@ -169,7 +172,10 @@ export const AUDIT_EVENT_TYPES = [
   "process-exchange-export",
   "process-exchange-import-refused",
   "process-exchange-import-committed",
-  "runs-overlapped"
+  "runs-overlapped",
+  "definition-published",
+  "definition-deactivated",
+  "definition-restored"
 ] as const;
 
 export const SETTINGS_KEYS = [

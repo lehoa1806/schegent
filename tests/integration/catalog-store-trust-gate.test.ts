@@ -65,13 +65,14 @@ describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)',
     expect(before.outcome).toBe('read');
     if (before.outcome !== 'read') return;
     expect(
-      await planted.save({
+      await planted.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'implement',
         body: { name: 'Implement' },
-        expectedRevision: before.snapshot.revisions.phase
+        expectedDraftVersion: 'no-draft'
       })
-    ).toMatchObject({ outcome: 'saved' });
+    ).toMatchObject({ outcome: 'written' });
     expect((await treeOf(workspaceRoot)).files.length).toBeGreaterThan(0);
 
     setTrusted(false);
@@ -122,13 +123,14 @@ describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)',
     if (read.outcome !== 'read') return;
 
     expect(
-      await store.save({
+      await store.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'implement',
         body: { name: 'Implement' },
-        expectedRevision: read.snapshot.revisions.phase
+        expectedDraftVersion: 'no-draft'
       })
-    ).toMatchObject({ outcome: 'saved', versionId: 'v1' });
+    ).toMatchObject({ outcome: 'written', writtenVersionId: 'v1', draftVersionId: 'v1' });
 
     // The host's own root computation put it where the store's own tests look.
     expect((await treeOf(workspaceRoot)).files).toEqual([
@@ -153,11 +155,12 @@ describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)',
     expect(read.snapshot.definitions).toEqual([]);
 
     expect(
-      await store.save({
+      await store.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'implement',
         body: { n: 1 },
-        expectedRevision: read.snapshot.revisions.phase
+        expectedDraftVersion: 'no-draft'
       })
     ).toEqual({ outcome: 'refused', reason: 'no-workspace' });
   });

@@ -526,13 +526,28 @@ rejected acknowledgement details and mirrors the correlation behavior of
    reject).
 4. Concurrent saves are correlated by id and never cross-resolve.
 
-A repo-grep regression test at
-[`../tests/lint/no-inline-save-phases.test.ts`](../tests/lint/no-inline-save-phases.test.ts)
-fails the build if any new component references `CMD_SAVE_PHASES` directly.
 Saves contain exactly one create/edit/duplicate/remove/reset intent and the
 complete target layer. Delete additionally awaits
 `useConfirm('catalog.remove-phase', ...)`. The UI remains pending until a
 snapshot publishes the accepted revision.
+
+**Amended by feature 100 (FR-R3-016), T509b.** `CMD_SAVE_PHASES` is retired, so
+`no-inline-save-phases.test.ts` is gone with it and the single-call-site property
+moved to
+[`../tests/lint/catalog-lifecycle-dispatch.test.ts`](../tests/lint/catalog-lifecycle-dispatch.test.ts),
+which pins all six lifecycle commands to one dispatch module,
+[`catalog-lifecycle.ts`](src/lib/catalog-lifecycle.ts). `save-phases.ts` still
+exists and still exports `savePhases`, but it is now a **translation rather than
+a transport**: it keeps the request shape this Builder already builds and hands it
+to that module. A whole-layer save becomes a one-layer `CMD_PUBLISH_PACKAGE`
+gated on the same `expectedRevision`; the `mutation` tag no longer travels,
+because intent is declared by being the command it is — it is still read *here*
+for the one thing a publish cannot express, since a `remove` is an omission from
+a whole-array write and omitting a definition from a package leaves it exactly as
+it was, so a removal routes to `deactivateDefinition` instead. The translation
+exists so this surface keeps working while the store changes underneath it;
+FR-R3-017 replaces the surface with one that speaks the lifecycle directly and
+deletes `save-phases.ts`, `save-pipelines.ts`, and `save-workflows.ts` with it.
 
 ### Scoped Pipeline catalog manager (spec 082)
 

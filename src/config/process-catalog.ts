@@ -160,6 +160,16 @@ export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef
  * catalog and `revision` is the store's manifest revision (FR-044a); selection is
  * "the row parsed cleanly and its id is not duplicated", which
  * `invalidateDuplicates` has already decided by the time the loop runs.
+ *
+ * **Feature 100 (FR-R3-016) T505 — the effective catalog is the set of ACTIVE
+ * versions** (FR-007). This resolver is not rebuilt to say so, and that is the
+ * point: `effective` has always been "the rows that resolved", and the rows are
+ * whatever `storedRows` hands over. FR-006 gives a definition a second body — the
+ * Draft — and `storedRows` reads only the active one, so a draft-only definition
+ * arrives here as no row at all and cannot reach `effective` by any path. A draft
+ * therefore changes nothing about what runs until it is published (FR-008,
+ * FR-009); publication is the only event that moves a body into this function's
+ * input. `tests/unit/config/effective-is-active-only.test.ts` pins it.
  */
 export function resolvePhaseCatalog(input: {
   readonly rows: readonly unknown[] | undefined;

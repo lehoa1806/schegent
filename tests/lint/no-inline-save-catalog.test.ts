@@ -1,3 +1,18 @@
+// Feature 096 (T023) — single-call-site discipline for the Model Catalog save.
+//
+// Feature 100 (FR-R3-016) T509d — this file used to gate four commands. Three of
+// them (`CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`, `CMD_SAVE_WORKFLOWS`) are retired
+// with the whole-array save, and their property moved to
+// `tests/lint/catalog-lifecycle-dispatch.test.ts`, which pins the six lifecycle
+// commands to one dispatch surface.
+//
+// `CMD_SAVE_MODELS` stays here and stays as feature 096 left it. The Model Catalog
+// is not a versioned definition catalog: it has no draft, no publish, and no
+// version history, so folding it into a file named for the lifecycle would claim a
+// shared model these two do not share. Its gate is the original one — the helper
+// owns the correlation, pending, and timeout handling, and a component that sent
+// the command inline would skip all three.
+
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -6,50 +21,13 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
 const ALLOWED_BY_COMMAND: Record<string, ReadonlySet<string>> = {
-  CMD_SAVE_PIPELINES: new Set([
-    'webview-ui/src/lib/messages.ts',
-    'webview-ui/src/lib/save-pipelines.ts',
-    // Feature 082 (T021) — pins the envelope emitted by the sole call site.
-    'webview-ui/src/lib/__tests__/save-pipelines.test.ts'
-  ]),
   CMD_SAVE_MODELS: new Set([
-    'webview-ui/src/lib/messages.ts',
     'webview-ui/src/lib/save-models.ts',
     'webview-ui/src/lib/__tests__/save-catalog-command.test.ts',
     // Feature 096 (T023) — pins the import-confirm envelope emitted by
     // `saveModelsImport`, the second `CMD_SAVE_MODELS` call site added
     // alongside the pre-existing manual add/remove `saveModels` path.
     'webview-ui/src/lib/__tests__/save-models.test.ts'
-  ]),
-  // Feature 083 (T035) — same gate as the Pipeline save: a per-component send
-  // would bypass the correlation, pending, and timeout handling the helper owns.
-  CMD_SAVE_WORKFLOWS: new Set([
-    'webview-ui/src/lib/messages.ts',
-    'webview-ui/src/lib/save-workflows.ts',
-    'webview-ui/src/lib/__tests__/save-workflows.test.ts'
-  ]),
-  /**
-   * Feature 086 (T072) — the FIRST of the three ordered writes, which had no
-   * entry here at all.
-   *
-   * T072 asked whether the third save call site was in scope; it is, as
-   * `CMD_SAVE_WORKFLOWS` above. Checking that turned up the gap in the other
-   * direction: 082 added the Pipeline save to this scan and 083 the Workflow
-   * save, but the Phase save — the oldest of the three, and the one an import
-   * package writes first — was never added. Nothing failed, because a
-   * command this file does not name cannot produce an offender.
-   *
-   * It matters most on this feature's path. A package import performs Phases,
-   * then Pipelines, then Workflows, each with its own `expectedRevision` and its
-   * own single mutation intent. A component that sent the Phase write inline
-   * would send it without the revision the helper attaches, and the layer it
-   * raced would be overwritten rather than reported as stale.
-   */
-  CMD_SAVE_PHASES: new Set([
-    'webview-ui/src/lib/messages.ts',
-    'webview-ui/src/lib/save-phases.ts',
-    'webview-ui/src/lib/__tests__/save-phases.test.ts',
-    'webview-ui/src/lib/__tests__/save-catalog-command.test.ts'
   ])
 };
 
@@ -65,10 +43,7 @@ const ALLOWED_BY_COMMAND: Record<string, ReadonlySet<string>> = {
  * the matches; this one now does the same.
  */
 const HELPER_BY_COMMAND: Record<string, string> = {
-  CMD_SAVE_PIPELINES: 'webview-ui/src/lib/save-pipelines.ts',
-  CMD_SAVE_MODELS: 'webview-ui/src/lib/save-models.ts',
-  CMD_SAVE_WORKFLOWS: 'webview-ui/src/lib/save-workflows.ts',
-  CMD_SAVE_PHASES: 'webview-ui/src/lib/save-phases.ts'
+  CMD_SAVE_MODELS: 'webview-ui/src/lib/save-models.ts'
 };
 
 function listMatchingFiles(pattern: string): readonly string[] {
@@ -91,7 +66,7 @@ function listMatchingFiles(pattern: string): readonly string[] {
     );
 }
 
-describe('no inline catalog-save IPC calls', () => {
+describe('no inline Model Catalog save IPC calls', () => {
   for (const [command, allowlist] of Object.entries(ALLOWED_BY_COMMAND)) {
     it(`only allowlisted files reference ${command}`, () => {
       const matched = listMatchingFiles(command);

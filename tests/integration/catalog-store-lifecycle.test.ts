@@ -17,6 +17,14 @@
 //     host would reject round-trips byte-identically (FR-010, FR-011).
 //   - **T496k** — ten saves make ten versions, monotonic, and every record
 //     written along the way is byte-identical at the end (FR-004, FR-005, FR-016).
+//
+// Feature 100 (T514) — two things moved underneath all four. "A save" is now two
+// writes (FR-016): a draft write produces the record, and a publication moves the
+// active pointer, so `saveNext` below does both wherever a suite wants a *live*
+// definition. And the claim that a save over a definition whose active record is
+// missing is refused by name inverted — it is now the **repair** (FR-011a), so the
+// last test in this file asserts the repair and the containment that survived it
+// rather than a refusal that no longer exists.
 
 import { rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -27,6 +35,7 @@ import type { CatalogStore } from '../../src/catalog';
 import type { CatalogKind } from '../../src/contracts/catalog-store';
 import {
   createWorkspace,
+  draftTokenFor,
   fingerprintOf,
   openStore,
   openStoreWithoutWorkspace,
@@ -34,7 +43,8 @@ import {
   readStoreJson,
   removeWorkspace,
   storeRootOf,
-  treeOf
+  treeOf,
+  type Fingerprint
 } from '../fixtures/catalog-real-fs';
 
 async function revisionOf(store: CatalogStore, kind: CatalogKind): Promise<string> {
@@ -43,23 +53,47 @@ async function revisionOf(store: CatalogStore, kind: CatalogKind): Promise<strin
   return result.snapshot.revisions[kind];
 }
 
-/** Save, taking the current revision — the gate is not what these suites are testing. */
+/**
+ * A definition drafted and then published, returning the version the draft wrote.
+ *
+ * Two writes, because one no longer makes a definition live (FR-016). The draft
+ * token is read out of the store each time rather than tracked here — the gate is
+ * not what these suites are testing, and re-reading it is what a window does.
+ */
 async function saveNext(
   store: CatalogStore,
   kind: CatalogKind,
   id: string,
   body: unknown
 ): Promise<string> {
-  const outcome = await store.save({
+  const drafted = await store.applyLifecycleWrite({
+    op: 'save-draft',
     kind,
     id,
     body,
-    expectedRevision: await revisionOf(store, kind)
+    expectedDraftVersion: await draftTokenFor(store, kind, id)
   });
-  if (outcome.outcome !== 'saved') {
-    throw new Error(`expected a save, got ${outcome.outcome}`);
+  if (drafted.outcome !== 'written') {
+    throw new Error(`expected a draft write, got ${drafted.outcome}`);
   }
-  return outcome.versionId;
+  const published = await store.applyLifecycleWrite({
+    op: 'publish',
+    kind,
+    id,
+    expectedDraftVersion: await draftTokenFor(store, kind, id)
+  });
+  if (published.outcome !== 'written') {
+    throw new Error(`expected a publication, got ${published.outcome}`);
+  }
+  if (drafted.writtenVersionId === null) {
+    throw new Error('a draft write reported no version');
+  }
+  return drafted.writtenVersionId;
+}
+
+/** The files `after` holds that `before` did not. */
+function addedIn(before: Fingerprint, after: Fingerprint): readonly string[] {
+  return [...after.keys()].filter((path) => !before.has(path)).sort();
 }
 
 describe('Feature 099 — a workspace that never saves has no store (T496e)', () => {
@@ -112,11 +146,12 @@ describe('Feature 099 — a workspace that never saves has no store (T496e)', ()
     const result = await store.read();
     expect(result.outcome).toBe('read');
 
-    const outcome = await store.save({
+    const outcome = await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: await revisionOf(store, 'phase')
+      expectedDraftVersion: 'no-draft'
     });
 
     expect(outcome).toEqual({ outcome: 'refused', reason: 'no-workspace' });
@@ -201,22 +236,30 @@ describe('Feature 099 — a definition round-trips through the disk (T496c)', ()
     ]);
   });
 
-  it('agrees with the other window about the revision, so the gate is usable across them', async () => {
+  it('agrees with the other window about both gates, so either is usable across them', async () => {
     const writer = openStore(workspaceRoot);
     await saveNext(writer, 'phase', 'implement', { n: 1 });
 
     const reader = openStore(workspaceRoot);
+    // Two gates now, at two granularities: the per-kind revision a layer write is
+    // taken against (FR-036), and the per-definition draft pointer a single write
+    // is taken against (FR-012). Both are facts about the manifest on disk, so
+    // both must read the same from either window.
     expect(await revisionOf(reader, 'phase')).toBe(await revisionOf(writer, 'phase'));
+    expect(await draftTokenFor(reader, 'phase', 'implement')).toBe(
+      await draftTokenFor(writer, 'phase', 'implement')
+    );
 
-    // And the revision the reader read is one the writer's store will accept:
-    // the gate is over the same bytes on both sides (SC-019).
-    const outcome = await writer.save({
+    // And the token the reader read is one the writer's store will accept: the
+    // gate is over the same bytes on both sides (SC-019).
+    const outcome = await writer.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 2 },
-      expectedRevision: await revisionOf(reader, 'phase')
+      expectedDraftVersion: await draftTokenFor(reader, 'phase', 'implement')
     });
-    expect(outcome).toMatchObject({ outcome: 'saved', versionId: 'v2' });
+    expect(outcome).toMatchObject({ outcome: 'written', writtenVersionId: 'v2' });
   });
 
   it('recognises its own bytes, so reopening an editor manufactures no history', async () => {
@@ -228,13 +271,17 @@ describe('Feature 099 — a definition round-trips through the disk (T496c)', ()
     const before = await fingerprintOf(storeRootOf(workspaceRoot));
 
     const reopened = openStore(workspaceRoot);
-    const outcome = await reopened.save({
+    const outcome = await reopened.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { order: 3, name: 'Implement' },
-      expectedRevision: await revisionOf(reopened, 'phase')
+      expectedDraftVersion: await draftTokenFor(reopened, 'phase', 'implement')
     });
 
+    // Compared against the *head* — here the active version, since publishing left
+    // no pending draft — so a reopened editor that saves what it loaded manufactures
+    // no draft either (FR-014a).
     expect(outcome).toMatchObject({ outcome: 'unchanged', versionId: 'v1' });
     // Not one byte moved, and not one mtime either: an identical rewrite of the
     // manifest would move the revision and make the other window's next save stale.
@@ -257,7 +304,13 @@ describe('Feature 099 — a definition round-trips through the disk (T496c)', ()
     // trusted because of it.
     const manifest = (await readStoreJson(workspaceRoot, 'manifest.json')) as {
       storeFormatVersion: number;
-      entries: readonly { kind: string; id: string; activeVersionId: string; draftVersionId: null }[];
+      entries: readonly {
+        kind: string;
+        id: string;
+        activeVersionId: string;
+        draftVersionId: null;
+        versions: readonly { versionId: string; createdAt: number; publishedAt: number | null }[];
+      }[];
     };
     expect(manifest.storeFormatVersion).toBe(1);
     expect(manifest.entries).toHaveLength(1);
@@ -265,9 +318,17 @@ describe('Feature 099 — a definition round-trips through the disk (T496c)', ()
       kind: 'phase',
       id: 'implement',
       activeVersionId: 'v1',
-      // Declared and inert until FR-R3-016 (FR-009).
+      // Not "inert" any more, and not "the draft that was published" either: the
+      // publication cleared it, so the pointers never name the same version (FR-009).
       draftVersionId: null
     });
+
+    // The publication is on disk as a time, not merely as a pointer — which is what
+    // lets a later read say when the active version went live (FR-020).
+    const version = manifest.entries[0]!.versions[0]!;
+    expect(version.versionId).toBe('v1');
+    expect(typeof version.publishedAt).toBe('number');
+    expect(version.publishedAt).toBeGreaterThanOrEqual(version.createdAt);
   });
 
   it('keeps the store out of reach of every other account', async () => {
@@ -530,11 +591,15 @@ describe('Feature 099 — a missing record costs exactly one definition (T496c)'
     expect(await fingerprintOf(storeRootOf(workspaceRoot))).toEqual(before);
   });
 
-  it('refuses to save over the damaged definition, and still saves its neighbours', async () => {
-    // The damage is contained in both directions: a save aimed at the broken
-    // definition is refused by name rather than compounding the fault with a
-    // version whose predecessor cannot be read, and a save aimed at anything else
-    // proceeds untouched by it.
+  it('repairs the damaged definition by adding a version, and still saves its neighbours', async () => {
+    // 099 refused this save by name (`definition-invalid`) on the grounds that a
+    // version whose predecessor cannot be read compounds the fault. FR-011a
+    // reverses the judgement: refusing leaves the operator with a definition they
+    // cannot fix from the surface that broke it, so the write is allowed and is the
+    // repair. What survives from the old claim is the part that mattered — the
+    // damage is contained in both directions. Nothing is deleted, no existing
+    // record is rewritten, the fault is still reported until the repair is
+    // published, and a save aimed at anything else proceeds untouched by it.
     const store = openStore(workspaceRoot);
     await saveNext(store, 'phase', 'alpha', { n: 1 });
     await saveNext(store, 'phase', 'beta', { n: 1 });
@@ -545,25 +610,67 @@ describe('Feature 099 — a missing record costs exactly one definition (T496c)'
     const before = await fingerprintOf(storeRootOf(workspaceRoot));
 
     expect(
-      await cold.save({
+      await cold.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'beta',
         body: { n: 3 },
-        expectedRevision: await revisionOf(cold, 'phase')
+        expectedDraftVersion: await draftTokenFor(cold, 'phase', 'beta')
       })
-    ).toEqual({ outcome: 'refused', reason: 'definition-invalid' });
+    ).toMatchObject({
+      outcome: 'written',
+      writtenVersionId: 'v3',
+      draftVersionId: 'v3',
+      // The *active* pointer does not move: a draft write never promotes itself,
+      // so the definition is still broken until somebody publishes the repair.
+      activeVersionId: 'v2',
+      pruned: []
+    });
 
-    // Refused *before anything was written* — not a rollback, nothing to roll back.
-    expect(await fingerprintOf(storeRootOf(workspaceRoot))).toEqual(before);
+    // An addition, not an edit. The one new file is v3, the manifest is the only
+    // file rewritten, and v1 — the record that is still readable — is untouched
+    // down to its mtime. A "repair" that rewrote history would be the compounding
+    // the old refusal was there to prevent.
+    const afterRepair = await fingerprintOf(storeRootOf(workspaceRoot));
+    expect(addedIn(before, afterRepair)).toEqual(['phases/beta/v3.json']);
+    for (const [path, print] of before) {
+      if (path === 'manifest.json') continue;
+      expect(afterRepair.get(path)).toBe(print);
+    }
 
-    // The neighbour saves normally, and the fault is still exactly one.
+    // Still invalid, and still exactly one fault: the active version is still the
+    // missing one.
+    const drafted = await cold.read();
+    expect(drafted.outcome).toBe('read');
+    if (drafted.outcome !== 'read') return;
+    expect(drafted.snapshot.faults).toEqual([
+      { fault: 'dangling-record', kind: 'phase', id: 'beta', versionId: 'v2' }
+    ]);
+    expect(
+      drafted.snapshot.definitions.find((definition) => definition.id === 'beta')
+    ).toMatchObject({ status: 'invalid', body: null, activeVersionId: 'v2', draftVersionId: 'v3' });
+
+    // Publishing the repair is what clears the fault — and nothing was deleted to
+    // get there, so v2's manifest row survives its record.
+    expect(
+      await cold.applyLifecycleWrite({
+        op: 'publish',
+        kind: 'phase',
+        id: 'beta',
+        expectedDraftVersion: await draftTokenFor(cold, 'phase', 'beta')
+      })
+    ).toMatchObject({ outcome: 'written', activeVersionId: 'v3', draftVersionId: null });
+
+    // The neighbour saves normally throughout, and the store is clean.
     expect(await saveNext(cold, 'phase', 'alpha', { n: 2 })).toBe('v2');
     const after = await cold.read();
     expect(after.outcome).toBe('read');
     if (after.outcome !== 'read') return;
-    expect(after.snapshot.faults).toEqual([
-      { fault: 'dangling-record', kind: 'phase', id: 'beta', versionId: 'v2' }
-    ]);
+    expect(after.snapshot.faults).toEqual([]);
     expect(after.snapshot.collectable).toEqual([]);
+    expect(after.snapshot.definitions.find((definition) => definition.id === 'beta')).toMatchObject({
+      status: 'effective',
+      body: { n: 3 }
+    });
   });
 });

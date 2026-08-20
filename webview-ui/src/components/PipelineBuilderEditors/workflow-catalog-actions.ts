@@ -1,24 +1,24 @@
-// Feature 083 (US5, T059, FR-035) — the two destructive Workflow writes.
+// Feature 083 (US5, T059, FR-035) — the destructive Workflow write.
+// Feature 100 (FR-R3-016) T509b — one write, not two, and it no longer confirms
+// here.
 //
-// Both live here rather than in `WorkflowCatalogEditor.svelte` for one reason
-// that matters and one that does not. The one that matters: the confirmation
-// and the mutation it authorises belong in the same module, so a future edit
-// cannot move the `useConfirm` away from the write without moving it out of
-// this file entirely — which is the shape `tests/lint/destructive-actions.lint.test.ts`
-// scans for. The one that does not: it keeps the editor inside the
-// repository-wide 500-line Svelte budget.
+// The confirmation moved into `deactivateDefinition`, the only function that can
+// post the command it authorises (FR-049). Keeping it at the call site was the
+// right shape while a removal was an *omission* from a whole-array save — there
+// was no single function to attach it to — but there is one now, and a gate
+// inside it cannot be forgotten by the next caller.
 //
-// Neither function sends anything. Each returns the request the caller should
-// send, or `null` when the operator declined, so the caller keeps one submit
-// path with one pending-revision gate — a second `saveWorkflows` call site per
-// action would be a second place to get that gate wrong.
+// `confirmWorkflowLayerReset` is gone with the Reset action. It emptied the whole
+// layer in one write, which the store can no longer do: a package addresses
+// definitions by id, so emptying a catalog is N independent deactivations. A
+// button whose atomicity the store does not provide is a button that lies, and a
+// bulk surface — if one is wanted — is FR-R3-017's to design rather than this
+// item's to fake with a loop.
 //
-// A `remove` is expressed as an omission: the save is the whole catalog, so the
-// removed row is simply absent from `workflows`, and a `reset` is the same
-// statement made about every row at once.
+// This module still builds the request rather than sending it, so the caller
+// keeps one submit path with one pending-revision gate.
 
 import type { SaveWorkflowsRequest } from '../../lib/save-workflows';
-import { useConfirm } from '../../lib/use-confirm';
 import { toSaveWorkflowRow } from './workflow-catalog-state';
 import type { MutableWorkflow } from './types';
 
@@ -33,48 +33,21 @@ export interface WorkflowRemovalRequest {
 }
 
 /**
- * Confirm a single-row removal and build the write that performs it.
+ * Build the write that removes one Workflow.
  *
- * @returns the request to send, or `null` if the operator declined.
+ * `layer` is still passed and still filtered: the request keeps its whole-array
+ * shape until FR-R3-017 replaces it, and the remaining rows are what the caller's
+ * optimistic view renders while the deactivation is in flight.
  */
-export async function confirmWorkflowRemoval(
-  request: WorkflowRemovalRequest
-): Promise<SaveWorkflowsRequest | null> {
+export function buildWorkflowRemoval(request: WorkflowRemovalRequest): SaveWorkflowsRequest {
   const { row, expectedRevision, layer, originatingElement } = request;
-  const confirmed = await useConfirm('catalog.remove-workflow', {
-    originatingElement,
-    context: { workflowName: row.name, workflowId: row.workflowId }
-  });
-  if (!confirmed) return null;
   return {
     expectedRevision,
     mutation: { kind: 'remove', workflowId: row.workflowId },
     workflows: layer
       .filter((candidate) => candidate.sourceKey !== row.sourceKey)
-      .map(toSaveWorkflowRow)
+      .map(toSaveWorkflowRow),
+    removedName: row.name,
+    originatingElement
   };
-}
-
-export interface WorkflowResetRequest {
-  readonly expectedRevision: string;
-  /** How many rows the catalog is about to lose; shown in the prompt. */
-  readonly workflowCount: number;
-  readonly originatingElement: HTMLElement | null;
-}
-
-/**
- * Confirm emptying the whole catalog and build the write that performs it.
- *
- * @returns the request to send, or `null` if the operator declined.
- */
-export async function confirmWorkflowLayerReset(
-  request: WorkflowResetRequest
-): Promise<SaveWorkflowsRequest | null> {
-  const { expectedRevision, workflowCount, originatingElement } = request;
-  const confirmed = await useConfirm('catalog.reset-workflows', {
-    originatingElement,
-    context: { workflowCount }
-  });
-  if (!confirmed) return null;
-  return { expectedRevision, mutation: { kind: 'reset' }, workflows: [] };
 }

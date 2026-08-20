@@ -19,9 +19,13 @@
   // Deriving it in the editor would mean threading a flag whose inputs live here.
   //
   // Feature 099 (T494a, FR-043) — no scope picker. A save had a destination to
-  // choose while there were three layers; there is one, so the control is gone
-  // and "Reset Scope" is what it always did to the only layer there is: empty
-  // the catalog.
+  // choose while there were three layers; there is one, so the control is gone.
+  //
+  // Feature 100 (FR-R3-016) T509b — and Reset Catalog is gone with it. It emptied
+  // the layer in one write, which the store can no longer do: definitions are
+  // addressed by id and removal is one confirmed deactivation each. A button whose
+  // atomicity the store does not provide is a button that lies, so it is deleted
+  // rather than reimplemented as a loop behind a single prompt.
   import type { WorkflowExportInclusion } from '../../lib/messages';
   import { exportWorkflowYaml } from '../../lib/process-yaml-ipc';
   import type { MutableWorkflow } from './types';
@@ -62,7 +66,6 @@
     onadd: () => void;
     onduplicate: () => void;
     onremove: (event: MouseEvent) => void;
-    onreset: (event: MouseEvent) => void;
     onsave: () => void;
   }
 
@@ -77,7 +80,6 @@
     onadd,
     onduplicate,
     onremove,
-    onreset,
     onsave
   }: Props = $props();
 
@@ -156,14 +158,6 @@
     onclick={onremove}
   >
     Delete
-  </button>
-  <button
-    class="btn btn-secondary destructive"
-    data-testid="workflows-reset"
-    disabled={mutatingDisabled}
-    onclick={onreset}
-  >
-    Reset Catalog
   </button>
   <!-- FR-013 — the choice sits beside the control it changes, so it is made
        before the document is produced rather than after. Disabled on exactly the

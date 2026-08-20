@@ -5,10 +5,10 @@
 //   - A real on-disk workspace under `tmpRoot`.
 //   - `workspace.isTrusted === true`.
 //   - Workspace-scope `schegent.trust.allowCustomPhases: false`.
-//   - The host's MessageRouter dispatches `CMD_SAVE_PHASES` with a
-//     NON-default payload.
+//   - The host's MessageRouter dispatches a draft save carrying a
+//     NON-default body.
 //   - The save command MUST reject with `trust-denied`, the on-disk
-//     the Phase catalog (modeled here as the `saveLayer` request) MUST be
+//     the Phase catalog (modeled here as the store's write ports) MUST be
 //     unchanged, and a single `trust.capability-denied` audit entry MUST
 //     land in `<workspaceRoot>/.schegent/audit.log` with the contracted
 //     payload shape.
@@ -16,8 +16,14 @@
 // The capability resolver and canonical-folder picker are mocked at
 // module load so the integration test can exercise the gate without a
 // running VS Code host. The integration spans:
-//   MessageRouter → cmd-save-phases handler → resolver → audit writer
+//   MessageRouter → lifecycle handler → resolver → audit writer
 //   → on-disk JSONL.
+//
+// Feature 100 (T514) — the command is `CMD_SAVE_DEFINITION_DRAFT` and the write it
+// makes is a version record rather than a settings array, which sharpens the
+// accepted half of this pair: the body reaching the store is now asserted to be
+// the operator's body *exactly*, because the store keeps it verbatim (099 FR-010)
+// and no longer stamps a `version` onto it on the way past.
 //
 // Test is expected to FAIL until T013 (gate insertion) and T014 (audit
 // emission helper) land. See:
@@ -58,10 +64,11 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, tokenFor, writesOf } from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
-  CMD_SAVE_PHASES,
+  CMD_SAVE_DEFINITION_DRAFT,
   type SidebarCommand,
   type CommandAckMessage,
   type TrustDeniedError
@@ -136,6 +143,7 @@ function buildHarness(): Harness {
     logger,
     audit,
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
@@ -144,17 +152,21 @@ function buildHarness(): Harness {
 
 async function dispatchSave(
   harness: Harness,
-  phases: readonly unknown[],
+  body: { readonly id: string },
   correlationId = 'integ-trust-1'
 ): Promise<CapturedAck> {
   let captured: CapturedAck | undefined;
+  // The token is read from the store, not written out: the trust gate runs after
+  // the staleness pre-check (FR-014), so a token that did not match would report
+  // `stale-catalog` and neither half of this pair would reach the gate.
   const command = {
-    type: CMD_SAVE_PHASES,
+    type: CMD_SAVE_DEFINITION_DRAFT,
     correlationId,
     payload: {
-      expectedRevision: harness.store.revisionOf('phase'),
-      mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
-      phases
+      kind: 'phase',
+      id: body.id,
+      expectedDraftVersion: tokenFor(harness.store, 'phase', body.id),
+      body
     }
   } as unknown as SidebarCommand;
   await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
@@ -170,23 +182,21 @@ async function dispatchSave(
 }
 
 describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', () => {
-  it('rejects non-default CMD_SAVE_PHASES with trust-denied and emits a single trust.capability-denied audit entry', async () => {
+  it('rejects a non-default draft save with trust-denied and emits a single trust.capability-denied audit entry', async () => {
     // Trusted workspace; workspace-scope allowCustomPhases=false.
     mocks.state.capabilities.set('phases', false);
     mocks.state.scopes.set('phases', 'workspace');
 
     const harness = buildHarness();
     const { audit, store } = harness;
-    const nonDefaultPhases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Operator-authored override',
-        loopable: false
-      }
-    ];
+    const nonDefaultPhase = {
+      id: 'speckit-specify',
+      name: 'Modified Specify',
+      instruction: 'Operator-authored override',
+      loopable: false
+    };
 
-    const ack = await dispatchSave(harness, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhase);
 
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
@@ -197,8 +207,8 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
     expect(typeof err.reason).toBe('string');
 
     // On-disk persistence MUST be untouched: the handler must not call
-    // the store once the gate fires.
-    expect(store.layerSaves).toEqual([]);
+    // the store once the gate fires — on any of its three write ports.
+    expect(writesOf(store)).toEqual(NO_WRITES);
 
     // Audit log on disk MUST contain exactly one `trust.capability-denied`
     // entry with the contracted payload shape. A harmless trailing append
@@ -225,24 +235,27 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
 
     const harness = buildHarness();
     const { audit, store } = harness;
-    const nonDefaultPhases = [
-      {
-        id: 'speckit-specify',
-        name: 'Modified Specify',
-        instruction: 'Operator-authored override',
-        loopable: false
-      }
-    ];
+    const nonDefaultPhase = {
+      id: 'speckit-specify',
+      name: 'Modified Specify',
+      instruction: 'Operator-authored override',
+      loopable: false
+    };
 
-    const ack = await dispatchSave(harness, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhase);
 
     expect(ack.status).toBe('accepted');
     expect(ack.reason).toBeUndefined();
-    expect(store.layerSaves).toHaveLength(1);
-    expect(store.layerSaves[0].kind).toBe('phase');
-    expect(layerWrites(store)[0]).toEqual([
-      expect.objectContaining({ ...nonDefaultPhases[0], version: 1 })
-    ]);
+    expect(writesOf(store)).toEqual({ ...NO_WRITES, lifecycle: 1 });
+    const write = store.lifecycleWrites[0];
+    expect(write.op).toBe('save-draft');
+    expect(write.kind).toBe('phase');
+    expect(write.id).toBe(nonDefaultPhase.id);
+    // Verbatim, not `objectContaining`: the body the store holds is the body the
+    // operator authored, with nothing added to it (099 FR-010).
+    expect((write as { readonly body: unknown }).body).toEqual(nonDefaultPhase);
+    // And it lands as a draft, so an allowed save is still not a publication.
+    expect(store.stateOf('phase', nonDefaultPhase.id)).toBe('draft');
 
     await flushAuditChain(audit);
     const entries = await readAuditLog(tmpRoot);

@@ -17,6 +17,17 @@
 // stored rows at EVERY status, and `invalid` is still the load-bearing case,
 // because a row in that state has no resolved definition and an oracle reading
 // the effective catalog would call the id absent.
+//
+// Feature 100 (T512, T514g, FR-043/FR-044) — the scan grows a second half. A
+// definition can now hold a Draft and no active version, which produces NO stored
+// row at all: its body is not active, so it is not in the effective catalog. A
+// scan of rows alone would therefore report an operator's unpublished draft as
+// absent and plan an import straight over the top of it. So every presence oracle
+// takes an id set beside the rows — the set says *whether* the id is taken, the
+// rows say *how* — and the fixtures below derive the set FROM the rows by default,
+// which is precisely the pre-100 world where a stored row and a stored definition
+// were the same thing. The tests that exercise the new case pass the set
+// explicitly, with no row to go with it.
 
 import { describe, expect, it } from 'vitest';
 import type {
@@ -41,6 +52,7 @@ import {
   planPipelineImport,
   planWorkflowImport,
   type PackageImportContext,
+  type StoredDefinitionIds,
   type WorkflowPackageImportContext
 } from '../../../src/services/process-yaml/import-planner';
 import { parsePipelinePackage } from '../../../src/services/process-yaml/pipeline-document';
@@ -64,6 +76,36 @@ const REVISION: ProcessYamlCatalogRevision = 'phase-rev-1';
  * other would gate the wrong write and pass a shared-fixture test (FR-043).
  */
 const PIPELINE_REVISION: ProcessYamlCatalogRevision = 'pipeline-rev-1';
+
+/** No definition stored at all — no row, and no id claimed either. */
+const EMPTY_IDS: StoredDefinitionIds = new Set<string>();
+
+/**
+ * The ids a set of rows claims: a store in which every definition has an active
+ * version, which is every store feature 099 could produce.
+ *
+ * Three helpers rather than one taking an id accessor, mirroring the discipline
+ * the planner states for the scans themselves: a Pipeline named `ship-it-flow`
+ * claims nothing about the Workflow of that name, and one generic builder would
+ * make it possible to hand one kind's rows to another kind's oracle and have the
+ * mistake typecheck.
+ */
+function phaseIdsOf(rows: readonly PhaseSourceRecord[]): StoredDefinitionIds {
+  return new Set(rows.map((row) => row.phaseId));
+}
+
+function pipelineIdsOf(rows: readonly PipelineSourceRecord[]): StoredDefinitionIds {
+  return new Set(rows.map((row) => row.pipelineId));
+}
+
+function workflowIdsOf(rows: readonly WorkflowSourceRecord[]): StoredDefinitionIds {
+  return new Set(rows.map((row) => row.workflowId));
+}
+
+/** An id a definition claims while holding nothing but a draft (FR-006, FR-043). */
+function draftOnly(...ids: readonly string[]): StoredDefinitionIds {
+  return new Set(ids);
+}
 
 function storedRow(phaseId: string, status: PhaseSourceStatus): PhaseSourceRecord {
   return Object.freeze({
@@ -103,7 +145,7 @@ const VALID_DOCUMENT = document(
 
 describe('planPhaseImport', () => {
   it('plans a new id as import and names it (QS-14)', () => {
-    const result = planPhaseImport(validate(VALID_DOCUMENT), [], REVISION);
+    const result = planPhaseImport(validate(VALID_DOCUMENT), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -146,7 +188,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(withRetry), [], REVISION);
+    const result = planPhaseImport(validate(withRetry), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -160,7 +202,7 @@ describe('planPhaseImport', () => {
     for (const status of ['effective', 'invalid'] as const) {
       const rows = [storedRow('ship-it', status)];
 
-      const result = planPhaseImport(validate(VALID_DOCUMENT), rows, REVISION);
+      const result = planPhaseImport(validate(VALID_DOCUMENT), rows, REVISION, phaseIdsOf(rows));
 
       expect(result.outcome).toBe('planned');
       if (result.outcome !== 'planned') return;
@@ -189,7 +231,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(badVersion), [], REVISION);
+    const result = planPhaseImport(validate(badVersion), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -216,7 +258,7 @@ describe('planPhaseImport', () => {
       ].join('\n')
     );
 
-    const result = planPhaseImport(validate(threeBad), [], REVISION);
+    const result = planPhaseImport(validate(threeBad), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -235,7 +277,7 @@ describe('planPhaseImport', () => {
   it('does not claim an id for an invalid resource whose metadata never validated', () => {
     const noMetadata = document(['spec:', '  instruction: Ship the thing.', ''].join('\n'));
 
-    const result = planPhaseImport(validate(noMetadata), [], REVISION);
+    const result = planPhaseImport(validate(noMetadata), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
@@ -260,7 +302,12 @@ describe('planPhaseImport', () => {
     ];
 
     for (const testCase of cases) {
-      const result = planPhaseImport(validate(testCase.source), testCase.rows, REVISION);
+      const result = planPhaseImport(
+        validate(testCase.source),
+        testCase.rows,
+        REVISION,
+        phaseIdsOf(testCase.rows)
+      );
       expect(result.outcome).toBe('planned');
       if (result.outcome !== 'planned') return;
       const { counts, rows } = result.plan;
@@ -274,7 +321,7 @@ describe('planPhaseImport', () => {
   it('returns a refusal with NO rows for a document-level refusal (FR-027)', () => {
     const wrongKind = 'apiVersion: schegent/v1\nkind: Pipeline\nmetadata:\n  phaseId: ship-it\n';
 
-    const result = planPhaseImport(validate(wrongKind), [], REVISION);
+    const result = planPhaseImport(validate(wrongKind), [], REVISION, EMPTY_IDS);
 
     expect(result.outcome).toBe('refused');
     if (result.outcome !== 'refused') return;
@@ -284,17 +331,39 @@ describe('planPhaseImport', () => {
 });
 
 describe('findPhaseIdPresence', () => {
-  it('is null when no stored row claims the id', () => {
+  it('is null when no stored definition claims the id', () => {
     const rows = [storedRow('other', 'effective'), storedRow('third', 'invalid')];
 
-    expect(findPhaseIdPresence(rows, 'ship-it')).toBeNull();
+    expect(findPhaseIdPresence(rows, 'ship-it', phaseIdsOf(rows))).toBeNull();
   });
 
   it('finds a claim from a row that resolves to nothing', () => {
     const rows = [storedRow('specify', 'invalid')];
 
-    expect(findPhaseIdPresence(rows, 'specify')).toEqual({
+    expect(findPhaseIdPresence(rows, 'specify', phaseIdsOf(rows))).toEqual({
       status: 'invalid'
+    });
+  });
+
+  it('finds a claim with no row behind it, and calls it a draft (FR-043)', () => {
+    // Feature 100's new case, and the reason the oracle takes two arguments. A
+    // definition holding nothing but a draft has no active body, so it produces no
+    // row at all — and an import planned over the top of it would destroy an edit
+    // the operator has not published yet (FR-044). There is nothing for the rows to
+    // report a status from, so the status is the state itself.
+    expect(findPhaseIdPresence([], 'specify', draftOnly('specify'))).toEqual({
+      status: 'draft'
+    });
+  });
+
+  it('prefers the row when a definition has both a draft and an active version', () => {
+    // `active-with-draft`. The id set holds it either way, so the set alone could
+    // not tell this apart from the draft-only case — the row is what carries the
+    // status, which is why both are passed rather than the set alone.
+    const rows = [storedRow('specify', 'effective')];
+
+    expect(findPhaseIdPresence(rows, 'specify', draftOnly('specify'))).toEqual({
+      status: 'effective'
     });
   });
 
@@ -311,7 +380,7 @@ describe('findPhaseIdPresence', () => {
       storedRow('specify', 'effective')
     ];
 
-    expect(findPhaseIdPresence(rows, 'specify')).toEqual({
+    expect(findPhaseIdPresence(rows, 'specify', phaseIdsOf(rows))).toEqual({
       status: 'invalid'
     });
   });
@@ -319,8 +388,11 @@ describe('findPhaseIdPresence', () => {
   it('matches an id exactly, not as a prefix of a longer one', () => {
     const rows = [storedRow('ship-it-again', 'effective')];
 
-    expect(findPhaseIdPresence(rows, 'ship-it')).toBeNull();
-    expect(findPhaseIdPresence(rows, 'ship-it-again')).not.toBeNull();
+    expect(findPhaseIdPresence(rows, 'ship-it', phaseIdsOf(rows))).toBeNull();
+    expect(findPhaseIdPresence(rows, 'ship-it-again', phaseIdsOf(rows))).not.toBeNull();
+    // And the same exactness in the id set, which is a separate lookup and would
+    // be a separate place for a prefix match to creep in.
+    expect(findPhaseIdPresence([], 'ship-it', draftOnly('ship-it-again'))).toBeNull();
   });
 });
 
@@ -379,9 +451,18 @@ function parsePackage(text: string) {
  * the other.
  */
 function context(overrides: Partial<PackageImportContext> = {}): PackageImportContext {
+  const phaseRows = overrides.phaseRows ?? [];
+  const pipelineRows = overrides.pipelineRows ?? [];
   return {
-    phaseRows: [],
-    pipelineRows: [],
+    phaseRows,
+    pipelineRows,
+    // Derived from the rows so a caller that names only rows gets the store every
+    // one of these fixtures described before feature 100: every definition has an
+    // active version, so every claimed id has a row. A caller that names an id set
+    // explicitly is describing the case that could not exist then — a definition
+    // holding nothing but a draft — and its override wins.
+    phaseIds: phaseIdsOf(phaseRows),
+    pipelineIds: pipelineIdsOf(pipelineRows),
     effectivePhases: [],
     revision: REVISION,
     pipelineRevision: PIPELINE_REVISION,
@@ -674,18 +755,29 @@ describe('Feature 085 T050 — presence covers every status (FR-030)', () => {
       // definition, so an oracle that read the effective catalog would report
       // "absent" and let the import overwrite work the operator is part-way
       // through.
-      expect(findPhaseIdPresence([storedRow('specify', status)], 'specify')).toEqual({
-        status
-      });
+      expect(
+        findPhaseIdPresence([storedRow('specify', status)], 'specify', draftOnly('specify'))
+      ).toEqual({ status });
     }
+    // Feature 100 — the third state, which has no row to name it (FR-043).
+    expect(findPhaseIdPresence([], 'specify', draftOnly('specify'))).toEqual({
+      status: 'draft'
+    });
   });
 
   it('claims a Pipeline id in any state', () => {
     for (const status of PRESENCE_STATUSES) {
       expect(
-        findPipelineIdPresence([storedPipelineRow('ship-it', status)], 'ship-it')
+        findPipelineIdPresence(
+          [storedPipelineRow('ship-it', status)],
+          'ship-it',
+          draftOnly('ship-it')
+        )
       ).toEqual({ status });
     }
+    expect(findPipelineIdPresence([], 'ship-it', draftOnly('ship-it'))).toEqual({
+      status: 'draft'
+    });
   });
 
   it('plans a skip for a Phase claimed only by an invalid row', () => {
@@ -720,8 +812,11 @@ describe('Feature 085 T050 — presence covers every status (FR-030)', () => {
     // The two catalogs are separate stores. A Pipeline named `specify` does not
     // claim the Phase id `specify`, and a shared scan would make one kind's
     // catalog silently gate the other's import.
-    expect(findPhaseIdPresence([], 'specify')).toBeNull();
-    expect(findPipelineIdPresence([], 'ship-it')).toBeNull();
+    expect(findPhaseIdPresence([], 'specify', EMPTY_IDS)).toBeNull();
+    expect(findPipelineIdPresence([], 'ship-it', EMPTY_IDS)).toBeNull();
+    // Feature 100 — and the id sets are separate stores too. A Pipeline holding
+    // only a draft named `specify` does not claim the Phase id `specify`.
+    expect(findPhaseIdPresence([], 'specify', draftOnly('ship-it'))).toBeNull();
 
     const crossed = context({
       phaseRows: [storedRow('ship-it', 'effective')],
@@ -746,15 +841,18 @@ describe('Feature 085 T050 — presence covers every status (FR-030)', () => {
       storedPipelineRow('ship-it', 'invalid'),
       storedPipelineRow('ship-it', 'effective')
     ];
-    expect(findPipelineIdPresence(rows, 'ship-it')).toEqual({
+    expect(findPipelineIdPresence(rows, 'ship-it', pipelineIdsOf(rows))).toEqual({
       status: 'invalid'
     });
   });
 
   it('matches a Pipeline id exactly, not as a prefix of a longer one', () => {
     const rows = [storedPipelineRow('ship-it-again', 'effective')];
-    expect(findPipelineIdPresence(rows, 'ship-it')).toBeNull();
-    expect(findPipelineIdPresence(rows, 'ship-it-again')).not.toBeNull();
+    const ids = pipelineIdsOf(rows);
+    expect(findPipelineIdPresence(rows, 'ship-it', ids)).toBeNull();
+    expect(findPipelineIdPresence(rows, 'ship-it-again', ids)).not.toBeNull();
+    // Feature 100 — the id set is matched exactly too, not by prefix.
+    expect(findPipelineIdPresence([], 'ship-it', draftOnly('ship-it-again'))).toBeNull();
   });
 
   it('names the state the claim was found in, on every skip (FR-026)', () => {
@@ -834,10 +932,18 @@ const WORKFLOW_REVISION: ProcessYamlCatalogRevision = 'workflow-rev-1';
 function workflowContext(
   overrides: Partial<WorkflowPackageImportContext> = {}
 ): WorkflowPackageImportContext {
+  const phaseRows = overrides.phaseRows ?? [];
+  const pipelineRows = overrides.pipelineRows ?? [];
+  const workflowRows = overrides.workflowRows ?? [];
   return {
-    phaseRows: [],
-    pipelineRows: [],
-    workflowRows: [],
+    phaseRows,
+    pipelineRows,
+    workflowRows,
+    // Three id sets for the reason there are three row lists, derived the same way
+    // and overridable the same way. See {@link context}.
+    phaseIds: phaseIdsOf(phaseRows),
+    pipelineIds: pipelineIdsOf(pipelineRows),
+    workflowIds: workflowIdsOf(workflowRows),
     effectivePhases: [],
     effectivePipelines: [],
     invalidPipelines: new Map(),
@@ -1057,7 +1163,9 @@ describe('planWorkflowImport', () => {
       workflowRows: [storedWorkflowRow('specify', 'effective')]
     });
 
-    expect(findWorkflowIdPresence([], 'ship-it-flow')).toBeNull();
+    expect(findWorkflowIdPresence([], 'ship-it-flow', EMPTY_IDS)).toBeNull();
+    // Feature 100 — same separation for the draft-only claims.
+    expect(findWorkflowIdPresence([], 'ship-it-flow', draftOnly('specify'))).toBeNull();
     expect(plannedWorkflowRows(SELF_CONTAINED_WORKFLOW, crossed).map((row) => row.outcome)).toEqual([
       'import',
       'import',
@@ -1074,16 +1182,37 @@ describe('planWorkflowImport', () => {
       storedWorkflowRow('ship-it-flow', 'effective')
     ];
 
-    expect(findWorkflowIdPresence(rows, 'ship-it-flow')).toEqual({
+    expect(findWorkflowIdPresence(rows, 'ship-it-flow', workflowIdsOf(rows))).toEqual({
       status: 'invalid'
     });
   });
 
   it('matches a Workflow id exactly, not as a prefix of a longer one', () => {
     const rows = [storedWorkflowRow('ship-it-flow-again', 'effective')];
+    const ids = workflowIdsOf(rows);
 
-    expect(findWorkflowIdPresence(rows, 'ship-it-flow')).toBeNull();
-    expect(findWorkflowIdPresence(rows, 'ship-it-flow-again')).not.toBeNull();
+    expect(findWorkflowIdPresence(rows, 'ship-it-flow', ids)).toBeNull();
+    expect(findWorkflowIdPresence(rows, 'ship-it-flow-again', ids)).not.toBeNull();
+    expect(findWorkflowIdPresence([], 'ship-it-flow', draftOnly('ship-it-flow-again'))).toBeNull();
+  });
+
+  it('skips a Workflow that holds only a draft (FR-043)', () => {
+    // Feature 100 — the draft-only claim, in the third catalog. The row list is
+    // empty because no version of this Workflow is active, so an oracle reading
+    // only the rows would plan an import over a draft the operator is editing.
+    const rows = plannedWorkflowRows(
+      SELF_CONTAINED_WORKFLOW,
+      workflowContext({ workflowIds: draftOnly('ship-it-flow') })
+    );
+
+    expect(rows[0]).toEqual({
+      outcome: 'skip',
+      resourceKind: 'workflow',
+      resourceId: 'ship-it-flow',
+      name: 'Ship It Flow',
+      presentRowStatus: 'draft'
+    });
+    expect(rows.slice(1).map((row) => row.outcome)).toEqual(['import', 'import']);
   });
 
   it('carries one revision per layer this plan can write, each from its own catalog (FR-036)', () => {
@@ -1458,9 +1587,17 @@ describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031,
     // the operator is part-way through repairing (FR-034).
     for (const status of PRESENCE_STATUSES) {
       expect(
-        findWorkflowIdPresence([storedWorkflowRow('ship-it-flow', status)], 'ship-it-flow')
+        findWorkflowIdPresence(
+          [storedWorkflowRow('ship-it-flow', status)],
+          'ship-it-flow',
+          draftOnly('ship-it-flow')
+        )
       ).toEqual({ status });
     }
+    // Feature 100 — the fourth cell, which no row can hold (FR-043).
+    expect(findWorkflowIdPresence([], 'ship-it-flow', draftOnly('ship-it-flow'))).toEqual({
+      status: 'draft'
+    });
   });
 
   it('has no effective Workflow catalog to decide presence from', () => {
@@ -1474,10 +1611,13 @@ describe('Feature 086 T057 — Workflow presence reads stored rows only (FR-031,
       'effectivePhases',
       'effectivePipelines',
       'invalidPipelines',
+      'phaseIds',
       'phaseRows',
+      'pipelineIds',
       'pipelineRevision',
       'pipelineRows',
       'revision',
+      'workflowIds',
       'workflowRevision',
       'workflowRows'
     ]);
@@ -1797,6 +1937,11 @@ describe('the shipped example imports into a workspace that has never imported (
     return {
       phaseRows: phaseCatalog.records,
       pipelineRows: pipelineCatalog.records,
+      // Feature 100 (T512) — an empty store claims no id either, in the second
+      // half of the scan any more than the first. A shipped draft would fail
+      // here the same way a shipped active row would.
+      phaseIds: phaseIdsOf(phaseCatalog.records),
+      pipelineIds: pipelineIdsOf(pipelineCatalog.records),
       effectivePhases: phaseCatalog.effective,
       revision: phaseCatalog.revision,
       pipelineRevision: pipelineCatalog.revision

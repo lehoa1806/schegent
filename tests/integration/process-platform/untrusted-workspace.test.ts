@@ -18,7 +18,7 @@ import {
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_RETRY_QUEUE_ITEM,
-  CMD_SAVE_PHASES,
+  CMD_SAVE_DEFINITION_DRAFT,
   CMD_START
 } from '../../../src/ui/sidebar/messages';
 import {
@@ -53,7 +53,7 @@ describe('an untrusted workspace refuses every mutating command (T027, FR-028)',
     // (`message-router.ts`), so a malicious untrusted workspace cannot use the
     // rejection token to learn whether this window holds the workspace lock.
     const probe = makeGateProbe({ isTrusted: () => false, isPrimary: () => false });
-    const ack = await probe.dispatch(CMD_SAVE_PHASES);
+    const ack = await probe.dispatch(CMD_SAVE_DEFINITION_DRAFT);
 
     expect(ack?.reason).toBe(UNTRUSTED_REJECT);
     expect(ack?.reason).not.toBe(SECONDARY_REJECT);
@@ -63,7 +63,7 @@ describe('an untrusted workspace refuses every mutating command (T027, FR-028)',
   it('treats a missing trust callback as untrusted (fail-closed)', async () => {
     // A deps-wiring regression on the host must not silently disable the gate.
     const probe = makeGateProbe({ isPrimary: () => true });
-    const ack = await probe.dispatch(CMD_SAVE_PHASES);
+    const ack = await probe.dispatch(CMD_SAVE_DEFINITION_DRAFT);
 
     expect(ack?.reason).toBe(UNTRUSTED_REJECT);
     expect(probe.writes).toEqual([]);
@@ -126,9 +126,30 @@ const MISMATCHED: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
       payload: { id: { nested: '/Users/someone/secret/workspace' } }
     }
   ],
+  // Feature 100 (T514) — the same two mismatches the retired `CMD_SAVE_PHASES`
+  // entry carried, restated against the command that replaced it: a field whose
+  // domain is closed arriving as a filesystem path, and an envelope missing the
+  // one field that says what it is writing.
   [
-    'CMD_SAVE_PHASES whose phases field is a string',
-    { type: CMD_SAVE_PHASES, correlationId: 'c5', payload: { scope: 'user', phases: '/etc/passwd' } }
+    'CMD_SAVE_DEFINITION_DRAFT whose kind is a path, not a catalog kind',
+    {
+      type: CMD_SAVE_DEFINITION_DRAFT,
+      correlationId: 'c5',
+      payload: {
+        kind: '/etc/passwd',
+        id: 'speckit-specify',
+        expectedDraftVersion: 'none',
+        body: {}
+      }
+    }
+  ],
+  [
+    'CMD_SAVE_DEFINITION_DRAFT with no body to save',
+    {
+      type: CMD_SAVE_DEFINITION_DRAFT,
+      correlationId: 'c6',
+      payload: { kind: 'phase', id: 'speckit-specify', expectedDraftVersion: 'none' }
+    }
   ]
 ];
 
@@ -186,9 +207,14 @@ describe('a payload that does not match its command is refused (T030, FR-030)', 
     // filesystem path and a secret-looking token.
     const planted = '/Users/someone/.aws/credentials';
     const result = validateInboundMessage({
-      type: CMD_SAVE_PHASES,
-      correlationId: 'c6',
-      payload: { scope: planted, phases: [{ id: planted }] }
+      type: CMD_SAVE_DEFINITION_DRAFT,
+      correlationId: 'c7',
+      payload: {
+        kind: planted,
+        id: planted,
+        expectedDraftVersion: planted,
+        body: { id: planted }
+      }
     });
 
     expect(result.ok).toBe(false);

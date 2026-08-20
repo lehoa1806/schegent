@@ -2,10 +2,17 @@
 // specs/096-model-list-import-export/contracts/model-catalog-exchange.md
 // §4). Manual add/remove (`expectedRevision`/`mutation` both omitted) keeps
 // its pre-existing unconditional write byte-for-byte. Import-confirm (both
-// present) runs the gated sequence below, narrowed from
-// `cmd-save-pipelines.ts`'s pattern to what Model Catalog actually needs: no
-// cross-reference gate, no consumer-removal-block gate, no capability-trust
-// gate (none apply — FR-015, research.md Decision 9).
+// present) runs the gated sequence below, narrowed from the Pipeline save gate's
+// pattern to what Model Catalog actually needs: no cross-reference gate, no
+// consumer-removal-block gate, no capability-trust gate (none apply — FR-015,
+// research.md Decision 9).
+//
+// Feature 100 (T513b) — `cmd-save-pipelines.ts`, the module that pattern was
+// taken from, is gone with the whole-array save. This command is not, and the
+// reason is a real difference rather than an omission: the Model Catalog has no
+// draft, no publish, and no version history, so there is no lifecycle for it to
+// speak. It keeps its whole-array write and its `mutation` tag, which is still
+// what distinguishes an import-confirm from a manual add/remove here.
 
 import { modelsLayerRevision } from '../../../config/model-catalog';
 import { isBackendRunnerKind, type BackendRunnerKind } from '../../../runner/backend-runner-factory';
