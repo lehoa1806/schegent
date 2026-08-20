@@ -1,13 +1,10 @@
-import { createHash } from 'node:crypto';
 import type {
   PipelineCatalogResolution,
   PipelineCatalogWarning,
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineFieldError,
   PipelineSourceRecord,
-  PipelineSourceStatus,
-  WritablePipelineDefinitionScope
+  PipelineSourceStatus
 } from '../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../contracts/process-definitions';
 import type { PipelineDef } from './pipeline-config';
@@ -24,9 +21,8 @@ const PIPELINE_ID_MAX_LEN = 64;
 const MODEL_ID_MAX_LEN = 64;
 
 /**
- * The stable per-row identity used to group source rows across layers. A row
- * that cannot supply one keeps its slot under a synthetic id so it stays
- * visible for repair without ever resolving (FR-002).
+ * The stable per-row identity. A row that cannot supply one keeps its slot under
+ * a synthetic id so it stays visible for repair without ever resolving (FR-002).
  */
 export function pipelineSourceIdentity(row: unknown, index: number): string {
   if (row && typeof row === 'object' && !Array.isArray(row)) {
@@ -46,7 +42,6 @@ export function pipelineSourceIdentity(row: unknown, index: number): string {
 interface MutableSourceRecord {
   readonly key: string;
   readonly pipelineId: string;
-  readonly scope: PipelineDefinitionScope;
   status: PipelineSourceStatus;
   definition: PipelineDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -55,43 +50,6 @@ interface MutableSourceRecord {
 
 export interface ResolvedPipelineCatalog extends PipelineCatalogResolution {
   readonly effectivePipelineDefs: readonly PipelineDef[];
-}
-
-function stableJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(record[key])}`)
-    .join(',')}}`;
-}
-
-/** SHA-256 fingerprint of one writable layer, echoed as `expectedRevision` on save (FR-029). */
-export function pipelineLayerRevision(raw: readonly unknown[] | undefined): string {
-  return createHash('sha256')
-    .update(stableJsonStringify(raw ?? []), 'utf8')
-    .digest('hex');
-}
-
-function authoredBuiltInRow(pipeline: PipelineDef): Record<string, unknown> {
-  return {
-    id: pipeline.id,
-    name: pipeline.name,
-    version: pipeline.version ?? 1,
-    phases: [...pipeline.phases],
-    ...(pipeline.description !== undefined ? { description: pipeline.description } : {}),
-    ...(pipeline.inputs !== undefined ? { inputs: pipeline.inputs } : {}),
-    ...(pipeline.outputs !== undefined ? { outputs: pipeline.outputs } : {}),
-    ...(pipeline.bindings !== undefined ? { bindings: pipeline.bindings } : {}),
-    ...(pipeline.executionDefaults !== undefined
-      ? { executionDefaults: pipeline.executionDefaults }
-      : {}),
-    ...(pipeline.recommendedNext !== undefined
-      ? { recommendedNext: pipeline.recommendedNext }
-      : {})
-  };
 }
 
 function bounded(value: string, max: number): string {
@@ -126,8 +84,14 @@ export function unknownPhaseErrors(
   return errors;
 }
 
-function parseLayer(
-  scope: PipelineDefinitionScope,
+/**
+ * Parse the stored rows into source records.
+ *
+ * Feature 099 (T489, FR-042) — formerly `parseLayer`, called three times. See
+ * `parseRows` in `process-catalog.ts` for why `key` drops its scope segment and
+ * why a clean row now starts `effective` rather than `shadowed`.
+ */
+function parseRows(
   rows: readonly unknown[],
   defaultVersion: number,
   effectivePhases: readonly PhaseDefinition[],
@@ -144,10 +108,9 @@ function parseLayer(
       if (errors.length > 0) definition = null;
     }
     return {
-      key: `${scope}::${pipelineId}::${index}`,
+      key: `${pipelineId}::${index}`,
       pipelineId,
-      scope,
-      status: errors.length === 0 ? 'shadowed' : 'invalid',
+      status: errors.length === 0 ? 'effective' : 'invalid',
       definition,
       display: result.display,
       errors
@@ -160,7 +123,7 @@ function duplicateError(pipelineId: string): PipelineFieldError {
     pipelineId,
     field: 'pipelineId',
     code: 'duplicate-in-scope',
-    message: `Pipeline id '${bounded(pipelineId, PIPELINE_ID_MAX_LEN)}' appears more than once in this scope`
+    message: `Pipeline id '${bounded(pipelineId, PIPELINE_ID_MAX_LEN)}' appears more than once in the catalog`
   });
 }
 
@@ -184,18 +147,19 @@ function invalidateDuplicates(records: MutableSourceRecord[]): void {
 
 /**
  * Projects a resolved Pipeline onto the runtime `PipelineDef` shape consumed by
- * Run creation. `sourceScope` is host-assigned provenance and is never authored.
+ * Run creation.
+ *
+ * Feature 099 (T489, FR-039) — the `scope` parameter is gone with the layer tier,
+ * and with it the `sourceScope` field it stamped. `snapshotPipelineContract`
+ * already dropped that field on the way into a Run, so nothing persisted carries
+ * it and no `STATE_SCHEMA_VERSION` bump follows.
  */
-export function pipelineDefinitionToPipelineDef(
-  definition: PipelineDefinition,
-  scope: PipelineDefinitionScope
-): PipelineDef {
+export function pipelineDefinitionToPipelineDef(definition: PipelineDefinition): PipelineDef {
   return Object.freeze({
     id: definition.pipelineId,
     name: definition.name,
     version: definition.version,
     phases: Object.freeze([...definition.phaseIds]),
-    sourceScope: scope,
     ...(definition.description !== undefined ? { description: definition.description } : {}),
     inputs: Object.freeze([...definition.inputs]),
     outputs: Object.freeze([...definition.outputs]),
@@ -286,10 +250,16 @@ function unavailableModelWarnings(
   return warnings;
 }
 
+/**
+ * Resolve the one Pipeline layer.
+ *
+ * Feature 099 (T489, FR-042) — `rows` is the stored catalog and `revision` is the
+ * store's manifest revision (FR-044a). See `resolvePhaseCatalog` for the shape of
+ * the collapse.
+ */
 export function resolvePipelineCatalog(input: {
-  readonly builtIn: readonly PipelineDef[];
-  readonly user: readonly unknown[] | undefined;
-  readonly workspace: readonly unknown[] | undefined;
+  readonly rows: readonly unknown[] | undefined;
+  readonly revision: string;
   readonly phaseCatalog: readonly PhaseDefinition[];
   /**
    * Model ids the host currently offers per runner, for the FR-035 advisory.
@@ -307,45 +277,22 @@ export function resolvePipelineCatalog(input: {
   readonly defaultRunnerKind?: string;
 }): ResolvedPipelineCatalog {
   const knownPhaseIds = new Set(input.phaseCatalog.map((phase) => phase.phaseId));
-  const layer = (scope: PipelineDefinitionScope, rows: readonly unknown[]) =>
-    parseLayer(scope, rows, 1, input.phaseCatalog, knownPhaseIds);
+  const records = parseRows(input.rows ?? [], 1, input.phaseCatalog, knownPhaseIds);
+  invalidateDuplicates(records);
 
-  const builtInRecords = layer('built-in', input.builtIn.map(authoredBuiltInRow));
-  const userRecords = layer('user', input.user ?? []);
-  const workspaceRecords = layer('workspace', input.workspace ?? []);
-  invalidateDuplicates(userRecords);
-  invalidateDuplicates(workspaceRecords);
-
-  const records = [...builtInRecords, ...userRecords, ...workspaceRecords];
-  const pipelineIds = new Set(records.map((record) => record.pipelineId));
   const effective: PipelineDefinition[] = [];
   const effectivePipelineDefs: PipelineDef[] = [];
-  const scopeOrder: readonly PipelineDefinitionScope[] = ['workspace', 'user', 'built-in'];
-
-  for (const pipelineId of pipelineIds) {
-    if (pipelineId.startsWith(SYNTHETIC_PIPELINE_ID_PREFIX)) continue;
-    let selected: MutableSourceRecord | undefined;
-    for (const scope of scopeOrder) {
-      selected = records.find(
-        (record) =>
-          record.pipelineId === pipelineId &&
-          record.scope === scope &&
-          record.status !== 'invalid' &&
-          record.definition !== null
-      );
-      if (selected) break;
-    }
-    if (!selected?.definition) continue;
-    selected.status = 'effective';
-    effective.push(selected.definition);
-    effectivePipelineDefs.push(pipelineDefinitionToPipelineDef(selected.definition, selected.scope));
+  for (const record of records) {
+    if (record.pipelineId.startsWith(SYNTHETIC_PIPELINE_ID_PREFIX)) continue;
+    if (record.status !== 'effective' || record.definition === null) continue;
+    effective.push(record.definition);
+    effectivePipelineDefs.push(pipelineDefinitionToPipelineDef(record.definition));
   }
 
   const frozenRecords: PipelineSourceRecord[] = records.map((record) =>
     Object.freeze({
       key: record.key,
       pipelineId: record.pipelineId,
-      scope: record.scope,
       status: record.status,
       definition: record.definition,
       display: record.display,
@@ -368,15 +315,11 @@ export function resolvePipelineCatalog(input: {
     );
   }
 
-  const revisions: Record<WritablePipelineDefinitionScope, string> = {
-    user: pipelineLayerRevision(input.user),
-    workspace: pipelineLayerRevision(input.workspace)
-  };
   return Object.freeze({
     records: Object.freeze(frozenRecords),
     effective: Object.freeze(effective),
     effectivePipelineDefs: Object.freeze(effectivePipelineDefs),
-    revisions: Object.freeze(revisions),
+    revision: input.revision,
     warnings: Object.freeze(warnings)
   });
 }

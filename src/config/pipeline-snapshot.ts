@@ -47,9 +47,10 @@ function snapshotBinding(binding: PhaseBinding): PhaseBinding {
  *
  * Every nested array and object is copied rather than aliased: an operator
  * editing the catalog row afterwards must not be able to reach through a shared
- * reference into a Run that is already executing. `sourceScope` is deliberately
- * dropped — where a definition came from is catalog state, not part of the
- * executable contract, and it has no place in a persisted Run (FR-039).
+ * reference into a Run that is already executing. Every field is named rather
+ * than spread, so catalog state cannot leak into a persisted Run (FR-039) — the
+ * rule that used to be stated as "`sourceScope` is deliberately dropped", before
+ * Feature 099 deleted that field with the layer tier (FR-042).
  *
  * Each optional field is written only when the resolved definition carried it,
  * so a Pipeline that declares no ports produces exactly the pre-feature-082
@@ -111,20 +112,10 @@ export function resolvePinnedRunnerKind(
   return persisted ?? sessionOwner ?? configured ?? DEFAULT_BACKEND;
 }
 
-/**
- * Preserve a Git-declaring Phase's pinned runner across legacy layered overrides.
- *
- * Feature 098 T018 — the `sourceScope === 'built-in'` gate goes with the id list.
- * Keeping it would have made this function dead the moment the built-in layer
- * emptied, which is a silent loss of the pin rather than a visible one.
- */
-export function mergePhaseRunnerPolicy(
-  prior: PhaseDef | undefined,
-  next: PhaseDef
-): PhaseDef {
-  return next.runner === undefined &&
-    prior?.runner !== undefined &&
-    writesGitMetadata(next.sideEffects)
-      ? { ...next, runner: prior.runner }
-      : next;
-}
+// Feature 099 (T489, FR-042) — `mergePhaseRunnerPolicy` stood here. It carried a
+// Git-declaring Phase's pinned runner forward when a *higher-precedence layer*
+// redeclared the same id without one, and its only caller was `mergeCatalog`'s
+// three-layer Phase loop. With one layer nothing redeclares anything: the
+// resolved definition is the only definition, and its `runner` is whatever it
+// declares. Deleted rather than kept as an identity function — a merge helper
+// with nothing to merge is a claim that layers still exist.

@@ -28,10 +28,8 @@
 // host-side through `getCanonicalWorkspaceRoot()` and never leaves.
 
 import { randomUUID } from 'node:crypto';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../config/pipeline-config';
 import { resolvePipelineCatalog } from '../../../config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../config/process-catalog';
-import { BUILT_IN_WORKFLOWS } from '../../../config/workflow-config';
 import {
   resolveWorkflowCatalog,
   type WorkflowPipelineContext
@@ -53,16 +51,14 @@ import { ack } from './handler-helpers';
  * for; what matters is that every one of them resolves the *effective* layer.
  */
 function effectivePipelineContext(ctx: HandlerContext): WorkflowPipelineContext {
-  const phaseLayers = ctx.deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
-  const pipelineLayers = ctx.deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const storedPhases = ctx.deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
+  const storedPipelines = ctx.deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: pipelineLayers.user,
-    workspace: pipelineLayers.workspace,
+    rows: storedPipelines.rows,
+    revision: storedPipelines.revision,
     phaseCatalog: resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: phaseLayers.user,
-      workspace: phaseLayers.workspace
+      rows: storedPhases.rows,
+      revision: storedPhases.revision
     }).effective
   });
 }
@@ -78,15 +74,15 @@ type Resolution =
  * an invalid one from `effective`, so "in `effective`" already means "resolves and
  * its graph is valid and every node's Pipeline resolves". What is left is telling
  * the two refusals apart, and the records answer that: a row exists under this id
- * but did not become effective, so it is invalid or shadowed by one that is —
- * either way the operator has a definition to repair, not one to create.
+ * but did not become effective, so it is invalid — the operator has a definition
+ * to repair, not one to create. (Feature 099, FR-040: `shadowed` was the other way
+ * to be present and not effective, and it went with the layer tier.)
  */
 function resolveWorkflow(ctx: HandlerContext, workflowId: string): Resolution {
-  const layers = ctx.deps.readWorkflowConfig?.() ?? { user: [], workspace: [] };
+  const stored = ctx.deps.readWorkflowConfig?.() ?? { rows: [], revision: '' };
   const catalog = resolveWorkflowCatalog({
-    builtIn: BUILT_IN_WORKFLOWS,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
+    revision: stored.revision,
     pipelineCatalog: effectivePipelineContext(ctx)
   });
   const workflow = catalog.effective.find((entry) => entry.workflowId === workflowId);

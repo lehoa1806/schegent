@@ -8,12 +8,11 @@
 // and every schema entry has a package property, with matching
 // `type` / `default` / `minimum` / `maximum` / `enum` constraints.
 //
-// Feature 059 added three nullable boolean trust-scope settings:
+// Feature 059 added nullable boolean trust-scope settings; feature 099 (T491,
+// FR-045) removed the two that gated layer overrides, leaving the two that gate
+// document content:
 //   - schegent.trust.allowCustomPhases
 //   - schegent.trust.allowCustomRetryConditions
-//   - schegent.trust.allowPipelineOverrides
-// Feature 083 added a fourth on the same terms:
-//   - schegent.trust.allowWorkflowOverrides
 //
 // This module is intentionally `vscode`-free: it is imported by host
 // validators (transitively via `general-settings.ts`) and by tests.
@@ -24,9 +23,10 @@
 // preserved as the authoritative payload-key gate for
 // `CMD_SAVE_GENERAL_SETTINGS` (CLAUDE.md hard rule 011 T039 / T071).
 // `KEY_SPECS` covers the subset of settings that flow through the
-// general-settings IPC; this schema is the superset that includes
-// phases, pipelines, models, and backend-runner keys whose IPC paths
-// live elsewhere.
+// general-settings IPC; this schema is the superset that includes the
+// Model Catalog and backend-runner keys whose IPC paths live elsewhere.
+// Feature 099 (T494, FR-054) — it no longer includes definition keys at
+// all: Phases, Pipelines and Workflows are stored, not configured.
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
 export type SettingsSchemaType =
@@ -189,30 +189,12 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Custom model identifiers'
   },
-  'schegent.phases': {
-    key: 'schegent.phases',
-    type: 'array',
-    default: [],
-    itemType: 'object',
-    scope: 'resource',
-    docLabel: 'Custom phase definitions'
-  },
-  'schegent.pipelines': {
-    key: 'schegent.pipelines',
-    type: 'array',
-    default: [],
-    itemType: 'object',
-    scope: 'resource',
-    docLabel: 'Custom pipeline definitions'
-  },
-  'schegent.workflows': {
-    key: 'schegent.workflows',
-    type: 'array',
-    default: [],
-    itemType: 'object',
-    scope: 'resource',
-    docLabel: 'Custom workflow definitions'
-  },
+  // Feature 099 (T494, FR-054) — the three retired definition settings keys
+  // are deleted, not drained. Definitions live in the
+  // versioned store; a settings key that still declared them would be a second
+  // place to author a definition from, which is the thing the store replaces.
+  // The keys that remain here name what a Pipeline may select and which Pipeline
+  // a surface opens on — neither is a definition.
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
@@ -385,22 +367,6 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     nullable: true,
     scope: 'window',
     docLabel: 'Trust scope: allow saving non-default retry-condition DSL expressions on phase rows'
-  },
-  'schegent.trust.allowPipelineOverrides': {
-    key: 'schegent.trust.allowPipelineOverrides',
-    type: 'boolean',
-    default: null,
-    nullable: true,
-    scope: 'window',
-    docLabel: 'Trust scope: allow saving non-default pipeline catalog entries'
-  },
-  'schegent.trust.allowWorkflowOverrides': {
-    key: 'schegent.trust.allowWorkflowOverrides',
-    type: 'boolean',
-    default: null,
-    nullable: true,
-    scope: 'window',
-    docLabel: 'Trust scope: allow saving non-default workflow catalog entries'
   }
 });
 

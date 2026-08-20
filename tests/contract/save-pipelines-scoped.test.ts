@@ -1,4 +1,4 @@
-// Feature 082 (US1, T018) — IPC contract tests for the scoped, revisioned
+// Feature 082 (US1, T018) — IPC contract tests for the revisioned
 // CMD_SAVE_PIPELINES envelope.
 //
 // Covers the ordered gate table in
@@ -9,30 +9,48 @@
 //   gate 4  pipeline-validation      bounded, sanitized `PipelineFieldError[]`
 //   gate 9  pipeline-mutation-mismatch
 //   gate 10 pipeline-version-invalid `{ pipelineId }` (FR-010)
-//   gate 12 trust-denied             `pipelineOverrides` capability, audited
 //   gate 14 persistence-failed
-// plus the accepted ack `{ scope, revision, mutation }` and scope targeting
-// (FR-004, FR-020, FR-021).
+// plus the accepted ack `{ revision, mutation }` (FR-020, FR-021).
 //
-// Gates 5–8, 11, and 13 are covered by their own task-scoped suites
+// Gates 5–8 and 13 are covered by their own task-scoped suites
 // (T037 bindings, T051 removal, the 059 trust suite).
 //
 // Gate 2 is asserted against `validateInboundMessage` — the transport boundary
 // — because the router never sees a payload that fails there. Every other gate
 // is asserted through a real `MessageRouter.dispatch`, so the ordering between
 // them is exercised, not just each gate in isolation.
+//
+// Feature 099 (T496f) — three things changed under this file, and each one has a
+// successor here rather than a deletion:
+//
+//   - `scope` left the envelope with the layer tier (FR-042). Its required-key
+//     case is inverted: an envelope still carrying it is refused. Its
+//     scope-targeting case ('writes only the %s layer') becomes the claim that
+//     survives one catalog — a Pipeline save touches no catalog it was not
+//     addressed to.
+//   - Gate 12 is gone: `pipelineOverrides` asked whether one layer could redefine
+//     what another declares (FR-046). What replaces the deny case is the negative
+//     a reintroduced gate would break — the answer does not depend on the trust
+//     resolver at all, and nothing is audited.
+//   - The write port is the catalog store, not `updateConfig(key, value, scope)`.
+//     Every "never persists" assertion reads `store.layerSaves`, which the
+//     handler reaches only past every gate ahead of it.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   state: {
     capabilities: new Map<string, boolean>(),
-    scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>()
+    scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>(),
+    asked: [] as string[]
   }
 }));
 
 vi.mock('../../src/state/capability-trust-resolver', () => ({
-  isCapabilityAllowed: (capability: string) => mocks.state.capabilities.get(capability) ?? true,
+  isCapabilityAllowed: (capability: string) => {
+    mocks.state.asked.push(capability);
+    return mocks.state.capabilities.get(capability) ?? true;
+  },
   getResolvedScope: (capability: string) => mocks.state.scopes.get(capability) ?? 'workspace-trust'
 }));
 
@@ -51,10 +69,10 @@ import {
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
 import { validateInboundMessage } from '../../src/contracts/runtime-validators';
-import { pipelineLayerRevision, resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
+import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
 import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
+import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { collectWorkflowDefinitionPipelineRefs } from '../../src/ui/sidebar/workflow-definition-pipeline-refs';
 import type { PipelineCatalogMutation } from '../../src/contracts/pipeline-definitions';
@@ -66,58 +84,45 @@ const CUSTOM_ROW = {
   phases: ['speckit-specify', 'finalize', 'done']
 };
 
-interface Layers {
-  user: readonly unknown[];
-  workspace: readonly unknown[];
-}
+/** Feature 099 (T496f, FR-044a) — seeding rows does not move a revision. */
+const SEEDED_REVISION = new FakeCatalogStore().revisionOf('pipeline');
 
 interface Harness {
   router: MessageRouter;
   acks: CommandAckMessage[];
-  updateConfigCalls: Array<{ key: string; value: unknown; scope: string | undefined }>;
+  store: FakeCatalogStore;
   auditCalls: Array<Record<string, unknown>>;
-  layers: Layers;
 }
 
 // Feature 098 (T080) — `CUSTOM_ROW` names `speckit-specify` and `finalize`, which
 // used to resolve out of the built-in Phase layer. That layer is empty now, so a
-// Pipeline naming them fails gate 5 unless the workspace layer carries them:
-// every gate below would report `pipeline-validation` instead of the gate under
-// test. The rows come from the fixture; see its header for why the ids are the
-// real Spec Kit ones.
-const WORKSPACE_PHASE_ROWS = [
+// Pipeline naming them fails gate 5 unless the catalog carries them: every gate
+// below would report `pipeline-validation` instead of the gate under test. The
+// rows come from the fixture; see its header for why the ids are the real Spec
+// Kit ones.
+const PHASE_ROWS = [
   { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
   ...SPECKIT_PHASE_DEFS
 ];
 
 /**
  * Feature 083 (T052) — the definition-side half of gate 13's reference list,
- * assembled the way `extension.ts` assembles it: resolve the raw
- * `schegent.workflows` layers against the resolved Pipeline catalog, then
- * collect over **every stored record**. Going through real resolution is the
- * point — a hand-authored reference literal could not tell a shadowed or
- * invalid record apart from an effective one, which is precisely what FR-041
- * turns on.
+ * assembled the way `extension.ts` assembles it: resolve the stored Workflow
+ * rows against the resolved Pipeline catalog, then collect over **every stored
+ * record**. Going through real resolution is the point — a hand-authored
+ * reference literal could not tell an invalid record apart from an effective
+ * one, which is precisely what FR-041 turns on.
  */
-function workflowRefs(
-  workflows: { user?: readonly unknown[]; workspace?: readonly unknown[] },
-  pipelines: Layers
-) {
+function workflowRefs(workflows: readonly unknown[], pipelineRows: readonly unknown[]) {
   const pipelineCatalog = resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: pipelines.user,
-    workspace: pipelines.workspace,
-    phaseCatalog: resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: [],
-      workspace: WORKSPACE_PHASE_ROWS
-    }).effective
+    rows: pipelineRows,
+    revision: SEEDED_REVISION,
+    phaseCatalog: resolvePhaseCatalog({ rows: PHASE_ROWS, revision: SEEDED_REVISION }).effective
   });
   return collectWorkflowDefinitionPipelineRefs(
     resolveWorkflowCatalog({
-      builtIn: [],
-      user: workflows.user,
-      workspace: workflows.workspace,
+      rows: workflows,
+      revision: SEEDED_REVISION,
       pipelineCatalog
     }).records
   );
@@ -136,39 +141,48 @@ const workflowRow = (id: string, overrides: Record<string, unknown> = {}) => ({
 
 function buildRouter(
   opts: {
-    layers?: Layers;
+    rows?: readonly unknown[];
     omitConfigOps?: boolean;
-    updateConfigThrows?: boolean;
     /**
-     * Feature 083 (T052) — raw `schegent.workflows` layers. Resolved and
-     * collected here exactly as `extension.ts` does, so gate 13 sees the same
-     * reference list production does rather than hand-authored literals; that
-     * is what makes the shadowed and invalid cases below meaningful.
+     * Feature 099 (T496f, FR-029) — the settings writer used to throw to drive
+     * gate 14; the store names the fault instead and answers exactly one write.
      */
-    workflows?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
+    storeRefuses?: boolean;
+    /**
+     * Feature 083 (T052) — stored Workflow rows. Resolved and collected here
+     * exactly as `extension.ts` does, so gate 13 sees the same reference list
+     * production does rather than hand-authored literals; that is what makes the
+     * invalid case below meaningful.
+     */
+    workflows?: readonly unknown[];
   } = {}
 ): Harness {
   const acks: CommandAckMessage[] = [];
-  const updateConfigCalls: Harness['updateConfigCalls'] = [];
   const auditCalls: Array<Record<string, unknown>> = [];
-  const layers: Layers = opts.layers ?? { user: [], workspace: [] };
+  const store = new FakeCatalogStore({
+    phases: PHASE_ROWS,
+    pipelines: opts.rows ?? []
+  });
+  if (opts.storeRefuses) {
+    store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+  }
 
   const configOps = opts.omitConfigOps
     ? {}
     : {
-        updateConfig: async (
-          key: 'phases' | 'pipelines' | 'models',
-          value: unknown,
-          scope?: string
-        ) => {
-          if (opts.updateConfigThrows) throw new Error('update failed');
-          updateConfigCalls.push({ key, value, scope });
-        },
-        readPipelineConfig: () => ({ user: layers.user, workspace: layers.workspace }),
+        catalogStore: store,
+        refreshCatalog: async () => undefined,
+        readPipelineConfig: () => ({
+          rows: store.rowsOf('pipeline'),
+          revision: store.revisionOf('pipeline')
+        }),
         // Feature 082 (T038) — gate 5 resolves every `phaseId` against the
-        // effective Phase catalog, so the workspace-authored `done` these
-        // fixtures use has to exist as a Phase.
-        readPhaseConfig: () => ({ user: [], workspace: WORKSPACE_PHASE_ROWS })
+        // effective Phase catalog, so the authored `done` these fixtures use has
+        // to exist as a Phase.
+        readPhaseConfig: () => ({
+          rows: store.rowsOf('phase'),
+          revision: store.revisionOf('phase')
+        })
       };
 
   const deps = {
@@ -192,23 +206,24 @@ function buildRouter(
       }
     },
     ...(opts.workflows
-      ? { readWorkflowPipelineRefs: () => workflowRefs(opts.workflows ?? {}, layers) }
+      ? {
+          readWorkflowPipelineRefs: () =>
+            workflowRefs(opts.workflows ?? [], store.rowsOf('pipeline'))
+        }
       : {}),
     ...configOps
   } as unknown as RouterDeps;
 
-  return { router: new MessageRouter(deps), acks, updateConfigCalls, auditCalls, layers };
+  return { router: new MessageRouter(deps), acks, store, auditCalls };
 }
 
 function savePayload(opts: {
-  scope?: 'user' | 'workspace';
   expectedRevision?: string;
   mutation?: PipelineCatalogMutation;
   pipelines?: readonly unknown[];
 }) {
   return {
-    scope: opts.scope ?? 'workspace',
-    expectedRevision: opts.expectedRevision ?? pipelineLayerRevision([]),
+    expectedRevision: opts.expectedRevision ?? SEEDED_REVISION,
     mutation: opts.mutation ?? ({ kind: 'create', pipelineId: 'custom-flow' } as const),
     pipelines: opts.pipelines ?? [CUSTOM_ROW]
   };
@@ -227,20 +242,21 @@ async function dispatch(harness: Harness, payload: unknown, correlationId = 'sav
 beforeEach(() => {
   mocks.state.capabilities.clear();
   mocks.state.scopes.clear();
+  mocks.state.asked.length = 0;
 });
 
 describe('gate 2 — envelope validation at the transport boundary', () => {
   const valid = {
     type: CMD_SAVE_PIPELINES,
-    correlationId: 'scoped-save',
-    payload: savePayload({ scope: 'user' })
+    correlationId: 'revisioned-save',
+    payload: savePayload({})
   };
 
   it('accepts an exact revisioned mutation envelope', () => {
     expect(validateInboundMessage(valid)).toMatchObject({ ok: true, command: valid });
   });
 
-  it.each(['scope', 'expectedRevision', 'mutation', 'pipelines'])(
+  it.each(['expectedRevision', 'mutation', 'pipelines'])(
     'rejects an envelope missing %s',
     (key) => {
       const payload = { ...valid.payload } as Record<string, unknown>;
@@ -252,7 +268,7 @@ describe('gate 2 — envelope validation at the transport boundary', () => {
     }
   );
 
-  it('rejects the pre-082 unscoped { pipelines } payload', () => {
+  it('rejects the pre-082 unrevisioned { pipelines } payload', () => {
     expect(
       validateInboundMessage({ ...valid, payload: { pipelines: [CUSTOM_ROW] } })
     ).toMatchObject({ ok: false, reason: 'invalid-payload' });
@@ -267,13 +283,19 @@ describe('gate 2 — envelope validation at the transport boundary', () => {
     ).toMatchObject({ ok: false, reason: 'invalid-payload' });
   });
 
-  it('rejects a non-writable target scope', () => {
-    expect(
-      validateInboundMessage({
-        ...valid,
-        payload: { ...valid.payload, scope: 'built-in' }
-      })
-    ).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  // The successor of `rejects an envelope missing scope` and `rejects a
+  // non-writable target scope` (FR-042). Both said the same thing about a field
+  // that no longer has a referent: the caller must name a layer, and only a
+  // writable one. With one catalog, a caller that still names a layer is a
+  // caller pinned to the deleted tier, and it fails loudly at the boundary
+  // rather than having its extra field dropped on the way to a handler that
+  // would ignore it.
+  it('rejects an envelope that still carries a scope (FR-042)', () => {
+    for (const scope of ['user', 'workspace', 'built-in']) {
+      expect(
+        validateInboundMessage({ ...valid, payload: { ...valid.payload, scope } })
+      ).toMatchObject({ ok: false, reason: 'invalid-payload' });
+    }
   });
 
   it.each([
@@ -336,17 +358,17 @@ describe('gate 1 — host configuration operations unavailable', () => {
       status: 'rejected',
       reason: 'config-ops-unavailable'
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 });
 
 describe('gate 3 — stale catalog', () => {
-  it('rejects a save whose expectedRevision no longer matches the layer', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+  it('rejects a save whose expectedRevision no longer matches the catalog', async () => {
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
       savePayload({
-        expectedRevision: pipelineLayerRevision([]),
+        expectedRevision: 'rev-pipeline-stale',
         mutation: { kind: 'edit', pipelineId: 'custom-flow' },
         pipelines: [{ ...CUSTOM_ROW, name: 'Renamed' }]
       })
@@ -354,32 +376,31 @@ describe('gate 3 — stale catalog', () => {
     expect(harness.acks[0].status).toBe('rejected');
     expect(harness.acks[0].reason).toBe('stale-catalog');
     expect(harness.acks[0].result).toMatchObject({
-      currentRevision: pipelineLayerRevision([CUSTOM_ROW]),
+      currentRevision: SEEDED_REVISION,
       current: {
-        scope: 'workspace',
         pipelineId: 'custom-flow',
         name: 'Custom Flow',
         version: 1,
         legalActions: expect.arrayContaining(['refresh'])
       }
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it('reports a reset against a stale layer without naming a pipeline', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+  it('reports a reset against a stale catalog without naming a pipeline', async () => {
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
       savePayload({
-        expectedRevision: pipelineLayerRevision([]),
+        expectedRevision: 'rev-pipeline-stale',
         mutation: { kind: 'reset' },
         pipelines: []
       })
     );
     expect(harness.acks[0].reason).toBe('stale-catalog');
     expect(harness.acks[0].result).toMatchObject({
-      currentRevision: pipelineLayerRevision([CUSTOM_ROW]),
-      current: { scope: 'workspace', legalActions: expect.arrayContaining(['refresh']) }
+      currentRevision: SEEDED_REVISION,
+      current: { legalActions: expect.arrayContaining(['refresh']) }
     });
   });
 });
@@ -400,7 +421,7 @@ describe('gate 4 — complete-layer validation', () => {
       errors: [expect.objectContaining({ pipelineId: 'custom-flow', field: 'phaseIds' })],
       total: expect.any(Number)
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
   it('rejects a non-positive version at the field layer', async () => {
@@ -421,7 +442,7 @@ describe('gate 4 — complete-layer validation', () => {
     });
   });
 
-  it('rejects a duplicate pipelineId within one scope', async () => {
+  it('rejects a duplicate pipelineId within the catalog', async () => {
     const harness = buildRouter({});
     await dispatch(
       harness,
@@ -477,11 +498,10 @@ describe('gate 4 — complete-layer validation', () => {
 
 describe('gate 9 — declared intent must match the observed diff', () => {
   it('rejects a create whose layer also edits an untouched row', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
       savePayload({
-        expectedRevision: pipelineLayerRevision([CUSTOM_ROW]),
         mutation: { kind: 'create', pipelineId: 'second-flow' },
         pipelines: [
           { ...CUSTOM_ROW, name: 'Smuggled Rename' },
@@ -491,31 +511,26 @@ describe('gate 9 — declared intent must match the observed diff', () => {
     );
     expect(harness.acks[0].status).toBe('rejected');
     expect(harness.acks[0].reason).toBe('pipeline-mutation-mismatch');
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it('rejects a reset that does not empty the layer', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+  it('rejects a reset that does not empty the catalog', async () => {
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
-      savePayload({
-        expectedRevision: pipelineLayerRevision([CUSTOM_ROW]),
-        mutation: { kind: 'reset' },
-        pipelines: [CUSTOM_ROW]
-      })
+      savePayload({ mutation: { kind: 'reset' }, pipelines: [CUSTOM_ROW] })
     );
     expect(harness.acks[0].reason).toBe('pipeline-mutation-mismatch');
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 });
 
 describe('gate 10 — host-owned versions', () => {
   it('rejects a row asserting a version the host never issued (FR-010)', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
       savePayload({
-        expectedRevision: pipelineLayerRevision([CUSTOM_ROW]),
         mutation: { kind: 'edit', pipelineId: 'custom-flow' },
         pipelines: [{ ...CUSTOM_ROW, name: 'Renamed', version: 7 }]
       })
@@ -523,68 +538,79 @@ describe('gate 10 — host-owned versions', () => {
     expect(harness.acks[0].status).toBe('rejected');
     expect(harness.acks[0].reason).toBe('pipeline-version-invalid');
     expect(harness.acks[0].result).toMatchObject({ pipelineId: 'custom-flow' });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 });
 
-describe('gate 12 — pipelineOverrides capability', () => {
-  it('denies a non-reset save when the capability is off and audits the denial', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    mocks.state.scopes.set('pipelineOverrides', 'user');
+// Feature 099 (T496f, FR-046) — the successor of `gate 12 — pipelineOverrides
+// capability`. That gate asked whether one layer could redefine what another
+// declares; one catalog poses no such question, and the capability is deleted.
+// The deny case ('denies a non-reset save when the capability is off and audits
+// the denial') has no reachable form, so what stands in its place is the
+// negative a reintroduced gate would break — plus the reset case, which keeps
+// its claim exactly and loses only the setting that used to make it interesting.
+describe('no override capability is left to consult (FR-046)', () => {
+  it('accepts a non-reset save with every capability denied, and audits nothing', async () => {
+    for (const capability of ['pipelineOverrides', 'workflowOverrides', 'phases', 'retryConditions']) {
+      mocks.state.capabilities.set(capability, false);
+    }
     const harness = buildRouter({});
     await dispatch(harness, savePayload({}));
-    expect(harness.acks[0].status).toBe('rejected');
-    // `denyAndAudit` is the shared 059 helper; its pinned reason code is
-    // `trust-denied`, and the capability travels on the error payload.
-    expect(harness.acks[0].reason).toBe('trust-denied');
-    expect(harness.acks[0].result).toMatchObject({
-      kind: 'trust-denied',
-      capability: 'pipelineOverrides',
-      resolvedScope: 'user'
-    });
-    expect(harness.updateConfigCalls).toEqual([]);
-    expect(harness.auditCalls).toHaveLength(1);
-    expect(harness.auditCalls[0]).toMatchObject({ eventType: 'trust.capability-denied' });
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.auditCalls).toEqual([]);
+    expect(harness.store.layerSaves).toHaveLength(1);
   });
 
-  it('lets a reset through even when the capability is off', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    const harness = buildRouter({ layers: { user: [], workspace: [CUSTOM_ROW] } });
+  it('never asks the trust resolver about an override capability', async () => {
+    const harness = buildRouter({});
+    await dispatch(harness, savePayload({}));
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(mocks.state.asked).not.toContain('pipelineOverrides');
+    expect(mocks.state.asked).not.toContain('workflowOverrides');
+  });
+
+  it('lets a reset through, writing the empty catalog', async () => {
+    const harness = buildRouter({ rows: [CUSTOM_ROW] });
     await dispatch(
       harness,
-      savePayload({
-        expectedRevision: pipelineLayerRevision([CUSTOM_ROW]),
-        mutation: { kind: 'reset' },
-        pipelines: []
-      })
+      savePayload({ mutation: { kind: 'reset' }, pipelines: [] })
     );
     expect(harness.acks[0].status).toBe('accepted');
     expect(harness.auditCalls).toEqual([]);
-    expect(harness.updateConfigCalls).toEqual([
-      { key: 'pipelines', value: [], scope: 'workspace' }
-    ]);
+    expect(layerWrites(harness.store)).toEqual([[]]);
+    expect(harness.store.rowsOf('pipeline')).toEqual([]);
   });
 });
 
 describe('gate 14 — persistence failure', () => {
-  it('rejects with persistence-failed and leaves the prior scope unchanged (FR-021)', async () => {
-    const harness = buildRouter({ updateConfigThrows: true });
-    await dispatch(harness, savePayload({}));
+  it('rejects with persistence-failed and leaves the catalog unchanged (FR-021)', async () => {
+    const harness = buildRouter({ rows: [CUSTOM_ROW], storeRefuses: true });
+    await dispatch(
+      harness,
+      savePayload({
+        mutation: { kind: 'edit', pipelineId: 'custom-flow' },
+        pipelines: [{ ...CUSTOM_ROW, name: 'Renamed' }]
+      })
+    );
     expect(harness.acks[0].status).toBe('rejected');
     expect(harness.acks[0].reason).toBe('persistence-failed');
-    expect(harness.updateConfigCalls).toEqual([]);
-    expect(harness.layers).toEqual({ user: [], workspace: [] });
+    // The store names the fault rather than throwing (FR-029), and the refusal
+    // travels to the operator so a read-only catalog is distinguishable from a
+    // gate rejection.
+    expect(harness.acks[0].result).toMatchObject({ storeRefusal: 'not-writable' });
+    expect(harness.store.rowsOf('pipeline')).toEqual([CUSTOM_ROW]);
+    expect(harness.store.revisionOf('pipeline')).toBe(SEEDED_REVISION);
   });
 });
 
-describe('accepted ack and scope targeting', () => {
-  it('acknowledges with { scope, revision, mutation } and the host-assigned version', async () => {
+describe('accepted ack and catalog targeting', () => {
+  it('acknowledges with { revision, mutation } and the host-assigned version', async () => {
     const harness = buildRouter({});
     await dispatch(harness, savePayload({}));
     expect(harness.acks[0].status).toBe('accepted');
-    expect(harness.updateConfigCalls).toHaveLength(1);
-    const persisted = harness.updateConfigCalls[0].value as readonly unknown[];
-    expect(persisted).toEqual([
+    const persisted = layerWrites(harness.store);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toEqual([
       expect.objectContaining({
         id: 'custom-flow',
         name: 'Custom Flow',
@@ -593,46 +619,50 @@ describe('accepted ack and scope targeting', () => {
       })
     ]);
     expect(harness.acks[0].result).toEqual({
-      scope: 'workspace',
-      revision: pipelineLayerRevision(persisted),
+      revision: harness.store.revisionOf('pipeline'),
       mutation: 'create'
     });
   });
 
-  // `extension.ts` maps the third `updateConfig` argument onto a
-  // `vscode.ConfigurationTarget`: 'user' -> Global, 'workspace' -> Workspace.
-  // Asserting the argument here pins the handler half of that contract.
-  it.each([
-    ['user' as const, 'workspace' as const],
-    ['workspace' as const, 'user' as const]
-  ])(
-    'writes only the %s layer and leaves the %s layer byte-for-byte unchanged (FR-004)',
-    async (target, untouched) => {
-      const other = [{ id: 'other-flow', name: 'Other', version: 1, phases: ['finalize', 'done'] }];
-      const layers: Layers = target === 'user' ? { user: [], workspace: other } : { user: other, workspace: [] };
-      const snapshot = JSON.stringify(layers[untouched]);
-      const harness = buildRouter({ layers });
-      await dispatch(harness, savePayload({ scope: target }));
-      expect(harness.acks[0].status).toBe('accepted');
-      expect(harness.updateConfigCalls).toHaveLength(1);
-      expect(harness.updateConfigCalls[0].key).toBe('pipelines');
-      expect(harness.updateConfigCalls[0].scope).toBe(target);
-      expect(harness.acks[0].result).toMatchObject({ scope: target });
-      expect(JSON.stringify(harness.layers[untouched])).toBe(snapshot);
-    }
-  );
+  // Feature 099 (T496f, FR-004) — the successor of 'writes only the %s layer and
+  // leaves the %s layer byte-for-byte unchanged'. That case pinned the third
+  // `updateConfig` argument, which `extension.ts` mapped onto a
+  // `vscode.ConfigurationTarget`. There is one Pipeline catalog and no target to
+  // choose, so what remains of the isolation claim is the part that still has
+  // two sides: a Pipeline save is addressed to the Pipeline catalog, and the
+  // Phase and Workflow catalogs come out of it untouched — rows AND revision,
+  // which is strictly stronger than the byte comparison it replaces.
+  it('touches no catalog it was not addressed to (FR-004)', async () => {
+    const harness = buildRouter({});
+    const phasesBefore = JSON.stringify(harness.store.rowsOf('phase'));
+    const phaseRevision = harness.store.revisionOf('phase');
+    const workflowRevision = harness.store.revisionOf('workflow');
+
+    await dispatch(harness, savePayload({}));
+
+    expect(harness.acks[0].status).toBe('accepted');
+    expect(harness.store.layerSaves.map((request) => request.kind)).toEqual(['pipeline']);
+    expect(JSON.stringify(harness.store.rowsOf('phase'))).toBe(phasesBefore);
+    expect(harness.store.revisionOf('phase')).toBe(phaseRevision);
+    expect(harness.store.rowsOf('workflow')).toEqual([]);
+    expect(harness.store.revisionOf('workflow')).toBe(workflowRevision);
+  });
 });
 
 // Feature 082 (US4, T046) — the `duplicate` mutation.
 //
 // A duplicate is the only mutation that names two ids: the row it copies and the
-// row it creates. The source pair exists so the host can tell "copy the built-in
-// I cannot edit" apart from "create something new", and because a rename is
+// row it creates. The source id exists so the host can tell "copy the thing I am
+// looking at" apart from "create something new", and because a rename is
 // deliberately not an edit (FR-007) — the operator has to express it here.
 //
 // The declared intent still has to match the observed diff: carrying a source
-// pair must not become a way to smuggle an edit to another row through a
+// id must not become a way to smuggle an edit to another row through a
 // create-shaped gate.
+//
+// Feature 099 (T496f, FR-043) — the mutation carried a `sourceScope` alongside
+// the source id, because the same identifier could exist in several layers and
+// the copy had to say which one it came from. One catalog: the id names it.
 describe('duplicate mutation (US4, FR-006, FR-007)', () => {
   const SOURCE_ROW = {
     id: 'source-flow',
@@ -657,11 +687,8 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
   } = {}) {
     const layer = opts.layer ?? [SOURCE_ROW];
     return savePayload({
-      scope: 'workspace',
-      expectedRevision: pipelineLayerRevision(layer),
       mutation: opts.mutation ?? {
         kind: 'duplicate',
-        sourceScope: 'workspace',
         sourcePipelineId: 'source-flow',
         pipelineId: 'source-flow-copy'
       },
@@ -670,34 +697,34 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
   }
 
   it('accepts a source-paired duplicate and persists both rows', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [SOURCE_ROW] } });
+    const harness = buildRouter({ rows: [SOURCE_ROW] });
 
     await dispatch(harness, duplicatePayload());
 
     expect(harness.acks[0].status).toBe('accepted');
-    expect(harness.acks[0].result).toMatchObject({ scope: 'workspace', mutation: 'duplicate' });
-    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    expect(harness.acks[0].result).toMatchObject({ mutation: 'duplicate' });
+    const persisted = layerWrites(harness.store)[0] as readonly Record<string, unknown>[];
     expect(persisted.map((row) => row.id)).toEqual(['source-flow', 'source-flow-copy']);
   });
 
   // FR-006 — the copy is a new Pipeline, so its history starts over. Inheriting
   // the source's version would make a first edit look like the eighth.
   it('assigns the duplicate an independent version starting at 1', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [SOURCE_ROW] } });
+    const harness = buildRouter({ rows: [SOURCE_ROW] });
 
     await dispatch(harness, duplicatePayload());
 
-    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    const persisted = layerWrites(harness.store)[0] as readonly Record<string, unknown>[];
     expect(persisted[1]).toMatchObject({ id: 'source-flow-copy', version: 1 });
     expect(persisted[0]).toMatchObject({ id: 'source-flow', version: 7 });
   });
 
   it('copies every other authored property from the source', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [SOURCE_ROW] } });
+    const harness = buildRouter({ rows: [SOURCE_ROW] });
 
     await dispatch(harness, duplicatePayload());
 
-    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    const persisted = layerWrites(harness.store)[0] as readonly Record<string, unknown>[];
     expect(persisted[1]).toMatchObject({
       description: 'Original',
       phases: ['speckit-specify', 'done'],
@@ -705,21 +732,21 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
     });
   });
 
-  // A duplicate of a built-in names a source the writable layer does not hold.
-  // The pair still has to survive gate 8, which only forbids *editing* one.
-  it('accepts a duplicate whose source is a built-in in another scope', async () => {
-    const harness = buildRouter({ layers: { user: [], workspace: [] } });
+  // The successor of 'accepts a duplicate whose source is a built-in in another
+  // scope'. There is no other scope and no built-in layer, but the property that
+  // case stood for is unchanged and now the only way to state it: the source id
+  // need not name a row the catalog holds. The copy is the payload's business;
+  // the source pair is what the operator declared, not a lookup the gate makes.
+  it('accepts a duplicate whose source id the catalog does not hold', async () => {
+    const harness = buildRouter({ rows: [] });
     const copy = {
-      id: 'new-feature-copy', name: 'Copy of built-in', version: 1,
+      id: 'new-feature-copy', name: 'Copy of a departed source', version: 1,
       phases: ['speckit-specify', 'done']
     };
 
     await dispatch(harness, savePayload({
-      scope: 'workspace',
-      expectedRevision: pipelineLayerRevision([]),
       mutation: {
         kind: 'duplicate',
-        sourceScope: 'built-in',
         sourcePipelineId: 'speckit-new-feature',
         pipelineId: 'new-feature-copy'
       },
@@ -727,13 +754,13 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
     }));
 
     expect(harness.acks[0].status).toBe('accepted');
-    const persisted = harness.updateConfigCalls[0].value as readonly Record<string, unknown>[];
+    const persisted = layerWrites(harness.store)[0] as readonly Record<string, unknown>[];
     expect(persisted).toEqual([expect.objectContaining({ id: 'new-feature-copy', version: 1 })]);
   });
 
-  it('rejects a duplicate that also edits another row in the same layer', async () => {
+  it('rejects a duplicate that also edits another row in the same catalog', async () => {
     const other = { id: 'other-flow', name: 'Other', version: 2, phases: ['done'] };
-    const harness = buildRouter({ layers: { user: [], workspace: [SOURCE_ROW, other] } });
+    const harness = buildRouter({ rows: [SOURCE_ROW, other] });
 
     await dispatch(harness, duplicatePayload({
       layer: [SOURCE_ROW, other],
@@ -743,12 +770,12 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
     expect(harness.acks[0]).toMatchObject({
       status: 'rejected', reason: 'pipeline-mutation-mismatch'
     });
-    expect(harness.updateConfigCalls).toHaveLength(0);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it('rejects a duplicate whose target id already exists in the target scope', async () => {
+  it('rejects a duplicate whose target id already exists', async () => {
     const taken = { id: 'source-flow-copy', name: 'Taken', version: 1, phases: ['done'] };
-    const harness = buildRouter({ layers: { user: [], workspace: [SOURCE_ROW, taken] } });
+    const harness = buildRouter({ rows: [SOURCE_ROW, taken] });
 
     await dispatch(harness, duplicatePayload({
       layer: [SOURCE_ROW, taken],
@@ -756,24 +783,34 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
     }));
 
     expect(harness.acks[0].status).toBe('rejected');
-    expect(harness.updateConfigCalls).toHaveLength(0);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it.each(['sourceScope', 'sourcePipelineId'])(
-    'rejects a duplicate envelope missing %s at the transport boundary',
-    (key) => {
-      const mutation = {
-        kind: 'duplicate', sourceScope: 'workspace',
-        sourcePipelineId: 'source-flow', pipelineId: 'source-flow-copy'
-      } as Record<string, unknown>;
-      delete mutation[key];
-      expect(validateInboundMessage({
-        type: CMD_SAVE_PIPELINES,
-        correlationId: 'dup-1',
-        payload: { ...duplicatePayload(), mutation }
-      })).toMatchObject({ ok: false, reason: 'invalid-payload' });
-    }
-  );
+  it('rejects a duplicate envelope missing sourcePipelineId at the transport boundary', () => {
+    const mutation = {
+      kind: 'duplicate', pipelineId: 'source-flow-copy'
+    } as Record<string, unknown>;
+    expect(validateInboundMessage({
+      type: CMD_SAVE_PIPELINES,
+      correlationId: 'dup-1',
+      payload: { ...duplicatePayload(), mutation }
+    })).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
+
+  // The successor of `rejects a duplicate envelope missing sourceScope`: the
+  // field is gone, so the boundary claim inverts the same way the envelope's
+  // `scope` did.
+  it('rejects a duplicate envelope that still carries sourceScope (FR-043)', () => {
+    const mutation = {
+      kind: 'duplicate', sourceScope: 'workspace',
+      sourcePipelineId: 'source-flow', pipelineId: 'source-flow-copy'
+    };
+    expect(validateInboundMessage({
+      type: CMD_SAVE_PIPELINES,
+      correlationId: 'dup-2',
+      payload: { ...duplicatePayload(), mutation }
+    })).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
 });
 
 // Feature 083 (US6, T052) — gate 13's second consumer sense.
@@ -784,24 +821,27 @@ describe('duplicate mutation (US4, FR-006, FR-007)', () => {
 // it still blocks when the removal leaves the id with no effective source AND
 // something still references it. Only the reference list grew.
 //
-// The cases that matter are the ones the *effective* Workflow catalog would
-// drop. A shadowed record's reference goes live the moment the shadow is
-// deleted; an invalid record's goes live the moment its defects are fixed.
-// Removing the Pipeline under either would strand a definition an operator
-// restores with one edit, so both must block (FR-041, FR-031, SC-011).
+// The case that matters is the one the *effective* Workflow catalog would drop:
+// an invalid record's reference goes live the moment its defects are fixed.
+// Removing the Pipeline under it would strand a definition an operator restores
+// with one edit, so it must block (FR-041, FR-031, SC-011).
+//
+// Feature 099 (T496f, FR-040) — the shadowed case is gone with the precedence
+// that produced it. Its successor is the duplicate-id case below: a second row
+// claiming an id is invalidated rather than shadowed, and the reference it holds
+// blocks for exactly the reason a shadowed one did. The reported ids lose their
+// scope prefix (FR-043) — an identifier names the record now.
 describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 FR-041)', () => {
-  const removal = (layer: readonly unknown[] = [CUSTOM_ROW]) =>
+  const removal = () =>
     savePayload({
-      scope: 'workspace',
-      expectedRevision: pipelineLayerRevision(layer),
       mutation: { kind: 'remove', pipelineId: CUSTOM_ROW.id },
       pipelines: []
     });
 
   it('blocks a removal referenced only by an effective stored definition', async () => {
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: { workspace: [workflowRow('release')] }
+      rows: [CUSTOM_ROW],
+      workflows: [workflowRow('release')]
     });
 
     await dispatch(harness, removal());
@@ -812,25 +852,23 @@ describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 
       result: {
         pipelineIds: [CUSTOM_ROW.id],
         dependentWorkflowIds: [],
-        dependentWorkflowDefinitionIds: ['workspace::release'],
+        dependentWorkflowDefinitionIds: ['release'],
         total: 1
       }
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it('blocks a removal referenced only by a shadowed record (FR-041)', async () => {
-    // `release` exists in both writable layers; the workspace copy wins and the
-    // user copy is `shadowed`. The user copy is the ONLY record naming
-    // `custom-flow`, so nothing but the shadowed reference can block here.
+  it('blocks a removal referenced only by an invalidated duplicate record (FR-041)', async () => {
+    // `release` is declared twice. Duplicate ids invalidate, so the second record
+    // is retained at `invalid` and is the ONLY one naming `custom-flow` — nothing
+    // but its reference can block here.
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: {
-        user: [workflowRow('release')],
-        workspace: [workflowRow('release', {
-          nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }]
-        })]
-      }
+      rows: [CUSTOM_ROW],
+      workflows: [
+        workflowRow('release', { nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }] }),
+        workflowRow('release')
+      ]
     });
 
     await dispatch(harness, removal());
@@ -838,9 +876,9 @@ describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 
     expect(harness.acks[0]).toMatchObject({
       status: 'rejected',
       reason: 'pipeline-removal-blocked',
-      result: { dependentWorkflowDefinitionIds: ['user::release'], total: 1 }
+      result: { dependentWorkflowDefinitionIds: ['release'], total: 1 }
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
   it('blocks a removal referenced only by an invalid record (FR-041, FR-031)', async () => {
@@ -848,8 +886,8 @@ describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 
     // node's `pipelineId` is still well formed, so the reference survives the
     // best-effort parse and still blocks.
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: { user: [workflowRow('release', { name: '' })] }
+      rows: [CUSTOM_ROW],
+      workflows: [workflowRow('release', { name: '' })]
     });
 
     await dispatch(harness, removal());
@@ -857,85 +895,92 @@ describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 
     expect(harness.acks[0]).toMatchObject({
       status: 'rejected',
       reason: 'pipeline-removal-blocked',
-      result: { dependentWorkflowDefinitionIds: ['user::release'], total: 1 }
+      result: { dependentWorkflowDefinitionIds: ['release'], total: 1 }
     });
-    expect(harness.updateConfigCalls).toEqual([]);
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
-  it('names every referencing Workflow with its scope, since one id may span layers', async () => {
+  it('names every referencing Workflow', async () => {
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: {
-        user: [workflowRow('release'), workflowRow('audit')],
-        workspace: [workflowRow('release')]
-      }
+      rows: [CUSTOM_ROW],
+      workflows: [workflowRow('release'), workflowRow('audit')]
     });
 
     await dispatch(harness, removal());
 
     expect(harness.acks[0].result).toMatchObject({
-      dependentWorkflowDefinitionIds: ['user::audit', 'user::release', 'workspace::release'],
-      total: 3
+      dependentWorkflowDefinitionIds: ['audit', 'release'],
+      total: 2
     });
   });
 
   it('reports a Workflow once even when two of its nodes name the same Pipeline', async () => {
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: {
-        workspace: [workflowRow('release', {
+      rows: [CUSTOM_ROW],
+      workflows: [
+        workflowRow('release', {
           nodes: [
             { nodeId: 'a', pipelineId: CUSTOM_ROW.id },
             { nodeId: 'b', pipelineId: CUSTOM_ROW.id }
           ],
           connections: [{ fromNodeId: 'a', toNodeId: 'b' }]
-        })]
-      }
+        })
+      ]
     });
 
     await dispatch(harness, removal());
 
     expect(harness.acks[0].result).toMatchObject({
-      dependentWorkflowDefinitionIds: ['workspace::release'],
+      dependentWorkflowDefinitionIds: ['release'],
       total: 1
     });
   });
 
   it('permits the removal when no stored definition names the Pipeline', async () => {
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: {
-        workspace: [workflowRow('release', {
-          nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }]
-        })]
-      }
+      rows: [CUSTOM_ROW],
+      workflows: [
+        workflowRow('release', { nodes: [{ nodeId: 'a', pipelineId: 'speckit-new-feature' }] })
+      ]
     });
 
     await dispatch(harness, removal());
 
     expect(harness.acks[0].status).toBe('accepted');
-    expect(harness.updateConfigCalls).toHaveLength(1);
+    expect(harness.store.layerSaves).toHaveLength(1);
   });
 
   // FR-022's "either condition alone permits the removal" is unchanged by
   // FR-041: a definition reference blocks only when the id is left with no
   // effective source, exactly as a run-request reference does.
-  it('permits the removal when a lower-precedence Pipeline source stays effective', async () => {
+  //
+  // Feature 099 (T496f) — the rescuing source used to be the same id in the
+  // lower-precedence layer. It is a second row claiming the id in the one
+  // catalog now, and the gate's question is unchanged: after this save, does the
+  // id still resolve?
+  it('permits the removal when a second row claiming the id stays effective', async () => {
+    const twin = { ...CUSTOM_ROW, name: 'Fallback' };
     const harness = buildRouter({
-      layers: { user: [{ ...CUSTOM_ROW, name: 'Fallback' }], workspace: [CUSTOM_ROW] },
-      workflows: { workspace: [workflowRow('release')] }
+      rows: [CUSTOM_ROW, twin],
+      workflows: [workflowRow('release')]
     });
 
-    await dispatch(harness, removal());
+    await dispatch(
+      harness,
+      savePayload({
+        mutation: { kind: 'remove', pipelineId: CUSTOM_ROW.id },
+        pipelines: [CUSTOM_ROW]
+      })
+    );
 
     expect(harness.acks[0].status).toBe('accepted');
-    expect(harness.updateConfigCalls).toHaveLength(1);
+    expect(harness.store.layerSaves).toHaveLength(1);
   });
 
   it('keeps the two consumer senses in separate lists', async () => {
     const harness = buildRouter({
-      layers: { user: [], workspace: [CUSTOM_ROW] },
-      workflows: { workspace: [workflowRow('release')] }
+      rows: [CUSTOM_ROW],
+      workflows: [workflowRow('release')]
     });
     // A queued run request alongside the stored definition, injected at the
     // same seam `extension.ts` concatenates into.
@@ -950,7 +995,7 @@ describe('gate 13 — stored Workflow definitions block a Pipeline removal (083 
 
     expect(harness.acks[0].result).toMatchObject({
       dependentWorkflowIds: ['queued-1'],
-      dependentWorkflowDefinitionIds: ['workspace::release'],
+      dependentWorkflowDefinitionIds: ['release'],
       total: 2
     });
   });

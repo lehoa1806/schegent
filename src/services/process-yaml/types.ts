@@ -18,7 +18,6 @@
 import type {
   PhaseDefinition,
   PhaseDefinitionEffort,
-  PhaseDefinitionScope,
   PhaseEvidencePolicy,
   PhaseSideEffects,
   PhaseSourceStatus
@@ -26,7 +25,6 @@ import type {
 import type {
   PhaseBinding,
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineExecutionDefaults,
   PipelineInputPort,
   PipelineOutputPort,
@@ -35,7 +33,6 @@ import type {
 import type {
   WorkflowConnection,
   WorkflowDefinition,
-  WorkflowDefinitionScope,
   WorkflowNode,
   WorkflowSourceStatus
 } from '../../contracts/workflow-definitions';
@@ -484,14 +481,16 @@ export type BlockedReason =
     };
 
 /**
- * The scopes and statuses a presence scan can report. All three catalogs use the
- * same three of each; the union is written out so a row's `resourceKind` and its
- * presence fields cannot silently disagree about which catalog was scanned.
+ * The statuses a presence scan can report. All three catalogs use the same
+ * three; the union is written out so a row's `resourceKind` and its presence
+ * status cannot silently disagree about which catalog was scanned.
+ *
+ * Feature 099 (T490, FR-049) — `ProcessYamlPresenceScope` is gone with it. It
+ * named which of `built-in`/`user`/`workspace` already held the id. There is one
+ * layer, so the answer would be the same on every skip row, and the presence
+ * *property* is unchanged: a scan of stored rows at every status, never the
+ * effective catalog.
  */
-export type ProcessYamlPresenceScope =
-  | PhaseDefinitionScope
-  | PipelineDefinitionScope
-  | WorkflowDefinitionScope;
 export type ProcessYamlPresenceStatus =
   | PhaseSourceStatus
   | PipelineSourceStatus
@@ -533,10 +532,10 @@ export interface ModelCatalogImportRow {
 
 /**
  * A Model Catalog skip row. A distinct arm rather than a reuse of the generic
- * `skip` arm below: `presentIn` / `presentRowStatus` describe a scope-tiered
- * catalog (built-in/user/workspace), and Model Catalog has neither — its two
- * skip reasons are `already-exists` (FR-011) and `unrecognized-backend`
- * (FR-013), not a presence scope/status pair.
+ * `skip` arm below: `presentRowStatus` describes a stored row the catalog already
+ * holds, and the Model Catalog holds no stored rows — its two skip reasons are
+ * `already-exists` (FR-011) and `unrecognized-backend` (FR-013), not a presence
+ * status.
  */
 export interface ModelCatalogSkipRow {
   readonly outcome: 'skip';
@@ -577,7 +576,7 @@ export type ImportPlanRow =
       /**
        * Excludes 'modelCatalog' deliberately: `ModelCatalogSkipRow` below
        * carries that kind instead, with a disjoint field set
-       * (`backend`/`modelId`/`reason` vs. `name`/`presentIn`/`presentRowStatus`).
+       * (`backend`/`modelId`/`reason` vs. `name`/`presentRowStatus`).
        * Widening this to the full `ProcessYamlResourceKind` would make the two
        * arms structurally overlap on `{outcome: 'skip', resourceKind:
        * 'modelCatalog'}`, and a reader narrowing on `resourceKind` alone could
@@ -586,7 +585,6 @@ export type ImportPlanRow =
       readonly resourceKind: 'phase' | 'pipeline' | 'workflow';
       readonly resourceId: string;
       readonly name: string;
-      readonly presentIn: ProcessYamlPresenceScope;
       readonly presentRowStatus: ProcessYamlPresenceStatus;
     }
   | ModelCatalogSkipRow
@@ -615,14 +613,14 @@ export type ImportPlanRow =
     };
 
 /**
- * One revision per writable target. The operator may still choose the scope
- * after preflight, so recording a single revision would leave the staleness
- * gate unable to fire for whichever scope they actually pick (FR-033).
+ * The revision a plan was computed against, per kind.
+ *
+ * Feature 099 (T490, FR-043, FR-044) — was one revision per writable target,
+ * because the operator chose the scope *after* preflight and a single revision
+ * could not gate a choice not yet made. There is one target, so the plan records
+ * the one revision the store reported when the preview was computed.
  */
-export interface ProcessYamlLayerRevisions {
-  readonly user: string;
-  readonly workspace: string;
-}
+export type ProcessYamlCatalogRevision = string;
 
 /** One count per outcome. The four sum to `rows.length` (FR-028). */
 export interface ImportPlanCounts {
@@ -637,33 +635,33 @@ export interface ImportPlan {
   readonly rows: readonly ImportPlanRow[];
   readonly counts: ImportPlanCounts;
   /** Phase catalog. Always present — every plan can write Phases. */
-  readonly computedAgainstRevision: ProcessYamlLayerRevisions;
+  readonly computedAgainstRevision: ProcessYamlCatalogRevision;
   /**
    * Pipeline catalog (feature 085, FR-043). Present exactly when the document
-   * declared a Pipeline, which is the only case a Pipeline layer is written.
+   * declared a Pipeline, which is the only case a Pipeline is written at all.
    *
-   * A second field rather than a second use of the first: the two layers are
+   * A second field rather than a second use of the first: the two kinds are
    * independently mutable, so one revision cannot gate both, and a confirmed
    * package is two ordered writes each carrying its OWN expected revision. It is
    * carried on the plan rather than read live at confirm time because FR-040 is
    * about the catalog the operator's PREVIEW described — reading the current
    * revision at the moment of the write would make the gate unable to fire.
    */
-  readonly computedAgainstPipelineRevision?: ProcessYamlLayerRevisions;
+  readonly computedAgainstPipelineRevision?: ProcessYamlCatalogRevision;
   /**
    * Workflow catalog (feature 086, FR-036). Present exactly when the document
    * declared a Workflow.
    *
    * A third field for the same reason there is a second: three independently
-   * mutable layers cannot share one gate, and a confirmed package is three
+   * mutable kinds cannot share one gate, and a confirmed package is three
    * ordered writes each carrying its own expected revision (data-model.md §3.4).
    */
-  readonly computedAgainstWorkflowRevision?: ProcessYamlLayerRevisions;
+  readonly computedAgainstWorkflowRevision?: ProcessYamlCatalogRevision;
   /**
    * Model Catalog (feature 096). Present exactly when the document declared a
-   * `ModelCatalog`. A single string, not a `ProcessYamlLayerRevisions` pair:
-   * Model Catalog has exactly one writable layer (`'workspace'`), so there is
-   * only ever one revision to gate against (data-model.md Decision 6).
+   * `ModelCatalog`. Its own field rather than a fourth use of the three above:
+   * the Model Catalog is not in the store (FR-056), so its revision comes from a
+   * different authority even though the three kinds' now do not.
    */
   readonly computedAgainstModelsRevision?: string;
 }

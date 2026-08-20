@@ -25,6 +25,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..', '..');
  * names: authoring, resolution, precedence, revision, and save semantics. Paths
  * rather than imports, because the assertion is that they still exist and still
  * run — importing them here would run them twice.
+ *
+ * Feature 099 (T496f, FR-042/FR-043) — `precedence` was the question "two rows
+ * claim one id; which one is effective?", and with one layer the answer changed
+ * from "the higher scope" to "neither, both are invalid". The question survives,
+ * so the concern survives under the name the answer now has; only its suite
+ * moved, from the deleted `phase-precedence.test.ts` to the resolver suites that
+ * assert the invalidation. Deleting the row here instead would have let the
+ * contention rule go unguarded while SC-013 still claimed it was covered.
  */
 const CATALOG_SUITES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   authoring: ['webview-ui/src/components/__tests__/PhaseCatalogEditor.test.ts'],
@@ -32,7 +40,10 @@ const CATALOG_SUITES: Readonly<Record<string, readonly string[]>> = Object.freez
     'tests/unit/config/process-catalog.test.ts',
     'tests/integration/phase-catalog-run-snapshot.test.ts'
   ],
-  precedence: ['tests/unit/config/phase-precedence.test.ts'],
+  contention: [
+    'tests/unit/config/pipeline-config.test.ts',
+    'tests/unit/config/process-catalog.test.ts'
+  ],
   revision: ['tests/unit/ui/sidebar/commands/cmd-save-phases.test.ts'],
   'save-semantics': [
     'tests/unit/ui/sidebar/commands/cmd-save-phases-validation.test.ts',

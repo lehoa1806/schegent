@@ -109,14 +109,12 @@ const ALPHA: PhaseDef = {
   name: 'Alpha',
   version: 1,
   instruction: 'Alpha prompt.',
-  sourceScope: 'workspace'
 };
 const BETA: PhaseDef = {
   id: 'beta',
   name: 'Beta',
   version: 1,
   instruction: 'Beta prompt.',
-  sourceScope: 'workspace'
 };
 
 /** What the run froze at launch: `brief` in, `report` out. */
@@ -124,7 +122,6 @@ const AB_FLOW: PipelineDef = {
   id: 'ab-flow',
   name: 'A then B',
   phases: ['alpha', 'beta'],
-  sourceScope: 'workspace',
   inputs: [
     { portId: 'brief', label: 'Brief', type: 'text', required: true },
     { portId: 'notes', label: 'Notes', type: 'text' }
@@ -141,7 +138,6 @@ const AB_FLOW_DRIFTED: PipelineDef = {
   id: 'ab-flow',
   name: 'A then B (edited)',
   phases: ['alpha'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true }],
   outputs: [{ portId: 'summary', label: 'Summary', type: 'markdown' }]
 };
@@ -150,7 +146,6 @@ const SOLO_FLOW: PipelineDef = {
   id: 'solo-flow',
   name: 'Solo',
   phases: ['alpha'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'seed', label: 'Seed', type: 'text', required: true }],
   outputs: []
 };

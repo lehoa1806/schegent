@@ -14,7 +14,7 @@
 //
 // Both sources are read through the supplied callbacks on every call, never
 // captured at construction: the host reassigns its Workflow catalog wholesale
-// on a `schegent.workflows` reload, and a captured snapshot would answer the
+// on a Workflow catalog reload, and a captured snapshot would answer the
 // next gate decision from the pre-reload catalog.
 
 import type { FeatureRequest } from '../../queue/feature-request';

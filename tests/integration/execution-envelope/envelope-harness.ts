@@ -64,14 +64,12 @@ class FakeMemento implements Memento {
 
 const COMPOSE: PhaseDef = {
   id: 'compose', name: 'Compose', version: 1, instruction: 'Compose the report.',
-  sourceScope: 'built-in'
 };
 const REVIEW: PhaseDef = {
   id: 'review', name: 'Review', version: 1, instruction: 'Review the report.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 /**
@@ -86,7 +84,6 @@ export const ENVELOPE_FLOW: PipelineDef = {
   id: 'envelope-flow',
   name: 'Envelope Flow',
   phases: ['compose', 'review', 'done'],
-  sourceScope: 'workspace',
   inputs: [
     { portId: 'brief', label: 'Brief', type: 'text', required: true },
     { portId: 'spec', label: 'Spec', type: 'local-file', required: true }

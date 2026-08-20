@@ -1,5 +1,4 @@
 import type { AuditLogWriter } from '../../audit/audit-log-writer';
-import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
@@ -65,7 +64,6 @@ export interface StateProjectorDeps {
   readonly getGeneralSettings?: () => GeneralSettings;
   readonly getSessionArtifacts?: () => SessionArtifactsProjection;
   readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
-  readonly getPhasePrecedence?: () => PhasePrecedenceProjection | undefined;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
   /** Feature 082 — resolved Pipeline catalog; throwing projects `state: 'error'`. */
   readonly getPipelineCatalog?: () => ResolvedPipelineCatalog | undefined;

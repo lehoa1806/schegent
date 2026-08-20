@@ -111,6 +111,6 @@ These invariants exist so that paused runs reload cleanly across an extension re
 
 - **Step inside a phase.** Breakpoints are phase-boundary granular. You cannot pause between two tool calls within the same phase.
 - **Modify the phase argv.** The breakpoint pauses *before* the phase starts; the phase will run with the same argv composition it would have run anyway. To change the model, effort, or other CLI parameters, use [Phase Overrides](phase-overrides.md) **before** the run starts (or, per-run, via the override surface).
-- **Re-target the pipeline.** The pipeline snapshot is frozen on `WorkflowRun.pipeline` at the moment the task transitioned to in-flight. Changing `schegent.phases` or `schegent.pipelines` in your settings while paused has no effect on the in-flight run; it will take effect on the *next* enqueue.
+- **Re-target the pipeline.** The pipeline snapshot is frozen on `WorkflowRun.pipeline` at the moment the task transitioned to in-flight. Editing a phase or pipeline definition while paused has no effect on the in-flight run; it will take effect on the *next* enqueue.
 
 The next feature page is [Phase Overrides](phase-overrides.md).

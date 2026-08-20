@@ -2,8 +2,7 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
-import type { WritablePhaseDefinitionScope } from '../../../contracts/process-definitions';
-import type { WorkflowDefinitionScope } from '../../../contracts/workflow-definitions';
+import type { CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { RunOutputRecord } from '../../../contracts/run-results';
 import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
@@ -167,8 +166,9 @@ export interface WorkflowDefinitionPipelineReference {
   readonly kind: 'workflow-definition';
   readonly workflowId: string;
   readonly pipelineId: string;
-  /** The layer that holds the referencing record — the one worth editing. */
-  readonly scope: WorkflowDefinitionScope;
+  // Feature 099 (T489a, FR-043) — `scope` named the layer holding the referencing
+  // record, so the surface could point at the one worth editing. One layer: the
+  // `workflowId` already names it.
 }
 
 export type WorkflowPipelineReference =
@@ -236,28 +236,51 @@ export interface RouterDeps {
       correlationId?: string;
     }): Promise<unknown>;
   };
-  readonly updateConfig?: (
-    key: 'phases' | 'pipelines' | 'models' | 'workflows',
-    value: unknown,
-    scope?: WritablePhaseDefinitionScope
-  ) => Promise<void>;
-  readonly readPhaseConfig?: () => {
-    readonly user: readonly unknown[];
-    readonly workspace: readonly unknown[];
-  };
+  /**
+   * Feature 099 (T493d, FR-054) — the Model Catalog is the last catalog written
+   * through configuration, so this is narrowed to that one key. Phase, Pipeline,
+   * and Workflow saves go to {@link catalogStore} and produce a version record.
+   */
+  readonly updateConfig?: (key: 'models', value: unknown) => Promise<void>;
+  /**
+   * Feature 099 (T493d, FR-042a) — the versioned store the three catalog save
+   * commands write through, and `null` in an untrusted workspace (FR-051).
+   *
+   * `null` rather than absent-and-optional: a save in an untrusted workspace is
+   * refused by name, which is a different answer from "this host wired no store"
+   * and the operator reads them differently.
+   */
+  readonly catalogStore?: CatalogStore | null;
+  /**
+   * The stored rows of each catalog and the revision they were read at, taken
+   * from the snapshot the host is currently resolving against.
+   *
+   * Feature 099 (FR-041) — one layer, so a read is one list rather than a
+   * `{user, workspace}` pair, and the revision travels with the rows so a save
+   * cannot be gated against a revision the rows never came from.
+   */
+  readonly readPhaseConfig?: () => { readonly rows: readonly unknown[]; readonly revision: string };
   readonly readPipelineConfig?: () => {
-    readonly user: readonly unknown[];
-    readonly workspace: readonly unknown[];
+    readonly rows: readonly unknown[];
+    readonly revision: string;
   };
-  /** Feature 083 — the two writable Workflow layers, read fresh on every save. */
   readonly readWorkflowConfig?: () => {
-    readonly user: readonly unknown[];
-    readonly workspace: readonly unknown[];
+    readonly rows: readonly unknown[];
+    readonly revision: string;
   };
   /**
-   * Feature 096 — Model Catalog's one writable layer ('workspace', research.md
-   * Decision 6), read fresh per save for the same reason as `readWorkflowConfig`:
-   * the revision gate must compare against the layer as it stands now.
+   * Re-read the store and re-resolve every catalog derived from it.
+   *
+   * Feature 099 (T493b, FR-054) — a store write raises no configuration event, so
+   * nothing else can notice one. The window that wrote calls this; a save that
+   * changed nothing on disk does not. Absent in a host that wired no store, where
+   * there is nothing to re-read.
+   */
+  readonly refreshCatalog?: () => Promise<void>;
+  /**
+   * Feature 096 — the Model Catalog stays in workspace configuration (research.md
+   * Decision 6) and is out of feature 099's scope. Read fresh per save so the
+   * revision gate compares against the configuration as it stands now.
    */
   readonly readModelsConfig?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getCatalog?: () => PipelineCatalog;

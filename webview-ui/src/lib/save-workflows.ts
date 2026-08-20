@@ -20,8 +20,7 @@ import { CMD_SAVE_WORKFLOWS } from './messages';
 import type {
   WorkflowCatalogMutation,
   WorkflowConnection,
-  WorkflowNode,
-  WritableWorkflowDefinitionScope
+  WorkflowNode
 } from './snapshot-types';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
@@ -30,7 +29,7 @@ const ACK_TIMEOUT_MS = 5000;
 
 /**
  * An authored row as the Builder emits it. Unlike a Pipeline row there is no
- * legacy key form to accommodate: `schegent.workflows` is new in this feature,
+ * legacy key form to accommodate: the Workflow catalog is new in this feature,
  * so `workflowId` is the only identity spelling.
  */
 export interface SaveWorkflowRow {
@@ -46,7 +45,6 @@ export interface SaveWorkflowRow {
 export type SaveWorkflowsMutation = WorkflowCatalogMutation;
 
 export interface SaveWorkflowsRequest {
-  readonly scope: WritableWorkflowDefinitionScope;
   readonly expectedRevision: string;
   readonly mutation: SaveWorkflowsMutation;
   readonly workflows: readonly SaveWorkflowRow[];
@@ -57,13 +55,13 @@ export type SaveWorkflowsResult =
   | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
 
 /**
- * Persist one complete `schegent.workflows` layer via the CMD_SAVE_WORKFLOWS
+ * Persist the complete Workflow catalog via the CMD_SAVE_WORKFLOWS
  * IPC. Resolves with the host's ack, or with
  * `{ status: 'rejected', reason: 'timeout' }` after 5 seconds of silence so the
  * UI can surface a recovery affordance instead of hanging.
  *
- * @param request      Scope, the revision the draft was based on, the mutation
- *                     intent, and the full layer snapshot (all-or-nothing save).
+ * @param request      The revision the draft was based on, the mutation intent,
+ *                     and the full catalog snapshot (all-or-nothing save).
  * @param postMessage  Optional injection point for tests. When omitted, the
  *                     helper uses the standard `postCommand` path so the
  *                     envelope is observable by the snapshot store and the

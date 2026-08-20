@@ -112,7 +112,6 @@ export function composePhaseCatalogProjection(
       return Object.freeze({
         key: catalogText(record.key, sanitize, KEY_MAX),
         phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
-        scope: record.scope,
         status: record.status,
         definition,
         display: projectDisplay(record.display, sanitize),
@@ -129,7 +128,7 @@ export function composePhaseCatalogProjection(
     effective: Object.freeze(
       phaseCatalog.effective.map((definition) => projectPhaseDefinition(definition, sanitize))
     ),
-    revisions: phaseCatalog.revisions,
+    revision: phaseCatalog.revision,
     warnings: Object.freeze(phaseCatalog.warnings.map((warning) => Object.freeze({
       code: catalogText(warning.code, sanitize, CODE_MAX),
       message: catalogText(warning.message, sanitize, MESSAGE_MAX)

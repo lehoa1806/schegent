@@ -200,12 +200,14 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
   // parity for any present key; this assertion catches accidental deletion
   // of all of them at once (the generic loop would silently pass an empty
   // intersection).
-  it('declares the four trust-scope keys (nullable boolean, window scope)', () => {
+  //
+  // Feature 099 (T492, FR-046) — two of the four are deleted with the layer tier
+  // they guarded. They are named again below as an absence, so the deletion is
+  // pinned rather than merely no longer asserted.
+  it('declares the two surviving trust-scope keys (nullable boolean, window scope)', () => {
     const trustKeys = [
       'schegent.trust.allowCustomPhases',
-      'schegent.trust.allowCustomRetryConditions',
-      'schegent.trust.allowPipelineOverrides',
-      'schegent.trust.allowWorkflowOverrides'
+      'schegent.trust.allowCustomRetryConditions'
     ];
     for (const key of trustKeys) {
       const entry = SETTINGS_SCHEMA[key];
@@ -222,6 +224,16 @@ describe('SETTINGS_SCHEMA parity with package.json', () => {
       ).toBe(true);
       expect(pkg.default, `${key} package.json default`).toBeNull();
       expect(pkg.scope, `${key} package.json scope`).toBe('window');
+    }
+  });
+
+  it('declares neither retired override key, in the schema or in package.json', () => {
+    for (const key of [
+      'schegent.trust.allowPipelineOverrides',
+      'schegent.trust.allowWorkflowOverrides'
+    ]) {
+      expect(SETTINGS_SCHEMA[key], `${key} must be gone from the schema`).toBeUndefined();
+      expect(key in props, `${key} must be gone from package.json`).toBe(false);
     }
   });
 });

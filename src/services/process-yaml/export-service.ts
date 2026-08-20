@@ -23,9 +23,7 @@
 import { groupsFromModelsConfig } from '../../config/model-catalog';
 import { resolvePipelineCatalog } from '../../config/pipeline-catalog';
 import { coerceModels } from '../../config/pipeline-config-loader';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../config/pipeline-config';
 import { resolvePhaseCatalog } from '../../config/process-catalog';
-import { BUILT_IN_WORKFLOWS } from '../../config/workflow-config';
 import { serializeModelCatalogDocument } from './model-catalog-yaml-mapper';
 import { documentFromPhaseDefinition } from './phase-yaml-mapper';
 import {
@@ -39,21 +37,15 @@ import { referencedPhaseClosure, referencedPipelineOrder } from './workflow-expo
 import { selectWorkflowForExport } from './workflow-export-selection';
 import { serializePhaseDocument } from './yaml-serializer';
 import type { ProcessExchangePayload } from '../../contracts/audit-events';
-import type {
-  PipelineDefinition,
-  PipelineDefinitionScope
-} from '../../contracts/pipeline-definitions';
-import type { PhaseDefinition, PhaseDefinitionScope } from '../../contracts/process-definitions';
+import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
 import {
   RESOURCE_ID_MAX_LEN,
   type ExportProcessYamlRequest,
   type ExportProcessYamlResult,
   type ExportProcessYamlUnavailable
 } from '../../contracts/sidebar-ipc/process-yaml';
-import type {
-  WorkflowDefinitionScope,
-  WorkflowNode
-} from '../../contracts/workflow-definitions';
+import type { WorkflowNode } from '../../contracts/workflow-definitions';
 import type { ExchangeDeps } from './service-ports';
 import { MODEL_CATALOG_YAML_KIND, PHASE_YAML_API_VERSION, type ProcessYamlResourceKind } from './types';
 import type { WorkflowInclusion } from './workflow-document';
@@ -69,15 +61,16 @@ import type { WorkflowInclusion } from './workflow-document';
  */
 export const MODEL_CATALOG_EXPORT_RESOURCE_ID = 'model-catalog';
 
-export type ExportScope = PhaseDefinitionScope | PipelineDefinitionScope | WorkflowDefinitionScope;
-
 /**
  * The definition to write, already serialized. Selecting it is the only thing
  * the three resource kinds do differently.
+ *
+ * Feature 099 (FR-041) — `scope` is gone with the layer tier it named. An
+ * export writes the one definition the catalog holds, so there is no longer a
+ * layer to report alongside it.
  */
 export interface ResolvedExport {
   readonly outcome: 'resolved';
-  readonly scope: ExportScope;
   readonly suggestedFileName: string;
   readonly text: string;
   /**
@@ -103,7 +96,6 @@ type IncludedPipelineResolution =
 export interface ExportAuditEntry {
   readonly resourceKind: ProcessYamlResourceKind;
   readonly resourceId: string;
-  readonly scope: ExportScope | null;
   readonly outcome: ExportProcessYamlResult['outcome'];
   readonly includedPhaseCount?: number;
   readonly correlationId?: string;
@@ -115,8 +107,8 @@ export async function appendExportAudit(
 ): Promise<void> {
   if (!deps.audit) return;
   const saved = args.outcome === 'saved';
-  // FR-047 bounds this to operation, ids, scope, outcomes, and counts. The
-  // chosen file name is absent by construction — FR-019, FR-048, SC-009.
+  // FR-047 bounds this to operation, ids, outcomes, and counts. The chosen file
+  // name is absent by construction — FR-019, FR-048, SC-009.
   //
   // `includedPhases` counts the Phase definitions that actually left the
   // installation, so it follows `exported` rather than describing a document
@@ -127,7 +119,6 @@ export async function appendExportAudit(
     operation: 'export',
     resourceKind: args.resourceKind,
     resourceIds: [args.resourceId],
-    scope: args.scope,
     outcomes: [args.outcome],
     counts: {
       exported: saved ? 1 : 0,
@@ -157,12 +148,8 @@ export async function appendExportAudit(
 
 /** Reads the effective Phase catalog, which every branch needs. */
 function effectivePhases(deps: ExchangeDeps): ReturnType<typeof resolvePhaseCatalog> {
-  const layers = deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
-  return resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: layers.user,
-    workspace: layers.workspace
-  });
+  const stored = deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
+  return resolvePhaseCatalog({ rows: stored.rows, revision: stored.revision });
 }
 
 function selectPhase(deps: ExchangeDeps, resourceId: string): ExportSelection {
@@ -175,8 +162,8 @@ function selectPhase(deps: ExchangeDeps, resourceId: string): ExportSelection {
   if (!record?.definition) {
     // FR-015 / QS-6 — two different absences, told apart so the reason is
     // stated rather than guessed. A row that exists but carries no valid
-    // definition is `'does-not-resolve'`; an id no layer mentions at all is
-    // `'not-found'`.
+    // definition is `'does-not-resolve'`; an id the catalog does not hold at
+    // all is `'not-found'`.
     return {
       outcome: 'unavailable',
       reason: catalog.records.some((row) => row.phaseId === resourceId)
@@ -186,7 +173,6 @@ function selectPhase(deps: ExchangeDeps, resourceId: string): ExportSelection {
   }
   return {
     outcome: 'resolved',
-    scope: record.scope,
     // A bare name, never a location.
     suggestedFileName: `${record.phaseId}.phase.yaml`,
     text: serializePhaseDocument(documentFromPhaseDefinition(record.definition))
@@ -198,8 +184,8 @@ function selectPhase(deps: ExchangeDeps, resourceId: string): ExportSelection {
  * not resolve (FR-017).
  *
  * Resolution is against the EFFECTIVE catalog, so an included Phase is the one
- * this installation actually runs rather than a shadowed layer's copy (FR-014).
- * That is deliberately stricter than the reference-relaxed selection above:
+ * this installation actually runs rather than a row the catalog rejected
+ * (FR-014). That is deliberately stricter than the reference-relaxed selection above:
  * a references-only export writes an identifier, which needs nothing to resolve
  * (FR-018), while an inclusion export writes a definition, which needs one.
  *
@@ -235,11 +221,9 @@ function selectPipeline(
   deps: ExchangeDeps,
   request: Extract<ExportProcessYamlRequest, { resourceKind: 'pipeline' }>
 ): ExportSelection {
-  const layers = deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   const selection = selectPipelineForExport({
-    builtIn: BUILT_IN_PIPELINES,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
     phaseCatalog: effectivePhases(deps).effective,
     pipelineId: request.resourceId
   });
@@ -255,7 +239,6 @@ function selectPipeline(
 
   return {
     outcome: 'resolved',
-    scope: selection.scope,
     // Zero for a references-only export, which is a count and not an absence:
     // the operator chose to disclose no Phase text, and the log says so.
     includedPhaseCount: included?.length ?? 0,
@@ -273,15 +256,14 @@ function selectPipeline(
  * The effective Pipeline catalog and the rows behind it, which a Workflow's graph
  * is resolved against per the project rule on graph resolution.
  *
- * Built here rather than threaded in, so it is resolved from the same layers the
+ * Built here rather than threaded in, so it is resolved from the same rows the
  * Pipeline branch above reads and cannot be a stale copy of them.
  */
 function effectivePipelines(deps: ExchangeDeps): ReturnType<typeof resolvePipelineCatalog> {
-  const layers = deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
+    revision: stored.revision,
     phaseCatalog: effectivePhases(deps).effective
   });
 }
@@ -310,14 +292,12 @@ function resolveIncludedPipelines(
   deps: ExchangeDeps,
   nodes: readonly WorkflowNode[]
 ): IncludedPipelineResolution {
-  const layers = deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   const phaseCatalog = effectivePhases(deps).effective;
   const pipelines: PipelineDefinition[] = [];
   for (const pipelineId of referencedPipelineOrder(nodes)) {
     const selection = selectPipelineForExport({
-      builtIn: BUILT_IN_PIPELINES,
-      user: layers.user,
-      workspace: layers.workspace,
+      rows: stored.rows,
       phaseCatalog,
       pipelineId
     });
@@ -351,11 +331,9 @@ function selectWorkflow(
   deps: ExchangeDeps,
   request: Extract<ExportProcessYamlRequest, { resourceKind: 'workflow' }>
 ): ExportSelection {
-  const layers = deps.readWorkflowConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readWorkflowConfig?.() ?? { rows: [], revision: '' };
   const selection = selectWorkflowForExport({
-    builtIn: BUILT_IN_WORKFLOWS,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
     pipelineCatalog: effectivePipelines(deps),
     workflowId: request.resourceId
   });
@@ -389,7 +367,6 @@ function selectWorkflow(
 
   return {
     outcome: 'resolved',
-    scope: selection.scope,
     // Zero in the two shallower modes, and that is a count rather than an absence:
     // the operator chose to disclose no Phase text and the log says so (FR-059).
     includedPhaseCount: inclusion?.phases?.length ?? 0,
@@ -405,10 +382,9 @@ function selectWorkflow(
 }
 
 /**
- * Feature 096 — Model Catalog's one writable/readable layer is 'workspace'
- * (research.md Decision 6): there is no built-in/user/workspace tiering to
- * resolve an effective row from, so this reads that scope directly rather
- * than calling a `resolveXCatalog` the way the other three kinds do.
+ * Feature 096 — the Model Catalog stays in VS Code configuration and is out of
+ * feature 099's scope, so this reads that configuration directly rather than
+ * calling a `resolveXCatalog` the way the other three kinds do.
  *
  * Per FR-007 this never returns `ExportProcessYamlUnavailable` — an empty
  * catalog is still a valid, exportable document, so there is no absence this
@@ -418,7 +394,6 @@ function selectModelCatalog(deps: ExchangeDeps): ExportSelection {
   const modelsConfig = coerceModels(deps.readModelsConfig?.());
   return {
     outcome: 'resolved',
-    scope: 'workspace',
     suggestedFileName: 'model-catalog.yaml',
     text: serializeModelCatalogDocument({
       apiVersion: PHASE_YAML_API_VERSION,

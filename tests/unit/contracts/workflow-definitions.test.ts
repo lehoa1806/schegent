@@ -3,27 +3,21 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   WORKFLOW_CONDITION_OPERATORS,
-  WORKFLOW_DEFINITION_SCOPES,
   WORKFLOW_NODE_TERMINAL_STATUSES,
   WORKFLOW_SELECTION_RULES,
-  WORKFLOW_WRITABLE_SCOPES,
   isWorkflowConditionOperator,
-  isWorkflowDefinitionScope,
   isWorkflowNodeTerminalStatus,
-  isWorkflowSelectionRule,
-  isWritableWorkflowDefinitionScope
+  isWorkflowSelectionRule
 } from '../../../src/contracts/workflow-definitions';
 import type {
-  ScopedWorkflowSavePayload,
   WorkflowCatalogMutation,
   WorkflowCondition,
   WorkflowConditionOperand,
   WorkflowConnection,
   WorkflowDefinition,
-  WorkflowDefinitionScope,
   WorkflowDerivedPorts,
   WorkflowNode,
-  WritableWorkflowDefinitionScope
+  WorkflowSavePayload
 } from '../../../src/contracts/workflow-definitions';
 import type { HistoryTerminalStatus } from '../../../src/state/history-entry';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
@@ -39,26 +33,38 @@ const CONTRACT_SOURCE = join(
   'workflow-definitions.ts'
 );
 
-describe('workflow definition scopes', () => {
-  it('declares the three catalog layers in the same authored order as the Pipeline family', () => {
-    expect(WORKFLOW_DEFINITION_SCOPES).toEqual(['built-in', 'user', 'workspace']);
+// Feature 099 (T496f, FR-042, FR-043) — the scope union and its writable twin
+// are deleted, so these four membership tests have nothing to address. The
+// Pipeline family's file carries the same guard for the same reason: what is
+// worth pinning now is that the vocabulary stays gone.
+describe('the layer tier leaves no residue in the contract', () => {
+  const source = readFileSync(CONTRACT_SOURCE, 'utf8');
+
+  it('declares no scope union, writable twin, or guard', () => {
+    expect(source).not.toMatch(/WORKFLOW_DEFINITION_SCOPES/);
+    expect(source).not.toMatch(/WORKFLOW_WRITABLE_SCOPES/);
+    expect(source).not.toMatch(/WorkflowDefinitionScope/);
+    expect(source).not.toMatch(/isWritableWorkflowDefinitionScope/);
   });
 
-  it('exposes only the two writable scopes', () => {
-    expect(WORKFLOW_WRITABLE_SCOPES).toEqual(['user', 'workspace']);
+  it('names none of the three retired layers as a value anywhere', () => {
+    expect(source).not.toMatch(/'built-in'/);
+    expect(source).not.toMatch(/'workspace'/);
   });
 
-  it('narrows unknown strings away from the scope union', () => {
-    expect(isWorkflowDefinitionScope('workspace')).toBe(true);
-    expect(isWorkflowDefinitionScope('built-in')).toBe(true);
-    expect(isWorkflowDefinitionScope('global')).toBe(false);
-    expect(isWorkflowDefinitionScope(undefined)).toBe(false);
+  it('leaves no `shadowed` arm on the source-status union (FR-042)', () => {
+    const union = /export type WorkflowSourceStatus\s*=\s*([^;]+);/.exec(source);
+    expect(union, 'the source-status union must still be declared here').not.toBeNull();
+    expect(union?.[1]).not.toMatch(/shadowed/);
   });
 
-  it('rejects built-in as a writable target (FR-026)', () => {
-    expect(isWritableWorkflowDefinitionScope('user')).toBe(true);
-    expect(isWritableWorkflowDefinitionScope('workspace')).toBe(true);
-    expect(isWritableWorkflowDefinitionScope('built-in')).toBe(false);
+  it('resolves a save payload with no scope on it', () => {
+    const payload: WorkflowSavePayload = {
+      expectedRevision: 'rev-workflow-1',
+      mutation: { kind: 'create', workflowId: 'flow' },
+      workflows: []
+    };
+    expect(payload).not.toHaveProperty('scope');
   });
 });
 
@@ -135,7 +141,9 @@ describe('mutation kind exhaustiveness (FR-029)', () => {
       case 'edit':
         return `edit:${mutation.workflowId}`;
       case 'duplicate':
-        return `duplicate:${mutation.sourceScope}:${mutation.sourceWorkflowId}:${mutation.workflowId}`;
+        // Feature 099 (T496f, FR-042) — the source layer left the intent with the
+        // tier: there is one catalog to duplicate out of, so naming it said nothing.
+        return `duplicate:${mutation.sourceWorkflowId}:${mutation.workflowId}`;
       case 'remove':
         return `remove:${mutation.workflowId}`;
       case 'reset':
@@ -156,7 +164,7 @@ describe('mutation kind exhaustiveness (FR-029)', () => {
     const mutations: readonly WorkflowCatalogMutation[] = [
       { kind: 'create', workflowId: 'alpha' },
       { kind: 'edit', workflowId: 'alpha' },
-      { kind: 'duplicate', sourceScope: 'built-in', sourceWorkflowId: 'alpha', workflowId: 'beta' },
+      { kind: 'duplicate', sourceWorkflowId: 'alpha', workflowId: 'beta' },
       { kind: 'remove', workflowId: 'alpha' },
       { kind: 'reset' },
       { kind: 'import-package', workflowIds: ['alpha', 'beta'] }
@@ -164,7 +172,7 @@ describe('mutation kind exhaustiveness (FR-029)', () => {
     expect(mutations.map(describeMutation)).toEqual([
       'create:alpha',
       'edit:alpha',
-      'duplicate:built-in:alpha:beta',
+      'duplicate:alpha:beta',
       'remove:alpha',
       'reset',
       'import-package:alpha,beta'
@@ -203,18 +211,19 @@ describe('contract shapes are structurally assignable', () => {
       connections,
       startNodeIds: ['design']
     };
-    const scope: WritableWorkflowDefinitionScope = 'workspace';
-    const payload: ScopedWorkflowSavePayload = {
-      scope,
+    const payload: WorkflowSavePayload = {
       expectedRevision: 'abc123',
       mutation: { kind: 'create', workflowId: 'design-then-implement' },
       workflows: [definition]
     };
-    const anyScope: WorkflowDefinitionScope = scope;
 
     expect(payload.workflows).toHaveLength(1);
     expect(definition.connections).toHaveLength(1);
-    expect(anyScope).toBe('workspace');
+    // Feature 099 (T496f, FR-042, FR-044) — see the Pipeline twin: the scope types
+    // are deleted and the revision took their place, pinned by compile failure.
+    expect(payload.expectedRevision).toBe('abc123');
+    // @ts-expect-error - WorkflowSavePayload declares no scope
+    expect(payload.scope).toBeUndefined();
   });
 
   it('accepts a node-status operand with no field, and a bare connection', () => {
@@ -290,8 +299,6 @@ describe('the two senses of "Workflow" stay distinguishable (FR-046, SC-012)', (
   it('exports at least the contract surface the data model names', () => {
     const names = new Set(exportedNames());
     for (const expected of [
-      'WORKFLOW_DEFINITION_SCOPES',
-      'WORKFLOW_WRITABLE_SCOPES',
       'WORKFLOW_CONDITION_OPERATORS',
       'WORKFLOW_SELECTION_RULES',
       'WORKFLOW_NODE_TERMINAL_STATUSES',
@@ -304,7 +311,7 @@ describe('the two senses of "Workflow" stay distinguishable (FR-046, SC-012)', (
       'WorkflowSourceRecord',
       'WorkflowCatalogResolution',
       'WorkflowCatalogMutation',
-      'ScopedWorkflowSavePayload',
+      'WorkflowSavePayload',
       'WorkflowDerivedPort',
       'WorkflowDerivedPorts'
     ]) {

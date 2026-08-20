@@ -1,28 +1,25 @@
-import {
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINES,
-  isPipelineDef,
-  validatePipelineRaw
-} from '../../../config/pipeline-config';
-import {
-  phaseLayerRevision,
-  phaseSourceIdentity,
-  resolvePhaseCatalog
-} from '../../../config/process-catalog';
+// Feature 099 (T493d, FR-042a) — the commit writes the versioned catalog store
+// rather than the retired Phase settings key, which is deleted. What went with
+// the layer tier:
+// the `built-in-immutable` refusal (no built-in layer is left to be immutable)
+// and every scope argument. What stayed: the single-intent, expected-revision
+// gate (FR-047) and both content-keyed trust capabilities (FR-046, FR-053).
+
+import { isPipelineDef, validatePipelineRaw } from '../../../config/pipeline-config';
+import { phaseSourceIdentity, resolvePhaseCatalog } from '../../../config/process-catalog';
 import { validatePhaseDefinition } from '../../../config/process-definition-validator';
 import { phaseRunnerPolicyError } from '../../../config/phase-runner-policy';
 import type {
   PhaseCatalogMutation,
   PhaseDefinition,
-  PhaseFieldError,
-  WritablePhaseDefinitionScope
+  PhaseFieldError
 } from '../../../contracts/process-definitions';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePhasesCommand } from '../messages';
+import { commitCatalogLayer } from './catalog-layer-commit';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 import {
-  auditImportCommitted,
   auditImportRefused,
   type ImportCommitTarget
 } from './process-exchange-commit-audit';
@@ -182,18 +179,16 @@ function boundedValidationResult(
 function currentMetadata(
   mutation: PhaseCatalogMutation,
   current: ReadonlyMap<string, PhaseDefinition>,
-  scope: WritablePhaseDefinitionScope,
   sanitize: (value: string) => string
 ): unknown {
-  if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'reset') return { legalActions: ['refresh'] };
   // A package names a set, not a row, and `reapply` is not offered: the plan was
   // computed against the revision this gate just rejected, so its skip and
   // blocked decisions may no longer hold. The operator re-runs the preflight.
-  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'import-package') return { legalActions: ['refresh'] };
   const phaseId = mutation.kind === 'duplicate' ? mutation.sourcePhaseId : mutation.phaseId;
   const definition = current.get(phaseId);
   return {
-    scope,
     phaseId: sanitize(phaseId).slice(0, 64),
     ...(definition
       ? { name: sanitize(definition.name).slice(0, 80), version: definition.version }
@@ -207,11 +202,14 @@ function configuredPipelineIdsReferencing(
   phaseIds: ReadonlySet<string>,
   knownPhaseIds: ReadonlySet<string>
 ): string[] {
-  const configured = ctx.deps.readPipelineConfig?.();
+  const stored = ctx.deps.readPipelineConfig?.();
   let rows: readonly unknown[] = ctx.deps.getCatalog?.().pipelines ?? [];
-  if (configured) {
-    const effective = new Map(BUILT_IN_PIPELINES.map((pipeline) => [pipeline.id, pipeline]));
-    for (const raw of [...configured.workspace, ...configured.user]) {
+  if (stored) {
+    // The map is a de-duplicator, not a precedence ladder: two rows claiming one
+    // id are already `invalid` in resolution (FR-039), and counting such a row
+    // twice would overstate the dependents a removal is blocked by.
+    const effective = new Map<string, unknown>();
+    for (const raw of stored.rows) {
       if (isPipelineDef(raw) && validatePipelineRaw(raw, knownPhaseIds).length === 0) {
         effective.set(raw.id, raw);
       }
@@ -231,25 +229,30 @@ function configuredPipelineIdsReferencing(
 }
 
 export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) => {
-  const { scope, expectedRevision, mutation } = command.payload;
-  // Feature 085 (FR-061) — the one layer write a package import is about, or
+  const { expectedRevision, mutation } = command.payload;
+  // Feature 085 (FR-061) — the one catalog write a package import is about, or
   // null for every other mutation. Read before the first gate so a refusal at
   // any of them leaves a record; every audit call below is a no-op when null.
   const exchange: ImportCommitTarget | null =
     mutation.kind === 'import-package'
-      ? { resourceKind: 'phase', resourceIds: mutation.phaseIds, scope }
+      ? { resourceKind: 'phase', resourceIds: mutation.phaseIds }
       : null;
 
-  if (!ctx.deps.updateConfig || !ctx.deps.readPhaseConfig) {
+  // Somewhere to write. `null` is an untrusted workspace, where no catalog is
+  // activated at all (FR-051); `undefined` is a window that wired no store. Both
+  // mean this save has nowhere to land, and the Builder reports the trust gate on
+  // its own surface rather than through a save refusal (FR-052).
+  const store = ctx.deps.catalogStore;
+  if (!store || !ctx.deps.readPhaseConfig) {
     await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
 
   const intent = phaseIntent(mutation);
-  const layers = ctx.deps.readPhaseConfig();
-  const currentRows = layers[scope];
-  const currentRevision = phaseLayerRevision(currentRows);
+  const stored = ctx.deps.readPhaseConfig();
+  const currentRows = stored.rows;
+  const currentRevision = stored.revision;
   const currentLayer = normalizeLayer(currentRows);
   const currentById = definitionMap(currentLayer.definitions, phaseIntentAdapter);
   const currentIdentities = layerIdentities(currentRows, phaseIntentAdapter);
@@ -258,7 +261,7 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
-      current: currentMetadata(mutation, currentById, scope, ctx.deps.logger.sanitize)
+      current: currentMetadata(mutation, currentById, ctx.deps.logger.sanitize)
     });
     return;
   }
@@ -325,15 +328,12 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
       });
       return;
     }
-    const builtInIds = new Set(BUILT_IN_PHASES.map((phase) => phase.id));
-    // Only `edit` and `remove` can name a row this layer does not own, so the
-    // target is read from the single-id kinds alone.
-    const builtInOnly = (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && builtInIds.has(mutation.phaseId)
-      && !currentById.has(mutation.phaseId);
-    const reason = builtInOnly ? 'built-in-immutable' : 'phase-mutation-mismatch';
-    await auditImportRefused(ctx, exchange, reason);
-    await ack(ctx, 'rejected', reason);
+    // Feature 099 (FR-039, FR-046) — the `built-in-immutable` arm is gone with
+    // the built-in layer. An `edit` or `remove` naming a row the catalog does not
+    // hold is now what it always was underneath: a declared mutation the observed
+    // diff cannot produce.
+    await auditImportRefused(ctx, exchange, 'phase-mutation-mismatch');
+    await ack(ctx, 'rejected', 'phase-mutation-mismatch');
     return;
   }
 
@@ -407,9 +407,8 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
 
   if (mutation.kind === 'remove' || mutation.kind === 'reset') {
     const prospective = resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: scope === 'user' ? persistedRows : layers.user,
-      workspace: scope === 'workspace' ? persistedRows : layers.workspace
+      rows: persistedRows,
+      revision: currentRevision
     });
     const candidateIds = (mutation.kind === 'remove'
       ? [mutation.phaseId]
@@ -423,7 +422,8 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
         return;
       }
       const currentCatalog = resolvePhaseCatalog({
-        builtIn: BUILT_IN_PHASES, user: layers.user, workspace: layers.workspace
+        rows: currentRows,
+        revision: currentRevision
       });
       const knownPhaseIds = new Set(
         currentCatalog.effective.map((definition) => definition.phaseId)
@@ -445,21 +445,14 @@ export const handler: CommandHandler<SavePhasesCommand> = async (ctx, command) =
     }
   }
 
-  try {
-    await ctx.deps.updateConfig('phases', persistedRows, scope);
-  } catch (error) {
-    ctx.deps.logger.warn(
-      `phase catalog save failed: ${ctx.deps.logger.sanitize((error as Error).message)}`
-    );
-    await auditImportRefused(ctx, exchange, 'persistence-failed');
-    await ack(ctx, 'rejected', 'persistence-failed');
-    return;
-  }
-
-  await auditImportCommitted(ctx, exchange);
-  await ack(ctx, 'accepted', undefined, {
-    scope,
-    revision: phaseLayerRevision(persistedRows),
-    mutation: mutation.kind
+  // The single commit point. One `saveLayer` call rather than one `save` per
+  // row: the revision gate is per kind (FR-044), so N calls would move the
+  // revision on the first and refuse themselves as stale on the second.
+  await commitCatalogLayer(ctx, store, {
+    kind: 'phase',
+    definitions: persistedRows.map((row) => ({ id: row.id as string, body: row })),
+    expectedRevision,
+    mutationKind: mutation.kind,
+    exchange
   });
 };

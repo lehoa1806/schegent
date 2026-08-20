@@ -2,11 +2,9 @@ import type {
   PhaseBinding,
   PhaseCatalogSourceRecord,
   PhaseDefinition,
-  PhaseDefinitionScope,
   PhaseSourceStatus,
   PipelineCatalogSourceRecord,
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineExecutionDefaults,
   PipelineInputPort,
   PipelineInputPortType,
@@ -16,7 +14,6 @@ import type {
   WorkflowCatalogFieldErrorProjection,
   WorkflowCatalogPortProjection,
   WorkflowConnection,
-  WorkflowDefinitionScope,
   WorkflowNode,
   WorkflowSourceStatus
 } from '../../lib/snapshot-types';
@@ -37,11 +34,15 @@ export interface PipelinePortPatch {
 
 /**
  * Feature 082 — an editable Pipeline row. Mirrors `MutablePhase`: the authored
- * contract fields plus the precedence metadata the Library needs to render a
- * scope badge, a source status, and field-adjacent validation errors.
+ * contract fields plus the projection metadata the Library needs to render a
+ * source status and field-adjacent validation errors.
+ *
+ * Feature 099 (T494a, FR-043) — no `scope`. It carried which of the three
+ * layers a row came from, and there is one layer; a badge that can only ever
+ * read one value is not a badge.
  *
  * The ordered Phase reference list keeps the legacy authored key (`phases`),
- * which is also the key form persisted back to configuration.
+ * which is also the key form persisted back to the store.
  */
 export type MutablePipeline = Omit<PipelineDefinition, 'phases'> & {
   phases: string[];
@@ -53,7 +54,6 @@ export type MutablePipeline = Omit<PipelineDefinition, 'phases'> & {
   recommendedNext: string[];
   /** Stable list key; mirrors the projection record key for persisted rows. */
   sourceKey: string;
-  scope: PipelineDefinitionScope;
   sourceStatus: PipelineSourceStatus;
   sourceErrors: PipelineCatalogSourceRecord['errors'];
   /** False for a draft that has never been accepted by the host. */
@@ -75,7 +75,6 @@ export type MutablePhase = {
   isRequired?: boolean;
   runner?: PhaseDefinition['runner'];
   sourceKey: string;
-  scope: PhaseDefinitionScope;
   sourceStatus: PhaseSourceStatus;
   sourceErrors: PhaseCatalogSourceRecord['errors'];
   modelAvailable?: boolean;
@@ -89,11 +88,11 @@ export type PhaseEditState = {
 
 /**
  * Feature 083 — an editable Workflow row. Same shape of thing as
- * `MutablePipeline`: the authored contract fields plus the precedence metadata
+ * `MutablePipeline`: the authored contract fields plus the projection metadata
  * the Library renders.
  *
  * Two deliberate differences from the Pipeline row. The identity key is
- * `workflowId` and only `workflowId` — `schegent.workflows` is new in this
+ * `workflowId` and only `workflowId` — the Workflow catalog is new in this
  * feature, so unlike `MutablePipeline` there is no legacy `id` spelling to
  * carry. And the nested arrays are mutable copies rather than the readonly
  * projection arrays, because the Builder edits node and connection rows in
@@ -109,7 +108,6 @@ export type MutableWorkflow = {
   startNodeIds: string[];
   /** Stable list key; mirrors the projection record key for persisted rows. */
   sourceKey: string;
-  scope: WorkflowDefinitionScope;
   sourceStatus: WorkflowSourceStatus;
   sourceErrors: readonly WorkflowCatalogFieldErrorProjection[];
   /** False for a draft that has never been accepted by the host. */

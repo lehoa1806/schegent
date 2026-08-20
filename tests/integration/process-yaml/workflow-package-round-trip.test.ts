@@ -33,6 +33,8 @@ import { resolve as resolvePath } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
+
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import type {
@@ -44,7 +46,6 @@ import type { PhaseDefinition } from '../../../src/contracts/process-definitions
 import type {
   WorkflowConnection,
   WorkflowDefinition,
-  WorkflowDefinitionScope,
   WorkflowNode
 } from '../../../src/contracts/workflow-definitions';
 import {
@@ -826,9 +827,13 @@ function workflowRow(definition: WorkflowDefinition): Record<string, unknown> {
   return { ...definition };
 }
 
+/**
+ * Feature 099 (T496f, FR-042) — `scope` is gone with the layer tier it named.
+ * A selected definition is the one the single catalog holds; there is no layer
+ * left to report alongside it.
+ */
 interface Imported {
   readonly workflow: WorkflowDefinition;
-  readonly scope: WorkflowDefinitionScope;
   readonly pipelines: readonly PipelineDefinition[];
   readonly phases: readonly PhaseDefinition[];
 }
@@ -836,8 +841,8 @@ interface Imported {
 /**
  * Import a package into an empty catalog, then ask the exporter for it back.
  *
- * The catalog starts empty in every layer and receives exactly this document's
- * rows. Whatever the document did NOT carry is what "compatible" means — it is
+ * The catalog starts empty and receives exactly this document's rows. Whatever
+ * the document did NOT carry is what "compatible" means — it is
  * seeded from the fixture constants, standing in for definitions the operator
  * already had; whatever the document DID carry arrives having gone through the
  * document text, which is the half FR-061 is about.
@@ -847,20 +852,16 @@ function importAndSelect(read: ReadPackage, mode: Mode): Imported {
   const pipelines = mode === 'references' ? PIPELINES : read.pipelines;
 
   const phaseCatalog = resolvePhaseCatalog({
-    builtIn: [],
-    user: phases.map(phaseRow),
-    workspace: []
+    rows: phases.map(phaseRow),
+    revision: FIXTURE_REVISION
   });
   const pipelineCatalog = resolvePipelineCatalog({
-    builtIn: [],
-    user: pipelines.map(pipelineRow),
-    workspace: [],
+    rows: pipelines.map(pipelineRow),
+    revision: FIXTURE_REVISION,
     phaseCatalog: phaseCatalog.effective
   });
   const selection = selectWorkflowForExport({
-    builtIn: [],
-    user: [workflowRow(read.workflow)],
-    workspace: undefined,
+    rows: [workflowRow(read.workflow)],
     pipelineCatalog: {
       effective: pipelineCatalog.effective,
       records: pipelineCatalog.records
@@ -872,7 +873,6 @@ function importAndSelect(read: ReadPackage, mode: Mode): Imported {
   }
   return {
     workflow: selection.definition,
-    scope: selection.scope,
     pipelines: pipelineCatalog.effective,
     phases: phaseCatalog.effective
   };
@@ -898,7 +898,6 @@ describe('Feature 086 T064 — import then re-export is an identity (FR-061, SC-
     it(`re-exports '${fixture.label}' to the same definition`, () => {
       const imported = importAndSelect(readPackage(documentFor(fixture)), fixture.mode);
       expect(imported.workflow).toEqual(fixture.definition);
-      expect(imported.scope).toBe('user');
     });
   }
 

@@ -494,7 +494,7 @@ describe('the Builder is operable by keyboard alone (FR-042, SC-008)', () => {
 // resolve to the nodes the operator authored.
 
 const draft = (): MutableWorkflow => ({
-  ...makeNewWorkflowDraft('workspace', []),
+  ...makeNewWorkflowDraft([]),
   nodes: [
     { nodeId: 'draft', pipelineId: 'authoring' },
     { nodeId: 'ship', pipelineId: 'release' }

@@ -18,6 +18,13 @@
 //                  (FR-042b), and it is self-healing because the landed Phases
 //                  then plan `skip` and resolve the Pipeline's references.
 //
+// Feature 099 (T496f, FR-042) — "two catalogs" used to mean two configuration
+// keys, each with a user and a workspace layer, and a package write picked one
+// scope for both. The scope tier is deleted: there is one catalog per kind, so
+// `scope` leaves every payload and the layers a proposal appends to are simply
+// the rows the store holds. Every claim below is about the ORDER and the
+// INDEPENDENCE of the two writes, and neither was ever a property of the scope.
+//
 // The plan-to-request translation is the webview's, and is pinned as pure logic
 // in `webview-ui/src/components/__tests__/process-import-state.test.ts`. It is
 // mirrored below rather than imported — the webview is a separate program —
@@ -42,7 +49,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
@@ -59,42 +65,78 @@ import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/c
 import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
 import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
 import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
+import type { CatalogKind } from '../../../src/contracts/catalog-store';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
-/** The one scope a package targets; a write never splits across scopes (FR-036). */
-type Scope = 'user' | 'workspace';
-
-/** The configuration key each layer write targets, and the order they occur in. */
+/** The catalog each write targets, and the order the two occur in. */
 type LayerKey = 'phases' | 'pipelines';
 
-interface Layers {
-  user: readonly unknown[];
-  workspace: readonly unknown[];
-}
+const KIND_OF: Readonly<Record<LayerKey, CatalogKind>> = {
+  phases: 'phase',
+  pipelines: 'pipeline'
+};
 
-/** Both writable catalogs, mutated in place by an accepted write. */
+/** Both writable catalogs, behind the one store a package write goes through. */
 interface Installation {
-  readonly phases: Layers;
-  readonly pipelines: Layers;
+  readonly store: FakeCatalogStore;
 }
 
 function installation(seed: {
-  readonly phases?: Partial<Layers>;
-  readonly pipelines?: Partial<Layers>;
+  readonly phases?: readonly unknown[];
+  readonly pipelines?: readonly unknown[];
+  readonly workflows?: readonly unknown[];
 } = {}): Installation {
   return {
-    phases: { user: seed.phases?.user ?? [], workspace: seed.phases?.workspace ?? [] },
-    pipelines: { user: seed.pipelines?.user ?? [], workspace: seed.pipelines?.workspace ?? [] }
+    store: new FakeCatalogStore({
+      phases: seed.phases ?? [],
+      pipelines: seed.pipelines ?? [],
+      workflows: seed.workflows ?? []
+    })
   };
 }
 
-/** The rows of both layers as the operator's preview saw them, for the proposal. */
+/** The read seams every handler in this file shares, wired to one store. */
+function catalogDeps(store: FakeCatalogStore): Record<string, unknown> {
+  return {
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
+    readPipelineConfig: () => ({
+      rows: store.rowsOf('pipeline'),
+      revision: store.revisionOf('pipeline')
+    })
+  };
+}
+
+/** The rows of both catalogs as the operator's preview saw them, for the proposal. */
 interface Held {
   readonly phases: readonly unknown[];
   readonly pipelines: readonly unknown[];
 }
 
-function held(inst: Installation, scope: Scope): Held {
-  return { phases: inst.phases[scope], pipelines: inst.pipelines[scope] };
+function held(inst: Installation): Held {
+  return { phases: inst.store.rowsOf('phase'), pipelines: inst.store.rowsOf('pipeline') };
+}
+
+/**
+ * Someone else writes a catalog between the preview and the confirm.
+ *
+ * Feature 099 (T496f) — the cases that need this used to assign a layer array in
+ * place. A revision is the store's now, not a hash of an array, so the way to
+ * make a preview stale is to perform the write that moves it.
+ */
+async function concurrentWrite(
+  inst: Installation,
+  key: LayerKey,
+  rows: readonly Record<string, unknown>[]
+): Promise<void> {
+  const kind = KIND_OF[key];
+  const outcome = await inst.store.saveLayer({
+    kind,
+    expectedRevision: inst.store.revisionOf(kind),
+    definitions: rows.map((row) => ({ id: row.id as string, body: row }))
+  });
+  expect(outcome.outcome).toBe('saved');
 }
 
 const CORRELATION = 'package-import-1';
@@ -210,8 +252,7 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
+      ...catalogDeps(inst.store),
       openProcessYamlDocument: async () => ({
         outcome: 'read' as const,
         bytes: new Uint8Array(Buffer.from(text, 'utf8'))
@@ -283,7 +324,7 @@ interface Attempt {
   readonly command: SavePhasesCommand | SavePipelinesCommand;
 }
 
-function attemptsFor(plan: ImportPlan, scope: Scope, layers: Held): readonly Attempt[] {
+function attemptsFor(plan: ImportPlan, layers: Held): readonly Attempt[] {
   const attempts: Attempt[] = [];
   const phases = importedPhases(plan);
   const pipelines = importedPipelines(plan);
@@ -296,8 +337,7 @@ function attemptsFor(plan: ImportPlan, scope: Scope, layers: Held): readonly Att
         type: CMD_SAVE_PHASES,
         correlationId: CORRELATION,
         payload: {
-          scope,
-          expectedRevision: plan.computedAgainstRevision[scope],
+          expectedRevision: plan.computedAgainstRevision,
           mutation: {
             kind: 'import-package',
             phaseIds: phases.map((definition) => definition.phaseId)
@@ -309,19 +349,18 @@ function attemptsFor(plan: ImportPlan, scope: Scope, layers: Held): readonly Att
   }
 
   if (pipelines.length > 0) {
-    // FR-043 — the Pipeline layer carries ITS OWN revision, not the Phase
-    // layer's. A single revision could not gate two independently mutable
-    // layers, and using the live one at confirm time would defeat FR-040.
-    const revisions = plan.computedAgainstPipelineRevision;
-    expect(revisions).toBeDefined();
+    // FR-043 — the Pipeline catalog carries ITS OWN revision, not the Phase
+    // catalog's. A single revision could not gate two independently mutable
+    // catalogs, and using the live one at confirm time would defeat FR-040.
+    const revision = plan.computedAgainstPipelineRevision;
+    expect(revision).toBeDefined();
     attempts.push({
       key: 'pipelines',
       command: {
         type: CMD_SAVE_PIPELINES,
         correlationId: CORRELATION,
         payload: {
-          scope,
-          expectedRevision: revisions![scope],
+          expectedRevision: revision!,
           mutation: {
             kind: 'import-package',
             pipelineIds: pipelines.map((definition) => definition.pipelineId)
@@ -341,7 +380,7 @@ interface LayerResult {
 }
 
 interface CommitRun {
-  /** Configuration keys actually written, in the order `updateConfig` saw them. */
+  /** Catalogs a write request actually reached, in the order the store saw them. */
   readonly writes: readonly LayerKey[];
   readonly results: readonly LayerResult[];
   readonly outcome: 'imported' | 'partial' | 'failed';
@@ -360,24 +399,14 @@ function outcomeOf(results: readonly LayerResult[]): CommitRun['outcome'] {
 async function commitPackage(
   inst: Installation,
   plan: ImportPlan,
-  scope: Scope,
   layers: Held,
   opts: { readonly failOn?: LayerKey } = {}
 ): Promise<CommitRun> {
-  const writes: LayerKey[] = [];
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
+      ...catalogDeps(inst.store),
       readConfig: () => undefined,
-      updateConfig: async (key: string, value: unknown, target: Scope) => {
-        expect(key === 'phases' || key === 'pipelines').toBe(true);
-        writes.push(key as LayerKey);
-        if (opts.failOn === key) throw new Error('EACCES: settings.json is read-only');
-        const layer = key === 'phases' ? inst.phases : inst.pipelines;
-        layer[target] = value as readonly unknown[];
-      },
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
@@ -392,7 +421,14 @@ async function commitPackage(
   } as any;
 
   const results: LayerResult[] = [];
-  for (const attempt of attemptsFor(plan, scope, layers)) {
+  const savesBefore = inst.store.layerSaves.length;
+  for (const attempt of attemptsFor(plan, layers)) {
+    // Feature 099 (T496f, FR-029) — `failOn` made the settings writer throw. The
+    // store never throws; it names the fault, and `not-writable` is the same
+    // fault by its own name, answering exactly one write.
+    if (opts.failOn === attempt.key) {
+      inst.store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+    }
     if (attempt.key === 'phases') {
       await savePhasesHandler(ctx, attempt.command as SavePhasesCommand);
     } else {
@@ -407,6 +443,13 @@ async function commitPackage(
     if (ack!.status !== 'accepted') break;
   }
 
+  // The writes this run reached, in the order the store saw them. A gate that
+  // rejects ahead of the store leaves no request behind, which is what the
+  // `expect(run.writes).toEqual([])` cases are asserting.
+  const writes = inst.store.layerSaves
+    .slice(savesBefore)
+    .map((request) => (request.kind === 'phase' ? 'phases' : 'pipelines') as LayerKey);
+
   return { writes, results, outcome: outcomeOf(results) };
 }
 
@@ -414,30 +457,34 @@ async function commitPackage(
 // Reads
 // ---------------------------------------------------------------------------
 
-function effectivePhaseIds(inst: Installation): readonly string[] {
+function phaseCatalogOf(inst: Installation) {
   return resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: inst.phases.user,
-    workspace: inst.phases.workspace
-  }).effective.map((definition) => definition.phaseId);
+    rows: inst.store.rowsOf('phase'),
+    revision: inst.store.revisionOf('phase')
+  });
+}
+
+function effectivePhaseIds(inst: Installation): readonly string[] {
+  return phaseCatalogOf(inst).effective.map((definition) => definition.phaseId);
+}
+
+function pipelineCatalogOf(inst: Installation) {
+  return resolvePipelineCatalog({
+    rows: inst.store.rowsOf('pipeline'),
+    revision: inst.store.revisionOf('pipeline'),
+    phaseCatalog: phaseCatalogOf(inst).effective
+  });
 }
 
 function effectivePipelineIds(inst: Installation): readonly string[] {
-  const phases = resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: inst.phases.user,
-    workspace: inst.phases.workspace
-  }).effective;
-  return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: inst.pipelines.user,
-    workspace: inst.pipelines.workspace,
-    phaseCatalog: phases
-  }).effective.map((definition) => definition.pipelineId);
+  return pipelineCatalogOf(inst).effective.map((definition) => definition.pipelineId);
 }
 
-function snapshot(inst: Installation, scope: Scope): string {
-  return JSON.stringify({ phases: inst.phases[scope], pipelines: inst.pipelines[scope] });
+function snapshot(inst: Installation): string {
+  return JSON.stringify({
+    phases: inst.store.rowsOf('phase'),
+    pipelines: inst.store.rowsOf('pipeline')
+  });
 }
 
 beforeEach(() => capabilities.clear());
@@ -447,30 +494,30 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     // `specify` is already held, so it plans `skip` and stays at the version the
     // host holds — a skip is not a write, and not an overwrite either.
     const inst = installation({
-      phases: { workspace: [HELD_PHASE, { id: 'specify', name: 'Mine', version: 7, instruction: 'Mine.' }] }
+      phases: [HELD_PHASE, { id: 'specify', name: 'Mine', version: 7, instruction: 'Mine.' }]
     });
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(plan.counts).toEqual({ import: 2, skip: 1, blocked: 0, invalid: 0 });
 
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    const run = await commitPackage(inst, plan, held(inst));
 
     expect(run.outcome).toBe('imported');
-    expect(inst.phases.workspace).toEqual([
+    expect(inst.store.rowsOf('phase')).toEqual([
       HELD_PHASE,
       { id: 'specify', name: 'Mine', version: 7, instruction: 'Mine.' },
       { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
     ]);
     // The declared version survives the write it arrived on (FR-044).
-    expect(inst.pipelines.workspace).toEqual([
+    expect(inst.store.rowsOf('pipeline')).toEqual([
       expect.objectContaining({ id: 'ship-it', version: 3, phases: ['specify', 'plan'] })
     ]);
   });
 
-  it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
+  it('writes the Phase catalog before the Pipeline catalog (FR-038)', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, 'user', held(inst, 'user'));
+    const run = await commitPackage(inst, plan, held(inst));
 
     expect(run.writes).toEqual(['phases', 'pipelines']);
     expect(run.results.map((result) => result.ack.status)).toEqual(['accepted', 'accepted']);
@@ -489,15 +536,14 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     const reversed = await commitPackage(
       installation(),
       plan,
-      'user',
       { phases: [], pipelines: [] },
-      // Nothing is written, so the Phase attempt cannot have run first.
+      // Nothing lands, so the Phase attempt cannot have run second.
       { failOn: 'phases' }
     );
     expect(reversed.outcome).toBe('failed');
     expect(reversed.writes).toEqual(['phases']);
 
-    const run = await commitPackage(inst, plan, 'user', held(inst, 'user'));
+    const run = await commitPackage(inst, plan, held(inst));
     expect(run.outcome).toBe('imported');
     expect(effectivePhaseIds(inst)).toEqual(expect.arrayContaining(['specify', 'plan']));
     expect(effectivePipelineIds(inst)).toContain('ship-it');
@@ -508,14 +554,14 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     const plan = await planFor(inst, BLOCKED_ROOT);
     expect(plan.counts).toEqual({ import: 1, skip: 0, blocked: 1, invalid: 0 });
 
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    const run = await commitPackage(inst, plan, held(inst));
 
     // A blocked row is not a failed write — it was never eligible, so there is
     // no Pipeline attempt at all and nothing partial about the outcome.
     expect(run.writes).toEqual(['phases']);
     expect(run.outcome).toBe('imported');
     expect(effectivePhaseIds(inst)).toContain('specify');
-    expect(inst.pipelines.workspace).toEqual([]);
+    expect(inst.store.rowsOf('pipeline')).toEqual([]);
     const blocked = plan.rows.find((row) => row.outcome === 'blocked');
     expect(blocked).toMatchObject({
       resourceKind: 'pipeline',
@@ -524,34 +570,38 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     });
   });
 
-  it('refuses both layers when the Phase layer changed since preflight (FR-040)', async () => {
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
+  it('refuses both catalogs when the Phase catalog changed since preflight (FR-040)', async () => {
+    const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst, 'workspace');
+    const layers = held(inst);
 
-    // Someone else writes the Phase layer between the preview and the confirm.
-    inst.phases.workspace = [HELD_PHASE, { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }];
-    const before = snapshot(inst, 'workspace');
+    await concurrentWrite(inst, 'phases', [
+      HELD_PHASE,
+      { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }
+    ]);
+    const before = snapshot(inst);
 
-    const run = await commitPackage(inst, plan, 'workspace', layers);
+    const run = await commitPackage(inst, plan, layers);
 
     expect(run.results.map((result) => result.ack.status)).toEqual(['rejected']);
     expect(run.results[0]?.ack).toMatchObject({ reason: 'stale-catalog' });
     expect(run.outcome).toBe('failed');
     expect(run.writes).toEqual([]);
-    expect(snapshot(inst, 'workspace')).toBe(before);
+    expect(snapshot(inst)).toBe(before);
   });
 
-  it('refuses the Pipeline layer alone when only it changed since preflight (FR-040)', async () => {
-    const inst = installation();
+  it('refuses the Pipeline catalog alone when only it changed since preflight (FR-040)', async () => {
+    // `held` is the Phase this Pipeline names, so the concurrent write below is a
+    // valid catalog rather than one the write gate would reject for its own reasons.
+    const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst, 'user');
+    const layers = held(inst);
 
-    // The two layers have independent revisions, so a concurrent Pipeline write
+    // The two catalogs have independent revisions, so a concurrent Pipeline write
     // must stop the Pipeline half without pretending the Phase half is stale.
-    inst.pipelines.user = [HELD_PIPELINE];
+    await concurrentWrite(inst, 'pipelines', [HELD_PIPELINE]);
 
-    const run = await commitPackage(inst, plan, 'user', layers);
+    const run = await commitPackage(inst, plan, layers);
 
     expect(run.writes).toEqual(['phases']);
     expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
@@ -561,7 +611,7 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     expect(run.results[1]?.ack).toMatchObject({ reason: 'stale-catalog' });
     expect(run.outcome).toBe('partial');
     expect(effectivePhaseIds(inst)).toEqual(expect.arrayContaining(['specify', 'plan']));
-    expect(inst.pipelines.user).toEqual([HELD_PIPELINE]);
+    expect(inst.store.rowsOf('pipeline')).toEqual([HELD_PIPELINE]);
   });
 
   it('reports staleness rather than the denied capability (FR-041)', async () => {
@@ -569,39 +619,60 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     // the preview no longer describes the catalog, so re-running the preflight
     // is the next step whether or not the capability is ever granted.
     capabilities.set('phases', false);
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
+    const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst, 'workspace');
-    inst.phases.workspace = [HELD_PHASE, { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }];
+    const layers = held(inst);
+    await concurrentWrite(inst, 'phases', [
+      HELD_PHASE,
+      { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }
+    ]);
 
-    const run = await commitPackage(inst, plan, 'workspace', layers);
+    const run = await commitPackage(inst, plan, layers);
 
     expect(run.results[0]?.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
     expect(run.writes).toEqual([]);
   });
 
-  it('reports staleness rather than the denied capability on the Pipeline layer (FR-041)', async () => {
-    capabilities.set('pipelineOverrides', false);
-    const inst = installation();
+  it('reports staleness on the Pipeline catalog with every capability denied (FR-041)', async () => {
+    // Feature 099 (T496f, FR-046) — this denied `pipelineOverrides`, which is
+    // deleted along with the layer tier: a Pipeline save consults no capability at
+    // all now, so "both gates would fire" is unreachable on this path. What
+    // survives is the half that still has teeth — the staleness answer does not
+    // depend on the resolver — so every remaining capability is denied and the
+    // Pipeline write must still report the actionable reason.
+    //
+    // The document's Phases are seeded, so they plan `skip` and the Pipeline is
+    // the only attempt. Otherwise the denied `phases` capability would stop the
+    // run one write earlier and the Pipeline gate would go unobserved.
+    for (const capability of ['phases', 'retryConditions', 'pipelineOverrides']) {
+      capabilities.set(capability, false);
+    }
+    const inst = installation({
+      phases: [
+        HELD_PHASE,
+        { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
+        { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
+      ]
+    });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst, 'user');
-    inst.pipelines.user = [HELD_PIPELINE];
+    expect(plan.counts).toEqual({ import: 1, skip: 2, blocked: 0, invalid: 0 });
+    const layers = held(inst);
+    await concurrentWrite(inst, 'pipelines', [HELD_PIPELINE]);
 
-    const run = await commitPackage(inst, plan, 'user', layers);
+    const run = await commitPackage(inst, plan, layers);
 
-    expect(run.results[1]?.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
-    expect(run.writes).toEqual(['phases']);
+    expect(run.results.map((result) => result.key)).toEqual(['pipelines']);
+    expect(run.results[0]?.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    expect(run.writes).toEqual([]);
   });
 });
 
 describe('Feature 085 T044 — a failed second write is partial, and stays partial', () => {
   it('leaves the Phases written and reports the outcome as partial (FR-042a)', async () => {
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
+    const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'), {
-      failOn: 'pipelines'
-    });
+    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
 
     expect(run.outcome).toBe('partial');
     expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
@@ -616,18 +687,16 @@ describe('Feature 085 T044 — a failed second write is partial, and stays parti
   });
 
   it('triggers no compensating delete of the Phases that landed (FR-042c)', async () => {
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
+    const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'), {
-      failOn: 'pipelines'
-    });
+    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
 
     // Two attempts, two writes, and no third. Removing a resource the operator
     // never confirmed removing is a destructive write in its own right, and it
     // can destroy a concurrent edit.
     expect(run.writes).toEqual(['phases', 'pipelines']);
-    expect(inst.phases.workspace).toEqual([
+    expect(inst.store.rowsOf('phase')).toEqual([
       HELD_PHASE,
       { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
       { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
@@ -635,9 +704,9 @@ describe('Feature 085 T044 — a failed second write is partial, and stays parti
   });
 
   it('is recovered by re-running the same document, with no manual cleanup (FR-042b)', async () => {
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
+    const inst = installation({ phases: [HELD_PHASE] });
     const first = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, first, 'workspace', held(inst, 'workspace'), { failOn: 'pipelines' });
+    await commitPackage(inst, first, held(inst), { failOn: 'pipelines' });
 
     // The same bytes, nothing edited, nothing removed by hand.
     const second = await planFor(inst, SELF_CONTAINED);
@@ -649,13 +718,13 @@ describe('Feature 085 T044 — a failed second write is partial, and stays parti
       second.rows.filter((row) => row.outcome === 'skip').map((row) => row.resourceId)
     ).toEqual(['specify', 'plan']);
 
-    const run = await commitPackage(inst, second, 'workspace', held(inst, 'workspace'));
+    const run = await commitPackage(inst, second, held(inst));
 
     expect(run.writes).toEqual(['pipelines']);
     expect(run.outcome).toBe('imported');
     expect(effectivePipelineIds(inst)).toContain('ship-it');
     // The Phases were not rewritten, so the versions the first run stored stand.
-    expect(inst.phases.workspace).toEqual([
+    expect(inst.store.rowsOf('phase')).toEqual([
       HELD_PHASE,
       { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
       { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
@@ -714,28 +783,30 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     expect(keys.toLowerCase()).not.toContain('exchange');
   });
 
-  it('appends to the target layer and rewrites nothing that was there', async () => {
+  it('appends to the target catalog and rewrites nothing that was there', async () => {
     const MINE = Object.freeze({ id: 'mine', name: 'Mine', version: 9, instruction: 'Mine.' });
     const inst = installation({
-      phases: { workspace: [HELD_PHASE, MINE] },
-      pipelines: { workspace: [HELD_PIPELINE] }
+      phases: [HELD_PHASE, MINE],
+      pipelines: [HELD_PIPELINE]
     });
-    const before = JSON.parse(snapshot(inst, 'workspace')) as {
+    const before = JSON.parse(snapshot(inst)) as {
       phases: readonly unknown[];
       pipelines: readonly unknown[];
     };
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    const run = await commitPackage(inst, plan, held(inst));
     expect(run.outcome).toBe('imported');
 
-    // Each layer is its prior contents, in order, followed by the imported rows.
+    // Each catalog is its prior contents, in order, followed by the imported rows.
     // Positional, because a row that moved is a row some other reader's index
     // now points past.
-    expect(inst.phases.workspace.slice(0, before.phases.length)).toEqual(before.phases);
-    expect(inst.pipelines.workspace.slice(0, before.pipelines.length)).toEqual(before.pipelines);
-    expect(inst.phases.workspace.length).toBe(before.phases.length + 2);
-    expect(inst.pipelines.workspace.length).toBe(before.pipelines.length + 1);
+    expect(inst.store.rowsOf('phase').slice(0, before.phases.length)).toEqual(before.phases);
+    expect(inst.store.rowsOf('pipeline').slice(0, before.pipelines.length)).toEqual(
+      before.pipelines
+    );
+    expect(inst.store.rowsOf('phase').length).toBe(before.phases.length + 2);
+    expect(inst.store.rowsOf('pipeline').length).toBe(before.pipelines.length + 1);
   });
 
   it('leaves a resource the host already holds exactly as its author wrote it', async () => {
@@ -749,30 +820,44 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
       version: 41,
       instruction: 'Mine, not the document.'
     });
-    const inst = installation({ phases: { workspace: [AUTHORED, HELD_PHASE] } });
+    const inst = installation({ phases: [AUTHORED, HELD_PHASE] });
 
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(plan.counts).toEqual({ import: 2, skip: 1, blocked: 0, invalid: 0 });
 
-    await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    await commitPackage(inst, plan, held(inst));
 
-    expect(inst.phases.workspace[0]).toEqual(AUTHORED);
-    expect(inst.phases.workspace.filter((row) => (row as { id: string }).id === 'specify')).toEqual([
-      AUTHORED
-    ]);
+    expect(inst.store.rowsOf('phase')[0]).toEqual(AUTHORED);
+    expect(
+      inst.store.rowsOf('phase').filter((row) => (row as { id: string }).id === 'specify')
+    ).toEqual([AUTHORED]);
   });
 
-  it('touches neither the other scope nor the layer it was not addressed to', async () => {
-    const inst = installation({
-      phases: { user: [HELD_PHASE], workspace: [] },
-      pipelines: { user: [HELD_PIPELINE], workspace: [] }
+  it('touches no catalog it was not addressed to', async () => {
+    // Feature 099 (T496f, FR-042) — this read "touches neither the other scope nor
+    // the layer it was not addressed to", and half of it named a destination that
+    // no longer exists. The surviving half is the one that was always the point: a
+    // package declares the kinds it carries, and a kind it does not declare is not
+    // written. This document is a Pipeline package, so the Workflow catalog is the
+    // one it was not addressed to — untouched down to its revision, which is the
+    // stronger reading, because a rewrite that happened to produce the same rows
+    // would still move it.
+    const WORKFLOW_ROW = Object.freeze({
+      id: 'held-flow',
+      name: 'Held Flow',
+      version: 1,
+      nodes: []
     });
-    const untouched = snapshot(inst, 'user');
+    const inst = installation({ workflows: [WORKFLOW_ROW] });
+    const untouchedRevision = inst.store.revisionOf('workflow');
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    const run = await commitPackage(inst, plan, held(inst));
+    expect(run.outcome).toBe('imported');
 
-    expect(snapshot(inst, 'user')).toBe(untouched);
+    expect(inst.store.rowsOf('workflow')).toEqual([WORKFLOW_ROW]);
+    expect(inst.store.revisionOf('workflow')).toBe(untouchedRevision);
+    expect(inst.store.layerSaves.map((request) => request.kind)).toEqual(['phase', 'pipeline']);
   });
 
   it('removes nothing when the second write fails, so recovery needs no undo (FR-042c)', async () => {
@@ -780,17 +865,15 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     // partial APPEND, never a partial delete. Re-running the same document is
     // the recovery (FR-042b, pinned in T044 above), and it needs no permission
     // to destroy anything because there is nothing to destroy.
-    const inst = installation({ phases: { workspace: [HELD_PHASE] } });
-    const before = [...inst.phases.workspace];
+    const inst = installation({ phases: [HELD_PHASE] });
+    const before = [...inst.store.rowsOf('phase')];
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    const run = await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'), {
-      failOn: 'pipelines'
-    });
+    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
 
     expect(run.outcome).toBe('partial');
-    expect(inst.phases.workspace.slice(0, before.length)).toEqual(before);
-    expect(inst.pipelines.workspace).toEqual([]);
+    expect(inst.store.rowsOf('phase').slice(0, before.length)).toEqual(before);
+    expect(inst.store.rowsOf('pipeline')).toEqual([]);
   });
 });
 
@@ -799,12 +882,12 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
 // ---------------------------------------------------------------------------
 //
 // FR-045: the document is a one-time input, not a source the catalog reads from.
-// The catalog has exactly three layers, and a fourth one that happened to be a
-// file on someone's disk would be a source no other installation has — a Pipeline
+// The catalog has exactly one source of rows, and a second one that happened to be
+// a file on someone's disk would be a source no other installation has — a Pipeline
 // that resolves here and nowhere else.
 //
 // FR-046: what import writes is a catalog row like any other. It goes through
-// the same save command, the same layer validation, and the same cross-reference
+// the same save command, the same validation, and the same cross-reference
 // resolution an operator's own edit does — so an imported Pipeline cannot be
 // valid in a way an authored one could not be, and cannot be invalid in a way
 // the catalog would fail to notice.
@@ -816,8 +899,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
     const acks: CommandAckMessage[] = [];
     const ctx = {
       deps: {
-        readPhaseConfig: () => inst.phases,
-        readPipelineConfig: () => inst.pipelines,
+        ...catalogDeps(inst.store),
         openProcessYamlDocument: async () => {
           opens += 1;
           return {
@@ -849,7 +931,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
 
     // The commit is driven entirely by the plan. If the document were a source,
     // the write would need to consult it again.
-    await commitPackage(inst, result.plan, 'workspace', held(inst, 'workspace'));
+    await commitPackage(inst, result.plan, held(inst));
     expect(opens).toBe(1);
     expect(effectivePipelineIds(inst)).toContain('ship-it');
   });
@@ -857,14 +939,14 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
   it('survives the document changing underneath it after the commit', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
-    const after = snapshot(inst, 'workspace');
+    await commitPackage(inst, plan, held(inst));
+    const after = snapshot(inst);
 
     // A later read of a document that now says something else must be
     // impossible, not merely unlikely: resolve the catalog again and see the
     // same rows. Nothing here has a handle on the file to re-read.
     await planFor(inst, BLOCKED_ROOT);
-    expect(snapshot(inst, 'workspace')).toBe(after);
+    expect(snapshot(inst)).toBe(after);
     expect(effectivePipelineIds(inst)).toContain('ship-it');
   });
 
@@ -883,7 +965,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
     // catalog applies to every row is not a trace of anything.
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    await commitPackage(inst, plan, held(inst));
 
     const addsNothing = (stored: readonly unknown[], declared: readonly Record<string, unknown>[]) => {
       expect(stored).toHaveLength(declared.length);
@@ -896,8 +978,8 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
       });
     };
 
-    addsNothing(inst.phases.workspace, importedPhases(plan).map(phaseRow));
-    addsNothing(inst.pipelines.workspace, importedPipelines(plan).map(pipelineRow));
+    addsNothing(inst.store.rowsOf('phase'), importedPhases(plan).map(phaseRow));
+    addsNothing(inst.store.rowsOf('pipeline'), importedPipelines(plan).map(pipelineRow));
   });
 });
 
@@ -905,18 +987,9 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
   it('resolves as effective, with the definition the document declared', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, 'workspace', held(inst, 'workspace'));
+    await commitPackage(inst, plan, held(inst));
 
-    const resolved = resolvePipelineCatalog({
-      builtIn: BUILT_IN_PIPELINES,
-      user: inst.pipelines.user,
-      workspace: inst.pipelines.workspace,
-      phaseCatalog: resolvePhaseCatalog({
-        builtIn: BUILT_IN_PHASES,
-        user: inst.phases.user,
-        workspace: inst.phases.workspace
-      }).effective
-    });
+    const resolved = pipelineCatalogOf(inst);
 
     const record = resolved.records.find((row) => row.pipelineId === 'ship-it');
     expect(record?.status).toBe('effective');
@@ -940,21 +1013,15 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
     // unobserved even though the save still failed.
     const seed = installation();
     const plan = await planFor(seed, SELF_CONTAINED);
-    const inst = installation({
-      phases: { workspace: importedPhases(plan).map(phaseRow) }
-    });
+    const inst = installation({ phases: importedPhases(plan).map(phaseRow) });
     const [pipeline] = importedPipelines(plan);
     expect(pipeline).toBeDefined();
 
     const acks: CommandAckMessage[] = [];
     const ctx = {
       deps: {
-        readPhaseConfig: () => inst.phases,
-        readPipelineConfig: () => inst.pipelines,
+        ...catalogDeps(inst.store),
         readConfig: () => undefined,
-        updateConfig: async () => {
-          throw new Error('a rejected save must not reach a write');
-        },
         executeCommand: vi.fn(),
         queueRemover: { remove: vi.fn() },
         audit: { append: async () => undefined },
@@ -984,8 +1051,7 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
       type: CMD_SAVE_PIPELINES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'workspace',
-        expectedRevision: plan.computedAgainstPipelineRevision!.workspace,
+        expectedRevision: plan.computedAgainstPipelineRevision!,
         mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
         pipelines: [broken]
       }
@@ -1000,13 +1066,15 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
       errors: [{ pipelineId: 'ship-it', code: 'binding-unknown-input-port' }],
       total: 1
     });
-    expect(inst.pipelines.workspace).toEqual([]);
+    expect(inst.store.rowsOf('pipeline')).toEqual([]);
+    // A rejected save must not reach a write.
+    expect(inst.store.layerSaves).toEqual([]);
   });
 
   it('is refused when its Phases are not there, exactly as an authored row would be', async () => {
     // The other half of FR-046, and the reason FR-038 orders the two writes: a
     // Pipeline whose Phases have not landed does not resolve. Writing the
-    // Pipeline layer alone reproduces the reversed order and must fail.
+    // Pipeline catalog alone reproduces the reversed order and must fail.
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
     const [pipeline] = importedPipelines(plan);
@@ -1014,12 +1082,8 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
     const acks: CommandAckMessage[] = [];
     const ctx = {
       deps: {
-        readPhaseConfig: () => inst.phases,
-        readPipelineConfig: () => inst.pipelines,
+        ...catalogDeps(inst.store),
         readConfig: () => undefined,
-        updateConfig: async () => {
-          throw new Error('a rejected save must not reach a write');
-        },
         executeCommand: vi.fn(),
         queueRemover: { remove: vi.fn() },
         audit: { append: async () => undefined },
@@ -1037,8 +1101,7 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
       type: CMD_SAVE_PIPELINES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'workspace',
-        expectedRevision: plan.computedAgainstPipelineRevision!.workspace,
+        expectedRevision: plan.computedAgainstPipelineRevision!,
         mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
         pipelines: [pipelineRow(pipeline!)]
       }
@@ -1049,5 +1112,6 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
     const detail = acks[0]!.result as { readonly errors: readonly { readonly code: string }[] };
     expect(detail.errors.map((error) => error.code)).toContain('unknown-phase');
     expect(JSON.stringify(detail.errors)).toContain('specify');
+    expect(inst.store.layerSaves).toEqual([]);
   });
 });

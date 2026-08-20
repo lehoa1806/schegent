@@ -46,7 +46,6 @@
 .pb .form-field { display: flex; flex-direction: column; gap: 4px; }
 .pb .form-field.full-width { grid-column: 1 / -1; }
 .pb .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
-.pb .precedence-badge { margin-left: 6px; padding: 1px 5px; border: 1px solid var(--schegent-divider); border-radius: 999px; color: var(--schegent-fg); font-size: 0.8em; font-weight: 500; }
 .pb .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
 .pb .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
 .pb .phases-sequence-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
@@ -96,7 +95,7 @@
 .pb .save-error-dismiss:hover { background: var(--vscode-inputValidation-errorBackground); }
 .pb .catalog-error, .pb .field-errors, .pb .status-invalid { color: var(--schegent-error-text); }
 .pb .phase-badges { display: flex; gap: 4px; }
-.pb .scope-badge, .pb .status-badge { font-size: 0.72em; }
+.pb .status-badge { font-size: 0.72em; }
 .pb .status-effective { color: var(--vscode-testing-iconPassed); }
 .pb [aria-invalid='true'] { border-color: var(--vscode-errorForeground); }
 

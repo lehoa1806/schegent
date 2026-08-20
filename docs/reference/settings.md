@@ -202,24 +202,39 @@ falls through to it is refused with the missing id named, rather than defaulting
 to a pipeline you never chose. Set it to one of your own pipeline ids — imported
 or authored — to give the Enqueue Feature dialog a pre-selection.
 
-### `schegent.phases`
+### Definitions are not settings
 
-- **Type:** `array of objects`
-- **Default:** `[]`
-- **Scope:** `resource`
+Phase, Pipeline, and Workflow definitions once lived in `schegent.phases`,
+`schegent.pipelines`, and `schegent.workflows`. **Those three keys no longer
+exist.** Definitions live in the versioned catalog store under
+`<workspaceRoot>/.schegent/catalog/`, and you get them there in one of two ways:
+author them in the Pipeline Builder, or import a `schegent/v1` YAML document.
+The settings keys were deleted rather than drained, so there is nothing to
+migrate — re-import from YAML.
 
-Portable Phase definitions. Resolution selects one complete valid source row per id using workspace > user > built-in precedence. Invalid rows remain visible for repair and fall back to the next valid source; rows never merge field-by-field.
+Two things follow for anyone who used to reason about these keys:
 
-The built-in layer is retained, read-only, and permanently empty, so in practice a workspace row wins over a user row and a lone user row wins outright. Every Phase in the catalog therefore lives in this key or its workspace-scoped twin, whether you typed it or imported it from a process document.
+- **There is one layer.** Nothing shadows anything, there is no
+  workspace-over-user precedence to configure, and a definition either resolves
+  or is reported invalid. An invalid definition stays visible with its field
+  errors and costs only itself.
+- **Every save writes an immutable version.** Saving unchanged content writes
+  nothing; history is bounded at 50 versions per definition. See
+  [Phase Overrides](../features/phase-overrides.md#version-history).
 
-Each phase object accepts:
+The tables below are the reference for the **definition body** — what the store
+holds, what the Builder edits, and what a `schegent/v1` document carries under
+`spec`. The store keeps bodies verbatim and never validates them; validation
+happens on the way in.
+
+#### Phase definition
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved and no id is privileged; reusing one from a lower-precedence scope shadows that row. |
+| `phaseId` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved and no id is privileged. Identity: an import naming an id the catalog already holds is reported as `skip`, not an overwrite. |
 | `name` | string | yes | Display name (1–80 chars) shown in sidebar tiles, audit logs, and pipeline picker. |
 | `description` | string | no | Portable description, up to 1024 chars. |
-| `version` | positive integer | no | Host-owned optimistic version. Omit for new settings rows; the host defaults it to 1. |
+| `version` | positive integer | no | Host-owned optimistic version. Omit on a new definition; the host defaults it to 1. Distinct from the store's `versionId`, which the catalog assigns on every save. |
 | `instruction` | string | conditional | Inline directive, 1–8192 chars. Exactly one of `instruction` or `skill` is required. |
 | `skill` | string | conditional | Declarative skill reference. Exactly one of `instruction` or `skill` is required. |
 | `model` | string | no | Backend model id passed to the selected runner for this phase only. |
@@ -228,50 +243,44 @@ Each phase object accepts:
 | `loopable` | boolean | no | Deprecated compatibility field; retry behavior is controlled by `retryCondition`. |
 | `retryCondition` | string | no | Retry-condition DSL expression evaluated against the audit-entry's `metrics` map. See [Custom Phases](../features/custom-phases.md#retry-condition-dsl). |
 | `isRequired` | boolean | no | Whether terminal failure stops the workflow; defaults to `true`. |
+| `forceContinueOnRetryCap` | boolean | no | Advance instead of halting when `retryCondition` is still truthy at the iteration cap. An explicit `false` wins over a workspace-wide `schegent.retry.forceContinueOnCap` of `true`. |
 | `runner` | string | no | Phase runner override: `claude`, `codex`, or `agy`. |
 | `sideEffects` | string | no | Containment class: `none`, `workspace`, `git`, or `unrestricted`. Omitted, it is `workspace`. Declaring `git` requires a Git-capable `runner` (`claude` or `agy`) or the save is refused. |
 | `evidencePolicy` | string | no | Evidence strictness: `required`, `best-effort`, or `none`. Omitted, it is `required`. |
 
-Both defaults are the narrow end of their range and both apply because the row
-said nothing — nothing is inferred from the id. A row that omits them is
-`workspace` and `required` even when it shadows a row that declared otherwise.
+Both defaults are the narrow end of their range and both apply because the
+definition said nothing — nothing is inferred from the id. A definition that
+omits them is `workspace` and `required`.
 
-Example:
+Example — the document form, which is what an import reads and an export writes
+(`metadata.phaseId` is the identity; the body moves under `spec`):
 
-```jsonc
-{
-  "schegent.phases": [
-    {
-      "id": "speckit-implement",
-      "name": "Spec-kit Implement (Opus)",
-      "instruction": "Implement the approved plan and verify the result.",
-      "model": "claude-opus-4-7",
-      "effort": "high",
-      "loopable": false
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: speckit-implement
+  name: Spec-kit Implement (Opus)
+  version: 1
+spec:
+  instruction: Implement the approved plan and verify the result.
+  model: claude-opus-4-7
+  effort: high
+  loopable: false
 ```
 
-For more on shadowing and overrides, see [Phase Overrides](../features/phase-overrides.md).
+For the per-run override surface, see [Phase Overrides](../features/phase-overrides.md).
 
-### `schegent.pipelines`
+#### Pipeline definition
 
-- **Type:** `array of objects`
-- **Default:** `[]`
-- **Scope:** `resource`
-
-Custom pipeline definitions. A pipeline is an ordered chain of phase ids, and
-may additionally declare a contract: what it consumes, what it produces, and how
-its steps are wired.
-
-Each pipeline accepts:
+A pipeline is an ordered chain of phase ids, and may additionally declare a
+contract: what it consumes, what it produces, and how its steps are wired.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Unique pipeline id, kebab-case, ≤64 chars (`pipelineId` is the portable alias). No id is reserved. Immutable once saved. |
+| `pipelineId` | string | yes | Unique pipeline id, kebab-case, ≤64 chars. In a `schegent/v1` document this is `metadata.id` — the document already declares what it is under `kind`, so the key does not repeat it. No id is reserved. Immutable once saved. |
 | `name` | string | yes | Display name (1–80 chars) shown in the QuickPick picker and sidebar header. |
-| `phases` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a phase with an effective definition — one of your `schegent.phases[].id`, whether authored or imported. The same id may appear more than once. Do not list `done`: it is the terminal state the host appends after the last phase, not a definition, and naming it fails the `unknown-phase` check like any other undefined id. |
+| `phaseIds` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a phase the catalog resolves, whether authored or imported. The same id may appear more than once. Do not list `done`: it is the terminal state the host appends after the last phase, not a definition, and naming it fails the `unknown-phase` check like any other undefined id. |
 | `description` | string | no | Optional summary, ≤1024 chars. |
 | `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
 | `inputs` | array of objects | no | Declared session inputs: `{ portId, label, type, required?, description? }`. `type` is one of `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, `repository-context`. |
@@ -292,59 +301,57 @@ type `pipeline-output`.
 
 Example:
 
-```jsonc
-{
-  "schegent.pipelines": [
-    {
-      "id": "quick-spec",
-      "name": "Quick Spec",
-      "version": 1,
-      "phases": ["speckit-specify", "speckit-plan", "speckit-implement"],
-      "inputs": [
-        { "portId": "brief", "label": "Feature brief", "type": "text", "required": true }
-      ],
-      "outputs": [
-        { "portId": "spec", "label": "Specification", "type": "markdown" }
-      ],
-      "bindings": [
-        {
-          "kind": "input",
-          "phaseIndex": 0,
-          "inputKey": "brief",
-          "source": { "from": "pipeline-input", "portId": "brief" }
-        },
-        { "kind": "output", "phaseIndex": 0, "portId": "spec", "outputKey": "spec" }
-      ]
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: quick-spec
+  name: Quick Spec
+  version: 1
+spec:
+  phaseIds:
+    - speckit-specify
+    - speckit-plan
+    - speckit-implement
+  inputs:
+    - portId: brief
+      label: Feature brief
+      type: text
+      required: true
+  outputs:
+    - portId: spec
+      label: Specification
+      type: markdown
+  bindings:
+    - kind: input
+      phaseIndex: 0
+      inputKey: brief
+      source:
+        from: pipeline-input
+        portId: brief
+    - kind: output
+      phaseIndex: 0
+      portId: spec
+      outputKey: spec
 ```
 
-Rows are resolved workspace > user > built-in, one effective definition per id.
-The built-in layer is read-only and ships empty, so every Pipeline you can run
-came from this key. An invalid row stays visible with its field errors while the
-next valid scope for that id becomes effective. Exceeding 20 effective pipelines,
-or 50 phases in one pipeline, warns without truncating anything. Editing this key from the Pipeline
-Builder is gated by `schegent.trust.allowPipelineOverrides`; see
-[Trust Scopes](../operations/trust-scopes.md) and
+One definition per id, resolved from the one catalog layer. An invalid
+definition stays visible with its field errors and does not take any other
+definition down with it. Exceeding 20 pipelines, or 50 phases in one pipeline,
+warns without truncating anything. Editing pipelines in the Builder needs
+Workspace Trust; see [Trust Scopes](../operations/trust-scopes.md) and
 [Configuration](../operations/configuration.md).
 
-### `schegent.workflows`
+#### Workflow definition
 
-- **Type:** `array of objects`
-- **Default:** `[]`
-- **Scope:** `resource`
-
-Saved Workflow **definitions**: reusable acyclic graphs whose nodes are
-pipelines. A Workflow definition is a document, not an execution — saving one
-starts nothing. This is a different thing from the run-side "workflow" you see
-in the queue and the audit log; see [Glossary](glossary.md) for both senses.
-
-Each Workflow accepts:
+A Workflow is a reusable acyclic graph whose nodes are pipelines. A Workflow
+definition is a document, not an execution — saving one starts nothing. This is a
+different thing from the run-side "workflow" you see in the queue and the audit
+log; see [Glossary](glossary.md) for both senses.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `workflowId` | string | yes | Unique id, kebab-case, ≤64 chars. Same grammar as `pipelineId`. Immutable once saved. |
+| `workflowId` | string | yes | Unique id, kebab-case, ≤64 chars. Same grammar as `pipelineId`, and likewise `metadata.id` in a `schegent/v1` document. Immutable once saved. |
 | `name` | string | yes | Display name, non-empty. |
 | `description` | string | no | Optional summary. |
 | `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
@@ -414,12 +421,9 @@ so a graph can be repaired in one pass. Cycles, unreachable nodes, unresolved
 pipelines, port-type mismatches, duplicate input bindings, missing selection
 rules, and non-ancestor condition operands all block the save.
 
-Rows resolve workspace > user > built-in, one effective definition per id. The
-built-in layer is read-only and ships empty in this release. An invalid row stays
-visible with its field errors while the next valid scope for that id becomes
-effective. Editing this key from the Builder is gated by
-`schegent.trust.allowWorkflowOverrides` — a capability distinct from
-`schegent.trust.allowPipelineOverrides`; see
+One definition per id, from the one catalog layer. An invalid definition stays
+visible with its field errors and costs only itself. Editing workflows in the
+Builder needs Workspace Trust; see
 [Trust Scopes](../operations/trust-scopes.md) and
 [Configuration](../operations/configuration.md).
 
@@ -432,6 +436,16 @@ effective. Editing this key from the Builder is gated by
 List of custom model identifiers (e.g., `claude-3-7-sonnet-20250219`, `sonnet`, `opus`) available in the Pipeline Builder QuickPick. Surface-only — does not validate the ids against an authoritative list.
 
 ### Removed settings
+
+`schegent.phases`, `schegent.pipelines`, and `schegent.workflows` were removed
+when definitions moved into the versioned catalog store. They were deleted, not
+drained: there is no migration, and the operator re-imports from YAML.
+
+`schegent.trust.allowPipelineOverrides` and
+`schegent.trust.allowWorkflowOverrides` went with them. Each gated which settings
+layer could redefine what another declared, and with one layer there is no such
+situation to gate. Editing pipelines and workflows now needs Workspace Trust and
+nothing further.
 
 `schegent.rules.injectPerPhase` was withdrawn and removed from the extension
 contract. Existing values in operator-owned settings files are left untouched
@@ -641,11 +655,9 @@ For quick lookup, the full list of keys:
 | `schegent.audit.rotation.sizeMB` | resource | `5` |
 | `schegent.audit.rotation.maxAgeDays` | resource | `30` |
 | `schegent.defaultPipelineId` | resource | `""` |
-| `schegent.phases` | resource | `[]` |
-| `schegent.pipelines` | resource | `[]` |
-| `schegent.workflows` | resource | `[]` |
 | `schegent.models` | resource | `[]` |
 | `schegent.retry.maxAttempts` | resource | `5` |
+| `schegent.retry.forceContinueOnCap` | resource | `false` |
 | `schegent.queue.globalConcurrencyCap` | resource | `1` |
 | `schegent.logging.runtimeLogLevel` | resource | `"INFO"` |
 | `schegent.logging.runtimeLogFilePath` | resource | `""` |
@@ -658,6 +670,9 @@ For quick lookup, the full list of keys:
 | `schegent.fatalSignatures` | resource | `[]` |
 | `schegent.claude.autoCompactPctOverride` | resource | `null` |
 | `schegent.multiRoot.suppressWarning` | window | `false` |
+| `schegent.ui.confirmations.enable` | window | `true` |
+| `schegent.trust.allowCustomPhases` | window | `null` |
+| `schegent.trust.allowCustomRetryConditions` | window | `null` |
 
 ## Editing settings
 

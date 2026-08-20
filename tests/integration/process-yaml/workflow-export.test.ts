@@ -21,16 +21,24 @@
 // derivable from the Workflow's own connections, which is why the ghost fixtures
 // below give every endpoint a port to find.
 //
-// The hazard R11 names carries over with it: relax first and a workspace row
-// whose only defect is a missing Pipeline outranks a user row that genuinely
-// resolves, and export emits bytes this installation does not run. Strict-first
-// makes that unreachable, and the test named for FR-014 below is what keeps it
-// so. The mirror-image hazard is new to this level and gets its own test: a
-// placeholder must relax the reference, never a structural defect, so a ghost
-// Workflow that ALSO contains a cycle stays unexportable.
+// The hazard R11 names carries over with it: relax first and a row whose only
+// defect is a missing Pipeline outranks one that genuinely resolves, and export
+// emits bytes this installation does not run. Strict-first makes that
+// unreachable, and the test named for FR-014 below is what keeps it so. The
+// mirror-image hazard is new to this level and gets its own test: a placeholder
+// must relax the reference, never a structural defect, so a ghost Workflow that
+// ALSO contains a cycle stays unexportable.
+//
+// Feature 099 (T496f, FR-042) — the harness held `{ user, workspace }` layers
+// and the FR-014 cases turned on which layer shadowed the other. There is one
+// catalog now, so a second row under the same id is a duplicate rather than a
+// shadow, and the resolver invalidates BOTH rows instead of picking a winner.
+// Those cases are converted rather than dropped: each still asserts that no
+// bytes leave for a definition this installation would not run.
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
 import { CMD_EXPORT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -61,9 +69,10 @@ interface Harness {
 }
 
 interface HarnessOptions {
-  readonly workflows?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-  readonly pipelines?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-  readonly phases?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
+  /** The stored rows of each catalog — one list per kind, not one per layer. */
+  readonly workflows?: readonly unknown[];
+  readonly pipelines?: readonly unknown[];
+  readonly phases?: readonly unknown[];
   readonly saveResult?: Exclude<ExportProcessYamlResult, { outcome: 'unavailable' }>;
   readonly saveThrows?: Error;
   readonly withSaveAdapter?: boolean;
@@ -88,18 +97,9 @@ function buildHarness(opts: HarnessOptions = {}): Harness {
 
   const ctx = {
     deps: {
-      readWorkflowConfig: () => ({
-        user: opts.workflows?.user ?? [],
-        workspace: opts.workflows?.workspace ?? []
-      }),
-      readPipelineConfig: () => ({
-        user: opts.pipelines?.user ?? [],
-        workspace: opts.pipelines?.workspace ?? []
-      }),
-      readPhaseConfig: () => ({
-        user: opts.phases?.user ?? [],
-        workspace: opts.phases?.workspace ?? []
-      }),
+      readWorkflowConfig: () => ({ rows: opts.workflows ?? [], revision: FIXTURE_REVISION }),
+      readPipelineConfig: () => ({ rows: opts.pipelines ?? [], revision: FIXTURE_REVISION }),
+      readPhaseConfig: () => ({ rows: opts.phases ?? [], revision: FIXTURE_REVISION }),
       updateConfig,
       executeCommand,
       ...(opts.withSaveAdapter === false ? {} : { saveProcessYamlDocument }),
@@ -262,9 +262,9 @@ const REPEATED_PIPELINE_WORKFLOW = Object.freeze({
 describe('Feature 086 — export one Workflow, references-only (US1, FR-011..FR-014)', () => {
   it('writes a package document naming the Workflow, its nodes, connection, and start set', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -289,9 +289,9 @@ describe('Feature 086 — export one Workflow, references-only (US1, FR-011..FR-
 
   it('writes both endpoints structurally and the condition as data (FR-006, FR-012)', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -331,9 +331,9 @@ describe('Feature 086 — export one Workflow, references-only (US1, FR-011..FR-
     // Pipelines, derived on read. A serialized copy would be a second source of
     // truth that goes stale the moment a node's Pipeline changes shape.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -342,31 +342,38 @@ describe('Feature 086 — export one Workflow, references-only (US1, FR-011..FR-
     expect(text).not.toContain('outputs:');
   });
 
-  it('exports the layer that actually runs, not a shadowed copy (FR-014)', async () => {
+  it('exports nothing when one id names two rows — neither copy wins (FR-014)', async () => {
+    // Feature 099 (T496f, FR-042) — this was "exports the layer that actually
+    // runs, not a shadowed copy", with the workspace copy expected in the bytes.
+    // One catalog has no shadowing to arbitrate, so the two copies are a
+    // duplicate id and the resolver invalidates both. The claim converts intact:
+    // an export never emits bytes for a definition this installation would not
+    // run, and here neither copy runs.
     const h = buildHarness({
-      workflows: {
-        user: [{ ...AUTHORED_WORKFLOW, name: 'User Copy' }],
-        workspace: [{ ...AUTHORED_WORKFLOW, name: 'Workspace Copy', version: 7 }]
-      },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [
+        { ...AUTHORED_WORKFLOW, name: 'First Copy' },
+        { ...AUTHORED_WORKFLOW, name: 'Second Copy', version: 7 }
+      ],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
-    const text = h.saved[0]!.text;
-    expect(text).toContain('  name: Workspace Copy');
-    expect(text).toContain('  version: 7');
-    expect(text).not.toContain('User Copy');
-    expect(h.audits[0]!.payload).toMatchObject({ scope: 'workspace' });
+    expect(h.saved).toHaveLength(0);
+    expect(h.acks[0]!.status).toBe('rejected');
+    expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+    const serialized = JSON.stringify({ ack: h.acks[0], audit: h.audits[0] });
+    expect(serialized).not.toContain('First Copy');
+    expect(serialized).not.toContain('Second Copy');
   });
 
   it('is deterministic — ten exports of an unchanged Workflow are byte-identical', async () => {
     const texts: string[] = [];
     for (let i = 0; i < 10; i += 1) {
       const h = buildHarness({
-        workflows: { user: [AUTHORED_WORKFLOW] },
-        pipelines: { user: PIPELINE_LAYER },
-        phases: { user: PHASE_LAYER }
+        workflows: [AUTHORED_WORKFLOW],
+        pipelines: PIPELINE_LAYER,
+        phases: PHASE_LAYER
       });
       await exportHandler(h.ctx, command('ship-it-flow'));
       texts.push(h.saved[0]!.text);
@@ -378,9 +385,9 @@ describe('Feature 086 — export one Workflow, references-only (US1, FR-011..FR-
 describe('Feature 086 — references-only carries no dependency payload (FR-015)', () => {
   it('writes no included section at all — not an empty one, absent', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -405,7 +412,7 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
     // No Pipeline layer defines `ghost-authoring` or `ghost-review`, so the
     // strict resolution reports `unknown-pipeline` against both nodes and
     // produces no effective record. The document is still produced (R11).
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     expect(h.acks[0]!.result).toEqual({ outcome: 'saved' });
@@ -419,19 +426,17 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
     // real `markdown` output feeding a placeholder input, and a placeholder
     // output feeding a real input, in the same graph.
     const h = buildHarness({
-      workflows: {
-        user: [
-          {
-            ...AUTHORED_WORKFLOW,
-            nodes: [
-              { nodeId: 'draft', pipelineId: 'spec-authoring', label: 'Draft the spec' },
-              { nodeId: 'review', pipelineId: 'ghost-review' }
-            ]
-          }
-        ]
-      },
-      pipelines: { user: [AUTHORING_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      workflows: [
+        {
+          ...AUTHORED_WORKFLOW,
+          nodes: [
+            { nodeId: 'draft', pipelineId: 'spec-authoring', label: 'Draft the spec' },
+            { nodeId: 'review', pipelineId: 'ghost-review' }
+          ]
+        }
+      ],
+      pipelines: [AUTHORING_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -440,7 +445,7 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
   });
 
   it('a Pipeline that resolves nowhere is still only an identifier in the document', async () => {
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     const text = h.saved[0]!.text;
@@ -448,23 +453,31 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
     expect(text).not.toContain('kind: Pipeline');
   });
 
-  it('the relaxation never promotes a layer over one that actually runs (FR-014)', async () => {
-    // The R11 hazard, one level up: relax first and the workspace row, whose
-    // only defect is a missing Pipeline, outranks a user row that genuinely
-    // resolves — and export would emit bytes this installation does not run.
+  it('the relaxation rescues nothing the catalog refuses for a non-reference defect (FR-014)', async () => {
+    // Feature 099 (T496f, FR-042) — the R11 hazard one level up was a relaxed
+    // workspace row, defective only in a missing Pipeline, outranking a user row
+    // that genuinely resolves. Layers are gone, so that promotion has no shape
+    // to take; what survives is the half that still bites. Both rows below claim
+    // `ship-it-flow`, so the strict pass refuses them as duplicates, and because
+    // the second names Pipelines nothing defines, the relaxed pass DOES run: it
+    // mints port-bearing placeholders and resolves again. It must still refuse,
+    // because `duplicate-in-scope` is computed from the catalog's own shape and
+    // no placeholder Pipeline can suppress it.
     const h = buildHarness({
-      workflows: {
-        user: [{ ...AUTHORED_WORKFLOW, name: 'Runs Here' }],
-        workspace: [{ ...GHOST_WORKFLOW, name: 'Never Runs' }]
-      },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [
+        { ...AUTHORED_WORKFLOW, name: 'Runs Here' },
+        { ...GHOST_WORKFLOW, name: 'Never Runs' }
+      ],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
-    expect(h.saved[0]!.text).toContain('  name: Runs Here');
-    expect(h.saved[0]!.text).not.toContain('Never Runs');
-    expect(h.audits[0]!.payload).toMatchObject({ scope: 'user' });
+    expect(h.saved).toHaveLength(0);
+    expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+    const serialized = JSON.stringify({ ack: h.acks[0], audit: h.audits[0] });
+    expect(serialized).not.toContain('Runs Here');
+    expect(serialized).not.toContain('Never Runs');
   });
 
   it('relaxes only the reference-class defects, never a structural one', async () => {
@@ -472,20 +485,18 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
     // cycle is computed from the graph's own edges, so no placeholder Pipeline
     // can suppress it and the row stays invalid through both passes.
     const h = buildHarness({
-      workflows: {
-        user: [
-          {
-            ...GHOST_WORKFLOW,
-            connections: [
-              ...GHOST_WORKFLOW.connections,
-              {
-                from: { nodeId: 'review', portId: 'verdict' },
-                to: { nodeId: 'draft', portId: 'brief' }
-              }
-            ]
-          }
-        ]
-      }
+      workflows: [
+        {
+          ...GHOST_WORKFLOW,
+          connections: [
+            ...GHOST_WORKFLOW.connections,
+            {
+              from: { nodeId: 'review', portId: 'verdict' },
+              to: { nodeId: 'draft', portId: 'brief' }
+            }
+          ]
+        }
+      ]
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -500,23 +511,21 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
     // ports the connections address would introduce a defect the strict pass never
     // had, which is FR-016 broken by the mechanism meant to uphold it.
     const h = buildHarness({
-      workflows: {
-        user: [
-          {
-            ...GHOST_WORKFLOW,
-            connections: [
-              {
-                ...GHOST_WORKFLOW.connections[0],
-                condition: {
-                  left: { source: 'node-output', nodeId: 'draft', field: 'status' },
-                  operator: 'equals',
-                  right: 'ready'
-                }
+      workflows: [
+        {
+          ...GHOST_WORKFLOW,
+          connections: [
+            {
+              ...GHOST_WORKFLOW.connections[0],
+              condition: {
+                left: { source: 'node-output', nodeId: 'draft', field: 'status' },
+                operator: 'equals',
+                right: 'ready'
               }
-            ]
-          }
-        ]
-      }
+            }
+          ]
+        }
+      ]
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -537,7 +546,7 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
   it('never reports dependency-does-not-resolve for a references-only export', async () => {
     // That reason belongs to the inclusion paths alone (FR-022). Reaching it
     // here would be FR-016 broken with a friendlier message.
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     expect(JSON.stringify(h.acks[0]!)).not.toContain('dependency-does-not-resolve');
@@ -547,9 +556,9 @@ describe('Feature 086 — references-only never requires the Pipelines to resolv
 describe('Feature 086 — the two absences stay told apart (FR-023)', () => {
   it('reports an intrinsically broken row as does-not-resolve', async () => {
     const h = buildHarness({
-      workflows: { user: [{ ...AUTHORED_WORKFLOW, version: 'not-a-number' }] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [{ ...AUTHORED_WORKFLOW, version: 'not-a-number' }],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -562,9 +571,9 @@ describe('Feature 086 — the two absences stay told apart (FR-023)', () => {
     // The never-saved draft: the operator has a Workflow open in the builder
     // that no layer holds, so the export has nothing to read.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('no-such-workflow'));
 
@@ -572,12 +581,22 @@ describe('Feature 086 — the two absences stay told apart (FR-023)', () => {
     expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'not-found' });
   });
 
-  it('reports not-found rather than does-not-resolve when no layer is configured', async () => {
+  it('reports not-found rather than does-not-resolve when the catalog is empty', async () => {
     const h = buildHarness();
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'not-found' });
-    expect(h.audits[0]!.payload).toMatchObject({ scope: null, outcomes: ['unavailable'] });
+    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['unavailable'] });
+    // Feature 099 (T496f, FR-041) — the envelope carried `scope: null` here, the
+    // one arm a refusal could report. The field is deleted rather than nulled,
+    // and this exact key set is what holds a build to that.
+    expect(Object.keys(h.audits[0]!.payload).sort()).toEqual([
+      'counts',
+      'operation',
+      'outcomes',
+      'resourceIds',
+      'resourceKind'
+    ]);
   });
 });
 
@@ -671,12 +690,12 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
   });
 
   it('writes no configuration and runs no command', async () => {
-    const workflows = { user: [AUTHORED_WORKFLOW], workspace: [] as readonly unknown[] };
+    const workflows: readonly unknown[] = [AUTHORED_WORKFLOW];
     const before = JSON.stringify(workflows);
     const h = buildHarness({
       workflows,
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -687,9 +706,9 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
 
   it('hands the adapter a bare name and no location', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
@@ -700,9 +719,9 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
 
   it('turns an adapter throw into a generic failure and keeps the detail in the log', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER },
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER,
       saveThrows: new Error('EACCES: permission denied writing the chosen location')
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
@@ -717,9 +736,9 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
 
   it('reports a canceled dialog without treating it as a failure', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER },
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER,
       saveResult: { outcome: 'canceled' }
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
@@ -731,42 +750,43 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
 
   it('rejects cleanly when the host wired no save adapter', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER },
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER,
       withSaveAdapter: false
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     expect(h.acks[0]!.status).toBe('rejected');
     expect(h.acks[0]!.result).toMatchObject({ outcome: 'failed' });
-    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'], scope: 'user' });
+    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'], counts: { exported: 0 } });
   });
 
   it('audits the Workflow kind with the same bounded envelope and no location', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow'));
 
     expect(h.audits).toHaveLength(1);
     const entry = h.audits[0]!;
     expect(entry.eventType).toBe('process-exchange-export');
+    // Feature 099 (T496f, FR-041) — `scope` sat at the end of this list and is
+    // gone with the layer tier it named. This is an EXACT key set, so dropping it
+    // here is not a loosening: a build that still emitted `scope` fails on it.
     expect(Object.keys(entry.payload).sort()).toEqual([
       'counts',
       'operation',
       'outcomes',
       'resourceIds',
-      'resourceKind',
-      'scope'
+      'resourceKind'
     ]);
     expect(entry.payload).toMatchObject({
       operation: 'export',
       resourceKind: 'workflow',
       resourceIds: ['ship-it-flow'],
-      scope: 'user',
       outcomes: ['saved'],
       counts: { exported: 1 }
     });
@@ -801,9 +821,9 @@ describe('Feature 086 — export changes nothing and names no location (FR-057)'
 describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, FR-020, FR-022)', () => {
   it('carries every referenced Pipeline and no Phase definition (FR-017)', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
@@ -821,9 +841,9 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
 
   it('carries a Pipeline two nodes name exactly once, and still three nodes (FR-020, FR-062)', async () => {
     const h = buildHarness({
-      workflows: { user: [REPEATED_PIPELINE_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: PHASE_LAYER }
+      workflows: [REPEATED_PIPELINE_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
@@ -838,7 +858,7 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
   });
 
   it('refuses when a referenced Pipeline does not resolve, naming it (FR-022)', async () => {
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
     expect(h.saved).toHaveLength(0);
@@ -851,7 +871,7 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
   });
 
   it('names the first unresolved reference in node order, not the first alphabetically', async () => {
-    const h = buildHarness({ workflows: { user: [ZULU_WORKFLOW] } });
+    const h = buildHarness({ workflows: [ZULU_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
     expect(h.acks[0]!.result).toMatchObject({
@@ -864,9 +884,9 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
     // it has anything to report — the counterpart to the test above, which reports
     // on the first.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: [AUTHORING_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: [AUTHORING_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
@@ -883,9 +903,9 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
     // is not a number is the Pipeline's own defect, and forgiving it would export a
     // definition that cannot be imported back.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: [AUTHORING_PIPELINE, { ...REVIEW_PIPELINE, version: 'not-a-number' }] },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: [AUTHORING_PIPELINE, { ...REVIEW_PIPELINE, version: 'not-a-number' }],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
@@ -898,7 +918,7 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
   });
 
   it('writes no partial document and audits the refusal without a location', async () => {
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
     expect(h.saved).toHaveLength(0);
@@ -907,7 +927,6 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
       operation: 'export',
       resourceKind: 'workflow',
       resourceIds: ['ship-it-flow'],
-      scope: null,
       outcomes: ['unavailable'],
       counts: { exported: 0 }
     });
@@ -917,7 +936,7 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
   });
 
   it('is the inclusion choice alone that makes the same Workflow unexportable (FR-016)', async () => {
-    const catalog = { workflows: { user: [GHOST_WORKFLOW] } };
+    const catalog = { workflows: [GHOST_WORKFLOW] };
     const references = buildHarness(catalog);
     const including = buildHarness(catalog);
 
@@ -932,8 +951,8 @@ describe('Feature 086 — export one Workflow with its Pipelines (US2, FR-017, F
 describe('Feature 086 — Pipeline inclusion never requires the Phases (US2, FR-018)', () => {
   /** Both Pipelines are present and well formed; nothing defines the Phases they name. */
   const PHASELESS = {
-    workflows: { user: [AUTHORED_WORKFLOW] },
-    pipelines: { user: PIPELINE_LAYER }
+    workflows: [AUTHORED_WORKFLOW],
+    pipelines: PIPELINE_LAYER
   } as const;
 
   it('exports Pipelines whose Phases no layer defines', async () => {
@@ -975,7 +994,7 @@ describe('Feature 086 — Pipeline inclusion never requires the Phases (US2, FR-
   it('refuses on the Pipeline level even while forgiving the Phase level', async () => {
     // The two relaxations are at different levels and must not blur: one absent
     // Pipeline still refuses in a catalog where every Phase is also absent.
-    const h = buildHarness({ workflows: { user: [AUTHORED_WORKFLOW] }, pipelines: { user: [REVIEW_PIPELINE] } });
+    const h = buildHarness({ workflows: [AUTHORED_WORKFLOW], pipelines: [REVIEW_PIPELINE] });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-pipelines'));
 
     expect(h.saved).toHaveLength(0);
@@ -1016,9 +1035,9 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
   });
 
   const FULL = {
-    workflows: { user: [AUTHORED_WORKFLOW] },
-    pipelines: { user: PIPELINE_LAYER },
-    phases: { user: PHASE_LAYER }
+    workflows: [AUTHORED_WORKFLOW],
+    pipelines: PIPELINE_LAYER,
+    phases: PHASE_LAYER
   } as const;
 
   it('carries every Pipeline and every Phase behind them (FR-019)', async () => {
@@ -1051,9 +1070,9 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
 
   it('carries a Phase two Pipelines both name exactly once (FR-019, FR-020)', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: [AUTHORING_PIPELINE, SHARING_REVIEW_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: [AUTHORING_PIPELINE, SHARING_REVIEW_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
@@ -1128,8 +1147,8 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
 
   it('refuses when a Phase in the closure does not resolve, naming it (FR-022, SC-007)', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
@@ -1146,13 +1165,11 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
     // The two absent Phases are ordered so authored order and alphabetical order
     // disagree: `zulu-phase` is reached first because its Pipeline is node one.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: {
-        user: [
-          { ...AUTHORING_PIPELINE, phaseIds: ['zulu-phase'] },
-          { ...REVIEW_PIPELINE, phaseIds: ['alpha-phase'] }
-        ]
-      }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: [
+        { ...AUTHORING_PIPELINE, phaseIds: ['zulu-phase'] },
+        { ...REVIEW_PIPELINE, phaseIds: ['alpha-phase'] }
+      ]
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
@@ -1164,9 +1181,9 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
 
   it('reaches the second Pipeline’s Phase when the first one resolves', async () => {
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER },
-      phases: { user: [phaseRow('draft', 'Draft')] }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER,
+      phases: [phaseRow('draft', 'Draft')]
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
@@ -1184,8 +1201,8 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
     // distinguish from a complete middle-mode package, which is why FR-022 refuses
     // the whole export rather than the missing section.
     const h = buildHarness({
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
@@ -1207,8 +1224,8 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
     // The same catalog, two depths. Blurring the two levels of relaxation would
     // either break FR-018 here or export an unresolvable closure above.
     const catalog = {
-      workflows: { user: [AUTHORED_WORKFLOW] },
-      pipelines: { user: PIPELINE_LAYER }
+      workflows: [AUTHORED_WORKFLOW],
+      pipelines: PIPELINE_LAYER
     } as const;
     const middle = buildHarness(catalog);
     const deep = buildHarness(catalog);
@@ -1226,7 +1243,7 @@ describe('Feature 086 — export the full transitive closure (US3, FR-019..FR-02
     // An absent Pipeline is reported as a Pipeline, not as whatever Phase it might
     // have named: the walk cannot know the second level of a definition it does
     // not have.
-    const h = buildHarness({ workflows: { user: [GHOST_WORKFLOW] } });
+    const h = buildHarness({ workflows: [GHOST_WORKFLOW] });
     await exportHandler(h.ctx, command('ship-it-flow', 'include-closure'));
 
     expect(h.saved).toHaveLength(0);

@@ -283,7 +283,7 @@ Reverses a `phase-disabled`.
 
 ### `phase-removed`
 
-A phase definition was removed from the operator's `schegent.phases` setting. Newly-enqueued runs will see the change; the in-flight run continues against its frozen snapshot.
+A phase definition was removed from the catalog. Newly-enqueued runs will see the change; the in-flight run continues against its frozen snapshot.
 
 ## Queue control
 

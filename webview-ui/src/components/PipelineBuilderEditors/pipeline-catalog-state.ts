@@ -8,17 +8,14 @@
 // passes `validatePipelineDraft` can still be rejected by the host validator,
 // and the editor must always surface the host's field errors as well.
 //
-// Authored rows persist under the legacy `id` / `phases` keys (plan.md:
-// "Authored rows persist under the legacy id/phases keys so existing user and
-// workspace configuration keeps loading"), so `MutablePipeline` and
-// `toSavePipelineRow` both speak that key form even though the projection
-// speaks `pipelineId` / `phaseIds`.
+// Authored rows persist under the legacy `id` / `phases` keys, so
+// `MutablePipeline` and `toSavePipelineRow` both speak that key form even
+// though the projection speaks `pipelineId` / `phaseIds`.
 
 import type {
   PhaseBinding,
   PipelineCatalogMutation,
-  PipelineCatalogSourceRecord,
-  WritablePipelineDefinitionScope
+  PipelineCatalogSourceRecord
 } from '../../lib/snapshot-types';
 import type { SavePipelineRow } from '../../lib/save-pipelines';
 import type { MutablePipeline } from './types';
@@ -75,7 +72,6 @@ export function sourceRecordToMutablePipeline(
       : {}),
     recommendedNext: definition ? [...definition.recommendedNext] : [],
     sourceKey: record.key,
-    scope: record.scope,
     sourceStatus: record.status,
     sourceErrors: record.errors,
     persisted: true
@@ -116,13 +112,9 @@ function uniqueId(base: string, taken: readonly MutablePipeline[]): string {
 }
 
 export function makeNewPipelineDraft(
-  pipelines: readonly MutablePipeline[],
-  scope: WritablePipelineDefinitionScope = 'workspace'
+  pipelines: readonly MutablePipeline[]
 ): MutablePipeline {
-  const id = uniqueId(
-    'new-pipeline',
-    pipelines.filter((row) => row.scope === scope)
-  );
+  const id = uniqueId('new-pipeline', pipelines);
   return {
     id,
     name: 'New Pipeline',
@@ -132,9 +124,10 @@ export function makeNewPipelineDraft(
     outputs: [],
     bindings: [],
     recommendedNext: [],
-    sourceKey: `draft::${scope}::${id}`,
-    scope,
-    sourceStatus: 'shadowed',
+    sourceKey: `draft::${id}`,
+    // Feature 099 (T494a, FR-043) — see `makeNewPhaseDraft`: a draft is
+    // `effective`, and `persisted: false` is what marks it unsaved.
+    sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false
   };
@@ -149,8 +142,6 @@ export function makeDuplicatePipelineDraft(
   original: MutablePipeline,
   pipelines: readonly MutablePipeline[]
 ): MutablePipeline {
-  const scope: WritablePipelineDefinitionScope =
-    original.scope === 'built-in' ? 'workspace' : original.scope;
   const id = uniqueId(`${original.id}-copy`, pipelines);
   return {
     ...original,
@@ -165,9 +156,8 @@ export function makeDuplicatePipelineDraft(
       ? { executionDefaults: { ...original.executionDefaults } }
       : {}),
     recommendedNext: [...original.recommendedNext],
-    scope,
-    sourceKey: `draft::${scope}::${id}`,
-    sourceStatus: 'shadowed',
+    sourceKey: `draft::${id}`,
+    sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false
   };
@@ -224,45 +214,43 @@ export function reorderPipelinePhases(
 function targetIndex(
   rows: readonly MutablePipeline[],
   sourceKey: string | null,
-  scope: WritablePipelineDefinitionScope,
   pipelineId: string
 ): number {
   const exact = rows.findIndex((row) => row.sourceKey === sourceKey);
   if (exact >= 0) return exact;
-  const candidates = rows.flatMap((row, index) =>
-    row.scope === scope && row.id === pipelineId ? [index] : []
-  );
+  const candidates = rows.flatMap((row, index) => (row.id === pipelineId ? [index] : []));
   return candidates.length === 1 ? candidates[0] : -1;
 }
 
 /**
  * Reapply only the declared local mutation over a freshly projected catalog.
  * Used after a `stale-catalog` rejection so a concurrent edit elsewhere in the
- * layer survives instead of being clobbered by the operator's whole draft.
+ * catalog survives instead of being clobbered by the operator's whole draft.
  */
 export function rebasePipelineMutation(
   records: readonly PipelineCatalogSourceRecord[],
   draftRows: readonly MutablePipeline[],
   mutation: PipelineCatalogMutation,
-  scope: WritablePipelineDefinitionScope,
   sourceKey: string | null
 ): MutablePipeline[] {
   const fresh = records.map(sourceRecordToMutablePipeline);
-  if (mutation.kind === 'reset') return fresh.filter((row) => row.scope !== scope);
+  // Feature 099 (T494a, FR-043) — a reset empties the catalog; see
+  // `rebasePhaseMutation`.
+  if (mutation.kind === 'reset') return [];
   // Feature 085 — a package import owns no draft row in this editor: the import
   // surface holds the plan, and a rejected package is recovered by inspecting the
   // same document again (FR-042b), not by rebasing a draft that does not exist.
   // The fresh projection IS the answer.
   if (mutation.kind === 'import-package') return fresh;
   if (mutation.kind === 'remove') {
-    const removal = targetIndex(fresh, sourceKey, scope, mutation.pipelineId);
+    const removal = targetIndex(fresh, sourceKey, mutation.pipelineId);
     return removal < 0 ? fresh : fresh.filter((_unused, index) => index !== removal);
   }
-  const draftTarget = targetIndex(draftRows, sourceKey, scope, mutation.pipelineId);
+  const draftTarget = targetIndex(draftRows, sourceKey, mutation.pipelineId);
   if (draftTarget < 0) return fresh;
   const draft = draftRows[draftTarget];
   if (mutation.kind === 'create' || mutation.kind === 'duplicate') return [...fresh, draft];
-  const freshTarget = targetIndex(fresh, sourceKey, scope, mutation.pipelineId);
+  const freshTarget = targetIndex(fresh, sourceKey, mutation.pipelineId);
   if (freshTarget < 0) return fresh;
   fresh[freshTarget] = draft;
   return fresh;
@@ -291,13 +279,13 @@ export function validatePipelineDraft(
     );
   } else if (
     siblings.some(
-      (other) =>
-        other.sourceKey !== pipeline.sourceKey &&
-        other.scope === pipeline.scope &&
-        other.id === pipeline.id
+      (other) => other.sourceKey !== pipeline.sourceKey && other.id === pipeline.id
     )
   ) {
-    add('pipelineId', 'duplicate-in-scope', `Id '${pipeline.id}' is already used in this scope`);
+    // The code keeps the host validator's spelling so the advisory pre-flight
+    // and the authoritative rejection stay comparable; only the message loses
+    // the scope it used to name.
+    add('pipelineId', 'duplicate-in-scope', `Id '${pipeline.id}' is already used`);
   }
   if (pipeline.name.trim().length === 0 || pipeline.name.length > PIPELINE_NAME_MAX_LEN) {
     add('name', 'invalid-length', `Name must contain 1 to ${PIPELINE_NAME_MAX_LEN} characters`);
@@ -539,8 +527,7 @@ export function formatPipelineSaveRejection(reason: string, result: unknown): st
     | undefined;
   // Feature 083 (FR-041) — a removal can be blocked by a queued run, by a
   // stored Workflow definition, or by both. Both lists are named, because
-  // showing only one would leave the operator editing the wrong thing; the
-  // definition names carry `scope::` so they point at the layer that blocked.
+  // showing only one would leave the operator editing the wrong thing.
   const dependents = [
     ...(details?.dependentWorkflowIds ?? []),
     ...(details?.dependentWorkflowDefinitionIds ?? [])

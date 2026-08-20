@@ -193,7 +193,7 @@ The setting save can be triggered from the sidebar settings panel.
 
 ## Configuration changes do not take effect
 
-**Symptom:** You changed `schegent.phases` (or any other setting) but the next phase ran with the old value.
+**Symptom:** You changed a phase definition (or any setting) but the next phase ran with the old value.
 
 **Causes:**
 

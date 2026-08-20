@@ -45,17 +45,15 @@ const NOW = 1_700_000_000_000;
 
 const COMPOSE: PhaseDef = {
   id: 'compose', name: 'Compose', version: 1, instruction: 'Compose the thing.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 const COMPOSE_FLOW: PipelineDef = {
   id: 'compose-flow',
   name: 'Compose Flow',
   phases: ['compose'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
   outputs: []
 };

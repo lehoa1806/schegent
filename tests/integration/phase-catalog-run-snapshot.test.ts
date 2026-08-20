@@ -29,7 +29,7 @@ function factoryHarness(source: PhaseDef): {
   catalogPhaseIds: () => readonly string[];
 } {
   const done: PhaseDef = {
-    id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+    id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
   };
   const pipeline = { id: 'custom-pipeline', name: 'Custom', phases: ['custom', 'done'] };
   let catalog: PipelineCatalog = buildCatalog(
@@ -55,7 +55,7 @@ describe('catalog edits cannot mutate queued or active Run Phase snapshots', () 
     const authored = {
       id: 'custom', name: 'Custom', description: 'Before', version: 2,
       skill: 'skill-a', model: 'model-a', effort: 'high' as const,
-      timeoutSeconds: 20, loopable: true, sourceScope: 'workspace' as const
+      timeoutSeconds: 20, loopable: true
     };
     const { factory } = factoryHarness(authored);
     const queued = resolved(factory, 'custom-pipeline').phases[0];
@@ -67,8 +67,7 @@ describe('catalog edits cannot mutate queued or active Run Phase snapshots', () 
 
   it('retains an active snapshot after the catalog source is removed', () => {
     const source: PhaseDef = {
-      id: 'custom', name: 'Custom', version: 1, instruction: 'Original',
-      sourceScope: 'user' as const
+      id: 'custom', name: 'Custom', version: 1, instruction: 'Original'
     };
     const { factory, removeCustomSource, catalogPhaseIds } = factoryHarness(source);
     const active = resolved(factory, 'custom-pipeline', 'agy').phases[0];
@@ -82,7 +81,7 @@ describe('catalog edits cannot mutate queued or active Run Phase snapshots', () 
   it('does not apply built-in runner pinning to a custom shadow', () => {
     const custom = snapshotPhaseDef({
       id: 'finalize', name: 'Custom finalize', version: 1,
-      instruction: 'Custom.', sourceScope: 'workspace'
+      instruction: 'Custom.'
     }, 'codex');
     expect(custom.runner).toBe('codex');
     expect(custom.promptVersion).toBe('custom-v1');

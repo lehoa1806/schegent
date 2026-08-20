@@ -1,6 +1,5 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { TerminationReason } from '../state/workflow-run';
-import type { PhaseDefinitionScope } from './process-definitions';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -530,12 +529,17 @@ export interface ProcessExchangePayload {
    * which is itself the fact worth recording (FR-027).
    */
   readonly resourceIds: readonly string[];
-  /**
-   * The layer the exported definition resolved from, or null when none did. Null
-   * for a preflight, which targets no layer — the operator chooses the scope
-   * after seeing the plan (FR-046, FR-056).
-   */
-  readonly scope: PhaseDefinitionScope | null;
+  // Feature 099 (T490b, FR-043) — `scope: PhaseDefinitionScope | null` stood here,
+  // recording which layer an exported definition resolved from. There is one layer,
+  // so the field's only remaining value would have been `null` on every event, and a
+  // field that is always null is a layer tier that has been hidden rather than
+  // removed. Deleted, not narrowed.
+  //
+  // No `AUDIT_SCHEMA_VERSION` bump follows (FR-060): nothing reads this field back
+  // — `audit-log-parser.ts` never projected it — so no reader of a historical log
+  // loses information it was using, and pre-release there is no installed base of
+  // logs to stay shape-compatible with. This feature still emits zero audit events;
+  // it only narrows what an existing one carries.
   /**
    * For an export, the result outcome. For a refusal, the refusal code — one of a
    * closed set of seven literals, never document-derived text (FR-048). For a
@@ -638,11 +642,9 @@ export interface MultiRootWarningShownPayload {
 // audit-contract.md (I-1..I-6) and the workspace-root-serialization
 // hard rule.
 export interface TrustCapabilityDeniedPayload {
-  readonly capability:
-    | 'phases'
-    | 'retryConditions'
-    | 'pipelineOverrides'
-    | 'workflowOverrides';
+  // Feature 099 (T492, FR-046) — the two layer-override capabilities are gone;
+  // these two gate document content and stay.
+  readonly capability: 'phases' | 'retryConditions';
   readonly resolvedScope: 'user' | 'workspace' | 'workspace-trust';
   readonly workspaceBasename: string;
   readonly reason: string;

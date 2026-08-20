@@ -171,31 +171,36 @@ describe('validateInboundMessage', () => {
     expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(true);
   });
 
-  // Feature 082 (US1, T019) — CMD_SAVE_PIPELINES carries the same scoped,
-  // revisioned envelope as CMD_SAVE_PHASES. The ingress gate is the only place
-  // the pre-082 unscoped `{ pipelines }` payload can be turned away, so the
-  // rejection is pinned here rather than in the handler.
-  const scopedPipelineSave = {
+  // Feature 082 (US1, T019) — CMD_SAVE_PIPELINES carries the same revisioned
+  // envelope as CMD_SAVE_PHASES. The ingress gate is the only place a payload
+  // from an older webview bundle can be turned away, so those rejections are
+  // pinned here rather than in the handler.
+  //
+  // Feature 099 (T496f, FR-043) — the envelope carried a `scope` naming which of
+  // `user`/`workspace` the complete layer belonged to. One catalog leaves it
+  // nothing to name. It is not merely optional now: the payload declares its keys
+  // and an undeclared one is refused, so a pre-099 bundle is turned away at this
+  // gate rather than silently writing to the one catalog that exists.
+  const pipelineSave = {
     type: 'CMD_SAVE_PIPELINES',
     correlationId: 'c',
     payload: {
-      scope: 'user',
       expectedRevision: 'a'.repeat(64),
       mutation: { kind: 'create', pipelineId: 'custom-flow' },
       pipelines: [{ id: 'custom-flow', name: 'Custom Flow', version: 1, phases: ['done'] }]
     }
   };
 
-  it('accepts the scoped CMD_SAVE_PIPELINES envelope', () => {
-    expect(validateInboundMessage(scopedPipelineSave).ok).toBe(true);
+  it('accepts the revisioned CMD_SAVE_PIPELINES envelope', () => {
+    expect(validateInboundMessage(pipelineSave).ok).toBe(true);
   });
 
-  it.each(['scope', 'expectedRevision', 'mutation', 'pipelines'])(
+  it.each(['expectedRevision', 'mutation', 'pipelines'])(
     'rejects a CMD_SAVE_PIPELINES envelope missing %s',
     (key) => {
-      const payload = { ...scopedPipelineSave.payload } as Record<string, unknown>;
+      const payload = { ...pipelineSave.payload } as Record<string, unknown>;
       delete payload[key];
-      expect(validateInboundMessage({ ...scopedPipelineSave, payload }).ok).toBe(false);
+      expect(validateInboundMessage({ ...pipelineSave, payload }).ok).toBe(false);
     }
   );
 
@@ -210,7 +215,7 @@ describe('validateInboundMessage', () => {
   });
 
   it.each([
-    ['a non-writable scope', { scope: 'built-in' }],
+    ['a pre-099 scope field', { scope: 'user' }],
     ['a non-string revision', { expectedRevision: 7 }],
     ['a non-array pipelines value', { pipelines: {} }],
     ['an unknown mutation kind', { mutation: { kind: 'promote', pipelineId: 'a' } }],
@@ -220,8 +225,8 @@ describe('validateInboundMessage', () => {
   ])('rejects a CMD_SAVE_PIPELINES envelope with %s', (_label, override) => {
     expect(
       validateInboundMessage({
-        ...scopedPipelineSave,
-        payload: { ...scopedPipelineSave.payload, ...override }
+        ...pipelineSave,
+        payload: { ...pipelineSave.payload, ...override }
       }).ok
     ).toBe(false);
   });
@@ -229,19 +234,18 @@ describe('validateInboundMessage', () => {
   it('rejects undeclared keys on the CMD_SAVE_PIPELINES payload', () => {
     expect(
       validateInboundMessage({
-        ...scopedPipelineSave,
-        payload: { ...scopedPipelineSave.payload, phases: [] }
+        ...pipelineSave,
+        payload: { ...pipelineSave.payload, phases: [] }
       }).ok
     ).toBe(false);
   });
 
   // Feature 083 (US1, T026) — CMD_SAVE_WORKFLOWS reuses the same envelope. The
   // rows themselves stay `unknown` here; the host validator owns graph shape.
-  const scopedWorkflowSave = {
+  const workflowSave = {
     type: 'CMD_SAVE_WORKFLOWS',
     correlationId: 'c',
     payload: {
-      scope: 'user',
       expectedRevision: 'a'.repeat(64),
       mutation: { kind: 'create', workflowId: 'design-then-build' },
       workflows: [
@@ -257,21 +261,21 @@ describe('validateInboundMessage', () => {
     }
   };
 
-  it('accepts the scoped CMD_SAVE_WORKFLOWS envelope', () => {
-    expect(validateInboundMessage(scopedWorkflowSave).ok).toBe(true);
+  it('accepts the revisioned CMD_SAVE_WORKFLOWS envelope', () => {
+    expect(validateInboundMessage(workflowSave).ok).toBe(true);
   });
 
-  it.each(['scope', 'expectedRevision', 'mutation', 'workflows'])(
+  it.each(['expectedRevision', 'mutation', 'workflows'])(
     'rejects a CMD_SAVE_WORKFLOWS envelope missing %s',
     (key) => {
-      const payload = { ...scopedWorkflowSave.payload } as Record<string, unknown>;
+      const payload = { ...workflowSave.payload } as Record<string, unknown>;
       delete payload[key];
-      expect(validateInboundMessage({ ...scopedWorkflowSave, payload }).ok).toBe(false);
+      expect(validateInboundMessage({ ...workflowSave, payload }).ok).toBe(false);
     }
   );
 
   it.each([
-    ['a non-writable scope', { scope: 'built-in' }],
+    ['a pre-099 scope field', { scope: 'user' }],
     ['a non-string revision', { expectedRevision: 7 }],
     ['an over-long revision', { expectedRevision: 'a'.repeat(129) }],
     ['a non-array workflows value', { workflows: {} }],
@@ -283,8 +287,8 @@ describe('validateInboundMessage', () => {
   ])('rejects a CMD_SAVE_WORKFLOWS envelope with %s', (_label, override) => {
     expect(
       validateInboundMessage({
-        ...scopedWorkflowSave,
-        payload: { ...scopedWorkflowSave.payload, ...override }
+        ...workflowSave,
+        payload: { ...workflowSave.payload, ...override }
       }).ok
     ).toBe(false);
   });
@@ -292,8 +296,8 @@ describe('validateInboundMessage', () => {
   it('rejects undeclared keys on the CMD_SAVE_WORKFLOWS payload', () => {
     expect(
       validateInboundMessage({
-        ...scopedWorkflowSave,
-        payload: { ...scopedWorkflowSave.payload, pipelines: [] }
+        ...workflowSave,
+        payload: { ...workflowSave.payload, pipelines: [] }
       }).ok
     ).toBe(false);
   });

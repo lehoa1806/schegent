@@ -14,30 +14,35 @@ If the phase you want already exists on someone else's machine, you do not need 
 
 ## Defining a new phase
 
-You can define new phases visually via the **Pipeline Builder > Phases** dashboard, or manually by adding an entry to `schegent.phases`:
+You define new phases visually via the **Pipeline Builder > Phases** dashboard, or as a `schegent/v1` document you import:
 
 ![Phase Builder](../assets/walkthrough/01_phase_builder.png)
 
-```jsonc
-{
-  "schegent.phases": [
-    {
-      "id": "lint-and-scan",
-      "name": "Lint and Scan",
-      "instruction": "Run the linter and security scanner. If both pass, emit [SCHEGENT_STATUS: CLEAR] on the last line of stdout. If either fails, fix the reported issues and re-run. After three iterations, emit a SCHEGENT_AUDIT_LOG block summarizing the remaining issues and exit.",
-      "model": "claude-sonnet-4-6",
-      "effort": "medium",
-      "loopable": true
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: lint-and-scan
+  name: Lint and Scan
+  version: 1
+spec:
+  instruction: >-
+    Run the linter and security scanner. If both pass, emit
+    [SCHEGENT_STATUS: CLEAR] on the last line of stdout. If either fails, fix
+    the reported issues and re-run. After three iterations, emit a
+    SCHEGENT_AUDIT_LOG block summarizing the remaining issues and exit.
+  model: claude-sonnet-4-6
+  effort: medium
+  loopable: true
 ```
+
+Either way the result is the same: a phase definition in the catalog under `<workspaceRoot>/.schegent/catalog/`, at version 1. Every later save writes a new immutable version.
 
 Field requirements:
 
-- `id` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved. Reusing an id you already have in a lower-precedence scope shadows that row; reusing one within the same scope is a duplicate and both rows are quarantined.
+- `phaseId` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved. It is the definition's identity: an import naming an id the catalog already holds is reported as `skip` rather than overwriting it.
 - `name` — display name (1–80 chars).
-- `instruction` or `skill` — exactly one non-empty directive is required for every source row.
+- `instruction` or `skill` — exactly one non-empty directive is required on every definition. A definition is complete in itself; nothing is inherited.
 - `loopable` — optional deprecated compatibility boolean.
 - `sideEffects` — optional containment class: `none`, `workspace`, `git`, or `unrestricted`. **Omitted, it is `workspace`.** Declare it honestly — this is what the phase is permitted to write, and nothing infers it from the phase's name.
 - `evidencePolicy` — optional: `required`, `best-effort`, or `none`. **Omitted, it is `required`.**
@@ -48,49 +53,48 @@ Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow t
 
 A phase that commits, tags, or otherwise writes `.git` must say so and must run on a Git-capable runner:
 
-```jsonc
-{
-  "id": "commit-and-tag",
-  "name": "Commit and Tag",
-  "instruction": "...",
-  "sideEffects": "git",
-  "runner": "claude"
-}
+```yaml
+metadata:
+  phaseId: commit-and-tag
+  name: Commit and Tag
+  version: 1
+spec:
+  instruction: ...
+  sideEffects: git
+  runner: claude
 ```
 
 Saving `sideEffects: git` with `runner: codex` is refused — Codex's workspace-write sandbox keeps `.git` read-only, so the phase would fail mid-run instead of at save time. The check reads the declaration, never the id: a phase called `finalize` that declares nothing is a `workspace` phase like any other, and a phase called `commit-and-tag` gets Git access because it asked for it.
 
 ## Using the new phase in a pipeline
 
-A new phase id is only useful if some pipeline references it. Define a custom pipeline visually in the **Pipelines** dashboard, or manually in your settings:
+A new phase id is only useful if some pipeline references it. Define a custom pipeline visually in the **Pipelines** dashboard, or as a document you import:
 
 ![Pipeline Builder](../assets/walkthrough/02_pipeline_builder.png)
 
-```jsonc
-{
-  "schegent.pipelines": [
-    {
-      "id": "speckit-with-security",
-      "name": "Spec-kit (with lint and security)",
-      "phases": [
-        "speckit-specify",
-        "speckit-clarify",
-        "speckit-plan",
-        "speckit-tasks",
-        "speckit-analyze",
-        "speckit-implement",
-        "lint-and-scan",
-        "finalize"
-      ]
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: speckit-with-security
+  name: Spec-kit (with lint and security)
+  version: 1
+spec:
+  phaseIds:
+    - speckit-specify
+    - speckit-clarify
+    - speckit-plan
+    - speckit-tasks
+    - speckit-analyze
+    - speckit-implement
+    - lint-and-scan
+    - finalize
 ```
 
 Pipeline rules:
 
 - `id` — kebab-case, ≤ 64 chars. No id is reserved; `speckit-new-feature` is simply the id the shipped example happens to use, and yours may reuse or replace it.
-- `phases` — 1 to 50 entries. Each must reference one of your `schegent.phases[].id`, whether you authored it or imported it. Do **not** list `done` — it is the terminal state the host appends after your last phase, not a phase you declare.
+- `phaseIds` — 1 to 50 entries. Each must reference a phase id your catalog holds, whether you authored it or imported it. Do **not** list `done` — it is the terminal state the host appends after your last phase, not a phase you declare.
 
 If a referenced id is unknown at load time, the pipeline is rejected with a warning.
 
@@ -131,8 +135,8 @@ confidence: 0.78
 
 Each `<identifier>: <number>` line becomes an entry in the metrics map (the parser is whitespace-tolerant; only `<identifier>: <number>` lines are extracted). The expression in `retryCondition` is then evaluated:
 
-```jsonc
-"retryCondition": "open_questions > 0"
+```yaml
+retryCondition: open_questions > 0
 ```
 
 A truthy result means "loop"; a falsy result means "advance to the next phase".
@@ -160,11 +164,11 @@ The DSL is sandboxed by design (no arbitrary code, no eval). Any new evaluator t
 
 ### Examples
 
-```jsonc
-"retryCondition": "open_questions > 0"
-"retryCondition": "unresolved_findings > 0 or open_questions > 0"
-"retryCondition": "not (confidence > 0.85)"
-"retryCondition": "(severity_high > 0 and severity_medium >= 3) or coverage < 80"
+```yaml
+retryCondition: open_questions > 0
+retryCondition: unresolved_findings > 0 or open_questions > 0
+retryCondition: not (confidence > 0.85)
+retryCondition: (severity_high > 0 and severity_medium >= 3) or coverage < 80
 ```
 
 ### Decision audit trail
@@ -183,35 +187,38 @@ When `missingKeys` is non-empty, the expression evaluates as if those identifier
 
 ### Invalid expressions
 
-An invalid expression invalidates that source row. The catalog keeps the authored row visible with a field error so you can repair it, while runtime resolution falls back to the next valid workspace, user, or built-in source for the same id.
+An invalid expression invalidates that definition. The catalog keeps it visible with a field error so you can repair it. There is nothing to fall back to — one layer means an invalid definition costs only itself, and every other definition still resolves. The previous version of that definition is still in its history, so you can see what the expression was before you broke it.
 
 ## Audit trail
 
 Every phase flows through the same audit + redaction + transcript path; there is exactly one, and nothing is exempt from it. The audit payload for a `phase-start` event includes the `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. There is no separate audit channel for phases you authored, because there is no privileged channel for anything else to use.
 
-## Shadowing across scopes
+## Editing versus defining a new id
 
-If two rows share an `id` in different scopes, the higher-precedence one **shadows** the other. Shadowing rules:
+There is one catalog and one definition per id, so tuning a phase you imported means **editing it** — nothing shadows anything, and there is no higher scope to author an override in. Two things make that safe:
 
-- A shadow is a complete definition; omitted optional fields use runtime defaults and are not copied from the row it shadows. That includes `sideEffects` and `evidencePolicy` — a shadow that omits them is `workspace` and `required`, whatever the shadowed row declared.
-- Workspace-layer entries shadow user-layer entries. The built-in layer sits below both and is permanently empty, so in practice there are two ranks with a third held open.
+- **The edit is versioned.** Every save writes a new immutable version and leaves the previous one readable, so you can see exactly what you changed a phase from. Saving unchanged content writes nothing.
+- **Every definition is complete.** Omitted optional fields take runtime defaults; they are never inherited from the version you replaced. That includes `sideEffects` and `evidencePolicy` — a definition that omits them is `workspace` and `required`, whatever the version before it declared.
 
-Shadowing is the right pattern when you want to tune a definition you imported without editing the document. Defining a new id is the right pattern when you want a new step.
+Editing is the right move when you want to tune a step you already have. Defining a new id is the right move when you want an additional step — the original stays untouched and both can appear in the same pipeline.
 
 ## Worked example: custom bugfix pipeline
 
 Suppose you want a smaller bugfix flow that skips the verify-pre phase:
 
-```jsonc
-{
-  "schegent.pipelines": [
-    {
-      "id": "bugfix-fast",
-      "name": "Bugfix (fast)",
-      "phases": ["bugfix-report", "bugfix-patch", "bugfix-implement", "bugfix-verify-post"]
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Pipeline
+metadata:
+  id: bugfix-fast
+  name: Bugfix (fast)
+  version: 1
+spec:
+  phaseIds:
+    - bugfix-report
+    - bugfix-patch
+    - bugfix-implement
+    - bugfix-verify-post
 ```
 
 You did not define any new phases — you reused the five bugfix phases from `examples/speckit-bugfix.pipeline.yaml` in a different order, which assumes you imported that document first. To use it, pick **Bugfix (fast)** in the enqueue dialog when you submit a task.
@@ -230,19 +237,20 @@ low_severity: 5
 
 You want it to loop until high and medium are zero (low can stay):
 
-```jsonc
-{
-  "schegent.phases": [
-    {
-      "id": "lint-and-scan",
-      "name": "Lint and Scan",
-      "instruction": "Run the linter and security scanner. Emit a SCHEGENT AUDIT LOG block with the severity counts.",
-      "model": "claude-sonnet-4-6",
-      "loopable": true,
-      "retryCondition": "high_severity > 0 or medium_severity > 0"
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: lint-and-scan
+  name: Lint and Scan
+  version: 2
+spec:
+  instruction: >-
+    Run the linter and security scanner. Emit a SCHEGENT AUDIT LOG block with
+    the severity counts.
+  model: claude-sonnet-4-6
+  loopable: true
+  retryCondition: high_severity > 0 or medium_severity > 0
 ```
 
 After the first iteration above, `high_severity > 0` is false and `medium_severity > 0` is true → decision is true → loop. The phase re-invokes. Eventually both are zero → decision is false → advance.
@@ -250,7 +258,7 @@ After the first iteration above, `high_severity > 0` is false and `medium_severi
 ## Things to watch out for
 
 - **Loop cap.** Even with a `retryCondition`, the loop hits `schegent.loop.maxIterations` (default 10). Force-advance fires beyond that.
-- **Phase id collisions.** Two custom phases with the same id is a configuration error caught at load.
+- **Phase id collisions.** There cannot be two definitions with one id — the catalog is keyed by id. What you get instead is a `skip` on an import that names an id you already hold, which is the store declining to overwrite your work.
 - **Pipeline that references a missing phase.** The pipeline is rejected; the audit log records the rejection.
 - **The DSL is for boolean decisions.** Do not try to use it for arithmetic.
 

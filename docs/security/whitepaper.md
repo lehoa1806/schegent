@@ -43,11 +43,10 @@ and task files are the trust boundary on what the CLI ingests.
 **Three boundary statements (each one sentence):**
 
 - **Trust ceiling.** Schegent's capability surface is gated by VS Code's
-  binary Workspace Trust, narrowed by three per-capability scopes
+  binary Workspace Trust, narrowed by two per-capability scopes
   (`schegent.trust.allowCustomPhases`,
-  `schegent.trust.allowCustomRetryConditions`,
-  `schegent.trust.allowPipelineOverrides`), and bound by 36 mutating IPC
-  commands enforced primary-host-only.
+  `schegent.trust.allowCustomRetryConditions`), and bound by 36 mutating
+  IPC commands enforced primary-host-only.
 - **Audit boundary.** Every phase invocation writes a redacted,
   append-only structured event to `.schegent/audit.log` through a single
   writer; paths and operator-controlled bytes are excluded from the
@@ -273,22 +272,25 @@ T21](./threat-model.md#t21--untrusted-stdout-names-local-files).
 
 ### (d) Per-capability trust scopes (spec 059)
 
-VS Code's Workspace Trust is binary; Schegent layers three
+VS Code's Workspace Trust is binary; Schegent layers two
 independently-configurable scopes on top, giving enterprise IT a
 narrower gate than "trust everything or trust nothing":
 
-- **`schegent.trust.allowCustomPhases`** — gates non-default phase
-  prompts (the operator's `schegent.phases` overrides). When `false`,
-  saving a custom phase emits a `trust.capability-denied` audit event
-  and the save is rejected.
-- **`schegent.trust.allowCustomRetryConditions`** — gates non-default
-  retry-condition DSL expressions on phase rows. Default retry
-  conditions remain available; only operator-authored expressions are
-  gated.
-- **`schegent.trust.allowPipelineOverrides`** — gates non-default
-  entries in the pipeline catalog. The built-in Spec Driven Development workflow pipeline
-  remains available; only operator-authored pipeline catalog entries
-  are gated.
+- **`schegent.trust.allowCustomPhases`** — gates saving a phase
+  definition into the catalog store. When `false`, the save emits a
+  `trust.capability-denied` audit event and is rejected.
+- **`schegent.trust.allowCustomRetryConditions`** — gates saving a
+  `retryCondition` expression on any phase. The gate keys on the field
+  being present, never on what the expression says.
+
+Both key on what a document **says**, which is why they survived the
+move to a single-layer catalog store in feature 099 and two others did
+not. `allowPipelineOverrides` and `allowWorkflowOverrides` gated which
+settings layer could redefine what another layer declared; with one
+catalog there is no second layer to redefine anything, so editing
+pipelines and workflows is gated by Workspace Trust alone — a gate an
+untrusted workspace already applies wholesale, by activating no catalog
+at all.
 
 Each setting is `boolean | null`, defaults to `null` (follow Workspace
 Trust), and resolves against a four-step ladder: **workspace-trust
@@ -305,7 +307,7 @@ path). No operator-controlled string flows into the payload, so
 redaction is unchanged.
 
 See [`operations/trust-scopes.md`](../operations/trust-scopes.md) for
-the operator-facing guide and 16-row truth table,
+the operator-facing guide and 18-row truth table,
 [spec 059](../../../specs/059-fine-grained-trust-scopes/spec.md) for
 the implementation, and [`threat-model.md` § Per-capability trust
 scopes](./threat-model.md#per-capability-trust-scopes).
@@ -480,8 +482,8 @@ stdout and stops exiting — because the upstream model is rate-limited
 beyond the configured timeout, the network is partitioned, the binary
 is wedged, or an in-flight tool call is itself hung.
 
-**What mitigates it.** Each phase has a per-phase timeout
-(`schegent.phases.*.timeoutMs` or the operator's phase override). The
+**What mitigates it.** Each phase has a per-phase timeout (the
+definition's own `timeoutSeconds`, or the per-run override). The
 runner watchdog kills the subprocess on timeout and records a
 `phase-timeout` audit event. The operator can also cancel via the
 sidebar (`schegent.cancel`); cancellation kills the subprocess after
@@ -525,14 +527,18 @@ scope (workspace scope takes precedence over user scope, which takes
 precedence over default-allow; the workspace-trust ceiling is enforced
 first):
 
-- `"schegent.trust.allowCustomPhases": false` — denies non-default
-  phase prompts.
-- `"schegent.trust.allowCustomRetryConditions": false` — denies
-  non-default retry-condition DSL expressions on phase rows.
-- `"schegent.trust.allowPipelineOverrides": false` — denies non-default
-  entries in the pipeline catalog.
+- `"schegent.trust.allowCustomPhases": false` — denies saving a phase
+  definition.
+- `"schegent.trust.allowCustomRetryConditions": false` — denies saving a
+  `retryCondition` expression on any phase.
 
-For the full 16-row resolution truth table and the four worked
+Denying both leaves the workspace able to *run* what its catalog already
+holds while authoring nothing new into it. To deny pipeline and workflow
+edits as well, deny Workspace Trust for the folder — that is now the
+gate for those, and it denies the whole catalog rather than one
+capability.
+
+For the full 18-row resolution truth table and the four worked
 resolution examples, see
 [`operations/trust-scopes.md`](../operations/trust-scopes.md).
 
@@ -625,7 +631,7 @@ Every artifact this white-paper depends on:
 - [`operations/inspect-audit-logs.md`](../operations/inspect-audit-logs.md)
   — audit log layout, rotation policy, and inspection workflow.
 - [`operations/trust-scopes.md`](../operations/trust-scopes.md) —
-  per-capability trust scopes operator guide and 16-row truth table.
+  per-capability trust scopes operator guide and 18-row truth table.
 - [`features/telemetry-projection.md`](../features/telemetry-projection.md)
   — the ephemeral PID / status display (local-only UI surface).
 - [`features/verbose-diagnostics.md`](../features/verbose-diagnostics.md)

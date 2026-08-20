@@ -70,8 +70,7 @@ const EFFECTIVE_PHASES: MutablePhase[] = [
     name: 'Specify',
     version: 1,
     instruction: 'Write the spec.',
-    sourceKey: 'built-in::speckit-specify::0',
-    scope: 'built-in',
+    sourceKey: 'speckit-specify::0',
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: true
@@ -81,8 +80,7 @@ const EFFECTIVE_PHASES: MutablePhase[] = [
     name: 'Done',
     version: 1,
     instruction: 'Finish.',
-    sourceKey: 'built-in::done::1',
-    scope: 'built-in',
+    sourceKey: 'done::1',
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: true
@@ -98,8 +96,7 @@ const WORKSPACE_PIPELINE: MutablePipeline = {
   outputs: [],
   bindings: [],
   recommendedNext: [],
-  sourceKey: 'workspace::custom-flow::0',
-  scope: 'workspace',
+  sourceKey: 'custom-flow::0',
   sourceStatus: 'effective',
   sourceErrors: [],
   persisted: true
@@ -132,7 +129,6 @@ function mount(
       historyLength: 1,
       newPhaseId: '',
       trusted: options.trusted ?? true,
-      showTrustBanner: false,
       saveError: null,
       savePending: options.savePending ?? false,
       mutationActive: options.mutationActive ?? false,
@@ -164,8 +160,8 @@ function draftRow(overrides: Partial<MutablePipeline> = {}): MutablePipeline {
     id: 'new-pipeline',
     name: 'New Pipeline',
     version: 1,
-    sourceKey: 'draft::workspace::new-pipeline',
-    sourceStatus: 'shadowed',
+    sourceKey: 'draft::new-pipeline',
+    sourceStatus: 'effective',
     persisted: false,
     ...overrides
   };
@@ -216,33 +212,28 @@ describe('Pipeline catalog source rendering', () => {
   it('renders rows from the projection and never from availablePipelines', () => {
     const { container } = mount({ pipelines: [WORKSPACE_PIPELINE] });
     expect(
-      container.querySelector('[data-testid="pipelines-list-item-workspace-custom-flow"]')
+      container.querySelector('[data-testid="pipelines-list-item-custom-flow"]')
     ).not.toBeNull();
     expect(container.textContent).not.toContain('Runtime Only');
     expect(container.textContent).not.toContain('runtime-only-pipeline');
   });
 
-  it('renders scope and source status badges for every precedence outcome', () => {
-    const shadowed: MutablePipeline = {
-      ...WORKSPACE_PIPELINE,
-      scope: 'user',
-      sourceKey: 'user::custom-flow::0',
-      sourceStatus: 'shadowed'
-    };
+  it('renders a source status badge for every resolution outcome', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — the scope badge and the `shadowed`
+    // status were two halves of one answer: which layer a row came from, and
+    // which layer hid it. Both are deleted. `PipelineSourceStatus` is down to
+    // `effective | invalid`, and every arm of it is still rendered here — the
+    // property this case exists for.
     const invalid: MutablePipeline = {
       ...WORKSPACE_PIPELINE,
       id: 'broken-flow',
       name: 'Broken Flow',
-      scope: 'workspace',
-      sourceKey: 'workspace::broken-flow::1',
+      sourceKey: 'broken-flow::1',
       sourceStatus: 'invalid',
       sourceErrors: [{ field: 'phaseIds', code: 'empty', message: 'At least one Phase required' }]
     };
-    const { container } = mount({ pipelines: [WORKSPACE_PIPELINE, shadowed, invalid] });
-    expect(container.textContent).toContain('workspace');
-    expect(container.textContent).toContain('user');
+    const { container } = mount({ pipelines: [WORKSPACE_PIPELINE, invalid] });
     expect(container.textContent).toContain('effective');
-    expect(container.textContent).toContain('shadowed');
     expect(container.textContent).toContain('invalid');
   });
 
@@ -255,24 +246,24 @@ describe('Pipeline catalog source rendering', () => {
     const { container } = mount({ pipelines: [invalid], selectedIndex: 0 });
     const name = container.querySelector('[data-testid="pipelines-name-field-custom-flow"]');
     expect(name?.getAttribute('aria-invalid')).toBe('true');
-    expect(name?.getAttribute('aria-describedby')).toContain('pipeline-errors-workspace-custom-flow');
+    expect(name?.getAttribute('aria-describedby')).toContain('pipeline-errors-custom-flow');
     expect(container.textContent).toContain('Name is invalid');
   });
 
-  it('keeps built-in rows read-only and hides removal (FR-024)', () => {
-    const builtIn: MutablePipeline = {
-      ...WORKSPACE_PIPELINE,
-      scope: 'built-in',
-      sourceKey: 'built-in::custom-flow::0'
-    };
-    const { container } = mount({ pipelines: [builtIn], selectedIndex: 0 });
+  it('keeps a stored row editable and offers removal (T496f)', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — this seeded a `built-in` row and
+    // pinned what the read-only tier withheld: a locked name field and no remove
+    // control, with duplicate as the one way out. The tier is deleted, so the
+    // inversion is the claim. The id field is the exception and keeps its own
+    // case below: it is read-only because the row is PERSISTED, which is a fact
+    // about identity rather than about any layer.
+    const { container } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
     expect(
       container
         .querySelector('[data-testid="pipelines-name-field-custom-flow"]')
         ?.hasAttribute('readonly')
-    ).toBe(true);
-    expect(container.querySelector('[data-testid="pipelines-remove"]')).toBeNull();
-    // Duplicating a built-in into a writable scope stays available (FR-006).
+    ).toBe(false);
+    expect(container.querySelector('[data-testid="pipelines-remove"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="pipelines-duplicate"]')).not.toBeNull();
   });
 
@@ -287,22 +278,17 @@ describe('Pipeline catalog source rendering', () => {
 });
 
 describe('Pipeline create path (FR-004, FR-007)', () => {
-  it('lets a draft select a writable target scope and forwards the choice', async () => {
-    const onpipelinechange = vi.fn();
-    const { container } = mount({
-      pipelines: [draftRow()],
-      selectedIndex: 0,
-      onpipelinechange
-    });
-    const select = container.querySelector(
-      '[data-testid="pipelines-scope-select-new-pipeline"]'
-    ) as HTMLSelectElement;
-    expect(select).not.toBeNull();
-    expect(select.disabled).toBe(false);
-    // Only writable scopes are offerable targets.
-    expect([...select.options].map((option) => option.value).sort()).toEqual(['user', 'workspace']);
-    await fireEvent.change(select, { target: { value: 'user' } });
-    expect(onpipelinechange).toHaveBeenCalledWith(0, { scope: 'user' });
+  it('offers no target-scope picker on a draft', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — a draft chose between the two
+    // writable layers, and the picker forwarded that choice as a patch. There is
+    // one catalog to land in, so the control is deleted rather than reduced to a
+    // single-option select that decides nothing. Pinned by absence: a build that
+    // brings the picker back fails here rather than silently offering a choice
+    // the host would ignore.
+    const { container } = mount({ pipelines: [draftRow()], selectedIndex: 0 });
+    expect(
+      container.querySelector('[data-testid="pipelines-scope-select-new-pipeline"]')
+    ).toBeNull();
   });
 
   it('leaves the draft id editable', () => {
@@ -325,9 +311,9 @@ describe('Pipeline create path (FR-004, FR-007)', () => {
     expect(save.disabled).toBe(true);
   });
 
-  it('blocks save when the draft id is already taken in the target scope', () => {
+  it('blocks save when the draft id is already taken in the catalog', () => {
     const { container } = mount({
-      pipelines: [WORKSPACE_PIPELINE, draftRow({ id: 'custom-flow', scope: 'workspace' })],
+      pipelines: [WORKSPACE_PIPELINE, draftRow({ id: 'custom-flow' })],
       selectedIndex: 1
     });
     const save = container.querySelector('[data-testid="pipelines-save-all"]') as HTMLButtonElement;
@@ -335,9 +321,9 @@ describe('Pipeline create path (FR-004, FR-007)', () => {
     expect(container.textContent).toMatch(/already/i);
   });
 
-  it('permits save once the draft carries a valid, unused id in a writable scope', () => {
+  it('permits save once the draft carries a valid, unused id', () => {
     const { container } = mount({
-      pipelines: [WORKSPACE_PIPELINE, draftRow({ id: 'release-flow', scope: 'user' })],
+      pipelines: [WORKSPACE_PIPELINE, draftRow({ id: 'release-flow' })],
       selectedIndex: 1
     });
     const save = container.querySelector('[data-testid="pipelines-save-all"]') as HTMLButtonElement;
@@ -767,11 +753,11 @@ describe('Pipeline duplicate path (US4, FR-006, FR-007)', () => {
     expect(idInput.hasAttribute('readonly')).toBe(false);
   });
 
-  it('keeps stepping the candidate id until it clears every scope', () => {
+  it('keeps stepping the candidate id until it clears the catalog', () => {
     const taken = [
       SOURCE,
-      { ...SOURCE, id: 'custom-flow-copy', sourceKey: 'user::custom-flow-copy::0', scope: 'user' },
-      { ...SOURCE, id: 'custom-flow-copy-1', sourceKey: 'user::custom-flow-copy-1::1', scope: 'user' }
+      { ...SOURCE, id: 'custom-flow-copy', sourceKey: 'custom-flow-copy::0' },
+      { ...SOURCE, id: 'custom-flow-copy-1', sourceKey: 'custom-flow-copy-1::1' }
     ] as MutablePipeline[];
 
     expect(makeDuplicatePipelineDraft(SOURCE, taken).id).toBe('custom-flow-copy-2');
@@ -793,8 +779,7 @@ describe('Pipeline duplicate path (US4, FR-006, FR-007)', () => {
       outputs: SOURCE.outputs,
       bindings: SOURCE.bindings,
       executionDefaults: SOURCE.executionDefaults,
-      recommendedNext: SOURCE.recommendedNext,
-      scope: 'workspace'
+      recommendedNext: SOURCE.recommendedNext
     });
 
     const { container } = mount({ pipelines: [copy], selectedIndex: 0 });
@@ -833,20 +818,19 @@ describe('Pipeline duplicate path (US4, FR-006, FR-007)', () => {
     expect(copy.executionDefaults).toEqual(SOURCE.executionDefaults);
   });
 
-  it('retargets a built-in source into a writable scope with its own draft key', () => {
-    const builtIn: MutablePipeline = {
-      ...SOURCE,
-      scope: 'built-in',
-      sourceKey: 'built-in::custom-flow::0'
-    };
+  it('gives the copy its own draft key and clears the source projection', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — the copy used to be RETARGETED: a
+    // `built-in` source produced a `workspace` draft, because the layer it came
+    // from could not be written. One layer removes the retargeting and leaves
+    // what duplication still has to do — hand the copy an identity of its own and
+    // drop the projection metadata that belonged to the row it was copied from.
+    const copy = makeDuplicatePipelineDraft(SOURCE, [SOURCE]);
 
-    const copy = makeDuplicatePipelineDraft(builtIn, [builtIn]);
-
-    expect(copy.scope).toBe('workspace');
-    expect(copy.sourceKey).toBe(`draft::workspace::${copy.id}`);
-    expect(copy.sourceStatus).toBe('shadowed');
+    expect(copy.id).not.toBe(SOURCE.id);
+    expect(copy.sourceKey).toBe(`draft::${copy.id}`);
+    expect(copy.persisted).toBe(false);
+    expect(copy.sourceStatus).toBe('effective');
     expect(copy.sourceErrors).toEqual([]);
-    expect(builtIn.scope).toBe('built-in');
   });
 
   it('forwards the selected row to the duplicate handler', async () => {
@@ -929,7 +913,7 @@ describe('Pipeline empty-Phase-prerequisite state (US6, FR-034, SC-007)', () => 
   it('still renders existing rows read-only rather than hiding the catalog', () => {
     const { container } = mountNoPhases({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
     expect(
-      container.querySelector('[data-testid="pipelines-list-item-workspace-custom-flow"]')
+      container.querySelector('[data-testid="pipelines-list-item-custom-flow"]')
     ).not.toBeNull();
     expect(container.querySelector('[data-testid="pipelines-editor-custom-flow"]')).not.toBeNull();
   });
@@ -958,7 +942,6 @@ describe('Consuming Workflows list (FR-002)', () => {
           {
             key: WORKSPACE_PIPELINE.sourceKey,
             pipelineId: WORKSPACE_PIPELINE.id,
-            scope: 'workspace',
             status: 'effective',
             definition: null,
             display: {},
@@ -1098,12 +1081,16 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     expect(onmovephasedown).toHaveBeenCalledWith(0);
   });
 
-  it('conveys scope and source status as text, never by color alone', () => {
+  it('conveys source status as text, never by color alone', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — two badges were read here, and the
+    // scope one is deleted with the tier. The audit property is unchanged and
+    // still worth asserting on what remains: the status is legible without
+    // seeing the colour it is painted in.
     const { container } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
     const row = container.querySelector(
-      '[data-testid="pipelines-list-item-workspace-custom-flow"]'
+      '[data-testid="pipelines-list-item-custom-flow"]'
     ) as HTMLElement;
-    expect(row.querySelector('.scope-badge')?.textContent?.trim()).toBe('workspace');
+    expect(row.querySelector('.scope-badge')).toBeNull();
     expect(row.querySelector('.status-badge')?.textContent?.trim()).toBe('effective');
   });
 

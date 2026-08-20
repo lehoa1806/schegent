@@ -7,12 +7,15 @@
 // no Pipelines defined" scenario are both unreachable. These tests pin the
 // mount and the trust wiring that decides the editor's `trusted` prop.
 //
-// The capability is `workflowOverrides`, and it is deliberately *distinct*
-// from `pipelineOverrides` (see docs/security/threat-model.md T22 and the
-// per-capability trust scopes section) — a Workflow graph decides which
-// Pipelines relate to which and under what conditions, a broader authority
-// than editing one Pipeline's phase order. The "distinct capability" test
-// below is the webview-side half of that invariant; the host-side half is
+// Feature 099 (T496f, FR-046) — this paragraph argued that `workflowOverrides`
+// was deliberately distinct from `pipelineOverrides`, a Workflow graph deciding
+// which Pipelines relate to which being a broader authority than editing one
+// Pipeline's phase order. Both settings are deleted with the layer tier: an
+// *override* names one layer redefining another layer's row, and there is one
+// catalog. The authority argument is unaffected and unenforced by either
+// setting — what gates both tabs is Workspace Trust, which is the single gate
+// precisely because a cloned repository can carry a `.schegent/catalog/`
+// directory (FR-052). The host-side half is
 // tests/unit/state/state-projector-trust.test.ts.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -47,8 +50,6 @@ afterEach(() => cleanup());
 interface SnapshotOpts {
   isPrimary?: boolean;
   workspaceTrust?: boolean;
-  pipelineOverrides?: boolean;
-  workflowOverrides?: boolean;
   workflowCatalogState?: 'ready' | 'error';
   pipelines?: readonly PortablePipelineRow[];
 }
@@ -122,30 +123,28 @@ function buildSnapshot(opts: SnapshotOpts = {}): WorkflowSnapshot {
       state: 'ready',
       records: [],
       effective: [],
-      revisions: { user: 'user-phase-revision', workspace: 'workspace-phase-revision' },
+      revision: 'phase-revision',
       warnings: []
     },
     pipelineCatalog: {
       state: 'ready',
       records: [],
       effective: opts.pipelines ?? DEFAULT_EFFECTIVE_PIPELINES,
-      revisions: { user: 'user-pipeline-revision', workspace: 'workspace-pipeline-revision' },
+      revision: 'pipeline-revision',
       warnings: []
     },
     workflowCatalog: {
       state: opts.workflowCatalogState ?? 'ready',
       records: [],
       effective: [],
-      revisions: { user: 'user-workflow-revision', workspace: 'workspace-workflow-revision' },
+      revision: 'workflow-revision',
       warnings: []
     },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
       phases: true,
-      retryConditions: true,
-      pipelineOverrides: opts.pipelineOverrides ?? true,
-      workflowOverrides: opts.workflowOverrides ?? true
+      retryConditions: true
     }
   }) as unknown as WorkflowSnapshot;
 }
@@ -191,45 +190,49 @@ describe('PipelineBuilder — Workflow Library mount (083)', () => {
 });
 
 describe('PipelineBuilder — Workflow trust gating (083)', () => {
-  it('disables every mutating control and shows the banner when workflowOverrides is false', () => {
+  // Feature 099 (T496f, FR-046, FR-052) — three cases stood here, all keyed on
+  // the deleted `workflowOverrides` capability: it withheld the controls, it was
+  // distinct from `pipelineOverrides`, and an older bundle omitting it failed
+  // closed. Workspace Trust is the single gate now, and the three claims map onto
+  // it one for one — it opens the tab, it closes the tab, and its absence from an
+  // older bundle fails closed.
+  it('opens the Workflows tab for editing under workspace trust', () => {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot({ workflowOverrides: false }), initialTab: 'workflows' }
+      props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
     const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
     const save = container.querySelector('[data-testid="workflows-save-all"]') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-    expect(save.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="trust-banner-workflows"]')).not.toBeNull();
-  });
-
-  it('treats workflowOverrides as a capability distinct from pipelineOverrides', () => {
-    const { container } = render(PipelineBuilder, {
-      props: {
-        snapshot: buildSnapshot({ pipelineOverrides: false, workflowOverrides: true }),
-        initialTab: 'workflows'
-      }
-    });
-    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
     expect(add.disabled).toBe(false);
+    expect(save).not.toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
   });
 
-  it('fails closed when the host bundle omits resolvedTrust.workflowOverrides', () => {
-    const legacy = buildSnapshot();
-    const withoutField = {
-      ...legacy,
-      resolvedTrust: {
-        phases: true,
-        retryConditions: true,
-        pipelineOverrides: true
-      }
-    } as unknown as WorkflowSnapshot;
+  it('withholds the editor entirely in an untrusted workspace, and says why (FR-052)', () => {
+    // Not a disabled Add button: an untrusted workspace activates no catalog at
+    // all, so rendering the Library would present it empty — which reads as "no
+    // Workflows are defined" when the truth is "this workspace is not trusted".
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: withoutField, initialTab: 'workflows' }
+      props: { snapshot: buildSnapshot({ workspaceTrust: false }), initialTab: 'workflows' }
+    });
+    expect(container.querySelector('[data-testid="workflows-add"]')).toBeNull();
+    expect(container.querySelector('[data-testid="builder-trust-gated"]')).not.toBeNull();
+  });
+
+  it('fails closed when the host bundle omits workspaceTrust', () => {
+    // Legacy tolerance, and the reason the projection is read as `=== true`
+    // rather than `!== false`: an older bundle that never learned the field
+    // must not be read as trusting. The editor still mounts, because the banner
+    // is keyed on an explicit `false` and this bundle says nothing — so the
+    // gate that has to hold is the one on the controls.
+    const { workspaceTrust: _omitted, ...withoutField } = buildSnapshot() as unknown as Record<
+      string,
+      unknown
+    >;
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: withoutField as unknown as WorkflowSnapshot, initialTab: 'workflows' }
     });
     const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement;
     expect(add.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="trust-banner-workflows"]')).not.toBeNull();
   });
 
   it('disables Workflow mutations in a secondary window', () => {
@@ -240,14 +243,19 @@ describe('PipelineBuilder — Workflow trust gating (083)', () => {
     expect(add.disabled).toBe(true);
   });
 
-  it('suppresses the per-capability banner under the workspace-trust ceiling', () => {
+  it('reports the ceiling once, and no per-capability banner beside it', () => {
+    // Feature 099 (T496f, FR-046) — the second assertion named
+    // `trust-banner-workflows`, a variant the component's union no longer has, so
+    // it would pass on any build. The two surviving variants are what the ceiling
+    // still has to suppress, and they are what it asserts instead.
     const { container } = render(PipelineBuilder, {
       props: {
-        snapshot: buildSnapshot({ workspaceTrust: false, workflowOverrides: false }),
+        snapshot: buildSnapshot({ workspaceTrust: false }),
         initialTab: 'workflows'
       }
     });
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-retry-conditions"]')).toBeNull();
   });
 });

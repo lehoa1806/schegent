@@ -1,8 +1,8 @@
 // Feature 026 T012 — shared savePhases helper.
 //
 // This is the ONE call site for CMD_SAVE_PHASES in the webview. Every
-// component that wants to persist the user-layer `schegent.phases`
-// catalog routes through here. Contract:
+// component that wants to persist the Phase catalog routes through here.
+// Contract:
 //   specs/026-phase-effort-bugfix-pipeline/contracts/save-phases-ipc.md
 //
 // Behavior:
@@ -20,11 +20,7 @@
 // CMD_SAVE_PHASES, …).
 
 import { CMD_SAVE_PHASES } from './messages';
-import type {
-  PhaseDefinition,
-  PhaseDefinitionScope,
-  WritablePhaseDefinitionScope
-} from './snapshot-types';
+import type { PhaseDefinition } from './snapshot-types';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 
@@ -64,7 +60,6 @@ export type SavePhasesMutation =
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: PhaseDefinitionScope;
       readonly sourcePhaseId: string;
       readonly phaseId: string;
     }
@@ -72,7 +67,6 @@ export type SavePhasesMutation =
   | { readonly kind: 'reset' };
 
 export interface SavePhasesRequest {
-  readonly scope: WritablePhaseDefinitionScope;
   readonly expectedRevision: string;
   readonly mutation: SavePhasesMutation;
   readonly phases: readonly SavePhaseRow[];
@@ -83,7 +77,7 @@ export type SavePhasesResult =
   | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
 
 /**
- * Persist the entire user-layer `schegent.phases` catalog via the
+ * Persist the entire Phase catalog via the
  * CMD_SAVE_PHASES IPC. Returns a Promise that resolves with the host's
  * ack (accepted) or rejection reason. Times out after 5 seconds with
  * `{ status: 'rejected', reason: 'timeout' }`.

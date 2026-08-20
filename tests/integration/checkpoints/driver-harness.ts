@@ -61,7 +61,6 @@ const WRITE: PhaseDef = {
   name: 'Write work',
   version: 1,
   instruction: 'Write this Run s file.',
-  sourceScope: 'workspace',
   sideEffects: 'workspace'
 };
 const SETTLE: PhaseDef = {
@@ -69,7 +68,6 @@ const SETTLE: PhaseDef = {
   name: 'Settle',
   version: 1,
   instruction: 'Do nothing observable.',
-  sourceScope: 'workspace',
   sideEffects: 'workspace'
 };
 const LAND: PhaseDef = {
@@ -77,7 +75,6 @@ const LAND: PhaseDef = {
   name: 'Land work',
   version: 1,
   instruction: 'Commit.',
-  sourceScope: 'workspace',
   sideEffects: 'git'
 };
 

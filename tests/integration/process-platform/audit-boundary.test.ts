@@ -69,7 +69,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 import { buildCatalog, type PhaseDef, type PipelineDef } from '../../../src/config/pipeline-config';
 import { loadCatalog } from '../../../src/config/pipeline-config-loader';
 import { PIPELINE_ID_MAX_LEN } from '../../../src/config/pipeline-definition-validator';
-import { phaseLayerRevision } from '../../../src/config/process-catalog';
 import { PHASE_ID_MAX_LEN } from '../../../src/config/process-definition-validator';
 import { WORKFLOW_ID_MAX_LEN } from '../../../src/config/workflow-definition-validator';
 import { PROCESS_EXCHANGE_EVENT_TYPES } from '../../../src/contracts/audit-events';
@@ -84,7 +83,6 @@ import {
 } from '../../../src/contracts/sidebar-ipc';
 import type { ExportProcessYamlRequest } from '../../../src/contracts/sidebar-ipc/process-yaml';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
-import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
 import {
   exportProcessDefinitions,
   importProcessDocument,
@@ -114,10 +112,8 @@ import {
   CMD_SAVE_PIPELINES,
   CMD_SAVE_WORKFLOWS
 } from '../../../src/ui/sidebar/messages';
-import { RecordingQueue, makeWorkspaceRoot, removeWorkspaceRoot } from './run-harness';
-
-type Scope = WritablePhaseDefinitionScope;
-type LayerKey = 'phases' | 'pipelines' | 'workflows';
+import { RecordingQueue, makeWorkspaceRoot, removeWorkspaceRoot, storedCatalog } from './run-harness';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 // ---------------------------------------------------------------------------
 // The canaries
@@ -229,30 +225,24 @@ const REFUSED_DOCUMENT = [
 // The fixture: one configuration store, one live audit recorder
 // ---------------------------------------------------------------------------
 
-interface Layers {
-  user: readonly unknown[];
-  workspace: readonly unknown[];
-}
-
-interface Store {
-  readonly phases: Layers;
-  readonly pipelines: Layers;
-  readonly workflows: Layers;
-}
+/**
+ * Feature 099 (T496f, FR-042) — this was three `{ user, workspace }` layers the
+ * handlers wrote through `updateConfig`. Definitions live in one store per kind
+ * now, so the store IS the fixture; which layer held a row was never something
+ * this file asserted, and nothing below reads a layer name.
+ */
+type Store = FakeCatalogStore;
 
 function makeStore(): Store {
-  return {
-    phases: { user: [], workspace: [] },
-    pipelines: { user: [], workspace: [] },
-    workflows: { user: [], workspace: [] }
-  };
+  return new FakeCatalogStore();
 }
 
-function heldLayers(store: Store, scope: Scope) {
+/** The stored rows each catalog holds — what an import appends to (FR-041). */
+function heldLayers(store: Store) {
   return {
-    phases: store.phases[scope],
-    pipelines: store.pipelines[scope],
-    workflows: store.workflows[scope]
+    phases: store.rowsOf('phase'),
+    pipelines: store.rowsOf('pipeline'),
+    workflows: store.rowsOf('workflow')
   };
 }
 
@@ -294,15 +284,25 @@ function auditRecorder(): Recorder {
  */
 function depsFor(store: Store, audit: Recorder, bytes?: Uint8Array): RouterDeps {
   return {
-    readPhaseConfig: () => store.phases,
-    readPipelineConfig: () => store.pipelines,
-    readWorkflowConfig: () => store.workflows,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
+    readPipelineConfig: () => ({
+      rows: store.rowsOf('pipeline'),
+      revision: store.revisionOf('pipeline')
+    }),
+    readWorkflowConfig: () => ({
+      rows: store.rowsOf('workflow'),
+      revision: store.revisionOf('workflow')
+    }),
     ...(bytes !== undefined
       ? { openProcessYamlDocument: async () => ({ outcome: 'read' as const, bytes }) }
       : {}),
-    updateConfig: async (key: string, value: unknown, target: Scope) => {
-      store[key as LayerKey][target] = value as readonly unknown[];
-    },
+    // Feature 099 (T496f, FR-042a) — the save handlers wrote through
+    // `updateConfig(key, value, scope)`; they write through the store now, and
+    // the fixture holds one rather than reimplementing it. `refreshCatalog` is a
+    // no-op because nothing here reads the resolved catalog back: the claim is
+    // about what the audit envelope carries, not about what the surface is shown.
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
     executeCommand: vi.fn(),
     queueRemover: { remove: vi.fn() },
     isPrimary: () => true,
@@ -422,20 +422,23 @@ async function driveImport(): Promise<readonly Emission[]> {
       saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
       saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
     },
-    { plan, scope: 'user', layers: heldLayers(store, 'user') }
+    { plan, layers: heldLayers(store) }
   );
   expect(imported.outcome, `import fixture failed: ${JSON.stringify(imported)}`).toBe('imported');
 
   // A refused layer write, so the `-refused` commit arm is covered too. The
   // revision is stale by construction: the store now holds the Phase the import
   // above wrote, so the revision the plan was computed against is gone.
+  //
+  // Feature 099 (T496f, FR-042) — that used to be spelled `expectedRevision: 0`,
+  // a number no layer revision could equal. A revision is an opaque string the
+  // store mints, so staleness is spelled as a revision the store never minted.
   const refused = auditRecorder();
   const refusedDeps = depsFor(store, refused);
   const ack = await dispatch(refusedDeps, CMD_SAVE_PHASES, {
-    scope: 'user',
-    expectedRevision: 0,
+    expectedRevision: 'rev-phase-never-minted',
     mutation: { kind: 'import-package', phaseIds: ['audit-specify'] },
-    phases: store.phases.user
+    phases: store.rowsOf('phase')
   });
   expect(ack.status, 'stale save was accepted').toBe('rejected');
 
@@ -465,7 +468,7 @@ async function driveExport(): Promise<readonly Emission[]> {
       saveWorkflows: (payload) => send(CMD_SAVE_WORKFLOWS, payload),
       saveModels: (payload) => send(CMD_SAVE_MODELS, payload)
     },
-    { plan, scope: 'user', layers: heldLayers(store, 'user') }
+    { plan, layers: heldLayers(store) }
   );
   expect(imported.outcome, 'export fixture failed to import').toBe('imported');
 
@@ -504,7 +507,8 @@ async function driveExport(): Promise<readonly Emission[]> {
 // supplied no Phases, because the built-in Phase layer resolved that id for free.
 // It resolves nothing now, so the Pipeline quarantines, the catalog is empty and
 // the launch is refused before it reaches the audit port this case is about. The
-// Phase is authored here instead, in the same scope as the Pipeline that names it.
+// Phase is authored here instead, in the same stored catalog the Pipeline that
+// names it comes from (feature 099, T496f — there is no scope to share).
 const LAUNCH_PHASE = Object.freeze({
   id: 'audit-launch-phase',
   name: 'Audit Launch Phase',
@@ -519,12 +523,10 @@ const LAUNCH_PIPELINE = Object.freeze({
   outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
 });
 
-const LAUNCH_CATALOG = loadCatalog({
-  getPhases: (scope) => (scope === 'user' ? [LAUNCH_PHASE] : undefined),
-  getPipelines: (scope) => (scope === 'user' ? [LAUNCH_PIPELINE] : undefined),
-  getModels: () => undefined,
-  getDefaultPipelineId: () => undefined
-}).catalog;
+const LAUNCH_CATALOG = loadCatalog(
+  storedCatalog({ phases: [LAUNCH_PHASE], pipelines: [LAUNCH_PIPELINE] }),
+  { getModels: () => undefined, getDefaultPipelineId: () => undefined }
+).catalog;
 
 function launchDeps(store: Store, audit: Recorder, queue: RecordingQueue): RouterDeps {
   return {
@@ -548,19 +550,20 @@ function launchRequest(): RunRequest {
 
 // -- Continuation -----------------------------------------------------------
 
+// Feature 099 (T496f, FR-043) — each of the three carried `sourceScope:
+// 'workspace'`. A resolved definition has no scope now; the field is deleted
+// rather than defaulted, and nothing below ever read it.
 const AUDIT_PHASE: PhaseDef = {
   id: 'audit-continue-phase',
   name: 'Audit Continue Phase',
   version: 1,
-  instruction: CANARY_TEXT,
-  sourceScope: 'workspace'
+  instruction: CANARY_TEXT
 };
 
 const AUDIT_HEAD: PipelineDef = {
   id: 'audit-continue-head',
   name: 'Audit Continue Head',
   phases: [AUDIT_PHASE.id],
-  sourceScope: 'workspace',
   outputs: [{ portId: 'report', label: 'Report', type: 'markdown' }]
 };
 
@@ -568,7 +571,6 @@ const AUDIT_TAIL: PipelineDef = {
   id: 'audit-continue-tail',
   name: 'Audit Continue Tail',
   phases: [AUDIT_PHASE.id],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'seed', label: 'Seed', type: 'text', required: true }],
   outputs: []
 };
@@ -660,7 +662,12 @@ function continueDeps(store: Store, audit: Recorder, queue: RecordingQueue) {
 
 const ENVELOPE_REQUIRED = ['runId', 'phase', 'iteration', 'eventType', 'payload', 'outcome'];
 const ENVELOPE_OPTIONAL = ['correlationId'];
-const PAYLOAD_KEYS = ['operation', 'resourceKind', 'resourceIds', 'scope', 'outcomes', 'counts'];
+// Feature 099 (T490b, T496f, FR-043) — `scope` stood between `resourceIds` and
+// `outcomes`, and is gone with the layer tier it named. Dropping it from this
+// list is not a relaxation: the key set below is asserted for EXACT equality, so
+// a build that still emitted `scope` fails here, and so would one that emitted a
+// nulled-out stand-in for it.
+const PAYLOAD_KEYS = ['operation', 'resourceKind', 'resourceIds', 'outcomes', 'counts'];
 
 /** The catalogs' own identifier bound. See T038 for why there is no second one. */
 const ID_MAX = 64;
@@ -693,7 +700,6 @@ function hasControlChar(value: string): boolean {
 
 const OPERATIONS = ['export', 'import-preflight', 'import-commit'];
 const RESOURCE_KINDS = ['phase', 'pipeline', 'workflow'];
-const SCOPES = ['built-in', 'user', 'workspace'];
 const OUTCOMES = ['info', 'success', 'failure'];
 
 /** A bounded identifier: non-empty, within the catalogs' bound, single-line. */
@@ -767,9 +773,6 @@ function classify(event: AuditEnvelope, where: string): void {
   (resourceIds as unknown[]).forEach((id, index) =>
     expectBoundedId(id, `${where}.payload.resourceIds[${index}]`)
   );
-
-  const scope = payload['scope'];
-  if (scope !== null) expect(SCOPES, `${where}.payload.scope`).toContain(scope);
 
   const outcomes = payload['outcomes'];
   expect(Array.isArray(outcomes), `${where}.payload.outcomes is not an array`).toBe(true);
@@ -1002,8 +1005,7 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       // The recorder in that same bag is live: a package save through it records.
       // Without this, "the list is empty" would also be true of a dead port.
       const ack = await dispatch(deps, CMD_SAVE_PHASES, {
-        scope: 'user',
-        expectedRevision: phaseLayerRevision(store.phases.user),
+        expectedRevision: store.revisionOf('phase'),
         mutation: { kind: 'import-package', phaseIds: ['audit-control'] },
         phases: [
           { id: 'audit-control', name: 'Audit Control', version: 1, instruction: 'Control.' }
@@ -1028,8 +1030,7 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       expect(audit.events, 'a continuation wrote an audit event').toEqual([]);
 
       const ack = await dispatch(deps, CMD_SAVE_PHASES, {
-        scope: 'user',
-        expectedRevision: phaseLayerRevision(store.phases.user),
+        expectedRevision: store.revisionOf('phase'),
         mutation: { kind: 'import-package', phaseIds: ['audit-control'] },
         phases: [
           { id: 'audit-control', name: 'Audit Control', version: 1, instruction: 'Control.' }
@@ -1077,7 +1078,6 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
           operation: 'import-preflight',
           resourceKind: 'phase',
           resourceIds: [CANARY_INSTRUCTION],
-          scope: null,
           outcomes: [CANARY_SECRET],
           // In the KEY position, which is the half a value-only walker misses.
           counts: { [CANARY_PATH]: 1 }
@@ -1137,8 +1137,7 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
         const audit = auditRecorder();
         await auditImportCommitted(handlerContext(audit), {
           resourceKind: kind,
-          resourceIds: [OVERLONG_ID],
-          scope: 'user'
+          resourceIds: [OVERLONG_ID]
         });
 
         const ids = audit.events[0]?.payload['resourceIds'] as readonly string[] | undefined;
@@ -1154,8 +1153,7 @@ describe('Audit boundary (T036-T038, US6, FR-033 - FR-037)', () => {
       const declared = Array.from({ length: 50 }, (_, index) => `audit-id-${index}`);
       await auditImportCommitted(handlerContext(audit), {
         resourceKind: 'phase',
-        resourceIds: declared,
-        scope: 'user'
+        resourceIds: declared
       });
 
       const payload = audit.events[0]?.payload ?? {};

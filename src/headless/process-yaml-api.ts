@@ -25,7 +25,6 @@ import type {
   ExportProcessYamlResult,
   PreflightProcessYamlResult
 } from '../contracts/sidebar-ipc/process-yaml';
-import type { WritablePhaseDefinitionScope } from '../contracts/process-definitions';
 import {
   appendExportAudit,
   MODEL_CATALOG_EXPORT_RESOURCE_ID,
@@ -88,7 +87,7 @@ export interface ImportWritePort {
   saveModels(payload: SaveModelsCommand['payload']): Promise<LayerSaveAck>;
 }
 
-/** The stored rows of each catalog the import appends to, for the target scope. */
+/** The stored rows of each catalog the import appends to (feature 099: one layer). */
 export interface ImportTargetLayers {
   readonly phases: readonly unknown[];
   readonly pipelines: readonly unknown[];
@@ -102,7 +101,6 @@ export interface ImportProcessDocumentInput {
    * from it rather than taken as a separate argument — see `layerRevisions`.
    */
   readonly plan: ImportPlan;
-  readonly scope: WritablePhaseDefinitionScope;
   readonly layers: ImportTargetLayers;
 }
 
@@ -196,9 +194,9 @@ export function importCommitOutcome(
  * The order is fixed by dependency and no write may precede the one it depends
  * on: a Pipeline's bindings are only satisfiable once its Phases are effective,
  * and a Workflow's nodes only resolve once its Pipelines are. Each write carries
- * its OWN expected revision — the one the PLAN was computed against for the
- * chosen scope, taken from the plan and never read live, because a revision read
- * at the moment of the write leaves the staleness gate unable to fire (FR-040).
+ * its OWN expected revision — the one the PLAN was computed against, taken from
+ * the plan and never read live, because a revision read at the moment of the
+ * write leaves the staleness gate unable to fire (FR-040).
  * Each carries exactly one `import-package` intent naming that layer's target
  * set; a document supplying fewer layers writes fewer times and never merges two
  * layers into one intent.
@@ -212,22 +210,22 @@ export async function importProcessDocument(
   deps: ImportWritePort,
   input: ImportProcessDocumentInput
 ): Promise<ImportProcessDocumentResult> {
-  const { plan, scope, layers } = input;
+  const { plan, layers } = input;
   const phases = importRows(plan, 'phase');
   const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
   const models = importRows(plan, 'modelCatalog');
-  const pipelineRevisions = plan.computedAgainstPipelineRevision;
-  const workflowRevisions = plan.computedAgainstWorkflowRevision;
+  const pipelineRevision = plan.computedAgainstPipelineRevision;
+  const workflowRevision = plan.computedAgainstWorkflowRevision;
   const modelsRevision = plan.computedAgainstModelsRevision;
 
   // Half a package is the one outcome no requirement admits. A plan that carries
   // rows for a layer but no revision to gate that layer's write cannot be applied
   // at all, so nothing is sent — not the layers it happens to have a gate for.
-  if (pipelines.length > 0 && pipelineRevisions === undefined) {
+  if (pipelines.length > 0 && pipelineRevision === undefined) {
     return { outcome: 'failed', results: [] };
   }
-  if (workflows.length > 0 && workflowRevisions === undefined) {
+  if (workflows.length > 0 && workflowRevision === undefined) {
     return { outcome: 'failed', results: [] };
   }
   if (models.length > 0 && modelsRevision === undefined) {
@@ -246,8 +244,7 @@ export async function importProcessDocument(
     // and relabelling one path would change an operator's recovery affordances.
     const standalone = phases.length === 1 && pipelines.length === 0 && workflows.length === 0;
     const ack = await deps.savePhases({
-      scope,
-      expectedRevision: plan.computedAgainstRevision[scope],
+      expectedRevision: plan.computedAgainstRevision,
       mutation: standalone
         ? { kind: 'import', phaseId: phases[0].resourceId }
         : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
@@ -263,10 +260,9 @@ export async function importProcessDocument(
     if (ack.status !== 'accepted') return { outcome: importCommitOutcome(results), results };
   }
 
-  if (pipelines.length > 0 && pipelineRevisions !== undefined) {
+  if (pipelines.length > 0 && pipelineRevision !== undefined) {
     const ack = await deps.savePipelines({
-      scope,
-      expectedRevision: pipelineRevisions[scope],
+      expectedRevision: pipelineRevision,
       mutation: { kind: 'import-package', pipelineIds: pipelines.map((row) => row.resourceId) },
       pipelines: [
         ...layers.pipelines,
@@ -280,10 +276,9 @@ export async function importProcessDocument(
     if (ack.status !== 'accepted') return { outcome: importCommitOutcome(results), results };
   }
 
-  if (workflows.length > 0 && workflowRevisions !== undefined) {
+  if (workflows.length > 0 && workflowRevision !== undefined) {
     const ack = await deps.saveWorkflows({
-      scope,
-      expectedRevision: workflowRevisions[scope],
+      expectedRevision: workflowRevision,
       mutation: { kind: 'import-package', workflowIds: workflows.map((row) => row.resourceId) },
       // Carried as declared: a rewritten connection or a reordered node list is
       // precisely the lossy round trip FR-046a forbids.
@@ -348,7 +343,6 @@ export async function exportProcessDefinitions(
     await appendExportAudit(deps, {
       resourceKind: request.resourceKind,
       resourceId,
-      scope: null,
       outcome: 'unavailable'
     });
     return { ...selection };
@@ -357,7 +351,6 @@ export async function exportProcessDefinitions(
   await appendExportAudit(deps, {
     resourceKind: request.resourceKind,
     resourceId,
-    scope: selection.scope,
     outcome: 'saved',
     ...(selection.includedPhaseCount !== undefined
       ? { includedPhaseCount: selection.includedPhaseCount }

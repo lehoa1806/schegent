@@ -2,23 +2,27 @@
 //
 // QS-15, QS-16, and QS-17 in one file, driven through the preflight command over
 // a REAL resolved catalog rather than synthetic `PhaseSourceRecord`s: an
-// `effective` id skips, a `shadowed` id skips, and an `invalid` id skips. The
+// `effective` id skips, a contested id skips, and an `invalid` id skips. The
 // unit tests pin the presence oracle in isolation; what this file adds is that
-// the three statuses arise from actual stored rows the way an installation
-// produces them, which is what makes the stored-rows-not-effective-catalog rule
-// (FR-030, SC-004) testable end to end. The `invalid` case is the sharp one — no
+// the statuses arise from actual stored rows the way an installation produces
+// them, which is what makes the stored-rows-not-effective-catalog rule (FR-030,
+// SC-004) testable end to end. The `invalid` case is the sharp one — no
 // effective catalog contains that id at all, so a presence check written against
 // `resolution.effective` would plan an import and silently take the id an
 // operator is part-way through repairing.
 //
-// T045 is the other half: for each case the target layer is compared
-// byte-for-byte before and after, the resolved definition is compared field by
-// field, and every write-shaped dependency is asserted untouched. A `skip`
-// overwrites nothing, merges nothing, renames nothing, and bumps no version.
+// T045 is the other half: for each case the catalog is compared byte-for-byte
+// before and after, the resolved definition is compared field by field, and every
+// write-shaped dependency is asserted untouched. A `skip` overwrites nothing,
+// merges nothing, renames nothing, and bumps no version.
+//
+// Feature 099 (T496f, FR-042) — the built-in/user/workspace tier is gone, and with
+// it `presentIn` on a skip row and the `shadowed` arm of `PhaseSourceStatus`. Both
+// carried layer facts and neither has anything left to say. What each case pinned
+// is preserved on the one catalog that remains; see the case comments.
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
@@ -26,40 +30,39 @@ import type {
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
-import type { PhaseDefinitionScope, PhaseSourceStatus } from '../../../src/contracts/process-definitions';
+import type { PhaseSourceStatus } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-interface Layers {
-  readonly user: readonly unknown[];
-  readonly workspace: readonly unknown[];
-}
+const SEEDED_PHASE_REVISION = 'rev-phase-import-skip';
+const SEEDED_PIPELINE_REVISION = 'rev-pipeline-import-skip';
 
 interface Harness {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly ctx: any;
   readonly acks: CommandAckMessage[];
   readonly audits: unknown[];
-  readonly writePhaseConfig: ReturnType<typeof vi.fn>;
-  readonly updateConfig: ReturnType<typeof vi.fn>;
+  readonly store: FakeCatalogStore;
   readonly executeCommand: ReturnType<typeof vi.fn>;
   readonly notifyWarning: ReturnType<typeof vi.fn>;
 }
 
-function buildHarness(layers: Layers, documentText: string): Harness {
+function buildHarness(rows: readonly unknown[], documentText: string): Harness {
   const acks: CommandAckMessage[] = [];
   const audits: unknown[] = [];
-  const writePhaseConfig = vi.fn();
-  const updateConfig = vi.fn();
   const executeCommand = vi.fn();
   const notifyWarning = vi.fn();
+  const store = new FakeCatalogStore({
+    revisions: { phase: SEEDED_PHASE_REVISION, pipeline: SEEDED_PIPELINE_REVISION }
+  });
 
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: layers.user, workspace: layers.workspace }),
-      writePhaseConfig,
-      updateConfig,
+      readPhaseConfig: () => ({ rows, revision: store.revisionOf('phase') }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       executeCommand,
       notifyWarning,
       openProcessYamlDocument: async () => ({
@@ -87,7 +90,7 @@ function buildHarness(layers: Layers, documentText: string): Harness {
     correlationId: 'import-skip-1'
   };
 
-  return { ctx, acks, audits, writePhaseConfig, updateConfig, executeCommand, notifyWarning };
+  return { ctx, acks, audits, store, executeCommand, notifyWarning };
 }
 
 const COMMAND: PreflightProcessYamlCommand = {
@@ -98,7 +101,7 @@ const COMMAND: PreflightProcessYamlCommand = {
 
 /**
  * A document claiming `phaseId`. Its contents differ from every stored row it is
- * matched against, so a merge or an overwrite would be visible in the layer.
+ * matched against, so a merge or an overwrite would be visible in the catalog.
  */
 function documentClaiming(phaseId: string): string {
   return [
@@ -132,83 +135,70 @@ const VALID_ROW = Object.freeze({
  */
 const INVALID_ROW = Object.freeze({ id: STORED_ID, name: 'Half Repaired', version: 2 });
 
-/** The built-in whose id a valid user row shadows in the QS-16 case. */
-const SHADOWED_ID = 'speckit-specify';
+/** The id two rows contend for in the QS-16 case. */
+const CONTESTED_ID = 'speckit-specify';
 
 interface SkipCase {
   readonly title: string;
-  readonly layers: Layers;
+  readonly rows: readonly unknown[];
   readonly phaseId: string;
-  readonly presentIn: PhaseDefinitionScope;
   readonly presentRowStatus: PhaseSourceStatus;
-  /** The layer a commit would have written, had the plan produced an import. */
-  readonly target: 'user' | 'workspace';
 }
 
 const CASES: readonly SkipCase[] = [
   {
     title: 'QS-15 an effective id skips',
-    layers: { user: [VALID_ROW], workspace: [] },
+    rows: [VALID_ROW],
     phaseId: STORED_ID,
-    presentIn: 'user',
-    presentRowStatus: 'effective',
-    target: 'user'
+    presentRowStatus: 'effective'
   },
   {
-    title: 'QS-16 a shadowed id skips and says which row claimed it',
-    // Feature 098 (T036) — the shadowed row used to be the built-in of this id,
-    // with a user row winning over it. The built-in layer holds nothing to shadow,
-    // so the same arrangement is expressed one layer up: the workspace row wins
-    // and the user row is left `shadowed`. The property is untouched — the
-    // presence scan reports the lower-precedence row first, so the claimant it
-    // names is NOT what the installation runs. Presence is a gate, not a routing
-    // decision.
-    layers: {
-      user: [
-        {
-          id: SHADOWED_ID,
-          name: 'User Specify',
-          version: 1,
-          instruction: 'Use the shipped house style.'
-        }
-      ],
-      workspace: [
-        {
-          id: SHADOWED_ID,
-          name: 'Locally Overridden Specify',
-          version: 2,
-          instruction: 'Use the local house style.'
-        }
-      ]
-    },
-    phaseId: SHADOWED_ID,
-    presentIn: 'user',
-    presentRowStatus: 'shadowed',
-    target: 'workspace'
+    // Feature 098 (T036) expressed this as a user row shadowed by a workspace row;
+    // feature 099 (FR-042) deletes the tier that made shadowing representable, and
+    // `shadowed` is gone from `PhaseSourceStatus` with it. Two rows contending for
+    // one id is still representable — it is a duplicate within the one catalog —
+    // and it carries QS-16's property unchanged: the scan reports the id as taken
+    // WITHOUT choosing between the rows claiming it. Presence is a gate, not a
+    // routing decision, so the plan says only "someone has this id".
+    title: 'QS-16 an id two rows contend for skips, and the plan picks neither',
+    rows: [
+      {
+        id: CONTESTED_ID,
+        name: 'First Specify',
+        version: 1,
+        instruction: 'Use the shipped house style.'
+      },
+      {
+        id: CONTESTED_ID,
+        name: 'Second Specify',
+        version: 2,
+        instruction: 'Use the local house style.'
+      }
+    ],
+    phaseId: CONTESTED_ID,
+    presentRowStatus: 'invalid'
   },
   {
     title: 'QS-17 an invalid id skips — the stored-rows rule, not the effective catalog',
-    layers: { user: [INVALID_ROW], workspace: [] },
+    rows: [INVALID_ROW],
     phaseId: STORED_ID,
-    presentIn: 'user',
-    presentRowStatus: 'invalid',
-    target: 'user'
+    presentRowStatus: 'invalid'
   }
 ];
 
 describe('Feature 084 — an import never takes an id that is already claimed', () => {
   for (const testCase of CASES) {
     it(testCase.title, async () => {
-      const before = {
-        user: JSON.stringify(testCase.layers.user),
-        workspace: JSON.stringify(testCase.layers.workspace)
-      };
-      const resolvedBefore = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, ...testCase.layers });
+      const before = JSON.stringify(testCase.rows);
+      const resolvedBefore = resolvePhaseCatalog({
+        rows: testCase.rows,
+        revision: SEEDED_PHASE_REVISION
+      });
       const definitionBefore = resolvedBefore.effective.find(
         (definition) => definition.phaseId === testCase.phaseId
       );
 
-      const h = buildHarness(testCase.layers, documentClaiming(testCase.phaseId));
+      const h = buildHarness(testCase.rows, documentClaiming(testCase.phaseId));
       await preflightHandler(h.ctx, COMMAND);
 
       expect(h.acks).toHaveLength(1);
@@ -216,38 +206,41 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
       expect(result.outcome).toBe('planned');
       if (result.outcome !== 'planned') return;
 
-      // The plan says skip, names the claimant, and carries no definition — so
-      // there is nothing for a commit to write even if one were attempted.
+      // The plan says skip, reports the claimant's status, and carries no
+      // definition — so there is nothing for a commit to write even if one were
+      // attempted. It names no row and no destination: with one catalog there is
+      // neither a layer to cite nor a choice to make.
       expect(result.plan.rows).toEqual([
         {
           outcome: 'skip',
           resourceKind: 'phase',
           resourceId: testCase.phaseId,
           name: 'Incoming Definition',
-          presentIn: testCase.presentIn,
           presentRowStatus: testCase.presentRowStatus
         }
       ]);
+      expect(result.plan.rows[0]).not.toHaveProperty('presentIn');
       expect(result.plan.counts).toEqual({ import: 0, skip: 1, invalid: 0, blocked: 0 });
 
-      // T045 — the layer, byte for byte, either side of the call.
-      expect(JSON.stringify(testCase.layers.user)).toBe(before.user);
-      expect(JSON.stringify(testCase.layers.workspace)).toBe(before.workspace);
-      const resolvedAfter = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, ...testCase.layers });
-      expect(resolvedAfter.revisions).toEqual(resolvedBefore.revisions);
+      // T045 — the catalog, byte for byte, either side of the call.
+      expect(JSON.stringify(testCase.rows)).toBe(before);
+      const resolvedAfter = resolvePhaseCatalog({
+        rows: testCase.rows,
+        revision: h.store.revisionOf('phase')
+      });
+      expect(resolvedAfter.revision).toBe(resolvedBefore.revision);
       // No overwrite and no merge: the definition this installation runs is the
       // same object shape, including the `version` the document tried to raise
-      // to 42, and including the ids the layer holds (nothing renamed).
+      // to 42, and including the ids the catalog holds (nothing renamed).
       expect(
         resolvedAfter.effective.find((definition) => definition.phaseId === testCase.phaseId)
       ).toEqual(definitionBefore);
-      expect(resolvedAfter.records.map((record) => `${record.scope}:${record.phaseId}`)).toEqual(
-        resolvedBefore.records.map((record) => `${record.scope}:${record.phaseId}`)
+      expect(resolvedAfter.records.map((record) => `${record.status}:${record.phaseId}`)).toEqual(
+        resolvedBefore.records.map((record) => `${record.status}:${record.phaseId}`)
       );
 
       // Nothing that could write was reached, and a skip is not an audited event.
-      expect(h.writePhaseConfig).not.toHaveBeenCalled();
-      expect(h.updateConfig).not.toHaveBeenCalled();
+      expect(h.store.layerSaves).toEqual([]);
       expect(h.executeCommand).not.toHaveBeenCalled();
       expect(h.notifyWarning).not.toHaveBeenCalled();
       expect(h.audits).toEqual([]);
@@ -258,14 +251,15 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
     // Stated separately because it is the premise the QS-17 case rests on: a
     // presence check written against `resolution.effective` would find nothing
     // here and plan an import.
-    const layers: Layers = { user: [INVALID_ROW], workspace: [] };
-    const resolved = resolvePhaseCatalog({ builtIn: BUILT_IN_PHASES, ...layers });
+    const rows: readonly unknown[] = [INVALID_ROW];
+    const resolved = resolvePhaseCatalog({ rows, revision: SEEDED_PHASE_REVISION });
     expect(resolved.effective.some((definition) => definition.phaseId === STORED_ID)).toBe(false);
-    expect(
-      resolved.records.find((record) => record.scope === 'user' && record.phaseId === STORED_ID)
-    ).toMatchObject({ status: 'invalid', definition: null });
+    expect(resolved.records.find((record) => record.phaseId === STORED_ID)).toMatchObject({
+      status: 'invalid',
+      definition: null
+    });
 
-    const h = buildHarness(layers, documentClaiming(STORED_ID));
+    const h = buildHarness(rows, documentClaiming(STORED_ID));
     await preflightHandler(h.ctx, COMMAND);
 
     const result = h.acks[0]!.result as PreflightProcessYamlResult;
@@ -274,12 +268,18 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
     expect(result.plan.counts.import).toBe(0);
   });
 
-  it('an id claimed only in the layer the operator did not target still skips (FR-030)', async () => {
-    // Presence is not scoped to the chosen target: the workspace layer claims
-    // the id, and a user-scoped import is refused all the same. Otherwise the
-    // same id would end up in two layers, one of them permanently shadowed.
-    const layers: Layers = { user: [], workspace: [VALID_ROW] };
-    const h = buildHarness(layers, documentClaiming(STORED_ID));
+  it('an id claimed by a row anywhere in the catalog still skips (FR-030)', async () => {
+    // Presence is a scan of the whole catalog, not of some privileged part of it.
+    // Feature 098 stated this across layers — an id claimed only in the layer the
+    // operator did not target still skipped. One catalog states the same rule
+    // positionally: the claiming row sits last, behind unrelated rows, and the
+    // import is refused all the same.
+    const rows: readonly unknown[] = [
+      { id: 'decoy-one', name: 'Decoy One', version: 1, instruction: 'Not the one.' },
+      { id: 'decoy-two', name: 'Decoy Two', version: 1, instruction: 'Also not the one.' },
+      VALID_ROW
+    ];
+    const h = buildHarness(rows, documentClaiming(STORED_ID));
     await preflightHandler(h.ctx, COMMAND);
 
     const result = h.acks[0]!.result as PreflightProcessYamlResult;
@@ -287,24 +287,25 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
     if (result.outcome !== 'planned') return;
     expect(result.plan.rows[0]).toMatchObject({
       outcome: 'skip',
-      presentIn: 'workspace',
+      resourceId: STORED_ID,
       presentRowStatus: 'effective'
     });
-    expect(JSON.stringify(layers.workspace)).toBe(JSON.stringify([VALID_ROW]));
+    expect(JSON.stringify(rows[2])).toBe(JSON.stringify(VALID_ROW));
   });
 });
 
 describe('Feature 098 (T033) — importing the same document twice writes once', () => {
   // SC-004, on the document the VSIX ships. The first import is represented by its
-  // outcome — the ten rows sitting in the WORKSPACE layer, which is where a
-  // workspace-scoped import puts them — and the assertion is about the second run:
-  // every row skips, every row names `workspace` as the claimant, and nothing is
-  // written.
+  // outcome — the ten rows sitting in the catalog — and the assertion is about the
+  // second run: every row skips, every row reports a claimant that resolves, and
+  // nothing is written.
   //
-  // The claimant matters as much as the count. Before this feature the same document
+  // The claimant matters as much as the count. Before feature 098 the same document
   // also produced an all-skip plan, but citing `built-in` — an operator who had never
-  // imported anything was told their own ids were taken. `workspace` is a claim the
-  // operator made, and it is the one an idempotent re-import should report.
+  // imported anything was told their own ids were taken. Feature 099 removed the
+  // built-in tier outright, so the only rows that can claim an id are ones the
+  // operator put there, and `presentRowStatus: 'effective'` is the residue of that
+  // claim: a row that resolves, holding the id.
   const EXAMPLE = readFileSync(
     join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
     'utf8'
@@ -323,12 +324,12 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
   ]);
 
   /**
-   * What the workspace layer holds after the first import. The stored rows
-   * deliberately do NOT match the document — different names, a raised version — so
-   * an overwrite or a merge on the second run would be visible in the layer rather
-   * than hidden behind identical content.
+   * What the catalog holds after the first import. The stored rows deliberately do
+   * NOT match the document — different names, a raised version — so an overwrite or
+   * a merge on the second run would be visible in the catalog rather than hidden
+   * behind identical content.
    */
-  function importedWorkspacePhases(): readonly unknown[] {
+  function importedPhases(): readonly unknown[] {
     return IMPORTED_PHASE_IDS.map((id) => ({
       id,
       name: `Already Imported ${id}`,
@@ -337,7 +338,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     }));
   }
 
-  function importedWorkspacePipelines(): readonly unknown[] {
+  function importedPipelines(): readonly unknown[] {
     return [
       {
         id: 'speckit-new-feature',
@@ -348,17 +349,17 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     ];
   }
 
-  function buildPackageHarness(): Harness & { readonly writePipelineConfig: ReturnType<typeof vi.fn> } {
-    const phases = importedWorkspacePhases();
-    const pipelines = importedWorkspacePipelines();
-    const base = buildHarness({ user: [], workspace: phases }, EXAMPLE);
-    const writePipelineConfig = vi.fn();
-    base.ctx.deps.readPipelineConfig = () => ({ user: [], workspace: pipelines });
-    base.ctx.deps.writePipelineConfig = writePipelineConfig;
-    return { ...base, writePipelineConfig };
+  function buildPackageHarness(): Harness {
+    const pipelines = importedPipelines();
+    const base = buildHarness(importedPhases(), EXAMPLE);
+    base.ctx.deps.readPipelineConfig = () => ({
+      rows: pipelines,
+      revision: base.store.revisionOf('pipeline')
+    });
+    return base;
   }
 
-  it('plans ten skip rows, every one citing the workspace layer', async () => {
+  it('plans ten skip rows, every one citing a stored row that resolves', async () => {
     const h = buildPackageHarness();
     await preflightHandler(h.ctx, COMMAND);
 
@@ -370,8 +371,8 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     for (const row of result.plan.rows) {
       expect(row.outcome).toBe('skip');
       if (row.outcome !== 'skip' || row.resourceKind === 'modelCatalog') continue;
-      expect(row.presentIn).toBe('workspace');
       expect(row.presentRowStatus).toBe('effective');
+      expect(row).not.toHaveProperty('presentIn');
     }
   });
 
@@ -379,9 +380,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     const h = buildPackageHarness();
     await preflightHandler(h.ctx, COMMAND);
 
-    expect(h.writePhaseConfig).not.toHaveBeenCalled();
-    expect(h.writePipelineConfig).not.toHaveBeenCalled();
-    expect(h.updateConfig).not.toHaveBeenCalled();
+    expect(h.store.layerSaves).toEqual([]);
     expect(h.audits).toEqual([]);
   });
 });

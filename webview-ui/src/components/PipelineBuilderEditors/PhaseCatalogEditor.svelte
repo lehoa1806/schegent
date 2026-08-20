@@ -97,8 +97,12 @@
     selectedPhase ? editStateById[selectedPhase.sourceKey] ?? { rawJsonMode: false } : null
   );
 
+  // Feature 099 (T488/T494a, FR-041/FR-043) — no scope. There is one layer, so
+  // no read-only `built-in` tier, no target-scope picker, no scope badge, and no
+  // precedence badge: precedence was the answer to "which layer won", and one
+  // layer answers it by existing.
   const selectedReadOnly = $derived(
-    selectedPhase?.scope === 'built-in' || !trusted || savePending ||
+    !trusted || savePending ||
       (editableSourceKey !== null && selectedPhase?.sourceKey !== editableSourceKey)
   );
 
@@ -115,7 +119,7 @@
   }
 
   function authoredPhase(phase: MutablePhase): Record<string, unknown> {
-    const { sourceKey: _sourceKey, scope: _scope, sourceStatus: _status,
+    const { sourceKey: _sourceKey, sourceStatus: _status,
       sourceErrors: _errors, modelAvailable: _modelAvailable,
       persisted: _persisted, ...authored } = phase;
     return authored;
@@ -123,15 +127,6 @@
 
   function isRetryEnabled(phase: MutablePhase): boolean {
     return typeof phase.retryCondition === 'string';
-  }
-
-  function phasePrecedenceLabel(phase: MutablePhase): string | null {
-    if (!phase.runner) return null;
-    const layer = snapshot.phasePrecedence?.[`${phase.id}::runner`];
-    if (!layer || layer === 'unset') return null;
-    if (layer === 'built-in') return 'Built-in';
-    if (layer === 'workspace') return 'Workspace';
-    return 'User';
   }
 
   /**
@@ -162,7 +157,7 @@
   }
 
   function phaseErrorId(phase: MutablePhase): string | undefined {
-    return phase.sourceErrors.length > 0 ? `phase-errors-${phase.scope}-${phase.id}` : undefined;
+    return phase.sourceErrors.length > 0 ? `phase-errors-${phase.id}` : undefined;
   }
 
   /**
@@ -235,18 +230,22 @@
     <div class="phase-list">
       {#each phases as phase, index (phase.sourceKey)}
         <div class="phase-list-row">
-          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.scope}-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
+          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="phases-list-item-{phase.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
             <div class="phase-list-title">{phase.name || 'Untitled Phase'}</div>
             <div class="phase-list-id">{phase.id}</div>
             <div class="phase-badges">
-              <span class="scope-badge">{phase.scope}</span>
+              <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
+                   only ever read one value is not a badge. -->
               <span class="status-badge status-{phase.sourceStatus}">{phase.sourceStatus}</span>
               {#if phase.modelAvailable === false}<span class="status-badge">model unavailable</span>{/if}
             </div>
           </button>
           <div class="phase-list-actions">
-            <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0 || phase.scope === 'built-in' || phases[index - 1]?.scope !== phase.scope} onclick={() => onmoveup(index)}>↑</button>
-            <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1 || phase.scope === 'built-in' || phases[index + 1]?.scope !== phase.scope} onclick={() => onmovedown(index)}>↓</button>
+            <!-- Feature 099 (T494a, FR-043) — the two guards these lost asked
+                 whether the row or its neighbour sat in a different layer. One
+                 layer, so every row is reorderable against every other. -->
+            <button class="icon-btn" aria-label="Move {phase.name} up" data-testid="phases-move-up-{phase.id}" disabled={!trusted || savePending || mutationActive || index === 0} onclick={() => onmoveup(index)}>↑</button>
+            <button class="icon-btn" aria-label="Move {phase.name} down" data-testid="phases-move-down-{phase.id}" disabled={!trusted || savePending || mutationActive || index === phases.length - 1} onclick={() => onmovedown(index)}>↓</button>
           </div>
         </div>
       {/each}
@@ -267,7 +266,7 @@
               </button>
             {/if}
             <button class="btn btn-ghost" onclick={() => onselect(null)}>Cancel</button>
-            {#if phase.scope !== 'built-in'}<button class="btn btn-ghost" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>{/if}
+            <button class="btn btn-ghost" disabled={selectedReadOnly} onclick={() => onreset(index)}>Discard Draft</button>
             <button class="btn btn-ghost" data-testid="phases-duplicate" disabled={!trusted || savePending || mutationActive} onclick={() => onduplicate(index)}>Duplicate Phase</button>
             <!-- FR-052 — Export is per phase, writes a file the operator names
                  and changes no catalog state; shown here in the editor header
@@ -299,15 +298,9 @@
               <input class="text-input" value={phase.id} readonly={phase.persisted} aria-invalid={phase.sourceErrors.some((error) => error.field === 'phaseId') ? 'true' : undefined} aria-describedby={phaseErrorId(phase)} oninput={(event) => onphasechange(index, { id: event.currentTarget.value })} placeholder="phase-id" />
               {#if phase.persisted}<span class="field-help">Duplicate this Phase to create a new identity.</span>{/if}
             </label>
-            {#if !phase.persisted}
-              <label class="form-field">
-                <span class="form-label">Target scope</span>
-                <select class="select-input" value={phase.scope} disabled={selectedReadOnly} onchange={(event) => onphasechange(index, { scope: event.currentTarget.value as 'user' | 'workspace' })}>
-                  <option value="workspace">Workspace</option>
-                  <option value="user">User</option>
-                </select>
-              </label>
-            {/if}
+            <!-- Feature 099 (T494a, FR-043) — no target-scope picker. A save has
+                 one destination, so there was nothing left for this control to
+                 choose between. -->
             <label class="form-field">
               <span class="form-label">Version</span>
               <input class="text-input" value={phase.version} readonly />
@@ -356,12 +349,10 @@
               </select>
             </label>
             <label class="form-field" style="flex: 1">
-              <span class="form-label">
-                Runner
-                {#if phasePrecedenceLabel(phase)}
-                  <span class="precedence-badge" data-testid="phases-runner-precedence-{phase.id}">{phasePrecedenceLabel(phase)}</span>
-                {/if}
-              </span>
+              <!-- Feature 099 (T488, FR-041) — no precedence badge. It named the
+                   layer whose `runner` won; precedence is the answer to "which
+                   layer won", and one layer answers it by existing. -->
+              <span class="form-label">Runner</span>
               <select class="select-input" data-testid="phases-runner-{phase.id}" value={phase.runner ?? ''} disabled={selectedReadOnly} onchange={(event) => { const value = event.currentTarget.value; onphasechange(index, { runner: value ? (value as PhaseDefinition['runner']) : undefined }); }}>
                 <option value="">[Inherit / Default]</option>
                 {#each RUNNER_KINDS as runner}

@@ -11,14 +11,16 @@ import {
   buildCatalog,
   isPhaseDef,
   isPipelineDef,
-  mergeCatalog,
+  isResetToDefaultsPayload,
+  mergeRuntimePolicy,
   validateCatalog,
   validatePhaseRaw,
-  equalsBuiltInPipelines,
   validatePipelineRaw,
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
+import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
+import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 // Feature 098 (T080) — the definitions these tests resolve over now come from the
 // fixture rather than from `BUILT_IN_PHASES` / `BUILT_IN_PIPELINE`. Each test
 // below is about validation, merge precedence, or by-id map construction; none of
@@ -36,7 +38,6 @@ const validPhase = (overrides: Partial<PhaseDef> = {}): PhaseDef => ({
   id: 'security-audit',
   name: 'Security Audit',
   instruction: 'Audit the staged diff for security regressions.',
-  
   ...overrides
 });
 
@@ -307,57 +308,56 @@ describe('validateCatalog — soft caps and warnings', () => {
   });
 });
 
-describe('mergeCatalog — precedence and duplicate warnings', () => {
-  it('workspace shadows user shadows builtin for shared Phase ids (081 FR-003)', () => {
-    const customFirst: PhaseDef = {
-      id: FIXTURE_PHASE_IDS.first,
-      name: 'Workspace First',
-      instruction: 'Workspace-level override'
-    };
-    const userFirst: PhaseDef = {
-      id: FIXTURE_PHASE_IDS.first,
-      name: 'User First',
-      instruction: 'User-level override'
-    };
-    const merge = mergeCatalog(
-      { phases: FIXTURE_PHASES },
-      { phases: [userFirst] },
-      { phases: [customFirst] }
+// Feature 099 (T496f, FR-042) — `mergeCatalog` merged definitions across
+// `built-in`/`user`/`workspace` AND merged the two runtime-policy settings. Its
+// definition half is deleted with the tier; what survives is `mergeRuntimePolicy`
+// over `schegent.models` and `schegent.defaultPipelineId`, which are not retired
+// keys and still have both scopes. Its precedence claim moves there verbatim.
+describe('mergeRuntimePolicy — the two settings still layered', () => {
+  it('lets workspace win over user for defaultPipelineId', () => {
+    const merged = mergeRuntimePolicy(
+      { defaultPipelineId: 'user-choice' },
+      { defaultPipelineId: 'workspace-choice' }
     );
-    const merged = merge.catalog.phases.find((p) => p.id === FIXTURE_PHASE_IDS.first);
-    expect(merged?.name).toBe('Workspace First');
+    expect(merged.defaultPipelineId).toBe('workspace-choice');
   });
 
-  it('flags duplicate phase ids within the same precedence layer', () => {
-    const merge = mergeCatalog(
-      { phases: FIXTURE_PHASES },
-      {
-        phases: [
-          validPhase({ id: 'audit-x', name: 'A' }),
-          validPhase({ id: 'audit-x', name: 'B' })
-        ]
-      },
-      {}
+  it('unions the model lists rather than letting one scope shadow the other', () => {
+    const merged = mergeRuntimePolicy(
+      { models: { claude: ['user-model', 'shared'] } as never },
+      { models: { claude: ['workspace-model', 'shared'] } as never }
     );
-    expect(merge.duplicateWarnings.some((w) => w.source === 'phase' && w.id === 'audit-x')).toBe(
-      true
-    );
+    expect(merged.models.claude).toEqual(['workspace-model', 'shared', 'user-model']);
+  });
+});
+
+// The duplicate-id claim outlived the merge that used to report it. A repeated
+// id is a defect on the rows now, not a "last one defined wins" warning, so both
+// rows go invalid and the id resolves to neither (FR-040).
+describe('duplicate ids in the one catalog', () => {
+  it('invalidates both Phase rows claiming one id', () => {
+    const catalog = resolvePhaseCatalog({
+      rows: [validPhase({ id: 'audit-x', name: 'A' }), validPhase({ id: 'audit-x', name: 'B' })],
+      revision: 'rev-phase-dup'
+    });
+    const forId = catalog.records.filter((record) => record.phaseId === 'audit-x');
+    expect(forId.map((record) => record.status)).toEqual(['invalid', 'invalid']);
+    expect(catalog.effective.some((definition) => definition.phaseId === 'audit-x')).toBe(false);
   });
 
-  it('flags duplicate pipeline ids within the same precedence layer', () => {
-    const merge = mergeCatalog(
-      { pipelines: [FIXTURE_PIPELINE_SIMPLE] },
-      {
-        pipelines: [
-          validPipeline({ id: 'sec', phases: ['speckit-specify'] }),
-          validPipeline({ id: 'sec', phases: ['speckit-specify'] })
-        ]
-      },
-      {}
-    );
-    expect(merge.duplicateWarnings.some((w) => w.source === 'pipeline' && w.id === 'sec')).toBe(
-      true
-    );
+  it('invalidates both Pipeline rows claiming one id', () => {
+    const catalog = resolvePipelineCatalog({
+      rows: [
+        validPipeline({ id: 'sec', phases: ['speckit-specify'] }),
+        validPipeline({ id: 'sec', phases: ['speckit-specify'] })
+      ],
+      revision: 'rev-pipeline-dup',
+      phaseCatalog: resolvePhaseCatalog({ rows: FIXTURE_PHASES, revision: 'rev-phase-dup' })
+        .effective
+    });
+    const forId = catalog.records.filter((record) => record.pipelineId === 'sec');
+    expect(forId.map((record) => record.status)).toEqual(['invalid', 'invalid']);
+    expect(catalog.effective.some((definition) => definition.pipelineId === 'sec')).toBe(false);
   });
 });
 
@@ -461,6 +461,11 @@ describe('Feature 082 — widened PipelineDef', () => {
     expect(legacy.bindings).toBeUndefined();
     expect(legacy.executionDefaults).toBeUndefined();
     expect(legacy.recommendedNext).toBeUndefined();
+    // Feature 099 (T496f, FR-042) — `sourceScope` is deleted with the layer tier,
+    // so the claim moves from "optional" to "not a field at all". Pinned by
+    // compile failure: the day it comes back, the suppression is unused and this
+    // line is the error.
+    // @ts-expect-error - PipelineDef declares no sourceScope
     expect(legacy.sourceScope).toBeUndefined();
   });
 
@@ -483,8 +488,7 @@ describe('Feature 082 — widened PipelineDef', () => {
         { kind: 'output', phaseIndex: 1, portId: 'spec', outputKey: 'spec' }
       ],
       executionDefaults: { runner: 'claude', effort: 'high', timeoutSeconds: 900 },
-      recommendedNext: ['legacy'],
-      sourceScope: 'workspace'
+      recommendedNext: ['legacy']
     };
     expect(isPipelineDef(full)).toBe(true);
     expect(full.bindings).toHaveLength(2);
@@ -498,21 +502,34 @@ describe('Feature 082 — widened PipelineDef', () => {
   // `accepts a legacy { id, name, phases } row` case above still holds the
   // optionality of every widened field.
 
-  it('keeps equalsBuiltInPipelines matching only an empty reset payload', () => {
-    // Feature 098 (T080) — this case built its payload out of `BUILT_IN_PIPELINES`
-    // and asserted that a truncated copy failed to match. With the built-in layer
-    // empty (T036) the honest statement is the one below: the reset payload the
-    // three save commands compare against is `[]`, and any row at all is a
-    // divergence from it. The comparison itself is what T037 deliberately kept.
-    expect(equalsBuiltInPipelines([])).toBe(true);
-    expect(equalsBuiltInPipelines([FIXTURE_PIPELINE_SIMPLE])).toBe(false);
+  // Feature 099 (T489, FR-039) — `equalsBuiltInPipelines` is one of three
+  // functions that each compared a payload against their layer's `BUILT_IN_*`
+  // constant. All three constants and all three functions are deleted; the one
+  // question they answered is asked once now, and the answer is unchanged.
+  it('recognizes only an empty payload as the reset to defaults', () => {
+    expect(isResetToDefaultsPayload([])).toBe(true);
+    expect(isResetToDefaultsPayload([FIXTURE_PIPELINE_SIMPLE])).toBe(false);
   });
 
   it('rejects a row whose new field has the wrong shape', () => {
     expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], version: '3' })).toBe(false);
     expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], inputs: 'brief' })).toBe(false);
     expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], recommendedNext: [7] })).toBe(false);
-    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], sourceScope: 'global' })).toBe(false);
+    expect(isPipelineDef({ id: 'x', name: 'X', phases: ['a'], outputs: 'spec' })).toBe(false);
+  });
+
+  // Feature 099 (FR-043) — `sourceScope` was the host-stamped layer name, and the
+  // wrong-shape case above used to pin it. The field is gone from the contract,
+  // so what matters is that resolution never puts it back.
+  it('resolves a Pipeline carrying no sourceScope', () => {
+    const catalog = resolvePipelineCatalog({
+      rows: [validPipeline({ id: 'scopeless', phases: ['speckit-specify'] })],
+      revision: 'rev-pipeline-scopeless',
+      phaseCatalog: resolvePhaseCatalog({ rows: FIXTURE_PHASES, revision: 'rev-phase-scopeless' })
+        .effective
+    });
+    expect(catalog.effectivePipelineDefs.every((def) => !('sourceScope' in def))).toBe(true);
+    expect(catalog.records.every((record) => !('scope' in record))).toBe(true);
   });
 });
 

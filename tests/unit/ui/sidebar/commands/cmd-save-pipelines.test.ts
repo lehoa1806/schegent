@@ -12,6 +12,21 @@
 // 059 invariants are unchanged — only the payload shape and the way a
 // "reset to defaults" is expressed moved: it is now either a layer-emptying
 // `{ kind: 'reset' }` or a payload byte-equal to `BUILT_IN_PIPELINES`.
+//
+// Feature 099 (T496f, FR-046) — the `pipelineOverrides` capability this file was
+// built around is DELETED with the layer tier: gates 11 and 12 asked whether one
+// layer could redefine what another declares, and one layer poses no such
+// question. Two of the four cases below were about the gate firing; what replaces
+// them is the negative that must now hold forever — a Pipeline save consults no
+// override capability at all, so the gate cannot come back unnoticed. The two
+// reset-to-defaults cases keep their claims exactly and lose only the setting
+// that used to make them interesting.
+//
+// The I-5 case ('still returns rejection when audit append throws') is gone with
+// the gate that produced the rejection: a Pipeline save has no trust denial left
+// to audit. The invariant itself — an audit failure never swallows the ack — is
+// unchanged and still pinned on the Phase path, in `cmd-save-phases.test.ts`
+// ('returns trust denial even when audit append fails').
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -19,14 +34,17 @@ const mocks = vi.hoisted(() => {
   const state = {
     capabilities: new Map<string, boolean>(),
     scopes: new Map<string, 'user' | 'workspace' | 'workspace-trust'>(),
+    asked: [] as string[],
     canonicalBasename: 'test-workspace' as string
   };
   return { state };
 });
 
 vi.mock('../../../../../src/state/capability-trust-resolver', () => ({
-  isCapabilityAllowed: (capability: string) =>
-    mocks.state.capabilities.get(capability) ?? true,
+  isCapabilityAllowed: (capability: string) => {
+    mocks.state.asked.push(capability);
+    return mocks.state.capabilities.get(capability) ?? true;
+  },
   getResolvedScope: (capability: string) =>
     mocks.state.scopes.get(capability) ?? 'workspace-trust'
 }));
@@ -43,10 +61,9 @@ import { handler as savePipelinesHandler } from '../../../../../src/ui/sidebar/c
 import { CMD_SAVE_PIPELINES } from '../../../../../src/ui/sidebar/messages';
 import type {
   CommandAckMessage,
-  SavePipelinesCommand,
-  TrustDeniedError
+  SavePipelinesCommand
 } from '../../../../../src/ui/sidebar/messages';
-import { pipelineLayerRevision } from '../../../../../src/config/pipeline-catalog';
+import { FakeCatalogStore, layerWrites } from '../../../../fixtures/fake-catalog-store';
 // Feature 098 (T080) — see the fixture header for why the Phase ids the payloads
 // below reference are the real Spec Kit ones.
 import { SPECKIT_PHASE_DEFS } from '../../../../fixtures/speckit-catalog-fixture';
@@ -62,21 +79,37 @@ interface CapturedAudit {
   correlationId?: string;
 }
 
+/** Feature 099 (T496f, FR-044a) — seeding rows does not move a revision. */
+const SEEDED_REVISION = new FakeCatalogStore().revisionOf('pipeline');
+
+// Feature 082 (T038) — gate 5 resolves every `phaseId` against the effective
+// Phase catalog; `done` is authored in these fixtures. Feature 098 (T080) — the
+// Spec Kit rows join it, because the payloads below name `speckit-specify` and
+// `finalize` and the built-in Phase layer that used to supply them is empty.
+// Without them gate 5 answers `pipeline-validation` and no test here reaches what
+// it is about.
+const PHASE_ROWS: readonly unknown[] = [
+  { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
+  ...SPECKIT_PHASE_DEFS
+];
+
 function buildCtx(opts: {
-  updateConfigThrows?: boolean;
   auditAppendThrows?: boolean;
-  workspace?: readonly unknown[];
+  current?: readonly unknown[];
 } = {}): {
   ctx: Parameters<typeof savePipelinesHandler>[0];
   acks: CommandAckMessage[];
   auditCalls: CapturedAudit[];
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
   warnings: string[];
 } {
   const acks: CommandAckMessage[] = [];
   const auditCalls: CapturedAudit[] = [];
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
   const warnings: string[] = [];
+  const store = new FakeCatalogStore({
+    phases: PHASE_ROWS,
+    pipelines: opts.current ?? []
+  });
   const logger = {
     info: vi.fn(),
     warn: (msg: string) => warnings.push(msg),
@@ -90,10 +123,6 @@ function buildCtx(opts: {
       auditCalls.push(entry);
     })
   };
-  const updateConfig = vi.fn(async (key: string, value: unknown) => {
-    if (opts.updateConfigThrows) throw new Error('update failed');
-    updateConfigCalls.push({ key, value });
-  });
   const ctx = {
     deps: {
       executeCommand: vi.fn(),
@@ -101,21 +130,15 @@ function buildCtx(opts: {
       logger,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       audit: audit as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      updateConfig: updateConfig as any,
-      readPipelineConfig: () => ({ user: [], workspace: opts.workspace ?? [] }),
-      // Feature 082 (T038) — gate 5 resolves every `phaseId` against the
-      // effective Phase catalog; `done` is workspace-authored in these fixtures.
-      // Feature 098 (T080) — the Spec Kit rows join it, because the payloads below
-      // name `speckit-specify` and `finalize` and the built-in Phase layer that used
-      // to supply them is empty. Without them gate 5 answers `pipeline-validation`
-      // and no test here reaches the trust gate it is about.
+      catalogStore: store,
+      refreshCatalog: vi.fn(async () => undefined),
+      readPipelineConfig: () => ({
+        rows: store.rowsOf('pipeline'),
+        revision: store.revisionOf('pipeline')
+      }),
       readPhaseConfig: () => ({
-        user: [],
-        workspace: [
-          { id: 'done', name: 'Done', version: 1, instruction: 'Done.' },
-          ...SPECKIT_PHASE_DEFS
-        ]
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
       })
     },
     postAck: async (msg: CommandAckMessage) => {
@@ -125,20 +148,18 @@ function buildCtx(opts: {
     correlationId: 'test-correlation-1'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
-  return { ctx, acks, auditCalls, updateConfigCalls, warnings };
+  return { ctx, acks, auditCalls, store, warnings };
 }
 
 function makeCmd(
   pipelines: readonly unknown[],
-  mutation: PipelineCatalogMutation = { kind: 'create', pipelineId: 'custom-flow' },
-  current: readonly unknown[] = []
+  mutation: PipelineCatalogMutation = { kind: 'create', pipelineId: 'custom-flow' }
 ): SavePipelinesCommand {
   return {
     type: CMD_SAVE_PIPELINES,
     correlationId: 'test-correlation-1',
     payload: {
-      scope: 'workspace',
-      expectedRevision: pipelineLayerRevision(current),
+      expectedRevision: SEEDED_REVISION,
       mutation,
       pipelines
     }
@@ -149,6 +170,7 @@ function makeCmd(
 beforeEach(() => {
   mocks.state.capabilities.clear();
   mocks.state.scopes.clear();
+  mocks.state.asked.length = 0;
   mocks.state.canonicalBasename = 'test-workspace';
 });
 
@@ -157,106 +179,66 @@ describe('cmd-save-pipelines trust gate (059, T019) — I-2 reset-to-defaults', 
   // `BUILT_IN_PIPELINES` under an `edit` mutation. The defaults are the empty
   // layer now, so the same payload is `[]`, and what distinguishes this case from
   // its `{ kind: 'reset' }` neighbour below is the mutation kind, not the bytes:
-  // `restoresDefaults` is a disjunction, and this exercises the second arm — an
-  // operator who removes their last override lands back on the defaults and so
-  // needs no capability, even though the command is not a reset.
+  // an operator who removes their last override lands back on the defaults, and
+  // does so through the ordinary remove path rather than a reset.
   it('accepts a payload byte-equal to the defaults under a non-reset mutation', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    mocks.state.scopes.set('pipelineOverrides', 'workspace');
     const current = [
       { id: 'custom-flow', name: 'Custom Flow', version: 1, phases: ['speckit-specify', 'finalize'] }
     ];
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx({ workspace: current });
+    const { ctx, acks, auditCalls, store } = buildCtx({ current });
     await savePipelinesHandler(
       ctx,
-      makeCmd([], { kind: 'remove', pipelineId: 'custom-flow' }, current)
+      makeCmd([], { kind: 'remove', pipelineId: 'custom-flow' })
     );
     expect(acks[0].status).toBe('accepted');
     expect(auditCalls).toEqual([]);
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('pipelines');
+    expect(store.layerSaves).toHaveLength(1);
+    expect(store.layerSaves[0].kind).toBe('pipeline');
   });
 
-  it('accepts a layer-emptying reset even when allowPipelineOverrides is false', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    mocks.state.scopes.set('pipelineOverrides', 'workspace');
+  it('accepts a layer-emptying reset', async () => {
     const current = [
       { id: 'custom-flow', name: 'Custom Flow', version: 1, phases: ['speckit-specify', 'finalize'] }
     ];
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx({ workspace: current });
-    await savePipelinesHandler(ctx, makeCmd([], { kind: 'reset' }, current));
+    const { ctx, acks, auditCalls, store } = buildCtx({ current });
+    await savePipelinesHandler(ctx, makeCmd([], { kind: 'reset' }));
     expect(acks[0].status).toBe('accepted');
     expect(auditCalls).toEqual([]);
-    expect(updateConfigCalls).toEqual([{ key: 'pipelines', value: [] }]);
+    expect(layerWrites(store)).toEqual([[]]);
+    expect(store.rowsOf('pipeline')).toEqual([]);
   });
 });
 
-describe('cmd-save-pipelines trust gate (059, T019) — capability denial', () => {
-  it('denies non-default pipelines when allowPipelineOverrides is false', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    mocks.state.scopes.set('pipelineOverrides', 'user');
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    const pipelines = [
-      {
-        id: 'custom-flow',
-        name: 'Custom Flow',
-        phases: ['speckit-specify', 'finalize', 'done']
-      }
-    ];
-    await savePipelinesHandler(ctx, makeCmd(pipelines));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('trust-denied');
-    const err = acks[0].result as TrustDeniedError;
-    expect(err.kind).toBe('trust-denied');
-    expect(err.capability).toBe('pipelineOverrides');
-    expect(err.resolvedScope).toBe('user');
-    expect(updateConfigCalls).toEqual([]);
-    expect(auditCalls).toHaveLength(1);
-    expect(auditCalls[0].eventType).toBe('trust.capability-denied');
-    expect(auditCalls[0].payload.capability).toBe('pipelineOverrides');
-    expect(auditCalls[0].payload.resolvedScope).toBe('user');
-    expect(auditCalls[0].payload.workspaceBasename).toBe('test-workspace');
-    expect(typeof auditCalls[0].payload.reason).toBe('string');
-    expect(auditCalls[0].outcome).toBe('failure');
-  });
+describe('cmd-save-pipelines (099, T496f) — no override capability is left to consult', () => {
+  const CUSTOM = [
+    {
+      id: 'custom-flow',
+      name: 'Custom Flow',
+      phases: ['speckit-specify', 'finalize', 'done']
+    }
+  ];
 
-  it('accepts non-default pipelines when allowPipelineOverrides is true', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', true);
-    const { ctx, acks, auditCalls, updateConfigCalls } = buildCtx();
-    const pipelines = [
-      {
-        id: 'custom-flow',
-        name: 'Custom Flow',
-        phases: ['speckit-specify', 'finalize', 'done']
-      }
-    ];
-    await savePipelinesHandler(ctx, makeCmd(pipelines));
+  // FR-046. The two cases this replaces set `pipelineOverrides` to false and then
+  // true, and asserted the save was denied and then allowed. There is no such
+  // capability any more, so the surviving claim is the one a reintroduced gate
+  // would break: the answer does not depend on the resolver at all.
+  it('accepts a non-default Pipeline with every capability denied', async () => {
+    for (const capability of ['pipelineOverrides', 'workflowOverrides', 'phases', 'retryConditions']) {
+      mocks.state.capabilities.set(capability, false);
+    }
+    const { ctx, acks, auditCalls, store } = buildCtx();
+    await savePipelinesHandler(ctx, makeCmd(CUSTOM));
     expect(acks[0].status).toBe('accepted');
     expect(auditCalls).toEqual([]);
-    expect(updateConfigCalls).toHaveLength(1);
+    expect(store.layerSaves).toHaveLength(1);
   });
-});
 
-describe('cmd-save-pipelines trust gate (059, T019) — I-5 audit-before-return resilience', () => {
-  it('still returns rejection when audit append throws', async () => {
-    mocks.state.capabilities.set('pipelineOverrides', false);
-    mocks.state.scopes.set('pipelineOverrides', 'workspace');
-    const { ctx, acks, updateConfigCalls, warnings } = buildCtx({
-      auditAppendThrows: true
-    });
-    const pipelines = [
-      {
-        id: 'custom-flow',
-        name: 'Custom Flow',
-        phases: ['speckit-specify', 'finalize', 'done']
-      }
-    ];
-    await savePipelinesHandler(ctx, makeCmd(pipelines));
-    expect(acks[0].status).toBe('rejected');
-    expect(acks[0].reason).toBe('trust-denied');
-    expect((acks[0].result as TrustDeniedError).capability).toBe('pipelineOverrides');
-    expect(updateConfigCalls).toEqual([]);
-    expect(warnings.some((w) => w.includes('trust.capability-denied'))).toBe(true);
+  it('never asks the resolver about an override capability', async () => {
+    const { ctx, acks } = buildCtx();
+    await savePipelinesHandler(ctx, makeCmd(CUSTOM));
+    expect(acks[0].status).toBe('accepted');
+    expect(mocks.state.asked).not.toContain('pipelineOverrides');
+    expect(mocks.state.asked).not.toContain('workflowOverrides');
   });
 });
 

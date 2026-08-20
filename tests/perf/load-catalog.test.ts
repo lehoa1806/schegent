@@ -1,5 +1,14 @@
+// Feature 099 (T496f, FR-054) — the budget is unchanged and so is the fixture
+// size: 50 Phases and 20 Pipelines, resolved 100 times. What changed is where
+// the rows come from. `loadCatalog` takes a store snapshot now, so the reader
+// supplies only the two settings that stayed (`models`, `defaultPipelineId`) and
+// the definitions arrive as a snapshot. Resolving the same number of rows is the
+// same work, which is exactly why the 50 ms p95 gate carries over unmoved.
+
 import { describe, it, expect } from 'vitest';
 import { loadCatalog, type CatalogConfigReader } from '../../src/config/pipeline-config-loader';
+import type { CatalogSnapshot } from '../../src/contracts/catalog-store';
+import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 
 const PHASE_COUNT = 50;
 const PIPELINE_COUNT = 20;
@@ -40,17 +49,15 @@ function buildFixture(): { phases: readonly Record<string, unknown>[]; pipelines
   return { phases, pipelines };
 }
 
-function makeReader(
+function makeSnapshot(
   phases: readonly Record<string, unknown>[],
   pipelines: readonly Record<string, unknown>[]
-): CatalogConfigReader {
+): CatalogSnapshot {
+  return new FakeCatalogStore({ phases, pipelines }).snapshot();
+}
+
+function makeReader(): CatalogConfigReader {
   return {
-    getPhases(scope) {
-      return scope === 'workspace' ? phases : undefined;
-    },
-    getPipelines(scope) {
-      return scope === 'workspace' ? pipelines : undefined;
-    },
     getDefaultPipelineId(scope) {
       return scope === 'workspace' ? 'pipeline-00' : undefined;
     },
@@ -69,9 +76,10 @@ function percentile(sortedAsc: number[], p: number): number {
 describe('loadCatalog performance (T059, plan Performance Goals)', () => {
   it(`completes in ≤ ${P95_BUDGET_MS} ms p95 with ${PHASE_COUNT} phases / ${PIPELINE_COUNT} pipelines`, () => {
     const { phases, pipelines } = buildFixture();
-    const reader = makeReader(phases, pipelines);
+    const snapshot = makeSnapshot(phases, pipelines);
+    const reader = makeReader();
 
-    const warmup = loadCatalog(reader);
+    const warmup = loadCatalog(snapshot, reader);
     expect(warmup.errors).toEqual([]);
     expect(warmup.usedFallback).toBe(false);
     expect(warmup.catalog.phases.length).toBeGreaterThanOrEqual(PHASE_COUNT);
@@ -80,7 +88,7 @@ describe('loadCatalog performance (T059, plan Performance Goals)', () => {
     const samples: number[] = [];
     for (let i = 0; i < SAMPLES; i++) {
       const start = performance.now();
-      loadCatalog(reader);
+      loadCatalog(snapshot, reader);
       samples.push(performance.now() - start);
     }
 
