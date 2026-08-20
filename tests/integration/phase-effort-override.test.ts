@@ -1,12 +1,12 @@
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // Feature 026 T018 — integration: per-phase Effort/Model override
-// flows through CMD_SAVE_PHASES, lands on the user-layer catalog,
-// and surfaces on the `phase-start` audit payload at run time.
+// flows through the draft save, lands on the catalog, and surfaces on
+// the `phase-start` audit payload at run time.
 //
 // Scope:
-//   (a) Dispatch CMD_SAVE_PHASES with `{ id: 'speckit-plan', effort: 'high' }`
-//       through MessageRouter; assert the host writes `phases` to the
-//       user-layer catalog byte-for-byte.
+//   (a) Dispatch a draft save of `{ id: 'speckit-plan', effort: 'high' }`
+//       through MessageRouter; assert the host writes the body to the
+//       catalog byte-for-byte.
 //   (b) Build a controller against the post-save merged catalog;
 //       enqueue + run the standard pipeline; assert the `phase-start`
 //       audit entry for `speckit-plan` carries `effort: 'high'` and no
@@ -24,6 +24,14 @@ import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // merge (built-in vs user) + the runtime emission at
 // `phase-runner.ts:172-176`. The host-side validators reject malformed
 // rows; the integration test uses only well-formed rows.
+//
+// Feature 100 (T514) — the override arrives one definition at a time, on
+// `CMD_SAVE_DEFINITION_DRAFT`, which is what this file was always simulating: the
+// old dispatch loop re-sent a growing array once per row precisely because the
+// command could only speak in whole layers. `effort` and `model` are ordinary
+// fields of a body the store keeps verbatim (099 FR-010), so the write assertions
+// now compare the body exactly rather than through `objectContaining` — nothing is
+// stamped onto it on the way past any more.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
@@ -42,7 +50,8 @@ import {
   type PhaseDef,
   type PipelineDef
 } from '../../src/config/pipeline-config';
-import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
+import { FakeCatalogStore, tokenFor } from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 // Feature 098 (T080) — the base layer these tests override comes from the test
 // fixture rather than from a compiled-in catalog, which no longer holds any. The
 // Spec Kit and bugfix ids are the real ones because the tests are about
@@ -56,7 +65,7 @@ import {
   SPECKIT_PIPELINE_ID
 } from '../fixtures/speckit-catalog-fixture';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
-import { CMD_SAVE_PHASES, type SidebarCommand, type CommandAckMessage } from '../../src/ui/sidebar/messages';
+import { CMD_SAVE_DEFINITION_DRAFT, type SidebarCommand, type CommandAckMessage } from '../../src/ui/sidebar/messages';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
@@ -133,20 +142,23 @@ async function dispatchSave(
   phases: ReadonlyArray<Partial<PhaseDef> & { id: string; name?: string; instruction?: string; loopable?: boolean }>
 ): Promise<DispatchResult> {
   let captured: DispatchResult | undefined;
-  const proposed: unknown[] = [];
+  let sent = 0;
   for (const phase of phases) {
-    proposed.push(phase);
+    sent += 1;
     await router.dispatch(
       {
-        type: CMD_SAVE_PHASES,
-        correlationId: `save-${proposed.length}`,
+        type: CMD_SAVE_DEFINITION_DRAFT,
+        correlationId: `save-${sent}`,
         payload: {
-          // Feature 099 (T496f, FR-044) — read fresh each time: the previous save
-          // moved the store's revision, and echoing a stale one is exactly what the
-          // gate exists to refuse.
-          expectedRevision: store.revisionOf('phase'),
-          mutation: { kind: 'create', phaseId: phase.id },
-          phases: [...proposed]
+          kind: 'phase',
+          id: phase.id,
+          // Feature 100 (T514) — read fresh each time, for the reason the revision
+          // was read fresh before it: this definition's own draft pointer is what
+          // the gate compares, and an echoed stale token is exactly what it exists
+          // to refuse. Per-definition, so saving one row no longer invalidates the
+          // token for the next (FR-012).
+          expectedDraftVersion: tokenFor(store, 'phase', phase.id),
+          body: phase
         }
       } as SidebarCommand,
       async (msg: CommandAckMessage) => {
@@ -267,7 +279,8 @@ afterEach(async () => {
 function buildRouter(): {
   router: MessageRouter;
   store: FakeCatalogStore;
-  writes: () => readonly (readonly unknown[])[];
+  /** The body each write carried, in order — one per definition saved. */
+  writes: () => readonly unknown[];
 } {
   const store = new FakeCatalogStore();
   const deps: RouterDeps = {
@@ -278,10 +291,16 @@ function buildRouter(): {
     notifyWarning: vi.fn(),
     logger: new SanitizedLogger(),
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
-  return { router: new MessageRouter(deps), store, writes: () => layerWrites(store) };
+  return {
+    router: new MessageRouter(deps),
+    store,
+    writes: () =>
+      store.lifecycleWrites.map((write) => (write as { readonly body?: unknown }).body)
+  };
 }
 
 const VALID_BASE_FIELDS = {
@@ -291,17 +310,15 @@ const VALID_BASE_FIELDS = {
 };
 
 describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () => {
-  it('(a)+(b) saves effort: high on speckit-plan via CMD_SAVE_PHASES and emits it on phase-start', async () => {
+  it('(a)+(b) saves effort: high on speckit-plan via a draft save and emits it on phase-start', async () => {
     const { router, store, writes } = buildRouter();
     const savePayload = [
       { id: 'speckit-plan', ...VALID_BASE_FIELDS, effort: 'high' as const }
     ];
     const ack = await dispatchSave(router, store, savePayload);
     expect(ack.status).toBe('accepted');
-    expect(store.layerSaves.map((request) => request.kind)).toEqual(['phase']);
-    expect(writes()[0]).toEqual([
-      expect.objectContaining({ ...savePayload[0], version: 1 })
-    ]);
+    expect(store.lifecycleWrites.map((write) => write.kind)).toEqual(['phase']);
+    expect(writes()[0]).toEqual(savePayload[0]);
 
     const { auditLog } = await runHarness({
       phases: savePayload as readonly PhaseDef[],
@@ -324,9 +341,7 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     const { router, store, writes } = buildRouter();
     const ack = await dispatchSave(router, store, cleared);
     expect(ack.status).toBe('accepted');
-    expect(writes()[0]).toEqual([
-      expect.objectContaining({ ...cleared[0], version: 1 })
-    ]);
+    expect(writes()[0]).toEqual(cleared[0]);
 
     const { auditLog } = await runHarness({
       phases: cleared as readonly PhaseDef[],
@@ -357,7 +372,9 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     const { router, store } = buildRouter();
     const ack = await dispatchSave(router, store, authored);
     expect(ack.status).toBe('accepted');
-    expect(store.layerSaves).toHaveLength(3);
+    // Three definitions, three writes — one per Phase, where the whole-layer save
+    // sent three growing copies of the same array.
+    expect(store.lifecycleWrites).toHaveLength(3);
 
     const { auditLog } = await runHarness({
       phases: authored as readonly PhaseDef[],
@@ -395,9 +412,7 @@ describe('BUG-003 successor — an override on a non-default Pipeline (US3)', ()
     const { router, store, writes } = buildRouter();
     const ack = await dispatchSave(router, store, [bugfixImplement]);
     expect(ack.status).toBe('accepted');
-    expect(writes()[0]).toEqual([
-      expect.objectContaining({ id: 'bugfix-implement', effort: 'high', version: 1 })
-    ]);
+    expect(writes()[0]).toEqual(bugfixImplement);
 
     const { auditLog } = await runHarness({
       phases: [bugfixImplement],

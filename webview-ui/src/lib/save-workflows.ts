@@ -1,31 +1,34 @@
 // Feature 083 (US1, T034) — shared saveWorkflows helper.
+// Feature 100 (FR-R3-016) T509b — rewritten onto the lifecycle IPC.
 //
-// This is the ONE call site for CMD_SAVE_WORKFLOWS in the webview, pinned by
-// `tests/lint/no-inline-save-catalog.test.ts`. Contract:
-//   specs/083-workflow-graph-builder/contracts/save-workflows-ipc.md
+// The Workflow half of the translation described in `save-phases.ts`. Two things
+// are specific to this layer:
 //
-// Structurally identical to `save-pipelines.ts` (FR-034): UUIDv4 correlation,
-// `snapshotStore.markPending`, a one-shot ack listener, a 5-second timeout, and
-// no cross-resolution between concurrent saves. It does not share
-// `save-catalog-command.ts` because that helper discards `ack.result`, and a
-// `stale-catalog` or `workflow-validation` rejection carries the structured
-// recovery payload the Builder needs to anchor host defects to a field path.
+// Authored node and connection order is part of the payload's meaning (FR-049),
+// and the row becomes the definition body unchanged, so nothing here sorts,
+// dedupes, or normalises the graph.
 //
-// The request is forwarded verbatim. Authored node and connection order is part
-// of the payload's meaning (FR-049), so nothing here sorts, dedupes, or
-// normalizes the graph — the host validator is the only thing entitled to
-// reject it.
+// The `reset` intent has no successor. It emptied the whole layer in one write,
+// which the store can no longer do: a package addresses definitions by id, and
+// removal is now one confirmed deactivation per definition. A button whose
+// atomicity the store does not provide is a button that lies, so the Reset action
+// is gone from the editor rather than reimplemented as a loop; a bulk surface, if
+// one is wanted, is FR-R3-017's to design. The union arm survives only because it
+// is declared in the shared snapshot types.
 
-import { CMD_SAVE_WORKFLOWS } from './messages';
+import { NO_DRAFT } from '../../../src/contracts/catalog-lifecycle';
 import type {
   WorkflowCatalogMutation,
   WorkflowConnection,
   WorkflowNode
 } from './snapshot-types';
-import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
-
-const ACK_TIMEOUT_MS = 5000;
+import {
+  deactivateDefinition,
+  publishDefinitionPackage,
+  EMPTY_LAYER,
+  type LifecycleResult,
+  type PostMessage
+} from './catalog-lifecycle';
 
 /**
  * An authored row as the Builder emits it. Unlike a Pipeline row there is no
@@ -48,92 +51,41 @@ export interface SaveWorkflowsRequest {
   readonly expectedRevision: string;
   readonly mutation: SaveWorkflowsMutation;
   readonly workflows: readonly SaveWorkflowRow[];
+  /** Feature 100 (T509b) — shown in the removal prompt. See `save-phases.ts`. */
+  readonly removedName?: string;
+  /** Focus returns here when the removal prompt closes. */
+  readonly originatingElement?: HTMLElement | null;
 }
 
-export type SaveWorkflowsResult =
-  | { readonly status: 'accepted'; readonly result?: unknown }
-  | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
+export type SaveWorkflowsResult = LifecycleResult;
 
-/**
- * Persist the complete Workflow catalog via the CMD_SAVE_WORKFLOWS
- * IPC. Resolves with the host's ack, or with
- * `{ status: 'rejected', reason: 'timeout' }` after 5 seconds of silence so the
- * UI can surface a recovery affordance instead of hanging.
- *
- * @param request      The revision the draft was based on, the mutation intent,
- *                     and the full catalog snapshot (all-or-nothing save).
- * @param postMessage  Optional injection point for tests. When omitted, the
- *                     helper uses the standard `postCommand` path so the
- *                     envelope is observable by the snapshot store and the
- *                     VS Code webview message bus.
- */
+/** Make the authored Workflow layer effective. */
 export function saveWorkflows(
   request: SaveWorkflowsRequest,
-  postMessage?: (msg: unknown) => void
+  postMessage?: PostMessage
 ): Promise<SaveWorkflowsResult> {
-  return new Promise<SaveWorkflowsResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: SaveWorkflowsResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // unsubscribe errors must not leak; the listener is one-shot.
+  const { expectedRevision, mutation, workflows } = request;
+  if (mutation.kind === 'remove') {
+    return deactivateDefinition(
+      { kind: 'workflow', id: mutation.workflowId, expectedDraftVersion: NO_DRAFT },
+      {
+        definitionName: request.removedName ?? mutation.workflowId,
+        originatingElement: request.originatingElement ?? null
+      },
+      postMessage
+    );
+  }
+  if (workflows.length === 0) return Promise.resolve(EMPTY_LAYER);
+  return publishDefinitionPackage(
+    {
+      layers: [
+        {
+          kind: 'workflow',
+          expectedRevision,
+          definitions: workflows.map((row) => ({ id: row.workflowId, body: row }))
         }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    let correlationId: string;
-    if (postMessage) {
-      correlationId = uuidv4();
-      postMessage({ type: CMD_SAVE_WORKFLOWS, correlationId, payload: request });
-    } else {
-      const posted = postCommand(CMD_SAVE_WORKFLOWS, request);
-      correlationId = posted.correlationId;
-    }
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted', ...(ack.result !== undefined ? { result: ack.result } : {}) });
-      } else {
-        finalise({
-          status: 'rejected',
-          reason: ack.reason ?? 'rejected',
-          ...(ack.result !== undefined ? { result: ack.result } : {})
-        });
-      }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, ACK_TIMEOUT_MS);
-  });
-}
-
-function uuidv4(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+      ]
+    },
+    postMessage
+  );
 }

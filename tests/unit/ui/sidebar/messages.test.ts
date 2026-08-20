@@ -60,11 +60,19 @@ describe('messages literal mirror (Wave 5 — authoritative module)', () => {
     }
   });
 
+  // Feature 100 (T509) — `CMD_SAVE_PIPELINES` and `CMD_SAVE_PHASES` were two of
+  // this era's five, and the lifecycle retired both along with the whole-array
+  // layer envelope they carried. What the test claims is unchanged: every
+  // command literal is declared in the authoritative module and nowhere else.
+  // The two names are replaced by the commands that now do their work rather
+  // than dropped, because a shortened list would let a literal drift out of the
+  // barrel while the era still looked covered.
   it('declares the 011+012-era command constants in the authoritative module', () => {
     const authoritative = readLiterals(AUTHORITATIVE_PATH);
     const expected = [
-      'CMD_SAVE_PIPELINES',
-      'CMD_SAVE_PHASES',
+      'CMD_SAVE_DEFINITION_DRAFT',
+      'CMD_PUBLISH_DEFINITION',
+      'CMD_PUBLISH_PACKAGE',
       'CMD_SAVE_MODELS',
       'CMD_SAVE_GENERAL_SETTINGS',
       'CMD_RETRY_PHASE_NOW'

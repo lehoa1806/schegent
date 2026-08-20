@@ -1,4 +1,5 @@
-import type { AuditEventType } from '../contracts/audit-events';
+import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
+import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -411,6 +412,59 @@ function projectMonitorInvocationSummary(
   });
 }
 
+/**
+ * The store's version-id form, as `catalog-paths.ts` writes one: `v` followed by
+ * a positive integer with no leading zero. Restated here rather than imported
+ * because the store's copy is a *path* concern — it is how a record's file is
+ * named — and this one is a projection concern: it is the assertion that keeps
+ * the only non-enum field in the payload from carrying anything but an id.
+ *
+ * If the store's format ever changes, this refuses and `catalog-lifecycle-commit`
+ * logs the append failure. That is the intended failure mode: a visible missing
+ * record, never a written wrong one.
+ */
+const CATALOG_VERSION_ID_RE = /^v[1-9][0-9]*$/;
+
+/**
+ * Feature 100 (T513, FR-054) — the three catalog lifecycle events get a bespoke
+ * projection rather than riding `projectValue`, and the reason is that the closed
+ * `CatalogLifecyclePayload` type does not survive this boundary.
+ * `projectAuditPayload` takes a `Record<string, unknown>`, so the compiler has
+ * nothing left to enforce here; `OMITTED_KEYS` catches `note` and
+ * `workspaceRoot`, but it does NOT contain `body` or `draftBody`, and the generic
+ * path would write a definition body into the log verbatim. That is precisely the
+ * leak FR-054 forbids. A projection that names its three fields and copies
+ * nothing else is what makes the closure a mechanism instead of a convention.
+ *
+ * Every field is required, and a malformed one throws rather than degrading to a
+ * fallback. `projectMonitorInvocationSummary` degrades because its counts survive
+ * a missing interval; here all three fields ARE the record, and an entry that
+ * cannot say which definition it is about — or which version — is not a
+ * degraded record but a misleading one.
+ */
+function projectCatalogLifecycle(payload: Record<string, unknown>): CatalogLifecyclePayload {
+  const resourceKind = payload.resourceKind;
+  if (typeof resourceKind !== 'string' || !CATALOG_KINDS.includes(resourceKind as CatalogKind)) {
+    throw new AuditPayloadValidationError('invalid-catalog-kind');
+  }
+  const resourceId = payload.resourceId;
+  if (typeof resourceId !== 'string' || resourceId.length === 0) {
+    throw new AuditPayloadValidationError('invalid-catalog-resource-id');
+  }
+  const versionId = payload.versionId;
+  if (typeof versionId !== 'string' || !CATALOG_VERSION_ID_RE.test(versionId)) {
+    throw new AuditPayloadValidationError('invalid-catalog-version-id');
+  }
+  return Object.freeze({
+    resourceKind: resourceKind as CatalogKind,
+    // Still projected, not passed through: the emitter sanitizes and bounds the
+    // id, and this is the boundary that makes the no-paths rule hold whether or
+    // not it did.
+    resourceId: projectValue(resourceId, 0) as string,
+    versionId
+  });
+}
+
 function projectMetricsViewOpened(
   payload: Record<string, unknown>
 ): MetricsViewOpenedPayloadV3 {
@@ -438,6 +492,12 @@ export function projectAuditPayload(
     projected = projectMonitorInvocationSummary(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'metrics-view-opened') {
     projected = projectMetricsViewOpened(payload) as unknown as Record<string, unknown>;
+  } else if (
+    eventType === 'definition-published' ||
+    eventType === 'definition-deactivated' ||
+    eventType === 'definition-restored'
+  ) {
+    projected = projectCatalogLifecycle(payload) as unknown as Record<string, unknown>;
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

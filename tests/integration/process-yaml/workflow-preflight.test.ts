@@ -33,7 +33,7 @@ import type {
 import { DEFECT_FIELD_MAX } from '../../../src/services/process-yaml/phase-yaml-validator';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
@@ -353,7 +353,7 @@ describe('Feature 086 T033 — the host dispatches on the declared kind, for thr
   it('writes nothing while planning a Workflow package (SC-008)', async () => {
     const { harness } = await preflight({ text: PACKAGE_DOCUMENT });
 
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
     expect(harness.updateConfig).not.toHaveBeenCalled();
     expect(harness.executeCommand).not.toHaveBeenCalled();
   });
@@ -585,7 +585,7 @@ describe('Feature 086 T031 — a refused Workflow document produces no plan (FR-
     expect(keys).toEqual(['outcome', 'refusal']);
     expect(harness.acks[0]!.status).toBe('rejected');
     expect(harness.acks[0]!.reason).toBe('refused');
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 
@@ -670,7 +670,7 @@ describe('Feature 086 T031 — a refused Workflow document produces no plan (FR-
     const { code, keys, harness } = await refusalOf({ bytes: oversized });
     expect(code).toBe('too-large');
     expect(keys).toEqual(['outcome', 'refusal']);
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
   });
 
   it('still plans the same document once the refusal is resolved', async () => {
@@ -731,7 +731,7 @@ describe('Feature 086 T071 — a read failure reports generically (FR-057)', () 
     expect(serialized).not.toContain('someone');
     expect(serialized).not.toMatch(/[/\\]/);
     // Nothing was written on the way to failing, and no plan was built.
-    expect(harness.store.layerSaves).toEqual([]);
+    expect(writesOf(harness.store)).toEqual(NO_WRITES);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 

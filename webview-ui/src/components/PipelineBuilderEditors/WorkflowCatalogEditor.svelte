@@ -28,8 +28,7 @@
   } from '../../lib/snapshot-types';
   import { saveWorkflows, type SaveWorkflowsRequest } from '../../lib/save-workflows';
   import {
-    confirmWorkflowLayerReset,
-    confirmWorkflowRemoval
+    buildWorkflowRemoval
   } from './workflow-catalog-actions';
   import {
     addWorkflowConditionValue,
@@ -278,12 +277,12 @@
     );
 
   /**
-   * The one send path. Every write is the whole target layer, not one row: the
-   * Workflow save command is all-or-nothing, so a partial payload would
-   * silently delete every row it omitted. The `saveWorkflows` helper is the
-   * only way to send it — the lint gate in
-   * `tests/lint/no-inline-save-catalog.test.ts` fails any component that names
-   * the command itself.
+   * The one send path. A non-removal write is still the whole layer, not one row:
+   * it becomes a single package layer whose `expectedRevision` gate is the one
+   * this editor has always held, so a partial payload would publish a catalog
+   * missing every row it omitted. The `saveWorkflows` helper is the only way to
+   * send it — the lint gate in `tests/lint/catalog-lifecycle-dispatch.test.ts`
+   * fails any component that names a lifecycle command itself (Feature 100 T509d).
    */
   async function submit(request: SaveWorkflowsRequest): Promise<void> {
     submittedRevision = request.expectedRevision;
@@ -294,6 +293,9 @@
       // No new revision is coming, so the pending gate has to be released here
       // or every control stays dead until the view is reloaded.
       submittedRevision = null;
+      // Feature 100 (T509b) — the operator closed the removal prompt. Nothing was
+      // sent and nothing failed, so the banner stays clear.
+      if (outcome.reason === 'declined') return;
       saveError = formatWorkflowSaveRejection(
         outcome.reason,
         outcome.result as Parameters<typeof formatWorkflowSaveRejection>[1]
@@ -311,36 +313,25 @@
   }
 
   /**
-   * Removal and reset both confirm before they build anything, in
-   * `workflow-catalog-actions.ts`. A declined prompt returns null and nothing
-   * is sent — including the pending gate, which is only raised by `submit`.
+   * Feature 100 (T509b) — the confirmation now lives inside
+   * `deactivateDefinition`, which raises it before dispatch (FR-049). A declined
+   * prompt comes back as a `declined` rejection that `submit` treats as a no-op,
+   * so nothing is sent and no error is reported.
    *
    * The rows passed in are the **stored** ones, not `rows`: an unsaved draft is
    * not part of what the host holds, and carrying one along would make the
-   * write an add and a remove at once. The host's intent algebra refuses that,
-   * so the removal would fail for a reason unrelated to the removal.
+   * write an add and a remove at once.
    */
   async function removeSelected(event: MouseEvent): Promise<void> {
     if (removeDisabled || !selected) return;
-    const request = await confirmWorkflowRemoval({
-      row: selected,
-      expectedRevision: revision,
-      layer: persisted,
-      originatingElement: event.currentTarget as HTMLElement
-    });
-    if (request) await submit(request);
-  }
-
-  async function resetLayer(event: MouseEvent): Promise<void> {
-    if (mutatingDisabled) return;
-    const request = await confirmWorkflowLayerReset({
-      expectedRevision: revision,
-      // Stored rows only: a draft is not yet a definition the catalog holds, so
-      // counting it would overstate what the reset actually deletes.
-      workflowCount: persisted.length,
-      originatingElement: event.currentTarget as HTMLElement
-    });
-    if (request) await submit(request);
+    await submit(
+      buildWorkflowRemoval({
+        row: selected,
+        expectedRevision: revision,
+        layer: persisted,
+        originatingElement: event.currentTarget as HTMLElement
+      })
+    );
   }
 </script>
 
@@ -371,7 +362,6 @@
     onadd={addWorkflow}
     onduplicate={duplicateWorkflow}
     onremove={removeSelected}
-    onreset={resetLayer}
     onsave={save}
   />
 

@@ -1,21 +1,32 @@
 // Feature 082 (US1, T021) — savePipelines helper behavior.
+// Feature 100 (FR-R3-016) T509b — narrowed to the translation.
 //
-// Contract: specs/082-pipeline-contracts-builder/contracts/save-pipelines-ipc.md
-// § "Webview helper" — "structurally identical to `savePhases`: UUIDv4
-// correlation, `snapshotStore.markPending`, one-shot `onceAck`, 5-second
-// timeout, no cross-resolution between concurrent saves."
+// The transport half of this file (correlation, pending, acks, timeout, no
+// cross-resolution, UUIDv4) moved to `catalog-lifecycle.test.ts`, where the code
+// it tests now lives once. See `save-phases.test.ts` for why all three save tests
+// were cut the same way.
 //
-// The pre-082 helper posted `{ pipelines }` and dropped every authored
-// contract field on the floor. These tests pin the revisioned envelope
-// (`{ expectedRevision, mutation, pipelines }`) as forwarded verbatim, so a
-// Pipeline's ports, bindings, and execution defaults reach the host handler
-// unmodified. Feature 099 (T496f, FR-042) — `scope` left the envelope with the
-// layer tier it named; `expectedRevision` is the whole of what a save is
-// optimistic against now.
+// What stays is Pipeline-specific, and it is the reason this file is not a copy of
+// `save-phases.test.ts`:
+//
+//   - The pre-082 helper posted `{ pipelines }` and dropped every authored
+//     contract field on the floor. The row is now a definition *body*, forwarded
+//     verbatim, so ports, bindings, execution defaults, and recommendedNext have
+//     to survive — and the store does not validate a body (099 FR-010), so this
+//     helper is the last place that could damage them.
+//   - A Pipeline row has two authored identity spellings, `pipelineId` and `id`.
+//     A package addresses definitions by id, so one of them has to be picked here,
+//     and a row carrying neither has to go somewhere other than the wire.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { savePipelines, type SavePipelinesRequest } from '../save-pipelines';
-import { CMD_SAVE_PIPELINES } from '../messages';
+import { CMD_DEACTIVATE_DEFINITION, CMD_PUBLISH_PACKAGE } from '../messages';
+import { NO_DRAFT } from '../../../../src/contracts/catalog-lifecycle';
+
+// Bound, not named inline — see the note in `save-phases.test.ts`.
+const WIRE = {
+  package: CMD_PUBLISH_PACKAGE,
+  deactivate: CMD_DEACTIVATE_DEFINITION
+} as const;
 
 type AckListener = (ack: {
   status: 'accepted' | 'rejected';
@@ -24,13 +35,10 @@ type AckListener = (ack: {
 }) => void;
 
 const ackListeners = new Map<string, AckListener>();
-const pendingSet = new Set<string>();
 
 vi.mock('../snapshot-store.svelte', () => ({
   snapshotStore: {
-    markPending(id: string): void {
-      pendingSet.add(id);
-    },
+    markPending(): void {},
     onceAck(id: string, fn: AckListener): () => void {
       ackListeners.set(id, fn);
       return () => ackListeners.delete(id);
@@ -38,21 +46,44 @@ vi.mock('../snapshot-store.svelte', () => ({
   }
 }));
 
-function fireAck(
-  id: string,
-  status: 'accepted' | 'rejected',
-  reason?: string,
-  result?: unknown
-): void {
-  const fn = ackListeners.get(id);
-  expect(fn, `no listener registered for ${id}`).toBeDefined();
-  ackListeners.delete(id);
-  fn!({ status, reason, result });
+const confirmCalls: { readonly actionKey: string; readonly context: unknown }[] = [];
+let confirmAnswer = true;
+
+vi.mock('../use-confirm', () => ({
+  useConfirm(actionKey: string, options?: { context?: unknown }): Promise<boolean> {
+    confirmCalls.push({ actionKey, context: options?.context });
+    return Promise.resolve(confirmAnswer);
+  }
+}));
+
+const { savePipelines } = await import('../save-pipelines');
+const { EMPTY_LAYER } = await import('../catalog-lifecycle');
+type SavePipelinesRequest = import('../save-pipelines').SavePipelinesRequest;
+
+interface Envelope {
+  readonly type: string;
+  readonly correlationId: string;
+  readonly payload: unknown;
 }
 
-// A fully authored row: id/name/version plus every optional contract field.
-// If the helper ever reshapes the payload, the deep-equality assertion in the
-// first test fails rather than silently shipping a lossy save.
+interface PackagePayload {
+  readonly layers: readonly {
+    readonly kind: string;
+    readonly expectedRevision: string;
+    readonly definitions: readonly { readonly id: string; readonly body: unknown }[];
+  }[];
+}
+
+function ack(envelope: Envelope): void {
+  const fn = ackListeners.get(envelope.correlationId);
+  expect(fn, `no listener registered for ${envelope.correlationId}`).toBeDefined();
+  ackListeners.delete(envelope.correlationId);
+  fn!({ status: 'accepted' });
+}
+
+// A fully authored row: id/name/version plus every optional contract field. If
+// the helper ever reshapes the body, the deep-equality assertion below fails
+// rather than silently publishing a lossy definition.
 const AUTHORED_ROW = {
   id: 'custom-flow',
   name: 'Custom Flow',
@@ -87,7 +118,8 @@ const SAMPLE_REQUEST: SavePipelinesRequest = {
 
 beforeEach(() => {
   ackListeners.clear();
-  pendingSet.clear();
+  confirmCalls.length = 0;
+  confirmAnswer = true;
   vi.useFakeTimers();
 });
 
@@ -95,146 +127,195 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('Feature 082 T021 — savePipelines helper', () => {
-  it('posts exactly one CMD_SAVE_PIPELINES envelope carrying the request verbatim', async () => {
-    const posted: unknown[] = [];
-    const postMessage = (msg: unknown): void => {
-      posted.push(msg);
-    };
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
+describe('savePipelines — the authored layer becomes one publication', () => {
+  it('publishes one pipeline layer with the whole authored row as the body', async () => {
+    const posted: Envelope[] = [];
+    const promise = savePipelines(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
 
-    expect(posted.length).toBe(1);
-    const env = posted[0] as { type: string; correlationId: string; payload: unknown };
-    expect(env.type).toBe(CMD_SAVE_PIPELINES);
-    expect(typeof env.correlationId).toBe('string');
-    expect(env.correlationId.length).toBeGreaterThan(0);
-    // Deep equality, not a subset check: ports, bindings, executionDefaults,
-    // and recommendedNext must survive the trip to the host.
-    expect(env.payload).toEqual(SAMPLE_REQUEST);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.type).toBe(WIRE.package);
+    // Deep equality, not a subset check: ports, bindings, executionDefaults, and
+    // recommendedNext must all survive the trip to the store.
+    expect(posted[0]!.payload).toEqual({
+      layers: [
+        {
+          kind: 'pipeline',
+          expectedRevision: 'a'.repeat(64),
+          definitions: [{ id: 'custom-flow', body: AUTHORED_ROW }]
+        }
+      ]
+    });
 
-    fireAck(env.correlationId, 'accepted');
+    ack(posted[0]!);
+    await expect(promise).resolves.toEqual({ status: 'accepted' });
+  });
+
+  it('never sends the mutation tag', async () => {
+    const posted: Envelope[] = [];
+    const promise = savePipelines(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
+    expect(Object.keys(posted[0]!.payload as object)).toEqual(['layers']);
+    expect(JSON.stringify(posted[0]!.payload)).not.toContain('mutation');
+    ack(posted[0]!);
     await promise;
   });
 
-  it('marks the correlation id pending so the snapshot store can gate the UI', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    expect(pendingSet.has(env.correlationId)).toBe(true);
-    fireAck(env.correlationId, 'accepted');
-    await promise;
-  });
-
-  it('resolves accepted and preserves the { revision, mutation } ack result', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = { revision: 'b'.repeat(64), mutation: 'edit' };
-    fireAck(env.correlationId, 'accepted', undefined, result);
-    await expect(promise).resolves.toEqual({ status: 'accepted', result });
-  });
-
-  it('resolves rejected with the reason from a matching rejected ack', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    fireAck(env.correlationId, 'rejected', 'pipeline-validation');
-    await expect(promise).resolves.toEqual({
-      status: 'rejected',
-      reason: 'pipeline-validation'
-    });
-  });
-
-  it('preserves structured recovery details from a stale-catalog rejection', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = {
-      currentRevision: 'c'.repeat(64),
-      current: [{ pipelineId: 'custom-flow', version: 4 }]
-    };
-    fireAck(env.correlationId, 'rejected', 'stale-catalog', result);
-    await expect(promise).resolves.toEqual({
-      status: 'rejected',
-      reason: 'stale-catalog',
-      result
-    });
-  });
-
-  it('resolves { status: rejected, reason: timeout } after 5 seconds without an ack', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    vi.advanceTimersByTime(5000);
-    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
-  });
-
-  it('does NOT cross-resolve mismatched correlation ids when two saves are in flight', async () => {
-    const postMessage = vi.fn();
-    const p1 = savePipelines(SAMPLE_REQUEST, postMessage);
-    const p2 = savePipelines(
-      { ...SAMPLE_REQUEST, mutation: { kind: 'remove', pipelineId: 'custom-flow' } },
-      postMessage
-    );
-    expect(postMessage).toHaveBeenCalledTimes(2);
-    const env1 = postMessage.mock.calls[0][0] as { correlationId: string };
-    const env2 = postMessage.mock.calls[1][0] as { correlationId: string };
-    expect(env1.correlationId).not.toBe(env2.correlationId);
-
-    // Ack out of order — the second save must not settle the first.
-    fireAck(env2.correlationId, 'rejected', 'pipeline-remove-blocked');
-    await expect(p2).resolves.toEqual({
-      status: 'rejected',
-      reason: 'pipeline-remove-blocked'
-    });
-    fireAck(env1.correlationId, 'accepted');
-    await expect(p1).resolves.toEqual({ status: 'accepted' });
-  });
-
-  it('ignores a late ack after the timeout has already settled the promise', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    vi.advanceTimersByTime(5000);
-    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
-    // The one-shot listener is unsubscribed on settle, so no listener remains
-    // to deliver a stale accepted ack into a resolved promise.
-    expect(ackListeners.has(env.correlationId)).toBe(false);
-  });
-
-  it('uses crypto-grade UUIDv4 correlation ids (RFC 4122 layout) when not injected', async () => {
-    const postMessage = vi.fn();
-    const promise = savePipelines(SAMPLE_REQUEST, postMessage);
-    const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    expect(env.correlationId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-    );
-    fireAck(env.correlationId, 'accepted');
-    await promise;
-  });
-
-  const MUTATIONS: readonly SavePipelinesRequest['mutation'][] = [
+  const PUBLISHING_MUTATIONS: readonly SavePipelinesRequest['mutation'][] = [
     { kind: 'create', pipelineId: 'custom-flow' },
+    { kind: 'import-package', pipelineIds: ['custom-flow'] },
     { kind: 'edit', pipelineId: 'custom-flow' },
     { kind: 'duplicate', sourcePipelineId: 'speckit-new-feature', pipelineId: 'custom-flow' },
-    { kind: 'remove', pipelineId: 'custom-flow' },
     { kind: 'reset' }
   ];
 
-  it.each(MUTATIONS.map((mutation) => [mutation.kind, mutation] as const))(
-    'forwards a %s mutation unchanged',
-    async (_kind, mutation) => {
-      const postMessage = vi.fn();
-      const request: SavePipelinesRequest = {
-        ...SAMPLE_REQUEST,
-        mutation,
-        pipelines: mutation.kind === 'reset' ? [] : SAMPLE_REQUEST.pipelines
-      };
-      const promise = savePipelines(request, postMessage);
-      const env = postMessage.mock.calls[0][0] as { payload: SavePipelinesRequest; correlationId: string };
-      expect(env.payload.mutation).toEqual(mutation);
-      expect(env.payload.pipelines).toEqual(request.pipelines);
-      fireAck(env.correlationId, 'accepted');
+  it.each(PUBLISHING_MUTATIONS)(
+    'a $kind mutation produces the same publication as every other',
+    async (mutation) => {
+      const posted: Envelope[] = [];
+      const promise = savePipelines({ ...SAMPLE_REQUEST, mutation }, (msg) =>
+        posted.push(msg as Envelope)
+      );
+
+      expect(posted).toHaveLength(1);
+      expect(posted[0]!.type).toBe(WIRE.package);
+      expect(posted[0]!.payload).toEqual({
+        layers: [
+          {
+            kind: 'pipeline',
+            expectedRevision: 'a'.repeat(64),
+            definitions: [{ id: 'custom-flow', body: AUTHORED_ROW }]
+          }
+        ]
+      });
+      expect(confirmCalls).toEqual([]);
+
+      ack(posted[0]!);
       await promise;
     }
   );
+});
+
+describe('savePipelines — choosing the id a definition is addressed by', () => {
+  it('prefers the portable pipelineId over the legacy id', async () => {
+    // Both spellings are accepted by the host validator, so a row can carry both,
+    // and they can disagree — a row imported from a document keeps `pipelineId`
+    // while the editor writes `id`. Publishing under the wrong one would create a
+    // second definition instead of a version of the existing one.
+    const posted: Envelope[] = [];
+    const promise = savePipelines(
+      {
+        ...SAMPLE_REQUEST,
+        pipelines: [{ ...AUTHORED_ROW, pipelineId: 'portable-flow' }]
+      },
+      (msg) => posted.push(msg as Envelope)
+    );
+
+    const layer = (posted[0]!.payload as PackagePayload).layers[0]!;
+    expect(layer.definitions.map((definition) => definition.id)).toEqual(['portable-flow']);
+    // The body still carries both keys unchanged: the choice is about addressing,
+    // not about rewriting what the operator authored.
+    expect(layer.definitions[0]!.body).toEqual({ ...AUTHORED_ROW, pipelineId: 'portable-flow' });
+
+    ack(posted[0]!);
+    await promise;
+  });
+
+  it('falls back to the legacy id when the row carries no pipelineId', async () => {
+    const posted: Envelope[] = [];
+    const promise = savePipelines(SAMPLE_REQUEST, (msg) => posted.push(msg as Envelope));
+    const layer = (posted[0]!.payload as PackagePayload).layers[0]!;
+    expect(layer.definitions.map((definition) => definition.id)).toEqual(['custom-flow']);
+    ack(posted[0]!);
+    await promise;
+  });
+
+  it('drops a row with neither spelling rather than publishing an empty id', async () => {
+    // An empty id would be refused by the host as a malformed layer, and reported
+    // against the whole document instead of the row that caused it — so the
+    // operator would be told their valid Pipelines failed.
+    const { id: _id, ...unnamed } = AUTHORED_ROW;
+    const posted: Envelope[] = [];
+    const promise = savePipelines(
+      { ...SAMPLE_REQUEST, pipelines: [unnamed, { ...AUTHORED_ROW, id: 'keeps-its-id' }] },
+      (msg) => posted.push(msg as Envelope)
+    );
+
+    const layer = (posted[0]!.payload as PackagePayload).layers[0]!;
+    expect(layer.definitions.map((definition) => definition.id)).toEqual(['keeps-its-id']);
+
+    ack(posted[0]!);
+    await promise;
+  });
+
+  it('sends nothing when every row was dropped, or when there were none', async () => {
+    const { id: _id, ...unnamed } = AUTHORED_ROW;
+    const postMessage = vi.fn();
+    await expect(
+      savePipelines({ ...SAMPLE_REQUEST, pipelines: [unnamed] }, postMessage)
+    ).resolves.toEqual(EMPTY_LAYER);
+    await expect(savePipelines({ ...SAMPLE_REQUEST, pipelines: [] }, postMessage)).resolves.toEqual(
+      EMPTY_LAYER
+    );
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('savePipelines — a removal is not a publication', () => {
+  it('deactivates the named pipeline and leaves the surviving rows alone', async () => {
+    const posted: Envelope[] = [];
+    const promise = savePipelines(
+      {
+        ...SAMPLE_REQUEST,
+        mutation: { kind: 'remove', pipelineId: 'custom-flow' },
+        removedName: 'Custom Flow'
+      },
+      (msg) => posted.push(msg as Envelope)
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.type).toBe(WIRE.deactivate);
+    expect(posted[0]!.payload).toEqual({
+      kind: 'pipeline',
+      id: 'custom-flow',
+      expectedDraftVersion: NO_DRAFT
+    });
+    expect(confirmCalls).toEqual([
+      {
+        actionKey: 'catalog.deactivate-definition',
+        context: {
+          kindLabel: 'Pipeline',
+          definitionName: 'Custom Flow',
+          definitionId: 'custom-flow'
+        }
+      }
+    ]);
+
+    ack(posted[0]!);
+    await expect(promise).resolves.toEqual({ status: 'accepted' });
+  });
+
+  it('removes by the mutation id, not by whichever row happens to be first', async () => {
+    // The removal target comes from the mutation, and the layer handed in is the
+    // one that remains — so a translation that read the id off the rows would
+    // deactivate a survivor.
+    const posted: Envelope[] = [];
+    const promise = savePipelines(
+      {
+        ...SAMPLE_REQUEST,
+        mutation: { kind: 'remove', pipelineId: 'gone-flow' },
+        pipelines: [AUTHORED_ROW]
+      },
+      (msg) => posted.push(msg as Envelope)
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(posted[0]!.payload).toEqual({
+      kind: 'pipeline',
+      id: 'gone-flow',
+      expectedDraftVersion: NO_DRAFT
+    });
+
+    ack(posted[0]!);
+    await promise;
+  });
 });

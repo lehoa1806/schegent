@@ -23,6 +23,7 @@
 // association is carried by text, not by color alone (FR-044).
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SaveWorkflowsRequest } from '../../lib/save-workflows';
 import type {
@@ -393,6 +394,18 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 // dialog is Feature 063's contract and already has its own coverage; what is
 // under test here is which mutation intent this Builder declares and whether it
 // waits for the answer.
+//
+// Feature 100 (T509b, FR-049) — the gate moved. It now lives inside
+// `deactivateDefinition`, the one function that can post the command it
+// authorises, so this editor no longer asks: it hands `removedName` and the
+// triggering control to the helper as request fields and the helper prompts. The
+// three cases that drove the local prompt are rewritten below onto that shape,
+// and each of them additionally asserts `useConfirm` was NOT called here —
+// because a prompt re-added at this call site would prompt twice for one
+// removal and nothing else in the suite would notice.
+//
+// The three Reset cases are deleted rather than ported, and their tombstone is
+// below. `useConfirm` stays mocked: the mock is now what proves the absence.
 
 /**
  * Typed to `useConfirm`'s own shape so the assertions below read the call the
@@ -407,56 +420,79 @@ type ConfirmCall = (
 const useConfirmMock = vi.hoisted(() => vi.fn<ConfirmCall>(async () => true));
 vi.mock('../../lib/use-confirm', () => ({ useConfirm: useConfirmMock, isModalOpen: () => false }));
 
-type SaveCall = (request: SaveWorkflowsRequest) => Promise<{ status: string }>;
+type SaveCall = (
+  request: SaveWorkflowsRequest
+) => Promise<{ status: string; reason?: string; result?: unknown }>;
 
 const saved = async () =>
   (await import('../../lib/save-workflows')).saveWorkflows as unknown as ReturnType<
     typeof vi.fn<SaveCall>
   >;
 
-describe('removal and reset are confirmation-gated (FR-035)', () => {
-  it('sends a remove mutation for the selected row once confirmed', async () => {
+describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
+  it('sends one removal for the selected row, addressed by its own id', async () => {
     const saveWorkflows = await saved();
     saveWorkflows.mockClear();
     useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(true);
 
     const { container, getByTestId } = mount([record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
-    await fireEvent.click(getByTestId('workflows-remove'));
+    const trigger = getByTestId('workflows-remove');
+    await fireEvent.click(trigger);
 
-    expect(useConfirmMock).toHaveBeenCalledTimes(1);
-    expect(useConfirmMock.mock.calls[0][0]).toBe('catalog.remove-workflow');
     expect(saveWorkflows).toHaveBeenCalledTimes(1);
     const request = saveWorkflows.mock.calls[0][0];
     expect(request.mutation).toEqual({ kind: 'remove', workflowId: 'design-then-build' });
     // The write is the whole layer minus the row: an omitted row is the removal.
     expect(request.workflows).toEqual([]);
     expect(request.expectedRevision).toBe('w');
+    // What the prompt must say and where focus must return, carried as request
+    // fields because the helper is what asks. Feature 099 (T496f, FR-042) — a
+    // `scope` stood beside the name in the old prompt context; `toEqual` above
+    // and these two reads are exact, so its absence is pinned here.
+    expect(request.removedName).toBe('Design then Build');
+    expect(request.originatingElement).toBe(trigger);
   });
 
-  it('sends nothing at all when the operator declines', async () => {
+  it('asks nothing itself, so one removal cannot prompt twice', async () => {
     const saveWorkflows = await saved();
     saveWorkflows.mockClear();
     useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(false);
 
     const { container, getByTestId } = mount([record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 
-    expect(useConfirmMock).toHaveBeenCalledTimes(1);
-    expect(saveWorkflows).not.toHaveBeenCalled();
-    // And the control is live again, not stuck behind a pending save that the
-    // host was never asked to perform.
-    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
+    // The gate is `deactivateDefinition`'s, and it is mocked away here. A prompt
+    // restored at this call site would still pass every other assertion in this
+    // block while asking the operator twice for one removal.
+    expect(useConfirmMock).not.toHaveBeenCalled();
+    expect(saveWorkflows).toHaveBeenCalledTimes(1);
   });
 
-  it('removes from the stored layer only, leaving unsaved drafts out of the write', async () => {
+  it('reports nothing when the operator declines, because nothing was sent', async () => {
     const saveWorkflows = await saved();
     saveWorkflows.mockClear();
     useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(true);
+    saveWorkflows.mockResolvedValueOnce({ status: 'rejected', reason: 'declined' });
+
+    const { container, getByTestId } = mount([record()]);
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await fireEvent.click(getByTestId('workflows-remove'));
+    await tick();
+
+    // A decline is neither a save nor a failure, and that is only observable in
+    // the surface: no banner, the row still listed, the control live again
+    // rather than stuck behind a pending save the host never performed.
+    expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
+    expect(rowFor(container, 'design-then-build')).not.toBeNull();
+    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('keeps unsaved drafts out of the rows it carries alongside the removal', async () => {
+    const saveWorkflows = await saved();
+    saveWorkflows.mockClear();
+    useConfirmMock.mockClear();
 
     const { container, getByTestId } = mount([record(), record({ workflowId: 'keeper' })]);
     // An unsaved draft, created before the removal.
@@ -472,85 +508,31 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     expect(request.workflows.map((row) => row.workflowId)).toEqual(['keeper']);
   });
 
-  it('names the row in the prompt and hands back the triggering control for focus', async () => {
-    useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(false);
+  // Feature 100 (T509b, FR-049) — three Reset cases stood here: the mutation and
+  // its empty layer, the prompt counting only stored rows, and the declined
+  // reset writing nothing. They are deleted rather than rewritten, because their
+  // whole subject is gone: Reset was one atomic layer-wide write, and the
+  // versioned store deactivates one definition at a time. A button whose
+  // atomicity the store does not provide is a button that lies, so
+  // `WorkflowToolbar` no longer offers one and `confirmWorkflowLayerReset` is
+  // deleted. A bulk surface, if it is wanted, is FR-R3-017's to design against
+  // per-definition writes. What those cases really encoded — that one prompt
+  // names what it is about to destroy — survives above in `removedName`.
 
-    const { container, getByTestId } = mount([record()]);
-    await fireEvent.click(rowFor(container, 'design-then-build'));
-    const trigger = getByTestId('workflows-remove');
-    await fireEvent.click(trigger);
-
-    const options = useConfirmMock.mock.calls[0][1];
-    // Feature 099 (T496f, FR-042) — a `scope` stood beside the two names.
-    // `toEqual` is exact, so its absence is pinned by this assertion alone.
-    expect(options.context).toEqual({
-      workflowName: 'Design then Build',
-      workflowId: 'design-then-build'
-    });
-    // FR-035's focus requirement is Feature 063's to honour; this Builder's part
-    // is naming the element it must return focus to.
-    expect(options.originatingElement).toBe(trigger);
-  });
-
-  it('sends a reset mutation with an empty layer once confirmed', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
-    useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(true);
-
-    const { getByTestId } = mount([record()]);
-    await fireEvent.click(getByTestId('workflows-reset'));
-
-    expect(useConfirmMock.mock.calls[0][0]).toBe('catalog.reset-workflows');
-    expect(useConfirmMock.mock.calls[0][1].context).toEqual({ workflowCount: 1 });
-    const request = saveWorkflows.mock.calls[0][0];
-    expect(request.mutation).toEqual({ kind: 'reset' });
-    expect(request.workflows).toEqual([]);
-    expect(request.expectedRevision).toBe('w');
-  });
-
-  it('counts only stored definitions in the reset prompt', async () => {
-    useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(false);
-
-    const { getByTestId } = mount([record()]);
-    await fireEvent.click(getByTestId('workflows-add'));
-    await fireEvent.click(getByTestId('workflows-reset'));
-
-    // The draft is not a stored definition yet — reset deletes what the host
-    // holds, and naming a number the operator cannot see would misstate it.
-    expect(useConfirmMock.mock.calls[0][1].context).toEqual({ workflowCount: 1 });
-  });
-
-  it('leaves the catalog alone when the reset is declined', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
-    useConfirmMock.mockClear();
-    useConfirmMock.mockResolvedValueOnce(false);
-
-    const { getByTestId } = mount([record()]);
-    await fireEvent.click(getByTestId('workflows-reset'));
-
-    expect(saveWorkflows).not.toHaveBeenCalled();
-  });
-
-  it('offers both controls against any stored row, trust being the only gate', async () => {
+  it('offers removal against any stored row, trust being the only gate', async () => {
     // Feature 099 (T496f, FR-042, FR-043) — this pinned remove DISABLED against
     // a `built-in` row. With the read-only tier gone, where a row came from
-    // gates nothing, and the case below — the same two controls, disabled by
+    // gates nothing, and the case below — the same control, disabled by an
     // untrusted workspace — is what the pair now distinguishes it from.
     const { container, getByTestId } = mount([record({ workflowId: 'shipped' })]);
     await fireEvent.click(rowFor(container, 'shipped'));
     expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
-    expect((getByTestId('workflows-reset') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('offers neither control in an untrusted workspace (FR-029)', async () => {
+  it('offers no removal in an untrusted workspace (FR-029)', async () => {
     const { container, getByTestId } = mount([record()], false);
     await fireEvent.click(rowFor(container, 'design-then-build'));
     expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(true);
-    expect((getByTestId('workflows-reset') as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

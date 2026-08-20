@@ -32,6 +32,18 @@ export interface SnapshotRowsInput {
    * about staleness sets the one it is about.
    */
   readonly revisions?: Partial<Record<CatalogKind, string>>;
+  /**
+   * Feature 100 (T514) — rows presented as **draft-only**: an entry with a draft
+   * pointer and no active version.
+   *
+   * Kept separate from the three row lists rather than folded into them, because
+   * the whole point of the state is that these rows are NOT what the resolvers see:
+   * `body` is null for every one of them, so `storedRows` omits them and the
+   * effective catalog cannot contain them (FR-007). A suite about import presence
+   * or the effective catalog needs to be able to put a definition in the store that
+   * is invisible to a resolver, and this is how it says so.
+   */
+  readonly drafts?: Partial<Record<CatalogKind, readonly unknown[]>>;
 }
 
 const DEFAULT_REVISION = 'rev-fixture';
@@ -56,21 +68,33 @@ function rowId(row: unknown, kind: CatalogKind, index: number): string {
 /** The first version's id, spelled the way the store spells it (`v<N>`). */
 const FIRST_VERSION = versionIdFor(1);
 
-function definitionsFor(kind: CatalogKind, rows: readonly unknown[]): StoredDefinition[] {
+function definitionsFor(
+  kind: CatalogKind,
+  rows: readonly unknown[],
+  pointer: 'active' | 'draft' = 'active'
+): StoredDefinition[] {
+  const active = pointer === 'active';
   return rows.map((row, index) => ({
     kind,
     id: rowId(row, kind, index),
     status: 'effective' as const,
-    activeVersionId: FIRST_VERSION,
-    body: row,
+    activeVersionId: active ? FIRST_VERSION : null,
+    // `body` means the ACTIVE body and nothing else (T498a). A draft-only entry has
+    // no active version, so it has no body — which is exactly what keeps it out of
+    // every resolver with no resolver edit (FR-007).
+    body: active ? row : null,
+    draftVersionId: active ? null : FIRST_VERSION,
+    draftBody: active ? null : row,
     createdAt: 0,
     updatedAt: 0,
     versions: [
       {
         versionId: FIRST_VERSION,
-        contentHash: `sha256:${kind}-${index}`,
+        contentHash: `sha256:${kind}-${pointer}-${index}`,
         createdAt: 0,
-        publishedAt: 0,
+        // Stamped by a publication and by nothing else: a draft has never been live
+        // (FR-020).
+        publishedAt: active ? 0 : null,
         note: null
       }
     ]
@@ -84,7 +108,10 @@ export function snapshotOf(input: SnapshotRowsInput = {}): CatalogSnapshot {
     definitions: [
       ...definitionsFor('phase', input.phases ?? []),
       ...definitionsFor('pipeline', input.pipelines ?? []),
-      ...definitionsFor('workflow', input.workflows ?? [])
+      ...definitionsFor('workflow', input.workflows ?? []),
+      ...definitionsFor('phase', input.drafts?.phase ?? [], 'draft'),
+      ...definitionsFor('pipeline', input.drafts?.pipeline ?? [], 'draft'),
+      ...definitionsFor('workflow', input.drafts?.workflow ?? [], 'draft')
     ],
     faults: [],
     collectable: [],

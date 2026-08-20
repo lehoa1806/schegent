@@ -6,9 +6,9 @@
 //
 //   1. automation — `validateProcessDefinition` from
 //      `src/headless/process-definition-api.ts`
-//   2. operator   — `MessageRouter.dispatch` of `CMD_SAVE_PHASES`,
-//      `CMD_SAVE_PIPELINES`, and `CMD_SAVE_WORKFLOWS`, i.e. the real router
-//      running the real `cmd-save-*.ts` gate tables
+//   2. operator   — `MessageRouter.dispatch` of `CMD_SAVE_DEFINITION_DRAFT` and
+//      then `CMD_PUBLISH_DEFINITION`, i.e. the real router running the real
+//      lifecycle service and the real `defectsOf` gate
 //
 // They are compared on all three things SC-001 names: the verdict, the defect
 // codes, and the defect *field addresses*. Addresses matter most — `bindings[0]
@@ -55,6 +55,19 @@
 // unchanged alongside the row under test". Both readings make the same case: every
 // save is a plain `create`, so the mutation gates — which run after validation —
 // stay out of a comparison that is about validation.
+//
+// Feature 100 (T514, FR-016, FR-019) — the operator surface is two commands now,
+// and the second one is the one under test. A draft save validates nothing: the
+// store takes a body verbatim (099 FR-010) and the gate that computes defects sits
+// on the publish path (`lifecycle-service.ts` `publish`). So the operator arm
+// authors the draft and then asks for it to be made live, which is where the verdict
+// is — and the refusal is one `validation-failed` carrying every defect rather than
+// three `<kind>-validation` literals carrying the first.
+//
+// That makes this a strictly stronger comparison than the whole-array save it
+// replaces: that save reported the defects of a *payload*, and this reports the
+// defects of the body the store is holding, so the two surfaces are now compared
+// across a round trip through the store rather than on the same message.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -77,14 +90,14 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
-import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
+import { FakeCatalogStore, tokenFor } from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { validateProcessDefinition } from '../../src/headless/process-definition-api';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_WORKFLOWS,
+  CMD_PUBLISH_DEFINITION,
+  CMD_SAVE_DEFINITION_DRAFT,
   type CommandAckMessage,
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
@@ -312,14 +325,17 @@ function headlessVerdict(kind: Kind, row: Row): Verdict {
 interface SidebarOutcome extends Verdict {
   /** The ack's own reason, so a refusal from some gate other than validation is visible. */
   readonly reason: string | undefined;
-  readonly wrote: boolean;
+  /** Whether the publication made the definition live. */
+  readonly active: boolean;
+  /**
+   * The write instructions that reached the store, in order.
+   *
+   * `['save-draft']` alone is what "refused before the write" looks like: the
+   * publish gate computes defects and returns without touching the store, so a
+   * refusal has nothing to undo (`lifecycle-service.ts` `publish`).
+   */
+  readonly ops: readonly string[];
 }
-
-const SAVE: Record<Kind, { readonly type: string; readonly key: string }> = {
-  phase: { type: CMD_SAVE_PHASES, key: 'phases' },
-  pipeline: { type: CMD_SAVE_PIPELINES, key: 'pipelines' },
-  workflow: { type: CMD_SAVE_WORKFLOWS, key: 'workflows' }
-};
 
 /** The rows the catalog already holds for each kind, seeded into every harness. */
 const SEED_ROWS: Record<Kind, readonly Row[]> = {
@@ -328,20 +344,22 @@ const SEED_ROWS: Record<Kind, readonly Row[]> = {
   workflow: []
 };
 
-function mutationFor(kind: Kind, row: Row): Record<string, unknown> {
-  const id = (row.id ?? row.pipelineId ?? row.phaseId ?? row.workflowId) as string;
-  if (kind === 'phase') return { kind: 'create', phaseId: id };
-  if (kind === 'pipeline') return { kind: 'create', pipelineId: id };
-  return { kind: 'create', workflowId: id };
+/**
+ * The id the store keys a definition by — the one its body authors.
+ *
+ * A malformed id is still the id: `PHASE_BROKEN` is stored under `Parity Publish!`,
+ * which is what lets its defect be reported against the definition the operator can
+ * see rather than under a synthetic name (`definition-semantics.ts` `unresolvable`).
+ */
+function idOf(row: Row): string {
+  return (row.id ?? row.pipelineId ?? row.phaseId ?? row.workflowId) as string;
 }
 
-async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
-  const acks: CommandAckMessage[] = [];
-  const store = new FakeCatalogStore({
-    phases: SEED_ROWS.phase,
-    pipelines: SEED_ROWS.pipeline,
-    workflows: SEED_ROWS.workflow
-  });
+function harnessFor(store: FakeCatalogStore): MessageRouter {
+  // The three `read*Config` seams the whole-array saves read are gone with them:
+  // a lifecycle operation reads the store itself (`cmd-catalog-lifecycle.ts`
+  // `currentRecord`), so a harness that still declared them would be describing a
+  // dependency this path does not have.
   const deps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -357,43 +375,67 @@ async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
     },
     audit: { append: async () => undefined },
     catalogStore: store,
-    refreshCatalog: async () => undefined,
-    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
-    readPipelineConfig: () => ({
-      rows: store.rowsOf('pipeline'),
-      revision: store.revisionOf('pipeline')
-    }),
-    readWorkflowConfig: () => ({
-      rows: store.rowsOf('workflow'),
-      revision: store.revisionOf('workflow')
-    })
+    catalogLifecycle: fakeCatalogLifecycle(store),
+    refreshCatalog: async () => undefined
   } as unknown as RouterDeps;
+  return new MessageRouter(deps);
+}
 
-  await new MessageRouter(deps).dispatch(
-    {
-      type: SAVE[kind].type,
-      correlationId: `parity-${kind}`,
-      payload: {
-        expectedRevision: store.revisionOf(kind),
-        mutation: mutationFor(kind, row),
-        // The seeded rows ride across unchanged, so the only difference between
-        // the stored catalog and the payload is the row under test.
-        [SAVE[kind].key]: [...SEED_ROWS[kind], row]
-      }
-    } as unknown as SidebarCommand,
-    async (message) => {
-      acks.push(message);
-      return true;
-    }
-  );
+async function dispatch(
+  router: MessageRouter,
+  command: Record<string, unknown>
+): Promise<CommandAckMessage | undefined> {
+  const acks: CommandAckMessage[] = [];
+  await router.dispatch(command as unknown as SidebarCommand, async (message) => {
+    acks.push(message);
+    return true;
+  });
+  return acks[0];
+}
 
-  const ack = acks[0];
-  const result = ack?.result as { errors?: Array<{ field: string; code: string }> } | undefined;
+async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
+  const store = new FakeCatalogStore({
+    phases: SEED_ROWS.phase,
+    pipelines: SEED_ROWS.pipeline,
+    workflows: SEED_ROWS.workflow
+  });
+  const router = harnessFor(store);
+  const id = idOf(row);
+  const ops = (): readonly string[] => store.lifecycleWrites.map((write) => write.op);
+
+  // Authoring comes first because there is nothing to publish otherwise. The
+  // supporting rows are already in the store and are not re-sent: an operation
+  // addresses one definition, so the only thing this command carries is the row
+  // under test.
+  const saved = await dispatch(router, {
+    type: CMD_SAVE_DEFINITION_DRAFT,
+    correlationId: `parity-${kind}-save`,
+    payload: { kind, id, expectedDraftVersion: tokenFor(store, kind, id), body: row }
+  });
+  if (saved?.status !== 'accepted') {
+    // The draft never landed, so the publish under test never ran. Reported rather
+    // than thrown, so the controls below name the gate that actually refused.
+    return { valid: false, defects: [], reason: saved?.reason, active: false, ops: ops() };
+  }
+
+  // Read fresh rather than carried across: the save moved this definition's draft
+  // pointer, so the token the publish must present is not the one the save did
+  // (FR-012).
+  const published = await dispatch(router, {
+    type: CMD_PUBLISH_DEFINITION,
+    correlationId: `parity-${kind}-publish`,
+    payload: { kind, id, expectedDraftVersion: tokenFor(store, kind, id) }
+  });
+
+  const result = published?.result as
+    | { defects?: Array<{ field: string; code: string }> }
+    | undefined;
   return {
-    valid: ack?.status === 'accepted',
-    defects: sorted((result?.errors ?? []).map((error) => `${error.field}|${error.code}`)),
-    reason: ack?.reason,
-    wrote: store.layerSaves.length > 0
+    valid: published?.status === 'accepted',
+    defects: sorted((result?.defects ?? []).map((defect) => `${defect.field}|${defect.code}`)),
+    reason: published?.reason,
+    active: store.stateOf(kind, id) === 'active',
+    ops: ops()
   };
 }
 
@@ -478,21 +520,29 @@ describe('the fixture resolves as intended (positive controls)', () => {
   });
 
   it.each(CASES.filter((entry) => entry.valid))(
-    'reaches the configuration write for $label, so an accepted verdict means the gates ran',
+    'publishes $label, so an accepted verdict means the gates ran',
     async ({ kind, row }) => {
-      // Without this, a save refused before validation would read as "no
-      // defects" on the sidebar side and agree with a headless clean verdict
+      // Without this, a save or a publish refused before validation would read as
+      // "no defects" on the sidebar side and agree with a headless clean verdict
       // for entirely the wrong reason.
       const outcome = await sidebarVerdict(kind, row);
       expect(outcome.reason).toBeUndefined();
-      expect(outcome.wrote).toBe(true);
+      expect(outcome.active).toBe(true);
     }
   );
 
   it.each(BROKEN)('refuses $label at the validation gate, not some later gate', async ({ kind, row }) => {
     const outcome = await sidebarVerdict(kind, row);
-    expect(outcome.reason).toBe(`${kind}-validation`);
-    expect(outcome.wrote).toBe(false);
+    // One literal for all three kinds (`catalog-lifecycle-commit.ts`): the three
+    // `<kind>-validation` reasons were an artefact of three save commands, and the
+    // condition they described was always the same one.
+    expect(outcome.reason).toBe('validation-failed');
+    // And it refused *before* the write. The draft save is the only instruction that
+    // reached the store, so the definition is still a Draft and there is nothing to
+    // undo — which is the whole reason validation sits on the publish path rather
+    // than after a write to an immutable record.
+    expect(outcome.ops).toEqual(['save-draft']);
+    expect(outcome.active).toBe(false);
   });
 });
 

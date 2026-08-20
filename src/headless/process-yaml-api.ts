@@ -15,10 +15,10 @@
 // This module imports no editor host API (FR-007).
 
 import type {
-  SavePhasesCommand,
-  SavePipelinesCommand,
-  SaveWorkflowsCommand
-} from '../contracts/sidebar-ipc/catalog-save';
+  PackageLayer,
+  PackagePublishOutcome,
+  PackagePublishRequest
+} from '../contracts/catalog-lifecycle';
 import type { SaveModelsCommand } from '../contracts/sidebar-ipc';
 import type {
   ExportProcessYamlRequest,
@@ -72,28 +72,39 @@ export type LayerSaveAck =
   | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
 
 /**
- * The three writes, injected.
+ * The two writes, injected.
  *
- * Injected rather than called directly because each one IS the existing
- * `CMD_SAVE_*` handler: the revision gate, the trust gate in that fixed order,
- * the intent algebra, and the audit envelope all stay where they are, and this
- * module adds none of them (R6). What it owns is the order the three are sent in
- * and what to say when one of them refuses.
+ * Feature 100 (T511) — the three ordered layer saves became **one** package
+ * publish. The ordering this module used to own moved into the operation itself
+ * (FR-035): `publishPackage` drafts every layer in dependency order and then
+ * publishes exactly the ids it drafted, which is what makes an import land as a
+ * set rather than as three independently-gated writes that can stop between two
+ * of them (FR-041, FR-042).
+ *
+ * That is also why an import can no longer leave a Pipeline live against Phases
+ * that never landed: the second pass runs only over what the first pass wrote.
+ * What can still happen is the whole thing stopping partway, and that is reported
+ * rather than repaired — FR-042c forbids a compensating delete, and FR-039a leaves
+ * whatever landed as a Draft for the operator to publish or re-import over.
+ *
+ * The Model Catalog keeps its own write because it never shares a document with
+ * the other three (FR-015) and is still configuration-backed (099 FR-054).
  */
 export interface ImportWritePort {
-  savePhases(payload: SavePhasesCommand['payload']): Promise<LayerSaveAck>;
-  savePipelines(payload: SavePipelinesCommand['payload']): Promise<LayerSaveAck>;
-  saveWorkflows(payload: SaveWorkflowsCommand['payload']): Promise<LayerSaveAck>;
+  publishPackage(request: PackagePublishRequest): Promise<PackagePublishOutcome>;
   saveModels(payload: SaveModelsCommand['payload']): Promise<LayerSaveAck>;
 }
 
-/** The stored rows of each catalog the import appends to (feature 099: one layer). */
-export interface ImportTargetLayers {
-  readonly phases: readonly unknown[];
-  readonly pipelines: readonly unknown[];
-  readonly workflows: readonly unknown[];
-}
-
+/**
+ * What a confirmed import needs, which is the plan and nothing else.
+ *
+ * Feature 100 (T511, FR-039a) — the stored rows of the target catalogs used to
+ * arrive here too, because a layer write replaced a whole array and the untouched
+ * rows had to be carried back in to survive it. A publication addresses
+ * definitions by id, so there is no envelope for an unnamed row to fall out of
+ * and nothing left for a caller to supply: naming a stored id would publish that
+ * id's head, which is the side effect FR-039a forbids.
+ */
 export interface ImportProcessDocumentInput {
   /**
    * The plan the caller accepted. It IS the confirmation: a caller that did not
@@ -101,7 +112,6 @@ export interface ImportProcessDocumentInput {
    * from it rather than taken as a separate argument — see `layerRevisions`.
    */
   readonly plan: ImportPlan;
-  readonly layers: ImportTargetLayers;
 }
 
 export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows' | 'models';
@@ -166,6 +176,55 @@ function modelsDeltaByBackend(
   return delta;
 }
 
+/** The layer key each catalog kind reports under. */
+const LAYER_KEY_OF: Readonly<Record<PackageLayer['kind'], ImportLayerKey>> = {
+  phase: 'phases',
+  pipeline: 'pipelines',
+  workflow: 'workflows'
+};
+
+/**
+ * One package outcome, reported as the per-layer results this module has always
+ * returned (FR-042a).
+ *
+ * The shape is kept because it is what an operator's report is built from — which
+ * layers went live and which did not — and because a package that stops partway
+ * is exactly the case where "the import failed" is the wrong thing to say. The
+ * three cases:
+ *
+ *   published → every declared layer is live.
+ *   partial   → the layers named in `published` are live; the rest were written
+ *               and are Drafts (FR-039a). Reported per layer so the operator can
+ *               see the boundary, never repaired.
+ *   refused   → nothing was written, so every declared layer is refused under the
+ *               refusal's own reason.
+ */
+export function packageResults(
+  layers: readonly PackageLayer[],
+  outcome: PackagePublishOutcome
+): readonly ImportLayerResult[] {
+  if (outcome.outcome === 'published') {
+    return layers.map((layer) => ({
+      key: LAYER_KEY_OF[layer.kind],
+      ack: { status: 'accepted' } as const
+    }));
+  }
+  if (outcome.outcome === 'refused') {
+    const { refusal } = outcome;
+    return layers.map((layer) => ({
+      key: LAYER_KEY_OF[layer.kind],
+      ack: { status: 'rejected', reason: refusal.reason, result: refusal } as const
+    }));
+  }
+  const live = new Set(outcome.published.map((published) => published.kind));
+  return layers.map((layer) => ({
+    key: LAYER_KEY_OF[layer.kind],
+    ack: live.has(layer.kind)
+      ? ({ status: 'accepted' } as const)
+      : ({ status: 'rejected', reason: 'package-partial', result: outcome } as const)
+  }));
+}
+
 /**
  * The three outcomes, read off the acks that actually came back (FR-042a).
  *
@@ -197,9 +256,11 @@ export function importCommitOutcome(
  * its OWN expected revision — the one the PLAN was computed against, taken from
  * the plan and never read live, because a revision read at the moment of the
  * write leaves the staleness gate unable to fire (FR-040).
- * Each carries exactly one `import-package` intent naming that layer's target
- * set; a document supplying fewer layers writes fewer times and never merges two
- * layers into one intent.
+ * Each layer names its own target set through the ids it carries, so a document
+ * supplying fewer layers writes fewer times and never merges two kinds into one
+ * layer. The per-layer `import-package` mutation intent is gone with the intent
+ * algebra (feature 100, FR-051): there is no whole-array diff left for a declared
+ * intent to be reconciled against, and a layer's `kind` is what identifies it.
  *
  * Sequential and short-circuiting: a rejection stops the sequence, and stopping
  * is all it does. Whichever prefix landed stays written (FR-042c). Importing the
@@ -210,7 +271,7 @@ export async function importProcessDocument(
   deps: ImportWritePort,
   input: ImportProcessDocumentInput
 ): Promise<ImportProcessDocumentResult> {
-  const { plan, layers } = input;
+  const { plan } = input;
   const phases = importRows(plan, 'phase');
   const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
@@ -232,59 +293,52 @@ export async function importProcessDocument(
     return { outcome: 'failed', results: [] };
   }
 
-  const results: ImportLayerResult[] = [];
-
-  // Awaited in sequence deliberately: each write is conditional on the one before
-  // it. Issuing them together would send the Pipeline before its Phases exist and
-  // the Workflow before its Pipelines do.
+  const layerRequest: PackageLayer[] = [];
   if (phases.length > 0) {
-    // `import` only for the single-Phase standalone document, `import-package`
-    // for everything else — the same rule the sidebar applies, because the host
-    // returns different legal actions per intent on a `stale-catalog` rejection
-    // and relabelling one path would change an operator's recovery affordances.
-    const standalone = phases.length === 1 && pipelines.length === 0 && workflows.length === 0;
-    const ack = await deps.savePhases({
+    layerRequest.push({
+      kind: 'phase',
       expectedRevision: plan.computedAgainstRevision,
-      mutation: standalone
-        ? { kind: 'import', phaseId: phases[0].resourceId }
-        : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
-      phases: [
-        ...layers.phases,
-        ...phases.map(({ definition }) => {
-          const { phaseId, ...declared } = definition;
-          return { id: phaseId, ...declared };
-        })
-      ]
+      definitions: phases.map(({ definition }) => {
+        const { phaseId, ...declared } = definition;
+        return { id: phaseId, body: { id: phaseId, ...declared } };
+      })
     });
-    results.push({ key: 'phases', ack });
-    if (ack.status !== 'accepted') return { outcome: importCommitOutcome(results), results };
   }
-
   if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    const ack = await deps.savePipelines({
+    layerRequest.push({
+      kind: 'pipeline',
       expectedRevision: pipelineRevision,
-      mutation: { kind: 'import-package', pipelineIds: pipelines.map((row) => row.resourceId) },
-      pipelines: [
-        ...layers.pipelines,
-        ...pipelines.map(({ definition }) => {
-          const { pipelineId, phaseIds, ...declared } = definition;
-          return { id: pipelineId, phases: [...phaseIds], ...declared };
-        })
-      ]
+      definitions: pipelines.map(({ definition }) => {
+        const { pipelineId, phaseIds, ...declared } = definition;
+        return { id: pipelineId, body: { id: pipelineId, phases: [...phaseIds], ...declared } };
+      })
     });
-    results.push({ key: 'pipelines', ack });
-    if (ack.status !== 'accepted') return { outcome: importCommitOutcome(results), results };
   }
-
   if (workflows.length > 0 && workflowRevision !== undefined) {
-    const ack = await deps.saveWorkflows({
+    layerRequest.push({
+      kind: 'workflow',
       expectedRevision: workflowRevision,
-      mutation: { kind: 'import-package', workflowIds: workflows.map((row) => row.resourceId) },
       // Carried as declared: a rewritten connection or a reordered node list is
       // precisely the lossy round trip FR-046a forbids.
-      workflows: [...layers.workflows, ...workflows.map(({ definition }) => ({ ...definition }))]
+      definitions: workflows.map(({ definition }) => ({
+        id: definition.workflowId,
+        body: { ...definition }
+      }))
     });
-    results.push({ key: 'workflows', ack });
+  }
+
+  const results: ImportLayerResult[] = [];
+
+  // One call, not three. The layers still go out in dependency order, but the
+  // order is now inside the operation rather than in this sequence — see
+  // `ImportWritePort`. The existing rows are no longer sent alongside the new
+  // ones because a package addresses definitions by id: there is no whole-array
+  // envelope left for an untouched row to fall out of.
+  if (layerRequest.length > 0) {
+    results.push(...packageResults(layerRequest, await deps.publishPackage({ layers: layerRequest })));
+    if (results.some((result) => result.ack.status !== 'accepted')) {
+      return { outcome: importCommitOutcome(results), results };
+    }
   }
 
   // Independent of the three above (FR-015 rules out a mixed document), so it is

@@ -1,7 +1,14 @@
 // Feature 083 (US6, FR-041) — the definition-side half of "a Workflow that
 // consumes a Pipeline". Its run-request sibling is `workflow-pipeline-refs.ts`;
-// `extension.ts` concatenates the two into one list and gate 13 in
-// `commands/cmd-save-pipelines.ts` reads that list unchanged.
+// `extension.ts` concatenates the two into one list.
+//
+// Feature 100 (T513b) — that list has one consumer now, the Library's
+// consuming-Workflow display (082 FR-002). Gate 13 of `cmd-save-pipelines.ts`,
+// the other reader, went with the whole-array save (T509), and the deactivate
+// blocker that replaced it reads active stored definitions directly
+// (`src/config/definition-semantics.ts`, FR-025b) rather than this list. The
+// stored-record rule below is unaffected: it is what makes the display honest
+// about work an operator can still repair.
 //
 // The input is **every stored source record, not the effective catalog**. That
 // is the opposite of the rule the rest of this feature follows, and it is

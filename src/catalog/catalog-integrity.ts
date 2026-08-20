@@ -80,10 +80,70 @@ async function collectUnreferenced(
 }
 
 /**
- * One definition, resolved from its manifest entry plus its active record.
+ * Read and hash-verify the record one pointer names.
+ *
+ * `null` means the body could not be produced, and the reason has already been
+ * pushed onto the sink. Feature 100 (T498f) factored this out of `scanDefinition`
+ * so the draft pointer is resolved by the same code as the active pointer — two
+ * copies would be two places for the fault taxonomy to drift.
+ */
+async function readPointedBody(
+  fs: CatalogFsPort,
+  digest: Digest,
+  entry: CatalogManifestEntry,
+  versionId: string,
+  sink: ScanSink
+): Promise<{ readonly body: unknown } | null> {
+  const metadata = entry.versions.find((version) => version.versionId === versionId);
+  // The manifest shape check already refuses a pointer that is not among `versions`,
+  // so this is defence at a boundary that cannot currently be crossed.
+  if (metadata === undefined) {
+    sink.faults.push({ fault: 'dangling-record', kind: entry.kind, id: entry.id, versionId });
+    return null;
+  }
+
+  const record = await readVersionRecord(fs, entry.kind, entry.id, versionId);
+
+  if (record.outcome === 'absent') {
+    sink.faults.push({ fault: 'dangling-record', kind: entry.kind, id: entry.id, versionId });
+    return null;
+  }
+
+  if (record.outcome === 'failed') {
+    sink.faults.push({ fault: 'unreadable-store', errno: record.errno });
+    return null;
+  }
+
+  if (record.outcome === 'unreadable') {
+    sink.faults.push({ fault: 'hash-mismatch', kind: entry.kind, id: entry.id, versionId });
+    return null;
+  }
+
+  const hashed = contentHashOf(record.record.body, digest);
+  if (hashed.outcome === 'refused' || hashed.contentHash !== metadata.contentHash) {
+    sink.faults.push({ fault: 'hash-mismatch', kind: entry.kind, id: entry.id, versionId });
+    return null;
+  }
+
+  return { body: record.record.body };
+}
+
+/**
+ * One definition, resolved from its manifest entry plus the records its pointers name.
  *
  * The only place a body enters the snapshot, and the only place a definition
  * becomes `invalid`.
+ *
+ * Feature 100 reads the **draft** record here too, so the authoring surface and the
+ * publish gate get the draft body from the snapshot they already hold rather than
+ * from a second async round trip. That is one extra record read per *drafted*
+ * definition and none at all for the rest — a definition with no draft costs exactly
+ * what it cost in 099, which is what preserves the read-once property (FR-027a).
+ *
+ * `status` stays a statement about the **active** body alone. A definition whose
+ * draft record is broken is still `effective` if what is live is readable: what runs
+ * is unaffected, so reporting it as invalid would take a working definition out of
+ * the catalog over an unpublished edit. The fault is still reported either way.
  */
 async function scanDefinition(
   fs: CatalogFsPort,
@@ -94,74 +154,32 @@ async function scanDefinition(
   const named = new Set(entry.versions.map((version) => version.versionId));
   await collectUnreferenced(fs, entry.kind, entry.id, named, sink);
 
+  const draft =
+    entry.draftVersionId === null
+      ? null
+      : await readPointedBody(fs, digest, entry, entry.draftVersionId, sink);
+
   const base = {
     kind: entry.kind,
     id: entry.id,
     activeVersionId: entry.activeVersionId,
+    draftVersionId: entry.draftVersionId,
+    draftBody: draft?.body ?? null,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     versions: entry.versions
   } as const;
 
-  // No active version: nothing to read, and nothing is wrong. Unreachable through
-  // this feature's save path, which writes `activeVersionId` every time (FR-009);
-  // FR-R3-016's draft-only entry is what makes it reachable on purpose.
+  // No active version — the draft-only entry. Nothing to read and nothing wrong:
+  // the definition simply is not part of the effective catalog (FR-007).
   if (entry.activeVersionId === null) {
     return { ...base, status: 'effective', body: null };
   }
 
-  const active = entry.versions.find((version) => version.versionId === entry.activeVersionId);
-  // The manifest shape check already refuses an `activeVersionId` that is not among
-  // `versions`, so this is defence at a boundary that cannot currently be crossed.
-  if (active === undefined) {
-    sink.faults.push({
-      fault: 'dangling-record',
-      kind: entry.kind,
-      id: entry.id,
-      versionId: entry.activeVersionId
-    });
-    return { ...base, status: 'invalid', body: null };
-  }
+  const active = await readPointedBody(fs, digest, entry, entry.activeVersionId, sink);
+  if (active === null) return { ...base, status: 'invalid', body: null };
 
-  const record = await readVersionRecord(fs, entry.kind, entry.id, active.versionId);
-
-  if (record.outcome === 'absent') {
-    sink.faults.push({
-      fault: 'dangling-record',
-      kind: entry.kind,
-      id: entry.id,
-      versionId: active.versionId
-    });
-    return { ...base, status: 'invalid', body: null };
-  }
-
-  if (record.outcome === 'failed') {
-    sink.faults.push({ fault: 'unreadable-store', errno: record.errno });
-    return { ...base, status: 'invalid', body: null };
-  }
-
-  if (record.outcome === 'unreadable') {
-    sink.faults.push({
-      fault: 'hash-mismatch',
-      kind: entry.kind,
-      id: entry.id,
-      versionId: active.versionId
-    });
-    return { ...base, status: 'invalid', body: null };
-  }
-
-  const hashed = contentHashOf(record.record.body, digest);
-  if (hashed.outcome === 'refused' || hashed.contentHash !== active.contentHash) {
-    sink.faults.push({
-      fault: 'hash-mismatch',
-      kind: entry.kind,
-      id: entry.id,
-      versionId: active.versionId
-    });
-    return { ...base, status: 'invalid', body: null };
-  }
-
-  return { ...base, status: 'effective', body: record.record.body };
+  return { ...base, status: 'effective', body: active.body };
 }
 
 /**

@@ -23,6 +23,23 @@
 // left to make, is carried by the two catalogs of the OTHER kinds: a Workflow save
 // that wrote a Phase or Pipeline record would fail exactly where the shadowed-layer
 // assertion used to fail.
+//
+// Feature 100 (T514, FR-013, FR-016) — the round trip gains a step. A save writes
+// a Draft and nothing more; a Draft becomes effective only when it is published,
+// so every claim in this file about "what the host wrote" is now a claim about two
+// writes, and `commit()` below is that pair.
+//
+// The consequence worth stating up front is where validation moved. A save never
+// validates: an operator's half-finished graph is theirs to keep, and refusing to
+// store it is what made the old surface lose work. The defects surface at the
+// publication instead, which turns each rejection in this file from "nothing was
+// written" into the sharper claim that the *Draft* was written and the *effective
+// catalog* was not — the last good graph is still the one running.
+//
+// The write recorder follows the port: `writesOf(store)` counts all three write
+// ports, and `lifecycleWrites` names each instruction's operation and kind, so
+// "wrote only the catalog it named" is now readable off the write itself rather
+// than inferred from the absence of a second layer save.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,24 +62,32 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { FIXTURE_REVISION, snapshotOf } from '../fixtures/catalog-snapshot-fixture';
-import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
+import {
+  FakeCatalogStore,
+  NO_WRITES,
+  tokenFor,
+  writesOf
+} from '../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../fixtures/fake-catalog-lifecycle';
 import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
-import type { CatalogLayerSaveRequest } from '../../src/contracts/catalog-store';
+import { NO_DRAFT } from '../../src/contracts/catalog-lifecycle';
 import type { CatalogConfigReader } from '../../src/config/pipeline-config-loader';
 import { loadCatalog } from '../../src/config/pipeline-config-loader';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { deriveWorkflowPorts } from '../../src/config/workflow-derived-ports';
-import type {
-  WorkflowCatalogMutation,
-  WorkflowDefinition
-} from '../../src/contracts/workflow-definitions';
+import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
+import { SanitizedLogger } from '../../src/lib/logger';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { handler as saveWorkflowsHandler } from '../../src/ui/sidebar/commands/cmd-save-workflows';
-import { CMD_SAVE_WORKFLOWS } from '../../src/ui/sidebar/messages';
-import type { CommandAckMessage, SaveWorkflowsCommand } from '../../src/ui/sidebar/messages';
+import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
+import {
+  CMD_PUBLISH_DEFINITION,
+  CMD_SAVE_DEFINITION_DRAFT,
+  type CommandAckMessage,
+  type SidebarCommand
+} from '../../src/ui/sidebar/messages';
 import { findQueueRuntime, type WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
 import { collectWorkflowDefinitionPipelineRefs } from '../../src/ui/sidebar/workflow-definition-pipeline-refs';
@@ -174,46 +199,51 @@ const AUTHORED_EDGE_ORDER = edgeOrder(AUTHORED_CONNECTIONS);
 /** The Pipeline rows every host in this file reads, store-side and reload-side. */
 const AUTHORED_PIPELINE_ROWS: readonly unknown[] = [DESIGN_PIPELINE, BUILD_PIPELINE];
 
-interface SaveOutcome {
+interface CommitOutcome {
+  /**
+   * The draft save's ack. Feature 100 (FR-013) — its own step, and it is the one
+   * that must be `accepted` even when the graph is defective: an operator's
+   * half-finished work is stored, and only its *publication* is judged.
+   */
+  readonly saved: CommandAckMessage;
+  /**
+   * The publication's ack, or the save's when the save itself was refused. This
+   * is the ack every claim about a verdict reads, because the verdict moved here.
+   */
   readonly ack: CommandAckMessage;
   readonly persisted: readonly unknown[];
   /**
-   * Every `saveLayer` request the handler reached, in order. Feature 099 (T496f,
-   * FR-042a) — the successor of the `updateConfig` write recorder: the store's
-   * layer save is the write port now, so "wrote nothing" is an empty list here.
+   * The lifecycle operations the store actually applied, in order. Feature 100
+   * (T514) — the successor of the `layerSaves` write recorder: a save and a
+   * publication are two instructions now, so `['save-draft']` is the shape of
+   * "the draft landed and the publication did not".
    */
-  readonly layerSaves: readonly CatalogLayerSaveRequest[];
+  readonly ops: readonly string[];
   /**
-   * The store the handler ran against. Replaces `userLayer`, which named the
+   * The store the router ran against. Replaces `userLayer`, which named the
    * lower-precedence layer a rejection had to leave alone; one catalog has no
    * such layer, so what a rejection must leave alone is the Phase and Pipeline
    * catalogs this exposes.
    */
   readonly store: FakeCatalogStore;
   /**
-   * The dependency object the handler actually ran against, so a caller can ask
+   * The dependency object the router actually ran against, so a caller can ask
    * what it did *not* touch. Used by the US6 block to show that no seam capable
    * of starting work was reached (FR-038).
    */
   readonly deps: Record<string, unknown>;
 }
 
-interface SaveOptions {
+interface CommitOptions {
   /**
-   * The revision the STORE reports for the Workflow catalog. Feature 099
-   * (FR-044/FR-044a) — a revision is the manifest's, not a hash over the rows, so
-   * a test about staleness now states what the host holds and what the window
-   * echoed as two independent values rather than deriving both from one array.
+   * Overrides the draft token the window echoes. Feature 100 (FR-012) —
+   * staleness is per definition and per pointer now, not a catalog-wide revision:
+   * a second window sends the draft version it read, and loses when a write has
+   * moved that pointer since.
    */
-  readonly storeRevision?: string;
+  readonly expectedDraftVersion?: string;
   /**
-   * Overrides the revision the window echoes. A second window that read the
-   * catalog before someone else wrote it sends the revision it saw, not the one
-   * the host now holds (FR-028).
-   */
-  readonly expectedRevision?: string;
-  /**
-   * Extra dependencies merged into the handler's `deps`. The US6 block supplies
+   * Extra dependencies merged into the router's `deps`. The US6 block supplies
    * spies for the run-, queue-, and phase-control seams the router can carry so
    * their call counts are observable; no other caller passes any, so the base
    * dependency set is unchanged for every test above.
@@ -221,82 +251,93 @@ interface SaveOptions {
   readonly extraDeps?: Record<string, unknown>;
 }
 
-/** Runs the real save handler against an in-memory catalog store. */
-async function save(
-  currentLayer: readonly unknown[],
-  mutation: WorkflowCatalogMutation,
-  rows: readonly unknown[],
-  options: SaveOptions = {}
-): Promise<SaveOutcome> {
+let dispatched = 0;
+
+/**
+ * Dispatches one command, with a correlation id no other dispatch shares.
+ *
+ * The router caches every mutation ack by correlation id and replays it for an
+ * hour, so a test that reused one would get the *first* dispatch's ack back
+ * without the second ever reaching a handler. The whole-array save needed one
+ * write per test and never noticed; a commit is two dispatches.
+ */
+async function dispatch(
+  router: MessageRouter,
+  type: string,
+  payload: Record<string, unknown>
+): Promise<CommandAckMessage> {
+  dispatched += 1;
   const acks: CommandAckMessage[] = [];
-  // One store holding all three catalogs, because the handler reads all three:
-  // the Workflow catalog it is about, and the Pipeline and Phase catalogs gates
-  // 5-7 resolve every `pipelineId` against. Seeding them here rather than from
-  // three separate doubles is what lets a rejection be shown to leave the other
-  // two byte-identical.
+  await router.dispatch(
+    { type, correlationId: `${type}-${dispatched}`, payload } as unknown as SidebarCommand,
+    async (message) => {
+      acks.push(message);
+      return true;
+    }
+  );
+  const ack = acks[0];
+  expect(ack, 'the router must ack every lifecycle command').toBeDefined();
+  return ack;
+}
+
+/**
+ * Authors one Workflow row and makes it effective — the two writes one save was.
+ *
+ * `currentRows` seeds the Workflow catalog as already-active rows, the same thing
+ * the old `currentLayer` argument named. Everything the router needs arrives
+ * through the store: the Workflow catalog the operation is about, and the
+ * Pipeline and Phase catalogs the publish gate resolves every `pipelineId`
+ * against. Seeding all three from one double is what lets a rejection be shown to
+ * leave the other two byte-identical.
+ */
+async function commit(
+  currentRows: readonly unknown[],
+  row: Record<string, unknown>,
+  options: CommitOptions = {}
+): Promise<CommitOutcome> {
   const store = new FakeCatalogStore({
     phases: AUTHORED_PHASE_ROWS,
     pipelines: AUTHORED_PIPELINE_ROWS,
-    workflows: currentLayer,
-    ...(options.storeRevision !== undefined
-      ? { revisions: { workflow: options.storeRevision } }
-      : {})
+    workflows: currentRows
   });
   const deps: Record<string, unknown> = {
     executeCommand: vi.fn(),
     queueRemover: { remove: vi.fn() },
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-      sanitize: (value: string) => value
-    },
-    audit: { append: vi.fn() },
+    isPrimary: () => true,
+    isTrusted: () => true,
+    notifyWarning: vi.fn(),
+    logger: new SanitizedLogger(),
+    audit: { append: vi.fn().mockResolvedValue(undefined) },
     catalogStore: store,
+    catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: vi.fn(async () => undefined),
-    readWorkflowConfig: () => ({
-      rows: store.rowsOf('workflow'),
-      revision: store.revisionOf('workflow')
-    }),
-    // Gates 5-7 resolve every `pipelineId` against the EFFECTIVE Pipeline
-    // catalog, which is itself resolved against the effective Phase catalog,
-    // so both have to be supplied — and they have to describe the same catalog
-    // `reload()` builds below.
-    readPipelineConfig: () => ({
-      rows: store.rowsOf('pipeline'),
-      revision: store.revisionOf('pipeline')
-    }),
-    readPhaseConfig: () => ({
-      rows: store.rowsOf('phase'),
-      revision: store.revisionOf('phase')
-    }),
     ...(options.extraDeps ?? {})
   };
-  const ctx = {
-    deps,
-    postAck: async (message: CommandAckMessage) => {
-      acks.push(message);
-      return true;
-    },
-    correlationId: 'test-correlation-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-  const command: SaveWorkflowsCommand = {
-    type: CMD_SAVE_WORKFLOWS,
-    correlationId: 'test-correlation-1',
-    payload: {
-      expectedRevision: options.expectedRevision ?? store.revisionOf('workflow'),
-      mutation,
-      workflows: rows
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-  await saveWorkflowsHandler(ctx, command);
+  const router = new MessageRouter(deps as unknown as RouterDeps);
+  const id = String(row.id);
+  const target = {
+    kind: 'workflow',
+    id,
+    expectedDraftVersion: options.expectedDraftVersion ?? tokenFor(store, 'workflow', id)
+  };
+
+  const saved = await dispatch(router, CMD_SAVE_DEFINITION_DRAFT, { ...target, body: row });
+  // A refused save has no draft to publish, so the second dispatch would only
+  // report `no-draft` and hide what actually went wrong. The save's own ack is
+  // the verdict in that case.
+  const ack =
+    saved.status === 'accepted'
+      ? await dispatch(router, CMD_PUBLISH_DEFINITION, {
+          ...target,
+          expectedDraftVersion: tokenFor(store, 'workflow', id)
+        })
+      : saved;
+
   return {
-    ack: acks[0],
+    saved,
+    ack,
     persisted: store.rowsOf('workflow'),
-    layerSaves: store.layerSaves,
+    ops: store.lifecycleWrites.map((write) => write.op),
     store,
     deps
   };
@@ -330,9 +371,7 @@ beforeEach(() => {
 
 describe('Workflow catalog management — graph round trip (US1, T036)', () => {
   it('reloads node ids, connection endpoints, and allowed starts unchanged', async () => {
-    const { ack, persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      authoredRow()
-    ]);
+    const { ack, persisted } = await commit([], authoredRow());
 
     expect(ack.status).toBe('accepted');
     const definition = reload(persisted);
@@ -342,9 +381,7 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
   });
 
   it('preserves authored node and connection order on both sides of the trip (FR-049)', async () => {
-    const { persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      authoredRow()
-    ]);
+    const { persisted } = await commit([], authoredRow());
 
     // The written row is already in authored order — the save side does not sort.
     const stored = persisted[0] as {
@@ -365,8 +402,9 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
   });
 
   it('treats authored order as carrying no execution semantics (SC-013)', async () => {
-    const forward = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()]);
-    const reversed = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
+    const forward = await commit([], authoredRow());
+    const reversed = await commit(
+      [],
       authoredRow({
         nodes: [...AUTHORED_NODES].reverse().map((node) => ({ ...node })),
         connections: [...AUTHORED_CONNECTIONS].reverse().map((edge) => ({
@@ -374,7 +412,7 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
           to: { ...edge.to }
         }))
       })
-    ]);
+    );
 
     expect(forward.ack.status).toBe('accepted');
     expect(reversed.ack.status).toBe('accepted');
@@ -405,23 +443,24 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
   });
 
   it('round-trips unrecognized authored fields without letting one shadow a recognized field (FR-007)', async () => {
-    const { persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      authoredRow()
-    ]);
+    const { persisted } = await commit([], authoredRow());
 
     const stored = persisted[0] as Record<string, unknown>;
     expect(stored.authoredBy).toBe(UNRECOGNIZED_FIELDS.authoredBy);
     expect(stored.layoutHints).toEqual(UNRECOGNIZED_FIELDS.layoutHints);
-    // Recognized fields are re-emitted after the unrecognized bag, so an
-    // authored `nodes` key smuggled in there could never win.
+    // Feature 100 (FR-007a) — a stronger reading of the same requirement. The
+    // store keeps the authored body verbatim rather than re-emitting recognized
+    // keys over an unrecognized bag, so there is no re-emission step in which an
+    // authored `nodes` key smuggled into that bag could shadow the real one. What
+    // is asserted is the body itself: byte-identical to what was authored, and
+    // still resolving to the authored graph.
+    expect(stored).toEqual(authoredRow());
     expect(stored.id).toBe(WORKFLOW_ID);
     expect(nodeOrder(reload(persisted).nodes)).toEqual(AUTHORED_NODE_ORDER);
   });
 
   it('stores no run identifier, session value, transcript, or workspace path (FR-006)', async () => {
-    const { persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      authoredRow()
-    ]);
+    const { persisted } = await commit([], authoredRow());
 
     const serialized = JSON.stringify(persisted);
     const forbidden = ['runId', 'sessionId', 'transcript', 'workspaceRoot', '/tmp/', '/Users/'];
@@ -442,50 +481,50 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
     ]);
   });
 
-  it('rejects a superseded revision as stale-catalog and writes nothing at all (FR-028, SC-005)', async () => {
-    const created = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()]);
+  it('rejects a superseded draft token as stale-catalog and writes nothing at all (FR-028, SC-005)', async () => {
+    const created = await commit([], authoredRow());
     expect(created.ack.status).toBe('accepted');
 
-    // The revision the host holds, and the one a second window read before the
-    // create landed. Feature 099 (FR-044a) — stated as two literals rather than
-    // derived from the rows: the store's revision comes from its manifest, so a
-    // window can be stale against a catalog whose rows it has read correctly.
-    const HOST_REVISION = 'rev-workflow-7';
-    const WINDOW_REVISION = 'rev-workflow-6';
-    const stale = await save(
-      created.persisted,
-      { kind: 'edit', workflowId: WORKFLOW_ID },
-      [authoredRow({ name: 'Renamed by the stale window' })],
-      { storeRevision: HOST_REVISION, expectedRevision: WINDOW_REVISION }
-    );
-
-    expect(stale.ack.status).toBe('rejected');
-    expect(stale.ack.reason).toBe('stale-catalog');
-    const result = stale.ack.result as {
-      currentRevision: string;
-      current: {
-        workflowId: string;
-        name: string;
-        version: number;
-        legalActions: readonly string[];
-      };
-    };
-    // The host's revision, not the echoed one — the point of reporting it at all.
-    expect(result.currentRevision).toBe(HOST_REVISION);
-    // An EXACT shape: `scope` used to be a member here and named the layer this
-    // record came from. A build that still emitted it — under any value — fails
-    // on this line rather than passing with a vestigial field.
-    expect(result.current).toEqual({
-      workflowId: WORKFLOW_ID,
-      name: 'Design then Build',
-      version: 1,
-      legalActions: ['refresh', 'reapply']
+    // Feature 100 (FR-012) — staleness moved from a catalog-wide revision to the
+    // definition's own draft pointer, and the two windows now disagree about a
+    // *pointer* rather than about a manifest revision. `created.persisted` is
+    // seeded as the active row, which is precisely the state after a publication:
+    // there is no draft, so the token the host holds is `NO_DRAFT`. The second
+    // window still holds `v1` — the draft version it was editing before the first
+    // window published it away — and loses by echoing it.
+    const stale = await commit(created.persisted, authoredRow({ name: 'Renamed by the stale window' }), {
+      expectedDraftVersion: 'v1'
     });
 
-    // No write of any kind. The Workflow catalog never reached the store's write
-    // port, and the two catalogs the handler only READ are byte-identical — the
-    // successor of "the other layer stayed untouched" now that there is one layer.
-    expect(stale.layerSaves).toEqual([]);
+    expect(stale.saved.status).toBe('rejected');
+    expect(stale.saved.reason).toBe('stale-catalog');
+    // An EXACT shape, and the reasons it is exact have accumulated. `scope` used
+    // to be a member of `current` and named the layer the record came from; 099
+    // deleted the tier. `currentRevision` was a sibling of `current` and named a
+    // catalog-wide revision; 100 replaced it with the per-definition pointers
+    // inside the record. A build that still emitted either — under any value —
+    // fails here rather than passing with a vestigial field.
+    expect(stale.ack.result).toEqual({
+      current: {
+        kind: 'workflow',
+        id: WORKFLOW_ID,
+        state: 'active',
+        draftVersionId: null,
+        activeVersionId: 'v1',
+        expectedDraftVersion: NO_DRAFT
+      },
+      // The record says what may be done from here, so the window can offer it
+      // rather than guess. `reapply` is gone with the whole-array save: there is
+      // no array to re-send, and the successor of "try again" is a draft save
+      // against the token this very record carries.
+      legalActions: ['save-draft', 'deactivate', 'restore']
+    });
+
+    // No write of any kind. Neither pointer moved, so nothing reached the store's
+    // write port, and the two catalogs the publish gate only READS are
+    // byte-identical — the successor of "the other layer stayed untouched" now
+    // that there is one layer.
+    expect(writesOf(stale.store)).toEqual(NO_WRITES);
     expect(stale.persisted).toEqual(created.persisted);
     expect(stale.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
     expect(stale.store.rowsOf('pipeline')).toEqual(AUTHORED_PIPELINE_ROWS);
@@ -501,10 +540,22 @@ describe('Workflow catalog management — graph round trip (US1, T036)', () => {
 // forcing the operator through one round trip per defect.
 //
 // The second half pins the pass's single ordering dependency (research R11) and
-// pins it narrowly. A cycle suppresses the FR-023 ancestry check and nothing
-// else, so the payload's `ancestryChecksSuppressed` flag has to mean exactly
-// that — a broader reading would have the UI tell operators that condition
-// checking was skipped while condition defects sit in the same list.
+// pins it narrowly: a cycle suppresses the FR-023 ancestry check and nothing
+// else. Feature 100 (T514) — that used to be stated by an
+// `ancestryChecksSuppressed` flag on the ack, and there is no flag to carry it
+// now: the surface it belonged to is retired, and the `validation-failed` payload
+// is kind-agnostic (`current`, `legalActions`, `defects`, `total`). So the claim
+// is made where it was always strongest, on the defect list itself — the ancestry
+// code is provably absent while the cycle and the graph-independent condition
+// defect are both present, and it appears the moment the cycle is cut. Whether a
+// surface should re-declare the flag is FR-R3-017's question.
+//
+// Where the refusal lands moved too, and it is the more interesting half. A save
+// never validates (FR-013), so each row below is *stored* and only its
+// publication is refused. That turns "nothing was written" into two sharper
+// claims: `ops` is `['save-draft']`, so the publication really did refuse before
+// its write; and the definition is left in `draft`, so the operator's defective
+// work is still there to fix rather than discarded on their behalf.
 describe('Workflow catalog management — defect accumulation (US2, T041)', () => {
   /** Distinct defects, no two of which share a cause. */
   const MULTI_DEFECT_ROW = {
@@ -527,37 +578,58 @@ describe('Workflow catalog management — defect accumulation (US2, T041)', () =
     startNodeIds: ['design']
   };
 
-  function errorsOf(ack: CommandAckMessage): { field: string; code: string; message: string }[] {
-    const result = ack.result as { errors?: { field: string; code: string; message: string }[] };
-    return result.errors ?? [];
+  interface Defect {
+    readonly kind: string;
+    readonly id: string;
+    readonly field: string;
+    readonly code: string;
+    readonly message: string;
   }
 
-  it('reports every independent defect in one rejection (FR-019)', async () => {
-    const { ack, layerSaves, persisted } = await save(
-      [],
-      { kind: 'create', workflowId: WORKFLOW_ID },
-      [MULTI_DEFECT_ROW]
-    );
+  function defectsOf(ack: CommandAckMessage): readonly Defect[] {
+    const result = ack.result as { defects?: readonly Defect[] };
+    return result.defects ?? [];
+  }
 
-    expect(ack.status).toBe('rejected');
-    expect(ack.reason).toBe('workflow-validation');
-    const codes = errorsOf(ack).map((error) => error.code);
+  const codesOf = (ack: CommandAckMessage): readonly string[] =>
+    defectsOf(ack).map((defect) => defect.code);
+
+  it('reports every independent defect in one rejection (FR-019)', async () => {
+    const outcome = await commit([], MULTI_DEFECT_ROW);
+
+    // Stored, then refused. The save is the accepted half deliberately: an
+    // operator's defective graph is theirs to keep (FR-013).
+    expect(outcome.saved.status).toBe('accepted');
+    expect(outcome.ack.status).toBe('rejected');
+    expect(outcome.ack.reason).toBe('validation-failed');
+    const codes = codesOf(outcome.ack);
     expect(codes).toContain('unknown-pipeline');
     expect(codes).toContain('unreachable-node');
     expect(codes).toContain('unresolved-endpoint');
     // One pass, not one defect per round trip.
-    expect(errorsOf(ack).length).toBeGreaterThanOrEqual(3);
-    expect((ack.result as { total: number }).total).toBe(errorsOf(ack).length);
-    expect(layerSaves).toEqual([]);
-    expect(persisted).toEqual([]);
+    expect(defectsOf(outcome.ack).length).toBeGreaterThanOrEqual(3);
+    expect((outcome.ack.result as { total: number }).total).toBe(defectsOf(outcome.ack).length);
+    // Every defect names the definition being published, so a package refusal can
+    // say which of several bodies each one belongs to.
+    for (const defect of defectsOf(outcome.ack)) {
+      expect({ kind: defect.kind, id: defect.id }).toEqual({ kind: 'workflow', id: WORKFLOW_ID });
+    }
+
+    // The draft write landed and the publication's did not, which is what makes
+    // "refused before writing" a claim about this operation rather than about the
+    // catalog happening to be empty.
+    expect(outcome.ops).toEqual(['save-draft']);
+    expect(outcome.persisted).toEqual([]);
+    // ...and the defective body is still there. FR-013's point: the operator has
+    // something to come back and fix.
+    expect(outcome.store.stateOf('workflow', WORKFLOW_ID)).toBe('draft');
+    expect(outcome.store.draftRowsOf('workflow')).toEqual([MULTI_DEFECT_ROW]);
   });
 
   it('anchors each accumulated defect on its own field so the builder can place them', async () => {
-    const { ack } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      MULTI_DEFECT_ROW
-    ]);
+    const { ack } = await commit([], MULTI_DEFECT_ROW);
 
-    const fields = errorsOf(ack).map((error) => error.field);
+    const fields = defectsOf(ack).map((defect) => defect.field);
     // Distinct anchors: a single shared anchor would collapse the list into one
     // marker in the UI no matter how many defects the pass found.
     expect(new Set(fields).size).toBe(fields.length);
@@ -584,7 +656,7 @@ describe('Workflow catalog management — defect accumulation (US2, T041)', () =
         condition: {
           left: { source: 'node-status', nodeId: 'build' },
           operator: 'equals',
-          right: 'succeeded'
+          right: 'completed'
         }
       },
       {
@@ -592,68 +664,80 @@ describe('Workflow catalog management — defect accumulation (US2, T041)', () =
         from: { nodeId: 'build', portId: 'artifact' },
         to: { nodeId: 'design', portId: 'goal' },
         // Graph-independent: `nowhere` is not a declared node, which is a table
-        // lookup rather than an ancestry question. The operand is deliberately
-        // well-formed — a bad *operator* would be caught by
-        // `validateWorkflowDefinition` first, so the row would never reach graph
-        // validation and there would be no cycle to suppress anything.
+        // lookup rather than an ancestry question.
         condition: {
           left: { source: 'node-status', nodeId: 'nowhere' },
           operator: 'equals',
-          right: 'succeeded'
+          right: 'completed'
         }
       }
     ],
+    // Both right operands are a real terminal status. Feature 100 (T514) — this
+    // used to read `succeeded`, which is not one, and the row therefore carried a
+    // silent third defect (`condition-right-invalid`) that no assertion here named:
+    // the claims were `toContain`, so an extra code was invisible. The exact sets
+    // below are what make the R11 claim airtight, and they only isolate it if
+    // every OTHER defect in the row is deliberate.
     startNodeIds: ['design']
   };
 
-  it('states the cycle suppression in the payload rather than leaving it implicit (R11)', async () => {
-    const { ack } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [CYCLIC_ROW]);
+  it('suppresses ONLY the ancestry check when the graph is cyclic (R11)', async () => {
+    const outcome = await commit([], CYCLIC_ROW);
 
-    expect(ack.status).toBe('rejected');
-    const codes = errorsOf(ack).map((error) => error.code);
-    expect(codes).toContain('graph-cycle');
-    expect(ack.result).toMatchObject({ ancestryChecksSuppressed: true });
-    // The ancestry defect is genuinely absent — the flag is not decoration.
-    expect(codes).not.toContain('condition-operand-not-ancestor');
-  });
-
-  it('suppresses ONLY the ancestry check, not condition validation as a whole', async () => {
-    const { ack } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [CYCLIC_ROW]);
-
-    // Resolving an operand against the node table does not depend on the graph,
-    // so withholding it would cost the operator a round trip for no reason.
-    expect(errorsOf(ack).map((error) => error.code)).toContain('condition-operand-unknown');
+    expect(outcome.ack.status).toBe('rejected');
+    // An EXACT set, which is the whole of the R11 claim in one assertion. The
+    // cycle is reported; the graph-INDEPENDENT condition defect is reported too,
+    // because resolving an operand against the node table does not depend on the
+    // graph and withholding it would cost the operator a round trip for no reason;
+    // and `condition-operand-not-ancestor` — the one check a cycle really does
+    // make uncomputable — is absent. A build that suppressed condition validation
+    // as a whole, or that reported an ancestry verdict it could not compute, fails
+    // here.
+    expect([...new Set(codesOf(outcome.ack))].sort()).toEqual([
+      'condition-operand-unknown',
+      'graph-cycle'
+    ]);
   });
 
   it('surfaces the withheld ancestry defect once the cycle is cut', async () => {
-    const { ack } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      {
-        ...CYCLIC_ROW,
-        connections: [
-          // Same forward edge and same forward-looking condition; the back edge
-          // is gone and the second condition's operator is now legal.
-          CYCLIC_ROW.connections[0],
-          {
-            from: { nodeId: 'design', portId: 'summary' },
-            to: { nodeId: 'build', portId: 'context' }
-          }
-        ]
-      }
-    ]);
+    const outcome = await commit([], {
+      ...CYCLIC_ROW,
+      connections: [
+        // Same forward edge and same forward-looking condition; the back edge is
+        // gone and the second condition's operand is now a declared node.
+        CYCLIC_ROW.connections[0],
+        {
+          from: { nodeId: 'design', portId: 'summary' },
+          to: { nodeId: 'build', portId: 'context' }
+        }
+      ]
+    });
 
-    expect(ack.status).toBe('rejected');
-    const codes = errorsOf(ack).map((error) => error.code);
-    expect(codes).toContain('condition-operand-not-ancestor');
-    expect(codes).not.toContain('graph-cycle');
-    // No cycle, so nothing was withheld and the flag must be absent.
-    expect(ack.result).not.toHaveProperty('ancestryChecksSuppressed');
+    expect(outcome.ack.status).toBe('rejected');
+    // Exact again, and the mirror image: no cycle, so the ancestry check ran and
+    // found the very defect the cyclic graph withheld.
+    expect([...new Set(codesOf(outcome.ack))].sort()).toEqual(['condition-operand-not-ancestor']);
   });
 
-  it('omits the flag entirely for an acyclic rejection', async () => {
-    const { ack } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      MULTI_DEFECT_ROW
+  it('reports a validation refusal as a closed payload with no vestigial members', async () => {
+    const outcome = await commit([], MULTI_DEFECT_ROW);
+
+    // Feature 100 (T514) — the payload is kind-agnostic. `ancestryChecksSuppressed`
+    // was a member of the retired workflow-validation ack and rode along on every
+    // rejection, cyclic or not; `scope` and `currentRevision` are 099's. The closed
+    // key set is what keeps any of them from quietly reappearing.
+    expect(Object.keys(outcome.ack.result as object).sort()).toEqual([
+      'current',
+      'defects',
+      'legalActions',
+      'total'
     ]);
-    expect(ack.result).not.toHaveProperty('ancestryChecksSuppressed');
+    // The record names the state the refusal left behind, so the window can offer
+    // the operator the discard the draft it just stored makes available.
+    expect(outcome.ack.result).toMatchObject({
+      current: { kind: 'workflow', id: WORKFLOW_ID, state: 'draft' },
+      legalActions: ['save-draft', 'publish', 'restore', 'discard-draft']
+    });
   });
 });
 
@@ -761,9 +845,7 @@ describe('Workflow catalog management — deterministic branch ordering (US4, T0
   }
 
   async function saveAndReload(): Promise<WorkflowDefinition> {
-    const { ack, persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
-      branchingRow()
-    ]);
+    const { ack, persisted } = await commit([], branchingRow());
     expect(ack.status).toBe('accepted');
     return reload(persisted);
   }
@@ -823,7 +905,8 @@ describe('Workflow catalog management — deterministic branch ordering (US4, T0
   it('does not invent a priority or a default marker for a branch that declares neither', async () => {
     // Materializing `priority: 0` or `isDefault: false` on save would silently
     // give an unmarked branch a position under any consumer applying the rule.
-    const { ack, persisted } = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [
+    const { ack, persisted } = await commit(
+      [],
       branchingRow({
         connections: [
           { from: { nodeId: 'design', portId: 'notes' }, to: { nodeId: 'build', portId: 'brief' } },
@@ -834,7 +917,7 @@ describe('Workflow catalog management — deterministic branch ordering (US4, T0
         ],
         nodes: [BRANCH_NODES[0], BRANCH_NODES[1]].map((node) => ({ ...node }))
       })
-    ]);
+    );
 
     expect(ack.status).toBe('accepted');
     const stored = (persisted[0] as { connections: readonly Record<string, unknown>[] }).connections;
@@ -1067,10 +1150,12 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   // than circumstantial, because the handler has exactly two ways to affect
   // anything outside itself and both are observed here:
   //
-  //   * the catalog store — asserted to receive exactly one layer save, of kind
-  //     `workflow`, so no other catalog and no state key was written. Feature 099
-  //     (T496f, FR-042a): this was `updateConfig`, asserted to receive the
-  //     `workflows` settings key and nothing else. Same claim, current write port;
+  //   * the catalog store — asserted to receive exactly the two writes the
+  //     operation is, both of kind `workflow`, so no other catalog and no state
+  //     key was written. Feature 099 (T496f, FR-042a): this was `updateConfig`,
+  //     asserted to receive the `workflows` settings key and nothing else.
+  //     Feature 100 (T514): same claim, and now readable off the instruction —
+  //     each write names its op and its kind;
   //   * the router dependencies — every seam that can start, resume, retry, or
   //     re-order work, asserted uncalled.
   //
@@ -1080,11 +1165,12 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   // it would prove little, since the handler holds no reference to that store.
   it('writes only the Workflow catalog and reaches no work-starting seam, on create, edit, and validate (FR-038, SC-007)', async () => {
     const onCreate = workStartingSeams();
-    const created = await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()], {
-      extraDeps: onCreate
-    });
+    const created = await commit([], authoredRow(), { extraDeps: onCreate });
     expect(created.ack.status).toBe('accepted');
-    expect(created.layerSaves.map((request) => request.kind)).toEqual(['workflow']);
+    expect(created.store.lifecycleWrites.map((write) => `${write.op}:${write.kind}`)).toEqual([
+      'save-draft:workflow',
+      'publish:workflow'
+    ]);
     // The store holds all three catalogs, so "only the Workflow one" is checkable
     // directly rather than inferred from the absence of a second write.
     expect(created.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
@@ -1092,32 +1178,32 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     expectNoSeamReached(created.deps);
 
     const onEdit = workStartingSeams();
-    const edited = await save(
-      created.persisted,
-      { kind: 'edit', workflowId: WORKFLOW_ID },
-      [authoredRow({ name: 'Design then Build, revised' })],
-      { extraDeps: onEdit }
-    );
+    const edited = await commit(created.persisted, authoredRow({ name: 'Design then Build, revised' }), {
+      extraDeps: onEdit
+    });
     expect(edited.ack.status).toBe('accepted');
-    expect(edited.layerSaves.map((request) => request.kind)).toEqual(['workflow']);
+    expect(edited.store.lifecycleWrites.map((write) => `${write.op}:${write.kind}`)).toEqual([
+      'save-draft:workflow',
+      'publish:workflow'
+    ]);
     expect(edited.store.rowsOf('phase')).toEqual(AUTHORED_PHASE_ROWS);
     expect(edited.store.rowsOf('pipeline')).toEqual(AUTHORED_PIPELINE_ROWS);
     expectNoSeamReached(edited.deps);
 
-    // "Validating" has no command of its own — a save carries the graph through
-    // the same validation pass and reports the defects, so a refused save *is*
-    // the validate path, and it must be as inert as the two accepted ones. More
-    // so, in fact: it may not even reach the store's write port.
+    // "Validating" has no command of its own — a publication carries the graph
+    // through the same validation pass and reports the defects, so a refused
+    // publication *is* the validate path, and it must be as inert as the two
+    // accepted ones. More so, in fact: it may not reach the store's write port at
+    // all. Feature 100 (FR-016) — the draft write ahead of it is the operation's
+    // own first half, and the *effective* catalog is what stayed put.
     const onValidate = workStartingSeams();
-    const validated = await save(
-      edited.persisted,
-      { kind: 'edit', workflowId: WORKFLOW_ID },
-      [INVALID_ROW],
-      { extraDeps: onValidate }
-    );
+    const validated = await commit(edited.persisted, INVALID_ROW, { extraDeps: onValidate });
+    expect(validated.saved.status).toBe('accepted');
     expect(validated.ack.status).toBe('rejected');
-    expect(validated.ack.reason).toBe('workflow-validation');
-    expect(validated.layerSaves).toEqual([]);
+    expect(validated.ack.reason).toBe('validation-failed');
+    expect(validated.ops).toEqual(['save-draft']);
+    expect(validated.persisted).toEqual(edited.persisted);
+    expect(validated.store.stateOf('workflow', WORKFLOW_ID)).toBe('active-with-draft');
     expectNoSeamReached(validated.deps);
   });
 
@@ -1125,11 +1211,9 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
     const observer = await host([]);
     const baselineWrites = observer.memento.writes;
 
-    await save([], { kind: 'create', workflowId: WORKFLOW_ID }, [authoredRow()]);
-    await save([authoredRow()], { kind: 'edit', workflowId: WORKFLOW_ID }, [
-      authoredRow({ name: 'Design then Build, revised' })
-    ]);
-    await save([authoredRow()], { kind: 'edit', workflowId: WORKFLOW_ID }, [INVALID_ROW]);
+    await commit([], authoredRow());
+    await commit([authoredRow()], authoredRow({ name: 'Design then Build, revised' }));
+    await commit([authoredRow()], INVALID_ROW);
 
     expect(observer.store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
     expect(observer.queue.list()).toEqual([]);

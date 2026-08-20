@@ -33,9 +33,12 @@ import {
   CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_QUEUE_ITEM,
   CMD_START,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_WORKFLOWS,
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_PUBLISH_DEFINITION,
+  CMD_DEACTIVATE_DEFINITION,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_DISCARD_DEFINITION_DRAFT,
+  CMD_PUBLISH_PACKAGE,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
@@ -101,9 +104,14 @@ import {
   validateQueueIdPayload,
   validateResumePhasePayload
 } from './validators/phase-control';
-import { validateSavePhases } from './validators/save-phases';
-import { validateSavePipelines } from './validators/save-pipelines';
-import { validateSaveWorkflows } from './validators/save-workflows';
+import {
+  validateDeactivateDefinition,
+  validateDiscardDefinitionDraft,
+  validatePublishDefinition,
+  validatePublishPackage,
+  validateRestoreDefinitionVersion,
+  validateSaveDefinitionDraft
+} from './validators/catalog-lifecycle';
 import {
   CORRELATION_ID_MAX,
   QUEUE_ID_MAX,
@@ -185,12 +193,20 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
     case CMD_RETRY_ACTIVE_RUN:
       return validateNoPayload(CMD_RETRY_ACTIVE_RUN, obj, correlationId);
-    case CMD_SAVE_PIPELINES:
-      return validateSavePipelines(obj, correlationId);
-    case CMD_SAVE_WORKFLOWS:
-      return validateSaveWorkflows(obj, correlationId);
-    case CMD_SAVE_PHASES:
-      return validateSavePhases(obj, correlationId);
+    // Feature 100 (T509) — the six lifecycle commands replace the three
+    // whole-array layer saves that stood here.
+    case CMD_SAVE_DEFINITION_DRAFT:
+      return validateSaveDefinitionDraft(obj, correlationId);
+    case CMD_PUBLISH_DEFINITION:
+      return validatePublishDefinition(obj, correlationId);
+    case CMD_DEACTIVATE_DEFINITION:
+      return validateDeactivateDefinition(obj, correlationId);
+    case CMD_RESTORE_DEFINITION_VERSION:
+      return validateRestoreDefinitionVersion(obj, correlationId);
+    case CMD_DISCARD_DEFINITION_DRAFT:
+      return validateDiscardDefinitionDraft(obj, correlationId);
+    case CMD_PUBLISH_PACKAGE:
+      return validatePublishPackage(obj, correlationId);
     case CMD_SAVE_MODELS:
       return validateSaveModels(obj, correlationId);
     case CMD_SAVE_GENERAL_SETTINGS:

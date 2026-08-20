@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { checkIdLegality } from '../../../src/catalog/catalog-paths';
+import { draftTokenOf, type ExpectedDraftVersion } from '../../../src/contracts/catalog-lifecycle';
 import type { CatalogKind } from '../../../src/contracts/catalog-store';
 import { createTestStore, type FsCall, type TestStore } from '../../fixtures/catalog-memory-fs';
 
@@ -29,6 +30,20 @@ async function revisionOf(test: TestStore, kind: CatalogKind): Promise<string> {
   const result = await test.store.read();
   if (result.outcome !== 'read') throw new Error(`store unreadable: ${result.fault.fault}`);
   return result.snapshot.revisions[kind];
+}
+
+/** The draft token the store currently holds for one definition (FR-012). */
+async function tokenOf(
+  test: TestStore,
+  kind: CatalogKind,
+  id: string
+): Promise<ExpectedDraftVersion> {
+  const result = await test.store.read();
+  if (result.outcome !== 'read') throw new Error(`store unreadable: ${result.fault.fault}`);
+  const found = result.snapshot.definitions.find(
+    (definition) => definition.kind === kind && definition.id === id
+  );
+  return draftTokenOf(found?.draftVersionId ?? null);
 }
 
 /** Why a call would escape the store, or `null` if it stays inside it. */
@@ -77,7 +92,7 @@ describe('checkIdLegality', () => {
     // in the assembled store — it comes from the manifest, whose reader applies the
     // same pattern — so the collision arm is unreachable *through the store* and is
     // asserted here at the function's own boundary. It is kept for that boundary:
-    // `saveLayer` passes ids claimed within one layer, and a caller that stopped
+    // `saveDraftLayer` passes ids claimed within one layer, and a caller that stopped
     // filtering would otherwise silently lose the guarantee.
     expect(checkIdLegality('implement', ['Implement'])).toEqual({
       outcome: 'refused',
@@ -103,25 +118,42 @@ describe('catalog store: an illegal id never reaches the filesystem', () => {
     // Arrange one legal definition so the store has a manifest to read: the refusal
     // must hold in a populated store, not only in an empty one where every path is
     // short.
-    await test.store.save({
+    await test.store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: await revisionOf(test, 'phase')
+      expectedDraftVersion: await tokenOf(test, 'phase', 'implement')
     });
-    const revision = await revisionOf(test, 'phase');
     const filesBefore = new Map(test.fs.files);
     test.fs.calls.length = 0;
 
     for (const id of ['../../etc/passwd', 'a/b', '..', 'Implement', 'a b', '', 'a'.repeat(65)]) {
-      const outcome = await test.store.save({
-        kind: 'phase',
-        id,
-        body: { hostile: true },
-        expectedRevision: revision
-      });
-      expect(outcome).toMatchObject({ outcome: 'refused' });
-      expect(outcome).not.toMatchObject({ outcome: 'saved' });
+      expect(
+        await test.store.applyLifecycleWrite({
+          op: 'save-draft',
+          kind: 'phase',
+          id,
+          body: { hostile: true },
+          expectedDraftVersion: 'no-draft'
+        })
+      ).toMatchObject({ outcome: 'refused', reason: 'illegal-id' });
+
+      // The other four arms address a definition the manifest already holds, so they
+      // have no id to vet — and a hostile id names no entry, which is `not-applicable`
+      // and writes nothing either. Both mechanisms are asserted because only one of
+      // them is a refusal by name, and a reader of the first assertion alone would
+      // conclude the check is missing from the other four.
+      for (const op of ['publish', 'deactivate', 'discard-draft'] as const) {
+        expect(
+          await test.store.applyLifecycleWrite({
+            op,
+            kind: 'phase',
+            id,
+            expectedDraftVersion: 'no-draft'
+          })
+        ).toMatchObject({ outcome: 'not-applicable' });
+      }
     }
 
     // Zero writes and zero removes across all seven attempts, and the disk is
@@ -131,11 +163,11 @@ describe('catalog store: an illegal id never reaches the filesystem', () => {
     expect([...test.fs.files.entries()]).toEqual([...filesBefore.entries()]);
   });
 
-  it('refuses a layer save the same way, naming the offending id', async () => {
+  it('refuses a layer draft write the same way, naming the offending id', async () => {
     const test = createTestStore();
     test.fs.calls.length = 0;
 
-    const outcome = await test.store.saveLayer({
+    const outcome = await test.store.saveDraftLayer({
       kind: 'pipeline',
       definitions: [
         { id: 'standard', body: { n: 1 } },
@@ -144,9 +176,9 @@ describe('catalog store: an illegal id never reaches the filesystem', () => {
       expectedRevision: await revisionOf(test, 'pipeline')
     });
 
-    // The whole layer is refused, not the legal prefix of it: a layer is one
-    // ordering decision, so a partial layer would be a catalog the operator never
-    // authored.
+    // The whole layer is refused, not the legal prefix of it: every check for every
+    // definition runs before the first byte is written, so the legal row does not
+    // land ahead of the refusal.
     expect(outcome).toEqual({ outcome: 'refused', reason: 'illegal-id', id: '../escape' });
     expect(test.fs.writeCalls).toEqual([]);
     expect(test.fs.files.size).toBe(0);
@@ -157,30 +189,67 @@ describe('catalog store: every address stays inside the store', () => {
   it('addresses nothing outside the store across a full exercise', async () => {
     const test = createTestStore();
 
-    // Every code path that builds segments: first save, subsequent save, all three
-    // kinds, a prune (which is the only caller of `removeFile`), a past-version
-    // read, a version listing, and a whole-layer write.
+    // Every code path that builds segments: a first draft write, a subsequent one,
+    // all three kinds, all five per-definition operations, a prune (which is the only
+    // caller of `removeFile`), a past-version read, a version listing, and both layer
+    // writes.
     for (const kind of ['phase', 'pipeline', 'workflow'] as const) {
       for (let n = 1; n <= 2; n += 1) {
-        await test.store.save({
+        await test.store.applyLifecycleWrite({
+          op: 'save-draft',
           kind,
           id: 'shared',
           body: { n },
-          expectedRevision: await revisionOf(test, kind)
+          expectedDraftVersion: await tokenOf(test, kind, 'shared')
         });
       }
     }
     for (let n = 3; n <= 52; n += 1) {
-      await test.store.save({
+      await test.store.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'shared',
         body: { n },
-        expectedRevision: await revisionOf(test, 'phase')
+        expectedDraftVersion: await tokenOf(test, 'phase', 'shared')
       });
     }
-    await test.store.saveLayer({
+    // Publish, restore off a past version, deactivate, then discard what the
+    // deactivation left as a draft (FR-024a) — the four pointer paths and the second
+    // record-writing one.
+    await test.store.applyLifecycleWrite({
+      op: 'publish',
+      kind: 'phase',
+      id: 'shared',
+      expectedDraftVersion: await tokenOf(test, 'phase', 'shared')
+    });
+    await test.store.applyLifecycleWrite({
+      op: 'restore',
+      kind: 'phase',
+      id: 'shared',
+      body: { n: 10 },
+      fromVersionId: 'v10',
+      expectedDraftVersion: await tokenOf(test, 'phase', 'shared')
+    });
+    await test.store.applyLifecycleWrite({
+      op: 'discard-draft',
+      kind: 'phase',
+      id: 'shared',
+      expectedDraftVersion: await tokenOf(test, 'phase', 'shared')
+    });
+    await test.store.applyLifecycleWrite({
+      op: 'deactivate',
+      kind: 'phase',
+      id: 'shared',
+      expectedDraftVersion: await tokenOf(test, 'phase', 'shared')
+    });
+    await test.store.saveDraftLayer({
       kind: 'workflow',
       definitions: [{ id: 'shared', body: { n: 9 } }, { id: 'other', body: { n: 1 } }],
+      expectedRevision: await revisionOf(test, 'workflow')
+    });
+    await test.store.publishLayer({
+      kind: 'workflow',
+      ids: ['shared', 'other'],
       expectedRevision: await revisionOf(test, 'workflow')
     });
     await test.store.readVersion('phase', 'shared', 'v10');
@@ -201,11 +270,12 @@ describe('catalog store: every address stays inside the store', () => {
 
   it('holds no absolute path anywhere in what it writes', async () => {
     const test = createTestStore();
-    await test.store.save({
+    await test.store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { name: 'Implement' },
-      expectedRevision: await revisionOf(test, 'phase')
+      expectedDraftVersion: await tokenOf(test, 'phase', 'implement')
     });
 
     // FR-061 restated over content rather than addresses. The core has no root to

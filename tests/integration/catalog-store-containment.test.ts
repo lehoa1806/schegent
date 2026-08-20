@@ -24,6 +24,14 @@
 // outside the store as records to collect. Neither is reachable from the core,
 // which cannot build an escaping segment — both are reachable from a cloned
 // repository, which is the threat this file is about.
+//
+// Feature 100 (T514) — the exercise below grew from two write methods to seven. Every
+// lifecycle operation and both layer writes now run through it, because "no path
+// leaves the store" is a claim about **every** outcome arm the store can return, and
+// four of those arms did not exist in 099: `stale` carries a pointer pair,
+// `not-applicable` carries another, `written` carries a prune list, and a layer
+// refusal carries an id. Each is a new place a path could be put, and the assertion
+// is only as wide as the exercise that feeds it.
 
 import { chmod, lstat, mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -34,7 +42,9 @@ import type { CatalogStore } from '../../src/catalog';
 import type { CatalogKind } from '../../src/contracts/catalog-store';
 import { createCatalogFsAdapter } from '../../src/lib/catalog-fs-adapter';
 import {
+  activate,
   createWorkspace,
+  draftTokenFor,
   openStore,
   pathVariants,
   removeWorkspace,
@@ -51,7 +61,7 @@ async function revisionOf(store: CatalogStore, kind: CatalogKind): Promise<strin
   return result.snapshot.revisions[kind];
 }
 
-/** Every save, read, and listing the store offers, over a populated store. */
+/** Every write, read, and listing the store offers, over a populated store. */
 async function exerciseEverything(
   store: CatalogStore,
   workspaceRoot: string
@@ -60,53 +70,122 @@ async function exerciseEverything(
 
   for (const kind of ['phase', 'pipeline', 'workflow'] as const) {
     seen.push(
-      await store.save({
+      await store.applyLifecycleWrite({
+        op: 'save-draft',
         kind,
         id: 'implement',
         body: { name: 'Implement', order: 1 },
-        expectedRevision: await revisionOf(store, kind)
+        expectedDraftVersion: await draftTokenFor(store, kind, 'implement')
+      })
+    );
+    seen.push(
+      await store.applyLifecycleWrite({
+        op: 'publish',
+        kind,
+        id: 'implement',
+        expectedDraftVersion: await draftTokenFor(store, kind, 'implement')
       })
     );
   }
 
-  // A save that refuses, one that is unchanged, and one that prunes: the refusal
-  // arms are the ones most likely to reach for a path when explaining themselves.
+  // Every arm that explains itself, because those are the ones most likely to reach
+  // for a path while doing it: a refusal by name, an `unchanged` short-circuit, a
+  // `stale` carrying the pointer pair it found, and a `not-applicable` carrying
+  // another.
   seen.push(
-    await store.save({
+    await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'Illegal Id',
       body: { n: 1 },
-      expectedRevision: await revisionOf(store, 'phase')
+      expectedDraftVersion: 'no-draft'
     })
   );
   seen.push(
-    await store.save({
+    await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
+      // The same body with its keys the other way round, which canonical JSON makes
+      // the same content — so this is the `unchanged` arm against the active head.
       body: { order: 1, name: 'Implement' },
-      expectedRevision: await revisionOf(store, 'phase')
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
     })
   );
   seen.push(
-    await store.save({
+    await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: 'a revision nobody has'
+      expectedDraftVersion: 'v99'
     })
   );
+  seen.push(
+    await store.applyLifecycleWrite({
+      op: 'publish',
+      kind: 'phase',
+      id: 'implement',
+      expectedDraftVersion: 'no-draft'
+    })
+  );
+
+  // Enough history to force a prune, so `written` carries a non-empty `pruned` list
+  // and `removeFile` runs — the store's one destructive call.
   for (let n = 2; n <= 52; n += 1) {
-    await store.save({
+    await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n },
-      expectedRevision: await revisionOf(store, 'phase')
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
     });
   }
   seen.push(
-    await store.saveLayer({
+    await store.applyLifecycleWrite({
+      op: 'publish',
+      kind: 'phase',
+      id: 'implement',
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
+    })
+  );
+  seen.push(
+    await store.applyLifecycleWrite({
+      op: 'restore',
+      kind: 'phase',
+      id: 'implement',
+      body: { n: 10 },
+      fromVersionId: 'v10',
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
+    })
+  );
+  seen.push(
+    await store.applyLifecycleWrite({
+      op: 'discard-draft',
+      kind: 'phase',
+      id: 'implement',
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
+    })
+  );
+  seen.push(
+    await store.applyLifecycleWrite({
+      op: 'deactivate',
+      kind: 'phase',
+      id: 'implement',
+      expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
+    })
+  );
+  seen.push(
+    await store.saveDraftLayer({
       kind: 'workflow',
       definitions: [{ id: 'implement', body: { n: 2 } }, { id: 'review', body: { n: 1 } }],
+      expectedRevision: await revisionOf(store, 'workflow')
+    })
+  );
+  seen.push(
+    await store.publishLayer({
+      kind: 'workflow',
+      ids: ['implement', 'review'],
       expectedRevision: await revisionOf(store, 'workflow')
     })
   );
@@ -123,6 +202,20 @@ async function exerciseEverything(
   // The exercise must have exercised something, or every assertion below is vacuous.
   const tree = await treeOf(storeRootOf(workspaceRoot));
   expect(tree.files.length).toBeGreaterThan(50);
+  // And it must have reached the arms it was widened for, or the widening is a
+  // comment rather than a test.
+  const arms = new Set(
+    seen
+      .map((outcome) =>
+        outcome !== null && typeof outcome === 'object' && 'outcome' in outcome
+          ? String((outcome as { outcome: unknown }).outcome)
+          : null
+      )
+      .filter((arm): arm is string => arm !== null)
+  );
+  for (const arm of ['written', 'unchanged', 'stale', 'not-applicable', 'refused', 'saved', 'published']) {
+    expect(arms.has(arm), `the exercise never reached the \`${arm}\` arm`).toBe(true);
+  }
   return seen;
 }
 
@@ -174,21 +267,17 @@ describe('Feature 099 — no workspace root leaves the store (T496l)', () => {
     if (process.getuid?.() === 0) return;
 
     const store = openStore(workspaceRoot);
-    await store.save({
-      kind: 'phase',
-      id: 'implement',
-      body: { n: 1 },
-      expectedRevision: await revisionOf(store, 'phase')
-    });
+    await activate(store, 'phase', 'implement', { n: 1 });
 
     const storeRoot = storeRootOf(workspaceRoot);
     await chmod(storeRoot, 0o500);
     try {
-      const outcome = await store.save({
+      const outcome = await store.applyLifecycleWrite({
+        op: 'save-draft',
         kind: 'phase',
         id: 'implement',
         body: { n: 2 },
-        expectedRevision: await revisionOf(store, 'phase')
+        expectedDraftVersion: await draftTokenFor(store, 'phase', 'implement')
       });
       expect(outcome).toEqual({ outcome: 'refused', reason: 'not-writable' });
       expect(JSON.stringify(outcome)).not.toMatch(/[/\\]/);
@@ -329,12 +418,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     // be valid JSON and reads it into the Builder.
     const storeRoot = storeRootOf(workspaceRoot);
     const store = openStore(workspaceRoot);
-    await store.save({
-      kind: 'phase',
-      id: 'implement',
-      body: { n: 1 },
-      expectedRevision: await revisionOf(store, 'phase')
-    });
+    await activate(store, 'phase', 'implement', { n: 1 });
 
     const recordPath = join(storeRoot, 'phases', 'implement', 'v1.json');
     const elsewhere = join(workspaceRoot, 'elsewhere.json');
@@ -358,12 +442,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     // reporting files outside the store as collectable records.
     const storeRoot = storeRootOf(workspaceRoot);
     const store = openStore(workspaceRoot);
-    await store.save({
-      kind: 'phase',
-      id: 'implement',
-      body: { n: 1 },
-      expectedRevision: await revisionOf(store, 'phase')
-    });
+    await activate(store, 'phase', 'implement', { n: 1 });
 
     const outsideDirectory = join(workspaceRoot, 'elsewhere');
     await mkdir(outsideDirectory, { recursive: true });
@@ -394,11 +473,12 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
       fault: { fault: 'unreadable-store', errno: CONTAINMENT_ERRNO }
     });
 
-    const outcome = await store.save({
+    const outcome = await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: 'whatever the store says'
+      expectedDraftVersion: 'no-draft'
     });
     expect(outcome).toEqual({ outcome: 'refused', reason: 'store-unreadable' });
     expect(await readFile(outsidePath, 'utf8')).toBe('{"untouched":true}');
@@ -407,11 +487,12 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     // about where the file is, not about what is in it. The link stays a link —
     // nothing was written over it — and the outside file is untouched.
     await writeFile(outsidePath, JSON.stringify({ storeFormatVersion: 1, entries: [] }));
-    const stillRefused = await store.save({
+    const stillRefused = await store.applyLifecycleWrite({
+      op: 'save-draft',
       kind: 'phase',
       id: 'implement',
       body: { n: 1 },
-      expectedRevision: 'whatever the store says'
+      expectedDraftVersion: 'no-draft'
     });
     expect(stillRefused).toEqual({ outcome: 'refused', reason: 'store-unreadable' });
     expect(await readFile(outsidePath, 'utf8')).toBe(

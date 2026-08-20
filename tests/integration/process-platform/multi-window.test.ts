@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { MUTATING_COMMAND_TYPES } from '../../../src/contracts/sidebar-command-metadata';
-import { CMD_SAVE_PHASES, CMD_START } from '../../../src/ui/sidebar/messages';
+import { CMD_SAVE_DEFINITION_DRAFT, CMD_START } from '../../../src/ui/sidebar/messages';
 import { makeGateProbe, SECONDARY_REJECT, UNTRUSTED_REJECT } from './gate-harness';
 
 const SECONDARY = { isTrusted: () => true, isPrimary: () => false };
@@ -37,7 +37,7 @@ describe('a secondary window refuses every mutating command (T028, FR-029)', () 
     // differs: trust the folder, versus close the other window. A refusal that
     // named the wrong one would send them to the wrong fix.
     const probe = makeGateProbe(SECONDARY);
-    const ack = await probe.dispatch(CMD_SAVE_PHASES);
+    const ack = await probe.dispatch(CMD_SAVE_DEFINITION_DRAFT);
 
     expect(ack?.reason).toBe(SECONDARY_REJECT);
     expect(ack?.reason).not.toBe(UNTRUSTED_REJECT);
@@ -51,7 +51,7 @@ describe('a secondary window refuses every mutating command (T028, FR-029)', () 
         throw new Error('lock probe unavailable');
       }
     });
-    const ack = await probe.dispatch(CMD_SAVE_PHASES);
+    const ack = await probe.dispatch(CMD_SAVE_DEFINITION_DRAFT);
 
     expect(ack?.reason).toBe(SECONDARY_REJECT);
     expect(probe.writes).toEqual([]);

@@ -2,7 +2,7 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
-import type { CatalogStore } from '../../../catalog';
+import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { RunOutputRecord } from '../../../contracts/run-results';
 import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
@@ -216,7 +216,7 @@ export interface RouterDeps {
    * When the callback returns `false`, mutating commands are rejected before
    * any handler runs — closes the gap where an operator who opens a malicious
    * untrusted workspace could still trigger writes to `schegent.*` settings
-   * (e.g. `CMD_SAVE_PHASES` to inject a hostile custom prompt). Read-only
+   * (e.g. `CMD_SAVE_DEFINITION_DRAFT` to inject a hostile custom prompt). Read-only
    * commands (snapshot reads, phase-log reads) are unaffected.
    *
    * Optional for the same reason as `isPrimary`: absent in unit tests, the
@@ -251,6 +251,16 @@ export interface RouterDeps {
    * and the operator reads them differently.
    */
   readonly catalogStore?: CatalogStore | null;
+  /**
+   * Feature 100 (T508, FR-047) — the six lifecycle commands' one dependency, and
+   * `null` in an untrusted workspace for the same reason {@link catalogStore} is.
+   *
+   * Separate from the store rather than derived from it inside a handler: building
+   * the service needs a `DefinitionSemantics`, which needs a configuration read,
+   * and a handler that constructs its own service is a handler that reads
+   * configuration on every keystroke-driven save.
+   */
+  readonly catalogLifecycle?: CatalogLifecycleOps | null;
   /**
    * The stored rows of each catalog and the revision they were read at, taken
    * from the snapshot the host is currently resolving against.
@@ -326,24 +336,16 @@ export interface RouterDeps {
    * nothing in the handler changes.
    */
   readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
-  /**
-   * Feature 082 (US7, FR-022a) — the only data source behind
-   * `consumingWorkflowIdsReferencing(...)` in `cmd-save-pipelines.ts`, which
-   * decides whether removing a Pipeline source would leave a consuming
-   * Workflow's reference unresolved.
-   *
-   * "Consuming Workflow" is not a persisted catalog entity in this slice, so
-   * the host supplies the references it can see today: queued Workflow
-   * requests that pin a `pipelineId` and have not yet frozen a Pipeline
-   * contract. An in-flight or finished Run already froze its contract
-   * (FR-027) and is therefore never a consumer. A future Workflow catalog
-   * supplies the same pairs through this same hook; the save algebra above it
-   * does not change (research R5).
-   *
-   * Optional: a host that exposes no Workflow references reports none, which
-   * is the same answer as an empty queue.
-   */
-  readonly readWorkflowPipelineRefs?: () => readonly WorkflowPipelineReference[];
+  // Feature 100 (FR-R3-016) T513b — `readWorkflowPipelineRefs` is gone. It was
+  // feature 082's data source for gate 13 of `cmd-save-pipelines.ts`, and that
+  // gate went with the whole-array save (T509). Its successor is the `referenced`
+  // refusal on deactivate, which FR-025b scopes deliberately narrower: direct
+  // references from *active stored definitions*, computed in
+  // `src/config/definition-semantics.ts`, never queued run requests. A queued
+  // request that has not frozen its plan is covered by FR-026 rather than by a
+  // blocker. The collector itself is still live for a different consumer — the
+  // Library's `getWorkflowPipelineRefs` (082 FR-002) — so only this dep was
+  // removed, not `workflow-pipeline-ref-source.ts`.
   /**
    * Feature 088 — the connected-run store behind `CMD_LAUNCH_WORKFLOW` and
    * `CMD_CONTINUE_WORKFLOW`. Optional like every other port here; a host that

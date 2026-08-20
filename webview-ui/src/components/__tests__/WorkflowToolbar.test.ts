@@ -56,7 +56,6 @@ const mount = (selected: MutableWorkflow | null) =>
     onadd: () => {},
     onduplicate: () => {},
     onremove: () => {},
-    onreset: () => {},
     onsave: () => {}
   });
 

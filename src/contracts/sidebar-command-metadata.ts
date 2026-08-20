@@ -7,7 +7,9 @@ import {
   CMD_CONTINUE_WORKFLOW,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
+  CMD_DEACTIVATE_DEFINITION,
   CMD_DISABLE_PHASE,
+  CMD_DISCARD_DEFINITION_DRAFT,
   CMD_ENABLE_PHASE,
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
@@ -17,6 +19,8 @@ import {
   CMD_MOVE_TASK,
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
+  CMD_PUBLISH_DEFINITION,
+  CMD_PUBLISH_PACKAGE,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
   CMD_RENAME_QUEUE,
@@ -25,18 +29,17 @@ import {
   CMD_RESET,
   CMD_RESTART_CANCELED_TASK,
   CMD_RESTART_PHASE,
+  CMD_RESTORE_DEFINITION_VERSION,
   CMD_RESUME,
   CMD_RESUME_PHASE,
   CMD_RESUME_QUEUE,
   CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
+  CMD_SAVE_DEFINITION_DRAFT,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
@@ -71,10 +74,25 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_MODIFY_TASK]: 'task mutation',
   [CMD_REORDER_TASK]: 'task reorder',
   [CMD_SAVE_GENERAL_SETTINGS]: 'general settings write',
+  // Feature 100 (T509) — the Model Catalog is the only catalog still written
+  // through configuration. Phase, Pipeline, and Workflow saves became the six
+  // lifecycle commands below.
   [CMD_SAVE_MODELS]: 'catalog settings write',
-  [CMD_SAVE_PHASES]: 'catalog settings write',
-  [CMD_SAVE_PIPELINES]: 'catalog settings write',
-  [CMD_SAVE_WORKFLOWS]: 'catalog settings write',
+  // Feature 100 (T507, FR-047, FR-048) — the per-definition lifecycle. All six
+  // write the catalog store, so all six are gated in a secondary window. Only
+  // `SAVE_DEFINITION_DRAFT` carries a verb the `mutating-command-name-gate` lint
+  // recognises; the other five would have passed that lint while omitted here,
+  // so their registration is deliberate, not incidental.
+  //
+  // A draft write is separated from a publication in the reason text on purpose:
+  // a draft changes nothing a run can reach, and a publication is the one
+  // operation that makes a definition triggerable (FR-013).
+  [CMD_SAVE_DEFINITION_DRAFT]: 'catalog draft write',
+  [CMD_RESTORE_DEFINITION_VERSION]: 'catalog draft write',
+  [CMD_DISCARD_DEFINITION_DRAFT]: 'catalog draft discard',
+  [CMD_PUBLISH_DEFINITION]: 'catalog publication',
+  [CMD_PUBLISH_PACKAGE]: 'catalog publication',
+  [CMD_DEACTIVATE_DEFINITION]: 'catalog deactivation',
   [CMD_RESTART_CANCELED_TASK]: 'canceled task restart',
   [CMD_SET_PHASE_BREAKPOINT]: 'phase breakpoint write',
   [CMD_CLEAR_PHASE_BREAKPOINT]: 'phase breakpoint write',

@@ -7,7 +7,7 @@ import type { PipelineCatalog } from '../config/pipeline-config';
 import { loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
 import type { ResolvedPhaseCatalog } from '../config/process-catalog';
 import { resolveWorkflowCatalog } from '../config/workflow-catalog';
-import { emptyCatalogSnapshot, snapshotOfRead, storedRows } from '../catalog';
+import { emptyCatalogSnapshot, snapshotOfRead, storedIds, storedRows } from '../catalog';
 import type { CatalogStore } from '../catalog/catalog-store';
 import type { Digest } from '../catalog/ports';
 import type {
@@ -183,7 +183,13 @@ export class CatalogSession {
   storedLayer(kind: CatalogKind): StoredLayer {
     return {
       rows: storedRows(this.snapshot, kind),
-      revision: this.snapshot.revisions[kind]
+      revision: this.snapshot.revisions[kind],
+      // Feature 100 (T512, FR-043) — the ids travel with the rows because they
+      // must describe the SAME read. `rows` is the active bodies and `ids` is
+      // every entry at every state, so the two differ by exactly the draft-only
+      // definitions; derived from one snapshot they cannot disagree, and the
+      // import presence gate reads the difference (FR-044).
+      ids: storedIds(this.snapshot, kind)
     };
   }
 
@@ -198,6 +204,16 @@ export class CatalogSession {
 export interface StoredLayer {
   readonly rows: readonly unknown[];
   readonly revision: string;
+  /**
+   * Feature 100 (T512, FR-043) — every id the manifest holds an entry for, at
+   * every state, which is a strict superset of the ids in `rows`.
+   *
+   * Import presence is resolved against this and never against `rows`: a
+   * definition holding only an unpublished Draft has no active body, so it is
+   * absent from `rows` and from the effective catalog (FR-007), and an import
+   * that read only `rows` would plan straight over the operator's draft (FR-044).
+   */
+  readonly ids: ReadonlySet<string>;
 }
 
 /**
