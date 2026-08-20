@@ -17,10 +17,41 @@ catalog permissions involved see
 - **A folder must be open.** A Pipeline declares output targets, and a
   target needs somewhere to be written. Without a workspace root, both
   launch and continuation refuse with `no-workspace-root`.
+- **The Workflow must be published.** Runs offers exactly what is Active —
+  see "Where runs are started" below.
 - **The Workflow must resolve.** It has to exist in the effective catalog
   and its graph has to be valid, including every node's Pipeline.
 - **The queue has to accept the run.** A connected run's children go
   through the same single task queue as any other Run.
+
+## Where runs are started
+
+**Runs is where work is started, and the only place it is started.** The tab
+has two sections, Pipelines and Workflows. You pick a definition, press
+**Trigger**, fill in what it asks for, and press **Run**. Nothing starts on
+the selection itself.
+
+**Only Active definitions are listed.** A definition you are still drafting
+does not appear in Runs, and neither does one you have deactivated. This is
+not a filter you can turn off — it is what the two surfaces are for. Builder
+is where a definition is written and published; Runs is where a published one
+is started.
+
+**Publishing is what makes a definition appear here.** If you have just
+written a Workflow and cannot find it in Runs, you have almost certainly saved
+a draft without publishing it. Go back to Builder, publish, and it appears.
+The reverse holds too: deactivating a definition removes it from Runs
+immediately, which is the supported way to take something out of circulation
+without deleting its history.
+
+**A run keeps executing the version it froze.** When you press Run, Schegent
+records which published version it started against, and that version is what
+executes — even if the run sits in the queue while you publish three more
+revisions, and even if you deactivate or delete the definition afterwards.
+This is why a run's behaviour will not match the Builder's current view of the
+same definition, and it is deliberate: you approved one process, and that is
+the one that runs. Retention respects it as well — a version a queued or
+running job froze is not pruned out from under it.
 
 ## Launch a connected run
 

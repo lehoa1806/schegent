@@ -27,6 +27,8 @@
 
 import type { CMD_CONTINUE_WORKFLOW, CMD_LAUNCH_WORKFLOW, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
+import { validRunRequest } from '../validators/run-request-shape';
+import { QUEUE_ID_MAX, hasUnexpectedKeys } from '../validators/shared';
 
 export type { RunRequest, RunRequestFieldError };
 
@@ -231,31 +233,32 @@ export type ContinueWorkflowOutcome = ContinueWorkflowResult['outcome'];
 // those stay there. Field-level rules are not their job: `validateRunRequest()`
 // owns them and reports every failing field at once (FR-014), which a boolean
 // predicate cannot do.
+//
+// Feature 102 (T039, FR-023) — what *is* their job is the transport contract,
+// and they used to state a weaker one than `validators/workflow-run.ts` does for
+// the identical message: required keys present, everything else waved through.
+// So a submitted `catalogVersion` was refused at ingress and accepted here. Both
+// now apply the same allowlists and the same nested `validRunRequest`, which is
+// the only arrangement in which "refused" is a property of the boundary rather
+// than of which door you happened to knock on.
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
+/** A connected run identifier is host-minted, so this is a sanity bound, not a contract. */
+const RUN_ID_MAX = 128;
+const ID_MAX = 64;
 
-/** The nested `RunRequest`, at transport depth only. */
-function isRunRequestShape(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const req = value as Record<string, unknown>;
-  return (
-    isNonEmptyString(req.pipelineId) &&
-    Array.isArray(req.inputs) &&
-    Array.isArray(req.supplemental) &&
-    Array.isArray(req.outputs)
-  );
+function boundedId(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
 
 export function isLaunchWorkflowPayload(payload: unknown): payload is LaunchWorkflowPayload {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
   return (
-    isNonEmptyString(value.workflowId) &&
-    isNonEmptyString(value.startNodeId) &&
-    (value.queueId === undefined || isNonEmptyString(value.queueId)) &&
-    isRunRequestShape(value.request)
+    !hasUnexpectedKeys(value, ['workflowId', 'startNodeId', 'request', 'queueId']) &&
+    boundedId(value.workflowId, ID_MAX) &&
+    boundedId(value.startNodeId, ID_MAX) &&
+    (value.queueId === undefined || boundedId(value.queueId, QUEUE_ID_MAX)) &&
+    validRunRequest(value.request)
   );
 }
 
@@ -263,10 +266,13 @@ export function isContinueWorkflowPayload(payload: unknown): payload is Continue
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
   return (
-    isNonEmptyString(value.connectedRunId) &&
+    !hasUnexpectedKeys(value, ['connectedRunId', 'expectedRevision', 'nodeId', 'request']) &&
+    boundedId(value.connectedRunId, RUN_ID_MAX) &&
+    // Bounded below and not above, matching the ingress validator: a revision the
+    // store has moved past is gate 2's `rejected-stale`, not a transport defect.
     Number.isInteger(value.expectedRevision) &&
     (value.expectedRevision as number) >= 0 &&
-    isNonEmptyString(value.nodeId) &&
-    isRunRequestShape(value.request)
+    boundedId(value.nodeId, ID_MAX) &&
+    validRunRequest(value.request)
   );
 }

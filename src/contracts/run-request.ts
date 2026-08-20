@@ -16,6 +16,7 @@
 // execution path reads, rather than a record the factory harvested one field
 // from. `FrozenRunPlan` is retained as an alias of it, not as a sibling type.
 
+import type { CatalogVersionRef } from './catalog-version';
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 
@@ -185,6 +186,20 @@ export interface ExecutionEnvelope {
   readonly outputs: readonly FrozenOutputRequest[];
   readonly instructions?: string;
   readonly frozenAt: number;
+  /**
+   * Feature 102 (T035, FR-021, FR-022) — which published version this plan froze.
+   *
+   * Resolved host-side at the freeze site and stamped here; `RunRequest` gains
+   * nothing, which is FR-024 and a requirement rather than an omission. Optional
+   * and additive, so a plan serialized before this feature deserializes unchanged
+   * and no `STATE_SCHEMA_VERSION` moves.
+   *
+   * **Absent means "not recorded"** (FR-027), never an error and never `''`. Two
+   * plans reach that state legitimately: one frozen before this feature, and one
+   * frozen from a caller-supplied snapshot rather than from the effective catalog
+   * — a version invented for either would be a version the system never resolved.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
 }
 
 /**

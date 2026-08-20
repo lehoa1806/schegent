@@ -38,7 +38,17 @@ const SCAN_ROOTS: readonly string[] = [
   // host. The Builder renders lifecycle chrome around them — rows, a history
   // panel, a changed-field summary — and each of those is a new render site
   // that must stay on Svelte's auto-escaping path.
-  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'Builder')
+  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'Builder'),
+  // Runs launch surface (feature 102, FR-040): definition names and
+  // descriptions, rendered first as list rows and then again in a detail
+  // panel before a launch. Both strings are operator-authored or imported
+  // from a file on disk, so both are untrusted text arriving from outside
+  // the host — the same provenance as the Builder's, now rendered at new
+  // sites. Listed here BEFORE those components exist, because until a root
+  // is scanned this lint passes while proving nothing about the render
+  // sites it is meant to guard; feature 101 had to add `Builder` for the
+  // same reason.
+  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'Runs')
 ];
 
 // Empty allowlist — every existing scanned component renders text via

@@ -22,6 +22,7 @@
 
 import type { PipelineCatalog, PhaseDef } from '../../config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../config/pipeline-snapshot';
+import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import { createConnectedRun } from '../../state/connected-workflow-run';
@@ -55,6 +56,21 @@ export interface ConnectedRunFactoryInput {
    * default is applied on read, not written here (FR-046).
    */
   readonly queueId?: string;
+  /**
+   * Feature 102 (T037, FR-021, FR-026) — which published version each member
+   * Pipeline's body came from, resolved at this freeze and pinned with it.
+   *
+   * Here rather than at each member start, because a member start supplies its
+   * body from this snapshot: re-resolving there would stamp today's Active
+   * version beside a body frozen at start, which is precisely the version the
+   * system did not resolve. The port takes a Pipeline id and returns a Pipeline's
+   * version — a Workflow's own version is never asked for, so FR-026 is
+   * unreachable rather than merely untested.
+   *
+   * Optional. Absent yields snapshots with no version, recorded as "not
+   * recorded" (FR-027).
+   */
+  readonly resolveCatalogVersion?: (pipelineId: string) => CatalogVersionRef | undefined;
 }
 
 /**
@@ -67,7 +83,8 @@ export interface ConnectedRunFactoryInput {
 function freezeOne(
   pipelineId: string,
   catalog: PipelineCatalog,
-  defaultRunnerKind: BackendRunnerKind | undefined
+  defaultRunnerKind: BackendRunnerKind | undefined,
+  resolveCatalogVersion: ((pipelineId: string) => CatalogVersionRef | undefined) | undefined
 ): WorkflowRunPipeline | ConnectedRunFactoryRejection {
   const definition = catalog.pipelinesById.get(pipelineId);
   if (!definition) return { reason: 'pipeline-not-found', pipelineId };
@@ -78,7 +95,14 @@ function freezeOne(
     if (!phase) return { reason: 'pipeline-invalid', pipelineId };
     phases.push(snapshotPhaseDef(phase, defaultRunnerKind));
   }
-  return snapshotPipelineContract(definition, phases);
+  const contract = snapshotPipelineContract(definition, phases);
+  // Stamped after the snapshot, never inside it. `snapshotPipelineContract()`
+  // names every field it copies and copies only definition fields, which is what
+  // keeps catalog state out of a persisted Run; the version is not a definition
+  // field but a fact about which stored revision this definition was read from,
+  // so it is added here by the caller that knows it.
+  const catalogVersion = resolveCatalogVersion?.(pipelineId);
+  return catalogVersion === undefined ? contract : { ...contract, catalogVersion };
 }
 
 /**
@@ -103,7 +127,12 @@ export function createConnectedRunSnapshot(
     // Two nodes may name the same Pipeline (FR-003); it is frozen once, and both
     // read the same snapshot.
     if (pipelines[node.pipelineId] !== undefined) continue;
-    const frozen = freezeOne(node.pipelineId, input.catalog, input.defaultRunnerKind);
+    const frozen = freezeOne(
+      node.pipelineId,
+      input.catalog,
+      input.defaultRunnerKind,
+      input.resolveCatalogVersion
+    );
     if ('reason' in frozen) return { outcome: 'rejected', ...frozen };
     pipelines[node.pipelineId] = frozen;
   }

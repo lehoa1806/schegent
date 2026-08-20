@@ -810,6 +810,59 @@ export interface WorkflowCatalogProjection {
 }
 
 /**
+ * Feature 102 — webview mirror of the launch projection in
+ * `src/ui/sidebar/snapshot.ts`. This mirror is hand-maintained: field names,
+ * optionality, and arm names are character-identical to the host declaration so
+ * the two cannot drift.
+ */
+export interface LaunchablePort {
+  readonly portId: string;
+  readonly label: string;
+  readonly type: PipelineInputPortType;
+  /**
+   * FR-009 — what the definition itself declares, never what the surface infers.
+   * Present for a Pipeline; **absent for a Workflow**, whose derived ports do not
+   * carry requiredness through. Absent means "not declared required"; the surface
+   * does not reconstruct it.
+   */
+  readonly required?: boolean;
+  readonly description?: string;
+  /** Workflows only — which node in the graph asks for this port. */
+  readonly nodeId?: string;
+}
+
+/** One entry Runs offers. Identity is `(kind, id)`, never `id` alone (FR-014). */
+export interface Launchable {
+  readonly kind: 'pipeline' | 'workflow';
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  /** Required: a launchable exists because its definition has an active version (FR-003). */
+  readonly activeVersionId: string;
+  /** Pipelines: the declared input ports. Workflows: the derived, unsatisfied ones. */
+  readonly inputs: readonly LaunchablePort[];
+  /** Workflows only; non-empty when present. Drives the start-node question (FR-043). */
+  readonly startNodeIds?: readonly string[];
+}
+
+/**
+ * What one section is showing.
+ *
+ * **`loading` is not an arm** — it is the absence of `launchables`, the same way
+ * absence already signals "still loading" for the three catalog projections
+ * above. Do not add a fourth arm; it would give one fact two representations.
+ */
+export type LaunchSection =
+  | { readonly state: 'entries'; readonly entries: readonly Launchable[] }
+  | { readonly state: 'no-definitions' }
+  | { readonly state: 'none-active' };
+
+export interface LaunchProjection {
+  readonly pipelines: LaunchSection;
+  readonly workflows: LaunchSection;
+}
+
+/**
  * Feature 011 — webview mirror of `DelayedRetryState` in
  * src/ui/sidebar/snapshot.ts. The host always emits this object (even
  * idle); the field is marked optional here for legacy-tolerance per
@@ -1152,6 +1205,15 @@ export interface WorkflowSnapshot {
    * control stays disabled until it arrives (FR-036).
    */
   readonly workflowCatalog?: WorkflowCatalogProjection;
+  /**
+   * Feature 102 — what Runs may start: Active only, at the active version,
+   * filtered and ordered host-side (FR-001, FR-002, FR-003).
+   *
+   * Additive and optional on the same terms as the catalog projections above:
+   * absent means the host has not resolved a catalog yet, so each section renders
+   * a loading state (FR-006). That is why `LaunchSection` has no `loading` arm.
+   */
+  readonly launchables?: LaunchProjection;
   /**
    * Feature 088 — the connected runs the operator can act on, already folded to
    * per-node state, legal actions, and `hydrating` host-side. Additive and

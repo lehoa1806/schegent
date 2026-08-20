@@ -145,7 +145,33 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // comment saying which of the two gates this is, and they earn their place —
   // a reader who takes this for a copy of the coordinator's binding deletes it.
   // Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_318 },
+  //
+  // Feature 102 (T038, T051, T055 — FR-022, FR-037) — 1,318 → 1,329 for the two
+  // provenance bindings, both of which are the shape the two entries above have
+  // already ruled on: a closure over a local of `wireStage2`, read live rather
+  // than captured.
+  //
+  // `resolveCatalogVersion` reads the Active version through `catalogSession`,
+  // which is reassigned whenever the catalog reloads, so a captured value would
+  // pair one window's frozen body with another read's version — the exact defect
+  // FR-022 exists to prevent. Five of its six lines are the comment saying that
+  // `'pipeline'` is named at this seam and only here, and they earn their place:
+  // a reader who takes it for a general resolver extends it to Workflows, which
+  // FR-026 forbids.
+  //
+  // The run-plan enumerator is that closure twice over. `queue` and `store` are
+  // both locals, and the store is constructed *before* the queue, so the binding
+  // cannot be an argument even in principle — it has to be a thunk written at
+  // this site. Extraction was measured before raising: both bindings behind one
+  // helper module buys two lines and costs an import and two call sites to hide
+  // two one-line closures, which is the trade the first entry above declines by
+  // name. What did move is everything with a rule in it — which runs count as
+  // live, and the terminal-status filter that decides, are in
+  // src/activation/run-provenance-enumeration.ts, and the reader retention asks
+  // is in src/catalog/run-provenance-queue.ts. Neither could live here: the
+  // second is inside the purity boundary `tests/lint/catalog-purity.test.ts`
+  // guards. Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_329 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

@@ -17,7 +17,7 @@ import {
   CMD_LAUNCH_WORKFLOW,
   type SidebarCommand
 } from '../sidebar-ipc';
-import { validRunRequest } from './launch-pipeline';
+import { validRunRequest } from './run-request-shape';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
 const ID_MAX = 64;

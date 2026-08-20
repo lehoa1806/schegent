@@ -267,7 +267,15 @@ export async function launchWorkflow(
     catalog: input.catalog,
     startedAt: input.startedAt,
     ...(input.defaultRunnerKind ? { defaultRunnerKind: input.defaultRunnerKind } : {}),
-    ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    // Feature 102 (T037, FR-021). Taken from `deps`, the same object the shared
+    // seam below reads it from, so the version stamped on each member snapshot
+    // and the version a standalone launch would stamp come from one resolver.
+    // The freeze is the only place it is asked: every later member start reads
+    // its version off the snapshot this call produced.
+    ...(deps.resolveCatalogVersion !== undefined
+      ? { resolveCatalogVersion: deps.resolveCatalogVersion }
+      : {})
   });
   if (snapshot.outcome === 'rejected') {
     // A residual: gate 2's graph validation resolves every node's Pipeline
