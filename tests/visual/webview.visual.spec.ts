@@ -7,7 +7,7 @@ type ThemeName = 'light' | 'dark' | 'high-contrast';
 type SurfaceName =
   | 'sidebar'
   | 'queues'
-  | 'pipeline-builder'
+  | 'builder'
   | 'metrics'
   | 'activity-feed';
 
@@ -63,7 +63,7 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
   // also appears twice in the photograph itself (a badge in the list, and the
   // testid of each list row), so a regression would show up as a pixel diff;
   // this fails with the landmark's name instead.
-  'pipeline-builder': {
+  builder: {
     present: [
       'pipeline-builder-root',
       'pipelines-save-all',
@@ -348,8 +348,8 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     return metrics;
   }
 
-  if (surface === 'pipeline-builder') {
-    await page.getByTestId('dashboard-route-pipeline-builder').click();
+  if (surface === 'builder') {
+    await page.getByTestId('dashboard-route-builder').click();
     const builder = page.getByTestId('pipeline-builder-root');
     await expect(builder).toBeVisible();
     await builder.locator('.phase-list-item').first().click();
@@ -401,7 +401,7 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
   for (const surface of [
     'sidebar',
     'queues',
-    'pipeline-builder',
+    'builder',
     'metrics',
     'activity-feed'
   ] as const) {
@@ -438,7 +438,7 @@ test.describe('responsive accessibility hardening', () => {
       history: 'history-dashboard',
       metrics: 'metrics-section',
       system: 'system-tab',
-      'pipeline-builder': 'pipeline-builder-root',
+      builder: 'pipeline-builder-root',
       settings: 'settings-surface-root'
     } as const;
 
@@ -446,7 +446,7 @@ test.describe('responsive accessibility hardening', () => {
       await page.getByTestId(`dashboard-route-${route}`).click();
       await expect(page.getByTestId(target)).toBeVisible();
       await expect(page.locator('main')).toHaveCount(1);
-      if (route === 'pipeline-builder') {
+      if (route === 'builder') {
         await page.getByRole('tab', { name: 'Models' }).click();
       }
 

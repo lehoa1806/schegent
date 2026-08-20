@@ -22,44 +22,34 @@
   // destination for a save, and no writable-scope picker; a "layer" here is now
   // just the catalog.
   import type {
+    BuilderLifecycle,
     PortablePipelineDefinition,
-    WorkflowNode,
     WorkflowSnapshot
   } from '../../lib/snapshot-types';
-  import { saveWorkflows, type SaveWorkflowsRequest } from '../../lib/save-workflows';
   import {
-    buildWorkflowRemoval
+    deactivateDefinition,
+    draftTokenOfRecord,
+    saveDefinitionDraft,
+    type LifecycleResult
+  } from '../../lib/catalog-lifecycle';
+  import {
+    buildWorkflowRemoval,
+    makeWorkflowGraphActions,
+    takenWorkflowIds,
+    withWorkflowDraftEdited
   } from './workflow-catalog-actions';
   import {
-    addWorkflowConditionValue,
-    addWorkflowConnection,
-    addWorkflowNode,
     anchorWorkflowDefects,
     boundFieldErrors,
     formatWorkflowSaveRejection,
     makeDuplicateWorkflowDraft,
     makeNewWorkflowDraft,
-    makeWorkflowCondition,
-    makeWorkflowConnectionDraft,
-    makeWorkflowNodeDraft,
-    moveWorkflowConnection,
-    moveWorkflowNode,
-    parseWorkflowConditionLiteral,
-    removeWorkflowConditionValue,
-    removeWorkflowConnection,
-    removeWorkflowNode,
-    retargetWorkflowConnection,
     sourceRecordToMutableWorkflow,
-    toggleWorkflowStartNode,
     toSaveWorkflowRow,
-    updateWorkflowCondition,
-    updateWorkflowConditionValue,
-    updateWorkflowConnection,
-    updateWorkflowNode,
     validateWorkflowDraft,
-    type WorkflowConditionPatch,
     type WorkflowDraftError
   } from './workflow-catalog-state';
+  import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
   import WorkflowGraphEditor from './WorkflowGraphEditor.svelte';
   import WorkflowLibraryList from './WorkflowLibraryList.svelte';
   import WorkflowToolbar from './WorkflowToolbar.svelte';
@@ -86,6 +76,20 @@
 
   const persisted = $derived(
     ready ? (catalog?.records ?? []).map(sourceRecordToMutableWorkflow) : []
+  );
+  /**
+   * Feature 101 (US1, T037, FR-013) — lifecycle facts, keyed by projection
+   * record and handed to the list. Deliberately not folded into
+   * `sourceRecordToMutableWorkflow`: that function builds the editable copy, and
+   * `toSaveWorkflowRow` strips every projection-only field back off it before a
+   * save goes out. A lifecycle field there would be one more strip to remember,
+   * and the one that got missed would send a projected view field back to the
+   * host — exactly what FR-010 forbids.
+   */
+  const lifecycleByKey = $derived(
+    new Map<string, BuilderLifecycle | undefined>(
+      (catalog?.records ?? []).map((record) => [record.key, record.lifecycle])
+    )
   );
   /**
    * A node may only run a Pipeline the effective catalog resolves, and only the
@@ -171,16 +175,16 @@
     selected === null || !selected.persisted || mutatingDisabled
   );
 
-  function takenWorkflowIds(): readonly string[] {
-    return rows.map((row) => row.workflowId);
+  /** Stage a freshly built draft as the selection; both creation paths end here. */
+  function selectNewDraft(draft: MutableWorkflow): void {
+    drafts = [...drafts, draft];
+    selectedKey = draft.sourceKey;
+    saveError = null;
   }
 
   function addWorkflow(): void {
     if (mutatingDisabled) return;
-    const draft = makeNewWorkflowDraft(takenWorkflowIds());
-    drafts = [...drafts, draft];
-    selectedKey = draft.sourceKey;
-    saveError = null;
+    selectNewDraft(makeNewWorkflowDraft(takenWorkflowIds(rows)));
   }
 
   /**
@@ -190,16 +194,12 @@
    */
   function duplicateWorkflow(): void {
     if (duplicateDisabled || !selected) return;
-    const draft = makeDuplicateWorkflowDraft(selected, takenWorkflowIds());
-    drafts = [...drafts, draft];
-    selectedKey = draft.sourceKey;
-    saveError = null;
+    selectNewDraft(makeDuplicateWorkflowDraft(selected, takenWorkflowIds(rows)));
   }
 
   function patchSelected(patch: Partial<MutableWorkflow>): void {
     if (!selected) return;
-    const key = selected.sourceKey;
-    drafts = drafts.map((row) => (row.sourceKey === key ? { ...row, ...patch } : row));
+    drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, (row) => ({ ...row, ...patch }));
   }
 
   /**
@@ -209,85 +209,24 @@
    */
   function applyGraphEdit(edit: (workflow: MutableWorkflow) => MutableWorkflow): void {
     if (!selected || !editable) return;
-    const key = selected.sourceKey;
-    drafts = drafts.map((row) => (row.sourceKey === key ? edit(row) : row));
+    drafts = withWorkflowDraftEdited(drafts, selected.sourceKey, edit);
   }
 
-  /**
-   * Turn one connection conditional, or unconditional again. The seed reads the
-   * connection's own source node: FR-023 bounds a condition to the branching
-   * node or an ancestor, and the branching node always qualifies.
-   */
-  function toggleCondition(index: number, conditional: boolean): void {
-    applyGraphEdit((workflow) => {
-      const connection = workflow.connections[index];
-      if (!connection) return workflow;
-      return updateWorkflowConnection(workflow, index, {
-        condition: conditional ? makeWorkflowCondition(connection.from.nodeId) : undefined
-      });
-    });
-  }
-
-  const addNode = (): void =>
-    applyGraphEdit((workflow) => {
-      const pipelineId = effectivePipelines[0]?.pipelineId;
-      return pipelineId === undefined
-        ? workflow
-        : addWorkflowNode(workflow, makeWorkflowNodeDraft(workflow, pipelineId));
-    });
-
-  const removeNode = (index: number): void =>
-    applyGraphEdit((workflow) => removeWorkflowNode(workflow, index));
-
-  const moveNode = (index: number, delta: number): void =>
-    applyGraphEdit((workflow) => moveWorkflowNode(workflow, index, delta));
-
-  const patchNode = (index: number, patch: Partial<WorkflowNode>): void =>
-    applyGraphEdit((workflow) => updateWorkflowNode(workflow, index, patch));
-
-  const toggleStartNode = (nodeId: string): void =>
-    applyGraphEdit((workflow) => toggleWorkflowStartNode(workflow, nodeId));
-
-  const addConnection = (): void =>
-    applyGraphEdit((workflow) =>
-      addWorkflowConnection(workflow, makeWorkflowConnectionDraft(workflow, effectivePipelines))
-    );
-
-  const removeConnection = (index: number): void =>
-    applyGraphEdit((workflow) => removeWorkflowConnection(workflow, index));
-
-  const moveConnection = (index: number, delta: number): void =>
-    applyGraphEdit((workflow) => moveWorkflowConnection(workflow, index, delta));
-
-  const retargetConnection = (
-    index: number,
-    end: 'from' | 'to',
-    patch: { nodeId?: string; portId?: string }
-  ): void =>
-    applyGraphEdit((workflow) =>
-      retargetWorkflowConnection(workflow, index, end, patch, effectivePipelines)
-    );
-
-  const patchCondition = (index: number, patch: WorkflowConditionPatch): void =>
-    applyGraphEdit((workflow) => updateWorkflowCondition(workflow, index, patch));
-
-  const setConditionValue = (index: number, valueIndex: number, text: string): void =>
-    applyGraphEdit((workflow) =>
-      updateWorkflowConditionValue(workflow, index, valueIndex, parseWorkflowConditionLiteral(text))
-    );
+  const graph = makeWorkflowGraphActions(applyGraphEdit, () => effectivePipelines);
 
   /**
-   * The one send path. A non-removal write is still the whole layer, not one row:
-   * it becomes a single package layer whose `expectedRevision` gate is the one
-   * this editor has always held, so a partial payload would publish a catalog
-   * missing every row it omitted. The `saveWorkflows` helper is the only way to
-   * send it — the lint gate in `tests/lint/catalog-lifecycle-dispatch.test.ts`
-   * fails any component that names a lifecycle command itself (Feature 100 T509d).
+   * The one send path. Feature 101 (T028) — a write names one definition, not the
+   * layer: the whole-array publish it replaced made every untouched row live
+   * again as a side effect of saving one (FR-026c). `send` is a thunk because a
+   * draft save is ungated while a deactivation raises its confirmation inside the
+   * helper (FR-049); everything the two share — the pending gate and the refusal
+   * handling — is here. `catalog-lifecycle.ts` remains the only module that may
+   * name a lifecycle command (`tests/lint/catalog-lifecycle-dispatch.test.ts`).
    */
-  async function submit(request: SaveWorkflowsRequest): Promise<void> {
-    submittedRevision = request.expectedRevision;
+  async function submit(send: () => Promise<LifecycleResult>): Promise<void> {
+    submittedRevision = revision;
     saveError = null;
-    const outcome = await saveWorkflows(request);
+    const outcome = await send();
 
     if (outcome.status === 'rejected') {
       // No new revision is coming, so the pending gate has to be released here
@@ -300,16 +239,30 @@
         outcome.reason,
         outcome.result as Parameters<typeof formatWorkflowSaveRejection>[1]
       );
+      return;
+    }
+    // FR-026d — an unchanged save writes no version, so the projection will not
+    // move. Release the gate here; the effect above never will.
+    if ((outcome.result as { appended?: boolean } | undefined)?.appended === false) {
+      submittedRevision = null;
     }
   }
 
+  /** FR-026a — save writes a DRAFT of the one selected Workflow. */
   async function save(): Promise<void> {
     if (saveDisabled || !selected) return;
-    await submit({
-      expectedRevision: revision,
-      mutation: { kind: 'create', workflowId: selected.workflowId },
-      workflows: rows.map(toSaveWorkflowRow)
-    });
+    const row = selected;
+    const record = catalog?.state === 'ready'
+      ? catalog.records.find((candidate) => candidate.key === row.sourceKey)
+      : undefined;
+    await submit(() =>
+      saveDefinitionDraft({
+        kind: 'workflow',
+        id: row.workflowId,
+        expectedDraftVersion: draftTokenOfRecord(record),
+        body: toSaveWorkflowRow(row)
+      })
+    );
   }
 
   /**
@@ -318,20 +271,19 @@
    * prompt comes back as a `declined` rejection that `submit` treats as a no-op,
    * so nothing is sent and no error is reported.
    *
-   * The rows passed in are the **stored** ones, not `rows`: an unsaved draft is
-   * not part of what the host holds, and carrying one along would make the
-   * write an add and a remove at once.
+   * Feature 101 (T028) — only a stored row can be removed (`removeDisabled`), so
+   * the record behind it is what carries the write token.
    */
   async function removeSelected(event: MouseEvent): Promise<void> {
-    if (removeDisabled || !selected) return;
-    await submit(
-      buildWorkflowRemoval({
-        row: selected,
-        expectedRevision: revision,
-        layer: persisted,
-        originatingElement: event.currentTarget as HTMLElement
-      })
-    );
+    if (removeDisabled || !selected || catalog?.state !== 'ready') return;
+    const row = selected;
+    const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
+    const removal = buildWorkflowRemoval({
+      row,
+      expectedDraftVersion: draftTokenOfRecord(record),
+      originatingElement: event.currentTarget as HTMLElement
+    });
+    await submit(() => deactivateDefinition(removal.request, removal.options));
   }
 </script>
 
@@ -386,9 +338,21 @@
     </div>
   {/if}
 
+  <!-- Feature 101 (US6, T065, FR-032/FR-033) — the front door, and this tab's
+       only import entry: the Workflows tab never grew a standalone preflight
+       region. Ordered after the trust check by construction — PipelineBuilder
+       gates the three definition tabs, so an untrusted workspace never reaches
+       here and the guidance can never point at an action that cannot succeed. -->
+  <CatalogEmptyState kind="workflow" count={rows.length} />
+
   <div class="split-pane">
     <div class="pane-left">
-      <WorkflowLibraryList {rows} {selectedKey} onselect={(key) => (selectedKey = key)} />
+      <WorkflowLibraryList
+        {rows}
+        {selectedKey}
+        {lifecycleByKey}
+        onselect={(key) => (selectedKey = key)}
+      />
     </div>
 
     <div class="pane-right">
@@ -436,22 +400,20 @@
           nodeDefects={defects.byNode}
           connectionDefects={defects.byConnection}
           readonly={!editable}
-          onnodeadd={addNode}
-          onnoderemove={removeNode}
-          onnodemove={moveNode}
-          onnodepatch={patchNode}
-          onstarttoggle={toggleStartNode}
-          onconnectionadd={addConnection}
-          onconnectionremove={removeConnection}
-          onconnectionmove={moveConnection}
-          onconnectionretarget={retargetConnection}
-          onconditiontoggle={toggleCondition}
-          onconditionpatch={patchCondition}
-          onconditionvalue={setConditionValue}
-          onconditionvalueadd={(index) =>
-            applyGraphEdit((workflow) => addWorkflowConditionValue(workflow, index))}
-          onconditionvalueremove={(index, valueIndex) =>
-            applyGraphEdit((workflow) => removeWorkflowConditionValue(workflow, index, valueIndex))}
+          onnodeadd={graph.addNode}
+          onnoderemove={graph.removeNode}
+          onnodemove={graph.moveNode}
+          onnodepatch={graph.patchNode}
+          onstarttoggle={graph.toggleStartNode}
+          onconnectionadd={graph.addConnection}
+          onconnectionremove={graph.removeConnection}
+          onconnectionmove={graph.moveConnection}
+          onconnectionretarget={graph.retargetConnection}
+          onconditiontoggle={graph.toggleCondition}
+          onconditionpatch={graph.patchCondition}
+          onconditionvalue={graph.setConditionValue}
+          onconditionvalueadd={graph.addConditionValue}
+          onconditionvalueremove={graph.removeConditionValue}
         />
 
         <!-- Only what no row could show: everything anchored to a node or a

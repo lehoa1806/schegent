@@ -14,7 +14,8 @@ import type {
   CatalogCollectableRecord,
   CatalogIntegrityFault,
   CatalogKind,
-  CatalogSnapshot
+  CatalogSnapshot,
+  StoredDefinition
 } from '../contracts/catalog-store';
 import type { WorkflowCatalogResolution } from '../contracts/workflow-definitions';
 import type { SanitizedLogger } from '../lib/logger';
@@ -172,6 +173,20 @@ export class CatalogSession {
 
   get workflowCatalog(): WorkflowCatalogResolution {
     return this.loaded.workflowCatalog;
+  }
+
+  /**
+   * Feature 101 (T017) — every entry at every lifecycle state, out of the same
+   * read the four resolutions came from.
+   *
+   * The resolutions above are bodies: `storedRows` drops a draft-only definition
+   * because it has none to resolve (100 FR-021). The Builder has to show that
+   * definition anyway, and the manifest is the only place it exists. Exposed as
+   * the raw entries rather than as a projection because the projection belongs to
+   * the sidebar and this class belongs to activation.
+   */
+  get definitions(): readonly StoredDefinition[] {
+    return this.snapshot.definitions;
   }
 
   /**

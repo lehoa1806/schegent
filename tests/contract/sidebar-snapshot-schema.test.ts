@@ -19,6 +19,7 @@ import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
+import { buildBuilderLifecycleByKind } from '../../src/ui/sidebar/builder-lifecycle';
 import { SCHEMA_VERSION, buildIdleSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
 import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
@@ -153,5 +154,156 @@ describe('sidebar snapshot — workflowCatalog is additive (feature 083)', () =>
     const idle = buildIdleSnapshot({ isPrimary: true });
     expect(idle.schemaVersion).toBe(SCHEMA_VERSION);
     expect('workflowCatalog' in idle).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 101 (T019, FR-005, FR-007) — `lifecycle` on the three record shapes.
+//
+// Same tolerance claim as 083's, one level down: the field is additive on the
+// *record* rather than on the envelope, and `SCHEMA_VERSION` still does not move.
+// Asserted through the real `StateProjector` because the composer is where the
+// three per-kind lookups are handed out, and a projection that quietly dropped
+// one would still pass its own unit test. Contract:
+// `specs/101-builder-surface/contracts/builder-projection.md` §A.2.
+// ---------------------------------------------------------------------------
+
+const LIFECYCLE_VERSION = {
+  versionId: 'v-ported-1',
+  contentHash: `sha256:${'a'.repeat(64)}`,
+  createdAt: 1_000,
+  publishedAt: 1_100,
+  note: null
+};
+
+/**
+ * One stored definition per kind, ids matching the rows the three catalogs above
+ * resolve. Only `ported` and `release-train` have rows; the Phase ids come from
+ * the Spec Kit fixture, so `speckit-specify` is the one addressed here.
+ */
+const STORED_DEFINITIONS = [
+  {
+    kind: 'phase' as const,
+    id: 'speckit-specify',
+    status: 'effective' as const,
+    activeVersionId: 'v-ported-1',
+    body: { name: 'Specify' },
+    draftVersionId: null,
+    draftBody: null,
+    createdAt: 1_000,
+    updatedAt: 1_200,
+    versions: [LIFECYCLE_VERSION]
+  },
+  {
+    kind: 'pipeline' as const,
+    id: 'ported',
+    status: 'effective' as const,
+    activeVersionId: 'v-ported-1',
+    body: { name: 'Ported', phaseIds: ['speckit-specify', 'speckit-plan'] },
+    draftVersionId: 'v-ported-2',
+    draftBody: { name: 'Ported', phaseIds: ['speckit-specify'] },
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    versions: [
+      LIFECYCLE_VERSION,
+      { ...LIFECYCLE_VERSION, versionId: 'v-ported-2', createdAt: 2_000, publishedAt: null }
+    ]
+  },
+  {
+    kind: 'workflow' as const,
+    id: 'release-train',
+    status: 'effective' as const,
+    activeVersionId: 'v-ported-1',
+    body: { name: 'Release Train' },
+    draftVersionId: null,
+    draftBody: null,
+    createdAt: 1_000,
+    updatedAt: 1_200,
+    versions: [LIFECYCLE_VERSION]
+  }
+];
+
+const WORKFLOW_DEPS = {
+  getPipelineCatalog: () => PIPELINE_CATALOG,
+  getPhaseCatalog: () => PHASE_CATALOG,
+  getWorkflowCatalog: () =>
+    resolveWorkflowCatalog({
+      rows: [WORKFLOW_ROW],
+      revision: 'rev-workflow-snapshot',
+      pipelineCatalog: PIPELINE_CATALOG
+    })
+};
+
+describe('sidebar snapshot — record lifecycle is additive (feature 101)', () => {
+  it('omits lifecycle from every record on a host that wires no catalog store', () => {
+    const snapshot = project(WORKFLOW_DEPS);
+    expect(snapshot.schemaVersion).toBe(SCHEMA_VERSION);
+    const records = [
+      ...(snapshot.phaseCatalog?.records ?? []),
+      ...(snapshot.pipelineCatalog?.records ?? []),
+      ...(snapshot.workflowCatalog?.records ?? [])
+    ];
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((record) => !('lifecycle' in record))).toBe(true);
+  });
+
+  it('carries lifecycle on all three kinds without moving SCHEMA_VERSION', () => {
+    const snapshot = project({
+      ...WORKFLOW_DEPS,
+      getBuilderLifecycle: () => buildBuilderLifecycleByKind(STORED_DEFINITIONS)
+    });
+    expect(snapshot.schemaVersion).toBe(SCHEMA_VERSION);
+
+    const phase = snapshot.phaseCatalog?.records.find((r) => r.phaseId === 'speckit-specify');
+    expect(phase?.lifecycle?.state).toBe('active');
+    expect(phase?.lifecycle?.activeVersionId).toBe('v-ported-1');
+
+    const workflow = snapshot.workflowCatalog?.records.find((r) => r.workflowId === 'release-train');
+    expect(workflow?.lifecycle?.state).toBe('active');
+
+    const pipeline = snapshot.pipelineCatalog?.records.find((r) => r.pipelineId === 'ported');
+    expect(pipeline?.lifecycle?.state).toBe('active-with-draft');
+    // Newest first, and the pending draft is not the active one.
+    expect(pipeline?.lifecycle?.versions.map((entry) => entry.versionId)).toEqual([
+      'v-ported-2',
+      'v-ported-1'
+    ]);
+    expect(pipeline?.lifecycle?.versions.filter((entry) => entry.isActive)).toHaveLength(1);
+    expect(pipeline?.lifecycle?.changedFields).toEqual({
+      kind: 'changed',
+      fields: [
+        {
+          field: 'phaseIds',
+          change: 'collection',
+          added: [],
+          removed: ['speckit-plan'],
+          reordered: []
+        }
+      ]
+    });
+  });
+
+  it('omits lifecycle from a record the store does not name', () => {
+    // `speckit-plan` resolves from the fixture but has no manifest entry. It is a
+    // row without a stored definition behind it, and the projection says so by
+    // omitting the field rather than by inventing a state for it.
+    const snapshot = project({
+      ...WORKFLOW_DEPS,
+      getBuilderLifecycle: () => buildBuilderLifecycleByKind(STORED_DEFINITIONS)
+    });
+    const other = snapshot.phaseCatalog?.records.find((r) => r.phaseId === 'speckit-plan');
+    expect(other).toBeDefined();
+    expect('lifecycle' in other!).toBe(false);
+  });
+
+  it('never carries a contentHash or a version body to the webview', () => {
+    const serialized = JSON.stringify(
+      project({
+        ...WORKFLOW_DEPS,
+        getBuilderLifecycle: () => buildBuilderLifecycleByKind(STORED_DEFINITIONS)
+      })
+    );
+    expect(serialized).not.toContain('contentHash');
+    expect(serialized).not.toContain('sha256:');
   });
 });

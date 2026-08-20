@@ -21,7 +21,84 @@ export type { DebugLogEntry };
 export type { EvidenceHealthSnapshot };
 export { IDLE_EVIDENCE_HEALTH };
 
+import type { CatalogVersionId } from '../../contracts/catalog-store';
+import type { DefinitionState, ExpectedDraftVersion } from '../../contracts/catalog-lifecycle';
+import type {
+  ChangedCollectionField,
+  ChangedField,
+  ChangedFieldSummary,
+  ChangedScalarField
+} from '../../catalog/changed-fields';
+export type { ChangedCollectionField, ChangedField, ChangedFieldSummary, ChangedScalarField };
+
 export const SCHEMA_VERSION = 4 as const;
+
+/**
+ * Feature 101 (T013) — one retained version, as the history panel lists it.
+ *
+ * Metadata only (FR-012): the version id, when it was written, when it first went
+ * live or that it never has, whether it is the active one, and the note written
+ * with it. **No `contentHash` and no body.** The hash is the store's integrity
+ * check and means nothing to an operator; the body is fetched a version at a time
+ * by `CMD_READ_DEFINITION_VERSION`, because eagerly projecting every retained body
+ * of every definition is fifty bodies per definition on every snapshot push.
+ */
+export interface BuilderVersionEntry {
+  readonly versionId: CatalogVersionId;
+  readonly createdAt: number;
+  /** When this version first became active, or `null` while it never has. */
+  readonly publishedAt: number | null;
+  readonly isActive: boolean;
+  /** The operator's note on the save that produced it. `null` renders as empty, never as "null". */
+  readonly note: string | null;
+}
+
+/**
+ * Feature 101 (T013) — a definition's lifecycle, as the Builder reads it.
+ *
+ * **One nested field rather than six flat ones**, and the nesting is the point:
+ * these six facts are present together or not at all. A host with no catalog store
+ * wired projects rows out of a resolved catalog it was handed directly and has no
+ * manifest entry behind any of them — and there is no honest value for `state`,
+ * `versions`, or `activeVersionId` in that situation. Every candidate filler breaks
+ * one of the contract's own invariants: `'active'` with no `activeVersionId` breaks
+ * the third, an empty `versions` the fourth, and a synthesized version id would be
+ * quoted straight back at the host by a history read. Absent is the truth, and one
+ * optional field says it in a way six optional fields could drift out of.
+ *
+ * Contract: `specs/101-builder-surface/contracts/builder-projection.md` §A.2.
+ */
+export interface BuilderLifecycle {
+  /**
+   * FR-005 — the return of `deriveDefinitionState`, never a local mapping. A
+   * second derivation is a second oracle even on the day it agrees.
+   */
+  readonly state: DefinitionState;
+  /** First save. Never moves. Epoch ms. */
+  readonly createdAt: number;
+  /** Last effective save. Epoch ms. */
+  readonly updatedAt: number;
+  /** FR-006 — **absent**, never `''`, when the definition has never been published. */
+  readonly activeVersionId?: CatalogVersionId;
+  /**
+   * FR-012 — the optimistic-concurrency token every lifecycle write carries.
+   *
+   * The return of `currentDraftToken`, for the same reason `state` is the return
+   * of `deriveDefinitionState`: the `draftVersionId ?? NO_DRAFT` fold is the one
+   * thing standing between two windows racing a first draft and one silently
+   * overwriting the other, and a webview that did the fold itself would be the
+   * second place it could be got wrong. The raw pointer is deliberately not
+   * projected — there is nothing the surface can correctly do with it that this
+   * token does not already say.
+   *
+   * Opaque to the webview: echoed back verbatim, never parsed, never compared.
+   */
+  readonly expectedDraftVersion: ExpectedDraftVersion;
+  /** Newest first. The surface does not sort. Non-empty for any definition the store holds. */
+  readonly versions: readonly BuilderVersionEntry[];
+  /** FR-011 — present if and only if `state` is `'active-with-draft'`. */
+  readonly changedFields?: ChangedFieldSummary;
+}
 
 // Feature 098 (T039, FR-020) — `BUILT_IN_PHASE_NAMES`, its `PHASE_NAMES` alias
 // and the `BuiltInPhaseName` union it derived are gone, together with the
@@ -53,6 +130,8 @@ export interface PhaseCatalogSourceProjection {
   readonly display: Readonly<Record<string, unknown>>;
   readonly errors: readonly PhaseCatalogFieldErrorProjection[];
   readonly modelAvailable?: boolean;
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface PhaseCatalogProjection {
@@ -100,6 +179,8 @@ export interface PipelineCatalogSourceProjection {
    * host exposes no Workflow references at all (see `collectWorkflowPipelineRefs`).
    */
   readonly consumingWorkflowIds?: readonly string[];
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface PipelineCatalogProjection {
@@ -142,6 +223,8 @@ export interface WorkflowCatalogSourceProjection {
    */
   readonly derivedInputs: readonly WorkflowDerivedPort[];
   readonly derivedOutputs: readonly WorkflowDerivedPort[];
+  /** Feature 101 (FR-005, FR-007) — absent on a host with no catalog store wired. */
+  readonly lifecycle?: BuilderLifecycle;
 }
 
 export interface WorkflowCatalogProjection {

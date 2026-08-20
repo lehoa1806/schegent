@@ -21,18 +21,39 @@
 //
 // Defects anchor to the specific node or connection row they concern, and the
 // association is carried by text, not by color alone (FR-044).
+//
+// Feature 101 (T030) — the transport moved. `saveWorkflows` posted the whole
+// Workflow layer and encoded the operation in a `mutation` field; the lifecycle
+// senders address one definition by id and encode the operation in the command
+// they post. Every assertion about "the rows carried alongside" is gone with it,
+// because a per-definition write carries no rows.
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SaveWorkflowsRequest } from '../../lib/save-workflows';
+import type { LifecycleConfirmOptions, LifecycleResult } from '../../lib/catalog-lifecycle';
+import type { DeactivateRequest } from '../../../../src/contracts/catalog-lifecycle';
 import type {
   WorkflowCatalogSourceProjection,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
 import WorkflowCatalogEditor from '../PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
 
-vi.mock('../../lib/save-workflows', () => ({ saveWorkflows: vi.fn(async () => ({ status: 'accepted' })) }));
+// Feature 101 (T030) — `save-workflows.ts` folded into `catalog-lifecycle.ts`.
+// Only the two senders this editor reaches are stubbed; everything else keeps
+// its real body, `draftTokenOfRecord` above all: it is the derivation that turns
+// a record's lifecycle block into the write token, and stubbing it would let the
+// editor send any token at all while the assertions below still read 'no-draft'.
+const deactivateSpy = vi.hoisted(() =>
+  vi.fn<(request: DeactivateRequest, options: LifecycleConfirmOptions) => Promise<LifecycleResult>>(
+    async () => ({ status: 'accepted' as const })
+  )
+);
+vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
+  saveDefinitionDraft: vi.fn(async () => ({ status: 'accepted' as const })),
+  deactivateDefinition: deactivateSpy
+}));
 
 afterEach(cleanup);
 
@@ -121,6 +142,22 @@ const rowFor = (container: HTMLElement, workflowId: string): HTMLElement => {
   return row as HTMLElement;
 };
 
+/**
+ * The lifecycle chrome beside the selection button.
+ *
+ * Feature 101 (T037) — the validity badge used to sit inside the button
+ * `rowFor` returns, and moved into `DefinitionLifecycleRow` next to it: T042
+ * hangs interactive lifecycle actions off that row, and a control nested in a
+ * button is invalid markup and unreachable by keyboard. `rowFor` stays pointed
+ * at the button because half this file clicks it to select a row, so the chrome
+ * gets its own handle rather than widening that one.
+ */
+const lifecycleRowFor = (container: HTMLElement, workflowId: string): HTMLElement => {
+  const row = container.querySelector<HTMLElement>(`[data-testid="definition-row-${workflowId}"]`);
+  expect(row, `lifecycle chrome for ${workflowId} must render`).not.toBeNull();
+  return row as HTMLElement;
+};
+
 // ── Row content (FR-036, FR-048, FR-049, US5 scenario 2) ────────────────────
 
 describe('WorkflowCatalogEditor row content (US5, T055)', () => {
@@ -135,8 +172,8 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
       record({ workflowId: 'broken-one', status: 'invalid' })
     ]);
 
-    expect(rowFor(container, 'design-then-build').textContent).toContain('effective');
-    expect(rowFor(container, 'broken-one').textContent).toContain('invalid');
+    expect(lifecycleRowFor(container, 'design-then-build').textContent).toContain('effective');
+    expect(lifecycleRowFor(container, 'broken-one').textContent).toContain('invalid');
   });
 
   it('shows the purpose, so the list is readable by someone who did not author it', () => {
@@ -187,10 +224,16 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
       })
     ]);
 
+    // Both halves of the row: the button, which is where the absent derived
+    // fields would surface as a stringified `undefined`, and the lifecycle
+    // chrome beside it, which is where the status now reads.
     const row = rowFor(container, 'broken-one');
-    expect(row.textContent).toContain('invalid');
-    expect(row.textContent).not.toContain('undefined');
-    expect(row.textContent).not.toContain('null');
+    const chrome = lifecycleRowFor(container, 'broken-one');
+    expect(chrome.textContent).toContain('invalid');
+    for (const text of [row.textContent, chrome.textContent]) {
+      expect(text).not.toContain('undefined');
+      expect(text).not.toContain('null');
+    }
   });
 });
 
@@ -387,8 +430,8 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 // an awaited `useConfirm`, and `tests/lint/destructive-actions.lint.test.ts`
 // pins the shape of that gate statically. What a static scan cannot show is
 // that declining actually stops the write, so that is what these assert: the
-// same control, once confirmed and once declined, with `saveWorkflows` as the
-// witness.
+// same control, once confirmed and once declined, with `deactivateDefinition`
+// as the witness.
 //
 // `useConfirm` is mocked rather than driven through the real dialog because the
 // dialog is Feature 063's contract and already has its own coverage; what is
@@ -420,19 +463,9 @@ type ConfirmCall = (
 const useConfirmMock = vi.hoisted(() => vi.fn<ConfirmCall>(async () => true));
 vi.mock('../../lib/use-confirm', () => ({ useConfirm: useConfirmMock, isModalOpen: () => false }));
 
-type SaveCall = (
-  request: SaveWorkflowsRequest
-) => Promise<{ status: string; reason?: string; result?: unknown }>;
-
-const saved = async () =>
-  (await import('../../lib/save-workflows')).saveWorkflows as unknown as ReturnType<
-    typeof vi.fn<SaveCall>
-  >;
-
 describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
   it('sends one removal for the selected row, addressed by its own id', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
+    deactivateSpy.mockClear();
     useConfirmMock.mockClear();
 
     const { container, getByTestId } = mount([record()]);
@@ -440,23 +473,28 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     const trigger = getByTestId('workflows-remove');
     await fireEvent.click(trigger);
 
-    expect(saveWorkflows).toHaveBeenCalledTimes(1);
-    const request = saveWorkflows.mock.calls[0][0];
-    expect(request.mutation).toEqual({ kind: 'remove', workflowId: 'design-then-build' });
-    // The write is the whole layer minus the row: an omitted row is the removal.
-    expect(request.workflows).toEqual([]);
-    expect(request.expectedRevision).toBe('w');
-    // What the prompt must say and where focus must return, carried as request
-    // fields because the helper is what asks. Feature 099 (T496f, FR-042) — a
-    // `scope` stood beside the name in the old prompt context; `toEqual` above
-    // and these two reads are exact, so its absence is pinned here.
-    expect(request.removedName).toBe('Design then Build');
-    expect(request.originatingElement).toBe(trigger);
+    expect(deactivateSpy).toHaveBeenCalledTimes(1);
+    const [request, options] = deactivateSpy.mock.calls[0];
+    // Feature 101 (T030) — `toEqual` is exact, and that is the point: the write
+    // names one definition and carries no layer. The `mutation: { kind: 'remove' }`
+    // and the whole-layer-minus-the-row `workflows: []` that stood here are both
+    // gone, because the command posted is what says "deactivate" now.
+    expect(request).toEqual({
+      kind: 'workflow',
+      id: 'design-then-build',
+      // The fixture record carries no draft, so the staleness token is the
+      // sentinel rather than a version id (FR-024).
+      expectedDraftVersion: 'no-draft'
+    });
+    // What the prompt must say and where focus must return, handed to the helper
+    // as options because the helper is what asks. Feature 099 (T496f, FR-042) — a
+    // `scope` stood beside the name in the old prompt context; `toEqual` here is
+    // exact, so its absence is pinned.
+    expect(options).toEqual({ definitionName: 'Design then Build', originatingElement: trigger });
   });
 
   it('asks nothing itself, so one removal cannot prompt twice', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
+    deactivateSpy.mockClear();
     useConfirmMock.mockClear();
 
     const { container, getByTestId } = mount([record()]);
@@ -467,14 +505,13 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     // restored at this call site would still pass every other assertion in this
     // block while asking the operator twice for one removal.
     expect(useConfirmMock).not.toHaveBeenCalled();
-    expect(saveWorkflows).toHaveBeenCalledTimes(1);
+    expect(deactivateSpy).toHaveBeenCalledTimes(1);
   });
 
   it('reports nothing when the operator declines, because nothing was sent', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
+    deactivateSpy.mockClear();
     useConfirmMock.mockClear();
-    saveWorkflows.mockResolvedValueOnce({ status: 'rejected', reason: 'declined' });
+    deactivateSpy.mockResolvedValueOnce({ status: 'rejected', reason: 'declined' });
 
     const { container, getByTestId } = mount([record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
@@ -489,9 +526,8 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('keeps unsaved drafts out of the rows it carries alongside the removal', async () => {
-    const saveWorkflows = await saved();
-    saveWorkflows.mockClear();
+  it('names only the removed row, so an unsaved draft cannot ride along', async () => {
+    deactivateSpy.mockClear();
     useConfirmMock.mockClear();
 
     const { container, getByTestId } = mount([record(), record({ workflowId: 'keeper' })]);
@@ -500,12 +536,13 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 
-    // Exactly the stored layer minus the removed row. Including the draft would
-    // declare two intents in one write — an add and a remove — which the host's
-    // intent algebra refuses, so the removal would fail for a reason that has
-    // nothing to do with the removal.
-    const request = saveWorkflows.mock.calls[0][0];
-    expect(request.workflows.map((row) => row.workflowId)).toEqual(['keeper']);
+    // Feature 101 (T030) — this used to assert the stored layer minus the removed
+    // row, because the write was the layer and an unsaved draft riding along would
+    // declare two intents in one write. Addressing one definition by id retires
+    // that whole failure mode: the request names `design-then-build` and nothing
+    // else, so `keeper` and the draft are unreachable from it by construction.
+    expect(deactivateSpy).toHaveBeenCalledTimes(1);
+    expect(deactivateSpy.mock.calls[0][0].id).toBe('design-then-build');
   });
 
   // Feature 100 (T509b, FR-049) — three Reset cases stood here: the mutation and

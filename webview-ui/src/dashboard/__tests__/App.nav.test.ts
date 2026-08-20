@@ -84,7 +84,7 @@ describe('Feature 064 T013 — flat seven-route top-level nav', () => {
     expect(buttons[2].getAttribute('data-testid')).toBe('dashboard-route-history');
     expect(buttons[3].getAttribute('data-testid')).toBe('dashboard-route-metrics');
     expect(buttons[4].getAttribute('data-testid')).toBe('dashboard-route-system');
-    expect(buttons[5].getAttribute('data-testid')).toBe('dashboard-route-pipeline-builder');
+    expect(buttons[5].getAttribute('data-testid')).toBe('dashboard-route-builder');
     expect(buttons[6].getAttribute('data-testid')).toBe('dashboard-route-settings');
   });
 
@@ -105,7 +105,7 @@ describe('Feature 064 T013 — flat seven-route top-level nav', () => {
       '[data-testid="dashboard-route-history"]'
     ) as HTMLButtonElement;
     const pbBtn = container.querySelector(
-      '[data-testid="dashboard-route-pipeline-builder"]'
+      '[data-testid="dashboard-route-builder"]'
     ) as HTMLButtonElement;
     const sysBtn = container.querySelector(
       '[data-testid="dashboard-route-system"]'
@@ -115,7 +115,7 @@ describe('Feature 064 T013 — flat seven-route top-level nav', () => {
     ) as HTMLButtonElement;
 
     await fireEvent.click(pbBtn);
-    expect(container.querySelector('[data-testid="dashboard-route-pipeline-builder"].active')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dashboard-route-builder"].active')).not.toBeNull();
     await fireEvent.click(sysBtn);
     expect(container.querySelector('[data-testid="dashboard-route-system"].active')).not.toBeNull();
     await fireEvent.click(setBtn);

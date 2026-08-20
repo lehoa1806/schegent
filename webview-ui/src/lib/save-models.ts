@@ -24,10 +24,12 @@ const IMPORT_ACK_TIMEOUT_MS = 5000;
  * structured `ack.result` — `currentRevision` on a `stale-catalog` rejection,
  * `revision`/`mutation` on acceptance — that `saveCatalogCommand` discards.
  *
- * Structurally identical to `savePipelines`/`saveWorkflows` for that reason:
- * UUIDv4 correlation, `snapshotStore.markPending`, a one-shot ack listener,
- * and a 5-second timeout so the caller can surface a recovery affordance
- * instead of hanging.
+ * Structurally identical to the lifecycle senders in `catalog-lifecycle.ts` for
+ * that reason: UUIDv4 correlation, `snapshotStore.markPending`, a one-shot ack
+ * listener, and a 5-second timeout so the caller can surface a recovery
+ * affordance instead of hanging. It stays separate from them because the Model
+ * Catalog is not a versioned catalog: it has no drafts, no versions, and no
+ * lifecycle to run.
  */
 export interface SaveModelsImportRequest {
   readonly models: Record<string, readonly string[]>;

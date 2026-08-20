@@ -257,3 +257,120 @@ describe('T505 — publication is the only way into the effective catalog', () =
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 101 (FR-R3-017) T024a — the consequence of FR-026b, at the layer that
+// decides what a run gets.
+//
+// Everything above is about a definition with no active version. This is the
+// state feature 101 makes reachable from the UI for the first time: a definition
+// that IS live and has an unpublished edit sitting on top of it. Before 101, a
+// Builder save republished the whole layer, so `'active-with-draft'` could not
+// occur from the surface at all and this case had nothing to protect.
+//
+// T020-T022 assert the surface never moves the pointer. This asserts what that
+// buys — SC-001a's headline claim, that saving does not change what a run uses.
+// Without it the claim is checked only by the absence of a publish dispatch, and
+// an absence is evidence about the caller, not about the resolution.
+// ---------------------------------------------------------------------------
+
+const EDITED_MARKER = 'edited-but-unpublished';
+
+/** One definition, published, with a differing draft on top of it (FR-004). */
+function activeWithDraft(kind: CatalogKind, body: (id: string) => unknown): CatalogSnapshot {
+  const published = body(PUBLISHED) as Record<string, unknown>;
+  return {
+    storeFormatVersion: 1,
+    definitions: [
+      {
+        kind,
+        id: PUBLISHED,
+        status: 'effective',
+        createdAt: 1,
+        updatedAt: 2,
+        activeVersionId: 'v1',
+        body: published,
+        draftVersionId: 'v2',
+        // A body that would resolve just as cleanly, differing only in a field the
+        // assertion can see. A malformed draft would be excluded for the wrong
+        // reason and the test would pass while proving nothing.
+        draftBody: { ...published, name: EDITED_MARKER },
+        versions: []
+      }
+    ],
+    faults: [],
+    collectable: [],
+    revisions: { phase: 'r1', pipeline: 'r1', workflow: 'r1' }
+  } as unknown as CatalogSnapshot;
+}
+
+describe('T024a — an unpublished save changes nothing about what a run uses (FR-026b, SC-001a)', () => {
+  it('resolves the Phase at its published body, not its draft', () => {
+    const resolved = resolvePhaseCatalog({
+      rows: storedRows(activeWithDraft('phase', PHASE_BODY), 'phase'),
+      revision: 'r1'
+    });
+    expect(resolved.effective).toHaveLength(1);
+    expect(resolved.effective[0].name).toBe(PUBLISHED);
+  });
+
+  it('resolves the Pipeline at its published body, not its draft', () => {
+    const phaseCatalog = resolvePhaseCatalog({
+      rows: [{ ...(PHASE_BODY('plan') as object) }],
+      revision: 'r1'
+    });
+    const resolved = resolvePipelineCatalog({
+      rows: storedRows(activeWithDraft('pipeline', PIPELINE_BODY), 'pipeline'),
+      revision: 'r1',
+      phaseCatalog: phaseCatalog.effective
+    });
+    expect(resolved.effective).toHaveLength(1);
+    expect(resolved.effective[0].name).toBe(PUBLISHED);
+  });
+
+  it('resolves the Workflow at its published body, not its draft', () => {
+    const standard = {
+      pipelineId: 'standard',
+      name: 'Standard',
+      version: 1,
+      phaseIds: ['plan'],
+      inputs: [],
+      outputs: [],
+      bindings: [],
+      recommendedNext: []
+    };
+    const resolved = resolveWorkflowCatalog({
+      rows: storedRows(activeWithDraft('workflow', WORKFLOW_BODY), 'workflow'),
+      revision: 'r1',
+      pipelineCatalog: {
+        effective: [standard],
+        records: [
+          {
+            key: 'standard::0',
+            pipelineId: 'standard',
+            status: 'effective' as const,
+            definition: standard,
+            display: {},
+            errors: []
+          }
+        ]
+      }
+    });
+    expect(resolved.effective).toHaveLength(1);
+    expect(resolved.effective[0].name).toBe(PUBLISHED);
+  });
+
+  it('leaves the edited body out of the resolution entirely, for every kind', () => {
+    // Not just out of `effective`: out of `records` and out of every display
+    // projection too. A surface that rendered the draft as though it were live
+    // would be the same defect one layer up.
+    for (const [kind, body] of [
+      ['phase', PHASE_BODY],
+      ['pipeline', PIPELINE_BODY],
+      ['workflow', WORKFLOW_BODY]
+    ] as const) {
+      const rows = storedRows(activeWithDraft(kind, body), kind);
+      expect(JSON.stringify(rows)).not.toContain(EDITED_MARKER);
+    }
+  });
+});

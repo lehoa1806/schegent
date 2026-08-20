@@ -208,7 +208,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
-| `pipeline-builder` | Process Library | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
+| `builder` | Builder | `components/PipelineBuilder.svelte` | Pipelines, phases, and models editor with `RetryConditionEditor` / `RawJsonPhaseEditor` wiring. |
 | `settings` | Settings | `components/SettingsSurface.svelte` | Two sub-tabs: **General** and **Fatal Signatures**. |
 
 `DEFAULT_DASHBOARD_ROUTE` stays `operations` through every such addition —
@@ -502,7 +502,7 @@ All three commands are **read-only** and are NOT members of `MUTATING_COMMANDS` 
 [`PipelineBuilder.svelte`](src/components/PipelineBuilder.svelte) carries
 per-phase **Effort** and **Model** dropdowns plus a precedence badge
 ("shadowed by workspace" etc.) on each row. The Pipeline Builder
-(reached via the top-level Pipeline Builder route) remains the canonical
+(reached via the top-level **Builder** route) remains the canonical
 phase-editing surface; SettingsSurface intentionally does **not** carry
 a Phases tab (spec 012 reduction).
 
@@ -512,13 +512,17 @@ effective/shadowed/invalid status, bounded errors, revisions, and unavailable
 models. `availablePhases` remains the effective runtime-only list. Built-ins are
 read-only; drafts select user or workspace scope explicitly.
 
-[`webview-ui/src/lib/save-phases.ts`](src/lib/save-phases.ts) is the
-**single call site** for `CMD_SAVE_PHASES` in the webview (FR-021 +
-research Decision 1). Components MUST call
+`webview-ui/src/lib/save-phases.ts` was the **single call site** for
+`CMD_SAVE_PHASES` in the webview (FR-021 + research Decision 1). Feature 101
+deleted it along with the command it wrapped (see the feature 101 amendment
+below); what survives is the single-call-site property, now held by
+[`catalog-lifecycle.ts`](src/lib/catalog-lifecycle.ts). The behavior it
+described, for the record: components called
 `await savePhases({ scope, expectedRevision, mutation, phases })` rather than
-constructing the envelope inline. The helper preserves structured accepted and
-rejected acknowledgement details and mirrors the correlation behavior of
-[`save-general-settings.ts`](src/lib/save-general-settings.ts):
+constructing the envelope inline. The helper preserved structured accepted and
+rejected acknowledgement details and mirrored the correlation behavior of
+[`save-general-settings.ts`](src/lib/save-general-settings.ts), which
+`catalog-lifecycle.ts` still follows step for step:
 
 1. Generates a UUIDv4 correlation id.
 2. Posts the envelope through `postCommand`.
@@ -526,8 +530,8 @@ rejected acknowledgement details and mirrors the correlation behavior of
    reject).
 4. Concurrent saves are correlated by id and never cross-resolve.
 
-Saves contain exactly one create/edit/duplicate/remove/reset intent and the
-complete target layer. Delete additionally awaits
+Saves contained exactly one create/edit/duplicate/remove/reset intent and the
+complete target layer. Delete additionally awaited
 `useConfirm('catalog.remove-phase', ...)`. The UI remains pending until a
 snapshot publishes the accepted revision.
 
@@ -548,6 +552,32 @@ it was, so a removal routes to `deactivateDefinition` instead. The translation
 exists so this surface keeps working while the store changes underneath it;
 FR-R3-017 replaces the surface with one that speaks the lifecycle directly and
 deletes `save-phases.ts`, `save-pipelines.ts`, and `save-workflows.ts` with it.
+
+**Amended by feature 101 (FR-R3-017).** That replacement happened. The three
+translation shims are **deleted**: `save-phases.ts`, `save-pipelines.ts`, and
+`save-workflows.ts` no longer exist, and the editors call
+[`catalog-lifecycle.ts`](src/lib/catalog-lifecycle.ts) directly —
+`saveDefinitionDraft` per definition, quoting that definition's
+`expectedDraftVersion` rather than a whole-layer revision. `save-models.ts` is
+untouched: the Model Catalog is configuration, not a versioned definition, and it
+stays outside the lifecycle (FR-041).
+
+Everything a definition's lifecycle looks like on screen now lives under
+[`src/components/Builder/`](src/components/Builder/): `DefinitionLifecycleRow`
+(state badge, created/modified, active version, defects), `DefinitionActions`
+(the four operations, one dispatch path), `DefinitionHistoryPanel` (the version
+list and one body at a time), `ChangedFieldSummary` (what publishing would
+change), and `CatalogEmptyState` (the empty-catalog front door, whose words come
+from the shared `empty-catalog-guidance` constant so this surface and the Runs
+surface cannot drift). Each editor mounts the row beside its own list item; the
+tab shell mounts nothing per-definition. The directory is a scan root of
+[`../tests/lint/no-html-interpolation-in-activity-feed.test.ts`](../tests/lint/no-html-interpolation-in-activity-feed.test.ts)
+with an empty allowlist, because every string on it is document-sourced.
+
+The scope vocabulary in the three sections below (built-in / user / workspace
+layers, `shadowed` status, per-layer revisions) describes the pre-099 store and
+is stale; feature 099 left one layer and feature 101 left the rows lifecycle
+state where the scope badge used to be.
 
 ### Scoped Pipeline catalog manager (spec 082)
 
@@ -572,9 +602,11 @@ Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
 pipelines }`, matching `CMD_SAVE_PHASES`. Each row may now carry `description`,
 `version`, `inputs`, `outputs`, `bindings`, `executionDefaults`, and
 `recommendedNext` in addition to `id`/`name`/`phases`.
-[`webview-ui/src/lib/save-pipelines.ts`](src/lib/save-pipelines.ts) is the
-**single call site**, with the same correlation and 5-second timeout behavior as
-`save-phases.ts`; the repo-grep regression at
+`webview-ui/src/lib/save-pipelines.ts` was the **single call site**, with the
+same correlation and 5-second timeout behavior as `save-phases.ts`. Feature 101
+deleted it along with the command it wrapped (see the feature 101 amendment
+above); what survives is the single-call-site property, now held by
+[`catalog-lifecycle.ts`](src/lib/catalog-lifecycle.ts). The repo-grep regression at
 [`../tests/lint/no-inline-save-catalog.test.ts`](../tests/lint/no-inline-save-catalog.test.ts)
 fails the build if a component posts the command inline. Removal awaits
 `useConfirm('catalog.remove-pipeline', ...)`, enforced by
@@ -632,8 +664,9 @@ A connection **condition** is structured data (`{ left, operator, right? }`)
 compared field-wise against closed enums; there is no string form, parser,
 evaluator, or sandbox, and there must never be one.
 
-[`webview-ui/src/lib/save-workflows.ts`](src/lib/save-workflows.ts) is the
-**single call site** for `CMD_SAVE_WORKFLOWS`, with the same UUIDv4
+`webview-ui/src/lib/save-workflows.ts` was the **single call site** for
+`CMD_SAVE_WORKFLOWS` — deleted by feature 101 with the rest of the whole-array
+save path (see the feature 101 amendment above) — with the same UUIDv4
 correlation, `snapshotStore.markPending`, one-shot ack listener, and 5-second
 timeout as `save-pipelines.ts`. It does not reuse `save-catalog-command.ts`
 because that helper discards `ack.result`, and a `stale-catalog` or
@@ -1021,6 +1054,26 @@ operator-authored free text. Rendering safety does not depend on that
 assumption holding, though: the table uses Svelte's default auto-escaping
 with no `{@html}` usage anywhere in the component (FR-017), so a
 hand-edited or adversarial log entry still can't inject markup.
+
+### IPC additions (spec 101 — Builder surface)
+
+One command, and it only reads.
+[`src/lib/catalog-history-ipc.ts`](src/lib/catalog-history-ipc.ts) is the
+**single call site** for `CMD_READ_DEFINITION_VERSION`, pinned by
+[`../tests/lint/no-inline-catalog-history-ipc.test.ts`](../tests/lint/no-inline-catalog-history-ipc.test.ts).
+`readDefinitionVersion({ kind, id, versionId })` correlates the request the same
+way the lifecycle senders do — UUIDv4 id, one-shot ack listener, 5-second
+timeout — and resolves to a closed result: `{ outcome: 'success', body }` or
+`{ outcome: 'failure', reason }`, never a body and a reason together. The panel
+that consumes it holds a three-state view (`pending | ready | error`), so a
+failed read cannot render as an empty body.
+
+The version *list* is not fetched: it rides the snapshot on each definition's
+`lifecycle.versions`, and only the body an operator actually opens costs a round
+trip. Reads carry no `expectedDraftVersion` — there is nothing to be stale
+against — and a response arriving after the operator has opened a different
+version is discarded rather than merged, which is a webview-side sequence check
+rather than a cancellation the host knows about.
 
 ### Audit surfaces
 

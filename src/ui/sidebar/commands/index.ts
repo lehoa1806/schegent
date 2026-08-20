@@ -30,6 +30,7 @@ import {
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_PUBLISH_DEFINITION,
   CMD_PUBLISH_PACKAGE,
+  CMD_READ_DEFINITION_VERSION,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
@@ -89,6 +90,7 @@ import { handler as pausePhase } from './cmd-pause-phase';
 import { handler as pauseQueue } from './cmd-pause-queue';
 import { handler as pingBackend } from './cmd-ping-backend';
 import { handler as preflightProcessYaml } from './cmd-preflight-process-yaml';
+import { handler as readDefinitionVersion } from './cmd-read-definition-version';
 import { handler as readMetrics } from './cmd-read-metrics';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
@@ -164,6 +166,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_PAUSE_QUEUE, pauseQueue as CommandHandler],
   [CMD_PING_BACKEND, pingBackend as CommandHandler],
   [CMD_PREFLIGHT_PROCESS_YAML, preflightProcessYaml as CommandHandler],
+  [CMD_READ_DEFINITION_VERSION, readDefinitionVersion as CommandHandler],
   [CMD_READ_METRICS, readMetrics as CommandHandler],
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
   [CMD_REMOVE_QUEUE_ITEM, removeQueueItem as CommandHandler],

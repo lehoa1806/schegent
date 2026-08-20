@@ -38,11 +38,13 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
     onceAck: vi.fn()
   }
 }));
-vi.mock('../../lib/save-phases', () => ({
-  savePhases: vi.fn(async () => ({ status: 'accepted' as const }))
-}));
-vi.mock('../../lib/save-workflows', () => ({
-  saveWorkflows: vi.fn(async () => ({ status: 'accepted' as const }))
+// Feature 101 (T030) — the three `save-*` transports collapsed into one module,
+// so one mock replaces two. Only the senders are stubbed: `draftTokenOfRecord`
+// keeps its real body because the editors derive their write token through it.
+vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
+  saveDefinitionDraft: vi.fn(async () => ({ status: 'accepted' as const })),
+  deactivateDefinition: vi.fn(async () => ({ status: 'accepted' as const }))
 }));
 
 afterEach(() => cleanup());

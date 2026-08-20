@@ -13,6 +13,7 @@ import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 import type { WorkflowPipelineReference } from './commands/router-types';
+import type { BuilderLifecycleByKind } from './builder-lifecycle';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
   AuditTailEntry,
@@ -80,6 +81,14 @@ export interface StateProjectorDeps {
    * renders as a loading state (FR-036).
    */
   readonly getWorkflowCatalog?: () => WorkflowCatalogResolution | undefined;
+  /**
+   * Feature 101 (FR-005, FR-007) — the catalog store's lifecycle facts, one
+   * lookup per kind. Read fresh on every compose so a save that turns an Active
+   * definition into `active-with-draft` is visible on the next projection.
+   * Absent on a host with no catalog store wired; every Builder row then omits
+   * `lifecycle` rather than claiming a state the host cannot know.
+   */
+  readonly getBuilderLifecycle?: () => BuilderLifecycleByKind;
   /**
    * Feature 088 — the connected runs, already projected. The host folds them
    * (aggregate + child-run states) rather than handing the composer the raw

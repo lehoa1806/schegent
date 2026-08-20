@@ -8,9 +8,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DocumentRefusalCode, ImportPlan, ImportPlanRow } from '../../lib/messages';
 import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
-import type { SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
-import type { SavePipelinesRequest, SavePipelinesResult } from '../../lib/save-pipelines';
-import type { SaveWorkflowsRequest, SaveWorkflowsResult } from '../../lib/save-workflows';
+import type { LifecycleResult } from '../../lib/catalog-lifecycle';
+import type { PackagePublishRequest } from '../../../../src/contracts/catalog-lifecycle';
 import {
   buildImportWrites,
   commitOutcome,
@@ -337,8 +336,10 @@ describe('Feature 084 — the retry-condition advisory (T062, FR-012a)', () => {
     const advised = buildImportWrites(plan([importRow(FULL, true)]));
     const silent = buildImportWrites(plan([importRow(FULL, false)]));
     expect(advised).toEqual(silent);
-    const request = advised[0].request as SavePhasesRequest;
-    expect(request.phases[0]).toHaveProperty('retryCondition', 'open_questions > 0');
+    expect(advised[0].layer.definitions[0].body).toHaveProperty(
+      'retryCondition',
+      'open_questions > 0'
+    );
   });
 });
 
@@ -792,18 +793,24 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
     expect(writes).toEqual([
       {
         key: 'phases',
-        request: {
+        layer: {
+          kind: 'phase',
           // Feature 099 (T496f, FR-042) — a `scope` stood beside the revision.
           // `toEqual` is exact, so its absence is pinned by this assertion.
           expectedRevision: PHASE_REVISION,
-          mutation: { kind: 'import', phaseId: 'brought-in' },
           // Feature 100 (T509b, FR-039a) — `HELD` used to lead this array: a
           // write named the whole layer, so the import had to append to what the
           // catalog already held. A write now names one definition, and the rows
           // it carries are the document's own. Passing the stored layer in is not
           // just unnecessary, it is unrepresentable — `buildImportWrites` takes
           // one argument, which the arity assertion above pins.
-          phases: [savePhaseRowFromDefinition(FULL)]
+          //
+          // Feature 101 (T029) — and a `mutation` stood beside them, declaring
+          // `import` or `import-package`. It reached no host: every one of these
+          // writes has gone out as a package publish since feature 100, and a
+          // package carries layers and ids and no intent. `toEqual` pins its
+          // absence too.
+          definitions: [{ id: 'brought-in', body: savePhaseRowFromDefinition(FULL) }]
         }
       }
     ]);
@@ -820,7 +827,7 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
       ...plan([importRow()]),
       computedAgainstRevision: 'moved-phase-rev'
     };
-    expect(buildImportWrites(moved)[0].request.expectedRevision).toBe('moved-phase-rev');
+    expect(buildImportWrites(moved)[0].layer.expectedRevision).toBe('moved-phase-rev');
   });
 
   // Feature 100 (T509b, FR-039a) — a case stood here named 'preserves the layer
@@ -847,36 +854,24 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   // FR-043 — two writes, two catalogs, two revisions. One map cannot gate both.
   it('gates each layer on its own catalog revision', () => {
     const writes = buildImportWrites(packagePlan([importRow(), PIPELINE_IMPORT_ROW]));
-    expect(writes[0].request.expectedRevision).toBe(PHASE_REVISION);
-    expect(writes[1].request.expectedRevision).toBe(PIPELINE_REVISION);
+    expect(writes[0].layer.expectedRevision).toBe(PHASE_REVISION);
+    expect(writes[1].layer.expectedRevision).toBe(PIPELINE_REVISION);
   });
 
-  it('declares exactly one intent per layer, naming every id it adds', () => {
+  // Feature 101 (T029) — this pinned the `import`/`import-package` intent, and a
+  // sibling case pinned that a lone Phase kept the standalone spelling. Both are
+  // gone with the field: a package publish carries no intent, so the surviving
+  // claim is which ids each layer names and under which kind.
+  it('names every id it writes, under the kind that owns it', () => {
     const second = importRow({ ...FULL, phaseId: 'also-in', name: 'Also In' });
     const writes = buildImportWrites(packagePlan([importRow(), second, PIPELINE_IMPORT_ROW]));
-    expect(writes[0].request.mutation).toEqual({
-      kind: 'import-package',
-      phaseIds: ['brought-in', 'also-in']
-    });
-    expect(writes[1].request.mutation).toEqual({
-      kind: 'import-package',
-      pipelineIds: ['ship-it']
-    });
-  });
-
-  // The distinction is observable — the host answers a `stale-catalog` rejection
-  // with different legal actions per intent kind — so the shipped standalone
-  // path keeps the intent it shipped with.
-  it('keeps the single-Phase standalone intent as `import`, not `import-package`', () => {
-    const standalone = buildImportWrites(plan([importRow()]));
-    expect(standalone[0].request.mutation).toEqual({ kind: 'import', phaseId: 'brought-in' });
-    // One Phase, but a package: the Phase write is part of an ordered pair, so
-    // it declares the package intent.
-    const withPipeline = buildImportWrites(packagePlan([importRow(), PIPELINE_IMPORT_ROW]));
-    expect(withPipeline[0].request.mutation).toEqual({
-      kind: 'import-package',
-      phaseIds: ['brought-in']
-    });
+    expect(writes[0].layer.kind).toBe('phase');
+    expect(writes[0].layer.definitions.map((definition) => definition.id)).toEqual([
+      'brought-in',
+      'also-in'
+    ]);
+    expect(writes[1].layer.kind).toBe('pipeline');
+    expect(writes[1].layer.definitions.map((definition) => definition.id)).toEqual(['ship-it']);
   });
 
   // Feature 100 (T509b, FR-039a) — this read 'appends the Pipeline row to the
@@ -885,8 +880,8 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   // handed to the plan, and the write must not name it.
   it('writes the Pipeline row alone, the stored layer having no route in', () => {
     const writes = buildImportWrites(packagePlan([PIPELINE_IMPORT_ROW]));
-    expect((writes[0].request as SavePipelinesRequest).pipelines).toEqual([
-      savePipelineRowFromDefinition(PIPELINE_DEFINITION)
+    expect(writes[0].layer.definitions).toEqual([
+      { id: 'ship-it', body: savePipelineRowFromDefinition(PIPELINE_DEFINITION) }
     ]);
     // The property, not this one ordering of it: a merge restored anywhere on
     // the row-building path would put the held id somewhere in the write.
@@ -1116,49 +1111,39 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
 describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', () => {
   const bothKinds = packagePlan([importRow(), PIPELINE_IMPORT_ROW]);
 
-  function deps(
-    phaseAck: SavePhasesResult,
-    pipelineAck: SavePipelinesResult
-  ): {
-    readonly savePhases: ReturnType<typeof vi.fn>;
-    readonly savePipelines: ReturnType<typeof vi.fn>;
-    readonly saveWorkflows: ReturnType<typeof vi.fn>;
+  /**
+   * Feature 101 (T029) — one spy where there were three.
+   *
+   * The three named a kind by which function was called; the single sender names
+   * it in the layer, so `kindsSent` is what "the Phase write went first" now reads
+   * off. Acks are supplied per call in order, which is also what pins that a
+   * refusal stops the sequence: an unconsumed ack is a write that never happened.
+   */
+  function deps(...acks: readonly LifecycleResult[]): {
+    readonly publishPackage: ReturnType<typeof vi.fn>;
+    readonly kindsSent: () => readonly string[];
   } {
-    return {
-      savePhases: vi.fn(async (_request: SavePhasesRequest) => phaseAck),
-      savePipelines: vi.fn(async (_request: SavePipelinesRequest) => pipelineAck),
-      // No plan in this block declares a Workflow, so this must never be called.
-      saveWorkflows: vi.fn(async (_request: SaveWorkflowsRequest) => ({
-        status: 'accepted' as const
-      }))
-    };
+    const sent: string[] = [];
+    const publishPackage = vi.fn(async (request: PackagePublishRequest) => {
+      sent.push(request.layers.map((layer) => layer.kind).join('+'));
+      return acks[sent.length - 1] ?? { status: 'accepted' as const };
+    });
+    return { publishPackage, kindsSent: () => sent };
   }
 
-  it('sends the Phase write before the Pipeline write', async () => {
-    const order: string[] = [];
-    const report = await runImportCommit(bothKinds, {
-      savePhases: async () => {
-        order.push('phases');
-        return { status: 'accepted' };
-      },
-      savePipelines: async () => {
-        order.push('pipelines');
-        return { status: 'accepted' };
-      },
-      saveWorkflows: async () => {
-        order.push('workflows');
-        return { status: 'accepted' };
-      }
-    });
-    expect(order).toEqual(['phases', 'pipelines']);
+  it('sends the Phase write before the Pipeline write, one layer per publish', async () => {
+    const injected = deps();
+    const report = await runImportCommit(bothKinds, injected);
+    // Not `['phase+pipeline']` — a single package carrying both would validate
+    // the Pipeline against a catalog that has not received its Phases yet.
+    expect(injected.kindsSent()).toEqual(['phase', 'pipeline']);
     expect(report.outcome).toBe('imported');
   });
 
   it('stops at the first rejection and never sends the second write', async () => {
-    const injected = deps({ status: 'rejected', reason: 'stale-catalog' }, { status: 'accepted' });
+    const injected = deps({ status: 'rejected', reason: 'stale-catalog' });
     const report = await runImportCommit(bothKinds, injected);
-    expect(injected.savePhases).toHaveBeenCalledTimes(1);
-    expect(injected.savePipelines).not.toHaveBeenCalled();
+    expect(injected.kindsSent()).toEqual(['phase']);
     expect(report.outcome).toBe('failed');
   });
 
@@ -1167,35 +1152,35 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
   it('sends no third write to undo the first when the second is refused', async () => {
     const injected = deps({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
     const report = await runImportCommit(bothKinds, injected);
-    expect(injected.savePhases).toHaveBeenCalledTimes(1);
-    expect(injected.savePipelines).toHaveBeenCalledTimes(1);
+    expect(injected.kindsSent()).toEqual(['phase', 'pipeline']);
     expect(report.outcome).toBe('partial');
     expect(report.rows[0].outcome).toBe('imported');
     expect(report.rows[1].outcome).toBe('failed');
   });
 
   it('sends nothing, and reports failure, for a plan it cannot build writes for', async () => {
-    const injected = deps({ status: 'accepted' }, { status: 'accepted' });
+    const injected = deps();
     // No Pipeline revision — the plan is unwritable, so the commit is a no-op.
     const report = await runImportCommit(plan([PIPELINE_IMPORT_ROW]), injected);
-    expect(injected.savePhases).not.toHaveBeenCalled();
-    expect(injected.savePipelines).not.toHaveBeenCalled();
+    expect(injected.publishPackage).not.toHaveBeenCalled();
     expect(report.outcome).toBe('failed');
     expect(report.results).toEqual([]);
   });
 
-  it('carries the built request through to the save it belongs to', async () => {
-    const injected = deps({ status: 'accepted' }, { status: 'accepted' });
+  it('carries each layer’s own revision gate through to the send', async () => {
+    const injected = deps();
     await runImportCommit(bothKinds, injected);
-    expect(injected.savePhases).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedRevision: PHASE_REVISION })
-    );
-    expect(injected.savePipelines).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedRevision: PIPELINE_REVISION })
-    );
+    expect(injected.publishPackage.mock.calls[0][0].layers[0]).toMatchObject({
+      kind: 'phase',
+      expectedRevision: PHASE_REVISION
+    });
+    expect(injected.publishPackage.mock.calls[1][0].layers[0]).toMatchObject({
+      kind: 'pipeline',
+      expectedRevision: PIPELINE_REVISION
+    });
     // Feature 099 (T496f, FR-042) — and neither request names a destination.
-    expect(injected.savePhases.mock.calls[0][0]).not.toHaveProperty('scope');
-    expect(injected.savePipelines.mock.calls[0][0]).not.toHaveProperty('scope');
+    expect(injected.publishPackage.mock.calls[0][0].layers[0]).not.toHaveProperty('scope');
+    expect(injected.publishPackage.mock.calls[1][0].layers[0]).not.toHaveProperty('scope');
   });
 });
 
@@ -1293,7 +1278,7 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
 
   it('gates each of the three layers on its own catalog revision', () => {
     const writes = buildImportWrites(threeLayers);
-    expect(writes.map((write) => write.request.expectedRevision)).toEqual([
+    expect(writes.map((write) => write.layer.expectedRevision)).toEqual([
       PHASE_REVISION,
       PIPELINE_REVISION,
       WORKFLOW_REVISION
@@ -1312,15 +1297,23 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
       computedAgainstPipelineRevision: 'moved-pipeline-rev',
       computedAgainstWorkflowRevision: 'moved-workflow-rev'
     };
-    expect(buildImportWrites(moved).map((write) => write.request.expectedRevision)).toEqual(['moved-phase-rev', 'moved-pipeline-rev', 'moved-workflow-rev']);
+    expect(buildImportWrites(moved).map((write) => write.layer.expectedRevision)).toEqual(['moved-phase-rev', 'moved-pipeline-rev', 'moved-workflow-rev']);
   });
 
-  it('declares exactly one intent per layer, naming every id it adds', () => {
+  // Feature 101 (T029) — was 'declares exactly one intent per layer, naming every
+  // id it adds'. The intent is gone with the whole-array request shape; the ids
+  // are not, and they are what the host addresses.
+  it('names every id it adds, under the kind that owns it', () => {
     const writes = buildImportWrites(threeLayers);
-    expect(writes.map((write) => write.request.mutation)).toEqual([
-      { kind: 'import-package', phaseIds: ['brought-in'] },
-      { kind: 'import-package', pipelineIds: ['ship-it'] },
-      { kind: 'import-package', workflowIds: ['ship-it-flow'] }
+    expect(
+      writes.map((write) => [
+        write.layer.kind,
+        write.layer.definitions.map((definition) => definition.id)
+      ])
+    ).toEqual([
+      ['phase', ['brought-in']],
+      ['pipeline', ['ship-it']],
+      ['workflow', ['ship-it-flow']]
     ]);
   });
 
@@ -1330,9 +1323,14 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   // Workflow write is built last and by its own code path.
   it('writes the Workflow row alone, the stored layer having no route in', () => {
     const writes = buildImportWrites(threeLayers);
-    const workflowWrite = writes[writes.length - 1].request as SaveWorkflowsRequest;
-    expect(workflowWrite.workflows).toEqual([
-      saveWorkflowRowFromDefinition(WORKFLOW_IMPORT_ROW.definition as ImportedWorkflowDefinition)
+    const workflowWrite = writes[writes.length - 1].layer;
+    expect(workflowWrite.definitions).toEqual([
+      {
+        id: 'ship-it-flow',
+        body: saveWorkflowRowFromDefinition(
+          WORKFLOW_IMPORT_ROW.definition as ImportedWorkflowDefinition
+        )
+      }
     ]);
     expect(JSON.stringify(writes)).not.toContain(HELD_WORKFLOW.workflowId);
   });
@@ -1342,7 +1340,7 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   it('writes only the Workflow layer for a package that supplies nothing else', () => {
     const writes = buildImportWrites(workflowOnlyPlan([WORKFLOW_IMPORT_ROW, SKIP_ROW]));
     expect(writes.map((write) => write.key)).toEqual(['workflows']);
-    expect(writes[0].request.expectedRevision).toBe(WORKFLOW_REVISION);
+    expect(writes[0].layer.expectedRevision).toBe(WORKFLOW_REVISION);
   });
 
   // The same rule the Pipeline half already obeys (FR-040): a layer with no gate
@@ -1453,53 +1451,32 @@ describe('Feature 086 T054 — projecting the third layer’s ack (FR-042, FR-05
 describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)', () => {
   const threeLayers = workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]);
 
-  function deps(
-    phaseAck: SavePhasesResult,
-    pipelineAck: SavePipelinesResult,
-    workflowAck: SaveWorkflowsResult
-  ): {
-    readonly savePhases: ReturnType<typeof vi.fn>;
-    readonly savePipelines: ReturnType<typeof vi.fn>;
-    readonly saveWorkflows: ReturnType<typeof vi.fn>;
+  /** Feature 101 (T029) — see the two-layer block above for why this is one spy. */
+  function deps(...acks: readonly LifecycleResult[]): {
+    readonly publishPackage: ReturnType<typeof vi.fn>;
+    readonly kindsSent: () => readonly string[];
   } {
-    return {
-      savePhases: vi.fn(async (_request: SavePhasesRequest) => phaseAck),
-      savePipelines: vi.fn(async (_request: SavePipelinesRequest) => pipelineAck),
-      saveWorkflows: vi.fn(async (_request: SaveWorkflowsRequest) => workflowAck)
-    };
+    const sent: string[] = [];
+    const publishPackage = vi.fn(async (request: PackagePublishRequest) => {
+      sent.push(request.layers.map((layer) => layer.kind).join('+'));
+      return acks[sent.length - 1] ?? { status: 'accepted' as const };
+    });
+    return { publishPackage, kindsSent: () => sent };
   }
 
-  it('sends the three writes in dependency order', async () => {
-    const order: string[] = [];
-    const report = await runImportCommit(threeLayers, {
-      savePhases: async () => {
-        order.push('phases');
-        return { status: 'accepted' };
-      },
-      savePipelines: async () => {
-        order.push('pipelines');
-        return { status: 'accepted' };
-      },
-      saveWorkflows: async () => {
-        order.push('workflows');
-        return { status: 'accepted' };
-      }
-    });
-    expect(order).toEqual(['phases', 'pipelines', 'workflows']);
+  it('sends the three writes in dependency order, one layer per publish', async () => {
+    const injected = deps();
+    const report = await runImportCommit(threeLayers, injected);
+    expect(injected.kindsSent()).toEqual(['phase', 'pipeline', 'workflow']);
     expect(report.outcome).toBe('imported');
   });
 
   // The stopping rule is unchanged and total over three: the first refusal ends
   // the sequence, so a refused Pipeline write means the Workflow is never sent.
   it('never sends the Workflow write when the Pipeline write was refused', async () => {
-    const injected = deps(
-      { status: 'accepted' },
-      { status: 'rejected', reason: 'stale-catalog' },
-      { status: 'accepted' }
-    );
+    const injected = deps({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
     const report = await runImportCommit(threeLayers, injected);
-    expect(injected.savePipelines).toHaveBeenCalledTimes(1);
-    expect(injected.saveWorkflows).not.toHaveBeenCalled();
+    expect(injected.kindsSent()).toEqual(['phase', 'pipeline']);
     expect(report.outcome).toBe('partial');
   });
 
@@ -1512,15 +1489,13 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
       { status: 'rejected', reason: 'stale-catalog' }
     );
     const report = await runImportCommit(threeLayers, injected);
-    expect(injected.savePhases).toHaveBeenCalledTimes(1);
-    expect(injected.savePipelines).toHaveBeenCalledTimes(1);
-    expect(injected.saveWorkflows).toHaveBeenCalledTimes(1);
+    expect(injected.kindsSent()).toEqual(['phase', 'pipeline', 'workflow']);
     expect(report.outcome).toBe('partial');
     expect(report.rows[2].outcome).toBe('failed');
   });
 
   it('reports imported only when all three acks were accepted', async () => {
-    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+    const injected = deps();
     const report = await runImportCommit(threeLayers, injected);
     expect(report.outcome).toBe('imported');
     expect(report.results.map((result) => result.key)).toEqual([
@@ -1530,23 +1505,24 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
     ]);
   });
 
-  it('carries the Workflow request through to the save it belongs to', async () => {
-    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+  it('carries the Workflow layer through to the send, ids and gate intact', async () => {
+    const injected = deps();
     await runImportCommit(threeLayers, injected);
-    expect(injected.saveWorkflows).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedRevision: WORKFLOW_REVISION,
-        mutation: { kind: 'import-package', workflowIds: ['ship-it-flow'] }
-      })
-    );
+    expect(injected.publishPackage).toHaveBeenLastCalledWith({
+      layers: [
+        expect.objectContaining({
+          kind: 'workflow',
+          expectedRevision: WORKFLOW_REVISION,
+          definitions: [expect.objectContaining({ id: 'ship-it-flow' })]
+        })
+      ]
+    });
   });
 
   it('sends only the Workflow write for a references-only package', async () => {
-    const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
+    const injected = deps();
     const report = await runImportCommit(workflowOnlyPlan([WORKFLOW_IMPORT_ROW]), injected);
-    expect(injected.savePhases).not.toHaveBeenCalled();
-    expect(injected.savePipelines).not.toHaveBeenCalled();
-    expect(injected.saveWorkflows).toHaveBeenCalledTimes(1);
+    expect(injected.kindsSent()).toEqual(['workflow']);
     expect(report.outcome).toBe('imported');
   });
 });

@@ -17,7 +17,13 @@
 // manifest revision instead of a per-scope record.
 
 import type { PipelineCatalogMutation, WorkflowSnapshot } from '../../lib/snapshot-types';
-import { savePipelines as savePipelinesHelper } from '../../lib/save-pipelines';
+import {
+  deactivateDefinition,
+  draftTokenOfRecord,
+  saveDefinitionDraft,
+  type LifecycleResult
+} from '../../lib/catalog-lifecycle';
+import { pipelineRowId } from '../../lib/definition-rows';
 import {
   formatPipelineSaveRejection,
   makeDuplicatePipelineDraft,
@@ -47,8 +53,11 @@ export class PipelineCatalogStore {
   #history = $state<MutablePipeline[][]>([]);
   /** The revision the visible rows were projected from; '' before the first. */
   #adopted = $state('');
-  #acceptedRevision = $state<string | null>(null);
-  #staleRevision = $state<string | null>(null);
+  // Feature 101 (T027) — booleans, not revision strings. A lifecycle ack carries
+  // no revision, and what the handshake below has always read out of these two is
+  // "a write landed" and "the last write was refused as stale".
+  #saveAccepted = $state(false);
+  #rebasePending = $state(false);
   #undoRedoInFlight = false;
   readonly #options: PipelineCatalogStoreOptions;
 
@@ -73,7 +82,7 @@ export class PipelineCatalogStore {
     const catalog = snapshot.pipelineCatalog;
     if (!catalog || catalog.state !== 'ready') return;
     const revision = catalog.revision;
-    if (this.#staleRevision !== null && this.mutation && revision !== this.#adopted) {
+    if (this.#rebasePending && this.mutation && revision !== this.#adopted) {
       this.pipelines = rebasePipelineMutation(
         catalog.records,
         this.pipelines,
@@ -81,9 +90,9 @@ export class PipelineCatalogStore {
         this.mutationSourceKey
       );
       this.#adopted = revision;
-      this.#staleRevision = null;
+      this.#rebasePending = false;
     }
-    const acceptedRefresh = this.#acceptedRevision !== null && revision !== this.#adopted;
+    const acceptedRefresh = this.#saveAccepted && revision !== this.#adopted;
     const shouldAdopt = this.#adopted === '' || this.mutation === null || acceptedRefresh;
     if (revision === this.#adopted || !shouldAdopt) return;
     this.pipelines = catalog.records.map(sourceRecordToMutablePipeline);
@@ -151,16 +160,18 @@ export class PipelineCatalogStore {
    * lets the helper raise it before dispatch (FR-049).
    */
   remove(index: number, originatingElement?: HTMLElement | null): void {
+    const catalog = this.#options.getSnapshot().pipelineCatalog;
     const pipeline = this.pipelines[index];
-    if (!pipeline || this.savePending) return;
-    const proposed = this.pipelines.filter((_row, rowIndex) => rowIndex !== index);
-    const mutation: PipelineCatalogMutation = { kind: 'remove', pipelineId: pipeline.id };
-    this.mutation = mutation;
+    if (!pipeline || this.savePending || catalog?.state !== 'ready') return;
+    const record = catalog.records.find((candidate) => candidate.key === pipeline.sourceKey);
+    this.mutation = { kind: 'remove', pipelineId: pipeline.id };
     this.mutationSourceKey = pipeline.sourceKey;
-    this.#submit(mutation, proposed, {
-      removedName: pipeline.name,
-      originatingElement: originatingElement ?? null
-    });
+    this.#submit(() =>
+      deactivateDefinition(
+        { kind: 'pipeline', id: pipeline.id, expectedDraftVersion: draftTokenOfRecord(record) },
+        { definitionName: pipeline.name, originatingElement: originatingElement ?? null }
+      )
+    );
   }
 
   /** Drops an unsaved draft, or restores a persisted row from the projection. */
@@ -231,8 +242,31 @@ export class PipelineCatalogStore {
     this.#swapPhases(phaseIndex, phaseIndex + 1);
   }
 
+  /**
+   * FR-026a — save writes a DRAFT of the one edited Pipeline.
+   *
+   * The row is found by source key rather than by id because the id is itself an
+   * editable field. `pipelineRowId` picks between the two authored identity
+   * spellings the host validator accepts; a row declaring neither is not
+   * addressable and is refused here rather than sent under an empty id.
+   */
   save(): void {
-    if (this.mutation) this.#submit(this.mutation);
+    const catalog = this.#options.getSnapshot().pipelineCatalog;
+    if (!this.mutation || catalog?.state !== 'ready') return;
+    const row = this.pipelines.find((candidate) => candidate.sourceKey === this.mutationSourceKey);
+    if (!row) return;
+    const body = toSavePipelineRow(row);
+    const id = pipelineRowId(body);
+    if (id.length === 0) return;
+    const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
+    this.#submit(() =>
+      saveDefinitionDraft({
+        kind: 'pipeline',
+        id,
+        expectedDraftVersion: draftTokenOfRecord(record),
+        body
+      })
+    );
   }
 
   /**
@@ -257,26 +291,23 @@ export class PipelineCatalogStore {
   #clearMutation(): void {
     this.mutation = null;
     this.mutationSourceKey = null;
-    this.#acceptedRevision = null;
-    this.#staleRevision = null;
+    this.#saveAccepted = false;
+    this.#rebasePending = false;
   }
 
-  #submit(
-    mutation: PipelineCatalogMutation,
-    sourceRows: readonly MutablePipeline[] = this.pipelines,
-    prompt: { removedName?: string; originatingElement?: HTMLElement | null } = {}
-  ): void {
-    const catalog = this.#options.getSnapshot().pipelineCatalog;
-    if (!catalog || catalog.state !== 'ready' || this.savePending) return;
-    const pipelines = sourceRows.map(toSavePipelineRow);
+  /**
+   * Feature 101 (T027, FR-026a) — one lifecycle write, sent and settled.
+   *
+   * `send` is a thunk rather than a request: a draft save is ungated and a
+   * deactivation raises its confirmation inside the helper (FR-049), so the two
+   * writers share only the pending gate, the refusal handling, and when to stop
+   * waiting. That is what this method is.
+   */
+  #submit(send: () => Promise<LifecycleResult>): void {
+    if (this.savePending) return;
     this.savePending = true;
-    this.#acceptedRevision = null;
-    void savePipelinesHelper({
-      expectedRevision: this.#adopted,
-      mutation,
-      pipelines,
-      ...prompt
-    }).then((result) => {
+    this.#saveAccepted = false;
+    void send().then((result) => {
       if (result.status === 'rejected') {
         this.savePending = false;
         // Feature 100 (T509b) — the operator closed the removal prompt. Nothing
@@ -286,19 +317,16 @@ export class PipelineCatalogStore {
           this.#clearMutation();
           return;
         }
-        const stale = result.result as { currentRevision?: unknown } | undefined;
-        if (result.reason === 'stale-catalog' && typeof stale?.currentRevision === 'string') {
-          this.#staleRevision = stale.currentRevision;
-        }
+        if (result.reason === 'stale-catalog') this.#rebasePending = true;
         this.#options.onSaveError(formatPipelineSaveRejection(result.reason, result.result));
         return;
       }
       this.#options.onSaveAccepted();
-      const accepted = result.result as { revision?: string } | undefined;
-      this.#acceptedRevision = accepted?.revision ?? '';
-      // An accepted save whose revision already matches the projection means no
-      // further snapshot is coming; settle now instead of waiting for one.
-      if (this.#acceptedRevision === catalog.revision) {
+      this.#saveAccepted = true;
+      // FR-026d — an unchanged save is a success that writes nothing, so the
+      // projection will not move and no snapshot is coming. Settle now, or every
+      // control stays disabled until the view is reloaded.
+      if ((result.result as { appended?: boolean } | undefined)?.appended === false) {
         this.savePending = false;
         this.#clearMutation();
       }
