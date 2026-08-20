@@ -17,22 +17,27 @@ import type { WorkflowPipelineReference } from '../../../../src/ui/sidebar/comma
 import { WorkspaceStateStore, type Memento } from '../../../../src/state/workspace-state';
 import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
-import { resolvePipelineCatalog, pipelineLayerRevision } from '../../../../src/config/pipeline-catalog';
+import { resolvePipelineCatalog } from '../../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../../src/config/pipeline-config';
 import { SPECKIT_PHASE_DEFS } from '../../../fixtures/speckit-catalog-fixture';
 
 // Feature 098 (T080) — the Pipelines projected below name `speckit-specify`,
 // `speckit-plan` and `finalize`, which used to resolve out of the built-in Phase
-// layer. That layer stays wired in because the product still resolves it, but it
-// is empty, so the rows arrive as a configured layer instead. Without them every
-// projected Pipeline is `invalid` and no case here reaches the projection it is
-// about. See the fixture header for why the ids are the real Spec Kit ones.
+// layer. Nothing is projected for free now, so the rows arrive as stored rows.
+// Without them every projected Pipeline is `invalid` and no case here reaches the
+// projection it is about. See the fixture header for why the ids are the real
+// Spec Kit ones.
 const PHASE_CATALOG = resolvePhaseCatalog({
-  builtIn: BUILT_IN_PHASES,
-  user: [],
-  workspace: SPECKIT_PHASE_DEFS
+  rows: SPECKIT_PHASE_DEFS,
+  revision: 'rev-phase-projection'
 });
+
+/**
+ * Feature 099 (T496f, FR-044) — the store's revision for the Pipeline catalog.
+ * Named rather than derived, so C4 below asserts the projection carries THIS
+ * string through rather than asserting a fingerprint against its own recompute.
+ */
+const SEEDED_PIPELINE_REVISION = 'rev-pipeline-projection';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -63,8 +68,7 @@ afterEach(async () => {
 
 function project(
   layers: {
-    user?: readonly unknown[];
-    workspace?: readonly unknown[];
+    rows?: readonly unknown[];
     /** FR-002 — omitted entirely by a host with no Workflow references. */
     workflowRefs?: readonly WorkflowPipelineReference[];
   },
@@ -72,9 +76,8 @@ function project(
     (value ?? '').replaceAll('SECRET', '[REDACTED]')
 ) {
   const catalog = resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: layers.user ?? [],
-    workspace: layers.workspace ?? [],
+    rows: layers.rows ?? [],
+    revision: SEEDED_PIPELINE_REVISION,
     phaseCatalog: PHASE_CATALOG.effective
   });
   const projector = new StateProjector({
@@ -103,50 +106,67 @@ const VALID_ROW = {
 };
 
 describe('pipelineCatalog projection — C1 every source row is retained', () => {
-  it('projects invalid rows alongside valid ones instead of discarding the layer', () => {
+  it('projects invalid rows alongside valid ones instead of discarding the catalog', () => {
     const { projection } = project({
-      workspace: [VALID_ROW, { id: 'BAD ID', name: '', phases: [] }]
+      rows: [VALID_ROW, { id: 'BAD ID', name: '', phases: [] }]
     });
     expect(projection?.state).toBe('ready');
-    const workspaceRecords = projection!.records.filter((r) => r.scope === 'workspace');
-    expect(workspaceRecords).toHaveLength(2);
-    const invalid = workspaceRecords.find((r) => r.status === 'invalid');
+    expect(projection!.records).toHaveLength(2);
+    const invalid = projection!.records.find((r) => r.status === 'invalid');
     expect(invalid).toBeDefined();
     expect(invalid!.definition).toBeNull();
     expect(invalid!.errors.length).toBeGreaterThan(0);
   });
 
-  it('keys each record as `${scope}:${pipelineId}`', () => {
-    const { projection } = project({ workspace: [VALID_ROW] });
-    const record = projection!.records.find((r) => r.scope === 'workspace')!;
-    expect(record.key).toBe('workspace:custom-flow');
+  // Feature 099 (T496f, FR-043) — the key was `${scope}:${pipelineId}`, unique
+  // because no layer could hold one id twice. The key is the resolver's own
+  // `${pipelineId}::${index}` now, and the property it exists for is unchanged
+  // and load-bearing in exactly the case that used to be impossible: two rows
+  // claiming one id must still be two distinct records the operator can tell
+  // apart and address separately.
+  it('keys each record by id and position, so two rows claiming one id stay distinct', () => {
+    const { projection } = project({
+      rows: [VALID_ROW, { ...VALID_ROW, name: 'Second Claim' }]
+    });
+    const keys = projection!.records.map((r) => r.key);
+    expect(keys).toEqual(['custom-flow::0', 'custom-flow::1']);
+    expect(new Set(keys).size).toBe(2);
   });
 });
 
-describe('pipelineCatalog projection — C2/C3 precedence and effectiveness', () => {
-  it('marks exactly one record effective per id and shadows the rest', () => {
-    const { projection } = project({
-      user: [{ ...VALID_ROW, name: 'User Copy' }],
-      workspace: [{ ...VALID_ROW, name: 'Workspace Copy' }]
-    });
+// Feature 099 (T496f, FR-042) — C2 was layer precedence: the higher layer wins
+// and the loser is `shadowed`. One layer has no precedence, and `shadowed` is
+// gone with it. C3 — an id resolves to at most one definition, and never to an
+// invalid one — is untouched, and it is now the whole of the contract: an id two
+// rows contend for resolves to NEITHER, which is the one-catalog analogue of the
+// case precedence used to settle.
+describe('pipelineCatalog projection — C3 effectiveness', () => {
+  it('marks exactly one record effective for an id exactly one row claims', () => {
+    const { projection } = project({ rows: [VALID_ROW] });
     const forId = projection!.records.filter((r) => r.pipelineId === 'custom-flow');
     expect(forId.filter((r) => r.status === 'effective')).toHaveLength(1);
-    expect(forId.find((r) => r.status === 'effective')!.scope).toBe('workspace');
-    expect(forId.filter((r) => r.status === 'shadowed').map((r) => r.scope)).toEqual(['user']);
+    expect(projection!.effective.map((d) => d.pipelineId)).toEqual(['custom-flow']);
+  });
+
+  it('marks no record effective when two rows contend for one id', () => {
+    const { projection } = project({
+      rows: [{ ...VALID_ROW, name: 'First Claim' }, { ...VALID_ROW, name: 'Second Claim' }]
+    });
+    const forId = projection!.records.filter((r) => r.pipelineId === 'custom-flow');
+    expect(forId).toHaveLength(2);
+    expect(forId.map((r) => r.status)).toEqual(['invalid', 'invalid']);
+    for (const record of forId) expect(record.definition).toBeNull();
+    // Neither claim is silently preferred, so the id resolves to nothing at all.
+    expect(projection!.effective.map((d) => d.pipelineId)).not.toContain('custom-flow');
   });
 
   it('never projects an invalid row into `effective`', () => {
     const { projection } = project({
-      user: [VALID_ROW],
-      workspace: [{ id: 'custom-flow', name: '', phases: [] }]
+      rows: [VALID_ROW, { id: 'broken-flow', name: '', phases: [] }]
     });
     const effectiveIds = projection!.effective.map((d) => d.pipelineId);
     expect(effectiveIds).toContain('custom-flow');
-    const effectiveRecord = projection!.records.find(
-      (r) => r.pipelineId === 'custom-flow' && r.status === 'effective'
-    );
-    // The workspace row is invalid, so the valid user row takes effect.
-    expect(effectiveRecord!.scope).toBe('user');
+    expect(effectiveIds).not.toContain('broken-flow');
     for (const definition of projection!.effective) {
       const record = projection!.records.find(
         (r) => r.pipelineId === definition.pipelineId && r.status === 'effective'
@@ -157,20 +177,22 @@ describe('pipelineCatalog projection — C2/C3 precedence and effectiveness', ()
   });
 });
 
-describe('pipelineCatalog projection — C4 revisions', () => {
-  it('carries the per-layer fingerprints the webview echoes as expectedRevision', () => {
-    const { projection } = project({ workspace: [VALID_ROW] });
-    expect(projection!.revisions).toEqual({
-      user: pipelineLayerRevision([]),
-      workspace: pipelineLayerRevision([VALID_ROW])
-    });
+describe('pipelineCatalog projection — C4 revision', () => {
+  // Feature 099 (T496f, FR-044) — one layer, one revision. It is the store's,
+  // carried through untouched rather than recomputed from the rows, so the
+  // webview echoes back the same string the store handed the host.
+  it('carries the store revision the webview echoes as expectedRevision', () => {
+    const { catalog, projection } = project({ rows: [VALID_ROW] });
+    expect(projection!.revision).toBe(SEEDED_PIPELINE_REVISION);
+    expect(projection!.revision).toBe(catalog.revision);
+    expect(projection).not.toHaveProperty('revisions');
   });
 });
 
 describe('pipelineCatalog projection — C5/C6 sanitization', () => {
   it('sanitizes definitions, display values, warnings, and errors exactly once', () => {
     const { projection } = project({
-      workspace: [
+      rows: [
         { ...VALID_ROW, name: 'Token SECRET', description: 'Uses SECRET creds' },
         { id: 'broken-SECRET-flow', name: 'Broken', phases: [], version: 1 }
       ]
@@ -192,7 +214,7 @@ describe('pipelineCatalog projection — C5/C6 sanitization', () => {
     // here would silently rewrite the operator's own description on their next
     // edit.
     const authoredPath = '/Users/someone/workspaces/project';
-    const { projection } = project({ workspace: [{ ...VALID_ROW, description: authoredPath }] });
+    const { projection } = project({ rows: [{ ...VALID_ROW, description: authoredPath }] });
     const serialized = JSON.stringify(projection);
     expect(serialized).not.toContain(tmpRoot);
     expect(serialized).not.toContain(audit.logPath);
@@ -205,7 +227,7 @@ describe('pipelineCatalog projection — C7 bounded errors', () => {
   it('caps errors at 20 per record and truncates each field to its declared length', () => {
     const manyBadFields: Record<string, unknown> = { id: 'noisy-flow', name: 'Noisy', version: 1, phases: ['finalize'] };
     for (let index = 0; index < 30; index++) manyBadFields[`unknownField${index}`] = 'x';
-    const { projection } = project({ workspace: [manyBadFields] });
+    const { projection } = project({ rows: [manyBadFields] });
     const record = projection!.records.find((r) => r.pipelineId === 'noisy-flow')!;
     expect(record.errors.length).toBeLessThanOrEqual(20);
     for (const error of record.errors) {
@@ -217,7 +239,7 @@ describe('pipelineCatalog projection — C7 bounded errors', () => {
 
   it('truncates an over-long projected id to 64 characters', () => {
     const { projection } = project({
-      workspace: [{ id: `a${'b'.repeat(200)}`, name: 'Long', version: 1, phases: ['finalize'] }]
+      rows: [{ id: `a${'b'.repeat(200)}`, name: 'Long', version: 1, phases: ['finalize'] }]
     });
     for (const record of projection!.records) {
       expect(record.pipelineId.length).toBeLessThanOrEqual(64);
@@ -233,7 +255,7 @@ describe('pipelineCatalog projection — C8 advisories are warnings, not errors'
       version: 1,
       phases: ['finalize']
     }));
-    const { projection } = project({ workspace: [...rows, { id: 'bad', name: '', phases: [] }] });
+    const { projection } = project({ rows: [...rows, { id: 'bad', name: '', phases: [] }] });
     expect(projection!.state).toBe('ready');
     expect(projection!.error).toBeUndefined();
     expect(projection!.warnings.length).toBeGreaterThan(0);
@@ -268,7 +290,7 @@ describe('pipelineCatalog projection — C9 whole-catalog resolution failure', (
 
 describe('pipelineCatalog projection — C10 derived state only', () => {
   it('is deeply frozen and leaves availablePipelines untouched', () => {
-    const { snapshot, projection } = project({ workspace: [VALID_ROW] });
+    const { snapshot, projection } = project({ rows: [VALID_ROW] });
     expect(Object.isFrozen(projection)).toBe(true);
     expect(Object.isFrozen(projection!.records)).toBe(true);
     expect(Object.isFrozen(projection!.effective)).toBe(true);
@@ -285,25 +307,31 @@ describe('pipelineCatalog projection — C10 derived state only', () => {
 describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
   it('lists the Workflows referencing an id, sorted and deduplicated', () => {
     const { projection } = project({
-      workspace: [VALID_ROW],
+      rows: [VALID_ROW],
       workflowRefs: [
         { workflowId: 'wf-z', pipelineId: 'custom-flow', kind: 'run-request' },
         { workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' },
         { workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }
       ]
     });
-    const record = projection!.records.find((r) => r.key === 'workspace:custom-flow')!;
+    const record = projection!.records.find((r) => r.pipelineId === 'custom-flow')!;
     expect(record.consumingWorkflowIds).toEqual(['wf-a', 'wf-z']);
   });
 
-  it('reports the same consumers on a shadowed record as on the effective one', () => {
+  // Feature 099 (T496f) — the second record was `shadowed`; it is `invalid` now,
+  // for the same underlying reason (a second row claiming the id). The claim is
+  // unchanged and matters more here: a reference names an ID, so every record
+  // carrying that id reports the same consumers regardless of its status — the
+  // operator of a record that is NOT in effect is the one most likely to need to
+  // know who depends on the id.
+  it('reports the same consumers on every record claiming the id', () => {
     const { projection } = project({
-      user: [{ ...VALID_ROW, name: 'User Copy' }],
-      workspace: [VALID_ROW],
+      rows: [{ ...VALID_ROW, name: 'First Claim' }, VALID_ROW],
       workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const forId = projection!.records.filter((r) => r.pipelineId === 'custom-flow');
-    expect(forId.map((r) => r.status).sort()).toEqual(['effective', 'shadowed']);
+    expect(forId).toHaveLength(2);
+    expect(forId.every((r) => r.status !== 'effective')).toBe(true);
     for (const record of forId) {
       expect(record.consumingWorkflowIds).toEqual(['wf-a']);
     }
@@ -315,7 +343,7 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
     // now, so the case authors the row it needs: one referenced Pipeline and one
     // that nothing names.
     const { projection } = project({
-      workspace: [VALID_ROW, { ...VALID_ROW, id: 'unreferenced-flow', name: 'Unreferenced' }],
+      rows: [VALID_ROW, { ...VALID_ROW, id: 'unreferenced-flow', name: 'Unreferenced' }],
       workflowRefs: [{ workflowId: 'wf-a', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
     const unreferenced = projection!.records.filter((r) => r.pipelineId !== 'custom-flow');
@@ -326,7 +354,7 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
   });
 
   it('omits the field entirely when the host exposes no Workflow references', () => {
-    const { projection } = project({ workspace: [VALID_ROW] });
+    const { projection } = project({ rows: [VALID_ROW] });
     for (const record of projection!.records) {
       expect(record.consumingWorkflowIds).toBeUndefined();
     }
@@ -334,10 +362,10 @@ describe('pipelineCatalog projection — FR-002 consuming Workflows', () => {
 
   it('sanitizes and bounds ids before they reach the webview (C5, C7)', () => {
     const { projection } = project({
-      workspace: [VALID_ROW],
+      rows: [VALID_ROW],
       workflowRefs: [{ workflowId: 'wf-SECRET', pipelineId: 'custom-flow', kind: 'run-request' }]
     });
-    const record = projection!.records.find((r) => r.key === 'workspace:custom-flow')!;
+    const record = projection!.records.find((r) => r.pipelineId === 'custom-flow')!;
     expect(record.consumingWorkflowIds).toEqual(['wf-[REDACTED]']);
     expect(Object.isFrozen(record.consumingWorkflowIds)).toBe(true);
   });

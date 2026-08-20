@@ -131,6 +131,19 @@ const REFUSED_PACKAGE = 'apiVersion: schegent/v1\nkind: Deployment\n';
 
 const HELD_PHASE = Object.freeze({ id: 'held', name: 'Held', version: 4, instruction: 'Hold.' });
 
+/**
+ * The revision every stored-layer read below reports.
+ *
+ * Feature 099 (T496f, FR-042, FR-044) — a distinctive sentinel rather than a
+ * plausible-looking digest, because it is host-derived installation state that
+ * the store computes and the operator never wrote. It is exactly the class of
+ * value this file exists to keep out of an exported document, and a sentinel is
+ * what lets that be asserted by name instead of hoped for: see the value-leak
+ * scan, which the key whitelist cannot make this claim for — a revision would
+ * arrive as a bare value, under a key the schema already declares.
+ */
+const STORE_REVISION = 'rev-sentinel-8f3c2a';
+
 interface PreflightOptions {
   readonly text: string;
   readonly sanitize?: (value: string) => string;
@@ -155,8 +168,14 @@ async function preflight(opts: PreflightOptions): Promise<PreflightRun> {
 
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: [], workspace: opts.phases ?? [] }),
-      readPipelineConfig: () => ({ user: [], workspace: [] }),
+      // Feature 099 (T496f, FR-042) — one stored layer with the revision it was
+      // read at, where this carried a `{ user, workspace }` pair per catalog. The
+      // preflight's presence rule is unchanged and is what `opts.phases` feeds: it
+      // scans STORED rows at every status, never the effective catalog, so a held
+      // id still produces a `skip` row below. Only the number of lists it scans
+      // collapsed.
+      readPhaseConfig: () => ({ rows: opts.phases ?? [], revision: STORE_REVISION }),
+      readPipelineConfig: () => ({ rows: [], revision: STORE_REVISION }),
       openProcessYamlDocument: async () => ({
         outcome: 'read' as const,
         bytes: new Uint8Array(Buffer.from(opts.text, 'utf8'))
@@ -913,9 +932,9 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
 
     const ctx = {
       deps: {
-        readWorkflowConfig: () => ({ user: [HYGIENE_WORKFLOW], workspace: [] }),
-        readPipelineConfig: () => ({ user: HYGIENE_PIPELINES, workspace: [] }),
-        readPhaseConfig: () => ({ user: HYGIENE_PHASES, workspace: [] }),
+        readWorkflowConfig: () => ({ rows: [HYGIENE_WORKFLOW], revision: STORE_REVISION }),
+        readPipelineConfig: () => ({ rows: HYGIENE_PIPELINES, revision: STORE_REVISION }),
+        readPhaseConfig: () => ({ rows: HYGIENE_PHASES, revision: STORE_REVISION }),
         saveProcessYamlDocument: async (request: { readonly text: string }) => {
           saved.push(request.text);
           return { outcome: 'saved' as const };
@@ -997,6 +1016,11 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     const { text } = await exportClosure();
     const haystack = text.toLowerCase();
     expect(LEAK_WORDS.filter((word) => haystack.includes(word))).toEqual([]);
+    // And the one installation-state value this path is handed by name. The list
+    // above is a denylist of words someone thought of; the store revision is a
+    // value the export reads on every run, so it is stated rather than left to a
+    // word list that has no reason to contain it.
+    expect(haystack).not.toContain(STORE_REVISION);
   });
 
   it('transports no executable extension code (FR-060)', async () => {

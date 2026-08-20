@@ -1,6 +1,5 @@
 // Feature 082 (T028) — the `savePipelines` case moved to
-// `save-pipelines.test.ts` when the helper adopted the scoped, revisioned
-// envelope. That suite covers the same envelope/markPending/accepted-ack
+// `save-pipelines.test.ts` when the helper adopted the revisioned envelope. That suite covers the same envelope/markPending/accepted-ack
 // behavior against the current contract, so keeping a copy here would only pin
 // the superseded `{ pipelines }` payload.
 
@@ -56,8 +55,7 @@ describe('save catalog helpers', () => {
       }
     ];
     const request: SavePhasesRequest = {
-      scope: 'workspace',
-      expectedRevision: 'workspace-revision',
+      expectedRevision: 'phase-revision',
       mutation: { kind: 'edit', phaseId: 'optional-audit' },
       phases
     };

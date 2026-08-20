@@ -71,10 +71,12 @@ import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
 import { coerceModels } from './config/pipeline-config-loader';
 import type { CatalogConfigReader } from './config/pipeline-config-loader';
-import { loadAndReportCatalog } from './activation/catalog-loading';
-import type { PipelineCatalog } from './config/pipeline-config';
-import { readWorkflowLayers, type WorkflowConfigReader } from './config/workflow-config';
-import { createWorkflowConfigReader } from './activation/workflow-config-reader';
+import { CatalogSession, storedLayerReaders } from './activation/catalog-loading';
+import {
+  createCatalogReader,
+  createCatalogSettingsWriter
+} from './activation/catalog-settings-wiring';
+import { createHostCatalogStore, nodeDigest } from './activation/catalog-store-wiring';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
@@ -325,14 +327,20 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
-  const workflowConfigReader: WorkflowConfigReader = createWorkflowConfigReader(workspaceRoot);
-  const initialLoad = loadAndReportCatalog(catalogReader, logger, workflowConfigReader);
-  let activeCatalog: PipelineCatalog = initialLoad.catalog;
-  let activePhasePrecedence: import('./config/phase-precedence').PhasePrecedenceProjection =
-    initialLoad.phasePrecedence;
-  let activePhaseCatalog = initialLoad.phaseCatalog;
-  let activePipelineCatalog = initialLoad.pipelineCatalog;
-  let activeWorkflowCatalog = initialLoad.workflowCatalog;
+  // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
+  // no catalog activates at all. The snapshot still has to exist for the resolvers,
+  // so the two facts stay apart: no store, and the empty catalog it resolves to.
+  const catalogStore = createHostCatalogStore();
+  // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
+  // before anything is composed, and the session owns that snapshot together with
+  // everything resolved from it. See `CatalogSession` for why the five bindings
+  // this replaced are one fact.
+  const catalogSession = await CatalogSession.open({
+    store: catalogStore,
+    reader: catalogReader,
+    digest: nodeDigest,
+    logger
+  });
   // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
   // can both see, now that the workspace root is known. Until this call the store
   // arbitrates through a `Memento`-backed adapter, which is correct for one host
@@ -367,11 +375,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const queue = new QueueManager(store, logger);
   // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
   // Pipeline?" for both the Library list (FR-002) and gate 13 (FR-022a). The
-  // callbacks re-read on every call so a `schegent.workflows` reload, which
-  // reassigns `activeWorkflowCatalog`, reaches the next gate decision.
+  // callbacks re-read on every call so a Workflow catalog reload, which
+  // reassigns `catalogSession.workflowCatalog`, reaches the next gate decision.
   const collectAllWorkflowPipelineRefs = createWorkflowPipelineRefReader({
     listRequests: () => queue.list(),
-    listWorkflowRecords: () => activeWorkflowCatalog.records
+    listWorkflowRecords: () => catalogSession.workflowCatalog.records
   });
   const auditWriter = new AuditLogWriter(
     {
@@ -647,7 +655,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     {
       monitor,
       historyStore,
-      catalog: activeCatalog,
+      catalog: catalogSession.catalog,
       auditWriter,
       backendCapabilities,
       // Feature 092 (T051) — the same manager the deactivate path releases,
@@ -745,11 +753,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     isForeignLockHeld: () => lock.isForeignLockHeld(),
     // Feature 098 (T058 / FR-031a) — a schedule that comes due with nothing
     // imported meets the refusal a manual launch meets, and the operator is
-    // told in the same words. Read through `activeCatalog` rather than
+    // told in the same words. Read through `catalogSession.catalog` rather than
     // captured, so a catalog imported into after the coordinator was built is
     // the one the gate sees.
     emptyCatalogGate: {
-      isCatalogEmpty: () => activeCatalog.pipelinesById.size === 0,
+      isCatalogEmpty: () => catalogSession.catalog.pipelinesById.size === 0,
       onRefused: (refusal) => notifier.warn(refusal.message)
     }
   });
@@ -830,9 +838,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // reads, for the same reason. `refuseOnEmptyCatalog` leaves the queue
     // `idle-pending` with its deadline persisted and its timer dropped, which is
     // precisely what this sweep recovers; without the gate here the watchdog
-    // would undo that refusal on its next tick. Read through `activeCatalog`
+    // would undo that refusal on its next tick. Read through `catalogSession.catalog`
     // rather than captured, so an import lifts the hold.
-    isCatalogEmpty: () => activeCatalog.pipelinesById.size === 0,
+    isCatalogEmpty: () => catalogSession.catalog.pipelinesById.size === 0,
     logger,
     audit: auditWriter
   });
@@ -851,7 +859,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger,
     monitor,
     history: historyStore,
-    getCatalog: () => activeCatalog,
+    getCatalog: () => catalogSession.catalog,
     defaultRunnerKind: backendKind,
     // Re-read scalar settings on each projection.
     getGeneralSettings: () =>
@@ -860,22 +868,17 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       ),
     getSessionArtifacts: () => sessionRetention.getUsage(),
     getEvidenceHealth: () => evidenceHealth.getSnapshot(),
-    // Feature 026 — UI-only per-phase precedence projection. Re-read on
-    // every snapshot so a catalog reload triggered by
-    // `onDidChangeConfiguration('schegent.phases')` reaches the webview
-    // within the FR-017 1s budget. Never persisted; never logged.
-    getPhasePrecedence: () => activePhasePrecedence,
-    getPhaseCatalog: () => activePhaseCatalog,
+    getPhaseCatalog: () => catalogSession.phaseCatalog,
     // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
-    getPipelineCatalog: () => activePipelineCatalog,
+    getPipelineCatalog: () => catalogSession.pipelineCatalog,
     // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
     // so the Library can show what a change would affect. Same collector as the
     // removal gate's `readWorkflowPipelineRefs` (FR-022a, 083 FR-041).
     getWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
     // Feature 083 — authoritative Workflow catalog (the definition sense) for
     // the Library and Builder. Re-resolved with the Pipeline catalog it was
-    // validated against, so a `schegent.pipelines` change refreshes both.
-    getWorkflowCatalog: () => activeWorkflowCatalog,
+    // validated against, so a Pipeline catalog change refreshes both.
+    getWorkflowCatalog: () => catalogSession.workflowCatalog,
     // Feature 063 — surface `schegent.ui.confirmations.enable` into the
     // snapshot so the webview's `useConfirm` helper can short-circuit
     // without an IPC round-trip. Re-read on every projection; the
@@ -911,6 +914,18 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // capability-trust-resolver-contract.md.
   initCapabilityTrustResolver(context, () => projector.kick());
 
+  /**
+   * Re-read the store, re-resolve, and tell the two consumers that cache it.
+   *
+   * Feature 099 (T493b, FR-054) — wired in as `refreshCatalog` on the save router;
+   * `CatalogSession.refresh` carries why a store write is what triggers it.
+   */
+  async function refreshCatalog(): Promise<void> {
+    await catalogSession.refresh();
+    controller.setCatalog(catalogSession.catalog);
+    projector.kick();
+  }
+
   if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
     disposables.push(
       vscode.workspace.onDidChangeConfiguration((event) => {
@@ -928,21 +943,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         ) {
           void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
         }
+        // Feature 099 (T493b, FR-054) — the three retired definition settings
+        // keys are gone, so the three arms that reloaded on
+        // them are gone with them; a definition change now arrives as a store
+        // write and re-resolves through `refreshCatalog` below. The two survivors
+        // are still configuration and still reload here.
         if (
-          event.affectsConfiguration('schegent.phases') ||
-          event.affectsConfiguration('schegent.pipelines') ||
           event.affectsConfiguration('schegent.defaultPipelineId') ||
-          event.affectsConfiguration('schegent.models') || // 096 — reload models
-          // Feature 083 — a Workflow layer edit re-resolves the whole catalog.
-          event.affectsConfiguration('schegent.workflows')
+          event.affectsConfiguration('schegent.models') // 096 — reload models
         ) {
-          const reload = loadAndReportCatalog(catalogReader, logger, workflowConfigReader);
-          activeCatalog = reload.catalog;
-          activePhasePrecedence = reload.phasePrecedence;
-          activePhaseCatalog = reload.phaseCatalog;
-          activePipelineCatalog = reload.pipelineCatalog;
-          activeWorkflowCatalog = reload.workflowCatalog;
-          controller.setCatalog(activeCatalog);
+          void refreshCatalog();
         }
         if (
           event.affectsConfiguration('schegent.cli.path') ||
@@ -996,28 +1006,32 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     notifyWarning: (message) => notifier.warn(`Schegent: ${message}.`),
     logger,
     audit: auditWriter,
-    updateConfig: async (key, value, scope = 'workspace') => {
-      const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-      await config.update(
-        key,
-        value,
-        scope === 'user' ? vscode.ConfigurationTarget.Global : vscode.ConfigurationTarget.Workspace
-      );
-    },
-    readPhaseConfig: () => ({ user: catalogReader.getPhases('user') ?? [],
-      workspace: catalogReader.getPhases('workspace') ?? [] }),
-    readPipelineConfig: () => ({ user: catalogReader.getPipelines('user') ?? [],
-      workspace: catalogReader.getPipelines('workspace') ?? [] }),
-    // Feature 083 — read fresh per save so the revision gate compares against the
-    // layer as it stands now, not as it stood when the catalog last resolved.
-    readWorkflowConfig: () => readWorkflowLayers(workflowConfigReader),
+    // Feature 099 (T494, FR-056) — the Model Catalog is the only
+    // configuration-backed catalog left; `createCatalogSettingsWriter` carries
+    // why the scope argument this port used to take is gone.
+    updateConfig: createCatalogSettingsWriter(workspaceRoot),
+    // Feature 099 (T493d, FR-042a, FR-051) — the write side of the store, or
+    // `null` in an untrusted workspace, where a save has nowhere legitimate to
+    // land and is refused by name rather than silently doing nothing.
+    catalogStore,
+    // Feature 099 (T493b, T493d, FR-042a, FR-044) — served from the snapshot this
+    // window last read, not from a fresh read per call: the store's own
+    // compare-and-swap is the authoritative gate (FR-030a), so these three feed the
+    // early-out that spares an operator a pointless write, and a save that races
+    // past them is still refused `stale` by the store itself. Same snapshot the
+    // catalogs resolved from, so a gate and the Library it defends cannot disagree.
+    ...storedLayerReaders(catalogSession),
+    // Feature 099 (T493b, FR-054) — the one signal that a definition changed. No
+    // configuration event announces a store write, so the window that wrote is the
+    // window that says so.
+    refreshCatalog,
     // Feature 096 — Model Catalog's one writable layer is 'workspace' (research.md
     // Decision 6), so this reads that scope only, fresh per call, same reason as
-    // readWorkflowConfig above — not activeCatalog.models, which is the merged
+    // readWorkflowConfig above — not catalogSession.catalog.models, which is the merged
     // user+workspace view and would let the revision gate react to a layer this
     // command never writes.
     readModelsConfig: () => coerceModels(catalogReader.getModels('workspace')),
-    getCatalog: () => activeCatalog,
+    getCatalog: () => catalogSession.catalog,
     guardedRun: guardedRunService,
     defaultRunnerKind: backendKind,
     // Feature 082 (US7, FR-022a) / 083 (FR-041) — the consumer side of the
@@ -1204,7 +1218,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     notifier,
     logger,
-    getCatalog: () => activeCatalog,
+    getCatalog: () => catalogSession.catalog,
     controller,
     queue,
     lock,
@@ -1270,41 +1284,6 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     output
-  };
-}
-
-function createCatalogReader(workspaceRoot: string): CatalogConfigReader {
-  return {
-    getPhases(scope) {
-      const inspect = vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .inspect<readonly unknown[]>('phases');
-      if (!inspect) return undefined;
-      return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
-    },
-    getPipelines(scope) {
-      const inspect = vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .inspect<readonly unknown[]>('pipelines');
-      if (!inspect) return undefined;
-      return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
-    },
-    getModels(scope) {
-      const inspect = vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .inspect<readonly unknown[]>('models');
-      if (!inspect) return undefined;
-      return scope === 'workspace' ? inspect.workspaceValue : inspect.globalValue;
-    },
-    getDefaultPipelineId(scope) {
-      const inspect = vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .inspect<string>('defaultPipelineId');
-      if (!inspect) return undefined;
-      return scope === 'workspace'
-        ? inspect.workspaceValue
-        : inspect.globalValue ?? inspect.defaultValue;
-    }
   };
 }
 

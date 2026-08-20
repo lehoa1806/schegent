@@ -37,13 +37,12 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
 import {
   buildCatalog,
-  mergeCatalog,
   type PhaseDef,
   type PipelineDef
 } from '../../src/config/pipeline-config';
+import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
 // Feature 098 (T080) — the base layer these tests override comes from the test
 // fixture rather than from a compiled-in catalog, which no longer holds any. The
 // Spec Kit and bugfix ids are the real ones because the tests are about
@@ -130,6 +129,7 @@ interface DispatchResult {
 
 async function dispatchSave(
   router: MessageRouter,
+  store: FakeCatalogStore,
   phases: ReadonlyArray<Partial<PhaseDef> & { id: string; name?: string; instruction?: string; loopable?: boolean }>
 ): Promise<DispatchResult> {
   let captured: DispatchResult | undefined;
@@ -141,10 +141,10 @@ async function dispatchSave(
         type: CMD_SAVE_PHASES,
         correlationId: `save-${proposed.length}`,
         payload: {
-          scope: 'workspace',
-          expectedRevision: phaseLayerRevision(
-            proposed.slice(0, -1).map((row) => ({ ...(row as object), version: 1 }))
-          ),
+          // Feature 099 (T496f, FR-044) — read fresh each time: the previous save
+          // moved the store's revision, and echoing a stale one is exactly what the
+          // gate exists to refuse.
+          expectedRevision: store.revisionOf('phase'),
           mutation: { kind: 'create', phaseId: phase.id },
           phases: [...proposed]
         }
@@ -169,11 +169,29 @@ async function readAuditLog(workspaceRoot: string): Promise<Array<Record<string,
 }
 
 interface HarnessOpts {
-  readonly userPhases: readonly PhaseDef[];
+  /** The Phases the operator authored; each replaces the fixture row of its id. */
+  readonly phases: readonly PhaseDef[];
   readonly workspaceRoot: string;
-  readonly workspacePhases?: readonly PhaseDef[];
-  readonly workspacePipelines?: readonly PipelineDef[];
+  readonly pipelines?: readonly PipelineDef[];
   readonly pipelineId?: string;
+}
+
+/**
+ * The one catalog the host resolves, as it stands after the operator's edits.
+ *
+ * Feature 099 (T496f, FR-042) — this composition was `mergeCatalog(base, user,
+ * workspace)`, a precedence ladder that is deleted with the layer tier. An
+ * operator who wants a Phase to differ from the document they imported now EDITS
+ * that row, so the successor is a replace-by-id over one list. Every override
+ * these tests set up means the same thing it always did — this Phase, with this
+ * effort or model, is the one the run will use.
+ */
+function composePhases(authored: readonly PhaseDef[]): readonly PhaseDef[] {
+  const byId = new Map<string, PhaseDef>(
+    SPECKIT_ALL_PHASE_DEFS.map((phase) => [phase.id, phase])
+  );
+  for (const phase of authored) byId.set(phase.id, phase);
+  return [...byId.values()];
 }
 
 async function runHarness(opts: HarnessOpts): Promise<{
@@ -183,27 +201,17 @@ async function runHarness(opts: HarnessOpts): Promise<{
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
 }> {
-  // Compose the merged catalog the same way the host does (base → user →
-  // workspace). The base layer holds both `speckit-new-feature` and
-  // `speckit-bugfix` (Feature 026 Phase 2), which is what makes a
-  // per-Phase override on either Pipeline observable.
+  // The catalog holds both `speckit-new-feature` and `speckit-bugfix` (Feature
+  // 026 Phase 2), which is what makes a per-Phase override on either Pipeline
+  // observable.
   //
-  // Feature 098 (T080) — the base was `BUILT_IN_PHASES` / `BUILT_IN_PIPELINES`,
-  // i.e. the product's own rows. Both are empty now, so the fixture supplies the
-  // same content under the same ids. The layer *precedence* under test is
-  // untouched: user still beats base, workspace still beats user.
-  const merge = mergeCatalog(
-    { phases: SPECKIT_ALL_PHASE_DEFS, pipelines: SPECKIT_PIPELINE_DEFS, defaultPipelineId: SPECKIT_PIPELINE_ID },
-    { phases: opts.userPhases },
-    {
-      phases: opts.workspacePhases ?? [],
-      pipelines: opts.workspacePipelines ?? []
-    }
-  );
+  // Feature 098 (T080) — these rows were `BUILT_IN_PHASES` / `BUILT_IN_PIPELINES`,
+  // i.e. the product's own. Both are empty now, so the fixture supplies the same
+  // content under the same ids.
   const catalog = buildCatalog(
-    merge.catalog.phases,
-    merge.catalog.pipelines,
-    merge.catalog.models,
+    composePhases(opts.phases),
+    [...SPECKIT_PIPELINE_DEFS, ...(opts.pipelines ?? [])],
+    { claude: [], codex: [], agy: [] },
     SPECKIT_PIPELINE_ID
   );
 
@@ -258,10 +266,10 @@ afterEach(async () => {
 
 function buildRouter(): {
   router: MessageRouter;
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
+  writes: () => readonly (readonly unknown[])[];
 } {
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
-  let workspacePhases: readonly unknown[] = [];
+  const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -269,13 +277,11 @@ function buildRouter(): {
     isTrusted: () => true,
     notifyWarning: vi.fn(),
     logger: new SanitizedLogger(),
-    updateConfig: async (key, value) => {
-      updateConfigCalls.push({ key, value });
-      if (key === 'phases' && Array.isArray(value)) workspacePhases = value;
-    },
-    readPhaseConfig: () => ({ user: [], workspace: workspacePhases })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
-  return { router: new MessageRouter(deps), updateConfigCalls };
+  return { router: new MessageRouter(deps), store, writes: () => layerWrites(store) };
 }
 
 const VALID_BASE_FIELDS = {
@@ -286,20 +292,19 @@ const VALID_BASE_FIELDS = {
 
 describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () => {
   it('(a)+(b) saves effort: high on speckit-plan via CMD_SAVE_PHASES and emits it on phase-start', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const savePayload = [
       { id: 'speckit-plan', ...VALID_BASE_FIELDS, effort: 'high' as const }
     ];
-    const ack = await dispatchSave(router, savePayload);
+    const ack = await dispatchSave(router, store, savePayload);
     expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual([
+    expect(store.layerSaves.map((request) => request.kind)).toEqual(['phase']);
+    expect(writes()[0]).toEqual([
       expect.objectContaining({ ...savePayload[0], version: 1 })
     ]);
 
     const { auditLog } = await runHarness({
-      userPhases: savePayload as readonly PhaseDef[],
+      phases: savePayload as readonly PhaseDef[],
       workspaceRoot: tmpRoot
     });
     const planStarts = auditLog.filter(
@@ -316,15 +321,15 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
     const cleared = [
       { id: 'speckit-plan', ...VALID_BASE_FIELDS }
     ];
-    const { router, updateConfigCalls } = buildRouter();
-    const ack = await dispatchSave(router, cleared);
+    const { router, store, writes } = buildRouter();
+    const ack = await dispatchSave(router, store, cleared);
     expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls[0].value).toEqual([
+    expect(writes()[0]).toEqual([
       expect.objectContaining({ ...cleared[0], version: 1 })
     ]);
 
     const { auditLog } = await runHarness({
-      userPhases: cleared as readonly PhaseDef[],
+      phases: cleared as readonly PhaseDef[],
       workspaceRoot: tmpRoot
     });
     const planStarts = auditLog.filter(
@@ -343,19 +348,19 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
       'speckit-plan': 'claude-sonnet-4-6',
       'speckit-implement': 'claude-opus-4-7'
     };
-    const userPhases: PhaseDef[] = Object.entries(modelByPhase).map(([id, model]) => ({
+    const authored: PhaseDef[] = Object.entries(modelByPhase).map(([id, model]) => ({
       id,
       ...VALID_BASE_FIELDS,
       model
     }));
 
-    const { router, updateConfigCalls } = buildRouter();
-    const ack = await dispatchSave(router, userPhases);
+    const { router, store } = buildRouter();
+    const ack = await dispatchSave(router, store, authored);
     expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(3);
+    expect(store.layerSaves).toHaveLength(3);
 
     const { auditLog } = await runHarness({
-      userPhases: userPhases as readonly PhaseDef[],
+      phases: authored as readonly PhaseDef[],
       workspaceRoot: tmpRoot
     });
     for (const [phaseId, expectedModel] of Object.entries(modelByPhase)) {
@@ -370,30 +375,32 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
   });
 });
 
-describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
-  it('(a)+(c) user effort:medium on bugfix-implement wins over workspace effort:high', async () => {
-    // (c) user-layer save is accepted by CMD_SAVE_PHASES.
-    // We dispatch the save first and assert the ack succeeds.
-    const userBugfixImplement: PhaseDef = {
-      id: 'bugfix-implement',
-      ...VALID_BASE_FIELDS,
-      effort: 'medium'
-    };
-    const { router, updateConfigCalls } = buildRouter();
-    const ack = await dispatchSave(router, [userBugfixImplement]);
-    expect(ack.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-
-    // (a) workspace layer overrides the user layer on the same phase id.
-    const workspaceBugfixImplement: PhaseDef = {
+// Feature 099 (T496f, FR-042) — this block was 'BUG-003 — user-layer override wins
+// over workspace (US3)', and both its cases asked which of two layers wins on one
+// phase id. One catalog answers no such question, so the precedence claim is gone
+// with the tier that made it meaningful. What the cases also carried, and nothing
+// else in this file pins, is the SECOND Pipeline: every case above runs
+// `speckit-new-feature`, and an override reaching a Phase of `speckit-bugfix`
+// exercises pipeline selection at enqueue as well as the override plumbing. Both
+// successors below keep that, and between them they keep the pair the originals
+// were built from — an authored override arrives, and its absence leaves nothing
+// behind.
+describe('BUG-003 successor — an override on a non-default Pipeline (US3)', () => {
+  it('(a) saves effort on a bugfix Phase and emits it on that Pipeline\'s phase-start', async () => {
+    const bugfixImplement: PhaseDef = {
       id: 'bugfix-implement',
       ...VALID_BASE_FIELDS,
       effort: 'high'
     };
+    const { router, store, writes } = buildRouter();
+    const ack = await dispatchSave(router, store, [bugfixImplement]);
+    expect(ack.status).toBe('accepted');
+    expect(writes()[0]).toEqual([
+      expect.objectContaining({ id: 'bugfix-implement', effort: 'high', version: 1 })
+    ]);
+
     const { auditLog } = await runHarness({
-      userPhases: [userBugfixImplement],
-      workspacePhases: [workspaceBugfixImplement],
+      phases: [bugfixImplement],
       workspaceRoot: tmpRoot,
       pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
@@ -407,15 +414,14 @@ describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
     }
   });
 
-  it('(b) removing the user catalog entry falls back to workspace effort:high on the next enqueue', async () => {
-    const workspaceBugfixImplement: PhaseDef = {
-      id: 'bugfix-implement',
-      ...VALID_BASE_FIELDS,
-      effort: 'high'
-    };
+  it('(b) emits no effort once the authored override is gone, and the row itself is untouched', async () => {
+    // The successor of 'removing the user catalog entry falls back to workspace
+    // effort:high'. There is no lower layer to fall back TO, so dropping the
+    // override drops it outright — and the second half of the assertion is what
+    // makes that precise: the Phase is still there, still carrying the `model`
+    // the catalog declares for it. Only the operator's edit went away.
     const { auditLog } = await runHarness({
-      userPhases: [], // user layer entry removed
-      workspacePhases: [workspaceBugfixImplement],
+      phases: [],
       workspaceRoot: tmpRoot,
       pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
     });
@@ -423,18 +429,19 @@ describe('BUG-003 — user-layer override wins over workspace (US3)', () => {
       (e) => e.eventType === 'phase-start' && e.payload.phaseId === 'bugfix-implement'
     );
     expect(implementStarts.length).toBeGreaterThan(0);
+    const declared = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'bugfix-implement');
     for (const evt of implementStarts) {
-      expect(evt.payload.effort).toBe('high');
-      expect(evt.payload).not.toHaveProperty('model');
+      expect(evt.payload).not.toHaveProperty('effort');
+      expect(evt.payload.model).toBe(declared?.model);
     }
   });
 });
 
-describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+model (US3, SC-006)', () => {
+describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-006)', () => {
   const customPipelineId = 'workspace-mix';
   const customPhaseIds = ['workspace-step-a', 'workspace-step-b', 'workspace-step-c'] as const;
 
-  function makeWorkspacePhases(args: {
+  function makeCustomPhases(args: {
     omitModelOn?: string;
   } = {}): readonly PhaseDef[] {
     return customPhaseIds.map((id) => {
@@ -449,7 +456,7 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
     });
   }
 
-  function makeWorkspacePipeline(): PipelineDef {
+  function makeCustomPipeline(): PipelineDef {
     return {
       id: customPipelineId,
       name: 'Workspace Mix',
@@ -457,26 +464,24 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
     };
   }
 
-  it('(a)+(b)+(d) resolves the workspace-defined pipeline at enqueue time, emits workspace effort+model on every phase-start, and the immutable snapshot mirrors the workspace catalog state', async () => {
-    const workspacePhases = makeWorkspacePhases();
+  it('(a)+(b)+(d) resolves the custom pipeline at enqueue time, emits its effort+model on every phase-start, and the immutable snapshot mirrors the catalog state', async () => {
     const { auditLog, storedRunPipeline, controller, store } = await runHarness({
-      userPhases: [],
-      workspacePhases,
-      workspacePipelines: [makeWorkspacePipeline()],
+      phases: makeCustomPhases(),
+      pipelines: [makeCustomPipeline()],
       workspaceRoot: tmpRoot,
       pipelineId: customPipelineId
     });
 
-    // (a) The run captured the workspace-defined pipeline in its
-    // immutable snapshot. The snapshot's phase ids match the workspace
-    // pipeline's phase list (plus the auto-appended `done` terminator).
+    // (a) The run captured the custom pipeline in its immutable snapshot. The
+    // snapshot's phase ids match the pipeline's phase list (plus the
+    // auto-appended `done` terminator).
     expect(storedRunPipeline).toBeDefined();
     const snapshotIds = (storedRunPipeline?.phases ?? []).map((p) => p.id);
     expect(snapshotIds.slice(0, customPhaseIds.length)).toEqual([...customPhaseIds]);
     expect(snapshotIds.length).toBe(customPhaseIds.length);
 
-    // (b) Each phase invocation's phase-start carries both the workspace
-    // effort:'xhigh' and the workspace model.
+    // (b) Each phase invocation's phase-start carries both the authored
+    // effort:'xhigh' and the authored model.
     for (const phaseId of customPhaseIds) {
       const starts = auditLog.filter(
         (e) => e.eventType === 'phase-start' && e.payload.phaseId === phaseId
@@ -490,26 +495,26 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
 
     // (d) The immutable WorkflowRun.pipeline snapshot is unaffected by
     // post-enqueue catalog mutations. After completing the run, swap the
-    // controller's catalog back to the base layer alone (which has neither
+    // controller's catalog back to the fixture rows alone (which have neither
     // the workspace-mix pipeline NOR the workspace-step-* phases) and
-    // confirm the persisted snapshot still references the workspace
-    // catalog state captured at enqueue time.
+    // confirm the persisted snapshot still references the catalog state
+    // captured at enqueue time.
     controller.setCatalog(buildSpeckitCatalog());
     const snapshotAfter = store.getRun(DEFAULT_QUEUE_ID)?.pipeline;
     expect(snapshotAfter).toBe(storedRunPipeline);
     expect((snapshotAfter?.phases ?? []).map((p) => p.id)).toEqual(snapshotIds);
   });
 
-  it('(c) removing the workspace model on one phase falls back to the next-precedence layer; the workspace effort stays active', async () => {
-    // The workspace removes `model` on workspace-step-b only; effort
-    // remains 'xhigh' across all three phases. workspace-step-b has no
-    // user/built-in fallback, so `model` is absent on its phase-start
-    // payload (no empty-string, no null — see phase-runner.ts:172-176).
-    const workspacePhases = makeWorkspacePhases({ omitModelOn: 'workspace-step-b' });
+  it('(c) a phase with no model emits none, while its effort stays active', async () => {
+    // The operator clears `model` on workspace-step-b only; effort remains
+    // 'xhigh' across all three phases. Feature 099 (T496f, FR-042) — the title
+    // read "falls back to the next-precedence layer", and the body's own comment
+    // already said workspace-step-b has no fallback, so `model` is absent on its
+    // phase-start payload (no empty-string, no null — see phase-runner.ts:172-176).
+    // With one catalog that absence is the whole claim, and the title now says so.
     const { auditLog } = await runHarness({
-      userPhases: [],
-      workspacePhases,
-      workspacePipelines: [makeWorkspacePipeline()],
+      phases: makeCustomPhases({ omitModelOn: 'workspace-step-b' }),
+      pipelines: [makeCustomPipeline()],
       workspaceRoot: tmpRoot,
       pipelineId: customPipelineId
     });
@@ -523,8 +528,7 @@ describe('Feature 026 T025a — workspace-defined custom pipeline mixing effort+
       expect(evt.payload.effort).toBe('xhigh');
     }
 
-    // workspace-step-a + workspace-step-c retain both effort + model
-    // from the workspace layer.
+    // workspace-step-a + workspace-step-c retain both effort + model.
     for (const phaseId of ['workspace-step-a', 'workspace-step-c'] as const) {
       const starts = auditLog.filter(
         (e) => e.eventType === 'phase-start' && e.payload.phaseId === phaseId

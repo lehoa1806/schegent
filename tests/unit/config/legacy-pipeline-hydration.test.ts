@@ -70,11 +70,13 @@ const LEGACY_PIPELINE_ROW = {
   phases: ['legacy-draft', 'legacy-review', 'finalize']
 } as const;
 
+/** Feature 099 (T496f, FR-044) — see the Phase twin: one layer, revision supplied. */
+const LEGACY_REVISION = 'rev-pipeline-legacy';
+
 function resolveLegacyLayer(rows: readonly unknown[]) {
   return resolvePipelineCatalog({
-    builtIn: [],
-    user: rows,
-    workspace: [],
+    rows,
+    revision: LEGACY_REVISION,
     phaseCatalog: PHASE_CATALOG
   });
 }
@@ -120,14 +122,13 @@ describe('a Pipeline stored before this platform hydrates unchanged (FR-017, SC-
       name: 'Legacy Flow',
       version: 1,
       phases: ['legacy-draft', 'legacy-review', 'finalize'],
-      sourceScope: 'user',
       inputs: [],
       outputs: [],
       bindings: [],
       recommendedNext: []
     });
     // The same projection the run path uses, reached directly.
-    expect(pipelineDefinitionToPipelineDef(definition, 'user')).toEqual(
+    expect(pipelineDefinitionToPipelineDef(definition)).toEqual(
       resolved.effectivePipelineDefs[0]
     );
     // Nothing declared, so nothing to satisfy: the binding validator — the
@@ -161,7 +162,10 @@ describe('hydration writes nothing back to configuration (T018, FR-019)', () => 
     const first = resolveLegacyLayer(stored);
     const second = resolveLegacyLayer(stored);
 
-    expect(second.revisions).toEqual(first.revisions);
+    // Feature 099 (T496f, FR-044) — see the Phase twin: the revision is supplied,
+    // so the records carry the claim that reading twice is reading once.
+    expect(second.revision).toBe(first.revision);
+    expect(second.records).toEqual(first.records);
     expect(second.effective).toEqual(first.effective);
     expect(second.effectivePipelineDefs).toEqual(first.effectivePipelineDefs);
   });

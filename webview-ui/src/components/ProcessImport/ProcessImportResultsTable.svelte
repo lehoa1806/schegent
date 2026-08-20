@@ -24,7 +24,12 @@
   // Rendering discipline (FR-050, FR-062) is inherited unchanged: the detail
   // column can carry host-sanitized, document-derived text, and is rendered by
   // text interpolation only.
-  import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
+  //
+  // Feature 099 (T494a, FR-043) — `committedScope` is gone. It held the scope the
+  // completed commit wrote to so the summary could not drift from it; with one
+  // catalog there is nothing for the summary to drift against, and the layer
+  // names the sentence still carries are KINDS (Phases, Pipelines, Workflows),
+  // not tiers.
   import {
     commitOutcomeStatement,
     modelCatalogCommitOutcomeStatement,
@@ -46,31 +51,22 @@
     layerResults: readonly ImportLayerResult[];
     /** Set with `results`, and only with them. Never inferred from the rows. */
     outcome: ImportCommitOutcome | null;
-    /** The scope the completed commit wrote to, so the summary cannot drift. */
-    committedScope: WritablePhaseDefinitionScope | null;
     /**
      * Feature 096 T024 — set instead of (never alongside, in practice)
-     * `outcome`/`committedScope` when the result set came from a Model Catalog
-     * commit, which has no scope and no layers to name. A separate field
-     * rather than widening `committedScope` to a Model-Catalog value: that
-     * scope type is `WritablePhaseDefinitionScope`, and Model Catalog is not a
-     * third member of it, it has no scope at all (FR-056).
+     * `outcome` when the result set came from a Model Catalog commit, which is
+     * one write and so has no layers to name. A separate field rather than a
+     * fourth arm of `ImportCommitOutcome`: `partial` is unreachable for a single
+     * write, and the Model Catalog is not in the store at all (FR-056).
      */
     modelCatalogOutcome?: ModelCatalogCommitOutcome | null;
   }
 
-  const {
-    results,
-    layerResults,
-    outcome,
-    committedScope,
-    modelCatalogOutcome = null
-  }: Props = $props();
+  const { results, layerResults, outcome, modelCatalogOutcome = null }: Props = $props();
 </script>
 
 {#if modelCatalogOutcome !== null}
   <!-- FR-042a for Model Catalog: same announcement discipline as the layered
-       outcome below, with no scope or layer to name. -->
+       outcome below, with no layer to name. -->
   <p
     class="preflight-note"
     data-testid="process-import-outcome"
@@ -80,7 +76,7 @@
   >
     {modelCatalogCommitOutcomeStatement(modelCatalogOutcome)}
   </p>
-{:else if outcome !== null && committedScope !== null}
+{:else if outcome !== null}
   <!-- FR-042a — the whole-commit outcome, above the per-row table. It is
        announced: an operator who clicked Confirm and got a partial write needs
        to hear that before they read anything else. -->
@@ -91,7 +87,7 @@
     role="status"
     aria-live="polite"
   >
-    {commitOutcomeStatement(outcome, committedScope, layerResults)}
+    {commitOutcomeStatement(outcome, layerResults)}
   </p>
 {/if}
 <!-- FR-042 — one result per plan row, so a row the commit never addressed still

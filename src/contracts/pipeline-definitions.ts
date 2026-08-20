@@ -3,25 +3,6 @@ import type { PhaseDefinitionEffort } from './process-definitions';
 /** How long a Pipeline id may be. See `PHASE_ID_MAX_LEN` for why it lives here. */
 export const PIPELINE_ID_MAX_LEN = 64;
 
-export const PIPELINE_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
-export type PipelineDefinitionScope = (typeof PIPELINE_DEFINITION_SCOPES)[number];
-export type WritablePipelineDefinitionScope = Exclude<PipelineDefinitionScope, 'built-in'>;
-
-export const PIPELINE_WRITABLE_SCOPES = ['user', 'workspace'] as const;
-
-export function isPipelineDefinitionScope(value: unknown): value is PipelineDefinitionScope {
-  return (
-    typeof value === 'string' &&
-    (PIPELINE_DEFINITION_SCOPES as readonly string[]).includes(value)
-  );
-}
-
-export function isWritablePipelineDefinitionScope(
-  value: unknown
-): value is WritablePipelineDefinitionScope {
-  return typeof value === 'string' && (PIPELINE_WRITABLE_SCOPES as readonly string[]).includes(value);
-}
-
 /**
  * Closed union of session-input port types (FR-012). `pipeline-output` is the
  * declared type an input port uses when an earlier Phase's output feeds it
@@ -125,12 +106,12 @@ export interface PipelineFieldError {
   readonly message: string;
 }
 
-export type PipelineSourceStatus = 'effective' | 'shadowed' | 'invalid';
+/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
+export type PipelineSourceStatus = 'effective' | 'invalid';
 
 export interface PipelineSourceRecord {
   readonly key: string;
   readonly pipelineId: string;
-  readonly scope: PipelineDefinitionScope;
   readonly status: PipelineSourceStatus;
   readonly definition: PipelineDefinition | null;
   /** Recognized authored fields only. This host-internal value is sanitized before IPC. */
@@ -146,7 +127,8 @@ export interface PipelineCatalogWarning {
 export interface PipelineCatalogResolution {
   readonly records: readonly PipelineSourceRecord[];
   readonly effective: readonly PipelineDefinition[];
-  readonly revisions: Readonly<Record<WritablePipelineDefinitionScope, string>>;
+  /** One revision for the one layer (FR-044), derived from the store's manifest (FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly PipelineCatalogWarning[];
 }
 
@@ -162,15 +144,14 @@ export type PipelineCatalogMutation =
   | { readonly kind: 'edit'; readonly pipelineId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: PipelineDefinitionScope;
       readonly sourcePipelineId: string;
       readonly pipelineId: string;
     }
   | { readonly kind: 'remove'; readonly pipelineId: string }
   | { readonly kind: 'reset' };
 
-export interface ScopedPipelineSavePayload {
-  readonly scope: WritablePipelineDefinitionScope;
+/** One save against the one layer. Formerly `ScopedPipelineSavePayload` (FR-043). */
+export interface PipelineSavePayload {
   readonly expectedRevision: string;
   readonly mutation: PipelineCatalogMutation;
   readonly pipelines: readonly unknown[];

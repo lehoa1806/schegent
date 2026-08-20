@@ -101,4 +101,40 @@ describe('visual fixture agrees with the snapshot schema the webview accepts', (
     const leftovers = V3_ROOT_RUN_FIELDS.filter((field) => field in fixture);
     expect(leftovers, 'these belong under queues[].inFlightRun / queues[]').toEqual([]);
   });
+
+  it('the visual fixture keeps nothing the layer collapse removed', () => {
+    // Feature 099 (T489a, FR-041, FR-043, FR-046) reshaped v4 in place rather than
+    // bumping it: the number gates a fixture from a *different build*, and there is
+    // no such thing — host and webview ship together. What the number cannot catch
+    // is this, a same-version reshape, which is the whole reason this file exists.
+    const fixture = readFixture();
+    expect('phasePrecedence' in fixture, 'the precedence projection went with the layer tier').toBe(
+      false
+    );
+
+    const trust = (fixture.resolvedTrust ?? {}) as Record<string, unknown>;
+    expect(
+      ['pipelineOverrides', 'workflowOverrides'].filter((key) => key in trust),
+      'both capabilities went with the layer tier they gated'
+    ).toEqual([]);
+  });
+
+  it('every catalog block the fixture carries is in the one-layer shape', () => {
+    // A stale catalog block does not fail the store gate — it renders a Builder tab
+    // with no revision to save under and rows keyed the old way, which is a green
+    // visual suite screenshotting a surface no build produces.
+    const fixture = readFixture();
+    for (const block of ['phaseCatalog', 'pipelineCatalog', 'workflowCatalog'] as const) {
+      const projection = fixture[block];
+      if (projection === undefined) continue;
+      const catalog = projection as Record<string, unknown>;
+      expect(typeof catalog.revision, `${block}.revision`).toBe('string');
+      expect('revisions' in catalog, `${block} still carries the per-layer revision map`).toBe(
+        false
+      );
+      for (const record of (catalog.records ?? []) as readonly Record<string, unknown>[]) {
+        expect('scope' in record, `${block}.records[] still carries a layer scope`).toBe(false);
+      }
+    }
+  });
 });

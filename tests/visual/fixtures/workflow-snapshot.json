@@ -214,14 +214,14 @@
   "pipelineCatalog": {
     "state": "ready",
     "records": [
-      { "key": "workspace::dev-new-feature::0", "pipelineId": "dev-new-feature", "scope": "workspace", "status": "effective", "definition": { "pipelineId": "dev-new-feature", "name": "New Feature", "version": 1, "phaseIds": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "dev-new-feature", "name": "New Feature", "version": 1, "phases": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"] }, "errors": [] },
-      { "key": "workspace::bugfix::1", "pipelineId": "bugfix", "scope": "workspace", "status": "effective", "definition": { "pipelineId": "bugfix", "name": "Bug Fix", "version": 1, "phaseIds": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "bugfix", "name": "Bug Fix", "version": 1, "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"] }, "errors": [] }
+      { "key": "dev-new-feature::0", "pipelineId": "dev-new-feature", "status": "effective", "definition": { "pipelineId": "dev-new-feature", "name": "New Feature", "version": 1, "phaseIds": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "dev-new-feature", "name": "New Feature", "version": 1, "phases": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"] }, "errors": [] },
+      { "key": "bugfix::1", "pipelineId": "bugfix", "status": "effective", "definition": { "pipelineId": "bugfix", "name": "Bug Fix", "version": 1, "phaseIds": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }, "display": { "id": "bugfix", "name": "Bug Fix", "version": 1, "phases": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"] }, "errors": [] }
     ],
     "effective": [
       { "pipelineId": "dev-new-feature", "name": "New Feature", "version": 1, "phaseIds": ["speckit-specify", "speckit-clarify", "speckit-plan", "speckit-tasks", "speckit-analyze", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] },
       { "pipelineId": "bugfix", "name": "Bug Fix", "version": 1, "phaseIds": ["speckit-specify", "speckit-plan", "speckit-implement", "finalize"], "inputs": [], "outputs": [], "bindings": [], "recommendedNext": [] }
     ],
-    "revisions": { "user": "visual-user-revision", "workspace": "visual-workspace-revision" },
+    "revision": "visual-pipeline-revision",
     "warnings": []
   },
   "availablePhases": [
@@ -239,17 +239,10 @@
     "agy": ["Gemini 3.1 Pro (High)"]
   },
   "availableBackends": ["claude", "codex", "agy"],
-  "phasePrecedence": {
-    "speckit-plan::model": "workspace",
-    "speckit-plan::effort": "user",
-    "speckit-plan::runner": "workspace"
-  },
   "workspaceTrust": true,
   "resolvedTrust": {
     "phases": true,
-    "retryConditions": true,
-    "pipelineOverrides": true,
-    "workflowOverrides": true
+    "retryConditions": true
   },
   "generalSettings": {
     "cliPath": "claude",

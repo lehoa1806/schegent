@@ -17,9 +17,9 @@ const SNAPSHOT = {
   }
 } as unknown as WorkflowSnapshot;
 
-const WORKSPACE_PHASE: MutablePhase = {
+const STORED_PHASE: MutablePhase = {
   id: 'custom', name: 'Custom', version: 2, instruction: 'Run.',
-  sourceKey: 'workspace::custom::0', scope: 'workspace', sourceStatus: 'effective',
+  sourceKey: 'custom::0', sourceStatus: 'effective',
   sourceErrors: [], persisted: true
 };
 
@@ -59,27 +59,34 @@ describe('Phase catalog source editor states', () => {
     expect(container.querySelector('[data-testid="phases-add"]')).toBeNull();
   });
 
-  it('renders source scope and effective status badges', () => {
-    const { container } = mount({ phases: [WORKSPACE_PHASE] });
-    expect(container.textContent).toContain('workspace');
+  it('renders the source status badge, and no scope beside it (T496f)', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — two badges stood on every row: which
+    // layer the definition came from, and how it resolved. The first is deleted
+    // with the tier, and a badge that can only ever read one value is not a
+    // badge. The second is what the row still has to say, so it is asserted with
+    // the first pinned absent — a scope badge left rendering a constant would
+    // read as a choice the operator could have made differently.
+    const { container } = mount({ phases: [STORED_PHASE] });
     expect(container.textContent).toContain('effective');
+    expect(container.textContent).not.toContain('workspace');
+    expect(container.textContent).not.toContain('built-in');
   });
 
   it('renders invalid source errors and associates them with fields', () => {
     const invalid: MutablePhase = {
-      ...WORKSPACE_PHASE,
+      ...STORED_PHASE,
       sourceStatus: 'invalid',
       sourceErrors: [{ field: 'name', code: 'invalid-length', message: 'Name is invalid' }]
     };
     const { container } = mount({ phases: [invalid], selectedIndex: 0 });
     const name = container.querySelector('[data-testid="phases-name-field-custom"]');
     expect(name?.getAttribute('aria-invalid')).toBe('true');
-    expect(name?.getAttribute('aria-describedby')).toContain('phase-errors-workspace-custom');
+    expect(name?.getAttribute('aria-describedby')).toContain('phase-errors-custom');
     expect(container.textContent).toContain('Name is invalid');
   });
 
   it('keeps an unavailable configured model visible', () => {
-    const phase = { ...WORKSPACE_PHASE, model: 'missing-model', modelAvailable: false };
+    const phase = { ...STORED_PHASE, model: 'missing-model', modelAvailable: false };
     const { container } = mount({ phases: [phase], selectedIndex: 0 });
     expect(container.textContent).toContain('model unavailable');
     expect(container.querySelector('[data-testid="phases-model-custom"]')?.textContent)
@@ -96,7 +103,7 @@ describe('Phase catalog source editor states', () => {
       availableModels: { claude: [], codex: [], agy: [] },
       configuredModels: { claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] }
     } as unknown as WorkflowSnapshot;
-    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0, snapshot });
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0, snapshot });
 
     const options = Array.from(
       container.querySelectorAll('[data-testid="phases-model-custom"] option')
@@ -110,7 +117,7 @@ describe('Phase catalog source editor states', () => {
       availableModels: { claude: [], codex: [], agy: ['gemini-3.7-flash-high', 'gemini-3.7-pro'] },
       configuredModels: { claude: [], codex: [], agy: ['my-own-id', 'gemini-3.7-pro'] }
     } as unknown as WorkflowSnapshot;
-    const phase = { ...WORKSPACE_PHASE, runner: 'agy' as const };
+    const phase = { ...STORED_PHASE, runner: 'agy' as const };
     const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
 
     const options = Array.from(
@@ -125,27 +132,29 @@ describe('Phase catalog source editor states', () => {
       availableModels: { claude: [], codex: [], agy: [] },
       configuredModels: { claude: ['claude-opus-5'], codex: [], agy: [] }
     } as unknown as WorkflowSnapshot;
-    const phase = { ...WORKSPACE_PHASE, model: 'retired-model' };
+    const phase = { ...STORED_PHASE, model: 'retired-model' };
     const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });
 
     expect(container.querySelector('[data-testid="phases-model-custom"]')?.textContent)
       .toContain('retired-model (Unavailable)');
   });
 
-  it('keeps built-in author fields read-only and hides removal', () => {
-    const builtIn: MutablePhase = {
-      ...WORKSPACE_PHASE,
-      scope: 'built-in',
-      sourceKey: 'built-in::custom::0'
-    };
-    const { container } = mount({ phases: [builtIn], selectedIndex: 0 });
-    expect(container.querySelector('[data-testid="phases-name-field-custom"]')?.hasAttribute('readonly')).toBe(true);
-    expect(container.querySelector('[data-testid="phases-remove"]')).toBeNull();
-    expect(container.querySelector('[data-testid="phases-raw-json-toggle"]')).toBeNull();
+  it('keeps a stored row editable and offers removal (T496f)', () => {
+    // Feature 099 (T496f, FR-041, FR-043) — the `built-in` tier was the one thing
+    // that made an author field read-only on a row the operator could see, and it
+    // is deleted. The inversion is the claim: every stored row is editable and
+    // removable, so a read-only branch surviving the collapse fails here rather
+    // than presenting a definition the operator silently cannot change. The id
+    // field is the exception and keeps its own case below — it is read-only
+    // because the row is PERSISTED, which is about identity, not about a layer.
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
+    expect(container.querySelector('[data-testid="phases-name-field-custom"]')?.hasAttribute('readonly')).toBe(false);
+    expect(container.querySelector('[data-testid="phases-remove"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="phases-raw-json-toggle"]')).not.toBeNull();
   });
 
   it('keeps a persisted custom Phase id read-only', () => {
-    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0 });
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
     const idInput = [...container.querySelectorAll('.form-field')]
       .find((field) => field.querySelector('.form-label')?.textContent === 'ID')
       ?.querySelector('input');
@@ -154,7 +163,7 @@ describe('Phase catalog source editor states', () => {
 
   it('associates duplicate-id validation with the Phase id field', () => {
     const duplicate: MutablePhase = {
-      ...WORKSPACE_PHASE,
+      ...STORED_PHASE,
       sourceStatus: 'invalid',
       sourceErrors: [{
         field: 'phaseId', code: 'duplicate-in-scope', message: 'Phase id appears twice'
@@ -168,20 +177,23 @@ describe('Phase catalog source editor states', () => {
     expect(container.textContent).toContain('Phase id appears twice');
   });
 
-  it('lets a new draft select a writable target scope', async () => {
-    const draft = { ...WORKSPACE_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
+  it('offers a new draft no target-scope picker (T496f)', () => {
+    // Feature 099 (T496f, FR-043) — a save has one destination, so the control is
+    // deleted rather than reduced to a single-option select that decides nothing.
+    // Pinned by absence, and by the patch it used to emit never being emitted:
+    // a `scope` reaching `onphasechange` would be a field no save carries.
+    const draft = { ...STORED_PHASE, persisted: false, sourceKey: 'draft::custom' };
     const onphasechange = vi.fn();
     const mounted = mount({ phases: [draft], selectedIndex: 0, onphasechange });
-    const select = [...mounted.container.querySelectorAll('select')].find((element) =>
-      element.textContent?.includes('Workspace') && element.textContent?.includes('User')
-    ) as HTMLSelectElement;
-    await fireEvent.change(select, { target: { value: 'user' } });
-    expect(onphasechange).toHaveBeenCalledWith(0, { scope: 'user' });
+    const scopePicker = [...mounted.container.querySelectorAll('select')].find((element) =>
+      element.textContent?.includes('Workspace') || element.textContent?.includes('User')
+    );
+    expect(scopePicker).toBeUndefined();
   });
 
   it('switches from instruction to skill as a mutually exclusive directive', async () => {
     const onphasechange = vi.fn();
-    const mounted = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0, onphasechange });
+    const mounted = mount({ phases: [STORED_PHASE], selectedIndex: 0, onphasechange });
     const select = [...mounted.container.querySelectorAll('select')].find((element) =>
       element.textContent?.includes('Instruction') && element.textContent?.includes('Skill reference')
     ) as HTMLSelectElement;
@@ -206,10 +218,10 @@ describe('Phase catalog source editor states', () => {
   });
 
   it('makes non-target rows read-only during an atomic mutation', () => {
-    const other = { ...WORKSPACE_PHASE, id: 'other', name: 'Other', sourceKey: 'workspace::other::0' };
+    const other = { ...STORED_PHASE, id: 'other', name: 'Other', sourceKey: 'workspace::other::0' };
     const { container } = mount({
-      phases: [WORKSPACE_PHASE, other], selectedIndex: 1, mutationActive: true,
-      editableSourceKey: WORKSPACE_PHASE.sourceKey
+      phases: [STORED_PHASE, other], selectedIndex: 1, mutationActive: true,
+      editableSourceKey: STORED_PHASE.sourceKey
     });
 
     expect(container.querySelector('[data-testid="phases-name-field-other"]')
@@ -226,7 +238,7 @@ describe('Phase catalog exchange entry points', () => {
   // Export moved from the sidebar row to the editor header, so it is offered for
   // the selected Phase rather than once per row; Import stays with the catalog.
   it('offers Export for the selected Phase and Import once for the catalog', () => {
-    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0 });
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0 });
     expect(container.querySelectorAll('[data-testid="process-export-button"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
   });
@@ -234,7 +246,7 @@ describe('Phase catalog exchange entry points', () => {
   it('keeps Export enabled where every other row control is closed', () => {
     // Export writes a file the operator names and changes no catalog state, so a
     // pending mutation is not a reason to withhold it.
-    const { container } = mount({ phases: [WORKSPACE_PHASE], selectedIndex: 0, mutationActive: true });
+    const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0, mutationActive: true });
     expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
       .disabled).toBe(false);
     expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled)
@@ -242,7 +254,7 @@ describe('Phase catalog exchange entry points', () => {
   });
 
   it('refuses to export an unsaved draft, and says why (FR-015, FR-057)', () => {
-    const draft = { ...WORKSPACE_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
+    const draft = { ...STORED_PHASE, persisted: false, sourceKey: 'draft::workspace::custom' };
     const { container } = mount({ phases: [draft], selectedIndex: 0 });
     expect((container.querySelector('[data-testid="process-export-button"]') as HTMLButtonElement)
       .disabled).toBe(true);
@@ -253,7 +265,7 @@ describe('Phase catalog exchange entry points', () => {
   it('closes Import while a Phase mutation is outstanding, and says why', () => {
     // The commit sends the whole persisted layer, so an import started now would
     // ask the operator to confirm a write that excludes their pending edit.
-    const { container } = mount({ phases: [WORKSPACE_PHASE], mutationActive: true });
+    const { container } = mount({ phases: [STORED_PHASE], mutationActive: true });
     expect((container.querySelector('[data-testid="process-import-inspect"]') as HTMLButtonElement)
       .disabled).toBe(true);
     expect(container.querySelector('[data-testid="process-import-unavailable"]')?.textContent)

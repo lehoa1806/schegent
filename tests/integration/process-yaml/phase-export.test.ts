@@ -22,6 +22,7 @@ import type { PhaseDefinition } from '../../../src/contracts/process-definitions
 import { documentFromPhaseDefinition } from '../../../src/services/process-yaml/phase-yaml-mapper';
 import { serializePhaseDocument } from '../../../src/services/process-yaml/yaml-serializer';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 interface AuditEntry {
   readonly eventType: string;
@@ -40,8 +41,7 @@ interface Harness {
 
 function buildHarness(
   opts: {
-    user?: readonly unknown[];
-    workspace?: readonly unknown[];
+    rows?: readonly unknown[];
     saveResult?: Exclude<ExportProcessYamlResult, { outcome: 'unavailable' }>;
     saveThrows?: Error;
     withSaveAdapter?: boolean;
@@ -61,9 +61,13 @@ function buildHarness(
     return opts.saveResult ?? { outcome: 'saved' };
   };
 
+  const store = new FakeCatalogStore();
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: opts.user ?? [], workspace: opts.workspace ?? [] }),
+      readPhaseConfig: () => ({
+        rows: opts.rows ?? [],
+        revision: store.revisionOf('phase')
+      }),
       ...(opts.withSaveAdapter === false ? {} : { saveProcessYamlDocument }),
       audit: {
         append: async (entry: AuditEntry) => {
@@ -110,7 +114,7 @@ const AUTHORED_PHASE = Object.freeze({
 
 describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   it('QS-1 exports exactly the declared fields and nothing else', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE] });
+    const h = buildHarness({ rows: [AUTHORED_PHASE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.saved).toHaveLength(1);
@@ -147,7 +151,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   it('QS-2 is deterministic — ten exports of an unchanged Phase are byte-identical', async () => {
     const texts: string[] = [];
     for (let i = 0; i < 10; i += 1) {
-      const h = buildHarness({ user: [AUTHORED_PHASE] });
+      const h = buildHarness({ rows: [AUTHORED_PHASE] });
       await exportHandler(h.ctx, command('ship-it'));
       texts.push(h.saved[0]!.text);
     }
@@ -155,7 +159,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   });
 
   it('QS-3 omits an absent optional rather than writing the host default', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE] });
+    const h = buildHarness({ rows: [AUTHORED_PHASE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     // The authored row declares no `effort`, `loopable`, `isRequired`,
@@ -194,11 +198,15 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
       sideEffects: 'unrestricted',
       evidencePolicy: 'best-effort',
       promptVersion: 7,
-      sourceScope: 'user'
+      // Feature 099 (T496f, FR-041) — the second probe was `sourceScope`, which
+      // the layer collapse deleted. `activeVersionId` replaces it as a field the
+      // HOST resolves and the document has no key for: it identifies a version
+      // record in this installation's store and means nothing anywhere else.
+      activeVersionId: 'v3'
     } as unknown as PhaseDefinition;
 
     const text = serializePhaseDocument(documentFromPhaseDefinition(definition));
-    for (const field of ['promptVersion', 'sourceScope']) {
+    for (const field of ['promptVersion', 'activeVersionId']) {
       expect(text, `${field} must not appear in the document`).not.toContain(field);
     }
     expect(text).toContain('sideEffects: unrestricted');
@@ -215,7 +223,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     // it here would have kept the case green off `invalid-enum` on a malformed
     // value rather than off the unknown-field refusal it is about.
     const h = buildHarness({
-      user: [{ ...AUTHORED_PHASE, promptVersion: 7 }]
+      rows: [{ ...AUTHORED_PHASE, promptVersion: 7 }]
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -223,46 +231,54 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
   });
 
-  // Feature 098 (T036) — this shadowed a built-in row with a user row. The
-  // built-in layer holds nothing to shadow now, so the case is re-keyed onto the
-  // two layers that remain. The property is unchanged and is the whole point of
-  // QS-5: an export writes the definition this installation actually runs, not
-  // whichever layer happens to be looked at first.
-  it('QS-5 exports the effective definition when a layer shadows another', async () => {
+  // Feature 098 (T036) shadowed a built-in row with a user row; feature 099
+  // (T496f, FR-042) deletes the tier that made shadowing possible at all. QS-5's
+  // property is unchanged — an export writes the definition this installation
+  // actually runs, not whichever row happens to be looked at first — and it is now
+  // carried by position rather than by layer: an id names exactly one row, and the
+  // export must find it wherever in the catalog it sits.
+  it('QS-5 exports the row the id names, wherever in the catalog it sits', async () => {
     const h = buildHarness({
-      user: [
+      rows: [
         {
-          phaseId: 'speckit-specify',
-          name: 'User Specify',
+          phaseId: 'decoy-before',
+          name: 'Decoy Before',
           version: 1,
-          instruction: 'Use the shipped house style.',
+          instruction: 'Not the one.',
           model: 'claude-opus-5'
-        }
-      ],
-      workspace: [
+        },
         {
           phaseId: 'speckit-specify',
-          name: 'Locally Overridden Specify',
+          name: 'Locally Authored Specify',
           version: 2,
           instruction: 'Use the local house style.',
           model: 'claude-sonnet-5'
+        },
+        {
+          phaseId: 'decoy-after',
+          name: 'Decoy After',
+          version: 1,
+          instruction: 'Also not the one.',
+          model: 'claude-opus-5'
         }
       ]
     });
     await exportHandler(h.ctx, command('speckit-specify'));
 
     const text = h.saved[0]!.text;
-    expect(text).toContain('name: Locally Overridden Specify');
+    expect(text).toContain('phaseId: speckit-specify');
+    expect(text).toContain('name: Locally Authored Specify');
     expect(text).toContain('model: claude-sonnet-5');
-    // The shadowed row's own values are not what this installation runs.
-    expect(text).not.toContain('name: User Specify');
+    // Neither neighbour's values reached the document.
+    expect(text).not.toContain('Decoy Before');
+    expect(text).not.toContain('Decoy After');
   });
 
   it('QS-6 reports a row that exists but does not resolve as does-not-resolve', async () => {
     // `timeoutSeconds` as a string fails validation, so the row is stored but
     // carries no valid definition.
     const h = buildHarness({
-      user: [{ ...AUTHORED_PHASE, timeoutSeconds: 'not-a-number' }]
+      rows: [{ ...AUTHORED_PHASE, timeoutSeconds: 'not-a-number' }]
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -272,8 +288,8 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     expect(ack.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
   });
 
-  it('QS-6 reports an id no layer mentions as not-found', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE] });
+  it('QS-6 reports an id the catalog does not mention as not-found', async () => {
+    const h = buildHarness({ rows: [AUTHORED_PHASE] });
     await exportHandler(h.ctx, command('no-such-phase'));
 
     expect(h.saved).toHaveLength(0);
@@ -281,7 +297,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   });
 
   it('QS-7 records no location in the ack, the audit payload, or the adapter request', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE] });
+    const h = buildHarness({ rows: [AUTHORED_PHASE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     // The response says the document was saved and nothing about where.
@@ -294,7 +310,9 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     expect(h.saved[0]!.suggestedFileName).not.toContain('/');
     expect(h.saved[0]!.suggestedFileName).not.toContain('\\');
 
-    // The audit payload is bounded to operation, ids, scope, outcomes, counts.
+    // The audit payload is bounded to operation, ids, outcomes, counts. Feature
+    // 099 (FR-041) removed `scope`: there is one catalog, so an export has no
+    // layer to name alongside the definition it wrote.
     expect(h.audits).toHaveLength(1);
     const entry = h.audits[0]!;
     expect(entry.eventType).toBe('process-exchange-export');
@@ -304,14 +322,13 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
       'operation',
       'outcomes',
       'resourceIds',
-      'resourceKind',
-      'scope'
+      'resourceKind'
     ]);
+    expect(entry.payload).not.toHaveProperty('scope');
     expect(entry.payload).toMatchObject({
       operation: 'export',
       resourceKind: 'phase',
       resourceIds: ['ship-it'],
-      scope: 'user',
       outcomes: ['saved'],
       counts: { exported: 1 }
     });
@@ -324,7 +341,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   });
 
   it('reports a canceled dialog without treating it as a failure', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE], saveResult: { outcome: 'canceled' } });
+    const h = buildHarness({ rows: [AUTHORED_PHASE], saveResult: { outcome: 'canceled' } });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.acks[0]!.result).toEqual({ outcome: 'canceled' });
@@ -337,7 +354,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
 
   it('turns an adapter throw into a generic failure and keeps the detail in the log', async () => {
     const h = buildHarness({
-      user: [AUTHORED_PHASE],
+      rows: [AUTHORED_PHASE],
       saveThrows: new Error('EACCES: permission denied writing the chosen location')
     });
     await exportHandler(h.ctx, command('ship-it'));
@@ -352,11 +369,11 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
   });
 
   it('rejects cleanly when the host wired no save adapter', async () => {
-    const h = buildHarness({ user: [AUTHORED_PHASE], withSaveAdapter: false });
+    const h = buildHarness({ rows: [AUTHORED_PHASE], withSaveAdapter: false });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.acks[0]!.status).toBe('rejected');
     expect(h.acks[0]!.result).toMatchObject({ outcome: 'failed' });
-    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'], scope: 'user' });
+    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'] });
   });
 });

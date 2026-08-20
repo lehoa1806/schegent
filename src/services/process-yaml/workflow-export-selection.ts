@@ -63,26 +63,18 @@ import type {
   PipelineInputPortType,
   PipelineOutputPortType
 } from '../../contracts/pipeline-definitions';
-import type {
-  WorkflowDefinition,
-  WorkflowDefinitionScope
-} from '../../contracts/workflow-definitions';
+import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
 
 export interface WorkflowExportSelectionInput {
-  readonly builtIn: readonly unknown[];
-  readonly user: readonly unknown[] | undefined;
-  readonly workspace: readonly unknown[] | undefined;
+  /** The stored Workflow rows, at every status (FR-043). */
+  readonly rows: readonly unknown[] | undefined;
   /** The effective Pipeline catalog and its rows, per the project rule on graph resolution. */
   readonly pipelineCatalog: WorkflowPipelineContext;
   readonly workflowId: string;
 }
 
 export type WorkflowExportSelection =
-  | {
-      readonly outcome: 'selected';
-      readonly definition: WorkflowDefinition;
-      readonly scope: WorkflowDefinitionScope;
-    }
+  | { readonly outcome: 'selected'; readonly definition: WorkflowDefinition }
   | { readonly outcome: 'unavailable'; readonly reason: 'does-not-resolve' | 'not-found' };
 
 /** The output type a placeholder writes when nothing on the far end constrains it. */
@@ -243,13 +235,11 @@ function placeholderPipelines(
   );
   const needs = new Map<string, PlaceholderNeed>();
 
-  for (const rows of [input.builtIn, input.user ?? [], input.workspace ?? []]) {
-    rows.forEach((row, index) => {
-      if (workflowSourceIdentity(row, index) !== input.workflowId) return;
-      const parsed = validateWorkflowDefinition(row);
-      if (parsed.definition !== null) deriveNeeds(parsed.definition, known, needs);
-    });
-  }
+  (input.rows ?? []).forEach((row, index) => {
+    if (workflowSourceIdentity(row, index) !== input.workflowId) return;
+    const parsed = validateWorkflowDefinition(row);
+    if (parsed.definition !== null) deriveNeeds(parsed.definition, known, needs);
+  });
 
   return [...needs].map(([pipelineId, need]) => placeholderPipeline(pipelineId, need));
 }
@@ -257,8 +247,8 @@ function placeholderPipelines(
 /**
  * The definition a references-only Workflow export writes, or why there is none.
  *
- * `does-not-resolve` and `not-found` are told apart by whether any layer holds a
- * row under this identifier at all — an unknown identifier is a different answer
+ * `does-not-resolve` and `not-found` are told apart by whether a stored row holds
+ * this identifier at all — an unknown identifier is a different answer
  * from a known one whose defects are structural, and the two are reported
  * separately (FR-023).
  */
@@ -267,9 +257,9 @@ export function selectWorkflowForExport(
 ): WorkflowExportSelection {
   const resolve = (pipelineCatalog: WorkflowPipelineContext) =>
     resolveWorkflowCatalog({
-      builtIn: input.builtIn,
-      user: input.user,
-      workspace: input.workspace,
+      rows: input.rows,
+      // An export reads; it never saves, so there is no revision to echo back.
+      revision: '',
       pipelineCatalog
     });
   const effectiveRow = (records: ReturnType<typeof resolve>['records']) =>
@@ -291,7 +281,7 @@ export function selectWorkflowForExport(
   }
 
   if (selected?.definition) {
-    return { outcome: 'selected', definition: selected.definition, scope: selected.scope };
+    return { outcome: 'selected', definition: selected.definition };
   }
 
   return {

@@ -58,8 +58,7 @@ const SAMPLE_PHASES = [
 ];
 
 const SAMPLE_REQUEST: SavePhasesRequest = {
-  scope: 'workspace',
-  expectedRevision: 'workspace-revision',
+  expectedRevision: 'phase-revision',
   mutation: { kind: 'edit', phaseId: 'speckit-plan' },
   phases: SAMPLE_PHASES
 };

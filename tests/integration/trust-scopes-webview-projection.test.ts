@@ -5,8 +5,13 @@
 // Drives the host-side projection pipeline end-to-end:
 //   capability-trust-resolver.getResolvedCapabilities() →
 //   StateProjector.project() → subscriber receives WorkflowSnapshot with
-//   `workspaceTrust` + `resolvedTrust.{phases, retryConditions,
-//   pipelineOverrides}`.
+//   `workspaceTrust` + `resolvedTrust.{phases, retryConditions}`.
+//
+// Feature 099 (T492, T496f, FR-046) — `pipelineOverrides` (and its Workflow
+// twin) went with the layer tier they guarded: they asked whether one layer
+// could redefine what another declares, and one layer poses no such question.
+// Every claim below is about the surviving pair; the initial-snapshot case
+// pins the deleted field as an absence so it cannot return by accident.
 //
 // This complements the unit test at tests/unit/state/state-projector-trust.test.ts
 // by exercising the SUBSCRIBE path (not just `.project()`) and by
@@ -20,13 +25,11 @@ const mocks = vi.hoisted(() => {
     current: {
       workspaceTrust: true,
       phases: true,
-      retryConditions: true,
-      pipelineOverrides: true
+      retryConditions: true
     } as {
       workspaceTrust: boolean;
       phases: boolean;
       retryConditions: boolean;
-      pipelineOverrides: boolean;
     },
     throwOnNext: false as boolean
   };
@@ -48,7 +51,6 @@ interface TrustView {
   resolvedTrust: {
     phases: boolean;
     retryConditions: boolean;
-    pipelineOverrides: boolean;
   };
 }
 
@@ -89,8 +91,7 @@ beforeEach(() => {
   mocks.state.current = {
     workspaceTrust: true,
     phases: true,
-    retryConditions: true,
-    pipelineOverrides: true
+    retryConditions: true
   };
   mocks.state.throwOnNext = false;
 });
@@ -105,7 +106,8 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     expect(trust.workspaceTrust).toBe(true);
     expect(trust.resolvedTrust.phases).toBe(true);
     expect(trust.resolvedTrust.retryConditions).toBe(true);
-    expect(trust.resolvedTrust.pipelineOverrides).toBe(true);
+    expect(trust.resolvedTrust).not.toHaveProperty('pipelineOverrides');
+    expect(trust.resolvedTrust).not.toHaveProperty('workflowOverrides');
     sub.dispose();
     projector.dispose();
   });
@@ -123,8 +125,7 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     mocks.state.current = {
       workspaceTrust: true,
       phases: false,
-      retryConditions: true,
-      pipelineOverrides: true
+      retryConditions: true
     };
     projector.kick();
     await flush();
@@ -133,14 +134,12 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     expect(last.workspaceTrust).toBe(true);
     expect(last.resolvedTrust.phases).toBe(false);
     expect(last.resolvedTrust.retryConditions).toBe(true);
-    expect(last.resolvedTrust.pipelineOverrides).toBe(true);
 
     // Flip back to allow → next kick re-enables.
     mocks.state.current = {
       workspaceTrust: true,
       phases: true,
-      retryConditions: true,
-      pipelineOverrides: true
+      retryConditions: true
     };
     projector.kick();
     await flush();
@@ -155,8 +154,7 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     mocks.state.current = {
       workspaceTrust: false,
       phases: false,
-      retryConditions: false,
-      pipelineOverrides: false
+      retryConditions: false
     };
     const { projector } = buildProjector();
     const seen: WorkflowSnapshot[] = [];
@@ -165,7 +163,6 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     expect(trust.workspaceTrust).toBe(false);
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(false);
-    expect(trust.resolvedTrust.pipelineOverrides).toBe(false);
     sub.dispose();
     projector.dispose();
   });
@@ -179,7 +176,6 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     expect(trust.workspaceTrust).toBe(false);
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(false);
-    expect(trust.resolvedTrust.pipelineOverrides).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
     sub.dispose();
     projector.dispose();

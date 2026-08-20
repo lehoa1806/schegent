@@ -30,7 +30,7 @@ The example ends at `finalize` and declares no `done` phase. `done` remains a te
 
 Each phase is a versioned JSON record. Every phase has these fields:
 
-- **`id`** — a stable kebab-case identifier (regex `^[a-z][a-z0-9-]{0,63}$`). **No id is reserved and no id is privileged.** The ids above belong to the example document, not to the product; import it and they are yours, edit them and nothing objects. An id shadows another only within the scope precedence described below — workspace over user — and it grants no capability by being recognised, because nothing recognises it.
+- **`phaseId`** — a stable kebab-case identifier (regex `^[a-z][a-z0-9-]{0,63}$`). **No id is reserved and no id is privileged.** The ids above belong to the example document, not to the product; import it and they are yours, edit them and nothing objects. It is the definition's identity in the catalog — there is one definition per id, so an id never shadows another — and it grants no capability by being recognised, because nothing recognises it.
 - **`name`** — display name used in the sidebar, audit log summaries, and pipeline picker (1–80 chars).
 - **`description`** — optional operator-facing context (up to 1024 chars).
 - **`version`** — a positive, host-owned revision. Legacy definitions load as version 1; changed rows increment on save.
@@ -91,54 +91,49 @@ The phase is *the unit of orchestration*. Audit events fire at phase boundaries 
 
 You rarely need to redefine an entire phase. More often you want to change one tunable without touching anything else — say, run `implement` with Opus instead of Sonnet, or extend `analyze`'s timeout for a particularly large feature.
 
-Phase overrides live at two precedence levels:
+There are two places a phase's fields can come from, and they are not two layers of the same thing:
 
-- **User layer.** Settings under `schegent.phases` in your user `settings.json`. These apply across every workspace you open.
-- **Workspace layer.** The same settings under `.vscode/settings.json` in a specific project. These take precedence over the user layer for that project only.
+- **The stored definition.** What the catalog holds for that id, under `<workspaceRoot>/.schegent/catalog/`. There is exactly one per id, and it applies to every run in that workspace.
+- **Per-run overrides.** Set in the enqueue dialog for one specific task. They merge into the frozen snapshot and win for that run only; they are never stored in the catalog.
 
-Resolution selects one complete valid source row per id: workspace first, then user, then built-in. An invalid higher-precedence row remains visible but is quarantined, allowing the next valid source to become effective. Source rows do not merge field-by-field.
-
-The built-in layer is retained and permanently empty. It is read-only and is never a save target, so in practice a workspace row wins over a user row, and a lone user row wins outright. An import writes to whichever writable layer you pick in the import preflight — there is no default, and an unchosen scope never quietly resolves to the workspace. Nothing writes to the built-in layer.
+The stored side is a single layer. A definition either resolves or is reported **invalid** — there is no shadowing, no precedence to reason about, and no falling back to a lower scope. An invalid definition stays visible with its field errors so you can repair it, and it costs only itself.
 
 ### Concrete example
 
-In your user `settings.json`:
+A `schegent/v1` document you import, or the equivalent typed into the Builder:
 
-```jsonc
-{
-  "schegent.phases": [
-    {
-      "id": "speckit-implement",
-      "name": "Spec Driven Development Implement",
-      "instruction": "...",
-      "model": "claude-opus-4-7",
-      "effort": "high"
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: speckit-implement
+  name: Spec Driven Development Implement
+  version: 1
+spec:
+  instruction: ...
+  model: claude-opus-4-7
+  effort: high
 ```
 
-The setting takes an array of complete phase records. Workspace-scoped (`.vscode/settings.json`) entries take precedence over user-scoped ones, so a record here shadows a record with the same `id` in the user layer. The sidebar's host-computed `phasePrecedence` projection remains a UI-only compatibility indicator; runtime catalog resolution never merges rows per field.
-
-Omitted optional fields use runtime defaults; they are not copied from a shadowed lower source. That includes `sideEffects` and `evidencePolicy` — a record that omits them is `workspace` and `required`, not whatever the row it shadows declared.
+Each definition is complete in itself. Omitted optional fields use runtime defaults; they are never inherited from anywhere. That includes `sideEffects` and `evidencePolicy` — a definition that omits them is `workspace` and `required`, whatever the version it replaced declared.
 
 ### What happens on save
 
-When you save a phase-override change, the host:
+When you save a phase change, the host:
 
-1. Validates the new value against the field's allowed range.
-2. Recomputes the `phasePrecedence` projection so the sidebar can show the new winning layer.
-3. **Does not** retarget any in-flight `WorkflowRun.pipeline` snapshot. Active runs keep their frozen pipeline. The override takes effect for the *next* enqueued task.
+1. Validates the complete definition against the field's allowed range, and rejects the save if the catalog moved under you since you were shown it.
+2. Writes a new **immutable version** of the definition and points the manifest at it. Saving unchanged content writes nothing, so opening the editor and closing it cannot manufacture history.
+3. **Does not** retarget any in-flight `WorkflowRun.pipeline` snapshot. Active runs keep their frozen pipeline. The change takes effect for the *next* enqueued task.
 
-This is intentional: phase definitions are configuration, not commands. To use a changed Phase definition, enqueue a new task; pausing and resuming an existing run preserves its frozen snapshot.
+Step 3 is intentional: phase definitions are configuration, not commands. To use a changed Phase definition, enqueue a new task; pausing and resuming an existing run preserves its frozen snapshot. What a past run actually executed is in its frozen snapshot and its audit trail, not in whatever the catalog holds now.
 
 ## Custom phases
 
-Every phase is a custom phase now — the shipped example's nine are yours the moment you import them, and they are ordinary rows in your own settings afterwards. "Custom" here means only *authored by you rather than imported from the example*: nothing distinguishes the two once they are in the catalog. You might add a `security-scan` phase between `speckit-implement` and `finalize` that runs a prompt against the just-written code.
+Every phase is a custom phase now — the shipped example's nine are yours the moment you import them, and they are ordinary definitions in your own catalog afterwards. "Custom" here means only *authored by you rather than imported from the example*: nothing distinguishes the two once they are in the catalog. You might add a `security-scan` phase between `speckit-implement` and `finalize` that runs a prompt against the just-written code.
 
 Phases:
 
-- Are declared in `schegent.phases` with an `id`, `name`, positive `version`, and exactly one of `instruction` or `skill`; pipeline order is declared separately.
+- Are stored in the catalog with a `phaseId`, `name`, positive `version`, and exactly one of `instruction` or `skill`; pipeline order is declared separately, by a pipeline definition.
 - All flow through *the same* audit pipeline: every `phase-start` and `phase-end` event carries the same fields, sanitization runs identically, and the verbose diagnostic sink captures everything. There is no second, privileged path — there is nothing left to be privileged.
 - Are all subject to the same phase overrides (model, effort, timeout, loopable, retryCondition).
 

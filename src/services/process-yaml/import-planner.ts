@@ -17,13 +17,14 @@
 // Note the deliberate asymmetry with export, which reads the EFFECTIVE catalog
 // (FR-014) because it must describe what this installation would actually run.
 //
-// Decision (084, autonomous): when more than one stored row claims an id, the
-// reported claimant is the first in the order the oracle is written in —
-// built-in, then user, then workspace. Precedence order was rejected: the
-// highest-precedence non-invalid row is always promoted to `'effective'`, which
-// would make `presentRowStatus: 'shadowed'` unreachable and turn the field into
-// a constant. Presence is a gate, not a routing decision; the reported row is
-// evidence for the skip.
+// Decision (084, autonomous; restated for 099 T496f, FR-042): when more than one
+// stored row claims an id, the reported claimant is the first in stored order.
+// The layer ordering this used to describe — built-in, then user, then workspace —
+// is deleted with the tier, and so is the `shadowed` status that made the choice
+// of claimant observable. One catalog invalidates BOTH rows of a duplicate pair
+// instead, so the reported status is `'invalid'` whichever row is read first.
+// Presence is a gate, not a routing decision; the reported row is evidence for
+// the skip.
 //
 // Feature 085 T032 extends the same module to packages. A package declares more
 // than one resource, so the planner gains a second presence oracle — the stored
@@ -59,7 +60,6 @@ import type {
 } from '../../contracts/pipeline-definitions';
 import type {
   PhaseDefinition,
-  PhaseDefinitionScope,
   PhaseSourceRecord,
   PhaseSourceStatus
 } from '../../contracts/process-definitions';
@@ -75,30 +75,30 @@ import type {
   ImportPlanCounts,
   ImportPlanRow,
   PhaseYamlDocument,
-  ProcessYamlLayerRevisions,
-  ProcessYamlPresenceScope,
+  ProcessYamlCatalogRevision,
   ProcessYamlPresenceStatus,
   ProcessYamlResourceKind
 } from './types';
 import type { WorkflowPackageResource, WorkflowPackageResult } from './workflow-document';
 
-/** The layer order the presence union is written in (data-model). */
-const PRESENCE_SCAN_ORDER: readonly PhaseDefinitionScope[] = ['built-in', 'user', 'workspace'];
+// Feature 099 (T490, FR-049) — `PRESENCE_SCAN_ORDER` is deleted, not reduced to a
+// one-element list. It named the order `built-in`, `user`, `workspace` were
+// searched and which claim won; with one layer there is no order to state, and a
+// single-element iteration would be the scan order kept alive as a loop nobody
+// can see is vestigial. The presence *property* is untouched: a scan of stored
+// rows at every status, never the effective catalog (FR-050).
 
 export interface PhaseIdPresence {
-  readonly scope: PhaseDefinitionScope;
   readonly status: PhaseSourceStatus;
 }
 
 /** The same evidence for a Pipeline id, from the Pipeline catalog's stored rows. */
 export interface PipelineIdPresence {
-  readonly scope: ProcessYamlPresenceScope;
   readonly status: ProcessYamlPresenceStatus;
 }
 
 /** The same evidence for a Workflow id, from the Workflow catalog's stored rows. */
 export interface WorkflowIdPresence {
-  readonly scope: ProcessYamlPresenceScope;
   readonly status: ProcessYamlPresenceStatus;
 }
 
@@ -129,15 +129,15 @@ export interface PackageImportContext {
   readonly pipelineRows: readonly PipelineSourceRecord[];
   /** Read by the US4 resolver; carried here so the two oracles arrive together. */
   readonly effectivePhases: readonly PhaseDefinition[];
-  /** Phase catalog layer revisions. */
-  readonly revisions: ProcessYamlLayerRevisions;
+  /** The Phase kind's store revision (FR-044a). */
+  readonly revision: ProcessYamlCatalogRevision;
   /**
-   * Pipeline catalog layer revisions. Separate because the two layers are
+   * The Pipeline kind's store revision. Separate because the two kinds are
    * independently mutable and a confirmed package is two ordered writes, each
-   * gated on its own layer having not moved since this plan was computed
+   * gated on its own kind having not moved since this plan was computed
    * (FR-040, FR-043).
    */
-  readonly pipelineRevisions: ProcessYamlLayerRevisions;
+  readonly pipelineRevision: ProcessYamlCatalogRevision;
 }
 
 /**
@@ -170,31 +170,28 @@ export interface WorkflowPackageImportContext extends PackageImportContext {
    */
   readonly invalidPipelines: ReadonlyMap<string, string>;
   /**
-   * Workflow catalog layer revisions. A third field for the reason there is a
-   * second: three independently mutable layers cannot share one staleness gate,
+   * The Workflow kind's store revision. A third field for the reason there is a
+   * second: three independently mutable kinds cannot share one staleness gate,
    * and a confirmed package is three ordered writes each carrying its own
    * `expectedRevision`.
    */
-  readonly workflowRevisions: ProcessYamlLayerRevisions;
+  readonly workflowRevision: ProcessYamlCatalogRevision;
 }
 
 /**
- * Does any stored row in any layer claim `phaseId`?
+ * Does any stored row claim `phaseId`?
  *
  * Exported so the rule has a name and a direct test, rather than being an
- * anonymous `.some(...)` inside the planner.
+ * anonymous `.some(...)` inside the planner. Still every stored row at every
+ * status, never the effective catalog (FR-050) — a row that is `invalid` claims
+ * its id just as firmly as one that resolves, which is the whole point.
  */
 export function findPhaseIdPresence(
   storedRows: readonly PhaseSourceRecord[],
   phaseId: string
 ): PhaseIdPresence | null {
-  for (const scope of PRESENCE_SCAN_ORDER) {
-    const claimant = storedRows.find((row) => row.scope === scope && row.phaseId === phaseId);
-    if (claimant !== undefined) {
-      return Object.freeze({ scope: claimant.scope, status: claimant.status });
-    }
-  }
-  return null;
+  const claimant = storedRows.find((row) => row.phaseId === phaseId);
+  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
 }
 
 /**
@@ -207,13 +204,8 @@ export function findPipelineIdPresence(
   storedRows: readonly PipelineSourceRecord[],
   pipelineId: string
 ): PipelineIdPresence | null {
-  for (const scope of PRESENCE_SCAN_ORDER) {
-    const claimant = storedRows.find((row) => row.scope === scope && row.pipelineId === pipelineId);
-    if (claimant !== undefined) {
-      return Object.freeze({ scope: claimant.scope, status: claimant.status });
-    }
-  }
-  return null;
+  const claimant = storedRows.find((row) => row.pipelineId === pipelineId);
+  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
 }
 
 /**
@@ -231,13 +223,8 @@ export function findWorkflowIdPresence(
   storedRows: readonly WorkflowSourceRecord[],
   workflowId: string
 ): WorkflowIdPresence | null {
-  for (const scope of PRESENCE_SCAN_ORDER) {
-    const claimant = storedRows.find((row) => row.scope === scope && row.workflowId === workflowId);
-    if (claimant !== undefined) {
-      return Object.freeze({ scope: claimant.scope, status: claimant.status });
-    }
-  }
-  return null;
+  const claimant = storedRows.find((row) => row.workflowId === workflowId);
+  return claimant === undefined ? null : Object.freeze({ status: claimant.status });
 }
 
 function countRows(rows: readonly ImportPlanRow[]): ImportPlanCounts {
@@ -262,39 +249,39 @@ function countRows(rows: readonly ImportPlanRow[]): ImportPlanCounts {
 }
 
 /**
- * The layers beyond Phases this plan can write, each named at the call site.
+ * The kinds beyond Phases this plan can write, each named at the call site.
  *
  * An object rather than two more positional parameters: a Workflow package may
  * declare a Workflow and no Pipeline, so positional arguments would put a bare
- * `undefined` in the middle of the call, which is exactly how the wrong layer's
+ * `undefined` in the middle of the call, which is exactly how the wrong kind's
  * revision comes to gate the wrong write.
  */
-interface OptionalLayerRevisions {
-  readonly pipelineRevisions?: ProcessYamlLayerRevisions;
-  readonly workflowRevisions?: ProcessYamlLayerRevisions;
+interface OptionalKindRevisions {
+  readonly pipelineRevision?: ProcessYamlCatalogRevision;
+  readonly workflowRevision?: ProcessYamlCatalogRevision;
 }
 
 function planned(
   rows: readonly ImportPlanRow[],
-  revisions: ProcessYamlLayerRevisions,
-  optional: OptionalLayerRevisions = {}
+  revision: ProcessYamlCatalogRevision,
+  optional: OptionalKindRevisions = {}
 ): ProcessImportPlanResult {
   return {
     outcome: 'planned',
     plan: Object.freeze({
       rows: Object.freeze(rows),
       counts: countRows(rows),
-      computedAgainstRevision: revisions,
+      computedAgainstRevision: revision,
       // Omitted rather than duplicated on the Phase path: a plan that cannot
       // write the Pipeline layer has no Pipeline revision to have been computed
       // against, and claiming one would be a fact about a catalog this plan
       // never read (FR-043). The same holds a layer up (FR-036) — the webview
       // reads each field's PRESENCE as "this plan can write that layer".
-      ...(optional.pipelineRevisions !== undefined
-        ? { computedAgainstPipelineRevision: optional.pipelineRevisions }
+      ...(optional.pipelineRevision !== undefined
+        ? { computedAgainstPipelineRevision: optional.pipelineRevision }
         : {}),
-      ...(optional.workflowRevisions !== undefined
-        ? { computedAgainstWorkflowRevision: optional.workflowRevisions }
+      ...(optional.workflowRevision !== undefined
+        ? { computedAgainstWorkflowRevision: optional.workflowRevision }
         : {})
     })
   };
@@ -306,7 +293,7 @@ function planned(
  * presence, because the id it claims may itself be the defect — and an invalid
  * resource does not claim its id for dependency resolution either (085's FR-032,
  * which 086 restates as the first step of the FR-025a order below; 086's own
- * FR-032 is the layer-and-status a skip row names).
+ * FR-032 is the status a skip row names — the layer half went with the tier).
  */
 function invalidRow(
   resourceKind: ProcessYamlResourceKind,
@@ -343,7 +330,6 @@ function phaseSkipOrImportRow(
       resourceKind: 'phase' as const,
       resourceId: metadata.phaseId,
       name: metadata.name,
-      presentIn: presence.scope,
       presentRowStatus: presence.status
     });
   }
@@ -387,7 +373,6 @@ function pipelineRow(
       resourceKind: 'pipeline' as const,
       resourceId: definition.pipelineId,
       name: definition.name,
-      presentIn: presence.scope,
       presentRowStatus: presence.status
     });
   }
@@ -430,24 +415,25 @@ function pipelineRow(
 /**
  * Turn one validated document into the plan an operator confirms or abandons.
  *
- * `revisions` records BOTH writable layers, because the target scope is chosen
- * after preflight; recording one would leave the staleness gate unable to fire
- * for whichever scope the operator actually picks (FR-033).
+ * `revision` is the Phase kind's store revision at the moment the preview was
+ * computed. Feature 099 (T490, FR-043) — it recorded both writable layers,
+ * because the target scope was chosen after preflight and one revision could not
+ * gate a choice not yet made. There is one target, so there is one revision.
  */
 export function planPhaseImport(
   validation: PhaseYamlValidationResult,
   storedRows: readonly PhaseSourceRecord[],
-  revisions: ProcessYamlLayerRevisions
+  revision: ProcessYamlCatalogRevision
 ): ProcessImportPlanResult {
   if (!validation.ok && validation.kind === 'document') {
     return { outcome: 'refused', refusal: validation.refusal };
   }
 
   if (!validation.ok) {
-    return planned([invalidRow('phase', validation.resourceId, validation.defects)], revisions);
+    return planned([invalidRow('phase', validation.resourceId, validation.defects)], revision);
   }
 
-  return planned([phaseSkipOrImportRow(validation.document, storedRows)], revisions);
+  return planned([phaseSkipOrImportRow(validation.document, storedRows)], revision);
 }
 
 /** One row per declared resource, whatever that resource turned out to be (FR-024). */
@@ -516,8 +502,8 @@ export function planPipelineImport(
 
   return planned(
     result.resources.map((resource) => planPackageResource(resource, context, plannedPhaseRows)),
-    context.revisions,
-    { pipelineRevisions: context.pipelineRevisions }
+    context.revision,
+    { pipelineRevision: context.pipelineRevision }
   );
 }
 
@@ -555,7 +541,6 @@ function workflowRow(
       resourceKind: 'workflow' as const,
       resourceId: definition.workflowId,
       name: definition.name,
-      presentIn: presence.scope,
       presentRowStatus: presence.status
     });
   }
@@ -743,17 +728,17 @@ export function planWorkflowImport(
     result.resources.map((resource) =>
       planWorkflowPackageResource(resource, context, plannedPhaseRows, plannedPipelineRows)
     ),
-    context.revisions,
+    context.revision,
     {
       // One revision per layer this plan can WRITE, which is one per layer the
       // document declared a resource for. A references-only Workflow claims no
       // Pipeline revision, because offering that write would offer a write with
       // nothing in it.
       ...(declaresKind(result.resources, 'pipeline')
-        ? { pipelineRevisions: context.pipelineRevisions }
+        ? { pipelineRevision: context.pipelineRevision }
         : {}),
       ...(declaresKind(result.resources, 'workflow')
-        ? { workflowRevisions: context.workflowRevisions }
+        ? { workflowRevision: context.workflowRevision }
         : {})
     }
   );

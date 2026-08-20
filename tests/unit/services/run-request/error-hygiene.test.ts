@@ -45,7 +45,7 @@ const PIPELINE: EffectivePipelineSource = {
     inputs: INPUT_PORTS,
     outputs: OUTPUT_PORTS
   },
-  phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.', sourceScope: 'built-in' }]
+  phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.' }]
 };
 
 /** Every path-bearing check refuses, so every path-bearing message is produced. */

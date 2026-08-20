@@ -7,10 +7,10 @@
 //       tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts:60-63).
 //   (b) A valid payload setting BOTH `effort: 'high'` and a permitted
 //       `model: '<id>'` on the same row is accepted by the host and the
-//       row is forwarded to `updateConfig('phases', …)` byte-for-byte.
+//       row is sent to the Phase catalog byte-for-byte.
 //   (c) A row carrying `effort: 'turbo'` (not in EFFORT_LEVELS) is
 //       rejected with a per-row validation error code and the prior
-//       state is preserved (no `updateConfig('phases', …)` call).
+//       state is preserved (no layer save at all).
 //   (d) A row carrying `model: '<unknown-id>'` (not in the permitted
 //       set) is rejected with a per-row validation error code and the
 //       prior state is preserved.
@@ -34,29 +34,25 @@ import {
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
+import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
 
 interface CapturedAck {
   msg: CommandAckMessage;
 }
 
-function buildRouter(opts: {
-  updateConfig?: (
-    key: 'phases' | 'pipelines' | 'models' | 'workflows',
-    value: unknown
-  ) => Promise<void>;
-} = {}): {
+// Feature 099 (T496f, FR-042a) — the write port is the versioned catalog store,
+// so "forwards byte-for-byte to `updateConfig('phases', ...)`" is now "sends
+// byte-for-byte as the one Phase layer". `layerWrites` projects a layer save back
+// to the array of rows these assertions are written against; the claim under test
+// — what the host decided to persist — has not moved.
+function buildRouter(): {
   router: MessageRouter;
   acks: CapturedAck[];
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
+  writes: () => readonly (readonly unknown[])[];
 } {
   const acks: CapturedAck[] = [];
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
-  const updateConfig =
-    opts.updateConfig ??
-    (async (key: 'phases' | 'pipelines' | 'models' | 'workflows', value: unknown) => {
-      updateConfigCalls.push({ key, value });
-    });
+  const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -64,17 +60,20 @@ function buildRouter(opts: {
     isTrusted: () => true,
     notifyWarning: vi.fn(),
     logger: new SanitizedLogger(),
-    updateConfig,
-    readPhaseConfig: () => ({ user: [], workspace: [] })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
   const router = new MessageRouter(deps);
-  return { router, acks, updateConfigCalls };
+  return { router, acks, store, writes: () => layerWrites(store) };
 }
+
+/** Feature 099 (T496f, FR-044a) — an empty store's revision, before any save. */
+const SEEDED_REVISION = new FakeCatalogStore().revisionOf('phase');
 
 function savePayload(phases: readonly unknown[], phaseId = 'speckit-plan') {
   return {
-    scope: 'workspace' as const,
-    expectedRevision: phaseLayerRevision([]),
+    expectedRevision: SEEDED_REVISION,
     mutation: { kind: 'create' as const, phaseId },
     phases
   };
@@ -103,7 +102,7 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
   });
 
   it('(b) accepts a row carrying BOTH effort and a permitted model and forwards byte-for-byte', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const acks: CapturedAck[] = [];
     const phases = [
       {
@@ -126,15 +125,14 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
     );
     expect(acks).toHaveLength(1);
     expect(acks[0].msg.status).toBe('accepted');
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual([
+    expect(store.layerSaves.map((request) => request.kind)).toEqual(['phase']);
+    expect(writes()[0]).toEqual([
       expect.objectContaining({ ...phases[0], version: 1 })
     ]);
   });
 
   it('(c) rejects a row with effort: "turbo" with a per-row error code and does not persist', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const acks: CapturedAck[] = [];
     await dispatch(
       router,
@@ -158,11 +156,12 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       reason: 'phase-validation',
       result: { errors: [expect.objectContaining({ phaseId: 'speckit-plan', field: 'effort' })] }
     });
-    expect(updateConfigCalls).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(store.layerSaves).toEqual([]);
   });
 
   it('(d) rejects a row with an unknown model with a per-row error code and does not persist', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const acks: CapturedAck[] = [];
     await dispatch(
       router,
@@ -186,11 +185,12 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       reason: 'phase-validation',
       result: { errors: [expect.objectContaining({ phaseId: 'speckit-plan', field: 'model' })] }
     });
-    expect(updateConfigCalls).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(store.layerSaves).toEqual([]);
   });
 
   it('(e) all-or-nothing multi-row save: one bad row blocks all writes', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const acks: CapturedAck[] = [];
     const phases = [
       {
@@ -222,11 +222,12 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
       reason: 'phase-validation',
       result: { errors: [expect.objectContaining({ phaseId: 'speckit-implement', field: 'effort' })] }
     });
-    expect(updateConfigCalls).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(store.layerSaves).toEqual([]);
   });
 
   it('(e-bis) rejects an all-valid batch whose diff exceeds one declared mutation', async () => {
-    const { router, updateConfigCalls } = buildRouter();
+    const { router, store, writes } = buildRouter();
     const acks: CapturedAck[] = [];
     const phases = [
       {
@@ -257,6 +258,7 @@ describe('Feature 026 T011a — CMD_SAVE_PHASES contract for effort + model', ()
     );
     expect(acks[0].msg.status).toBe('rejected');
     expect(acks[0].msg.reason).toBe('phase-mutation-mismatch');
-    expect(updateConfigCalls).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(store.layerSaves).toEqual([]);
   });
 });

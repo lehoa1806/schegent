@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   PIPELINE_CATALOG_SOFT_CAP,
   PIPELINE_PHASE_SOFT_CAP,
-  pipelineLayerRevision,
   pipelineSourceIdentity,
   resolvePipelineCatalog
 } from '../../../src/config/pipeline-catalog';
-import type { PipelineDef } from '../../../src/config/pipeline-config';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 
 const phase = (phaseId: string): PhaseDefinition => ({
@@ -22,10 +20,14 @@ const phaseCatalog: readonly PhaseDefinition[] = [
   phase('finalize')
 ];
 
-const builtIn: readonly PipelineDef[] = [
-  { id: 'shared', name: 'Built in', phases: ['speckit-specify'], version: 1 },
-  { id: 'fallback', name: 'Fallback', phases: ['finalize'], version: 1 }
-];
+// Feature 099 (T496f, FR-042/FR-043) — was three layer arrays. The resolver takes
+// one row list and the store's revision, so the fixture is one list and every
+// call below passes `rows`. `FALLBACK_ROW` is what the old `builtIn` array
+// contributed to the cases that needed a second, undisturbed id in the catalog.
+const FALLBACK_ROW = { id: 'fallback', name: 'Fallback', phases: ['finalize'], version: 1 };
+
+/** The revision the store reported for this catalog. Echoed back, never derived. */
+const REVISION = 'rev-pipeline-1';
 
 const row = (name: string, overrides: Record<string, unknown> = {}) => ({
   id: 'shared',
@@ -48,104 +50,37 @@ describe('pipelineSourceIdentity', () => {
   });
 });
 
-describe('pipelineLayerRevision', () => {
-  it('is stable across key order', () => {
-    const a = pipelineLayerRevision([{ id: 'a', name: 'A', phases: ['finalize'] }]);
-    const b = pipelineLayerRevision([{ phases: ['finalize'], name: 'A', id: 'a' }]);
-    expect(a).toBe(b);
-  });
+// Feature 099 (T496f, FR-044a) — `pipelineLayerRevision` is deleted. It hashed a
+// layer's rows so the Builder could detect that the layer had moved under it. The
+// store issues the revision now and this module reports it back verbatim, so
+// there is no derivation left here to test; the store's own suite owns the hash,
+// and the echo is asserted at the bottom of this file.
 
-  it('changes when content changes', () => {
-    const a = pipelineLayerRevision([{ id: 'a', name: 'A', phases: ['finalize'] }]);
-    const b = pipelineLayerRevision([{ id: 'a', name: 'B', phases: ['finalize'] }]);
-    expect(a).not.toBe(b);
-  });
-
-  it('treats an absent layer as an empty layer', () => {
-    expect(pipelineLayerRevision(undefined)).toBe(pipelineLayerRevision([]));
-  });
-});
-
-describe('resolvePipelineCatalog — precedence (FR-003, SC-001)', () => {
-  it('selects workspace over user over built-in as whole rows', () => {
-    const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User', { description: 'user only' })],
-      workspace: [row('Workspace')],
-      phaseCatalog
-    });
-    const shared = result.effective.find((pipeline) => pipeline.pipelineId === 'shared');
-    expect(shared).toMatchObject({ name: 'Workspace' });
-    expect(shared?.description).toBeUndefined();
-  });
-
-  it('emits exactly one effective record per id and marks the rest shadowed', () => {
-    const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User')],
-      workspace: [row('Workspace')],
-      phaseCatalog
-    });
-    const shared = result.records.filter((record) => record.pipelineId === 'shared');
-    expect(shared.filter((record) => record.status === 'effective')).toHaveLength(1);
-    expect(shared.find((record) => record.scope === 'workspace')?.status).toBe('effective');
-    expect(shared.find((record) => record.scope === 'user')?.status).toBe('shadowed');
-    expect(shared.find((record) => record.scope === 'built-in')?.status).toBe('shadowed');
-    expect(result.effective.filter((pipeline) => pipeline.pipelineId === 'shared')).toHaveLength(1);
-  });
-
-  it('keeps an invalid high-scope row visible and falls through to the next scope', () => {
-    const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User')],
-      workspace: [row('Workspace', { phases: [] })],
-      phaseCatalog
-    });
-    expect(result.records).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ scope: 'workspace', pipelineId: 'shared', status: 'invalid' }),
-        expect.objectContaining({ scope: 'user', pipelineId: 'shared', status: 'effective' })
-      ])
-    );
-  });
-
-  it('projects effectivePipelineDefs in the runtime shape with the resolved sourceScope', () => {
-    const result = resolvePipelineCatalog({
-      builtIn,
-      user: [],
-      workspace: [row('Workspace')],
-      phaseCatalog
-    });
-    const shared = result.effectivePipelineDefs.find((pipeline) => pipeline.id === 'shared');
-    expect(shared).toMatchObject({
-      id: 'shared',
-      name: 'Workspace',
-      phases: ['speckit-specify', 'speckit-plan'],
-      sourceScope: 'workspace'
-    });
-    const fallback = result.effectivePipelineDefs.find((pipeline) => pipeline.id === 'fallback');
-    expect(fallback?.sourceScope).toBe('built-in');
-  });
-});
+// Feature 099 (T496f, FR-043) — the precedence block is deleted whole. Its four
+// cases asserted which of three layers a shared id resolved out of, that the
+// losers were marked `shadowed`, that an invalid winner fell through to the next
+// layer, and that the winner's scope was stamped onto the runtime def. Every one
+// of those is a claim about an ordering between layers, and there is one layer;
+// `shadowed` and `sourceScope` are deleted with it. Nothing weaker replaces them:
+// the surviving question about two rows claiming one id is the duplicate rule
+// below, which invalidates BOTH rather than ranking them.
 
 describe('resolvePipelineCatalog — invalid rows are retained (FR-002)', () => {
   it('retains an unparseable row as a record with a synthetic id', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: ['nonsense'],
-      workspace: [],
+      rows: ['nonsense'],
+      revision: REVISION,
       phaseCatalog
     });
-    const record = result.records.find((entry) => entry.scope === 'user');
+    const record = result.records.find((entry) => entry.pipelineId === '?invalid-1');
     expect(record).toMatchObject({ pipelineId: '?invalid-1', status: 'invalid', definition: null });
     expect(record?.errors.length).toBeGreaterThan(0);
   });
 
   it('never projects a synthetic id into effective', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [{ name: 'No id', phases: ['finalize'] }],
-      workspace: [],
+      rows: [{ name: 'No id', phases: ['finalize'] }],
+      revision: REVISION,
       phaseCatalog
     });
     expect(result.effective.some((pipeline) => pipeline.pipelineId.startsWith('?invalid-'))).toBe(
@@ -156,9 +91,8 @@ describe('resolvePipelineCatalog — invalid rows are retained (FR-002)', () => 
 
   it('warns once when any source row requires repair', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: ['nonsense'],
-      workspace: [],
+      rows: ['nonsense'],
+      revision: REVISION,
       phaseCatalog
     });
     expect(result.warnings.filter((warning) => warning.code === 'invalid-source-rows')).toHaveLength(
@@ -167,64 +101,62 @@ describe('resolvePipelineCatalog — invalid rows are retained (FR-002)', () => 
   });
 });
 
-describe('resolvePipelineCatalog — duplicate ids inside one scope (FR-036)', () => {
-  it('invalidates both rows and falls through to the next scope', () => {
+// Feature 099 (T496f, FR-036/FR-043) — "inside one scope" is now the only place
+// two rows can collide, so the rule is unqualified: one catalog, one id. The
+// `duplicate-in-scope` error CODE is deliberately unchanged — it is host/webview
+// parity surface and renaming it would be a contract change this feature does not
+// make (recorded in tasks.md) — while what it means is now simply "twice here".
+describe('resolvePipelineCatalog — duplicate ids (FR-036)', () => {
+  it('invalidates both rows rather than ranking them', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('One'), row('Two')],
-      workspace: [],
+      rows: [row('One'), row('Two'), FALLBACK_ROW],
+      revision: REVISION,
       phaseCatalog
     });
-    const userRecords = result.records.filter((record) => record.scope === 'user');
-    expect(userRecords).toHaveLength(2);
-    expect(userRecords.every((record) => record.status === 'invalid')).toBe(true);
-    expect(userRecords.every((record) => record.definition === null)).toBe(true);
+    const collided = result.records.filter((record) => record.pipelineId === 'shared');
+    expect(collided).toHaveLength(2);
+    expect(collided.every((record) => record.status === 'invalid')).toBe(true);
+    expect(collided.every((record) => record.definition === null)).toBe(true);
     expect(
-      userRecords.every((record) =>
+      collided.every((record) =>
         record.errors.some((error) => error.code === 'duplicate-in-scope')
       )
     ).toBe(true);
+    // The collision is confined to the id that collided: an unrelated row in the
+    // same catalog is untouched. This is what the old "falls through to the next
+    // scope" assertion was really protecting, with the fall-through removed.
     expect(
-      result.records.find((record) => record.scope === 'built-in' && record.pipelineId === 'shared')
-        ?.status
+      result.records.find((record) => record.pipelineId === 'fallback')?.status
     ).toBe('effective');
   });
 
   it('does not treat two synthetic ids as duplicates of each other', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: ['nonsense', 42],
-      workspace: [],
+      rows: ['nonsense', 42],
+      revision: REVISION,
       phaseCatalog
     });
-    const userRecords = result.records.filter((record) => record.scope === 'user');
-    expect(userRecords.map((record) => record.pipelineId)).toEqual(['?invalid-1', '?invalid-2']);
+    expect(result.records.map((record) => record.pipelineId)).toEqual([
+      '?invalid-1',
+      '?invalid-2'
+    ]);
     expect(
-      userRecords.some((record) =>
+      result.records.some((record) =>
         record.errors.some((error) => error.code === 'duplicate-in-scope')
       )
     ).toBe(false);
   });
 
-  it('allows the same id in two different scopes', () => {
-    const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User')],
-      workspace: [row('Workspace')],
-      phaseCatalog
-    });
-    expect(
-      result.records.some((record) => record.errors.some((e) => e.code === 'duplicate-in-scope'))
-    ).toBe(false);
-  });
+  // Feature 099 (T496f, FR-043) — "allows the same id in two different scopes"
+  // is deleted. There are no two scopes to hold it in, and the case it excluded
+  // is now the collision above rather than a permitted arrangement.
 });
 
 describe('resolvePipelineCatalog — Phase references and bindings (FR-011)', () => {
   it('invalidates a row whose phaseIds do not resolve against the effective Phase catalog', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User', { id: 'ghost', phases: ['speckit-specify', 'made-up-phase'] })],
-      workspace: [],
+      rows: [row('User', { id: 'ghost', phases: ['speckit-specify', 'made-up-phase'] })],
+      revision: REVISION,
       phaseCatalog
     });
     const record = result.records.find((entry) => entry.pipelineId === 'ghost');
@@ -239,8 +171,7 @@ describe('resolvePipelineCatalog — Phase references and bindings (FR-011)', ()
 
   it('invalidates a row whose bindings fail cross-reference validation', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [
+      rows: [
         row('User', {
           id: 'wired',
           bindings: [
@@ -248,7 +179,7 @@ describe('resolvePipelineCatalog — Phase references and bindings (FR-011)', ()
           ]
         })
       ],
-      workspace: [],
+      revision: REVISION,
       phaseCatalog
     });
     const record = result.records.find((entry) => entry.pipelineId === 'wired');
@@ -260,8 +191,7 @@ describe('resolvePipelineCatalog — Phase references and bindings (FR-011)', ()
 
   it('keeps a fully wired row effective', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [
+      rows: [
         row('User', {
           id: 'wired',
           inputs: [
@@ -276,7 +206,7 @@ describe('resolvePipelineCatalog — Phase references and bindings (FR-011)', ()
           ]
         })
       ],
-      workspace: [],
+      revision: REVISION,
       phaseCatalog
     });
     const record = result.records.find((entry) => entry.pipelineId === 'wired');
@@ -293,7 +223,7 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
       version: 1,
       phases: ['finalize']
     }));
-    const result = resolvePipelineCatalog({ builtIn: [], user, workspace: [], phaseCatalog });
+    const result = resolvePipelineCatalog({ rows: user, revision: REVISION, phaseCatalog });
     expect(result.warnings.some((warning) => warning.code === 'pipeline-soft-cap')).toBe(true);
   });
 
@@ -304,16 +234,15 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
       version: 1,
       phases: ['finalize']
     }));
-    const result = resolvePipelineCatalog({ builtIn: [], user, workspace: [], phaseCatalog });
+    const result = resolvePipelineCatalog({ rows: user, revision: REVISION, phaseCatalog });
     expect(result.warnings.some((warning) => warning.code === 'pipeline-soft-cap')).toBe(false);
   });
 
   it('warns when a Pipeline sequence exceeds the per-Pipeline Phase soft cap', () => {
     const phases = Array.from({ length: PIPELINE_PHASE_SOFT_CAP + 1 }, () => 'finalize');
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [{ id: 'long', name: 'Long', version: 1, phases }],
-      workspace: [],
+      rows: [{ id: 'long', name: 'Long', version: 1, phases }],
+      revision: REVISION,
       phaseCatalog
     });
     const warning = result.warnings.find((entry) => entry.code === 'pipeline-phase-soft-cap');
@@ -333,7 +262,7 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
       version: 1,
       phases: ['finalize']
     }));
-    const result = resolvePipelineCatalog({ builtIn: [], user, workspace: [], phaseCatalog });
+    const result = resolvePipelineCatalog({ rows: user, revision: REVISION, phaseCatalog });
 
     expect(result.effective).toHaveLength(count);
     expect(result.records).toHaveLength(count);
@@ -349,9 +278,8 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
     const length = PIPELINE_PHASE_SOFT_CAP + 7;
     const phases = Array.from({ length }, () => 'finalize');
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [{ id: 'long', name: 'Long', version: 1, phases }],
-      workspace: [],
+      rows: [{ id: 'long', name: 'Long', version: 1, phases }],
+      revision: REVISION,
       phaseCatalog
     });
 
@@ -365,9 +293,8 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
   it('reports a soft-cap breach as a warning only — the record stays valid and effective', () => {
     const phases = Array.from({ length: PIPELINE_PHASE_SOFT_CAP + 1 }, () => 'finalize');
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [{ id: 'long', name: 'Long', version: 1, phases }],
-      workspace: [],
+      rows: [{ id: 'long', name: 'Long', version: 1, phases }],
+      revision: REVISION,
       phaseCatalog
     });
 
@@ -378,10 +305,17 @@ describe('resolvePipelineCatalog — advisory warnings (FR-019a, FR-033)', () =>
   });
 
   it('warns — never errors — when a recommendedNext id has no effective definition', () => {
+    // `fallback` is present as a row so that it RESOLVES: the warning must name
+    // only the ids that do not, which is what distinguishes it from a warning
+    // that simply echoes every id a Pipeline recommends. It reached the catalog
+    // through the built-in layer before feature 099; a row is where it comes
+    // from now, and the case is unchanged in what it asserts.
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: [row('User', { id: 'suggester', recommendedNext: ['fallback', 'not-a-pipeline'] })],
-      workspace: [],
+      rows: [
+        row('User', { id: 'suggester', recommendedNext: ['fallback', 'not-a-pipeline'] }),
+        FALLBACK_ROW
+      ],
+      revision: REVISION,
       phaseCatalog
     });
     const record = result.records.find((entry) => entry.pipelineId === 'suggester');
@@ -412,9 +346,8 @@ describe('resolvePipelineCatalog — unavailable execution-default model (FR-035
 
   it('warns and preserves the stored identifier rather than replacing it', () => {
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [modelRow('retired-model')],
-      workspace: [],
+      rows: [modelRow('retired-model')],
+      revision: REVISION,
       phaseCatalog,
       availableModels: { claude: ['current-model'] }
     });
@@ -430,9 +363,8 @@ describe('resolvePipelineCatalog — unavailable execution-default model (FR-035
 
   it('stays silent when the model is offered by the runner it names', () => {
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [modelRow('current-model')],
-      workspace: [],
+      rows: [modelRow('current-model')],
+      revision: REVISION,
       phaseCatalog,
       availableModels: { claude: ['current-model'], codex: [] }
     });
@@ -441,9 +373,8 @@ describe('resolvePipelineCatalog — unavailable execution-default model (FR-035
 
   it('resolves an unnamed runner against the supplied default', () => {
     const result = resolvePipelineCatalog({
-      builtIn: [],
-      user: [row('Modelled', { id: 'modelled', executionDefaults: { model: 'retired-model' } })],
-      workspace: [],
+      rows: [row('Modelled', { id: 'modelled', executionDefaults: { model: 'retired-model' } })],
+      revision: REVISION,
       phaseCatalog,
       availableModels: { claude: ['current-model'] },
       defaultRunnerKind: 'claude'
@@ -454,9 +385,8 @@ describe('resolvePipelineCatalog — unavailable execution-default model (FR-035
   it('treats an absent or empty model list as unknown availability, not as unavailable', () => {
     for (const availableModels of [undefined, { claude: [] }]) {
       const result = resolvePipelineCatalog({
-        builtIn: [],
-        user: [modelRow('retired-model')],
-        workspace: [],
+        rows: [modelRow('retired-model')],
+        revision: REVISION,
         phaseCatalog,
         ...(availableModels !== undefined ? { availableModels } : {})
       });
@@ -469,33 +399,41 @@ describe('resolvePipelineCatalog — unavailable execution-default model (FR-035
 });
 
 describe('resolvePipelineCatalog — revisions and immutability', () => {
-  it('reports a SHA-256 layer revision per writable scope', () => {
-    const user = [row('User')];
-    const workspace = [row('Workspace')];
-    const result = resolvePipelineCatalog({ builtIn, user, workspace, phaseCatalog });
-    expect(result.revisions.user).toBe(pipelineLayerRevision(user));
-    expect(result.revisions.workspace).toBe(pipelineLayerRevision(workspace));
-    expect(Object.keys(result.revisions).sort()).toEqual(['user', 'workspace']);
+  // Feature 099 (T496f, FR-044a) — was a hash per writable scope, derived here.
+  // The store issues one revision for the catalog and this resolver reports it
+  // back; deriving it a second time in the test would assert agreement between
+  // two copies of the same computation rather than that the store's value
+  // survives the trip.
+  it('reports back the revision the store issued, verbatim', () => {
+    const result = resolvePipelineCatalog({
+      rows: [row('Stored')],
+      revision: 'rev-issued-by-the-store',
+      phaseCatalog
+    });
+    expect(result.revision).toBe('rev-issued-by-the-store');
   });
 
   it('freezes the resolution and its collections', () => {
-    const result = resolvePipelineCatalog({ builtIn, user: [], workspace: [], phaseCatalog });
+    const result = resolvePipelineCatalog({ rows: [], revision: REVISION, phaseCatalog });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.records)).toBe(true);
     expect(Object.isFrozen(result.effective)).toBe(true);
     expect(Object.isFrozen(result.effectivePipelineDefs)).toBe(true);
     expect(Object.isFrozen(result.warnings)).toBe(true);
-    expect(Object.isFrozen(result.revisions)).toBe(true);
   });
 
-  it('resolves the built-in layer with no configured layers present', () => {
+  // Feature 099 (T496f, FR-001a) — was "resolves the built-in layer with no
+  // configured layers present". Absent rows are the empty store a workspace
+  // nobody has saved into presents, and the honest resolution is the empty one.
+  it('resolves an absent row list as an empty catalog, not as a failure', () => {
     const result = resolvePipelineCatalog({
-      builtIn,
-      user: undefined,
-      workspace: undefined,
+      rows: undefined,
+      revision: REVISION,
       phaseCatalog
     });
-    expect(result.effective.map((pipeline) => pipeline.pipelineId)).toEqual(['shared', 'fallback']);
+    expect(result.effective).toEqual([]);
+    expect(result.records).toEqual([]);
     expect(result.warnings).toEqual([]);
+    expect(result.revision).toBe(REVISION);
   });
 });

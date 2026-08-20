@@ -47,7 +47,7 @@ Each page follows the same structure: what it does, why you'd use it, how it wor
 
 - [Phase Log Feed](features/phase-log-feed.md) — the live activity feed beneath each phase, with tool-call and message rendering.
 - [Phase Breakpoints](features/phase-breakpoints.md) — pause a run before a specific phase so you can review and intervene.
-- [Custom Phases](features/custom-phases.md) — add your own pipeline phases via `schegent.phases` and run them through the same audit path as the built-ins.
+- [Custom Phases](features/custom-phases.md) — add your own pipeline phases and run them through the same audit path as every other phase.
 - [Phase Overrides](features/phase-overrides.md) — change the model, effort, timeout, or loopability of any phase without forking the pipeline.
 - [Phase YAML Exchange](features/phase-yaml-exchange.md) — export a phase to a portable YAML document, and inspect an imported one before it touches your catalog.
 

@@ -4,9 +4,15 @@
 // 084 settled the envelope: operation, resource kind, ids, scope, per-resource
 // outcomes, counts, and nothing else. A package does not change that shape — it
 // changes what fills it. One document now carries several definitions, writes
-// two catalog layers, and can end in a state that is neither success nor
-// failure, and the envelope has to describe all of that without acquiring a
-// field an instruction could ride out in.
+// several catalogs, and can end in a state that is neither success nor failure,
+// and the envelope has to describe all of that without acquiring a field an
+// instruction could ride out in.
+//
+// Feature 099 (T496f, FR-041) — the envelope is FIVE fields now: `scope` named
+// the layer a write went to, and there is one catalog per kind, so `resourceKind`
+// already says it. Every `scope` assertion below is deleted rather than relaxed,
+// and the exact-key-set check is what keeps the field from creeping back — a
+// build that re-emits it, under any value, fails at the first case in the file.
 //
 // Three claims, in the order the FRs make them:
 //
@@ -67,7 +73,7 @@ import {
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
-import { workflowLayerRevision } from '../../../src/config/workflow-catalog';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
@@ -84,7 +90,6 @@ import type {
   SaveWorkflowsCommand
 } from '../../../src/ui/sidebar/messages';
 
-type Scope = 'user' | 'workspace';
 type LayerKey = 'phases' | 'pipelines';
 
 interface AuditEntry {
@@ -94,14 +99,17 @@ interface AuditEntry {
   readonly runId: string;
 }
 
-/** The six fields 084 closed the envelope on. A seventh is the failure. */
+/**
+ * The fields the envelope is closed on. One more is the failure.
+ *
+ * Feature 099 (T496f, FR-041) — six became five when `scope` went.
+ */
 const ENVELOPE_KEYS = [
   'counts',
   'operation',
   'outcomes',
   'resourceIds',
-  'resourceKind',
-  'scope'
+  'resourceKind'
 ] as const;
 
 const CORRELATION = 'package-audit-1';
@@ -290,22 +298,42 @@ const STORED_PIPELINE = {
 // Harnesses
 // ---------------------------------------------------------------------------
 
-interface Layers {
-  user: readonly unknown[];
-  workspace: readonly unknown[];
-}
-
+/**
+ * One installation is now one store. Feature 099 (T496f, FR-042) — this was a
+ * pair of `{ user, workspace }` layers per kind, and every helper below took a
+ * `scope` to say which half it meant. The store IS the installation, so the
+ * parameter is gone from every signature and the seams the handlers read
+ * (`readXConfig`, `catalogStore`) all come off the same object.
+ */
 interface Installation {
-  readonly phases: Layers;
-  readonly pipelines: Layers;
+  readonly store: FakeCatalogStore;
 }
 
 function installation(
-  seed: { readonly phases?: Partial<Layers>; readonly pipelines?: Partial<Layers> } = {}
+  seed: { readonly phases?: readonly unknown[]; readonly pipelines?: readonly unknown[] } = {}
 ): Installation {
   return {
-    phases: { user: seed.phases?.user ?? [], workspace: seed.phases?.workspace ?? [] },
-    pipelines: { user: seed.pipelines?.user ?? [], workspace: seed.pipelines?.workspace ?? [] }
+    store: new FakeCatalogStore({
+      phases: seed.phases ?? [],
+      pipelines: seed.pipelines ?? []
+    })
+  };
+}
+
+/** The read seams every handler in this file shares, wired to one store. */
+function catalogDeps(store: FakeCatalogStore): Record<string, unknown> {
+  return {
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
+    readPipelineConfig: () => ({
+      rows: store.rowsOf('pipeline'),
+      revision: store.revisionOf('pipeline')
+    }),
+    readWorkflowConfig: () => ({
+      rows: store.rowsOf('workflow'),
+      revision: store.revisionOf('workflow')
+    })
   };
 }
 
@@ -324,8 +352,7 @@ async function exportPipeline(
   const saved: { suggestedFileName: string; text: string }[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
+      ...catalogDeps(inst.store),
       saveProcessYamlDocument: async (request: { suggestedFileName: string; text: string }) => {
         saved.push({ ...request });
         return { outcome: 'saved' as const };
@@ -372,8 +399,7 @@ async function preflight(
   const audits: AuditEntry[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
+      ...catalogDeps(inst.store),
       openProcessYamlDocument: async () => opened,
       audit: {
         append: async (entry: AuditEntry) => {
@@ -448,7 +474,6 @@ interface Attempt {
 
 function attemptsFor(
   plan: ImportPlan,
-  scope: Scope,
   inst: Installation,
   overrides: { readonly phaseRevision?: string; readonly pipelineRevision?: string } = {}
 ): readonly Attempt[] {
@@ -463,13 +488,12 @@ function attemptsFor(
         type: CMD_SAVE_PHASES,
         correlationId: CORRELATION,
         payload: {
-          scope,
-          expectedRevision: overrides.phaseRevision ?? plan.computedAgainstRevision[scope],
+          expectedRevision: overrides.phaseRevision ?? plan.computedAgainstRevision,
           mutation: {
             kind: 'import-package',
             phaseIds: phases.map((definition) => definition.phaseId)
           },
-          phases: [...inst.phases[scope], ...phases.map(phaseRow)]
+          phases: [...inst.store.rowsOf('phase'), ...phases.map(phaseRow)]
         }
       }
     });
@@ -484,13 +508,12 @@ function attemptsFor(
         type: CMD_SAVE_PIPELINES,
         correlationId: CORRELATION,
         payload: {
-          scope,
-          expectedRevision: overrides.pipelineRevision ?? revisions![scope],
+          expectedRevision: overrides.pipelineRevision ?? revisions!,
           mutation: {
             kind: 'import-package',
             pipelineIds: pipelines.map((definition) => definition.pipelineId)
           },
-          pipelines: [...inst.pipelines[scope], ...pipelines.map(pipelineRow)]
+          pipelines: [...inst.store.rowsOf('pipeline'), ...pipelines.map(pipelineRow)]
         }
       }
     });
@@ -507,7 +530,6 @@ interface CommitRun {
 async function commitPackage(
   inst: Installation,
   plan: ImportPlan,
-  scope: Scope,
   opts: {
     readonly failOn?: LayerKey;
     readonly phaseRevision?: string;
@@ -518,14 +540,8 @@ async function commitPackage(
   const audits: AuditEntry[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
+      ...catalogDeps(inst.store),
       readConfig: () => undefined,
-      updateConfig: async (key: string, value: unknown, target: Scope) => {
-        if (opts.failOn === key) throw new Error('EACCES: settings.json is read-only');
-        const layer = key === 'phases' ? inst.phases : inst.pipelines;
-        layer[target] = value as readonly unknown[];
-      },
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       audit: {
@@ -545,11 +561,17 @@ async function commitPackage(
   } as any;
 
   const results: { key: LayerKey; ack: CommandAckMessage }[] = [];
-  const attempts = attemptsFor(plan, scope, inst, {
+  const attempts = attemptsFor(plan, inst, {
     ...(opts.phaseRevision !== undefined ? { phaseRevision: opts.phaseRevision } : {}),
     ...(opts.pipelineRevision !== undefined ? { pipelineRevision: opts.pipelineRevision } : {})
   });
   for (const attempt of attempts) {
+    // Feature 099 (T496f, FR-029) — `failOn` used to make the settings writer
+    // throw. The store never throws; it names the fault, and `not-writable` is
+    // the same fault by its own name, answering exactly one write.
+    if (opts.failOn === attempt.key) {
+      inst.store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+    }
     if (attempt.key === 'phases') {
       await savePhasesHandler(ctx, attempt.command as SavePhasesCommand);
     } else {
@@ -579,17 +601,13 @@ beforeEach(() => {
 
 describe('Feature 085 T064 — a package exchange records six fields (FR-059)', () => {
   it('bounds a package export to the envelope, and names the Pipeline kind', async () => {
-    const inst = installation({
-      phases: { workspace: [...STORED_PHASES] },
-      pipelines: { workspace: [STORED_PIPELINE] }
-    });
+    const inst = installation({ phases: [...STORED_PHASES], pipelines: [STORED_PIPELINE] });
     const run = await exportPipeline(inst, 'include-referenced');
     expect(run.audits).toHaveLength(1);
     const entry = run.audits[0]!;
     expect(Object.keys(entry.payload).sort()).toEqual([...ENVELOPE_KEYS]);
     expect(entry.payload.resourceKind).toBe('pipeline');
     expect(entry.payload.resourceIds).toEqual(['ship-it']);
-    expect(entry.payload.scope).toBe('workspace');
   });
 
   it('counts the definitions the document actually carried, not just the root', async () => {
@@ -597,10 +615,7 @@ describe('Feature 085 T064 — a package exchange records six fields (FR-059)', 
     // describe a references-only export equally well, which makes the two
     // operations indistinguishable in the log — and the difference is precisely
     // whether other operators' Phase text left the installation.
-    const inst = installation({
-      phases: { workspace: [...STORED_PHASES] },
-      pipelines: { workspace: [STORED_PIPELINE] }
-    });
+    const inst = installation({ phases: [...STORED_PHASES], pipelines: [STORED_PIPELINE] });
     const bundled = await exportPipeline(inst, 'include-referenced');
     expect(bundled.audits[0]!.payload.counts).toEqual({ exported: 1, includedPhases: 2 });
 
@@ -620,7 +635,6 @@ describe('Feature 085 T064 — a package exchange records six fields (FR-059)', 
       operation: 'import-preflight',
       resourceKind: 'pipeline',
       resourceIds: [],
-      scope: null,
       counts: { refused: 1 }
     });
   });
@@ -628,16 +642,15 @@ describe('Feature 085 T064 — a package exchange records six fields (FR-059)', 
   it('bounds each layer write of a confirmed import to the same envelope', async () => {
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace');
+    const run = await commitPackage(inst, plan);
 
     const records = exchangeAudits(run.audits);
-    // One per layer written, because a package write is two operations that can
+    // One per catalog written, because a package write is two operations that can
     // succeed independently (FR-042).
     expect(records).toHaveLength(2);
     for (const entry of records) {
       expect(Object.keys(entry.payload).sort()).toEqual([...ENVELOPE_KEYS]);
       expect(entry.payload.operation).toBe('import-commit');
-      expect(entry.payload.scope).toBe('workspace');
     }
     expect(records[0]!.payload).toMatchObject({
       resourceKind: 'phase',
@@ -659,16 +672,14 @@ describe('Feature 085 T064 — a package exchange records six fields (FR-059)', 
     // second copy of the catalog's history.
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const attempts = attemptsFor(plan, 'workspace', inst);
+    const attempts = attemptsFor(plan, inst);
     expect(attempts.length).toBeGreaterThan(0);
 
     const audits: AuditEntry[] = [];
     const ctx = {
       deps: {
-        readPhaseConfig: () => inst.phases,
-        readPipelineConfig: () => inst.pipelines,
+        ...catalogDeps(inst.store),
         readConfig: () => undefined,
-        updateConfig: async () => undefined,
         executeCommand: vi.fn(),
         queueRemover: { remove: vi.fn() },
         audit: {
@@ -699,10 +710,7 @@ describe('Feature 085 T064 — a package exchange records six fields (FR-059)', 
 
 describe('Feature 085 T064 — the log records the operation, not the package (FR-060)', () => {
   it('carries no authored text out of an export, though the document held all of it', async () => {
-    const inst = installation({
-      phases: { workspace: [...STORED_PHASES] },
-      pipelines: { workspace: [STORED_PIPELINE] }
-    });
+    const inst = installation({ phases: [...STORED_PHASES], pipelines: [STORED_PIPELINE] });
     const run = await exportPipeline(inst, 'include-referenced');
 
     // The document itself proves the tokens were reachable — otherwise the
@@ -746,11 +754,11 @@ describe('Feature 085 T064 — the log records the operation, not the package (F
   it('carries no authored text out of a commit, though every row held some', async () => {
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace');
+    const run = await commitPackage(inst, plan);
 
     // The rows that landed prove the tokens were in scope at commit time.
-    expect(JSON.stringify(inst.phases.workspace)).toContain(TOKENS.instruction);
-    expect(JSON.stringify(inst.pipelines.workspace)).toContain(TOKENS.portLabel);
+    expect(JSON.stringify(inst.store.rowsOf('phase'))).toContain(TOKENS.instruction);
+    expect(JSON.stringify(inst.store.rowsOf('pipeline'))).toContain(TOKENS.portLabel);
 
     const serialized = JSON.stringify(run.audits);
     for (const token of FORBIDDEN_AUDIT_TOKENS) {
@@ -759,10 +767,14 @@ describe('Feature 085 T064 — the log records the operation, not the package (F
   });
 
   it('records the workspace basename but never the root', async () => {
-    capabilities.set('pipelineOverrides', false);
+    // Feature 099 (T496f, FR-046) — this denied `pipelineOverrides` to make a
+    // trust record appear, and that capability is deleted. `phases` is the
+    // surviving capability whose denial writes the payload this case reads, so
+    // the record under test is produced the same way by a gate that still exists.
+    capabilities.set('phases', false);
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace');
+    const run = await commitPackage(inst, plan);
 
     const serialized = JSON.stringify(run.audits);
     // Feature 059 I-6: the basename is the deliberate disclosure.
@@ -774,7 +786,7 @@ describe('Feature 085 T064 — the log records the operation, not the package (F
   it('draws every recorded outcome from a closed vocabulary, never document text', async () => {
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const committed = await commitPackage(inst, plan, 'workspace');
+    const committed = await commitPackage(inst, plan);
     const refused = await preflight(installation(), {
       outcome: 'read',
       bytes: new Uint8Array(Buffer.from(REFUSED_AS_PIPELINE, 'utf8'))
@@ -815,11 +827,11 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
     // is indistinguishable from an operator who closed the dialog.
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace', { phaseRevision: 'moved-on' });
+    const run = await commitPackage(inst, plan, { phaseRevision: 'moved-on' });
 
     expect(run.results).toHaveLength(1);
     expect(run.results[0]!.ack.reason).toBe('stale-catalog');
-    expect(inst.phases.workspace).toEqual([]);
+    expect(inst.store.rowsOf('phase')).toEqual([]);
 
     const records = exchangeAudits(run.audits);
     expect(records).toHaveLength(1);
@@ -827,7 +839,6 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
     expect(records[0]!.payload).toMatchObject({
       operation: 'import-commit',
       resourceKind: 'phase',
-      scope: 'workspace',
       outcomes: ['stale-catalog'],
       counts: { refused: 1 }
     });
@@ -837,10 +848,10 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
     capabilities.set('phases', false);
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace');
+    const run = await commitPackage(inst, plan);
 
     expect(run.results[0]!.ack.reason).toBe('trust-denied');
-    expect(inst.phases.workspace).toEqual([]);
+    expect(inst.store.rowsOf('phase')).toEqual([]);
     const denials = run.audits.filter((entry) => entry.eventType === 'trust.capability-denied');
     expect(denials).toHaveLength(1);
     // A denial is a different decision, taken at a different time, about a
@@ -855,10 +866,10 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
     // imported the Phases alone.
     const inst = installation();
     const plan = await planFor(inst, PLANTED_PACKAGE);
-    const run = await commitPackage(inst, plan, 'workspace', { failOn: 'pipelines' });
+    const run = await commitPackage(inst, plan, { failOn: 'pipelines' });
 
-    expect(inst.phases.workspace).toHaveLength(2);
-    expect(inst.pipelines.workspace).toEqual([]);
+    expect(inst.store.rowsOf('phase')).toHaveLength(2);
+    expect(inst.store.rowsOf('pipeline')).toEqual([]);
 
     const records = exchangeAudits(run.audits);
     expect(records).toHaveLength(2);
@@ -885,7 +896,7 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
     const plan = await planFor(inst, BLOCKED_ROOT);
     expect(plan.counts.blocked).toBe(1);
 
-    const run = await commitPackage(inst, plan, 'workspace');
+    const run = await commitPackage(inst, plan);
     const records = exchangeAudits(run.audits);
     expect(records).toHaveLength(1);
     expect(records[0]!.payload).toMatchObject({
@@ -894,7 +905,7 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
       outcomes: ['imported'],
       counts: { imported: 1 }
     });
-    expect(inst.pipelines.workspace).toEqual([]);
+    expect(inst.store.rowsOf('pipeline')).toEqual([]);
   });
 
   it('records nothing when the operator closes the dialog', async () => {
@@ -929,21 +940,17 @@ describe('Feature 085 T064 — refused, blocked, stale, committed, partial, and 
 
     const staleInst = installation();
     const stalePlan = await planFor(staleInst, PLANTED_PACKAGE);
-    const staleRun = await commitPackage(staleInst, stalePlan, 'workspace', {
-      phaseRevision: 'moved-on'
-    });
+    const staleRun = await commitPackage(staleInst, stalePlan, { phaseRevision: 'moved-on' });
     exchangeAudits(staleRun.audits).forEach(record);
 
     const okInst = installation();
     const okPlan = await planFor(okInst, PLANTED_PACKAGE);
-    const okRun = await commitPackage(okInst, okPlan, 'workspace');
+    const okRun = await commitPackage(okInst, okPlan);
     exchangeAudits(okRun.audits).forEach(record);
 
     const partialInst = installation();
     const partialPlan = await planFor(partialInst, PLANTED_PACKAGE);
-    const partialRun = await commitPackage(partialInst, partialPlan, 'workspace', {
-      failOn: 'pipelines'
-    });
+    const partialRun = await commitPackage(partialInst, partialPlan, { failOn: 'pipelines' });
     exchangeAudits(partialRun.audits).forEach(record);
 
     expect([...seen].sort()).toEqual([
@@ -1068,28 +1075,17 @@ type WorkflowLayerKey = 'phases' | 'pipelines' | 'workflows';
 
 const WORKFLOW_LAYER_ORDER: readonly WorkflowLayerKey[] = ['phases', 'pipelines', 'workflows'];
 
-interface WorkflowInstallation {
-  readonly phases: Layers;
-  readonly pipelines: Layers;
-  readonly workflows: Layers;
+/** Feature 099 (T496f) — three kinds, one store; the seam is `resourceKind`. */
+function workflowInstallation(): Installation {
+  return { store: new FakeCatalogStore() };
 }
 
-function workflowInstallation(): WorkflowInstallation {
-  return {
-    phases: { user: [], workspace: [] },
-    pipelines: { user: [], workspace: [] },
-    workflows: { user: [], workspace: [] }
-  };
-}
-
-async function workflowPlanFor(inst: WorkflowInstallation, text: string): Promise<ImportPlan> {
+async function workflowPlanFor(inst: Installation, text: string): Promise<ImportPlan> {
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
-      readWorkflowConfig: () => inst.workflows,
+      ...catalogDeps(inst.store),
       openProcessYamlDocument: async () => ({
         outcome: 'read' as const,
         bytes: new Uint8Array(Buffer.from(text, 'utf8'))
@@ -1116,7 +1112,7 @@ async function workflowPlanFor(inst: WorkflowInstallation, text: string): Promis
     payload: {}
   } as PreflightProcessYamlCommand);
   expect(acks).toHaveLength(1);
-  // A plan still records nothing, at three layers as at two.
+  // A plan still records nothing, at three kinds as at two.
   expect(audits).toEqual([]);
   const result = acks[0]!.result as PreflightProcessYamlResult;
   expect(result.outcome).toBe('planned');
@@ -1151,9 +1147,8 @@ interface WorkflowCommitRun {
 }
 
 async function commitWorkflowPackage(
-  inst: WorkflowInstallation,
+  inst: Installation,
   plan: ImportPlan,
-  scope: Scope,
   opts: {
     readonly failOn?: WorkflowLayerKey;
     readonly workflowRevision?: string;
@@ -1163,14 +1158,8 @@ async function commitWorkflowPackage(
   const audits: AuditEntry[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
-      readWorkflowConfig: () => inst.workflows,
+      ...catalogDeps(inst.store),
       readConfig: () => undefined,
-      updateConfig: async (key: string, value: unknown, target: Scope) => {
-        if (opts.failOn === key) throw new Error('EACCES: settings.json is read-only');
-        inst[key as WorkflowLayerKey][target] = value as readonly unknown[];
-      },
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       audit: {
@@ -1195,6 +1184,11 @@ async function commitWorkflowPackage(
   const results: { key: WorkflowLayerKey; ack: CommandAckMessage }[] = [];
 
   const send = async (key: WorkflowLayerKey, command: unknown): Promise<boolean> => {
+    // Feature 099 (T496f, FR-029) — the settings writer used to throw for
+    // `failOn`; the store names the fault instead, answering exactly one write.
+    if (opts.failOn === key) {
+      inst.store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+    }
     if (key === 'phases') await savePhasesHandler(ctx, command as SavePhasesCommand);
     else if (key === 'pipelines') await savePipelinesHandler(ctx, command as SavePipelinesCommand);
     else await saveWorkflowsHandler(ctx, command as SaveWorkflowsCommand);
@@ -1208,8 +1202,7 @@ async function commitWorkflowPackage(
       type: CMD_SAVE_PHASES,
       correlationId: CORRELATION,
       payload: {
-        scope,
-        expectedRevision: plan.computedAgainstRevision[scope],
+        expectedRevision: plan.computedAgainstRevision,
         mutation: {
           kind: 'import-package',
           phaseIds: phases.map((definition) => definition.phaseId)
@@ -1225,8 +1218,7 @@ async function commitWorkflowPackage(
       type: CMD_SAVE_PIPELINES,
       correlationId: CORRELATION,
       payload: {
-        scope,
-        expectedRevision: plan.computedAgainstPipelineRevision![scope],
+        expectedRevision: plan.computedAgainstPipelineRevision!,
         mutation: {
           kind: 'import-package',
           pipelineIds: pipelines.map((definition) => definition.pipelineId)
@@ -1242,9 +1234,7 @@ async function commitWorkflowPackage(
       type: CMD_SAVE_WORKFLOWS,
       correlationId: CORRELATION,
       payload: {
-        scope,
-        expectedRevision:
-          opts.workflowRevision ?? plan.computedAgainstWorkflowRevision![scope],
+        expectedRevision: opts.workflowRevision ?? plan.computedAgainstWorkflowRevision!,
         mutation: {
           kind: 'import-package',
           workflowIds: workflows.map((definition) => definition.workflowId)
@@ -1258,10 +1248,10 @@ async function commitWorkflowPackage(
 }
 
 describe('Feature 086 T052 — the Workflow write records itself through the existing envelope (FR-054)', () => {
-  it('bounds all three layer writes to the same six fields, naming the third kind', async () => {
+  it('bounds all three catalog writes to the same five fields, naming the third kind', async () => {
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'workspace');
+    const run = await commitWorkflowPackage(inst, plan);
 
     expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
       ['phases', 'accepted'],
@@ -1270,14 +1260,13 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
     ]);
 
     const records = exchangeAudits(run.audits);
-    // One per layer written. Three, not one — the three writes can succeed
+    // One per catalog written. Three, not one — the three writes can succeed
     // independently, so one record describing "the import" would be a record of
     // something that never happens as a unit.
     expect(records).toHaveLength(3);
     for (const entry of records) {
       expect(Object.keys(entry.payload).sort()).toEqual([...ENVELOPE_KEYS]);
       expect(entry.payload.operation).toBe('import-commit');
-      expect(entry.payload.scope).toBe('workspace');
       expect(entry.runId).toBe('process-exchange:import-commit');
     }
     expect(records.map((entry) => entry.payload.resourceKind)).toEqual([
@@ -1297,12 +1286,12 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
   it('carries no authored text out of the Workflow write, though every slot held some', async () => {
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'workspace');
+    const run = await commitWorkflowPackage(inst, plan);
 
     // The definitions landed, so the tokens were genuinely carried through the
     // path that produced these records — the absence below is not the absence of
     // the data itself.
-    expect(inst.workflows.workspace).toHaveLength(1);
+    expect(inst.store.rowsOf('workflow')).toHaveLength(1);
     const serialized = JSON.stringify(exchangeAudits(run.audits));
     expect(serialized.length).toBeGreaterThan(100);
     for (const token of FORBIDDEN_WORKFLOW_TOKENS) {
@@ -1316,14 +1305,14 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
   it('records the third partial shape as three records, the last a failure (FR-054)', async () => {
     // data-model.md §5.3's second shape: Phases and Pipelines landed, the Workflow
     // did not. Without the third record this is indistinguishable in the log from
-    // a package that only ever declared two layers.
+    // a package that only ever declared two kinds.
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'workspace', { failOn: 'workflows' });
+    const run = await commitWorkflowPackage(inst, plan, { failOn: 'workflows' });
 
-    expect(inst.phases.workspace).toHaveLength(1);
-    expect(inst.pipelines.workspace).toHaveLength(2);
-    expect(inst.workflows.workspace).toEqual([]);
+    expect(inst.store.rowsOf('phase')).toHaveLength(1);
+    expect(inst.store.rowsOf('pipeline')).toHaveLength(2);
+    expect(inst.store.rowsOf('workflow')).toEqual([]);
 
     const records = exchangeAudits(run.audits);
     expect(records).toHaveLength(3);
@@ -1340,9 +1329,7 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
   it('records a stale Workflow write as a refusal, so it is not silence', async () => {
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'workspace', {
-      workflowRevision: 'moved-on'
-    });
+    const run = await commitWorkflowPackage(inst, plan, { workflowRevision: 'moved-on' });
 
     expect(run.results[2]!.ack.reason).toBe('stale-catalog');
     const records = exchangeAudits(run.audits);
@@ -1360,17 +1347,14 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
     // intent, not on the command.
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    // Land the two lower layers so the edit reaches the same gates a real one would.
-    await commitWorkflowPackage(inst, plan, 'workspace', { failOn: 'workflows' });
+    // Land the two referenced kinds so the edit reaches the same gates a real one would.
+    await commitWorkflowPackage(inst, plan, { failOn: 'workflows' });
 
     const audits: AuditEntry[] = [];
     const ctx = {
       deps: {
-        readWorkflowConfig: () => inst.workflows,
-        readPipelineConfig: () => inst.pipelines,
-        readPhaseConfig: () => inst.phases,
+        ...catalogDeps(inst.store),
         readConfig: () => undefined,
-        updateConfig: async () => undefined,
         executeCommand: vi.fn(),
         queueRemover: { remove: vi.fn() },
         audit: {
@@ -1391,8 +1375,7 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
       type: CMD_SAVE_WORKFLOWS,
       correlationId: CORRELATION,
       payload: {
-        scope: 'workspace',
-        expectedRevision: workflowLayerRevision(inst.workflows.workspace),
+        expectedRevision: inst.store.revisionOf('workflow'),
         mutation: { kind: 'create', workflowId: 'ship-it-flow' },
         workflows
       }
@@ -1402,7 +1385,7 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
   });
 
   it('adds no event type and needs no schema bump', async () => {
-    // The whole claim of T079, asserted rather than inferred. The third layer is
+    // The whole claim of T079, asserted rather than inferred. The third catalog is
     // one more record of an existing kind, so nothing about the persisted shape
     // changes and no reader needs to learn a new name.
     expect(AUDIT_SCHEMA_VERSION).toBe(3);
@@ -1414,8 +1397,8 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
 
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'workspace');
-    // Every record the three-layer write produced is one of the two 085 declared.
+    const run = await commitWorkflowPackage(inst, plan);
+    // Every record the three-kind write produced is one of the two 085 declared.
     for (const entry of exchangeAudits(run.audits)) {
       expect(['process-exchange-import-committed', 'process-exchange-import-refused']).toContain(
         entry.eventType
@@ -1424,13 +1407,18 @@ describe('Feature 086 T052 — the Workflow write records itself through the exi
     }
   });
 
-  it('records all three layers in dependency order, never a reordering', async () => {
+  it('records all three kinds in dependency order, never a reordering', async () => {
     // The log's order is the write order, which is the dependency order. A record
     // sequence that put the Workflow first would describe an import that could not
     // have resolved.
+    //
+    // Feature 099 (T496f) — this committed to the `user` layer deliberately, to
+    // show the order does not depend on where the write lands. With one catalog
+    // per kind there is no second destination to vary, and the order is a property
+    // of the kinds alone, which is what the two assertions below now read.
     const inst = workflowInstallation();
     const plan = await workflowPlanFor(inst, PLANTED_WORKFLOW_PACKAGE);
-    const run = await commitWorkflowPackage(inst, plan, 'user');
+    const run = await commitWorkflowPackage(inst, plan);
 
     const kinds = exchangeAudits(run.audits).map((entry) => entry.payload.resourceKind);
     expect(kinds).toEqual(['phase', 'pipeline', 'workflow']);

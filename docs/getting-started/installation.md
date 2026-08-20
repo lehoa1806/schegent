@@ -101,25 +101,34 @@ contracts.
 
 ## Step 5: (Optional) Configure phase models
 
-Out of the box, Schegent uses sensible defaults for the model and effort of each phase. If you want to tune them — for example, run `speckit-implement` with Opus and high effort, but keep `speckit-clarify` on Sonnet — set `schegent.phases` in your user `settings.json`:
+Phase definitions are **not settings**. They live in the versioned catalog store
+under `<workspaceRoot>/.schegent/catalog/`, and you get them there in one of two
+ways: edit them in the Pipeline Builder, or import a `schegent/v1` YAML
+document. To tune the model and effort of a phase — for example, run
+`speckit-implement` with Opus and high effort — the document looks like this:
 
-```jsonc
-{
-  "schegent.phases": [
-    {
-      "id": "speckit-implement",
-      "name": "Spec-kit Implement",
-      "instruction": "Implement the approved plan and verify the result.",
-      "model": "claude-opus-4-7",
-      "effort": "high"
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: speckit-implement
+  name: Spec-kit Implement
+  version: 1
+spec:
+  instruction: Implement the approved plan and verify the result.
+  model: claude-opus-4-7
+  effort: high
 ```
 
-A custom phase whose `id` matches a built-in **shadows** it as a complete source row. Exactly one non-empty `instruction` or `skill` is required. Workspace rows take precedence over user rows, which take precedence over built-ins; invalid higher-precedence rows remain visible for repair and fall back to the next valid row.
+Exactly one non-empty `instruction` or `skill` is required. There is **one
+catalog layer**, so a definition either resolves or is reported invalid — there
+is no shadowing and no precedence to reason about. An invalid definition stays
+visible for repair and costs only itself; every other definition still resolves.
 
-For the full set of phase fields and the override precedence, see [Phase Overrides](../features/phase-overrides.md).
+Every save writes an immutable new version, so you can see what a phase looked
+like before you changed it, and saving unchanged content writes nothing.
+
+For the full set of phase fields, see [Phase Overrides](../features/phase-overrides.md).
 
 ## Step 6: (Optional) Workspace `.gitignore`
 

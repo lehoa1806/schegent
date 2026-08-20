@@ -1,4 +1,4 @@
-// Feature 083 (US1, T027) — scoped, revisioned, intent-declaring Workflow save.
+// Feature 083 (US1, T027) — revisioned, intent-declaring Workflow save.
 // Contract: specs/083-workflow-graph-builder/contracts/save-workflows-ipc.md
 //
 // The third catalog save. It reuses the payload shape, the gate order, and the
@@ -18,22 +18,18 @@
 //     be stranded by removing it. The reverse direction is gated on the
 //     Pipeline side.
 //
-// Feature 059's I-2 invariant is preserved as gate 14: a layer-emptying `reset`
-// and a payload byte-equal to `BUILT_IN_WORKFLOWS` both bypass
-// `workflowOverrides`, so an operator can always return to defaults from a
-// denied state.
+// Feature 099 (T493d, FR-042a) — the commit writes the versioned catalog store
+// rather than the retired Workflow settings key, which is deleted. Two gates went with the
+// layer tier: gate 10's `built-in-immutable` (there is no built-in layer left to
+// aim at) and gate 14's `workflowOverrides` capability, which asked whether this
+// layer could redefine what another declares — a question one layer cannot pose
+// (FR-046). Gate 12's version echo and gate 3's revision gate are untouched: the
+// single-intent, expected-revision contract is exactly what FR-047 keeps.
 
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../config/pipeline-config';
 import { resolvePipelineCatalog } from '../../../config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../config/process-catalog';
 import {
-  BUILT_IN_WORKFLOWS,
-  equalsBuiltInWorkflows,
-  writeWorkflowLayer
-} from '../../../config/workflow-config';
-import {
   invalidPipelineCauses,
-  workflowLayerRevision,
   type WorkflowPipelineContext
 } from '../../../config/workflow-catalog';
 import {
@@ -47,12 +43,10 @@ import { validateWorkflowGraph } from '../../../config/workflow-graph-validator'
 import type {
   WorkflowCatalogMutation,
   WorkflowDefinition,
-  WorkflowFieldError,
-  WritableWorkflowDefinitionScope
+  WorkflowFieldError
 } from '../../../contracts/workflow-definitions';
-import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
+import { commitCatalogLayer } from './catalog-layer-commit';
 import {
-  auditImportCommitted,
   auditImportRefused,
   type ImportCommitTarget
 } from './process-exchange-commit-audit';
@@ -70,7 +64,6 @@ import {
   workflowIntentAdapter,
   type LayerMutationIntent
 } from './save-layer-intent';
-import { denyAndAudit } from './trust-gate';
 
 const ERROR_CODE_MAX = 64;
 const ERROR_MESSAGE_MAX = 512;
@@ -137,16 +130,14 @@ function withImportedVersion(
  * now a node, is only ever checked against the effective layer.
  */
 function effectivePipelineContext(ctx: HandlerContext): WorkflowPipelineContext {
-  const phaseLayers = ctx.deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
-  const pipelineLayers = ctx.deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const storedPhases = ctx.deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
+  const storedPipelines = ctx.deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: pipelineLayers.user,
-    workspace: pipelineLayers.workspace,
+    rows: storedPipelines.rows,
+    revision: storedPipelines.revision,
     phaseCatalog: resolvePhaseCatalog({
-      builtIn: BUILT_IN_PHASES,
-      user: phaseLayers.user,
-      workspace: phaseLayers.workspace
+      rows: storedPhases.rows,
+      revision: storedPhases.revision
     }).effective
   });
 }
@@ -222,19 +213,17 @@ function boundedValidationResult(
 function currentMetadata(
   mutation: WorkflowCatalogMutation,
   current: ReadonlyMap<string, WorkflowDefinition>,
-  scope: WritableWorkflowDefinitionScope,
   sanitize: (value: string) => string
 ): unknown {
-  if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'reset') return { legalActions: ['refresh'] };
   // A package names a set, not a row, and `reapply` is not offered: the plan was
   // computed against the revision this gate just rejected, so its skip and
   // blocked decisions may no longer hold. The operator re-runs the preflight.
-  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'import-package') return { legalActions: ['refresh'] };
   const workflowId =
     mutation.kind === 'duplicate' ? mutation.sourceWorkflowId : mutation.workflowId;
   const definition = current.get(workflowId);
   return {
-    scope,
     workflowId: sanitize(workflowId).slice(0, WORKFLOW_ID_MAX_LEN),
     ...(definition
       ? { name: sanitize(definition.name).slice(0, WORKFLOW_NAME_MAX_LEN), version: definition.version }
@@ -244,9 +233,10 @@ function currentMetadata(
 }
 
 /**
- * The authored settings shape, matching the `schegent.workflows` JSON schema. Unrecognized
- * authored keys are re-emitted first so a recognized field can never be shadowed by one
- * (FR-007): they round-trip, they are never interpreted.
+ * The authored row shape, as the store holds it. Unrecognized authored keys are
+ * re-emitted first so a recognized field can never be shadowed by one (FR-007):
+ * they round-trip, they are never interpreted. Feature 099 changes nothing here —
+ * the store takes a body verbatim and never normalises it (FR-010, FR-011).
  */
 function persistedRow(
   definition: WorkflowDefinition,
@@ -265,7 +255,7 @@ function persistedRow(
 }
 
 export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command) => {
-  const { scope, expectedRevision, mutation } = command.payload;
+  const { expectedRevision, mutation } = command.payload;
   // Feature 086 T056 (FR-054) — the one layer write a package import is about, or
   // null for every other mutation. Read before gate 1 so a refusal at any gate
   // leaves a record; every audit call below is a no-op when null. Three writes
@@ -275,22 +265,25 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
   // indistinguishable from a two-layer document.
   const exchange: ImportCommitTarget | null =
     mutation.kind === 'import-package'
-      ? { resourceKind: 'workflow', resourceIds: mutation.workflowIds, scope }
+      ? { resourceKind: 'workflow', resourceIds: mutation.workflowIds }
       : null;
 
-  // Gate 1 — host configuration operations.
-  if (!ctx.deps.updateConfig || !ctx.deps.readWorkflowConfig) {
+  // Gate 1 — somewhere to write. `null` is an untrusted workspace, where no
+  // catalog is activated at all (FR-051); `undefined` is a window that wired no
+  // store. Both mean this save has nowhere to land, and the Builder reports the
+  // trust gate on its own surface rather than through a save refusal (FR-052).
+  const store = ctx.deps.catalogStore;
+  if (!store || !ctx.deps.readWorkflowConfig) {
     await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
-  const updateConfig = ctx.deps.updateConfig;
   const sanitize = ctx.deps.logger.sanitize;
 
   const intent = workflowIntent(mutation);
-  const layers = ctx.deps.readWorkflowConfig();
-  const currentRows = layers[scope];
-  const currentRevision = workflowLayerRevision(currentRows);
+  const stored = ctx.deps.readWorkflowConfig();
+  const currentRows = stored.rows;
+  const currentRevision = stored.revision;
   // Field validation only. A stored row that is well-formed but graph-invalid must stay
   // diffable, or the operator could never save the edit that repairs it.
   const currentDefinitions = currentRows
@@ -305,7 +298,7 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
-      current: currentMetadata(mutation, currentById, scope, sanitize)
+      current: currentMetadata(mutation, currentById, sanitize)
     });
     return;
   }
@@ -357,30 +350,10 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
       });
       return;
     }
-    // Gate 10 — the built-in layer is never a save target (FR-026). `BUILT_IN_WORKFLOWS` is
-    // empty today, so this cannot fire yet; the gate exists so the day a built-in Workflow
-    // ships, a mutation aimed at it is refused with the reason that names the cause rather
-    // than falling through to a generic mismatch.
-    const builtInIds = new Set(BUILT_IN_WORKFLOWS.map((workflow) => workflow.workflowId));
-    // Narrowed to the two kinds the gate is about before an id is read at all, as
-    // `cmd-save-pipelines.ts` does. Only `edit` and `remove` can aim at an existing
-    // built-in row: `duplicate` reads one as its source, `create` and
-    // `import-package` name ids that are absent by construction, and `reset` names
-    // none. That keeps the set-valued `import-package` arm out of a computation
-    // that only means anything for a single id.
-    const builtInTargetId =
-      (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && builtInIds.has(mutation.workflowId)
-      && !currentById.has(mutation.workflowId)
-        ? mutation.workflowId
-        : null;
-    if (builtInTargetId !== null) {
-      await auditImportRefused(ctx, exchange, 'built-in-immutable');
-      await ack(ctx, 'rejected', 'built-in-immutable', {
-        workflowId: sanitize(builtInTargetId).slice(0, WORKFLOW_ID_MAX_LEN)
-      });
-      return;
-    }
+    // Feature 099 (FR-039, FR-046) — gate 10 is gone. It refused a mutation aimed
+    // at a row the built-in layer owned, so that such a mutation named its cause
+    // rather than falling through to a generic mismatch. `BUILT_IN_WORKFLOWS` was
+    // empty for its whole life and the layer it guarded no longer exists.
     // Gate 11 — the declared intent and the observed diff disagree.
     const reported = (ids: readonly string[]) =>
       ids.slice(0, REPORTED_ERROR_MAX).map((id) => sanitize(id).slice(0, WORKFLOW_ID_MAX_LEN));
@@ -426,16 +399,6 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     }
   }
 
-  // Gate 14 — feature 059 I-2: returning to defaults is always allowed, whether expressed as a
-  // layer-emptying `reset` or as a payload byte-equal to the built-ins. Everything else needs
-  // the `workflowOverrides` capability, which is read fresh here and never cached (I-1).
-  const reset = mutation.kind === 'reset' && proposedLayer.definitions.length === 0;
-  const restoresDefaults = reset || equalsBuiltInWorkflows(command.payload.workflows);
-  if (!restoresDefaults && !isCapabilityAllowed('workflowOverrides')) {
-    await denyAndAudit(ctx, 'workflowOverrides');
-    return;
-  }
-
   const versionSources = repairTargetId !== null && mutation.kind === 'edit'
     ? new Map([
         ...currentIdentities.versions,
@@ -454,26 +417,19 @@ export const handler: CommandHandler<SaveWorkflowsCommand> = async (ctx, command
     persistedRow(definition, proposedLayer.unrecognized)
   );
 
-  // Gate 15 — the single commit point for the targeted layer (FR-030).
-  try {
-    await writeWorkflowLayer(updateConfig, persistedRows, scope);
-  } catch (error) {
-    ctx.deps.logger.warn(
-      `workflow catalog save failed: ${sanitize((error as Error).message)}`
-    );
-    await auditImportRefused(ctx, exchange, 'persistence-failed');
-    await ack(ctx, 'rejected', 'persistence-failed');
-    return;
-  }
-
-  // No audit event for an ordinary catalog mutation — that is a configuration write, and the
-  // audit log is the run-history record (FR-047). A trust denial still audits, via
-  // `denyAndAudit`, and a package import audits through `exchange` above, which is null for
-  // every other kind (FR-054).
-  await auditImportCommitted(ctx, exchange);
-  await ack(ctx, 'accepted', undefined, {
-    scope,
-    revision: workflowLayerRevision(persistedRows),
-    mutation: mutation.kind
+  // Gate 15 — the single commit point (FR-030). One `saveLayer` call rather than
+  // one `save` per row: the revision gate is per kind (FR-044), so N calls would
+  // move the revision on the first and refuse themselves as stale on the second.
+  //
+  // No audit event for an ordinary catalog mutation — the audit log is the
+  // run-history record (FR-047), and the store's own manifest is now the history
+  // of the catalog. A package import still audits through `exchange` above, which
+  // is null for every other kind (FR-054).
+  await commitCatalogLayer(ctx, store, {
+    kind: 'workflow',
+    definitions: persistedRows.map((row) => ({ id: row.id as string, body: row })),
+    expectedRevision,
+    mutationKind: mutation.kind,
+    exchange
   });
 };

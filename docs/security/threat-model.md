@@ -18,7 +18,7 @@ The catalog below enumerates each in-scope threat, the primary mitigation, and t
 | [T6](#t6--lease-leak-fail-deadly) | Lease leak (fail-deadly): a code path claims a queue and never gives it back, stalling that queue's subsequent runs. | Three execution-lease releases (terminal run transition, drain start-failure, window shutdown) behind a 15-second staleness reclaim; window primacy has no per-run scope to leak from. | [The hard rules](#the-hard-rules) |
 | [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
 | [T8](#t8--prompt-injection-via-specplantask-content) | Prompt-injection via spec / plan / task / phase-instruction content the operator (or an upstream model) authored. | Out-of-band trust boundary; the host does not analyze prompt content. Operator decides whether to ingest untrusted text. | [A note on prompt-injection](#a-note-on-prompt-injection) |
-| [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A custom-phase (`schegent.phases`) invocation bypassing the audit + redaction + raw-transcript path that built-ins flow through. | `appendAudit` + raw transcript writer is the single, mandatory invocation path. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
+| [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A phase invocation bypassing the audit + redaction + raw-transcript path. | `appendAudit` + raw transcript writer is the single, mandatory invocation path, and nothing is exempt from it. Phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
 | [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What requires local-only handling](#what-requires-local-only-handling) |
 | [T11](#t11--retrycondition-dsl-escape) | The operator-authored `retryCondition` DSL expression escaping the sandboxed evaluator. | Evaluator at `src/lib/retry-condition.ts` is the sole entry point: no arbitrary code, no function calls, no member access, no I/O. | [The hard rules](#the-hard-rules) |
 | [T12](#t12--fatal-signature-floor-weakening) | Operator workspace settings weakening or re-ordering the code-resident fatal-signature floor. | `FATAL_SIGNATURES` in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) is immutable at runtime; operator-additive surface extends but never removes built-ins; built-ins-first scan order preserved. | [The hard rules](#the-hard-rules) |
@@ -82,12 +82,12 @@ The YAML exchange ([features/phase-yaml-exchange.md](../features/phase-yaml-exch
 
 Four properties are what make that true rather than merely intended:
 
-- **No new authority.** An imported Phase is gated by `allowCustomPhases`, an imported Pipeline additionally by `allowPipelineOverrides`, an imported Workflow additionally by `allowWorkflowOverrides` — the same four scopes above, resolved by the same ladder, each re-read at commit rather than inherited from the preflight. A document cannot grant itself a capability, raise a scope, or choose which scope it lands in.
+- **No new authority.** An imported Phase is gated by `allowCustomPhases`, and additionally by `allowCustomRetryConditions` when it declares one; an imported Pipeline or Workflow is gated by Workspace Trust and nothing further, because the capabilities that once gated them (`allowPipelineOverrides`, `allowWorkflowOverrides`) named a layer tier that feature 099 deleted. Those are the same two scopes above, resolved by the same ladder, each re-read at commit rather than inherited from the preflight. A document cannot grant itself a capability or raise a scope, and there is no longer a scope for it to choose: there is one catalog.
 - **No new parser.** The exchange reads a closed YAML subset with its own scanner, not a general library. Anchors, aliases, and merge keys — a general parser's amplification and aliasing surface on a file you did not write — cannot be expressed, so they cannot be expanded. The size bound is checked before the scanner is entered, so an oversized file is never parsed at all. The scanner, parser, and scalar-style modules are pinned by digest, so a refactor that widens the accepted language fails the build rather than shipping.
 - **No new evaluator.** This is the property most at risk from the third kind, because a Workflow's connections are conditional. A condition is structured data (`{ left, operator, right? }`) over closed enums, never an expression string, so T22's mitigation covers the imported case with nothing added. A Phase's `retryCondition` is the one expression the format carries, and to the exchange it is inert text: validated for presence, carried verbatim, never parsed — T11's sandboxed evaluator remains the only thing that ever reads it, at run time. The capability gate keys on the field's presence, never on its contents, so the import path has no reason to look inside it.
 - **No path across the IPC boundary.** The open and save dialogs run host-side; no plan row, audit payload, or error message carries a filesystem path in either direction. An export write failure reports a generic sentence precisely because an adapter's own error text can name the location it tried to write. This is the T4 paths-free discipline applied to a second surface, not an exception to it.
 
-What the exchange *does* add is a decision the operator has to make, which is why the preflight writes nothing: a document is inspected first, resource by resource, and an import never overwrites anything already present in any layer at any status. See [Decisions you make as an operator](#decisions-you-make-as-an-operator).
+What the exchange *does* add is a decision the operator has to make, which is why the preflight writes nothing: a document is inspected first, resource by resource, and an import never overwrites anything the catalog already holds at any status. See [Decisions you make as an operator](#decisions-you-make-as-an-operator).
 
 ## The untrusted input classes
 
@@ -97,11 +97,11 @@ What the exchange *does* add is a decision the operator has to make, which is wh
 |---|---|---|---|
 | **Operator-authored document** | A YAML file opened through the process-exchange import dialog (Phase, Pipeline, or Workflow package). | That it parses, that it is small, that the resources it names exist, or that the operator wrote it. | A closed-subset scanner rather than a general YAML parser — no anchors, aliases, merge keys, or tags to expand; the 1 MiB bound is checked *before* the scanner is entered; a preflight that writes nothing and reports resource by resource; the same capability gates an equivalent hand-edit would face, re-read at commit rather than inherited from the preflight. See [An imported process document is not a fourth trust layer](#an-imported-process-document-is-not-a-fourth-trust-layer). |
 | **Operator-authored condition** | A phase `retryCondition` expression, and a Workflow connection condition. | That the expression is benign, or that evaluating it "just to check" is free. | `retryCondition` has exactly one evaluator, sandboxed, at [src/lib/retry-condition.ts](../../src/lib/retry-condition.ts) — [T11](#t11--retrycondition-dsl-escape). Every other reader, the import path included, treats the field as inert text and never looks inside it. A Workflow condition has no string form at all, so there is nothing to parse and no sandbox to escape — [T22](#t22--workflow-condition-acquiring-an-evaluator). |
-| **Operator-authored identifier** | A phase / pipeline / workflow id, a port id, or a node id — from a builder, a hand-edited `settings.json`, or an imported document. | That it is bounded, that it is unique within its scope, or that it is safe to interpolate whole into an audit payload, an error string, or an IPC projection. | Each catalog declares its own bound once, in its `contracts/` leaf module (`PHASE_ID_MAX_LEN`, `PIPELINE_ID_MAX_LEN`, `WORKFLOW_ID_MAX_LEN`); validators reject an over-long or duplicate id before it is persisted; every reporting site truncates against that same constant — [T23](#t23--operator-authored-identifier-escaping-its-declared-bound). |
+| **Operator-authored identifier** | A phase / pipeline / workflow id, a port id, or a node id — from a builder, an imported document, or a hand-edited file in the catalog store. | That it is bounded, that it is unique within its catalog, or that it is safe to interpolate whole into an audit payload, an error string, or an IPC projection. | Each catalog declares its own bound once, in its `contracts/` leaf module (`PHASE_ID_MAX_LEN`, `PIPELINE_ID_MAX_LEN`, `WORKFLOW_ID_MAX_LEN`); validators reject an over-long or duplicate id before it is persisted; every reporting site truncates against that same constant — [T23](#t23--operator-authored-identifier-escaping-its-declared-bound). |
 | **IPC payload** | Every message the Svelte sidebar posts to the host. | That the webview validated anything, that the sender is the primary host, or that the payload's fields have the declared types. | Strict CSP; membership in `MUTATING_COMMANDS` gates every mutating command behind the primary host; the host re-validates each payload against its own validator, and the catalogs are re-resolved host-side rather than trusted from the message — [T2](#t2--untrusted-webview-mutating-host-state). No filesystem path crosses this boundary in either direction. |
 | **Legacy persisted state** | `workspaceState`, VS Code global storage, and `.schegent/audit.log` rows written by an earlier extension version. | That it matches the current schema, or that the invariants in force today were in force when it was written. | Forward-only migrators run at `initialize()`; a persisted schema version *above* the runtime's is refused outright instead of best-effort read; `setRun()` rejects the one-sided pause/retry pairs an older record may carry — [T13](#t13--state-schema-invariant-violation); the audit parser warns and preserves unknown event types rather than dropping them — [T24](#t24--legacy-persisted-state-re-entering-the-runtime). |
 
-Two properties are common to all five. **None of them can widen a capability**: a document, a condition, an identifier, a message, and a migrated record all resolve through the same four trust scopes under the same workspace-trust ceiling, so the worst an untrusted input can do is be refused. And **each is bounded before it is interpreted**, not after — the size check precedes the scanner, the validator precedes the write, the migrator precedes the read. An input that fails its boundary check produces a refusal with a closed-enum reason; it does not produce a partially-applied change.
+Two properties are common to all five. **None of them can widen a capability**: a document, a condition, an identifier, a message, and a migrated record all resolve through the same two trust scopes under the same workspace-trust ceiling, so the worst an untrusted input can do is be refused. And **each is bounded before it is interpreted**, not after — the size check precedes the scanner, the validator precedes the write, the migrator precedes the read. An input that fails its boundary check produces a refusal with a closed-enum reason; it does not produce a partially-applied change.
 
 ## Sanitization is centralized
 
@@ -178,24 +178,29 @@ You must explicitly trust the workspace before Schegent does anything. This is t
 
 ## Per-capability trust scopes
 
-VS Code's Workspace Trust is binary; Schegent layers four
+VS Code's Workspace Trust is binary; Schegent layers two
 independently-configurable trust scopes on top to give enterprise IT a
 narrower gate than "trust everything or trust nothing":
 
-- `schegent.trust.allowCustomPhases` — gates non-default phase prompts.
-- `schegent.trust.allowCustomRetryConditions` — gates non-default retry-condition DSL expressions on phase rows.
-- `schegent.trust.allowPipelineOverrides` — gates non-default entries in the pipeline catalog.
-- `schegent.trust.allowWorkflowOverrides` — gates non-default entries in the workflow catalog (`schegent.workflows`).
+- `schegent.trust.allowCustomPhases` — gates saving a phase definition.
+- `schegent.trust.allowCustomRetryConditions` — gates saving a `retryCondition` expression on any phase.
 
-`workflowOverrides` is a **distinct capability**, not a reuse of
-`pipelineOverrides`: a workflow graph decides which pipelines relate to
-which and under what conditions, which is a broader authority than
-editing one pipeline's phase order. Permitting pipeline-catalog edits
-therefore does not thereby permit workflow-graph edits, and the two
-resolve independently through the same ladder. Like every other
-capability, `workflowOverrides` returns `false` on an untrusted
-workspace regardless of any explicit `true` at user or workspace
-scope — the ceiling is not widened by adding a fourth scope.
+Both key on what a document **says**. That is why they survived feature
+099 and the other two did not: `allowPipelineOverrides` and
+`allowWorkflowOverrides` gated *which settings layer could redefine what
+another layer declared*, and with definitions moved into a single-layer
+catalog store there is no second layer to redefine anything. Editing
+pipelines and workflows is now gated by Workspace Trust itself, which an
+untrusted workspace already denies wholesale: it activates no catalog at
+all.
+
+The two that remain resolve independently through the same ladder, and
+neither is a reuse of the other — a retry-condition expression is the one
+piece of operator-authored text that an evaluator will read, which is a
+narrower and sharper authority than authoring a prompt. Like every
+capability, each returns `false` on an untrusted workspace regardless of
+any explicit `true` at user or workspace scope; the ceiling is not
+widened by the number of scopes beneath it.
 
 Each setting is `boolean | null`, defaults to `null` (follow Workspace
 Trust), and is resolved against a four-step ladder:
@@ -353,17 +358,22 @@ If the spec / plan / task / phase-instruction text contains injection instructio
 
 ### T9 — Custom-phase bypassing audit or redaction
 
-A custom phase declared in `schegent.phases` could in principle skip the audit + redaction + raw-transcript path that built-in phases flow through. Mitigated by routing every phase invocation — built-in and custom — through the same `appendAudit` + raw transcript writer. Custom-phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs` / `runner`. Feature 072 task-execution lifecycle events (`task-execution-started`, `task-execution-ended`, etc.) flow through this identical `appendAudit` → `SanitizedLogger` path, introducing no new trust boundary.
+A phase definition in the catalog store could in principle skip the audit + redaction + raw-transcript path. Mitigated by routing every phase invocation through the same `appendAudit` + raw transcript writer — there is exactly one path and nothing is exempt from it. Phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs` / `runner`. Feature 072 task-execution lifecycle events (`task-execution-started`, `task-execution-ended`, etc.) flow through this identical `appendAudit` → `SanitizedLogger` path, introducing no new trust boundary.
+
+The threat is narrower than it once was, and for a structural reason: since
+feature 098 the extension ships no phases, so there is no privileged path a
+custom phase could be measured against and no built-in behavior it could
+acquire by naming itself something. Containment class, evidence policy, and
+runner pinning are read from the definition's own **declaration**, never from
+its id.
 
 Feature 081 keeps catalog mutation inside the same primary-host, workspace-trust,
 and fine-grained capability gates as the existing save command. Payloads are
-exact-key validated, revision checked, whole-layer validated, and persisted once.
-Built-in policy is derived from source origin rather than id, so a custom shadow
-cannot acquire built-in side effects, evidence policy, prompt version, or runner
-pinning. A `skill` directive is converted to declarative Agent CLI prompt text;
+exact-key validated, revision checked, whole-catalog validated, and persisted
+once. A `skill` directive is converted to declarative Agent CLI prompt text;
 the extension never resolves a skill path, imports code, or adds runner argv.
-Removal uses the shared confirmation helper and cannot delete built-ins or the
-last effective definition referenced by a pipeline.
+Removal uses the shared confirmation helper and cannot delete the last
+effective definition referenced by a pipeline.
 
 ### T10 — Verbose-diagnostic unredacted leak
 
@@ -445,7 +455,7 @@ The phase-log IPC pipeline (manifest read + live tail) must sanitize exactly onc
 
 ### T22 — Workflow condition acquiring an evaluator
 
-**Source**: operator-authored Workflow definitions in `schegent.workflows`, reaching the host either through the Workflow Builder (`CMD_SAVE_WORKFLOWS`) or a hand-edited `settings.json`.
+**Source**: operator-authored Workflow definitions in the catalog store, reaching the host either through the Workflow Builder (`CMD_SAVE_WORKFLOWS`), an imported YAML document, or a hand-edited version record under `.schegent/catalog/workflows/`.
 
 **Vector**: A Workflow connection may carry a condition that decides whether the branch is offered. The obvious design — an expression string — is the design Schegent already has once, in the phase `retryCondition` DSL ([T11](#t11--retrycondition-dsl-escape)). Repeating it here would put a second operator-authored expression language on a surface that also names pipelines and reads prior node output, and it would arrive without T11's sandbox invariants unless someone rebuilt them.
 
@@ -453,13 +463,13 @@ The phase-log IPC pipeline (manifest read + live tail) must sanitize exactly onc
 
 Because "we did not add an evaluator" is invisible to behavioral tests (every one of them would keep passing the day someone adds an expression escape hatch), the property is pinned against the module source: the `Feature 083 T046` block in [tests/unit/config/workflow-graph-validator.test.ts](../../tests/unit/config/workflow-graph-validator.test.ts) asserts that both condition modules — [src/config/workflow-graph-validator.ts](../../src/config/workflow-graph-validator.ts) and [src/config/workflow-definition-validator.ts](../../src/config/workflow-definition-validator.ts), which owns `readCondition` and runs first — import nothing but relative project modules, and contain no `eval`, `Function` constructor, `.constructor` access, dynamic `import(`, `require(`, or `node:vm`. The rule is stricter than a forbidden-package list on purpose: a blocklist would have to be maintained forever and would still miss the next engine published. The corresponding CLAUDE.md hard rule states the invariant for reviewers.
 
-**Trust boundary**: authoring a Workflow graph is gated by `schegent.trust.allowWorkflowOverrides`, a **distinct** `TrustCapability` from `pipelineOverrides` — permitting pipeline-catalog edits does not thereby permit workflow-graph edits. Like every capability it is subject to the untrusted-workspace ceiling: step 1 of the resolution ladder returns `false` on an untrusted workspace regardless of any explicit `true` at user or workspace scope. See [Per-capability trust scopes](#per-capability-trust-scopes).
+**Trust boundary**: authoring a Workflow graph is gated by Workspace Trust. The capability that once gated it separately, `allowWorkflowOverrides`, was retired in feature 099 with the layer tier it named — it decided which settings layer could redefine another's declaration, and a single-layer catalog store has no second layer. The ceiling it was subject to is now the whole gate, and it is not a weaker one: an untrusted workspace activates no catalog at all, so a `.schegent/catalog/workflows/` directory arriving with a cloned repository is inert until the operator trusts the workspace. See [Per-capability trust scopes](#per-capability-trust-scopes).
 
 **Residual risk**: An operator who is permitted to author workflow graphs can route between any pipelines they are permitted to author. Conditions bound *which* branch is offered, never *whether* the operator is asked — a Workflow never starts a follow-up run on its own, so a mis-authored condition mis-suggests rather than mis-executes.
 
 ### T23 — Operator-authored identifier escaping its declared bound
 
-**Source**: a phase, pipeline, workflow, port, or node id — authored in a builder, hand-edited into `settings.json`, or carried in an imported document.
+**Source**: a phase, pipeline, workflow, port, or node id — authored in a builder, hand-edited into a catalog version record, or carried in an imported document.
 
 **Vector**: an identifier is the one operator-authored string that is *supposed* to flow onward: into an audit payload, a validation error the webview renders, and a catalog key. An unbounded id therefore reaches a sink that is bounded everywhere else, and a very long one is a cheap way to push the fields that matter out of a truncated record. The subtler failure is a **second** bound for the same class of value: a module that declares its own `= 64` agrees with the catalog only by coincidence, and the day that catalog widens its id length, the private copy starts truncating identifiers the catalog itself accepts — silently, in exactly the reporting paths an operator would use to diagnose the problem.
 

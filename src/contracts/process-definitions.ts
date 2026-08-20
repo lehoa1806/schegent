@@ -11,10 +11,6 @@ import type { BackendRunnerKind } from '../runner/backend-runner-factory';
  */
 export const PHASE_ID_MAX_LEN = 64;
 
-export const PHASE_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
-export type PhaseDefinitionScope = (typeof PHASE_DEFINITION_SCOPES)[number];
-export type WritablePhaseDefinitionScope = Exclude<PhaseDefinitionScope, 'built-in'>;
-
 export const PHASE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 
@@ -76,12 +72,18 @@ export interface PhaseFieldError {
   readonly message: string;
 }
 
-export type PhaseSourceStatus = 'effective' | 'shadowed' | 'invalid';
+/**
+ * Feature 099 (FR-040) — two arms, because there is one layer.
+ *
+ * `shadowed` is deleted rather than retained as an unreachable arm: it described a
+ * definition a higher-precedence layer hid, and with a single layer nothing can hide
+ * anything. An arm no producer can emit is one every consumer still has to handle.
+ */
+export type PhaseSourceStatus = 'effective' | 'invalid';
 
 export interface PhaseSourceRecord {
   readonly key: string;
   readonly phaseId: string;
-  readonly scope: PhaseDefinitionScope;
   readonly status: PhaseSourceStatus;
   readonly definition: PhaseDefinition | null;
   /** Recognized authored fields only. This host-internal value is sanitized before IPC. */
@@ -97,7 +99,8 @@ export interface PhaseCatalogWarning {
 export interface PhaseCatalogResolution {
   readonly records: readonly PhaseSourceRecord[];
   readonly effective: readonly PhaseDefinition[];
-  readonly revisions: Readonly<Record<WritablePhaseDefinitionScope, string>>;
+  /** One revision for the one layer (FR-044). Derived from the store's manifest (FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly PhaseCatalogWarning[];
 }
 
@@ -124,15 +127,21 @@ export type PhaseCatalogMutation =
   | { readonly kind: 'edit'; readonly phaseId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: PhaseDefinitionScope;
       readonly sourcePhaseId: string;
       readonly phaseId: string;
     }
   | { readonly kind: 'remove'; readonly phaseId: string }
   | { readonly kind: 'reset' };
 
-export interface ScopedPhaseSavePayload {
-  readonly scope: WritablePhaseDefinitionScope;
+/**
+ * One save against the one layer.
+ *
+ * Feature 099 (FR-043) — formerly `ScopedPhaseSavePayload`. Renamed rather than
+ * kept with its `scope` field removed: a type named for a scope that no longer
+ * exists is a comment that lies, and the rename makes `typecheck` name every
+ * caller instead of leaving the collapse half-applied.
+ */
+export interface PhaseSavePayload {
   readonly expectedRevision: string;
   readonly mutation: PhaseCatalogMutation;
   readonly phases: readonly unknown[];

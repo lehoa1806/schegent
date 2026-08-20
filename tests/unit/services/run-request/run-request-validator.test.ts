@@ -34,7 +34,7 @@ function pipeline(
 ): EffectivePipelineSource {
   return {
     definition: { id: 'ab-flow', name: 'A then B', phases: ['alpha'], inputs, outputs },
-    phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.', sourceScope: 'built-in' }]
+    phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.' }]
   };
 }
 
@@ -279,7 +279,7 @@ describe('the frozen plan (FR-009, FR-030)', () => {
     // ever happened here: what the effective catalog yielded is what freezes.
     const source: EffectivePipelineSource = {
       definition: { id: 'ab-flow', name: 'A then B', phases: ['alpha', 'gone'] },
-      phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.', sourceScope: 'built-in' }]
+      phases: [{ id: 'alpha', name: 'Alpha', instruction: 'Do the thing.' }]
     };
     const outcome = await validateRunRequest(request(), context({ pipeline: source }));
     expect(outcome.ok).toBe(true);

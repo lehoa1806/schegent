@@ -22,6 +22,14 @@ import type {
 } from './snapshot';
 
 const ID_MAX = 64;
+/**
+ * The record key, which is not an id (T489a). It is `${pipelineId}::${index}`,
+ * and `ID_MAX` is the cap for the id alone — a legal 64-character id would fill
+ * it exactly and the `::index` that distinguishes two rows sharing one id would
+ * be truncated away, keying both records identically in the Builder's `{#each}`.
+ * Matches `phase-catalog-projection.ts`, which has always bounded the two apart.
+ */
+const KEY_MAX = 160;
 const NAME_MAX = 80;
 const LABEL_MAX = 80;
 const DESCRIPTION_MAX = 1024;
@@ -155,21 +163,12 @@ function projectDisplay(
   return Object.freeze(projected);
 }
 
-/**
- * The contract keys a record `${scope}:${pipelineId}`. Two rows in one scope may
- * still claim the same id (both are then invalid), so a repeat occurrence gets a
- * positional suffix and the key stays usable as a list key.
- */
-function projectionKey(
-  scope: string,
-  pipelineId: string,
-  seen: Map<string, number>
-): string {
-  const base = `${scope}:${pipelineId}`;
-  const occurrence = seen.get(base) ?? 0;
-  seen.set(base, occurrence + 1);
-  return occurrence === 0 ? base : `${base}:${occurrence}`;
-}
+// Feature 099 (T489a, FR-043) — `projectionKey` stood here, composing
+// `${scope}:${pipelineId}` and adding a positional suffix when two rows in one
+// scope claimed the same id. The resolver's own `key` is already
+// `${pipelineId}::${index}`, which is unique by construction over the one layer
+// and needs no de-duplication pass, so the projection carries it through rather
+// than composing a second key from a scope that no longer exists.
 
 export interface PipelineCatalogProjectionOptions {
   readonly sanitize: Sanitize;
@@ -186,9 +185,9 @@ export interface PipelineCatalogProjectionOptions {
 
 /**
  * `pipelineId` → its consuming Workflow ids, sorted and deduplicated. A
- * reference names an id, not a layer, so every record sharing that id reports
- * the same consumers — including a shadowed or invalid one, whose operator is
- * the person most likely to need to know who depends on the id.
+ * reference names an id, so every record sharing that id reports the same
+ * consumers — including an invalid one, whose operator is the person most likely
+ * to need to know who depends on the id.
  */
 function consumersByPipelineId(
   refs: readonly { readonly workflowId: string; readonly pipelineId: string }[],
@@ -214,7 +213,6 @@ export function projectPipelineCatalog(
   options: PipelineCatalogProjectionOptions
 ): PipelineCatalogProjection {
   const { sanitize } = options;
-  const seenKeys = new Map<string, number>();
   const consumers = consumersByPipelineId(options.workflowRefs ?? [], sanitize);
   const records: PipelineCatalogSourceProjection[] = catalog.records.map((record) => {
     const definition = record.definition
@@ -224,9 +222,8 @@ export function projectPipelineCatalog(
     const model = definition?.executionDefaults?.model;
     const pipelineId = text(record.pipelineId, sanitize, ID_MAX);
     return Object.freeze({
-      key: projectionKey(record.scope, pipelineId, seenKeys),
+      key: text(record.key, sanitize, KEY_MAX),
       pipelineId,
-      scope: record.scope,
       status: record.status,
       definition,
       display: projectDisplay(record.display, sanitize),
@@ -270,10 +267,7 @@ export function projectPipelineCatalog(
     effective: Object.freeze(
       catalog.effective.map((definition) => projectPipelineDefinition(definition, sanitize))
     ),
-    revisions: Object.freeze({
-      user: catalog.revisions.user,
-      workspace: catalog.revisions.workspace
-    }),
+    revision: catalog.revision,
     warnings: Object.freeze(warnings)
   });
 }
@@ -290,7 +284,7 @@ function pipelineCatalogFailureProjection(
     state: 'error' as const,
     records: Object.freeze([]),
     effective: Object.freeze([]),
-    revisions: Object.freeze({ user: '', workspace: '' }),
+    revision: '',
     warnings: Object.freeze([]),
     error: Object.freeze({
       code: 'pipeline-catalog-unavailable',

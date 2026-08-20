@@ -6,8 +6,8 @@
 //
 // Threat-model: T10 (verbose-diag intentionally unredacted) + T17
 // (path traversal). Operator-supplied `pipelineId` and `phaseId`
-// flow from `schegent.pipelines` / `schegent.phases` workspace
-// settings; a malicious or accidentally-misconfigured `..` segment
+// flow from the catalog store, whose ids a cloned repository can
+// supply; a malicious or accidentally-misconfigured `..` segment
 // would let the writer escape the `.schegent/sessions/` sandbox.
 //
 // On invalid input the composer throws; the caller in

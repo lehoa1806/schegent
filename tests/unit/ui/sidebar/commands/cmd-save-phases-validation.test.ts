@@ -17,41 +17,55 @@ vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { phaseLayerRevision } from '../../../../../src/config/process-catalog';
 import type { PhaseFieldError } from '../../../../../src/contracts/process-definitions';
+import { FakeCatalogStore, layerWrites } from '../../../../fixtures/fake-catalog-store';
 import { handler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../../../src/ui/sidebar/messages';
 import type { CommandAckMessage, SavePhasesCommand } from '../../../../../src/ui/sidebar/messages';
 
+/**
+ * Feature 099 (T496f, FR-042/FR-042a) — the harness holds one catalog behind the
+ * versioned store rather than a `{ user, workspace }` pair behind `updateConfig`.
+ * `writes()` projects the store's layer saves back to the array-of-rows shape the
+ * assertions below are written against, so what each case claims is unchanged;
+ * only the port it is claimed through moved.
+ */
 function harness(
   sanitize: (value: string) => string = String,
-  layers: { user: readonly unknown[]; workspace: readonly unknown[] } = {
-    user: [], workspace: []
-  }
+  current: readonly unknown[] = []
 ) {
   const acks: CommandAckMessage[] = [];
-  const writes: unknown[] = [];
+  const store = new FakeCatalogStore({ phases: current });
   const ctx = {
     deps: {
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize },
-      updateConfig: vi.fn(async (_key: string, value: unknown) => { writes.push(value); }),
-      readPhaseConfig: () => layers
+      catalogStore: store,
+      refreshCatalog: vi.fn(async () => undefined),
+      readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
     },
     postAck: async (message: CommandAckMessage) => { acks.push(message); return true; },
     correlationId: 'phase-validation'
   } as unknown as Parameters<typeof handler>[0];
-  return { ctx, acks, writes };
+  return { ctx, acks, store, writes: () => layerWrites(store) };
 }
+
+/**
+ * What a store reports for the Phase catalog before anything is saved into it.
+ *
+ * Feature 099 (FR-044a) — the revision is the manifest's, not a hash over the
+ * rows, so seeding the harness with rows does not move it. That is why every case
+ * below echoes this one value where it used to echo `phaseLayerRevision(current)`.
+ */
+const SEEDED_REVISION = new FakeCatalogStore().revisionOf('phase');
 
 function command(phases: readonly unknown[], phaseId = 'valid-id'): SavePhasesCommand {
   return {
     type: CMD_SAVE_PHASES,
     correlationId: 'phase-validation',
     payload: {
-      scope: 'workspace',
-      expectedRevision: phaseLayerRevision([]),
+      expectedRevision: SEEDED_REVISION,
       mutation: { kind: 'create', phaseId },
       phases
     }
@@ -70,7 +84,7 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
     const { ctx, acks, writes } = harness();
     await handler(ctx, command([{ id: 'INVALID', name: 'Invalid', instruction: 'Run.' }], 'INVALID'));
     expect(errors(acks[0])).toContainEqual(expect.objectContaining({ field: 'phaseId', code: 'invalid-pattern' }));
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('rejects an empty name', async () => {
@@ -89,7 +103,7 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
     const { ctx, acks, writes } = harness();
     await handler(ctx, command([{ id: 'valid-id', name: 'Valid', skill: 'speckit-plan' }]));
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[expect.objectContaining({ id: 'valid-id', skill: 'speckit-plan', version: 1 })]]);
+    expect(writes()).toEqual([[expect.objectContaining({ id: 'valid-id', skill: 'speckit-plan', version: 1 })]]);
   });
 
   it('rejects unknown authored fields', async () => {
@@ -146,7 +160,7 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
     expect(errors(acks[0])).toContainEqual(expect.objectContaining({
       phaseId: 'speckit-specify', field: 'runner', code: 'git-metadata-write-required'
     }));
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('allows the default runner on a custom row that shadows a protected built-in id', async () => {
@@ -175,20 +189,19 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
       { id: 'bad-id', name: '', instruction: 'Run.' }
     ]));
     expect(errors(acks[0])).toContainEqual(expect.objectContaining({ phaseId: 'bad-id', field: 'name' }));
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('repairs an invalid persisted row without treating it as a new identity', async () => {
     const current = [{
       id: 'valid-id', name: 'Valid', version: 2, instruction: 'Run.', retryCondition: '('
     }];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command([{ id: 'valid-id', name: 'Valid', version: 2, instruction: 'Run.' }]);
     const edit: SavePhasesCommand = {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'edit', phaseId: 'valid-id' }
       }
     };
@@ -196,77 +209,73 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
     await handler(ctx, edit);
 
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[
+    expect(writes()).toEqual([[
       expect.objectContaining({ id: 'valid-id', version: 3, instruction: 'Run.' })
     ]]);
   });
 
   it('repairs a malformed persisted identity as one atomic edit', async () => {
     const current = [{ id: 'INVALID', name: 'Invalid', version: 2, instruction: 'Run.' }];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command([{ id: 'repaired-id', name: 'Repaired', version: 2, instruction: 'Run.' }]);
     await handler(ctx, {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'edit', phaseId: 'INVALID' }
       }
     });
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[
+    expect(writes()).toEqual([[
       expect.objectContaining({ id: 'repaired-id', version: 3, instruction: 'Run.' })
     ]]);
   });
 
   it('removes a malformed persisted identity as one atomic removal', async () => {
     const current = [{ id: 'INVALID', name: 'Invalid', version: 2, instruction: 'Run.' }];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command([]);
     await handler(ctx, {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'remove', phaseId: 'INVALID' }
       }
     });
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[]]);
+    expect(writes()).toEqual([[]]);
   });
 
   it('repairs a persisted row with no string identity through its synthetic handle', async () => {
     const current = [{ name: 'Invalid', version: 2, instruction: 'Run.' }];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command([{ id: 'repaired-id', name: 'Repaired', version: 2, instruction: 'Run.' }]);
     await handler(ctx, {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'edit', phaseId: '?invalid-1' }
       }
     });
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[
+    expect(writes()).toEqual([[
       expect.objectContaining({ id: 'repaired-id', version: 3 })
     ]]);
   });
 
   it('removes a persisted row with no string identity through its synthetic handle', async () => {
     const current = [{ name: 'Invalid', instruction: 'Run.' }];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command([]);
     await handler(ctx, {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'remove', phaseId: '?invalid-1' }
       }
     });
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[]]);
+    expect(writes()).toEqual([[]]);
   });
 
   it('repairs one duplicate legacy identity by assigning it a new id', async () => {
@@ -278,18 +287,17 @@ describe('CMD_SAVE_PHASES shared Phase Definition validation', () => {
       { id: 'repaired-id', name: 'One', version: 1, instruction: 'One.' },
       { id: 'duplicate-id', name: 'Two', version: 2, instruction: 'Two.' }
     ];
-    const { ctx, acks, writes } = harness(String, { user: [], workspace: current });
+    const { ctx, acks, writes } = harness(String, current);
     const base = command(proposed);
     await handler(ctx, {
       ...base,
       payload: {
         ...base.payload,
-        expectedRevision: phaseLayerRevision(current),
         mutation: { kind: 'edit', phaseId: 'duplicate-id' }
       }
     });
     expect(acks[0].status).toBe('accepted');
-    expect(writes).toEqual([[
+    expect(writes()).toEqual([[
       expect.objectContaining({ id: 'repaired-id', version: 2 }),
       expect.objectContaining({ id: 'duplicate-id', version: 2 })
     ]]);

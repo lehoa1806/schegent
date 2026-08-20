@@ -11,7 +11,6 @@ export function effectivePhasesToMutable(
     ...phase,
     version: phase.version ?? 1,
     sourceKey: `effective::${phase.id}`,
-    scope: 'built-in',
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: true
@@ -44,7 +43,6 @@ export function sourceRecordToMutable(record: PhaseCatalogRecord): MutablePhase 
     ...(definition?.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
     ...(definition?.runner !== undefined ? { runner: definition.runner } : {}),
     sourceKey: record.key,
-    scope: record.scope,
     sourceStatus: record.status,
     sourceErrors: record.errors,
     ...(record.modelAvailable !== undefined ? { modelAvailable: record.modelAvailable } : {}),
@@ -53,13 +51,11 @@ export function sourceRecordToMutable(record: PhaseCatalogRecord): MutablePhase 
 }
 
 function targetIndex(
-  rows: readonly MutablePhase[], sourceKey: string | null,
-  scope: 'user' | 'workspace', phaseId: string
+  rows: readonly MutablePhase[], sourceKey: string | null, phaseId: string
 ): number {
   const exact = rows.findIndex((row) => row.sourceKey === sourceKey);
   if (exact >= 0) return exact;
-  const candidates = rows.flatMap((row, index) =>
-    row.scope === scope && row.id === phaseId ? [index] : []);
+  const candidates = rows.flatMap((row, index) => (row.id === phaseId ? [index] : []));
   return candidates.length === 1 ? candidates[0] : -1;
 }
 
@@ -68,25 +64,27 @@ export function rebasePhaseMutation(
   records: readonly PhaseCatalogRecord[],
   draftRows: readonly MutablePhase[],
   mutation: SavePhasesMutation,
-  scope: 'user' | 'workspace',
   sourceKey: string | null
 ): MutablePhase[] {
   const fresh = records.map(sourceRecordToMutable);
-  if (mutation.kind === 'reset') return fresh.filter((row) => row.scope !== scope);
+  // Feature 099 (T494a, FR-043) — a reset empties the catalog. It used to drop
+  // only the rows of the scope being reset, leaving a lower layer showing
+  // through; there is no lower layer to show through any more.
+  if (mutation.kind === 'reset') return [];
   // Feature 085 — a package import owns no draft row in this editor: the import
   // surface holds the plan, and a rejected package is recovered by inspecting the
   // same document again (FR-042b), not by rebasing a draft that does not exist.
   // The fresh projection IS the answer.
   if (mutation.kind === 'import-package') return fresh;
   if (mutation.kind === 'remove') {
-    const removal = targetIndex(fresh, sourceKey, scope, mutation.phaseId);
+    const removal = targetIndex(fresh, sourceKey, mutation.phaseId);
     return removal < 0 ? fresh : fresh.filter((_, index) => index !== removal);
   }
-  const draftTarget = targetIndex(draftRows, sourceKey, scope, mutation.phaseId);
+  const draftTarget = targetIndex(draftRows, sourceKey, mutation.phaseId);
   if (draftTarget < 0) return fresh;
   const draft = draftRows[draftTarget];
   if (mutation.kind === 'create' || mutation.kind === 'duplicate') return [...fresh, draft];
-  const freshTarget = targetIndex(fresh, sourceKey, scope, mutation.phaseId);
+  const freshTarget = targetIndex(fresh, sourceKey, mutation.phaseId);
   if (freshTarget < 0) return fresh;
   fresh[freshTarget] = draft;
   return fresh;
@@ -116,7 +114,7 @@ export function toSavePhaseRow(phase: MutablePhase): SavePhaseRow {
 export function makeNewPhaseDraft(phases: readonly MutablePhase[]): MutablePhase {
   let id = 'new-phase';
   let suffix = 1;
-  while (phases.some((phase) => phase.id === id && phase.scope === 'workspace')) {
+  while (phases.some((phase) => phase.id === id)) {
     id = `new-phase-${suffix++}`;
   }
   return {
@@ -124,9 +122,11 @@ export function makeNewPhaseDraft(phases: readonly MutablePhase[]): MutablePhase
     name: 'New Phase',
     version: 1,
     instruction: 'Describe the phase objective here.',
-    scope: 'workspace',
-    sourceKey: `draft::workspace::${id}`,
-    sourceStatus: 'shadowed',
+    sourceKey: `draft::${id}`,
+    // Feature 099 (T494a, FR-043) — a draft is `effective`, not `shadowed`. The
+    // `shadowed` arm is gone with the layer tier, and it never described a draft
+    // anyway: `persisted: false` is what says this row has not reached the store.
+    sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false
   };
@@ -149,9 +149,8 @@ export function makeDuplicatePhaseDraft(
   duplicate.id = id;
   duplicate.name = `${original.name || 'Untitled Phase'} (Copy)`;
   duplicate.version = 1;
-  duplicate.scope = original.scope === 'built-in' ? 'workspace' : original.scope;
-  duplicate.sourceKey = `draft::${duplicate.scope}::${id}`;
-  duplicate.sourceStatus = 'shadowed';
+  duplicate.sourceKey = `draft::${id}`;
+  duplicate.sourceStatus = 'effective';
   duplicate.sourceErrors = [];
   duplicate.persisted = false;
   return duplicate;

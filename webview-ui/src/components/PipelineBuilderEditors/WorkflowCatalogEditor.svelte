@@ -13,15 +13,18 @@
   // Rows come from the authoritative `workflowCatalog` projection and nothing
   // else. Every mutating control stays unavailable until that projection
   // arrives (FR-028), while trust says otherwise (FR-029), and — after a
-  // submitted save — until a snapshot arrives whose `revisions[scope]` differs
-  // from the one submitted. Waiting on the revision rather than on the ack is
-  // what makes the gate honest: the ack says the host accepted the write, the
-  // new revision says the projection the operator is looking at reflects it.
+  // submitted save — until a snapshot arrives whose `revision` differs from the
+  // one submitted. Waiting on the revision rather than on the ack is what makes
+  // the gate honest: the ack says the host accepted the write, the new revision
+  // says the projection the operator is looking at reflects it.
+  //
+  // Feature 099 (T494a, FR-043) — no scope. One layer means one revision, one
+  // destination for a save, and no writable-scope picker; a "layer" here is now
+  // just the catalog.
   import type {
     PortablePipelineDefinition,
     WorkflowNode,
-    WorkflowSnapshot,
-    WritableWorkflowDefinitionScope
+    WorkflowSnapshot
   } from '../../lib/snapshot-types';
   import { saveWorkflows, type SaveWorkflowsRequest } from '../../lib/save-workflows';
   import {
@@ -65,13 +68,12 @@
 
   interface Props {
     snapshot: WorkflowSnapshot;
-    /** `workflowOverrides`, resolved host-side; the host re-checks on save. */
+    /** Workspace Trust, resolved host-side; the host re-checks on save. */
     trusted: boolean;
   }
 
   const { snapshot, trusted }: Props = $props();
 
-  let scope = $state<WritableWorkflowDefinitionScope>('workspace');
   /** Rows the operator created but the host has not accepted yet. */
   let drafts = $state<MutableWorkflow[]>([]);
   let selectedKey = $state<string | null>(null);
@@ -81,17 +83,17 @@
 
   const catalog = $derived(snapshot.workflowCatalog);
   const ready = $derived(catalog?.state === 'ready');
-  const revision = $derived(ready ? (catalog?.revisions[scope] ?? '') : '');
+  const revision = $derived(ready ? (catalog?.revision ?? '') : '');
 
   const persisted = $derived(
     ready ? (catalog?.records ?? []).map(sourceRecordToMutableWorkflow) : []
   );
   /**
    * A node may only run a Pipeline the effective catalog resolves, and only the
-   * ports that Pipeline declares can be connected. Reading the effective layer
-   * rather than the raw rows is the same rule the host applies when it resolves
-   * a binding: a shadowed or invalid Pipeline must not appear authorable here
-   * when runtime resolution will not honor it.
+   * ports that Pipeline declares can be connected. Reading the effective rows
+   * rather than the raw ones is the same rule the host applies when it resolves
+   * a binding: an invalid Pipeline must not appear authorable here when runtime
+   * resolution will not honor it.
    */
   const effectivePipelines = $derived<readonly PortablePipelineDefinition[]>(
     snapshot.pipelineCatalog?.state === 'ready' ? snapshot.pipelineCatalog.effective : []
@@ -116,7 +118,7 @@
   const savePending = $derived(submittedRevision !== null && revision === submittedRevision);
 
   $effect(() => {
-    // Once the layer moves, the draft has landed: adopt the host's rows.
+    // Once the catalog moves, the draft has landed: adopt the host's rows.
     if (submittedRevision !== null && revision !== '' && revision !== submittedRevision) {
       submittedRevision = null;
       drafts = [];
@@ -128,7 +130,7 @@
       ? validateWorkflowDraft(
           selected,
           rows
-            .filter((row) => row.scope === selected.scope && row.sourceKey !== selected.sourceKey)
+            .filter((row) => row.sourceKey !== selected.sourceKey)
             .map((row) => row.workflowId)
         )
       : []
@@ -151,46 +153,45 @@
   const mutatingDisabled = $derived(!trusted || !ready || savePending);
   /**
    * Only an unsaved draft is editable. Editing a stored row in place would
-   * need an `edit` mutation and its own revision handling; duplicating it into
-   * a writable scope is the path this release offers (FR-026).
+   * need an `edit` mutation and its own revision handling; duplicating it is
+   * the path this release offers (FR-026).
    */
   const editable = $derived(selected !== null && !selected.persisted && !mutatingDisabled);
   const saveDisabled = $derived(!editable || draftErrors.length > 0 || noEffectivePipeline);
   /**
-   * Duplicate is the one action a built-in row offers, so it is gated on trust
+   * Duplicate is the one action a stored row offers, so it is gated on trust
    * and readiness only — not on `editable`, which is false for every stored row
    * and would make the control permanently dead exactly where it is needed.
    */
   const duplicateDisabled = $derived(selected === null || mutatingDisabled);
   /**
-   * Only a stored row in a writable scope can be removed. A draft has nothing
-   * persisted to delete — discarding it is not a write — and a built-in row is
-   * read-only (FR-026).
+   * Only a stored row can be removed: a draft has nothing persisted to delete,
+   * and discarding it is not a write (FR-026).
    */
   const removeDisabled = $derived(
-    selected === null || !selected.persisted || selected.scope === 'built-in' || mutatingDisabled
+    selected === null || !selected.persisted || mutatingDisabled
   );
 
-  function scopeIdsFor(target: WritableWorkflowDefinitionScope): readonly string[] {
-    return rows.filter((row) => row.scope === target).map((row) => row.workflowId);
+  function takenWorkflowIds(): readonly string[] {
+    return rows.map((row) => row.workflowId);
   }
 
   function addWorkflow(): void {
     if (mutatingDisabled) return;
-    const draft = makeNewWorkflowDraft(scope, scopeIdsFor(scope));
+    const draft = makeNewWorkflowDraft(takenWorkflowIds());
     drafts = [...drafts, draft];
     selectedKey = draft.sourceKey;
     saveError = null;
   }
 
   /**
-   * Copy the selected row into the writable scope the picker names, under an id
-   * free in that scope. The original is untouched — the copy is a new draft, and
-   * a duplicate of a built-in row is the only way to base a Workflow on one.
+   * Copy the selected row under a free id. The original is untouched — the copy
+   * is a new draft, and duplicating is the only way to base a Workflow on one
+   * the catalog already holds.
    */
   function duplicateWorkflow(): void {
     if (duplicateDisabled || !selected) return;
-    const draft = makeDuplicateWorkflowDraft(selected, scope, scopeIdsFor(scope));
+    const draft = makeDuplicateWorkflowDraft(selected, takenWorkflowIds());
     drafts = [...drafts, draft];
     selectedKey = draft.sourceKey;
     saveError = null;
@@ -300,21 +301,12 @@
     }
   }
 
-  function layerOf(target: WritableWorkflowDefinitionScope): MutableWorkflow[] {
-    return rows.filter((row) => row.scope === target);
-  }
-
   async function save(): Promise<void> {
     if (saveDisabled || !selected) return;
-    const target = selected.scope;
-    // Narrowing, not a guard against a reachable state: only a draft is
-    // saveable here and a draft is always created in a writable scope.
-    if (target === 'built-in') return;
     await submit({
-      scope: target,
-      expectedRevision: catalog?.revisions[target] ?? '',
+      expectedRevision: revision,
       mutation: { kind: 'create', workflowId: selected.workflowId },
-      workflows: layerOf(target).map(toSaveWorkflowRow)
+      workflows: rows.map(toSaveWorkflowRow)
     });
   }
 
@@ -323,20 +315,17 @@
    * `workflow-catalog-actions.ts`. A declined prompt returns null and nothing
    * is sent — including the pending gate, which is only raised by `submit`.
    *
-   * The layer passed in is the **stored** one, not `rows`: an unsaved draft is
+   * The rows passed in are the **stored** ones, not `rows`: an unsaved draft is
    * not part of what the host holds, and carrying one along would make the
    * write an add and a remove at once. The host's intent algebra refuses that,
    * so the removal would fail for a reason unrelated to the removal.
    */
   async function removeSelected(event: MouseEvent): Promise<void> {
     if (removeDisabled || !selected) return;
-    const target = selected.scope;
-    if (target === 'built-in') return;
     const request = await confirmWorkflowRemoval({
       row: selected,
-      scope: target,
-      expectedRevision: catalog?.revisions[target] ?? '',
-      layer: persisted.filter((row) => row.scope === target),
+      expectedRevision: revision,
+      layer: persisted,
       originatingElement: event.currentTarget as HTMLElement
     });
     if (request) await submit(request);
@@ -345,11 +334,10 @@
   async function resetLayer(event: MouseEvent): Promise<void> {
     if (mutatingDisabled) return;
     const request = await confirmWorkflowLayerReset({
-      scope,
-      expectedRevision: catalog?.revisions[scope] ?? '',
-      // Stored rows only: a draft is not yet a definition in this scope, so
+      expectedRevision: revision,
+      // Stored rows only: a draft is not yet a definition the catalog holds, so
       // counting it would overstate what the reset actually deletes.
-      workflowCount: persisted.filter((row) => row.scope === scope).length,
+      workflowCount: persisted.length,
       originatingElement: event.currentTarget as HTMLElement
     });
     if (request) await submit(request);
@@ -373,7 +361,6 @@
   </div>
 {:else}
   <WorkflowToolbar
-    {scope}
     {savePending}
     {mutatingDisabled}
     noPipelines={noEffectivePipeline && pipelinesResolved}
@@ -381,7 +368,6 @@
     {removeDisabled}
     {saveDisabled}
     {selected}
-    onscope={(next) => (scope = next)}
     onadd={addWorkflow}
     onduplicate={duplicateWorkflow}
     onremove={removeSelected}
@@ -446,8 +432,9 @@
             oninput={(event) => patchSelected({ description: event.currentTarget.value })}
           ></textarea>
         </label>
+        <!-- Feature 099 (T494a, FR-043) — no scope badge; one layer leaves it
+             one value to read, which is not a badge. -->
         <div class="phase-badges">
-          <span class="scope-badge">{row.scope}</span>
           <span class="status-badge status-{row.sourceStatus}">{row.sourceStatus}</span>
         </div>
 

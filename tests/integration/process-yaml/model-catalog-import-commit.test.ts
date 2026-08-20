@@ -145,11 +145,17 @@ async function commit(
   const ctx = {
     deps: {
       readModelsConfig: () => inst.workspace,
-      updateConfig: async (key: string, value: unknown, scope?: string) => {
+      // Feature 099 (T496f, FR-042) — `updateConfig` lost its scope parameter
+      // with the layer tier. The claim it carried is unchanged and now stronger:
+      // the command cannot choose a target, because the port has nowhere to name
+      // one. The workspace target is pinned once, in the adapter in
+      // `src/extension.ts`, so the assertion moves from "it asked for workspace"
+      // to "it could not have asked for anything else".
+      updateConfig: async (key: string, value: unknown, ...rest: readonly unknown[]) => {
         writes += 1;
         if (opts.writeThrows) throw opts.writeThrows;
         expect(key).toBe('models');
-        expect(scope).toBe('workspace');
+        expect(rest, 'the settings write port takes no target argument').toEqual([]);
         inst.workspace = value as ModelsConfig;
       },
       audit: { append: async () => undefined },

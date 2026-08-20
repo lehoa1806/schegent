@@ -66,7 +66,8 @@ src/
 ├── activation/   extension-host composition helpers; no workflow policy
 ├── audit/        evidence sinks — structured audit, raw transcript, verbose diagnostics, gitignore
 ├── commands/     extension command palette and command handlers
-├── config/       settings schema (single source of truth), phase/pipeline/workflow catalogs, precedence, validation
+├── catalog/      versioned definition store (manifest + immutable version records); no vscode import
+├── config/       settings schema (single source of truth), phase/pipeline/workflow catalog resolution, validation
 ├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
 ├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
 ├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
@@ -826,10 +827,11 @@ never `fsPath`). Suppressible per-workspace via
 `schegent.multiRoot.suppressWarning` (`window`-scoped boolean).
 
 [capability-trust-resolver.ts](src/state/capability-trust-resolver.ts) is
-the host-only resolver for the three per-capability trust scopes
-introduced in feature 059 (`schegent.trust.allowCustomPhases`,
-`schegent.trust.allowCustomRetryConditions`,
-`schegent.trust.allowPipelineOverrides`). Each call re-reads
+the host-only resolver for the per-capability trust scopes introduced in
+feature 059. Two remain — `schegent.trust.allowCustomPhases` and
+`schegent.trust.allowCustomRetryConditions` — both keyed on document
+**content**. `allowPipelineOverrides` and `allowWorkflowOverrides` were retired
+by feature 099 along with the layer tier they gated. Each call re-reads
 `vscode.workspace.isTrusted` and the relevant setting via
 `getConfiguration().inspect(key)` — no value is cached across
 configuration or workspace-trust changes. Resolution follows a four-step
@@ -927,13 +929,10 @@ against `package.json contributions.configuration` and webview defaults.
 [general-settings.ts](src/config/general-settings.ts) performs full-batch
 validation before any write; partial-write failures attempt compensating
 rollback of already-touched keys and return a rollback-specific failure
-when rollback itself fails. [phase-precedence.ts](src/config/phase-precedence.ts)
-is pure and UI-only — it computes projection metadata that is never
-persisted or logged. [pipeline-config.ts](src/config/pipeline-config.ts)
-and [pipeline-config-loader.ts](src/config/pipeline-config-loader.ts) own
-the host-owned pipeline catalog.
-[workflow-config.ts](src/config/workflow-config.ts),
-[workflow-catalog.ts](src/config/workflow-catalog.ts), and
+when rollback itself fails. [pipeline-config.ts](src/config/pipeline-config.ts)
+and [pipeline-config-loader.ts](src/config/pipeline-config-loader.ts) resolve
+the pipeline catalog from a store snapshot.
+[workflow-catalog.ts](src/config/workflow-catalog.ts) and
 [workflow-graph-validator.ts](src/config/workflow-graph-validator.ts) own the
 third definition family — saved Workflow *graphs* whose nodes are Pipelines,
 which are documents and not executions. This is a different thing from the
@@ -950,19 +949,46 @@ the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
 `BUILT_IN_WORKFLOWS` are each `Object.freeze([])` and
 `schegent.defaultPipelineId` defaults to `''`, so a fresh install resolves no
 Phase, no Pipeline, no Workflow and no Model until the operator imports a
-document. The layer itself is retained in full: three-scope precedence
-(workspace > user > built-in), the `effective` / `shadowed` / `invalid`
-statuses, deterministic writable-layer revisions, and the ordered save-gate
-tables in [cmd-save-phases.ts](src/ui/sidebar/commands/cmd-save-phases.ts) and
-[cmd-save-pipelines.ts](src/ui/sidebar/commands/cmd-save-pipelines.ts) all
-behave exactly as before — one rung of each table, built-in immutability, is now
-unreachable because no id belongs to the empty layer, and it is kept because it
-encodes the rule rather than the rows. `EMPTY_CATALOG` replaces the deleted
-`BUILT_IN_CATALOG` as the unreadable-configuration fallback, and
-`BUILT_IN_PIPELINE_ID` is deleted with no successor: a launch that resolves no
-Pipeline is refused with `catalog-empty`
+document. `EMPTY_CATALOG` replaces the deleted `BUILT_IN_CATALOG` as the
+unresolvable-catalog fallback, and `BUILT_IN_PIPELINE_ID` is deleted with no
+successor: a launch that resolves no Pipeline is refused with `catalog-empty`
 ([empty-catalog-guidance.ts](src/contracts/empty-catalog-guidance.ts)) rather
 than defaulted. `examples/` is the only process content in the package.
+
+**Feature 099 (FR-R3-015) then collapsed the layer tier itself.** With every
+layer but one empty, three-scope precedence was arbitration with no second
+party, so it was deleted rather than left as a one-armed union: the three
+`DefinitionScope` types and their `Writable` twins, the `shadowed` arm of all
+three `SourceStatus` unions, `phase-precedence.ts` and `PhasePrecedenceLayer`
+whole, and the `PRESENCE_SCAN_ORDER` iteration are gone. A `SourceStatus` is now
+`effective` or `invalid`. The `scope` field left all three save envelopes and is
+**refused rather than tolerated** on ingress, and three rungs left each of the
+save-gate tables in
+[cmd-save-phases.ts](src/ui/sidebar/commands/cmd-save-phases.ts) and
+[cmd-save-pipelines.ts](src/ui/sidebar/commands/cmd-save-pipelines.ts) —
+built-in immutability, which had no layer left to protect, and the two
+`allow*Overrides` capability gates, which asked which layer could redefine
+another. Definitions moved out of `settings.json` entirely and into the
+versioned catalog store under `.schegent/catalog/`; `schegent.phases`,
+`schegent.pipelines`, and `schegent.workflows` are **deleted, not drained**
+(there is no installed base to migrate), and the operator re-imports from YAML.
+Workspace Trust is the single remaining gate: an untrusted workspace gets no
+store at all, and the Builder reports the trust gate rather than an empty
+catalog.
+
+[src/catalog/](src/catalog/) is the store. It takes **no `vscode` import** —
+the filesystem and workspace root arrive as ports, enforced by
+`tests/lint/catalog-purity.test.ts` — and it never validates a definition; it
+stores and returns bodies. `manifest.json` is the only mutable file and the
+single ordering point, version records are immutable at
+`<kind>/<id>/v<N>.json`, and a SHA-256 `contentHash` over canonical JSON
+short-circuits a save whose content is unchanged. Writes are temp-plus-rename
+per file with no cross-file transaction, in **record-then-manifest** order: an
+unreferenced record is *collectable* rather than an error, a manifest entry
+naming an absent record is a reported integrity fault that costs exactly one
+definition, and a partial write stays written with no compensating delete. The
+full contract is in the workspace-root
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 [src/services/process-yaml/](src/services/process-yaml/) is the portable
 exchange format for all three of those families — `schegent/v1` `Phase`,
@@ -1002,11 +1028,11 @@ reads it, at run time.
 Two oracles answer two different questions about the same catalog, and never
 from one read:
 [import-planner.ts](src/services/process-yaml/import-planner.ts) answers
-*presence* — scanning stored rows at every status, `shadowed` and `invalid`
-included, so a write cannot silently destroy authored work — while
+*presence* — scanning stored rows at every status, `invalid` included, so a
+write cannot silently destroy authored work — while
 [package-resolver.ts](src/services/process-yaml/package-resolver.ts) answers
-*resolution* against the effective catalog, because a shadowed or invalid row is
-not what runs. A package can therefore legitimately show a Phase row as `skip`
+*resolution* against the effective catalog, because an invalid row is not what
+runs. A package can therefore legitimately show a Phase row as `skip`
 beside a Pipeline row `blocked` on that same id. With three levels the blocked
 reason also propagates: a Workflow blocked because its Pipeline is blocked
 reports the chain to its root cause, so the operator is pointed at the Phase to
@@ -1225,7 +1251,7 @@ migration."
 |---|---|
 | New backend runner | Implement [`BackendRunner`](src/contracts/backend-runner.ts); register in [`backend-runner-factory.ts`](src/runner/backend-runner-factory.ts); controller semantics unchanged. |
 | New mutating IPC command | Add to `MUTATING_COMMANDS` in [`message-router.ts`](src/ui/sidebar/message-router.ts); add a payload validator in [`ipc-validator.ts`](src/ui/sidebar/ipc-validator.ts); update the pinned-list test; add a webview helper or button. |
-| New phase tunable | Add to settings schema, package contributions, host catalog/precedence projection, IPC contract, and operations docs in one change. |
+| New phase tunable | Add to the Phase validator's authored-field allowlist, the catalog resolution, the IPC contract, and the operations docs in one change. It is a field on the stored definition, not a setting. |
 | New runtime sink | Use `SanitizedLogger` unless the threat model declares the sink intentionally unredacted and local-only. |
 | New persisted state field | Add a forward-only migrator; ensure parser tolerance for old records; bump `STATE_SCHEMA_VERSION` if shape changes; update docs. |
 | New audit event type | Define in [`audit-events.ts`](src/contracts/audit-events.ts); readers preserve unknown types (CLAUDE.md hard rule). |

@@ -21,8 +21,7 @@ import type {
   PipelineCatalogMutation,
   PipelineExecutionDefaults,
   PipelineInputPort,
-  PipelineOutputPort,
-  WritablePipelineDefinitionScope
+  PipelineOutputPort
 } from './snapshot-types';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
@@ -53,7 +52,6 @@ export interface SavePipelineRow {
 export type SavePipelinesMutation = PipelineCatalogMutation;
 
 export interface SavePipelinesRequest {
-  readonly scope: WritablePipelineDefinitionScope;
   readonly expectedRevision: string;
   readonly mutation: SavePipelinesMutation;
   readonly pipelines: readonly SavePipelineRow[];
@@ -64,7 +62,7 @@ export type SavePipelinesResult =
   | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
 
 /**
- * Persist one complete `schegent.pipelines` layer via the CMD_SAVE_PIPELINES
+ * Persist the complete Pipeline catalog via the CMD_SAVE_PIPELINES
  * IPC. Resolves with the host's ack, or with
  * `{ status: 'rejected', reason: 'timeout' }` after 5 seconds of silence so the
  * UI can surface a recovery affordance instead of hanging.

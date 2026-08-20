@@ -14,26 +14,36 @@
 
 import type { AuditEventType } from '../../contracts/audit-events';
 
-/** One catalog layer's stored rows, whatever their status. */
-interface StoredLayers {
-  readonly user: readonly unknown[];
-  readonly workspace: readonly unknown[];
+/**
+ * One catalog kind's stored rows, whatever their status, and the revision they
+ * were read at.
+ *
+ * Feature 099 (FR-041) — one layer. This was a `{user, workspace}` pair; the
+ * tier collapsed, so a read is now a single list plus the revision that names
+ * the store state it came from. The revision travels with the rows rather than
+ * being fetched separately, because a plan computed against one revision and
+ * committed against another is exactly the race the expected-revision gate
+ * exists to refuse.
+ */
+interface StoredCatalog {
+  readonly rows: readonly unknown[];
+  readonly revision: string;
 }
 
 /**
- * The stored rows of each catalog layer, exactly as the router already reads
- * them. Every reader is optional for the reason it is on `RouterDeps`: a unit
- * test that supplies none gets empty layers rather than a crash, and "no user
- * layer" is a legitimate state rather than a missing dependency.
+ * The stored rows of each catalog, exactly as the router already reads them.
+ * Every reader is optional for the reason it is on `RouterDeps`: a unit test
+ * that supplies none gets an empty catalog rather than a crash, and "no store
+ * yet" is a legitimate state rather than a missing dependency (FR-001a).
  */
 export interface ProcessCatalogPort {
-  readonly readPhaseConfig?: () => StoredLayers;
-  readonly readPipelineConfig?: () => StoredLayers;
-  readonly readWorkflowConfig?: () => StoredLayers;
+  readonly readPhaseConfig?: () => StoredCatalog;
+  readonly readPipelineConfig?: () => StoredCatalog;
+  readonly readWorkflowConfig?: () => StoredCatalog;
   /**
-   * Feature 096 — Model Catalog has one writable layer, not `{user,
-   * workspace}`, so its reader returns the current merged config directly
-   * rather than a `StoredLayers` pair.
+   * Feature 096 — the Model Catalog stays in configuration and is out of this
+   * feature's scope, so its reader returns the current merged config directly
+   * rather than a `StoredCatalog`.
    */
   readonly readModelsConfig?: () => Record<string, readonly string[]>;
 }

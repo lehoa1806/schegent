@@ -1,26 +1,33 @@
 import {
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINES,
   EMPTY_CATALOG,
   buildCatalog,
-  mergeCatalog,
+  mergeRuntimePolicy,
   validateCatalog,
-  type PhaseDef,
   type PipelineCatalog,
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
-import {
-  phaseDefinitionToPhaseDef,
-  resolvePhaseCatalog,
-  type ResolvedPhaseCatalog
-} from './process-catalog';
+import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
+import { storedRows } from '../catalog';
+import type { CatalogSnapshot } from '../contracts/catalog-store';
 
+/**
+ * The configuration this loader still reads.
+ *
+ * Feature 099 (T494, FR-054) — `getPhases` and `getPipelines` are gone. Phase and
+ * Pipeline definitions come from the store snapshot now, and the two retired
+ * definition settings keys are deleted rather than drained: there is no installed base
+ * to migrate, so a read-once path would be a migration for nobody that outlives
+ * the release it was written for (FR-055).
+ *
+ * `schegent.models` and `schegent.defaultPipelineId` are **not** retired keys and
+ * keep both scopes. Neither is a definition — one names what a Pipeline may
+ * select, the other which Pipeline the surfaces open on — so neither belongs in a
+ * store of versioned definitions.
+ */
 export interface CatalogConfigReader {
-  getPhases(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
-  getPipelines(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
   getModels(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
   getDefaultPipelineId(scope: 'user' | 'workspace'): string | undefined;
 }
@@ -31,21 +38,11 @@ export interface LoadCatalogResult {
   readonly warnings: readonly ValidationWarning[];
   readonly defaultPipelineId: string;
   readonly usedFallback: boolean;
-  /**
-   * Feature 026 — per-layer phase arrays surfaced for downstream
-   * precedence projection. The state projector consumes these to compute
-   * the UI-only `phasePrecedence` map; nothing else should depend on
-   * the per-layer split (catalog consumers should read the merged
-   * `catalog.phases`).
-   */
-  readonly builtInPhases: readonly PhaseDef[];
-  readonly userPhases: readonly PhaseDef[];
-  readonly workspacePhases: readonly PhaseDef[];
   readonly phaseCatalog: ResolvedPhaseCatalog;
   /**
-   * Feature 082 — the layered Pipeline resolution. Retains every source row
-   * (including invalid ones) so the Library can render them for repair, and
-   * carries the per-scope revisions the Builder echoes back on save.
+   * Feature 082 — the Pipeline resolution. Retains every source row (including
+   * invalid ones) so the Library can render them for repair, and carries the
+   * revision the Builder echoes back on save.
    */
   readonly pipelineCatalog: ResolvedPipelineCatalog;
 }
@@ -58,7 +55,7 @@ const PIPELINE_LIMIT_WARNING_CODES: ReadonlySet<string> = new Set([
 /**
  * Projects the Pipeline resolution onto the legacy warning channel: catalog-level
  * advisories plus one warning per retained field error. Invalid rows never
- * become catalog errors, so a single malformed row cannot discard the layer
+ * become catalog errors, so a single malformed row cannot discard the catalog
  * (FR-002).
  */
 function pipelineResolutionWarnings(
@@ -117,89 +114,37 @@ export function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly s
   return out;
 }
 
-export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
-  const builtInPhaseCatalog = resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: [],
-    workspace: []
-  });
-  if (!reader) {
-    // Feature 098 (T027, US3, FR-027) — a host with no configuration reader has
-    // nothing to report, and this used to answer `BUILT_IN_CATALOG` by constant.
-    // That was the one substitution layer resolution could not reach: emptying the
-    // built-in layer would leave this branch handing back seventeen Phases and
-    // three Pipelines regardless. The honest catalog is the empty one, and with no
-    // Pipelines there is no default to name. `models` is untouched — the built-in
-    // model layer is already empty and this feature does not widen it.
-    return {
-      catalog: EMPTY_CATALOG,
-      errors: [],
-      warnings: [],
-      defaultPipelineId: '',
-      usedFallback: false,
-      builtInPhases: BUILT_IN_PHASES,
-      userPhases: [],
-      workspacePhases: [],
-      phaseCatalog: builtInPhaseCatalog,
-      pipelineCatalog: resolvePipelineCatalog({
-        builtIn: BUILT_IN_PIPELINES,
-        user: [],
-        workspace: [],
-        phaseCatalog: builtInPhaseCatalog.effective
-      })
-    };
-  }
-
-  const userPhasesRaw = reader.getPhases('user');
-  const userPipelinesRaw = reader.getPipelines('user');
-  const userModelsRaw = reader.getModels('user');
-  const userDefault = reader.getDefaultPipelineId('user');
-
-  const workspacePhasesRaw = reader.getPhases('workspace');
-  const workspacePipelinesRaw = reader.getPipelines('workspace');
-  const workspaceModelsRaw = reader.getModels('workspace');
-  const workspaceDefault = reader.getDefaultPipelineId('workspace');
-
-  const userModels = coerceModels(userModelsRaw);
-  const workspaceModels = coerceModels(workspaceModelsRaw);
+/**
+ * Resolve the Phase and Pipeline catalogs out of one store snapshot.
+ *
+ * Feature 099 (T489/T494, FR-027a, FR-042) — was `loadCatalog(reader?)`, which
+ * read six configuration values and resolved three layers. The snapshot is read
+ * once, asynchronously, by the wiring (`activation/catalog-store-wiring.ts`) and
+ * handed here already in memory, which is what lets this function and both
+ * resolvers keep their synchronous signatures.
+ *
+ * An absent store is an empty snapshot, not a failure (FR-001a): the honest
+ * catalog for a workspace nobody has saved into is the empty one, and with no
+ * Pipelines there is no default to name. That is the same answer the `!reader`
+ * branch used to give, now reached by the store being empty rather than by a
+ * missing reader.
+ */
+export function loadCatalog(
+  snapshot: CatalogSnapshot,
+  reader?: CatalogConfigReader
+): LoadCatalogResult {
   const phaseCatalog = resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: userPhasesRaw,
-    workspace: workspacePhasesRaw
+    rows: storedRows(snapshot, 'phase'),
+    revision: snapshot.revisions.phase
   });
   // Pipeline bindings and Phase references resolve against the effective Phase
-  // catalog, so the Phase layer must be resolved first (FR-011).
+  // catalog, so the Phase catalog must be resolved first (FR-011).
   const pipelineCatalog = resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: userPipelinesRaw,
-    workspace: workspacePipelinesRaw,
+    rows: storedRows(snapshot, 'pipeline'),
+    revision: snapshot.revisions.pipeline,
     phaseCatalog: phaseCatalog.effective
   });
-  const builtInById = new Map(BUILT_IN_PHASES.map((phase) => [phase.id, phase]));
-  const userPhases = phaseCatalog.records
-    .filter((record) => record.scope === 'user' && record.definition !== null)
-    .map((record) => phaseDefinitionToPhaseDef(record.definition!, 'user', builtInById));
-  const workspacePhases = phaseCatalog.records
-    .filter((record) => record.scope === 'workspace' && record.definition !== null)
-    .map((record) => phaseDefinitionToPhaseDef(record.definition!, 'workspace', builtInById));
 
-  // Pipelines arrive already resolved and validated per row, so they enter the
-  // merge as a single settled layer; only models and defaultPipelineId still
-  // merge across scopes here.
-  const merge = mergeCatalog(
-    {
-      phases: phaseCatalog.effectivePhaseDefs,
-      pipelines: pipelineCatalog.effectivePipelineDefs,
-      models: [],
-      // Feature 098 — the built-in layer names no default, so the merge base
-      // contributes none and a user or workspace default wins on its own terms.
-      defaultPipelineId: ''
-    },
-    { pipelines: [], models: userModels, defaultPipelineId: userDefault },
-    { pipelines: [], models: workspaceModels, defaultPipelineId: workspaceDefault }
-  );
-
-  const report = validateCatalog(merge.catalog);
   const phaseWarnings: ValidationWarning[] = phaseCatalog.warnings.map((warning) => ({
     source: warning.code === 'phase-soft-cap' ? 'limit' : 'phase',
     message: warning.message
@@ -209,10 +154,36 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       phaseWarnings.push({ source: 'phase', id: record.phaseId, message: error.message });
     }
   }
+
+  // A missing reader is read as a reader supplying nothing, rather than as its own
+  // branch. It used to be one because it answered with a constant catalog — there
+  // were no definitions without a reader to hold them. There are: they came out of
+  // the store above, before this line, and all the reader still decides is which
+  // models a Pipeline may select and which Pipeline the surfaces open on. Its
+  // absence must move those two answers and nothing else, and a second return path
+  // is how it would come to move a third — the branch this replaces returned
+  // `errors: []` without validating the catalog at all.
+  const policy = mergeRuntimePolicy(
+    {
+      models: coerceModels(reader?.getModels('user')),
+      defaultPipelineId: reader?.getDefaultPipelineId('user')
+    },
+    {
+      models: coerceModels(reader?.getModels('workspace')),
+      defaultPipelineId: reader?.getDefaultPipelineId('workspace')
+    }
+  );
+
+  const merged = buildCatalog(
+    phaseCatalog.effectivePhaseDefs,
+    pipelineCatalog.effectivePipelineDefs,
+    policy.models,
+    policy.defaultPipelineId
+  );
+  const report = validateCatalog(merged);
   const allWarnings = [
     ...phaseWarnings,
     ...pipelineResolutionWarnings(pipelineCatalog),
-    ...merge.duplicateWarnings,
     ...report.warnings
   ];
 
@@ -225,7 +196,7 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
   // Reachability, recorded because it bears on how this is tested: nothing driving
   // `loadCatalog` can reach this branch today. `resolvePhaseCatalog` and
   // `resolvePipelineCatalog` quarantine per row *before* `validateCatalog` sees the
-  // merge, so `report.errors` is empty for every input — six adversarial readers
+  // catalog, so `report.errors` is empty for every input — six adversarial readers
   // (a Pipeline naming an unknown Phase, an empty phase list, an out-of-range
   // timeout, an id with spaces, a default naming nothing, a duplicated Phase) each
   // produced `errors: []`. The branch is kept and corrected rather than deleted:
@@ -239,9 +210,6 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
       warnings: allWarnings,
       defaultPipelineId: '',
       usedFallback: true,
-      builtInPhases: BUILT_IN_PHASES,
-      userPhases,
-      workspacePhases,
       phaseCatalog,
       pipelineCatalog
     };
@@ -249,31 +217,19 @@ export function loadCatalog(reader?: CatalogConfigReader): LoadCatalogResult {
 
   // Feature 098 (T027/T028, FR-027, FR-033) — a configured default that names no
   // effective Pipeline re-anchored to `BUILT_IN_PIPELINE_ID`, which is the same
-  // substitution the two branches above just lost, applied to the default rather
-  // than to the catalog. `''` means "no default" throughout this feature, and it is
-  // also what makes T081's deletion of the constant possible: this expression and
-  // the merge base below were the loader's two remaining readers of it.
-  let resolvedDefaultId = merge.catalog.defaultPipelineId;
-  if (!merge.catalog.pipelines.some((p) => p.id === resolvedDefaultId)) {
-    resolvedDefaultId = '';
-  }
-
-  const catalog = buildCatalog(
-    merge.catalog.phases,
-    merge.catalog.pipelines,
-    merge.catalog.models,
-    resolvedDefaultId
-  );
+  // substitution the branch above just lost, applied to the default rather than to
+  // the catalog. `''` means "no default" throughout.
+  const defaultNamesAPipeline = merged.pipelines.some((p) => p.id === merged.defaultPipelineId);
+  const resolvedDefaultId = defaultNamesAPipeline ? merged.defaultPipelineId : '';
 
   return {
-    catalog,
+    catalog: defaultNamesAPipeline
+      ? merged
+      : buildCatalog(merged.phases, merged.pipelines, merged.models, ''),
     errors: [],
     warnings: allWarnings,
     defaultPipelineId: resolvedDefaultId,
     usedFallback: false,
-    builtInPhases: BUILT_IN_PHASES,
-    userPhases,
-    workspacePhases,
     phaseCatalog,
     pipelineCatalog
   };

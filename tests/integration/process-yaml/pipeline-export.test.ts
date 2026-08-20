@@ -15,11 +15,19 @@
 // `binding-unknown-phase`. Research R11 records the resolution — strict
 // resolution first, and a reference-relaxed second pass reached only when the
 // strict pass found nothing. The tests below pin both halves: the relaxed pass
-// must rescue a missing-Phase Pipeline, and it must never promote a layer over
-// one that actually runs.
+// must rescue a missing-Phase Pipeline, and it must never rescue a row the
+// catalog refuses for a reason references cannot explain.
+//
+// Feature 099 (T496f, FR-042) — the harness held `{ user, workspace }` layers
+// and two cases turned on which one shadowed the other. There is one catalog
+// now, so a second row under the same id is not a shadow but a duplicate, which
+// `invalidateDuplicates` makes fatal for BOTH rows. Those two cases are
+// converted rather than dropped: each still asserts that no bytes leave for a
+// definition this installation would not run, which is the whole of FR-014.
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { FIXTURE_REVISION } from '../../fixtures/catalog-snapshot-fixture';
 import { CMD_EXPORT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -47,8 +55,9 @@ interface Harness {
 }
 
 interface HarnessOptions {
-  readonly pipelines?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-  readonly phases?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
+  /** The stored rows of each catalog — one list per kind, not one per layer. */
+  readonly pipelines?: readonly unknown[];
+  readonly phases?: readonly unknown[];
   readonly saveResult?: Exclude<ExportProcessYamlResult, { outcome: 'unavailable' }>;
   readonly saveThrows?: Error;
   readonly withSaveAdapter?: boolean;
@@ -73,14 +82,8 @@ function buildHarness(opts: HarnessOptions = {}): Harness {
 
   const ctx = {
     deps: {
-      readPipelineConfig: () => ({
-        user: opts.pipelines?.user ?? [],
-        workspace: opts.pipelines?.workspace ?? []
-      }),
-      readPhaseConfig: () => ({
-        user: opts.phases?.user ?? [],
-        workspace: opts.phases?.workspace ?? []
-      }),
+      readPipelineConfig: () => ({ rows: opts.pipelines ?? [], revision: FIXTURE_REVISION }),
+      readPhaseConfig: () => ({ rows: opts.phases ?? [], revision: FIXTURE_REVISION }),
       updateConfig,
       executeCommand,
       ...(opts.withSaveAdapter === false ? {} : { saveProcessYamlDocument }),
@@ -173,8 +176,8 @@ const GHOST_PIPELINE = Object.freeze({
 describe('Feature 085 — export one Pipeline, references-only (US1, FR-011..FR-014)', () => {
   it('writes a package document naming the Pipeline, its ports, sequence, and bindings', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -198,8 +201,8 @@ describe('Feature 085 — export one Pipeline, references-only (US1, FR-011..FR-
 
   it('preserves the ordered sequence including a repeated Phase (US1 scenario 2)', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -210,8 +213,8 @@ describe('Feature 085 — export one Pipeline, references-only (US1, FR-011..FR-
 
   it('carries no included section at all (FR-013)', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -228,35 +231,44 @@ describe('Feature 085 — export one Pipeline, references-only (US1, FR-011..FR-
     expect(topLevel).toEqual(['apiVersion', 'kind', 'metadata', 'spec']);
   });
 
-  it('exports the layer that actually runs, not a shadowed copy (FR-014, US1 scenario 3)', async () => {
+  it('exports nothing when one id names two rows — neither copy wins (FR-014)', async () => {
+    // Feature 099 (T496f, FR-042) — this case was "exports the layer that
+    // actually runs, not a shadowed copy": the same Pipeline in both the user
+    // and the workspace layer, with the workspace copy expected in the bytes.
+    // One catalog has no shadowing to arbitrate, so the two copies are a
+    // duplicate id, and `invalidateDuplicates` marks BOTH rows invalid rather
+    // than picking a winner. The claim converts intact — an export must never
+    // emit bytes for a definition this installation would not run — and here
+    // neither copy runs, so nothing is written at all.
     const h = buildHarness({
-      pipelines: {
-        user: [{ ...AUTHORED_PIPELINE, name: 'User Copy' }],
-        workspace: [{ ...AUTHORED_PIPELINE, name: 'Workspace Copy', version: 7 }]
-      },
-      phases: { user: PHASE_LAYER }
+      pipelines: [
+        { ...AUTHORED_PIPELINE, name: 'First Copy' },
+        { ...AUTHORED_PIPELINE, name: 'Second Copy', version: 7 }
+      ],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
-    const text = h.saved[0]!.text;
-    expect(text).toContain('  name: Workspace Copy');
-    expect(text).toContain('  version: 7');
-    expect(text).not.toContain('User Copy');
-    expect(h.audits[0]!.payload).toMatchObject({ scope: 'workspace' });
+    expect(h.saved).toHaveLength(0);
+    expect(h.acks[0]!.status).toBe('rejected');
+    expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+    const serialized = JSON.stringify({ ack: h.acks[0], audit: h.audits[0] });
+    expect(serialized).not.toContain('First Copy');
+    expect(serialized).not.toContain('Second Copy');
   });
 
   // Feature 098 (T036, FR-010) — a case here exported a Pipeline no layer
   // overrides, straight out of the built-in scope, and asserted the audit payload
   // recorded `scope: 'built-in'`. There is no such row to export any more: every
-  // Pipeline reaches the catalog through a configured layer, and the case above
-  // covers the scope the export actually reports.
+  // Pipeline reaches the catalog through a stored row, and feature 099 deleted
+  // the `scope` field the envelope reported (FR-041).
 
   it('is deterministic — ten exports of an unchanged Pipeline are byte-identical', async () => {
     const texts: string[] = [];
     for (let i = 0; i < 10; i += 1) {
       const h = buildHarness({
-        pipelines: { user: [AUTHORED_PIPELINE] },
-        phases: { user: PHASE_LAYER }
+        pipelines: [AUTHORED_PIPELINE],
+        phases: PHASE_LAYER
       });
       await exportHandler(h.ctx, command('ship-it'));
       texts.push(h.saved[0]!.text);
@@ -271,7 +283,7 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
     // `ghost-two`, so the strict resolution marks every row `invalid` with
     // `unknown-phase`/`binding-unknown-phase` and produces no effective record.
     // The document is still produced (research R11).
-    const h = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const h = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.acks[0]!.result).toEqual({ outcome: 'saved' });
@@ -281,7 +293,7 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
   });
 
   it('a Phase that resolves nowhere is still only an identifier in the document (FR-009)', async () => {
-    const h = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const h = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     const text = h.saved[0]!.text;
@@ -289,23 +301,32 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
     expect(text).not.toContain('kind: Phase');
   });
 
-  it('the relaxation never promotes a layer over one that actually runs (FR-014)', async () => {
-    // The hazard research R11 names: relax first and the workspace row, whose
-    // only defect is a missing Phase, outranks a user row that genuinely
-    // resolves — and export would emit bytes this installation does not run.
-    // Strict-first makes that unreachable.
+  it('the relaxation rescues nothing the catalog refuses for a non-reference defect (FR-014)', async () => {
+    // Feature 099 (T496f, FR-042) — the hazard research R11 named was a relaxed
+    // workspace row, defective only in a missing Phase, outranking a user row
+    // that genuinely resolves. Layers are gone, so that promotion has no shape
+    // to take; what survives is the half that still bites. Both rows below claim
+    // `ship-it`, so the strict pass refuses them as duplicates, and because the
+    // second names Phases nothing defines, the relaxed pass DOES run: it mints
+    // placeholders for `ghost-one`/`ghost-two` and resolves again. It must still
+    // refuse, because `duplicate-in-scope` is computed from the catalog's own
+    // shape and no Phase placeholder can suppress it. Were the relaxation
+    // allowed to rescue past it, export would emit bytes for a row this
+    // installation does not run — FR-014 broken in the case FR-014 exists for.
     const h = buildHarness({
-      pipelines: {
-        user: [{ ...AUTHORED_PIPELINE, name: 'Runs Here' }],
-        workspace: [{ ...GHOST_PIPELINE, name: 'Never Runs' }]
-      },
-      phases: { user: PHASE_LAYER }
+      pipelines: [
+        { ...AUTHORED_PIPELINE, name: 'Runs Here' },
+        { ...GHOST_PIPELINE, name: 'Never Runs' }
+      ],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
-    expect(h.saved[0]!.text).toContain('  name: Runs Here');
-    expect(h.saved[0]!.text).not.toContain('Never Runs');
-    expect(h.audits[0]!.payload).toMatchObject({ scope: 'user' });
+    expect(h.saved).toHaveLength(0);
+    expect(h.acks[0]!.result).toEqual({ outcome: 'unavailable', reason: 'does-not-resolve' });
+    const serialized = JSON.stringify({ ack: h.acks[0], audit: h.audits[0] });
+    expect(serialized).not.toContain('Runs Here');
+    expect(serialized).not.toContain('Never Runs');
   });
 
   it('relaxes only the reference-class defects, never a structural one', async () => {
@@ -313,21 +334,19 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
     // declares. `binding-unknown-input-port` is computed from the definition's
     // own ports, so no Phase catalog can suppress it and the row stays invalid.
     const h = buildHarness({
-      pipelines: {
-        user: [
-          {
-            ...GHOST_PIPELINE,
-            bindings: [
-              {
-                kind: 'input',
-                phaseIndex: 0,
-                inputKey: 'brief',
-                source: { from: 'pipeline-input', portId: 'undeclared' }
-              }
-            ]
-          }
-        ]
-      }
+      pipelines: [
+        {
+          ...GHOST_PIPELINE,
+          bindings: [
+            {
+              kind: 'input',
+              phaseIndex: 0,
+              inputKey: 'brief',
+              source: { from: 'pipeline-input', portId: 'undeclared' }
+            }
+          ]
+        }
+      ]
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -337,14 +356,12 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
 
   it('relaxes nothing for a binding that points outside the sequence', async () => {
     const h = buildHarness({
-      pipelines: {
-        user: [
-          {
-            ...GHOST_PIPELINE,
-            bindings: [{ kind: 'output', phaseIndex: 9, portId: 'carried', outputKey: 'draft' }]
-          }
-        ]
-      }
+      pipelines: [
+        {
+          ...GHOST_PIPELINE,
+          bindings: [{ kind: 'output', phaseIndex: 9, portId: 'carried', outputKey: 'draft' }]
+        }
+      ]
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -356,8 +373,8 @@ describe('Feature 085 — references-only never requires the Phases to resolve (
 describe('Feature 085 — the two absences stay told apart (FR-015)', () => {
   it('reports an intrinsically broken row as does-not-resolve', async () => {
     const h = buildHarness({
-      pipelines: { user: [{ ...AUTHORED_PIPELINE, version: 'not-a-number' }] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [{ ...AUTHORED_PIPELINE, version: 'not-a-number' }],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -368,8 +385,8 @@ describe('Feature 085 — the two absences stay told apart (FR-015)', () => {
 
   it('reports an id no layer mentions as not-found', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('no-such-pipeline'));
 
@@ -380,7 +397,7 @@ describe('Feature 085 — the two absences stay told apart (FR-015)', () => {
   it('never reports dependency-does-not-resolve for a references-only export', async () => {
     // That reason belongs to US2's inclusion path alone (FR-017). Reaching it
     // here would be FR-018 broken with a friendlier message.
-    const h = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const h = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(JSON.stringify(h.acks[0]!)).not.toContain('dependency-does-not-resolve');
@@ -392,8 +409,8 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     // FR-015/FR-016 — `phaseIds` is ['draft', 'review', 'draft']: three
     // positions, two definitions, the repeat collapsed onto its first mention.
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
@@ -421,8 +438,8 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
 
   it('leaves the ordered sequence authoritative and unchanged (FR-019)', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
@@ -433,33 +450,49 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     );
     // And the same Pipeline, references-only, differs by the added section only.
     const bare = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(bare.ctx, command('ship-it'));
     expect(text.startsWith(bare.saved[0]!.text)).toBe(true);
   });
 
-  it('includes the Phase the installation actually runs, not a shadowed copy (FR-014)', async () => {
+  it('includes no Phase text when one Phase id names two rows (FR-014, FR-017)', async () => {
+    // Feature 099 (T496f, FR-042) — this case was "includes the Phase the
+    // installation actually runs, not a shadowed copy": `draft` in both the user
+    // and the workspace Phase layer, with the workspace body expected in the
+    // document. One catalog turns those two into a duplicate id, which
+    // invalidates both, so no `draft` runs and the inclusion export refuses
+    // rather than choosing. The claim is unchanged — an inclusion export writes
+    // only Phase text this installation actually runs — and it is now enforced
+    // by a refusal instead of by a preference.
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: {
-        user: [{ ...phaseRow('draft', 'Draft'), instruction: 'User copy.' }, phaseRow('review', 'Review')],
-        workspace: [{ ...phaseRow('draft', 'Draft'), version: 4, instruction: 'Workspace copy.' }]
-      }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: [
+        { ...phaseRow('draft', 'Draft'), instruction: 'First copy.' },
+        phaseRow('review', 'Review'),
+        { ...phaseRow('draft', 'Draft'), version: 4, instruction: 'Second copy.' }
+      ]
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
-    const text = h.saved[0]!.text;
-    expect(text).toContain('        instruction: Workspace copy.');
-    expect(text).not.toContain('User copy.');
+    expect(h.saved).toHaveLength(0);
+    expect(h.acks[0]!.status).toBe('rejected');
+    expect(h.acks[0]!.result).toEqual({
+      outcome: 'unavailable',
+      reason: 'dependency-does-not-resolve',
+      unresolvedDependency: { kind: 'phase', resourceId: 'draft' }
+    });
+    const serialized = JSON.stringify({ ack: h.acks[0], audit: h.audits[0] });
+    expect(serialized).not.toContain('First copy.');
+    expect(serialized).not.toContain('Second copy.');
   });
 
   it('refuses when a referenced Phase does not resolve, naming it (FR-017)', async () => {
     // US2 acceptance scenario 3. `GHOST_PIPELINE` itself still resolves — the
     // reference-relaxed pass rescues it for FR-018 — so this refusal is the
     // inclusion check's alone, not the selection's.
-    const h = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const h = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
     expect(h.acks[0]!.status).toBe('rejected');
@@ -474,8 +507,8 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     // `ghost-one` resolves here, `ghost-two` does not, so the refusal moves to
     // the second position rather than always reporting the first id.
     const h = buildHarness({
-      pipelines: { user: [GHOST_PIPELINE] },
-      phases: { user: [phaseRow('ghost-one', 'Ghost One')] }
+      pipelines: [GHOST_PIPELINE],
+      phases: [phaseRow('ghost-one', 'Ghost One')]
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
@@ -486,34 +519,45 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
 
   it('writes no partial document when a reference does not resolve (FR-017)', async () => {
     const h = buildHarness({
-      pipelines: { user: [GHOST_PIPELINE] },
-      phases: { user: [phaseRow('ghost-one', 'Ghost One')] }
+      pipelines: [GHOST_PIPELINE],
+      phases: [phaseRow('ghost-one', 'Ghost One')]
     });
     await exportHandler(h.ctx, includingCommand('ship-it'));
 
     // Nothing reached the adapter — not the resolved half, not a stub for the
-    // missing one. The audit still records the attempt with no scope.
+    // missing one. The audit still records the attempt.
+    //
+    // Feature 099 (T496f, FR-041) — the envelope carried `scope: null` here,
+    // the one arm of the field a refusal could report. The field is deleted
+    // rather than nulled, and the exact key set below is what holds a build to
+    // that: re-emitting `scope`, null or otherwise, fails there.
     expect(h.saved).toHaveLength(0);
     expect(h.audits).toHaveLength(1);
     expect(h.audits[0]!.payload).toMatchObject({
       operation: 'export',
       resourceKind: 'pipeline',
       resourceIds: ['ship-it'],
-      scope: null,
       outcomes: ['unavailable'],
       counts: { exported: 0 }
     });
+    expect(Object.keys(h.audits[0]!.payload).sort()).toEqual([
+      'counts',
+      'operation',
+      'outcomes',
+      'resourceIds',
+      'resourceKind'
+    ]);
     expect(JSON.stringify({ ack: h.acks[0], audit: h.audits[0] })).not.toContain('/Users');
   });
 
   it('is the inclusion choice alone that makes the same Pipeline unexportable', async () => {
     // The pair FR-017 and FR-018 describe: identical catalog, identical id, and
     // the only difference is what the operator asked the document to carry.
-    const bare = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const bare = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(bare.ctx, command('ship-it'));
     expect(bare.acks[0]!.result).toEqual({ outcome: 'saved' });
 
-    const including = buildHarness({ pipelines: { user: [GHOST_PIPELINE] } });
+    const including = buildHarness({ pipelines: [GHOST_PIPELINE] });
     await exportHandler(including.ctx, includingCommand('ship-it'));
     expect(including.acks[0]!.result).toMatchObject({ reason: 'dependency-does-not-resolve' });
   });
@@ -522,8 +566,8 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
     const texts: string[] = [];
     for (let i = 0; i < 10; i += 1) {
       const h = buildHarness({
-        pipelines: { user: [AUTHORED_PIPELINE] },
-        phases: { user: PHASE_LAYER }
+        pipelines: [AUTHORED_PIPELINE],
+        phases: PHASE_LAYER
       });
       await exportHandler(h.ctx, includingCommand('ship-it'));
       texts.push(h.saved[0]!.text);
@@ -534,9 +578,9 @@ describe('Feature 085 — export one Pipeline with its Phases (US2, FR-015..FR-0
 
 describe('Feature 085 — export changes nothing and names no location (FR-020, FR-021)', () => {
   it('writes no configuration and runs no command (FR-020)', async () => {
-    const pipelines = { user: [AUTHORED_PIPELINE], workspace: [] as readonly unknown[] };
+    const pipelines: readonly unknown[] = [AUTHORED_PIPELINE];
     const before = JSON.stringify(pipelines);
-    const h = buildHarness({ pipelines, phases: { user: PHASE_LAYER } });
+    const h = buildHarness({ pipelines, phases: PHASE_LAYER });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.updateConfig).not.toHaveBeenCalled();
@@ -546,8 +590,8 @@ describe('Feature 085 — export changes nothing and names no location (FR-020, 
 
   it('hands the adapter a bare name and no location', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
@@ -558,8 +602,8 @@ describe('Feature 085 — export changes nothing and names no location (FR-020, 
 
   it('turns an adapter throw into a generic failure and keeps the detail in the log (FR-021)', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER },
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER,
       saveThrows: new Error('EACCES: permission denied writing the chosen location')
     });
     await exportHandler(h.ctx, command('ship-it'));
@@ -574,8 +618,8 @@ describe('Feature 085 — export changes nothing and names no location (FR-020, 
 
   it('reports a canceled dialog without treating it as a failure', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER },
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER,
       saveResult: { outcome: 'canceled' }
     });
     await exportHandler(h.ctx, command('ship-it'));
@@ -587,40 +631,41 @@ describe('Feature 085 — export changes nothing and names no location (FR-020, 
 
   it('rejects cleanly when the host wired no save adapter', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER },
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER,
       withSaveAdapter: false
     });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.acks[0]!.status).toBe('rejected');
     expect(h.acks[0]!.result).toMatchObject({ outcome: 'failed' });
-    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'], scope: 'user' });
+    expect(h.audits[0]!.payload).toMatchObject({ outcomes: ['failed'], counts: { exported: 0 } });
   });
 
   it('audits the Pipeline kind with the same bounded envelope and no location', async () => {
     const h = buildHarness({
-      pipelines: { user: [AUTHORED_PIPELINE] },
-      phases: { user: PHASE_LAYER }
+      pipelines: [AUTHORED_PIPELINE],
+      phases: PHASE_LAYER
     });
     await exportHandler(h.ctx, command('ship-it'));
 
     expect(h.audits).toHaveLength(1);
     const entry = h.audits[0]!;
     expect(entry.eventType).toBe('process-exchange-export');
+    // Feature 099 (T496f, FR-041) — `scope` sat between `resourceKind` and the
+    // list's end. This is an EXACT key set, so its removal here is not a
+    // loosening: a build that still emitted `scope` fails on this line.
     expect(Object.keys(entry.payload).sort()).toEqual([
       'counts',
       'operation',
       'outcomes',
       'resourceIds',
-      'resourceKind',
-      'scope'
+      'resourceKind'
     ]);
     expect(entry.payload).toMatchObject({
       operation: 'export',
       resourceKind: 'pipeline',
       resourceIds: ['ship-it'],
-      scope: 'user',
       outcomes: ['saved'],
       counts: { exported: 1 }
     });

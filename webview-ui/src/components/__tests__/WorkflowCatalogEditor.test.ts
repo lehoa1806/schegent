@@ -1,22 +1,23 @@
 // Feature 083 (US5, T055) — the Workflow Library as an operator reads it.
 //
 // Drives the T056 rework of `WorkflowCatalogEditor.svelte` from the T037 first
-// cut (name, id, scope badge, node count) into a source-aware Library. The
+// cut (name, id, node count) into a source-aware Library. The
 // question each row has to answer without being opened is "what is this, where
 // does it come from, what does it run, what does it need, and can I trust it?":
 //
-//   - scope and validation state, so a shadowed or invalid row is obvious
-//     before it is selected (FR-036);
+//   - validation state, so an invalid row is obvious before it is selected
+//     (FR-036);
 //   - purpose, so the list is readable by someone who did not author it;
 //   - the Pipeline sequence in **authored node order**, never sorted — that
 //     order is the operator's and carries no execution semantics (FR-049);
 //   - the derived inputs and outputs, which are projection-only and exist on no
 //     persisted row (FR-048).
 //
-// Built-in rows are read-only with duplicate as the only action (FR-026). The
-// built-in layer ships empty, so those assertions run against an **injected
-// fixture layer** — testing against shipped content would make the test a
-// tautology today and a false negative the day content is added.
+// Feature 099 (T496f, FR-042, FR-043) — a paragraph stood here about built-in
+// rows being read-only with duplicate as the only action, and about the injected
+// fixture layer those assertions needed because the built-in layer ships empty.
+// The layer is deleted: every stored row is writable, and the only gate left on
+// the mutating controls is Workspace Trust.
 //
 // Defects anchor to the specific node or connection row they concern, and the
 // association is carried by text, not by color alone (FR-044).
@@ -53,11 +54,9 @@ function record(
   overrides: Partial<WorkflowCatalogSourceProjection> = {}
 ): WorkflowCatalogSourceProjection {
   const workflowId = overrides.workflowId ?? 'design-then-build';
-  const scope = overrides.scope ?? 'workspace';
   return {
-    key: `${scope}::${workflowId}::0`,
+    key: `${workflowId}::0`,
     workflowId,
-    scope,
     status: 'effective',
     definition: {
       workflowId,
@@ -94,14 +93,17 @@ function snapshot(records: readonly WorkflowCatalogSourceProjection[]): Workflow
         { pipelineId: 'design-review', name: 'Design Review', version: 1, phaseIds: ['done'] },
         { pipelineId: 'build-it', name: 'Build It', version: 1, phaseIds: ['done'] }
       ],
-      revisions: { user: 'u', workspace: 'w' },
+      revision: 'w',
       warnings: []
     },
     workflowCatalog: {
       state: 'ready',
       records,
       effective: [],
-      revisions: { user: 'u', workspace: 'w' },
+      // Feature 099 (T496f, FR-042, FR-044) — a map of layer to revision stood
+      // here, and a write picked its gate out of it by the scope the operator
+      // had chosen. One catalog per kind leaves one revision per kind.
+      revision: 'w',
       warnings: []
     }
   } as unknown as WorkflowSnapshot;
@@ -110,41 +112,43 @@ function snapshot(records: readonly WorkflowCatalogSourceProjection[]): Workflow
 const mount = (records: readonly WorkflowCatalogSourceProjection[], trusted = true) =>
   render(WorkflowCatalogEditor, { snapshot: snapshot(records), trusted });
 
-const rowFor = (container: HTMLElement, scope: string, workflowId: string): HTMLElement => {
+const rowFor = (container: HTMLElement, workflowId: string): HTMLElement => {
   const row = container.querySelector<HTMLElement>(
-    `[data-testid="workflows-list-item-${scope}-${workflowId}"]`
+    `[data-testid="workflows-list-item-${workflowId}"]`
   );
-  expect(row, `row for ${scope}/${workflowId} must render`).not.toBeNull();
+  expect(row, `row for ${workflowId} must render`).not.toBeNull();
   return row as HTMLElement;
 };
 
 // ── Row content (FR-036, FR-048, FR-049, US5 scenario 2) ────────────────────
 
 describe('WorkflowCatalogEditor row content (US5, T055)', () => {
-  it('reports scope and validation state on every row', () => {
+  it('reports validation state on every row', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — the scope badge and the `shadowed`
+    // status went together: one named the layer a row came from, the other named
+    // a row a higher layer hid. Neither has a question left. `invalid` is the one
+    // remaining way a stored row fails to resolve, and it is still what tells the
+    // operator a row needs repair rather than use.
     const { container } = mount([
       record(),
-      record({ workflowId: 'shadowed-one', scope: 'user', status: 'shadowed' }),
-      record({ workflowId: 'broken-one', scope: 'user', status: 'invalid' })
+      record({ workflowId: 'broken-one', status: 'invalid' })
     ]);
 
-    expect(rowFor(container, 'workspace', 'design-then-build').textContent).toContain('workspace');
-    expect(rowFor(container, 'workspace', 'design-then-build').textContent).toContain('effective');
-    expect(rowFor(container, 'user', 'shadowed-one').textContent).toContain('shadowed');
-    expect(rowFor(container, 'user', 'broken-one').textContent).toContain('invalid');
+    expect(rowFor(container, 'design-then-build').textContent).toContain('effective');
+    expect(rowFor(container, 'broken-one').textContent).toContain('invalid');
   });
 
   it('shows the purpose, so the list is readable by someone who did not author it', () => {
     const { container } = mount([record()]);
 
-    expect(rowFor(container, 'workspace', 'design-then-build').textContent).toContain(
+    expect(rowFor(container, 'design-then-build').textContent).toContain(
       'Review the design, then build it.'
     );
   });
 
   it('shows the Pipeline sequence in authored node order, not sorted (FR-049)', () => {
     const { container } = mount([record()]);
-    const sequence = rowFor(container, 'workspace', 'design-then-build').querySelector(
+    const sequence = rowFor(container, 'design-then-build').querySelector(
       '[data-testid="workflow-row-sequence"]'
     );
 
@@ -158,7 +162,7 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
 
   it('shows the derived inputs and outputs, which exist on no persisted row (FR-048)', () => {
     const { container } = mount([record()]);
-    const row = rowFor(container, 'workspace', 'design-then-build');
+    const row = rowFor(container, 'design-then-build');
     const inputs = row.querySelector('[data-testid="workflow-row-inputs"]');
     const outputs = row.querySelector('[data-testid="workflow-row-outputs"]');
 
@@ -182,24 +186,32 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
       })
     ]);
 
-    const row = rowFor(container, 'workspace', 'broken-one');
+    const row = rowFor(container, 'broken-one');
     expect(row.textContent).toContain('invalid');
     expect(row.textContent).not.toContain('undefined');
     expect(row.textContent).not.toContain('null');
   });
 });
 
-// ── Built-in rows (FR-026, US5 scenario 3) ─────────────────────────────────
+// ── Every stored row is writable (FR-042, FR-043) ──────────────────────────
 
-describe('WorkflowCatalogEditor built-in rows (US5, T055)', () => {
-  // The shipped built-in layer is empty, so this fixture is injected. Asserting
-  // against shipped content would pass vacuously today and stop testing FR-026
-  // the moment content is added.
-  const BUILT_IN = record({ workflowId: 'shipped-flow', scope: 'built-in' });
-
-  it('renders a built-in row read-only — no editable field', async () => {
-    const { container } = mount([BUILT_IN]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
+describe('WorkflowCatalogEditor stored rows (T496f)', () => {
+  // Feature 099 (T496f, FR-042, FR-043) — three cases here seeded a `built-in`
+  // row and pinned what it withheld: no editable field, no save, no remove, and
+  // duplicate as the one way out. Two of those four were the tier's doing and
+  // two were not, and deleting the tier is precisely what separates them:
+  //
+  //   - remove was withheld because the row sat in a layer nothing could write.
+  //     That reason is gone, and the inversion below is the claim.
+  //   - the fields are read-only on EVERY stored row, and always were: a
+  //     Workflow has no `edit` mutation, so a change is made by duplicating
+  //     (FR-026, feature 083). The tier collapse does not reach that rule.
+  //
+  // Both are pinned here, with their reasons kept apart, so that a build which
+  // re-locks the whole row cannot pass by borrowing the surviving reason.
+  it('holds every field of a stored row read-only, a Workflow having no edit mutation', async () => {
+    const { container } = mount([record({ workflowId: 'stored-flow' })]);
+    await fireEvent.click(rowFor(container, 'stored-flow'));
 
     for (const field of ['workflowId', 'name', 'description']) {
       const control = container.querySelector<HTMLInputElement>(
@@ -207,69 +219,65 @@ describe('WorkflowCatalogEditor built-in rows (US5, T055)', () => {
       );
       expect(control, `${field} must render`).not.toBeNull();
       const locked = control?.readOnly === true || control?.disabled === true;
-      expect(locked, `${field} must not be editable on a built-in row`).toBe(true);
+      expect(locked, `${field} must stay read-only on a stored row`).toBe(true);
     }
+    // The counterpart is `makes the copy editable` below: the same three fields
+    // on the duplicate of this row are open. Read together they say the gate is
+    // persistence, not the row, and not where the row came from.
   });
 
-  it('offers duplicate as the only action on a built-in row (FR-026)', async () => {
-    const { container } = mount([BUILT_IN]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
-
-    expect(container.querySelector('[data-testid="workflows-duplicate"]')).not.toBeNull();
-    // Save and remove would each be a write to a layer the host refuses.
-    const save = container.querySelector<HTMLButtonElement>('[data-testid="workflows-save-all"]');
-    expect(save?.disabled).toBe(true);
-    const remove = container.querySelector<HTMLButtonElement>('[data-testid="workflows-remove"]');
-    expect(remove === null || remove.disabled).toBeTruthy();
-  });
-
-  it('keeps duplicate available on a built-in row even though every other action is not', async () => {
-    const { container } = mount([BUILT_IN]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
+  it('offers remove and duplicate alike on a stored row', async () => {
+    const { container } = mount([record({ workflowId: 'stored-flow' })]);
+    await fireEvent.click(rowFor(container, 'stored-flow'));
 
     const duplicate = container.querySelector<HTMLButtonElement>(
       '[data-testid="workflows-duplicate"]'
     );
     expect(duplicate?.disabled).toBe(false);
+    const remove = container.querySelector<HTMLButtonElement>('[data-testid="workflows-remove"]');
+    expect(remove?.disabled).toBe(false);
   });
 });
 
 // ── Duplicate (US5 scenario 5) ─────────────────────────────────────────────
 
 describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
-  it('lands the copy in a writable scope under a distinct identifier', async () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow', scope: 'built-in' })]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
+  it('lands the copy under a distinct identifier', async () => {
+    // Feature 099 (T496f, FR-042) — the source was a `built-in` row and the
+    // claim had two halves: a distinct id, and a destination the operator could
+    // actually write. One layer settles the destination, so what remains is the
+    // half a single catalog still has to decide — a copy that reused the
+    // identifier would collide with its own original on save.
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
 
-    // A copy that reused the identifier would collide on save; one that stayed
-    // in `built-in` could never be written at all.
-    const copy = container.querySelector('[data-testid="workflows-list-item-workspace-shipped-flow-copy"]');
-    expect(copy, 'the copy must appear in the writable scope').not.toBeNull();
+    const copy = container.querySelector('[data-testid="workflows-list-item-shipped-flow-copy"]');
+    expect(copy, 'the copy must appear under its own identifier').not.toBeNull();
   });
 
   it('leaves the original untouched', async () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow', scope: 'built-in' })]);
-    const before = rowFor(container, 'built-in', 'shipped-flow').textContent;
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    const before = rowFor(container, 'shipped-flow').textContent;
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
 
-    const original = rowFor(container, 'built-in', 'shipped-flow');
+    const original = rowFor(container, 'shipped-flow');
     expect(original.textContent).toBe(before);
   });
 
-  it('makes the copy editable, which the built-in original is not', async () => {
-    const { container } = mount([record({ workflowId: 'shipped-flow', scope: 'built-in' })]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped-flow'));
+  it('makes the copy editable', async () => {
+    const { container } = mount([record({ workflowId: 'shipped-flow' })]);
+    await fireEvent.click(rowFor(container, 'shipped-flow'));
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
     await fireEvent.click(
-      rowFor(container, 'workspace', 'shipped-flow-copy')
+      rowFor(container, 'shipped-flow-copy')
     );
 
     const name = container.querySelector<HTMLInputElement>('[data-testid="workflow-field-name"]');
@@ -281,7 +289,7 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
     // Rendered-but-disabled, not absent. Asserting only "not clickable" would
     // pass on a build that ships no duplicate control at all.
     const untrusted = mount([record()], false);
-    await fireEvent.click(rowFor(untrusted.container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(untrusted.container, 'design-then-build'));
     const withheld = untrusted.container.querySelector<HTMLButtonElement>(
       '[data-testid="workflows-duplicate"]'
     );
@@ -291,7 +299,7 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
     cleanup();
 
     const trusted = mount([record()], true);
-    await fireEvent.click(rowFor(trusted.container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(trusted.container, 'design-then-build'));
     const offered = trusted.container.querySelector<HTMLButtonElement>(
       '[data-testid="workflows-duplicate"]'
     );
@@ -319,7 +327,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 
   it('anchors each host defect to the specific row it concerns (FR-044)', async () => {
     const { container } = mount([DEFECTIVE]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
     const nodeRow = container.querySelector('[data-testid="workflow-node-1"]');
     const connectionRow = container.querySelector('[data-testid="workflow-connection-0"]');
@@ -331,7 +339,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 
   it('carries the association in text, not color alone (FR-044)', async () => {
     const { container } = mount([DEFECTIVE]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
     const nodeRow = container.querySelector('[data-testid="workflow-node-1"]') as HTMLElement;
     // A sighted operator sees red; everyone else needs the row to say so. An
@@ -344,7 +352,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 
   it('associates the defect text with the control for assistive technology', async () => {
     const { container } = mount([DEFECTIVE]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
     const nodeRow = container.querySelector('[data-testid="workflow-node-1"]') as HTMLElement;
     const describedBy = nodeRow.getAttribute('aria-describedby');
@@ -360,7 +368,7 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
 
   it('leaves a clean row unmarked, so the cue means something', async () => {
     const { container } = mount([record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
 
     const nodeRow = container.querySelector('[data-testid="workflow-node-1"]');
     // Without this, a build that renders no node rows at all would satisfy
@@ -414,7 +422,7 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     useConfirmMock.mockResolvedValueOnce(true);
 
     const { container, getByTestId } = mount([record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 
     expect(useConfirmMock).toHaveBeenCalledTimes(1);
@@ -434,7 +442,7 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     useConfirmMock.mockResolvedValueOnce(false);
 
     const { container, getByTestId } = mount([record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 
     expect(useConfirmMock).toHaveBeenCalledTimes(1);
@@ -451,9 +459,9 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     useConfirmMock.mockResolvedValueOnce(true);
 
     const { container, getByTestId } = mount([record(), record({ workflowId: 'keeper' })]);
-    // An unsaved draft in the same scope, created before the removal.
+    // An unsaved draft, created before the removal.
     await fireEvent.click(getByTestId('workflows-add'));
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 
     // Exactly the stored layer minus the removed row. Including the draft would
@@ -469,15 +477,16 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     useConfirmMock.mockResolvedValueOnce(false);
 
     const { container, getByTestId } = mount([record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     const trigger = getByTestId('workflows-remove');
     await fireEvent.click(trigger);
 
     const options = useConfirmMock.mock.calls[0][1];
+    // Feature 099 (T496f, FR-042) — a `scope` stood beside the two names.
+    // `toEqual` is exact, so its absence is pinned by this assertion alone.
     expect(options.context).toEqual({
       workflowName: 'Design then Build',
-      workflowId: 'design-then-build',
-      scope: 'workspace'
+      workflowId: 'design-then-build'
     });
     // FR-035's focus requirement is Feature 063's to honour; this Builder's part
     // is naming the element it must return focus to.
@@ -494,7 +503,7 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     await fireEvent.click(getByTestId('workflows-reset'));
 
     expect(useConfirmMock.mock.calls[0][0]).toBe('catalog.reset-workflows');
-    expect(useConfirmMock.mock.calls[0][1].context).toEqual({ scope: 'workspace', workflowCount: 1 });
+    expect(useConfirmMock.mock.calls[0][1].context).toEqual({ workflowCount: 1 });
     const request = saveWorkflows.mock.calls[0][0];
     expect(request.mutation).toEqual({ kind: 'reset' });
     expect(request.workflows).toEqual([]);
@@ -509,15 +518,12 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     await fireEvent.click(getByTestId('workflows-add'));
     await fireEvent.click(getByTestId('workflows-reset'));
 
-    // The draft is not a definition in the scope yet — reset deletes what the
-    // host holds, and naming a number the operator cannot see would misstate it.
-    expect(useConfirmMock.mock.calls[0][1].context).toEqual({
-      scope: 'workspace',
-      workflowCount: 1
-    });
+    // The draft is not a stored definition yet — reset deletes what the host
+    // holds, and naming a number the operator cannot see would misstate it.
+    expect(useConfirmMock.mock.calls[0][1].context).toEqual({ workflowCount: 1 });
   });
 
-  it('leaves the layer alone when the reset is declined', async () => {
+  it('leaves the catalog alone when the reset is declined', async () => {
     const saveWorkflows = await saved();
     saveWorkflows.mockClear();
     useConfirmMock.mockClear();
@@ -529,15 +535,20 @@ describe('removal and reset are confirmation-gated (FR-035)', () => {
     expect(saveWorkflows).not.toHaveBeenCalled();
   });
 
-  it('offers neither control against a built-in row, which is read-only (FR-026)', async () => {
-    const { container, getByTestId } = mount([record({ scope: 'built-in', workflowId: 'shipped' })]);
-    await fireEvent.click(rowFor(container, 'built-in', 'shipped'));
-    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(true);
+  it('offers both controls against any stored row, trust being the only gate', async () => {
+    // Feature 099 (T496f, FR-042, FR-043) — this pinned remove DISABLED against
+    // a `built-in` row. With the read-only tier gone, where a row came from
+    // gates nothing, and the case below — the same two controls, disabled by
+    // untrusted workspace — is what the pair now distinguishes it from.
+    const { container, getByTestId } = mount([record({ workflowId: 'shipped' })]);
+    await fireEvent.click(rowFor(container, 'shipped'));
+    expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
+    expect((getByTestId('workflows-reset') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('offers neither control in an untrusted workspace (FR-029)', async () => {
     const { container, getByTestId } = mount([record()], false);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(true);
     expect((getByTestId('workflows-reset') as HTMLButtonElement).disabled).toBe(true);
   });
@@ -564,13 +575,13 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     ({ ...snapshot(records), pipelineCatalog: catalog }) as unknown as WorkflowSnapshot;
 
   /** Resolved cleanly, holding nothing. */
-  const EMPTY = { state: 'ready', records: [], effective: [], revisions: { user: 'u', workspace: 'w' }, warnings: [] };
+  const EMPTY = { state: 'ready', records: [], effective: [], revision: 'w', warnings: [] };
 
   /** Resolved, holding rows — every one of which failed validation. */
   const ALL_INVALID = {
     ...EMPTY,
     records: [
-      { key: 'workspace::broken::0', pipelineId: 'broken', scope: 'workspace', status: 'invalid', definition: null, display: {}, errors: [{ field: 'phaseIds', code: 'unresolved', message: 'no such Phase' }] }
+      { key: 'broken::0', pipelineId: 'broken', status: 'invalid', definition: null, display: {}, errors: [{ field: 'phaseIds', code: 'unresolved', message: 'no such Phase' }] }
     ]
   };
 
@@ -603,7 +614,7 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
 
   it('still renders the stored rows rather than hiding the Library', () => {
     const { container } = mountWith(EMPTY, [record()]);
-    expect(rowFor(container, 'workspace', 'design-then-build')).not.toBeNull();
+    expect(rowFor(container, 'design-then-build')).not.toBeNull();
   });
 
   // The one case the pre-existing draft validation does not already cover: a
@@ -612,7 +623,7 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
   // nodes name. Without an explicit gate this is enabled.
   it('refuses to save a duplicate whose nodes no Pipeline resolves', async () => {
     const { container, getByTestId } = mountWith(EMPTY, [record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-duplicate'));
 
     expect(getByTestId('workflow-field-workflowId')).toBeTruthy();
@@ -621,7 +632,7 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
 
   it('becomes usable when a refreshed snapshot carries a valid Pipeline, with no reload', async () => {
     const { container, getByTestId, rerender } = mountWith(EMPTY, [record()]);
-    await fireEvent.click(rowFor(container, 'workspace', 'design-then-build'));
+    await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-duplicate'));
     expect(saveIn(container).disabled).toBe(true);
 

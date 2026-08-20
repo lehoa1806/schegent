@@ -6,10 +6,12 @@
 // timeout, no cross-resolution between concurrent saves."
 //
 // The pre-082 helper posted `{ pipelines }` and dropped every authored
-// contract field on the floor. These tests pin the scoped envelope
-// (`{ scope, expectedRevision, mutation, pipelines }`) as forwarded
-// verbatim, so a Pipeline's ports, bindings, and execution defaults reach
-// the host handler unmodified.
+// contract field on the floor. These tests pin the revisioned envelope
+// (`{ expectedRevision, mutation, pipelines }`) as forwarded verbatim, so a
+// Pipeline's ports, bindings, and execution defaults reach the host handler
+// unmodified. Feature 099 (T496f, FR-042) — `scope` left the envelope with the
+// layer tier it named; `expectedRevision` is the whole of what a save is
+// optimistic against now.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { savePipelines, type SavePipelinesRequest } from '../save-pipelines';
@@ -78,7 +80,6 @@ const AUTHORED_ROW = {
 };
 
 const SAMPLE_REQUEST: SavePipelinesRequest = {
-  scope: 'workspace',
   expectedRevision: 'a'.repeat(64),
   mutation: { kind: 'edit', pipelineId: 'custom-flow' },
   pipelines: [AUTHORED_ROW]
@@ -95,7 +96,7 @@ afterEach(() => {
 });
 
 describe('Feature 082 T021 — savePipelines helper', () => {
-  it('posts exactly one CMD_SAVE_PIPELINES envelope carrying the scoped request verbatim', async () => {
+  it('posts exactly one CMD_SAVE_PIPELINES envelope carrying the request verbatim', async () => {
     const posted: unknown[] = [];
     const postMessage = (msg: unknown): void => {
       posted.push(msg);
@@ -124,11 +125,11 @@ describe('Feature 082 T021 — savePipelines helper', () => {
     await promise;
   });
 
-  it('resolves accepted and preserves the { scope, revision, mutation } ack result', async () => {
+  it('resolves accepted and preserves the { revision, mutation } ack result', async () => {
     const postMessage = vi.fn();
     const promise = savePipelines(SAMPLE_REQUEST, postMessage);
     const env = postMessage.mock.calls[0][0] as { correlationId: string };
-    const result = { scope: 'workspace', revision: 'b'.repeat(64), mutation: 'edit' };
+    const result = { revision: 'b'.repeat(64), mutation: 'edit' };
     fireAck(env.correlationId, 'accepted', undefined, result);
     await expect(promise).resolves.toEqual({ status: 'accepted', result });
   });
@@ -171,7 +172,7 @@ describe('Feature 082 T021 — savePipelines helper', () => {
     const postMessage = vi.fn();
     const p1 = savePipelines(SAMPLE_REQUEST, postMessage);
     const p2 = savePipelines(
-      { ...SAMPLE_REQUEST, scope: 'user', mutation: { kind: 'remove', pipelineId: 'custom-flow' } },
+      { ...SAMPLE_REQUEST, mutation: { kind: 'remove', pipelineId: 'custom-flow' } },
       postMessage
     );
     expect(postMessage).toHaveBeenCalledTimes(2);
@@ -214,12 +215,7 @@ describe('Feature 082 T021 — savePipelines helper', () => {
   const MUTATIONS: readonly SavePipelinesRequest['mutation'][] = [
     { kind: 'create', pipelineId: 'custom-flow' },
     { kind: 'edit', pipelineId: 'custom-flow' },
-    {
-      kind: 'duplicate',
-      sourceScope: 'built-in',
-      sourcePipelineId: 'speckit-new-feature',
-      pipelineId: 'custom-flow'
-    },
+    { kind: 'duplicate', sourcePipelineId: 'speckit-new-feature', pipelineId: 'custom-flow' },
     { kind: 'remove', pipelineId: 'custom-flow' },
     { kind: 'reset' }
   ];

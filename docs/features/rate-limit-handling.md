@@ -101,7 +101,7 @@ The most common case. The schedule is correct; the timer fires; the retry succee
 
 If you regularly hit rate limits, consider:
 
-- Lowering the model used by long phases (`schegent.phases[speckit-implement].model: claude-sonnet-4-6`).
+- Lowering the model used by long phases (set `model: claude-sonnet-4-6` on the `speckit-implement` phase in the Builder).
 - Pausing the queue during peak hours (`schegent.pauseQueue` until the rate-limit window resets).
 
 ### React to a cascade pause

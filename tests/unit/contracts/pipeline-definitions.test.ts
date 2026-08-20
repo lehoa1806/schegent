@@ -1,45 +1,63 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  PIPELINE_DEFINITION_SCOPES,
   PIPELINE_INPUT_PORT_TYPES,
   PIPELINE_OUTPUT_PORT_TYPES,
-  PIPELINE_WRITABLE_SCOPES,
-  isPipelineDefinitionScope,
   isPipelineInputPortType,
-  isPipelineOutputPortType,
-  isWritablePipelineDefinitionScope
+  isPipelineOutputPortType
 } from '../../../src/contracts/pipeline-definitions';
 import type {
   PhaseBinding,
   PipelineCatalogMutation,
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineInputPortType,
   PipelineOutputPortType,
-  ScopedPipelineSavePayload,
-  WritablePipelineDefinitionScope
+  PipelineSavePayload
 } from '../../../src/contracts/pipeline-definitions';
 
-describe('pipeline definition scopes', () => {
-  it('declares the three catalog layers in precedence-agnostic authored order', () => {
-    expect(PIPELINE_DEFINITION_SCOPES).toEqual(['built-in', 'user', 'workspace']);
+const CONTRACT_SOURCE = join(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'src',
+  'contracts',
+  'pipeline-definitions.ts'
+);
+
+// Feature 099 (T496f, FR-042, FR-043) — the scope union and its writable twin
+// are deleted, not narrowed to one arm. Four tests pinned their membership and
+// their guards; nothing they asserted is reachable, so what replaces them is the
+// bar that keeps the concept from growing back: the contract must declare no
+// scope vocabulary at all. A one-armed union reintroduced "for symmetry" fails
+// here, which is the only way this file can still earn its place.
+describe('the layer tier leaves no residue in the contract', () => {
+  const source = readFileSync(CONTRACT_SOURCE, 'utf8');
+
+  it('declares no scope union, writable twin, or guard', () => {
+    expect(source).not.toMatch(/PIPELINE_DEFINITION_SCOPES/);
+    expect(source).not.toMatch(/PIPELINE_WRITABLE_SCOPES/);
+    expect(source).not.toMatch(/PipelineDefinitionScope/);
+    expect(source).not.toMatch(/isWritablePipelineDefinitionScope/);
   });
 
-  it('exposes only the two writable scopes', () => {
-    expect(PIPELINE_WRITABLE_SCOPES).toEqual(['user', 'workspace']);
+  it('names none of the three retired layers as a value anywhere', () => {
+    expect(source).not.toMatch(/'built-in'/);
+    expect(source).not.toMatch(/'workspace'/);
   });
 
-  it('narrows unknown strings away from the scope union', () => {
-    expect(isPipelineDefinitionScope('workspace')).toBe(true);
-    expect(isPipelineDefinitionScope('built-in')).toBe(true);
-    expect(isPipelineDefinitionScope('global')).toBe(false);
-    expect(isPipelineDefinitionScope(undefined)).toBe(false);
+  it('carries no `scope` field on the record or the save payload', () => {
+    expect(source).not.toMatch(/^\s*(readonly\s+)?scope\s*[?:]/m);
   });
 
-  it('rejects built-in as a writable target', () => {
-    expect(isWritablePipelineDefinitionScope('user')).toBe(true);
-    expect(isWritablePipelineDefinitionScope('workspace')).toBe(true);
-    expect(isWritablePipelineDefinitionScope('built-in')).toBe(false);
+  it('resolves a save payload with no scope on it', () => {
+    const payload: PipelineSavePayload = {
+      expectedRevision: 'rev-pipeline-1',
+      mutation: { kind: 'create', pipelineId: 'flow' },
+      pipelines: []
+    };
+    expect(payload).not.toHaveProperty('scope');
   });
 });
 
@@ -99,7 +117,9 @@ describe('mutation kind exhaustiveness', () => {
       case 'edit':
         return `edit:${mutation.pipelineId}`;
       case 'duplicate':
-        return `duplicate:${mutation.sourceScope}:${mutation.sourcePipelineId}:${mutation.pipelineId}`;
+        // Feature 099 (T496f, FR-042) — the source layer left the intent with the
+        // tier: there is one catalog to duplicate out of, so naming it said nothing.
+        return `duplicate:${mutation.sourcePipelineId}:${mutation.pipelineId}`;
       case 'remove':
         return `remove:${mutation.pipelineId}`;
       case 'reset':
@@ -119,7 +139,7 @@ describe('mutation kind exhaustiveness', () => {
     const mutations: readonly PipelineCatalogMutation[] = [
       { kind: 'create', pipelineId: 'alpha' },
       { kind: 'edit', pipelineId: 'alpha' },
-      { kind: 'duplicate', sourceScope: 'built-in', sourcePipelineId: 'alpha', pipelineId: 'beta' },
+      { kind: 'duplicate', sourcePipelineId: 'alpha', pipelineId: 'beta' },
       { kind: 'remove', pipelineId: 'alpha' },
       { kind: 'reset' },
       { kind: 'import-package', pipelineIds: ['alpha', 'beta'] }
@@ -127,7 +147,7 @@ describe('mutation kind exhaustiveness', () => {
     expect(mutations.map(describeMutation)).toEqual([
       'create:alpha',
       'edit:alpha',
-      'duplicate:built-in:alpha:beta',
+      'duplicate:alpha:beta',
       'remove:alpha',
       'reset',
       'import-package:alpha,beta'
@@ -166,18 +186,21 @@ describe('contract shapes are structurally assignable', () => {
       executionDefaults: { runner: 'claude', effort: 'high', timeoutSeconds: 600 },
       recommendedNext: ['beta']
     };
-    const scope: WritablePipelineDefinitionScope = 'workspace';
-    const payload: ScopedPipelineSavePayload = {
-      scope,
+    const payload: PipelineSavePayload = {
       expectedRevision: 'abc123',
       mutation: { kind: 'create', pipelineId: 'alpha' },
       pipelines: [definition]
     };
-    const anyScope: PipelineDefinitionScope = scope;
 
     expect(payload.pipelines).toHaveLength(1);
     expect(definition.bindings).toHaveLength(3);
-    expect(anyScope).toBe('workspace');
+    // Feature 099 (T496f, FR-042, FR-044) — the two scope types this stanza used
+    // to exercise are deleted, and the revision the save is optimistic against
+    // took their place in the payload. Pinned by compile failure rather than by
+    // value: the day `scope` returns, the suppression is unused and this errors.
+    expect(payload.expectedRevision).toBe('abc123');
+    // @ts-expect-error - PipelineSavePayload declares no scope
+    expect(payload.scope).toBeUndefined();
   });
 
   it('accepts the minimal definition with empty collections', () => {

@@ -4,8 +4,10 @@
 // Covers (per the "Test coverage" bullets):
 //   - Render with `resolvedTrust.phases: false` → Save button disabled,
 //     banner visible.
-//   - Render with `resolvedTrust.pipelineOverrides: false` → Save
-//     Pipelines disabled, banner visible.
+//   - Feature 099 (T496f, FR-046) — a `resolvedTrust.pipelineOverrides: false`
+//     bullet stood here. The capability asked which layer was permitted to
+//     redefine another layer's row, and one catalog has no such question; the
+//     Pipelines tab is gated by Workspace Trust alone now.
 //   - Render with `resolvedTrust.retryConditions: false` → row-level
 //     retry-condition inputs are read-only (FR-010c).
 //   - Toggle `resolvedTrust.phases` false → true → Save button re-enables,
@@ -50,7 +52,6 @@ interface TrustOpts {
   workspaceTrust?: boolean;
   phases?: boolean;
   retryConditions?: boolean;
-  pipelineOverrides?: boolean;
 }
 
 function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
@@ -105,9 +106,8 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     phaseCatalog: {
       state: 'ready',
       records: [{
-        key: 'workspace::speckit-specify::0',
+        key: 'speckit-specify::0',
         phaseId: 'speckit-specify',
-        scope: 'workspace',
         status: 'effective',
         definition: {
           phaseId: 'speckit-specify',
@@ -119,8 +119,18 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
         display: {},
         errors: []
       }],
-      effective: [],
-      revisions: { user: 'user-revision', workspace: 'workspace-revision' },
+      // An `effective` row that agrees with the record above. It was empty here,
+      // which left the Pipelines tab reporting its missing-Phase prerequisite and
+      // made every control on that tab disabled for a reason unrelated to trust —
+      // no use as a probe for what trust gates.
+      effective: [{
+        phaseId: 'speckit-specify',
+        name: 'Specify',
+        version: 1,
+        instruction: 'Specify',
+        loopable: false
+      }],
+      revision: 'phase-revision',
       warnings: []
     },
     // Feature 082 — the Pipeline tab's controls only exist once the
@@ -129,15 +139,14 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
       state: 'ready',
       records: [],
       effective: [],
-      revisions: { user: 'user-pipeline-revision', workspace: 'workspace-pipeline-revision' },
+      revision: 'pipeline-revision',
       warnings: []
     },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
       phases: opts.phases ?? true,
-      retryConditions: opts.retryConditions ?? true,
-      pipelineOverrides: opts.pipelineOverrides ?? true
+      retryConditions: opts.retryConditions ?? true
     }
   }) as unknown as unknown as WorkflowSnapshot;
 }
@@ -165,18 +174,34 @@ describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
   });
 });
 
-describe('PipelineBuilder trust gating (059, T022) — pipelines disabled', () => {
-  it('disables the Save Pipelines button and renders the policy banner when resolvedTrust.pipelineOverrides is false', () => {
+describe('PipelineBuilder trust gating (059, T022) — pipelines under Workspace Trust', () => {
+  // Feature 099 (T496f, FR-046) — one case stood here, seeding
+  // `resolvedTrust.pipelineOverrides: false` and pinning Save Pipelines disabled
+  // beside its own banner. The capability and the banner variant are both
+  // deleted: an *override* is a statement about one layer redefining another's
+  // row, and there is one catalog. What gates the tab now is Workspace Trust,
+  // which the pair below pins in both directions — a control dead either way
+  // would satisfy one of them on its own, and neither alone is the claim.
+  it('opens the Pipelines tab for editing under workspace trust, with no per-capability banner', () => {
+    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
+    const add = container.querySelector('[data-testid="pipelines-add"]') as HTMLButtonElement | null;
+    expect(add).not.toBeNull();
+    expect(add?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="trust-banner-pipelines"]')).toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
+  });
+
+  it('withholds the editor entirely in an untrusted workspace, and says why (FR-052)', () => {
+    // Not a disabled control: an untrusted workspace activates no catalog at all
+    // (T493c), so rendering the editor would present an empty Library — which
+    // reads as "nothing is defined here" when the truth is "this workspace is not
+    // trusted". The banner and the gated line are the report.
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot({ pipelineOverrides: false }) }
+      props: { snapshot: buildSnapshot({ workspaceTrust: false }) }
     });
-    const savePipelinesBtn = container.querySelector(
-      '[data-testid="pipelines-save-all"]'
-    ) as HTMLButtonElement | null;
-    expect(savePipelinesBtn).not.toBeNull();
-    expect(savePipelinesBtn?.hasAttribute('disabled')).toBe(true);
-    const banner = container.querySelector('[data-testid="trust-banner-pipelines"]');
-    expect(banner).not.toBeNull();
+    expect(container.querySelector('[data-testid="pipelines-add"]')).toBeNull();
+    expect(container.querySelector('[data-testid="builder-trust-gated"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).not.toBeNull();
   });
 });
 
@@ -187,16 +212,18 @@ describe('PipelineBuilder trust gating (059, T022) — workspace-trust ceiling',
         snapshot: buildSnapshot({
           workspaceTrust: false,
           phases: false,
-          retryConditions: false,
-          pipelineOverrides: false
+          retryConditions: false
         })
       }
     });
     const ceiling = container.querySelector('[data-testid="trust-banner-workspace-trust"]');
     expect(ceiling).not.toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
-    expect(container.querySelector('[data-testid="trust-banner-pipelines"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-retry-conditions"]')).toBeNull();
+    // Feature 099 (T496f, FR-046) — a `trust-banner-pipelines` line stood with
+    // these two. Asserting the absence of a variant that no longer exists in the
+    // component's union would pass on any build; the ceiling's reach over the two
+    // surviving per-capability banners is the claim that still has content.
   });
 });
 

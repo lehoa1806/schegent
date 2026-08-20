@@ -371,24 +371,17 @@ export interface PipelineDefinition {
   readonly bindings?: readonly PhaseBinding[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
-  readonly sourceScope?: PipelineDefinitionScope;
 }
 
 /**
- * Feature 026 — projected layer per (phaseId, fieldKey) tuple for
- * the merged phase catalog. Composite key shape:
- * `"<phaseId>::<fieldKey>"`. The webview consumes only `model` and
- * `effort` today; the remaining tunable keys (`timeoutSeconds`,
- * `loopable`, `retryCondition`) are forward-compatible reservations.
- * Never persisted; UI-only.
+ * Feature 099 (T494a, FR-040) — two arms, because there is one layer.
+ *
+ * `shadowed` described a definition a higher-precedence layer hid; with a single
+ * layer nothing can hide anything, so the arm is deleted rather than kept
+ * unreachable. `PhasePrecedenceLayer`, `PhasePrecedenceProjection`, and the three
+ * `*DefinitionScope` families went the same way and for the same reason.
  */
-export type PhasePrecedenceLayer = 'built-in' | 'user' | 'workspace' | 'unset';
-
-export type PhasePrecedenceProjection = Readonly<Record<string, PhasePrecedenceLayer>>;
-
-export type PhaseDefinitionScope = 'built-in' | 'user' | 'workspace';
-export type WritablePhaseDefinitionScope = Exclude<PhaseDefinitionScope, 'built-in'>;
-export type PhaseSourceStatus = 'effective' | 'shadowed' | 'invalid';
+export type PhaseSourceStatus = 'effective' | 'invalid';
 
 export interface PortablePhaseDefinition {
   readonly phaseId: string;
@@ -409,7 +402,6 @@ export interface PortablePhaseDefinition {
 export interface PhaseCatalogSourceRecord {
   readonly key: string;
   readonly phaseId: string;
-  readonly scope: PhaseDefinitionScope;
   readonly status: PhaseSourceStatus;
   readonly definition: PortablePhaseDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -425,7 +417,8 @@ export interface PhaseCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PhaseCatalogSourceRecord[];
   readonly effective: readonly PortablePhaseDefinition[];
-  readonly revisions: Readonly<Record<WritablePhaseDefinitionScope, string>>;
+  /** The store's revision for this kind, echoed back on save (FR-044, FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -436,9 +429,8 @@ export interface PhaseCatalogProjection {
  * host remains the sole authority for validation and resolution.
  */
 
-export type PipelineDefinitionScope = 'built-in' | 'user' | 'workspace';
-export type WritablePipelineDefinitionScope = Exclude<PipelineDefinitionScope, 'built-in'>;
-export type PipelineSourceStatus = 'effective' | 'shadowed' | 'invalid';
+/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
+export type PipelineSourceStatus = 'effective' | 'invalid';
 
 /**
  * Session-input port types (FR-012). `pipeline-output` is the declared type an
@@ -537,7 +529,6 @@ export type PipelineCatalogMutation =
   | { readonly kind: 'edit'; readonly pipelineId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: PipelineDefinitionScope;
       readonly sourcePipelineId: string;
       readonly pipelineId: string;
     }
@@ -547,7 +538,6 @@ export type PipelineCatalogMutation =
 export interface PipelineCatalogSourceRecord {
   readonly key: string;
   readonly pipelineId: string;
-  readonly scope: PipelineDefinitionScope;
   readonly status: PipelineSourceStatus;
   readonly definition: PortablePipelineDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -569,7 +559,8 @@ export interface PipelineCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PipelineCatalogSourceRecord[];
   readonly effective: readonly PortablePipelineDefinition[];
-  readonly revisions: Readonly<Record<WritablePipelineDefinitionScope, string>>;
+  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -586,9 +577,8 @@ export interface PipelineCatalogProjection {
  * vocabulary is renamed.
  */
 
-export type WorkflowDefinitionScope = 'built-in' | 'user' | 'workspace';
-export type WritableWorkflowDefinitionScope = Exclude<WorkflowDefinitionScope, 'built-in'>;
-export type WorkflowSourceStatus = 'effective' | 'shadowed' | 'invalid';
+/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
+export type WorkflowSourceStatus = 'effective' | 'invalid';
 
 /** Collection selection rules; `exactlyOne` fails at run time on any size but one. */
 export const WORKFLOW_SELECTION_RULES = ['first', 'last', 'exactlyOne'] as const;
@@ -687,7 +677,6 @@ export type WorkflowCatalogMutation =
   | { readonly kind: 'edit'; readonly workflowId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: WorkflowDefinitionScope;
       readonly sourceWorkflowId: string;
       readonly workflowId: string;
     }
@@ -716,7 +705,6 @@ export interface WorkflowCatalogPortProjection {
 export interface WorkflowCatalogSourceProjection {
   readonly key: string;
   readonly workflowId: string;
-  readonly scope: WorkflowDefinitionScope;
   readonly status: WorkflowSourceStatus;
   readonly definition: PortableWorkflowDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -729,7 +717,8 @@ export interface WorkflowCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly WorkflowCatalogSourceProjection[];
   readonly effective: readonly PortableWorkflowDefinition[];
-  readonly revisions: Readonly<Record<WritableWorkflowDefinitionScope, string>>;
+  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -1061,14 +1050,6 @@ export interface WorkflowSnapshot {
   readonly generalSettings?: GeneralSettings;
   readonly sessionArtifacts?: SessionArtifactsProjection;
   readonly evidenceHealth?: EvidenceHealthProjection;
-  /**
-   * Feature 026 — per-phase precedence projection. Flat map keyed by
-   * `"<phaseId>::<fieldKey>"` whose value is the layer that provided
-   * the effective value (`'workspace' | 'user' | 'built-in' | 'unset'`).
-   * Optional for legacy-tolerance and absent when the host has not
-   * recomputed it yet.
-   */
-  readonly phasePrecedence?: PhasePrecedenceProjection;
   /** Feature 081 — absent means the authoritative catalog is still loading. */
   readonly phaseCatalog?: PhaseCatalogProjection;
   /**
@@ -1102,16 +1083,16 @@ export interface WorkflowSnapshot {
    * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
    */
   readonly workspaceTrust?: boolean;
+  /**
+   * Feature 099 (T494a, FR-046) — `pipelineOverrides` and `workflowOverrides` are
+   * gone with the layer tier. Both asked which layer was permitted to redefine
+   * another's row, and one layer has no such question; the Pipelines and Workflows
+   * tabs are governed by Workspace Trust alone, which `workspaceTrust` carries.
+   * The two survivors gate document CONTENT, not layering.
+   */
   readonly resolvedTrust?: {
     readonly phases: boolean;
     readonly retryConditions: boolean;
-    readonly pipelineOverrides: boolean;
-    /**
-     * Feature 083 — gates non-default entries in the Workflow catalog. A
-     * capability distinct from `pipelineOverrides`, projected separately so
-     * the Builder cannot infer one from the other.
-     */
-    readonly workflowOverrides: boolean;
   };
   /**
    * Feature 033 — ephemeral per-subprocess telemetry sample. Never

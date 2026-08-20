@@ -106,12 +106,23 @@ describe('snapshotPhaseDef — no id list and no scope survives the freeze (FR-0
     );
   });
 
-  it('ignores sourceScope entirely when resolving containment', () => {
-    const asBuiltIn = snapshotPhaseDef(phase({ sourceScope: 'built-in' }));
-    const asWorkspace = snapshotPhaseDef(phase({ sourceScope: 'workspace' }));
+  it('resolves containment from the declaration, not from any other key on the row', () => {
+    // Feature 099 (T496f, FR-042) — this compared a `built-in` row against a
+    // `workspace` one and demanded the same four resolved fields. `PhaseDef` has
+    // no `sourceScope` to set, so the input becomes an unrecognized key smuggled
+    // onto the row: the same question — can anything but the declaration reach
+    // the resolution — asked in the only form the type still allows.
+    //
+    // The freeze spreads the row, so this does NOT claim the key is stripped;
+    // `snapshotPipelineContract` is the one that enumerates, and its own test
+    // owns that half.
+    const withStrayKey = snapshotPhaseDef({
+      ...phase(),
+      ...({ sourceScope: 'workspace' } as Partial<PhaseDef>)
+    });
     const asNothing = snapshotPhaseDef(phase());
 
-    for (const snapshot of [asBuiltIn, asWorkspace, asNothing]) {
+    for (const snapshot of [withStrayKey, asNothing]) {
       expect(snapshot.sideEffects).toBe('workspace');
       expect(snapshot.evidencePolicy).toBe('required');
       expect(snapshot.promptVersion).toBe('custom-v1');

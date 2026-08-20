@@ -1,18 +1,12 @@
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
 import type { BackendPingState } from '../../services/backend-ping-service';
-import type {
-  PhaseDefinition,
-  PhaseDefinitionScope,
-  PhaseSourceStatus
-} from '../../contracts/process-definitions';
+import type { PhaseDefinition, PhaseSourceStatus } from '../../contracts/process-definitions';
 import type {
   PipelineDefinition,
-  PipelineDefinitionScope,
   PipelineSourceStatus
 } from '../../contracts/pipeline-definitions';
 import type {
   WorkflowDefinition,
-  WorkflowDefinitionScope,
   WorkflowDerivedPort,
   WorkflowSourceStatus
 } from '../../contracts/workflow-definitions';
@@ -45,9 +39,15 @@ export interface PhaseCatalogFieldErrorProjection {
 }
 
 export interface PhaseCatalogSourceProjection {
+  /**
+   * `${phaseId}::${index}`, unique over the one layer.
+   *
+   * Feature 099 (T489a, FR-043) — was `${scope}:${phaseId}` with a positional
+   * de-duplication suffix, because two layers could hold the same id. One layer
+   * cannot, so the resolver's own key carries through unchanged.
+   */
   readonly key: string;
   readonly phaseId: string;
-  readonly scope: PhaseDefinitionScope;
   readonly status: PhaseSourceStatus;
   readonly definition: PhaseDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -59,10 +59,14 @@ export interface PhaseCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PhaseCatalogSourceProjection[];
   readonly effective: readonly PhaseDefinition[];
-  readonly revisions: {
-    readonly user: string;
-    readonly workspace: string;
-  };
+  /**
+   * The store's revision for this kind, echoed back on save (FR-044, FR-044a).
+   *
+   * Feature 099 (T489a, FR-043) — was one revision per writable layer. There is
+   * one layer and one revision; a per-layer map with a single key would be a
+   * layer tier kept alive in the shape of a record.
+   */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -80,10 +84,9 @@ export interface PipelineCatalogFieldErrorProjection {
 }
 
 export interface PipelineCatalogSourceProjection {
-  /** `${scope}:${pipelineId}`, suffixed positionally only when a scope repeats an id. */
+  /** `${pipelineId}::${index}`, unique over the one layer (FR-043). */
   readonly key: string;
   readonly pipelineId: string;
-  readonly scope: PipelineDefinitionScope;
   readonly status: PipelineSourceStatus;
   readonly definition: PipelineDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -103,10 +106,8 @@ export interface PipelineCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly PipelineCatalogSourceProjection[];
   readonly effective: readonly PipelineDefinition[];
-  readonly revisions: {
-    readonly user: string;
-    readonly workspace: string;
-  };
+  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -127,10 +128,9 @@ export interface WorkflowCatalogFieldErrorProjection {
 }
 
 export interface WorkflowCatalogSourceProjection {
-  /** `${scope}:${workflowId}`, suffixed positionally only when a scope repeats an id. */
+  /** `${workflowId}::${index}`, unique over the one layer (FR-043). */
   readonly key: string;
   readonly workflowId: string;
-  readonly scope: WorkflowDefinitionScope;
   readonly status: WorkflowSourceStatus;
   readonly definition: WorkflowDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
@@ -148,10 +148,8 @@ export interface WorkflowCatalogProjection {
   readonly state: 'ready' | 'error';
   readonly records: readonly WorkflowCatalogSourceProjection[];
   readonly effective: readonly WorkflowDefinition[];
-  readonly revisions: {
-    readonly user: string;
-    readonly workspace: string;
-  };
+  /** The store's revision for this kind, echoed back on save (FR-043, FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -410,13 +408,12 @@ export interface ActivePipelineSummary {
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { GeneralSettings } from '../../config/general-settings';
-import type { PhasePrecedenceProjection } from '../../config/phase-precedence';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 export type { GeneralSettings } from '../../config/general-settings';
-export type {
-  PhasePrecedenceLayer,
-  PhasePrecedenceProjection
-} from '../../config/phase-precedence';
+// Feature 099 (T491, FR-041) — `PhasePrecedenceLayer` and `PhasePrecedenceProjection`
+// are gone with `config/phase-precedence.ts`. Precedence answered "which layer wins
+// for this Phase id"; with one layer the question has no second answer, and a
+// projection that reports it would be a tier the operator can still see.
 export type { TelemetrySnapshot, TelemetryStatus } from '../../telemetry/telemetry-snapshot';
 
 /**
@@ -668,16 +665,10 @@ export interface WorkflowSnapshot {
   readonly generalSettings: GeneralSettings;
   readonly sessionArtifacts: SessionArtifactsProjection;
   readonly evidenceHealth: EvidenceHealthSnapshot;
-  /**
-   * Feature 026 — per-phase precedence projection. Flat map keyed by
-   * `"<phaseId>::<fieldKey>"` whose value is the layer that provided
-   * the effective value (`'workspace' | 'user' | 'built-in' | 'unset'`).
-   * UI-only — never persisted, never written to the audit log or
-   * runtime log sink. Optional and present only when the merged
-   * catalog has been computed; absent when no catalog read has
-   * occurred yet (e.g. very first idle snapshot).
-   */
-  readonly phasePrecedence?: PhasePrecedenceProjection;
+  // Feature 099 (T491, FR-041) — `phasePrecedence` is gone. It reported, per Phase
+  // field, which of `workspace | user | built-in` supplied the effective value. With
+  // one layer every answer would be the same one, and a projection whose value is
+  // constant is a tier the Builder keeps rendering after the tier is deleted.
   /** Feature 081 — authoritative source-aware Phase catalog; absence means loading. */
   readonly phaseCatalog?: PhaseCatalogProjection;
   /**
@@ -722,21 +713,18 @@ export interface WorkflowSnapshot {
    * affordances without an existence guard.
    *
    * - `workspaceTrust`: mirrors `vscode.workspace.isTrusted`. When `false`,
-   *   all four `resolvedTrust.*` fields are also `false` (the ceiling
+   *   both `resolvedTrust.*` fields are also `false` (the ceiling
    *   per the resolution ladder).
    * - `resolvedTrust.phases`: result of `isCapabilityAllowed('phases')`.
    *   Drives the Phases-tab Save button and policy banner.
    * - `resolvedTrust.retryConditions`: result of
    *   `isCapabilityAllowed('retryConditions')`. Drives the per-row
    *   retry-condition column read-only state.
-   * - `resolvedTrust.pipelineOverrides`: result of
-   *   `isCapabilityAllowed('pipelineOverrides')`. Drives the Pipelines-
-   *   tab Save button and policy banner.
-   * - `resolvedTrust.workflowOverrides` (feature 083): result of
-   *   `isCapabilityAllowed('workflowOverrides')`. Drives the Workflows-
-   *   tab Save button and policy banner. A distinct capability from
-   *   `pipelineOverrides` — projected separately so the Builder cannot
-   *   infer one from the other.
+   *
+   * Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides`
+   * are gone with the layer tier they gated. The Pipelines and Workflows tabs
+   * are governed by Workspace Trust alone, which `workspaceTrust` already
+   * carries.
    *
    * Contract:
    * `specs/059-fine-grained-trust-scopes/contracts/trust-projection-contract.md`.
@@ -745,8 +733,6 @@ export interface WorkflowSnapshot {
   readonly resolvedTrust: {
     readonly phases: boolean;
     readonly retryConditions: boolean;
-    readonly pipelineOverrides: boolean;
-    readonly workflowOverrides: boolean;
   };
   /**
    * Feature 063 (FR-021) — projected confirmation-prompt suppression
@@ -778,8 +764,6 @@ interface TrustProjection {
   readonly resolvedTrust: Readonly<{
     phases: boolean;
     retryConditions: boolean;
-    pipelineOverrides: boolean;
-    workflowOverrides: boolean;
   }>;
 }
 
@@ -787,9 +771,7 @@ export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
   workspaceTrust: false,
   resolvedTrust: Object.freeze({
     phases: false,
-    retryConditions: false,
-    pipelineOverrides: false,
-    workflowOverrides: false
+    retryConditions: false
   })
 });
 

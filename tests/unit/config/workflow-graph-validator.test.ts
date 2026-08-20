@@ -673,7 +673,7 @@ describe('dependency closure (US3, T042)', () => {
     { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan it.' }
   ];
 
-  /** Names a Phase no layer defines, so it cannot resolve (FR-017). */
+  /** Names a Phase the catalog does not define, so it cannot resolve (FR-017). */
   const BROKEN_PIPELINE = {
     id: 'broken',
     name: 'Broken',
@@ -693,15 +693,14 @@ describe('dependency closure (US3, T042)', () => {
   };
 
   /** Resolves the real chain and returns exactly what the save path passes down. */
-  function closure(layers: {
-    user?: readonly unknown[];
-    workspace?: readonly unknown[];
-  }): { effective: readonly PipelineDefinition[]; causes: ReadonlyMap<string, string> } {
+  function closure(
+    rows: readonly unknown[]
+  ): { effective: readonly PipelineDefinition[]; causes: ReadonlyMap<string, string> } {
     const catalog = resolvePipelineCatalog({
-      builtIn: [],
-      user: layers.user ?? [],
-      workspace: layers.workspace ?? [],
-      phaseCatalog: resolvePhaseCatalog({ builtIn: [], user: [], workspace: PHASE_ROWS }).effective
+      rows,
+      revision: 'rev-pipeline-closure',
+      phaseCatalog: resolvePhaseCatalog({ rows: PHASE_ROWS, revision: 'rev-phase-closure' })
+        .effective
     });
     return {
       effective: catalog.effective,
@@ -710,7 +709,7 @@ describe('dependency closure (US3, T042)', () => {
   }
 
   it('names the unresolved Phase when a node rests on a Pipeline with a bad Phase (FR-017, SC-003)', () => {
-    const { effective, causes } = closure({ workspace: [HEALTHY_PIPELINE, BROKEN_PIPELINE] });
+    const { effective, causes } = closure([HEALTHY_PIPELINE, BROKEN_PIPELINE]);
 
     // Guards the fixture: the cause has to come from the real resolution, not
     // from this test, or the assertion below proves nothing.
@@ -731,7 +730,7 @@ describe('dependency closure (US3, T042)', () => {
   });
 
   it('distinguishes a Pipeline that is absent from one that is present but invalid (FR-016)', () => {
-    const { effective, causes } = closure({ workspace: [HEALTHY_PIPELINE, BROKEN_PIPELINE] });
+    const { effective, causes } = closure([HEALTHY_PIPELINE, BROKEN_PIPELINE]);
 
     const errors = validateWorkflowGraph(
       graph([node('a', 'broken'), node('b', 'never-authored')], [], ['a', 'b']),
@@ -743,38 +742,38 @@ describe('dependency closure (US3, T042)', () => {
     expect(only(errors, 'unknown-pipeline')[0].field).toBe('nodes[1].pipelineId');
   });
 
-  // US3 scenario 3 in the two directions the shipped precedence rule produces.
+  // US3 scenario 3, in the two directions the shipped resolution rule produces.
   //
-  // `resolvePipelineCatalog` selects by descending scope but skips records it
-  // marked `invalid`, so an invalid higher-scope row does not shadow — it falls
-  // through to the next scope that has a usable definition. Both cases below
-  // therefore assert the same invariant from opposite sides: the graph
-  // validator's verdict is whatever the *effective* catalog says, and never
-  // what a raw source layer says.
-  it('follows effective resolution past an invalid higher-scope row rather than reading the raw layer', () => {
-    const { effective, causes } = closure({
-      user: [{ ...HEALTHY_PIPELINE, id: 'shared' }],
-      workspace: [{ ...BROKEN_PIPELINE, id: 'shared' }]
-    });
+  // Feature 099 (T496f, FR-042) — the rule used to be scope precedence: an
+  // invalid higher-scope row fell through to the next scope that had a usable
+  // definition. There is one catalog now, and two rows claiming one id are both
+  // invalidated (FR-040). The invariant these two cases were written for is
+  // untouched and is what they still assert from opposite sides: the graph
+  // validator's verdict is whatever the *effective* catalog says, and never what
+  // a raw stored row says.
+  it('reads the effective catalog, not the stored rows, when a healthy row is contended', () => {
+    const { effective, causes } = closure([
+      { ...HEALTHY_PIPELINE, id: 'shared' },
+      { ...BROKEN_PIPELINE, id: 'shared' }
+    ]);
 
-    // The invalid workspace row falls through; the valid user row is effective.
-    expect(effective.map((pipeline) => pipeline.pipelineId)).toContain('shared');
-    // Reading the raw workspace layer instead would have produced a cause here,
-    // which is exactly the mistake this asserts against.
-    expect(causes.has('shared')).toBe(false);
+    // A perfectly usable row for `shared` is sitting in the catalog, and it is
+    // still not effective: the second claim on the id invalidated both. Reading
+    // the raw rows would have let the node through, which is the mistake this
+    // asserts against.
+    expect(effective.map((pipeline) => pipeline.pipelineId)).not.toContain('shared');
 
-    expect(validateWorkflowGraph(graph([node('a', 'shared')], [], ['a']), effective, causes)).toEqual(
-      []
+    const errors = validateWorkflowGraph(
+      graph([node('a', 'shared')], [], ['a']),
+      effective,
+      causes
     );
+    expect(only(errors, 'pipeline-invalid')[0].field).toBe('nodes[0].pipelineId');
+    expect(codes(errors)).not.toContain('unknown-pipeline');
   });
 
-  it('reports the effective definition defect when every layer for that id is invalid', () => {
-    // Nothing to fall through to, so `shared` has no effective definition and
-    // the transitive cause is what the operator gets.
-    const { effective, causes } = closure({
-      user: [{ ...BROKEN_PIPELINE, id: 'shared' }],
-      workspace: [{ ...BROKEN_PIPELINE, id: 'shared', name: 'Shared (workspace)' }]
-    });
+  it('reports the transitive defect when the only row for that id is invalid', () => {
+    const { effective, causes } = closure([{ ...BROKEN_PIPELINE, id: 'shared' }]);
 
     expect(effective.map((pipeline) => pipeline.pipelineId)).not.toContain('shared');
 
@@ -783,11 +782,12 @@ describe('dependency closure (US3, T042)', () => {
       'pipeline-invalid'
     );
     expect(invalid).toHaveLength(1);
+    // The operator gets the Phase two levels down, not just "this is broken".
     expect(invalid[0].message).toContain('review');
   });
 
   it('reports one defect per node even when several rest on the same broken Pipeline', () => {
-    const { effective, causes } = closure({ workspace: [BROKEN_PIPELINE] });
+    const { effective, causes } = closure([BROKEN_PIPELINE]);
 
     const errors = validateWorkflowGraph(
       graph([node('a', 'broken'), node('b', 'broken')], [], ['a', 'b']),

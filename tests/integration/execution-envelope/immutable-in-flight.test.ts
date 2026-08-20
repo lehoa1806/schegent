@@ -53,7 +53,6 @@ const MUTATED_REVIEW: PhaseDef = {
   name: 'Review',
   version: 2,
   instruction: MUTATED_INSTRUCTION,
-  sourceScope: 'built-in'
 };
 
 function editCatalog(context: MidFlightContext): void {

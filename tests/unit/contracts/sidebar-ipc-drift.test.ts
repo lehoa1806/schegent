@@ -297,11 +297,17 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
   });
 
   // Feature 082 (US1, T019) — the two catalog saves are one contract shape.
-  // If CMD_SAVE_PIPELINES ever drifts back to the unscoped `{ pipelines }`
-  // payload, the Builder and the Phase editor stop agreeing on what a
-  // revisioned complete-layer save is, and the shared save-layer-intent
-  // algebra loses its second consumer.
-  it('SavePipelinesCommand declares the same scoped save envelope as SavePhasesCommand', () => {
+  // If CMD_SAVE_PIPELINES ever drifts back to the bare `{ pipelines }` payload,
+  // the Builder and the Phase editor stop agreeing on what a revisioned
+  // complete-layer save is, and the shared save-layer-intent algebra loses its
+  // second consumer.
+  //
+  // Feature 099 (T496f, FR-042/FR-043) — `scope` leaves the envelope with the
+  // layer tier: there is one catalog, so a save has nowhere to aim. The drift
+  // this guard exists to catch is unchanged (a save that forgets its revision or
+  // its mutation), and the check gains the mirror arm so the retired field
+  // cannot come back on one command and not the other.
+  it('SavePipelinesCommand declares the same save envelope as SavePhasesCommand', () => {
     // The two save shapes are declared together in the focused catalog-save
     // module; the barrel re-exports them so `sidebar-ipc.ts` remains the single
     // import site for the wire contract.
@@ -317,8 +323,15 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       /export interface SavePipelinesCommand[\s\S]*?\n\}/
     )?.[0];
     expect(declaration, 'SavePipelinesCommand must declare a payload').toBeDefined();
-    for (const field of ['scope', 'expectedRevision', 'mutation', 'pipelines']) {
+    for (const field of ['expectedRevision', 'mutation', 'pipelines']) {
       expect(declaration, `SavePipelinesCommand payload must carry '${field}'`).toContain(field);
+    }
+    const phases = source.match(/export interface SavePhasesCommand[\s\S]*?\n\}/)?.[0];
+    expect(phases, 'SavePhasesCommand must declare a payload').toBeDefined();
+    for (const shape of [declaration, phases]) {
+      expect(shape, 'a save payload must carry no scope').not.toMatch(
+        /^\s*(readonly\s+)?scope\s*[?:]/m
+      );
     }
   });
 

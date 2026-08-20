@@ -13,7 +13,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
   PhaseBinding,
-  PipelineDefinitionScope,
   PipelineExecutionDefaults,
   PipelineInputPort,
   PipelineOutputPort
@@ -50,10 +49,9 @@ function resolved(
 
 const SPECIFY: PhaseDef = {
   id: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Write the spec.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 const INPUTS: PipelineInputPort[] = [
@@ -82,7 +80,6 @@ interface AuthoredPipeline {
   bindings: PhaseBinding[];
   executionDefaults?: PipelineExecutionDefaults;
   recommendedNext: string[];
-  sourceScope?: PipelineDefinitionScope;
 }
 
 /** A Pipeline authored with every contract field this feature freezes. */
@@ -98,7 +95,6 @@ function authoredPipeline(): AuthoredPipeline {
     bindings: [...BINDINGS],
     executionDefaults: { runner: 'claude', model: 'model-a', effort: 'high', timeoutSeconds: 30 },
     recommendedNext: ['ship-it'],
-    sourceScope: 'workspace'
   };
 }
 
