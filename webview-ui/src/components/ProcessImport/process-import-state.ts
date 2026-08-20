@@ -30,6 +30,14 @@
 // any number of layers, so neither changed; what did change is the partial
 // sentence, which now names WHICH layers landed (FR-051), because with three of
 // them "part of this document" no longer tells the operator where to look.
+//
+// Feature 099 (T494a, FR-043/FR-044) — the target scope is gone from every
+// function here. "Which layer" and "which kind" were two independent axes: the
+// three ordered writes are the KIND axis and are untouched, because the three
+// catalogs are still independently revisioned and a Pipeline still cannot be
+// validated before its Phases exist. What collapsed is the other axis — the
+// operator's choice of destination, the per-scope revision lookup, and the layer
+// noun in every sentence a result carries.
 
 import type {
   BlockedDependency,
@@ -45,7 +53,6 @@ import type {
   SavePipelinesRequest,
   SavePipelinesResult
 } from '../../lib/save-pipelines';
-import type { WritablePhaseDefinitionScope } from '../../lib/snapshot-types';
 import type {
   SaveWorkflowRow,
   SaveWorkflowsRequest,
@@ -106,11 +113,9 @@ type ModelCatalogImportOutcomeRow = Extract<
   { outcome: 'import'; resourceKind: 'modelCatalog' }
 >;
 
-/**
- * The scopes an import may target. Built-in is absent, and unrepresentable in
- * the element type as well, so it cannot be offered (FR-035).
- */
-export const IMPORT_TARGET_SCOPES: readonly WritablePhaseDefinitionScope[] = ['user', 'workspace'];
+// Feature 099 (T494a, FR-043) — `IMPORT_TARGET_SCOPES` is gone. It enumerated
+// the scopes an import could target so the preflight could offer a choice; there
+// is one target, so there is no choice to offer and no list to enumerate it.
 
 /** Which states the surface can be in when the operator reaches for Confirm. */
 export type ImportSurfaceState =
@@ -125,8 +130,6 @@ export type ImportSurfaceState =
 export interface ConfirmGate {
   readonly state: ImportSurfaceState;
   readonly plan: ImportPlan | null;
-  /** `null` until the operator picks one. There is no default (FR-056). */
-  readonly scope: WritablePhaseDefinitionScope | null;
 }
 
 export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed';
@@ -207,7 +210,7 @@ export function modelCatalogImportRows(plan: ImportPlan): readonly ModelCatalogI
 
 /**
  * Feature 096 T024 — whether `plan` came from a Model Catalog document, the
- * single signal `ProcessImportPreflight.svelte` reads to choose its scope-less
+ * single signal `ProcessImportPreflight.svelte` reads to choose its single-write
  * rendering and commit branch over the Phase/Pipeline/Workflow one.
  *
  * `computedAgainstModelsRevision` is present on a plan exactly when the
@@ -291,25 +294,31 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
     return [];
   }
   if (row.outcome === 'skip') {
-    // A distinct arm (`ModelCatalogSkipRow`), not the presence-scope reason
-    // below: Model Catalog has no built-in/user/workspace tiering, so its two
-    // reasons are `already-exists` and `unrecognized-backend` (contracts §6).
+    // A distinct arm (`ModelCatalogSkipRow`), not the presence reason below:
+    // Model Catalog is not in the store (FR-056), so it is not scanned the way
+    // a stored row is, and its two reasons are `already-exists` and
+    // `unrecognized-backend` (contracts §6).
     if (row.resourceKind === 'modelCatalog') {
       return row.reason === 'already-exists'
         ? [`\`${row.modelId}\` already exists under ${row.backend} — skipped`]
         : [`Unrecognized backend \`${row.backend}\` — \`${row.modelId}\` skipped`];
     }
+    // Feature 099 (T494a, FR-049) — the sentence used to open with which layer
+    // already held the id. There is one, so what remains is the fact that decides
+    // the skip: a stored row exists, and at what status. The presence PROPERTY is
+    // unchanged — a scan of stored rows at every status, never the effective
+    // catalog — so an `invalid` row still skips and still says so.
     return [
-      `Already present in the ${row.presentIn} layer as a ${row.presentRowStatus} row, so this import would not change it.`
+      `Already present in the catalog as a ${row.presentRowStatus} row, so this import would not change it.`
     ];
   }
   if (row.outcome === 'blocked') {
     const needs = dependencyLabel(row.reason.dependency);
     if (row.reason.code === 'dependency-absent') {
-      return [`Needs the ${needs}, which is in no catalog layer and this document does not supply.`];
+      return [`Needs the ${needs}, which is not in the catalog and this document does not supply.`];
     }
     if (row.reason.code === 'dependency-unresolvable') {
-      return [`Needs the ${needs}, which a catalog layer claims but does not currently resolve.`];
+      return [`Needs the ${needs}, which the catalog holds but does not currently resolve.`];
     }
     // The propagated arm (086 T046, FR-039/FR-040). Two lines, not one: line one
     // answers the column's own question — what does THIS row wait on — and line
@@ -404,11 +413,10 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   }
   // FR-057 — the eligibility question, asked of the plan and of no kind.
   if (eligibleRows(gate.plan).length === 0) return 'This plan has nothing to import.';
-  // Model Catalog branches out here, before the scope-related checks below:
-  // FR-015 guarantees a plan with any Model Catalog row has ONLY Model
-  // Catalog rows, and Model Catalog has exactly one implicit target, so there
-  // is no scope for the operator to choose (T024) and none of the
-  // Pipeline/Workflow revision checks below apply to it.
+  // Model Catalog branches out here, before the revision checks below: FR-015
+  // guarantees a plan with any Model Catalog row has ONLY Model Catalog rows,
+  // and its revision comes from a different authority (FR-056), so none of the
+  // Pipeline/Workflow checks below apply to it.
   if (modelCatalogImportRows(gate.plan).length > 0) {
     return gate.plan.computedAgainstModelsRevision === undefined
       ? 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.'
@@ -432,43 +440,41 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   ) {
     return 'This plan does not carry the Workflow catalog revision its write has to check. Inspect the document again.';
   }
-  if (gate.scope === null) return 'Choose the scope to import into.';
+  // Feature 099 (T494a, FR-043) — a fourth refusal, "Choose the scope to import
+  // into", used to sit here. There is one target, so an operator can no longer
+  // fail to have chosen it.
   return null;
 }
 
 /**
  * What confirming would do, stated before the click (FR-058).
  *
- * Two facts the operator cannot read off the table quickly: that the write is
- * limited to the eligible rows, and where it lands. Both are stated even while
- * Confirm is unavailable, because the reason it is unavailable is often exactly
- * the second one — an operator who has not chosen a scope needs to know a scope
- * is what confirming needs, not merely that something is missing.
+ * The one fact the operator cannot read off the table quickly: that the write is
+ * limited to the eligible rows. Stated even while Confirm is unavailable, so a
+ * blocked Confirm is never merely "something is missing".
  *
- * The scope is named as the operator's choice (FR-046): the document has no say
- * in where it is written, so nothing here is derived from it.
+ * Feature 099 (T494a, FR-043) — the second fact this stated was WHERE the rows
+ * land, taken from a scope the operator had chosen or had yet to choose. There
+ * is one catalog, so naming it would be naming the only place a write can go.
  */
-export function commitStatement(
-  plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope | null
-): string {
+export function commitStatement(plan: ImportPlan): string {
   const eligible = eligibleRows(plan).length;
   if (eligible === 0) return 'No row here is eligible, so confirming would write nothing.';
   const others = plan.rows.length - eligible;
   const subject = eligible === 1 ? '1 resource' : `${eligible} resources`;
-  const target = scope === null ? 'the scope you choose' : `the ${scope} layer`;
   const rest =
     others === 0
       ? ''
       : ` The other ${others === 1 ? 'row is' : `${others} rows are`} left unchanged.`;
-  return `Confirming writes ${subject} into ${target}, and nothing else.${rest}`;
+  return `Confirming writes ${subject} into the catalog, and nothing else.${rest}`;
 }
 
 /**
  * What confirming a Model Catalog import would do, stated before the click
- * (FR-058) — the scope-less counterpart to `commitStatement` (Implementation
- * Note 1). Model Catalog has exactly one implicit target, so unlike the other
- * three kinds there is no scope to name or to have chosen yet.
+ * (FR-058) — the Model Catalog counterpart to `commitStatement` (Implementation
+ * Note 1). It stays separate because its destination is VS Code configuration
+ * rather than the store (FR-056), which is a different authority and a different
+ * revision, not merely a different noun in the same sentence.
  */
 export function modelCatalogCommitStatement(plan: ImportPlan): string {
   const eligible = modelCatalogImportRows(plan).length;
@@ -531,7 +537,7 @@ export function saveWorkflowRowFromDefinition(
   return { ...definition };
 }
 
-/** The stored rows of each catalog the commit appends to, for one scope. */
+/** The stored rows of each catalog the commit appends to. */
 export interface ImportTargetLayers {
   readonly phases: readonly SavePhaseRow[];
   readonly pipelines: readonly SavePipelineRow[];
@@ -572,11 +578,10 @@ const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
  * does not validate until that Phase is in the catalog, and a Workflow's nodes
  * do not resolve until its Pipelines are, so any other order would refuse a
  * package that is internally consistent. Each write carries the revision the
- * PLAN was computed against for the chosen scope — its own, from its own
- * catalog — because that is what makes a layer written since preflight refuse as
- * `stale-catalog` (FR-040) rather than overwrite an operator's work. Reading any
- * of the three revisions live at this moment would leave that gate unable to
- * fire.
+ * PLAN was computed against — its own, from its own catalog — because that is
+ * what makes a catalog written since preflight refuse as `stale-catalog`
+ * (FR-040) rather than overwrite an operator's work. Reading any of the three
+ * revisions live at this moment would leave that gate unable to fire.
  *
  * The intent is `import` only for the shipped single-Phase standalone case, and
  * `import-package` for everything else — one intent per layer, never one intent
@@ -597,16 +602,15 @@ const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
  */
 export function buildImportWrites(
   plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope,
   layers: ImportTargetLayers
 ): readonly ImportLayerWrite[] {
   const phases = phaseImportRows(plan);
   const pipelines = pipelineImportRows(plan);
   const workflows = workflowImportRows(plan);
-  const pipelineRevisions = plan.computedAgainstPipelineRevision;
-  const workflowRevisions = plan.computedAgainstWorkflowRevision;
-  if (pipelines.length > 0 && pipelineRevisions === undefined) return [];
-  if (workflows.length > 0 && workflowRevisions === undefined) return [];
+  const pipelineRevision = plan.computedAgainstPipelineRevision;
+  const workflowRevision = plan.computedAgainstWorkflowRevision;
+  if (pipelines.length > 0 && pipelineRevision === undefined) return [];
+  if (workflows.length > 0 && workflowRevision === undefined) return [];
 
   const writes: ImportLayerWrite[] = [];
   if (phases.length > 0) {
@@ -614,8 +618,7 @@ export function buildImportWrites(
     writes.push({
       key: 'phases',
       request: {
-        scope,
-        expectedRevision: plan.computedAgainstRevision[scope],
+        expectedRevision: plan.computedAgainstRevision,
         mutation: standalone
           ? { kind: 'import', phaseId: phases[0].resourceId }
           : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
@@ -626,12 +629,11 @@ export function buildImportWrites(
       }
     });
   }
-  if (pipelines.length > 0 && pipelineRevisions !== undefined) {
+  if (pipelines.length > 0 && pipelineRevision !== undefined) {
     writes.push({
       key: 'pipelines',
       request: {
-        scope,
-        expectedRevision: pipelineRevisions[scope],
+        expectedRevision: pipelineRevision,
         mutation: {
           kind: 'import-package',
           pipelineIds: pipelines.map((row) => row.resourceId)
@@ -643,12 +645,11 @@ export function buildImportWrites(
       }
     });
   }
-  if (workflows.length > 0 && workflowRevisions !== undefined) {
+  if (workflows.length > 0 && workflowRevision !== undefined) {
     writes.push({
       key: 'workflows',
       request: {
-        scope,
-        expectedRevision: workflowRevisions[scope],
+        expectedRevision: workflowRevision,
         mutation: {
           kind: 'import-package',
           workflowIds: workflows.map((row) => row.resourceId)
@@ -702,12 +703,12 @@ export function commitOutcome(results: readonly ImportLayerResult[]): ImportComm
  * rejection — says that rather than borrowing the other layer's reason. Rows the
  * commit never addressed keep the outcome and the reason preflight gave them.
  *
- * The scope named in an `imported` detail is the one the operator chose, which is
- * by FR-046 the resolution origin — never anything the document claimed.
+ * Feature 099 (T494a, FR-043) — the `imported` detail used to name the scope the
+ * operator chose. There is one catalog, so the row says it was imported and the
+ * destination is no longer a fact about the row.
  */
 export function projectCommitResults(
   plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope,
   results: readonly ImportLayerResult[]
 ): readonly ImportResultRow[] {
   const failureFor = (key: ImportLayerKey): string | null => {
@@ -744,7 +745,7 @@ export function projectCommitResults(
       ? {
           resourceId: row.resourceId,
           outcome: 'imported' as const,
-          detail: `Imported into the ${scope} layer.`
+          detail: 'Imported into the catalog.'
         }
       : { resourceId: row.resourceId, outcome: 'failed' as const, detail: failure };
   });
@@ -768,10 +769,9 @@ export function projectCommitResults(
  */
 export function commitOutcomeStatement(
   outcome: ImportCommitOutcome,
-  scope: WritablePhaseDefinitionScope,
   results: readonly ImportLayerResult[]
 ): string {
-  if (outcome === 'imported') return `Every eligible resource was written to the ${scope} layer.`;
+  if (outcome === 'imported') return 'Every eligible resource was written to the catalog.';
   if (outcome === 'failed') return 'Nothing was written.';
   const landed = IMPORT_LAYER_ORDER.filter((key) =>
     results.some((result) => result.key === key && result.ack.status === 'accepted')
@@ -780,7 +780,7 @@ export function commitOutcomeStatement(
     landed.length === 0
       ? 'Part of this document was'
       : `${landed.length === 1 ? landed[0] : `${landed.slice(0, -1).join(', ')} and ${landed[landed.length - 1]}`} were`;
-  return `${written} written to the ${scope} layer; the rest of this document was not. What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.`;
+  return `${written} written to the catalog; the rest of this document was not. What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.`;
 }
 
 /** The three saves, injected so the commit can be exercised without a host. */
@@ -809,12 +809,11 @@ export interface ImportCommitReport {
  */
 export async function runImportCommit(
   plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope,
   layers: ImportTargetLayers,
   deps: ImportCommitDeps
 ): Promise<ImportCommitReport> {
   const results: ImportLayerResult[] = [];
-  for (const write of buildImportWrites(plan, scope, layers)) {
+  for (const write of buildImportWrites(plan, layers)) {
     // Awaited inside the loop deliberately: the writes are ordered, and each is
     // conditional on the one before it. Issuing them together would send the
     // Pipeline before its Phases exist, and the Workflow before its Pipelines do.
@@ -832,7 +831,7 @@ export async function runImportCommit(
   return {
     outcome: commitOutcome(results),
     results,
-    rows: projectCommitResults(plan, scope, results)
+    rows: projectCommitResults(plan, results)
   };
 }
 
@@ -840,14 +839,14 @@ export async function runImportCommit(
 // Feature 096 T023 — Model Catalog import commit.
 //
 // A parallel, deliberately separate track from everything above (Implementation
-// Note 1): `buildImportWrites`/`runImportCommit` assume `phases`/`pipelines`/
-// `workflows` × `user`/`workspace`, and Model Catalog has one implicit target
-// and no scope choice. Forcing it into that shape would mean a 4th
-// `ImportLayerKey`, a degenerate single-choice scope type, and a
-// `commitOutcomeStatement` that has to explain why a "layer" nobody chose
-// landed — so instead it gets its own small, single-write path below, built
-// from the same primitives (`ImportPlan`, `ImportPlanRow`, `reasonLines`,
-// `ImportResultRow`) rather than the layer machinery.
+// Note 1): `buildImportWrites`/`runImportCommit` write the three store-backed
+// kinds, each independently revisioned by the catalog store, while the Model
+// Catalog is not in the store at all (FR-056) — it is VS Code configuration,
+// with its own authority and its own revision. Forcing it into that shape would
+// mean a 4th `ImportLayerKey` gated on a revision the store never issued, so
+// instead it gets its own small, single-write path below, built from the same
+// primitives (`ImportPlan`, `ImportPlanRow`, `reasonLines`, `ImportResultRow`)
+// rather than the layer machinery.
 // ---------------------------------------------------------------------------
 
 /**
@@ -886,7 +885,7 @@ export interface ModelCatalogCommitReport {
 
 /**
  * The ack, as one result per plan row (FR-042's Model Catalog analog) — the
- * scope-less counterpart to `projectCommitResults`. One ack decides every
+ * single-write counterpart to `projectCommitResults`. One ack decides every
  * `import` row's outcome, because Model Catalog is a single write rather than
  * an ordered sequence of independently-gated layers.
  */
@@ -935,7 +934,7 @@ export function projectModelCatalogCommitResults(
 
 /**
  * Send a Model Catalog plan's delta and report what happened — the
- * scope-less counterpart to `runImportCommit` (Implementation Note 1). One
+ * single-write counterpart to `runImportCommit` (Implementation Note 1). One
  * write, not an ordered sequence: FR-015 rules out a mixed document, so there
  * is no second, independently-revisioned layer for this write to depend on or
  * to leave stranded on a rejection.
@@ -969,10 +968,9 @@ export async function runModelCatalogImportCommit(
 
 /**
  * The whole-commit sentence for a Model Catalog import (FR-042a's Model
- * Catalog analog) — the scope-less counterpart to `commitOutcomeStatement`.
+ * Catalog analog) — the single-write counterpart to `commitOutcomeStatement`.
  * Binary rather than three-way, and names no layer: a single write has
- * nothing to report between imported and failed, and there is only ever the
- * one implicit target.
+ * nothing to report between imported and failed.
  */
 export function modelCatalogCommitOutcomeStatement(outcome: ModelCatalogCommitOutcome): string {
   return outcome === 'imported'

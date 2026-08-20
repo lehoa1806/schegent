@@ -95,22 +95,22 @@ describe('TrustCapabilityDeniedPayload shape (059, T029)', () => {
     expect(payload.workspaceBasename).not.toMatch(/[\\/]/);
   });
 
-  it('accepts a pipelineOverrides-denied payload at workspace-trust scope', () => {
+  it('accepts a denial at workspace-trust scope, the arm no setting can widen', () => {
+    // Feature 099 (T496f, FR-046) — `pipelineOverrides` left with the layer tier
+    // it gated. The claim here is about the SCOPE, not the capability:
+    // `workspace-trust` is the arm no per-capability setting can widen, and a
+    // surviving capability carries it just as well.
     const payload: TrustCapabilityDeniedPayload = {
-      capability: 'pipelineOverrides',
+      capability: 'phases',
       resolvedScope: 'workspace-trust',
       workspaceBasename: 'untrusted-folder',
-      reason: TRUST_DENIED_REASONS.pipelineOverridesWorkspace
+      reason: TRUST_DENIED_REASONS.workspaceTrust
     };
     expect(payload.resolvedScope).toBe('workspace-trust');
   });
 
   it('confines capability to the closed enum', () => {
-    const capabilities: readonly TrustCapability[] = [
-      'phases',
-      'retryConditions',
-      'pipelineOverrides'
-    ];
+    const capabilities: readonly TrustCapability[] = ['phases', 'retryConditions'];
     for (const c of capabilities) {
       const p: TrustCapabilityDeniedPayload = {
         capability: c,

@@ -1,18 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import {
-  phaseDefinitionToPhaseDef,
-  phaseLayerRevision,
-  resolvePhaseCatalog
-} from '../../../src/config/process-catalog';
-import type { PhaseDef } from '../../../src/config/pipeline-config';
+import { phaseDefinitionToPhaseDef, resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
-import { BUILT_IN_WORKFLOWS } from '../../../src/config/workflow-config';
 import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
+import { EMPTY_SNAPSHOT } from '../../fixtures/catalog-snapshot-fixture';
 
-const builtIn: readonly PhaseDef[] = [
-  { id: 'shared', name: 'Built in', instruction: 'built-in', version: 1, runner: 'claude' },
-  { id: 'fallback', name: 'Fallback', instruction: 'fallback', version: 1 }
-];
+/** The revision the store reported for this catalog. Echoed back, never derived. */
+const REVISION = 'rev-phase-1';
 
 const row = (name: string, overrides: Record<string, unknown> = {}) => ({
   id: 'shared',
@@ -24,91 +17,100 @@ const row = (name: string, overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('resolvePhaseCatalog', () => {
-  it('selects workspace over user over built-in as whole rows', () => {
-    const result = resolvePhaseCatalog({
-      builtIn,
-      user: [row('User', { model: 'user-model' })],
-      workspace: [row('Workspace')]
-    });
-    expect(result.effective.find((phase) => phase.phaseId === 'shared')).toMatchObject({
-      name: 'Workspace'
-    });
-    expect(result.effective.find((phase) => phase.phaseId === 'shared')).not.toHaveProperty('model');
-  });
+  // Feature 099 (T496f, FR-042) — three cases lived here and are gone with the
+  // layer tier, each because its subject was precedence itself:
+  //
+  //   - 'selects workspace over user over built-in as whole rows'
+  //   - 'keeps an invalid high-scope row visible and falls through'
+  //   - 'marks every same-scope duplicate invalid and falls through'
+  //
+  // The first two assert a winner chosen among layers; with one layer there is
+  // no choosing, and a rewritten "the only row wins" would pass against any
+  // implementation at all. The third's surviving half — a duplicated id
+  // invalidates every row claiming it — is asserted below without the
+  // fall-through clause, which had nothing left to fall through to.
 
-  it('keeps an invalid high-scope row visible and falls through', () => {
+  it('invalidates every row claiming a duplicated id', () => {
     const result = resolvePhaseCatalog({
-      builtIn,
-      user: [row('User')],
-      workspace: [row('Workspace', { instruction: '   ' })]
+      rows: [row('One'), row('Two')],
+      revision: REVISION
     });
-    expect(result.records).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ scope: 'workspace', phaseId: 'shared', status: 'invalid' }),
-        expect.objectContaining({ scope: 'user', phaseId: 'shared', status: 'effective' })
-      ])
-    );
-  });
-
-  it('marks every same-scope duplicate invalid and falls through', () => {
-    const result = resolvePhaseCatalog({
-      builtIn,
-      user: [row('One'), row('Two')],
-      workspace: []
-    });
-    expect(result.records.filter((record) => record.scope === 'user')).toHaveLength(2);
-    expect(result.records.filter((record) => record.scope === 'user').every((record) => record.status === 'invalid')).toBe(true);
-    expect(result.records.find((record) => record.scope === 'built-in')?.status).toBe('effective');
+    const collided = result.records.filter((record) => record.phaseId === 'shared');
+    expect(collided).toHaveLength(2);
+    expect(collided.every((record) => record.status === 'invalid')).toBe(true);
+    // And neither is offered: a duplicated id resolves to nothing, not to one of them.
+    expect(result.effective.filter((phase) => phase.phaseId === 'shared')).toHaveLength(0);
   });
 
   it('emits at most one effective definition per id', () => {
-    const result = resolvePhaseCatalog({ builtIn, user: [row('User')], workspace: [row('Workspace')] });
+    const result = resolvePhaseCatalog({ rows: [row('Only')], revision: REVISION });
     expect(result.effective.filter((phase) => phase.phaseId === 'shared')).toHaveLength(1);
   });
 
   it('uses a non-colliding repair handle for a row without a string identity', () => {
     const result = resolvePhaseCatalog({
-      builtIn: [],
-      user: [{ name: 'Broken', instruction: 'broken' }, {
-        id: 'invalid-1', name: 'Legitimate', instruction: 'valid'
-      }],
-      workspace: []
+      rows: [
+        { name: 'Broken', instruction: 'broken' },
+        { id: 'invalid-1', name: 'Legitimate', instruction: 'valid' }
+      ],
+      revision: REVISION
     });
-    expect(result.records).toEqual(expect.arrayContaining([
-      expect.objectContaining({ phaseId: '?invalid-1', status: 'invalid' }),
-      expect.objectContaining({ phaseId: 'invalid-1', status: 'effective' })
-    ]));
+    expect(result.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phaseId: '?invalid-1', status: 'invalid' }),
+        expect.objectContaining({ phaseId: 'invalid-1', status: 'effective' })
+      ])
+    );
   });
 
   // Feature 098 T018 — the rule this exercises was re-keyed from an id list onto
-  // the declared containment class, so the fixture now declares `sideEffects:
-  // 'git'` rather than relying on `finalize` having been one of five known ids.
-  // The id is retained only so the case still reads as the one it replaced; it
-  // carries no authority, and a row declaring nothing under the same id and the
-  // same runner is admitted (asserted in `phase-runner-policy.test.ts`).
-  it('quarantines an explicit Codex override for a Phase declaring Git side effects', () => {
+  // the declared containment class, so the fixture declares `sideEffects: 'git'`
+  // rather than relying on `finalize` having been one of five known ids. The id
+  // is retained only so the case still reads as the one it replaced; it carries
+  // no authority, and a row declaring nothing under the same id and the same
+  // runner is admitted (asserted in `phase-runner-policy.test.ts`).
+  //
+  // Feature 099 (T496f) — the case was written as a workspace row overriding a
+  // built-in one, and the quarantine was read off the losing layer. The rule was
+  // never about layers: `parseRows` applies it to each row on its own. So the
+  // fixture is now two rows in the one catalog, which asserts the same rule AND
+  // the per-row scope the old shape could not distinguish from a layer effect.
+  it('quarantines a Codex runner on a Phase declaring Git side effects', () => {
     const result = resolvePhaseCatalog({
-      builtIn: [{
-        id: 'finalize', name: 'Built-in finalize', instruction: 'commit',
-        runner: 'claude', sideEffects: 'git'
-      }],
-      user: [],
-      workspace: [{
-        id: 'finalize', name: 'Custom finalize', instruction: 'commit',
-        runner: 'codex', sideEffects: 'git'
-      }]
+      rows: [
+        {
+          id: 'finalize', name: 'Custom finalize', instruction: 'commit',
+          runner: 'codex', sideEffects: 'git'
+        },
+        {
+          id: 'commit', name: 'Other finalize', instruction: 'commit',
+          runner: 'claude', sideEffects: 'git'
+        }
+      ],
+      revision: REVISION
     });
-    expect(result.records.find((record) => record.scope === 'workspace')).toMatchObject({
-      status: 'invalid', errors: [expect.objectContaining({ code: 'git-metadata-write-required' })]
+    expect(result.records.find((record) => record.phaseId === 'finalize')).toMatchObject({
+      status: 'invalid',
+      errors: [expect.objectContaining({ code: 'git-metadata-write-required' })]
     });
-    expect(result.effective.find((phase) => phase.phaseId === 'finalize')?.runner).toBe('claude');
+    // Quarantine is per row: the compliant row beside it still resolves.
+    expect(result.effective.find((phase) => phase.phaseId === 'commit')?.runner).toBe('claude');
+    expect(result.effective.find((phase) => phase.phaseId === 'finalize')).toBeUndefined();
   });
 
-  it('computes deterministic semantic layer revisions', () => {
-    const first = phaseLayerRevision([{ name: 'A', id: 'a' }]);
-    const reorderedKeys = phaseLayerRevision([{ id: 'a', name: 'A' }]);
-    expect(first).toBe(reorderedKeys);
-    expect(first).not.toBe(phaseLayerRevision([{ id: 'a', name: 'B' }]));
+  it('reports back the revision the store issued, verbatim', () => {
+    // Feature 099 (FR-044a) — replaces 'computes deterministic semantic layer
+    // revisions', which pinned `phaseLayerRevision`'s key-order stability and
+    // content sensitivity. The resolver no longer computes a revision; the store
+    // issues one and this carries it. Recomputing the hash here would assert
+    // agreement between two copies of the same computation, and would pass
+    // against a value the store never issued — so the property under test is
+    // that the issued string survives the trip unaltered.
+    const result = resolvePhaseCatalog({
+      rows: [{ id: 'a', name: 'A', instruction: 'a' }],
+      revision: 'rev-issued-by-the-store'
+    });
+    expect(result.revision).toBe('rev-issued-by-the-store');
   });
 });
 
@@ -122,10 +124,15 @@ describe('resolvePhaseCatalog', () => {
 // enough: the field arrived at the freeze already absent, and the freeze would
 // have applied its default to a Phase that had in fact declared something.
 //
-// The `built-in` cases below still assert the old precedence, because Stage 1
-// lands on a build where the built-in layer still exists. They are written as
-// `definition ?? builtIn` rather than as either operand alone, so they stay
-// correct after Stage 3 empties that layer and the right operand goes dead.
+// Feature 099 (T489) — the `scope` argument and the built-in row map are gone
+// with the layer tier, so the projection reads the definition and nothing else.
+// Two cases went with them:
+//
+//   - 'prefers the definition over a built-in row that disagrees' — with no
+//     second source there is nothing to prefer it over, and the surviving half
+//     (both fields carried together) is 'carries both declarations together'.
+//   - 'falls back to the built-in row while one still exists' — one no longer
+//     can, and a fallback to nothing is what 'omits the key entirely' asserts.
 
 describe('phaseDefinitionToPhaseDef — containment declarations survive resolution', () => {
   const definition = (overrides: Record<string, unknown> = {}) => ({
@@ -136,38 +143,25 @@ describe('phaseDefinitionToPhaseDef — containment declarations survive resolut
     ...overrides
   }) as Parameters<typeof phaseDefinitionToPhaseDef>[0];
 
-  /** No built-in row for the id under test, which is the imported-Phase case. */
-  const noBuiltIns = new Map<string, PhaseDef>();
-
   it.each(['none', 'workspace', 'git', 'unrestricted'] as const)(
-    'carries a user-scope definition declaring sideEffects: %s',
+    'carries a definition declaring sideEffects: %s',
     (declared) => {
-      const phase = phaseDefinitionToPhaseDef(
-        definition({ sideEffects: declared }),
-        'user',
-        noBuiltIns
-      );
+      const phase = phaseDefinitionToPhaseDef(definition({ sideEffects: declared }));
       expect(phase.sideEffects).toBe(declared);
     }
   );
 
   it.each(['required', 'best-effort', 'none'] as const)(
-    'carries a workspace-scope definition declaring evidencePolicy: %s',
+    'carries a definition declaring evidencePolicy: %s',
     (declared) => {
-      const phase = phaseDefinitionToPhaseDef(
-        definition({ evidencePolicy: declared }),
-        'workspace',
-        noBuiltIns
-      );
+      const phase = phaseDefinitionToPhaseDef(definition({ evidencePolicy: declared }));
       expect(phase.evidencePolicy).toBe(declared);
     }
   );
 
   it('carries both declarations together', () => {
     const phase = phaseDefinitionToPhaseDef(
-      definition({ sideEffects: 'git', evidencePolicy: 'best-effort' }),
-      'user',
-      noBuiltIns
+      definition({ sideEffects: 'git', evidencePolicy: 'best-effort' })
     );
     expect(phase.sideEffects).toBe('git');
     expect(phase.evidencePolicy).toBe('best-effort');
@@ -177,68 +171,35 @@ describe('phaseDefinitionToPhaseDef — containment declarations survive resolut
     // Absence must stay absence here: the default belongs to the freeze
     // (FR-005), and filling it in at resolution would make an omission
     // indistinguishable from a declaration one layer earlier than intended.
-    const phase = phaseDefinitionToPhaseDef(definition(), 'user', noBuiltIns);
+    const phase = phaseDefinitionToPhaseDef(definition());
     expect(phase).not.toHaveProperty('sideEffects');
     expect(phase).not.toHaveProperty('evidencePolicy');
-  });
-
-  it('prefers the definition over a built-in row that disagrees', () => {
-    const builtInRow: PhaseDef = {
-      id: 'imported-phase',
-      name: 'Built-in',
-      instruction: 'built-in',
-      version: 1,
-      sideEffects: 'unrestricted',
-      evidencePolicy: 'none'
-    };
-    const phase = phaseDefinitionToPhaseDef(
-      definition({ sideEffects: 'workspace', evidencePolicy: 'required' }),
-      'built-in',
-      new Map([[builtInRow.id, builtInRow]])
-    );
-    expect(phase.sideEffects).toBe('workspace');
-    expect(phase.evidencePolicy).toBe('required');
-  });
-
-  it('falls back to the built-in row while one still exists', () => {
-    const builtInRow: PhaseDef = {
-      id: 'imported-phase',
-      name: 'Built-in',
-      instruction: 'built-in',
-      version: 1,
-      sideEffects: 'git',
-      evidencePolicy: 'best-effort'
-    };
-    const phase = phaseDefinitionToPhaseDef(
-      definition(),
-      'built-in',
-      new Map([[builtInRow.id, builtInRow]])
-    );
-    expect(phase.sideEffects).toBe('git');
-    expect(phase.evidencePolicy).toBe('best-effort');
   });
 });
 
 describe('a workspace with no operator-authored settings has four empty catalogs (T031)', () => {
   // Feature 098 (FR-010, FR-011, SC-001) — the product's own claim on the four
-  // catalogs, asserted from the outside. A reader that answers `undefined` to every
-  // question is exactly a fresh workspace: nothing in user settings, nothing in
-  // workspace settings. What is left is whatever the code ships, and after this
+  // catalogs, asserted from the outside. A store nobody has saved into plus a
+  // reader that answers `undefined` to every question is exactly a fresh
+  // workspace: no stored definitions, nothing in user settings, nothing in
+  // workspace settings. What is left is whatever the code ships, and after that
   // feature that is nothing.
   //
   // All four are asserted in one place on purpose. The Workflow layer has shipped
   // empty since feature 086 and is the existence proof the other three are
   // following, so a regression in any one of them is most legible next to the three
   // that agree.
+  //
+  // Feature 099 (T496f) — `getPhases`/`getPipelines` are gone from the reader
+  // and the rows come from the store, so "nothing authored" is now the empty
+  // snapshot plus the two surviving settings keys answering `undefined`.
   const NO_SETTINGS: CatalogConfigReader = {
-    getPhases: () => undefined,
-    getPipelines: () => undefined,
     getModels: () => undefined,
     getDefaultPipelineId: () => undefined
   };
 
   it('resolves zero Phases and zero Pipelines, and names no default', () => {
-    const loaded = loadCatalog(NO_SETTINGS);
+    const loaded = loadCatalog(EMPTY_SNAPSHOT, NO_SETTINGS);
 
     expect(loaded.catalog.phases).toEqual([]);
     expect(loaded.catalog.pipelines).toEqual([]);
@@ -252,17 +213,16 @@ describe('a workspace with no operator-authored settings has four empty catalogs
   });
 
   it('offers no models for any backend', () => {
-    const loaded = loadCatalog(NO_SETTINGS);
+    const loaded = loadCatalog(EMPTY_SNAPSHOT, NO_SETTINGS);
 
     expect(loaded.catalog.models).toEqual({ claude: [], codex: [], agy: [] });
   });
 
   it('resolves zero Workflows', () => {
-    const loaded = loadCatalog(NO_SETTINGS);
+    const loaded = loadCatalog(EMPTY_SNAPSHOT, NO_SETTINGS);
     const workflows = resolveWorkflowCatalog({
-      builtIn: BUILT_IN_WORKFLOWS,
-      user: undefined,
-      workspace: undefined,
+      rows: undefined,
+      revision: EMPTY_SNAPSHOT.revisions.workflow,
       pipelineCatalog: {
         effective: loaded.pipelineCatalog.effective,
         records: loaded.pipelineCatalog.records
@@ -273,16 +233,18 @@ describe('a workspace with no operator-authored settings has four empty catalogs
     expect(workflows.records).toEqual([]);
   });
 
-  it('reports every layer of every catalog as holding no rows at all', () => {
+  it('holds no source rows at all, not merely no effective ones', () => {
     // Distinct from the assertions above: those read the *effective* projection,
-    // which an empty built-in layer and a shadowed-everything layer would both
-    // satisfy. This reads the retained source records, so a row that exists but
-    // resolves away still fails it.
-    const loaded = loadCatalog(NO_SETTINGS);
+    // which a catalog whose every row resolved away would also satisfy. This
+    // reads the retained source records, so a row that exists but resolves to
+    // nothing still fails it.
+    //
+    // Feature 099 (T496f) — was 'reports every layer of every catalog as holding
+    // no rows at all', reading `builtInPhases`/`userPhases`/`workspacePhases`.
+    // Those three arrays were the layer tier itself; the records they fed are
+    // the two read here, and reading them is what the case was ever for.
+    const loaded = loadCatalog(EMPTY_SNAPSHOT, NO_SETTINGS);
 
-    expect(loaded.builtInPhases).toEqual([]);
-    expect(loaded.userPhases).toEqual([]);
-    expect(loaded.workspacePhases).toEqual([]);
     expect(loaded.phaseCatalog.records).toEqual([]);
     expect(loaded.pipelineCatalog.records).toEqual([]);
   });

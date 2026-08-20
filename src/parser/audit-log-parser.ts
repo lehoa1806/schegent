@@ -34,10 +34,9 @@ export function parseAuditLogLineDetailed(line: string): ParseAuditLineResult {
   const id = typeof obj.id === 'string' ? obj.id : null;
   const timestamp = typeof obj.timestamp === 'string' ? obj.timestamp : null;
   const runId = typeof obj.runId === 'string' ? obj.runId : null;
-  // Phase ids are operator-extensible (`schegent.phases`) and the built-in
-  // catalog now includes non-Speckit ids such as `bugfix-report`. The
-  // structured audit reader must preserve any non-empty phase id instead of
-  // pinning to the original seven-phase built-in list.
+  // Phase ids are operator-defined — every Phase in the catalog store is — so
+  // the structured audit reader must preserve any non-empty phase id instead of
+  // pinning to the original seven-phase list.
   const phase =
     typeof obj.phase === 'string' && obj.phase.trim().length > 0
       ? (obj.phase as Phase)

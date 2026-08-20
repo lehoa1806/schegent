@@ -42,25 +42,14 @@
   const trustRetryConditions = $derived(
     workspaceTrust && snapshot.resolvedTrust?.retryConditions === true
   );
-  const trustPipelineOverrides = $derived(
-    workspaceTrust && snapshot.resolvedTrust?.pipelineOverrides === true
-  );
-  // Feature 083 — read separately from `pipelineOverrides`: composing Pipelines
-  // into a graph is a broader authority than reordering one Pipeline's phases
-  // (docs/security/threat-model.md, per-capability trust scopes).
-  const trustWorkflowOverrides = $derived(
-    workspaceTrust && snapshot.resolvedTrust?.workflowOverrides === true
-  );
+  // Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides` are
+  // gone. Both asked which layer was allowed to redefine another's row, and
+  // there is one layer; the Pipelines and Workflows tabs are gated by Workspace
+  // Trust alone. The two survivors above gate document CONTENT, not layering.
   const showWorkspaceTrustBanner = $derived(snapshot.workspaceTrust === false);
   const showPhasesBanner = $derived(!showWorkspaceTrustBanner && !trustPhases);
   const showRetryConditionsBanner = $derived(
     !showWorkspaceTrustBanner && !trustRetryConditions
-  );
-  const showPipelinesBanner = $derived(
-    !showWorkspaceTrustBanner && !trustPipelineOverrides
-  );
-  const showWorkflowsBanner = $derived(
-    !showWorkspaceTrustBanner && !trustWorkflowOverrides
   );
   // svelte-ignore state_referenced_locally
   let activeTab = $state<BuilderTab>(initialTab ?? 'pipelines');
@@ -72,10 +61,10 @@
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
   let phaseMutation = $state<SavePhasesMutation | null>(null);
-  let phaseMutationScope = $state<'user' | 'workspace' | null>(null);
   let phaseMutationSourceKey = $state<string | null>(null);
   let phaseSavePending = $state(false); let acceptedPhaseRevision = $state<string | null>(null); let stalePhaseRevision = $state<string | null>(null);
-  let adoptedPhaseRevisions = $state({ user: '', workspace: '' });
+  /** The revision the visible rows were projected from; '' before the first. */
+  let adoptedPhaseRevision = $state('');
   const phaseCatalogReady = $derived(snapshot.phaseCatalog?.state === 'ready');
   const phaseMutationsAllowed = $derived(
     phaseCatalogReady && snapshot.isPrimary === true && trustPhases && !phaseSavePending
@@ -84,12 +73,12 @@
   const pipelineMutationsAllowed = $derived(
     snapshot.pipelineCatalog?.state === 'ready' &&
       snapshot.isPrimary === true &&
-      trustPipelineOverrides
+      workspaceTrust
   );
   const workflowMutationsAllowed = $derived(
     snapshot.workflowCatalog?.state === 'ready' &&
       snapshot.isPrimary === true &&
-      trustWorkflowOverrides
+      workspaceTrust
   );
   function showSaveError(reason: string): void {
     saveError = reason;
@@ -114,19 +103,21 @@
     if (snapshot.availablePhases) effectivePhases = effectivePhasesToMutable(snapshot.availablePhases);
     const catalog = snapshot.phaseCatalog;
     if (catalog?.state === 'ready') {
-      const revisionKey = `${catalog.revisions.user}:${catalog.revisions.workspace}`, adoptedKey = `${adoptedPhaseRevisions.user}:${adoptedPhaseRevisions.workspace}`;
-      if (stalePhaseRevision !== null && phaseMutation && phaseMutationScope && catalog.revisions[phaseMutationScope] !== adoptedPhaseRevisions[phaseMutationScope]) {
-        phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationScope, phaseMutationSourceKey);
-        adoptedPhaseRevisions = { ...catalog.revisions }; stalePhaseRevision = null;
+      // Feature 099 (T494a, FR-043/FR-044) — one layer, so one adopted revision.
+      // The handshake is otherwise unchanged: it is still the expected-revision
+      // gate, now reading the store's manifest revision for the Phase kind.
+      const revision = catalog.revision;
+      if (stalePhaseRevision !== null && phaseMutation && revision !== adoptedPhaseRevision) {
+        phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
+        adoptedPhaseRevision = revision; stalePhaseRevision = null;
       }
-      const acceptedRefresh = acceptedPhaseRevision !== null && phaseMutationScope !== null && catalog.revisions[phaseMutationScope] !== adoptedPhaseRevisions[phaseMutationScope];
-      const shouldAdopt = adoptedKey === ':' || phaseMutation === null || acceptedRefresh;
-      if (revisionKey !== adoptedKey && shouldAdopt) {
+      const acceptedRefresh = acceptedPhaseRevision !== null && revision !== adoptedPhaseRevision;
+      const shouldAdopt = adoptedPhaseRevision === '' || phaseMutation === null || acceptedRefresh;
+      if (revision !== adoptedPhaseRevision && shouldAdopt) {
         phases = catalog.records.map(sourceRecordToMutable);
-        adoptedPhaseRevisions = { ...catalog.revisions };
+        adoptedPhaseRevision = revision;
         phaseSavePending = false;
         phaseMutation = null;
-        phaseMutationScope = null;
         phaseMutationSourceKey = null;
         selectedPhaseIndex = null; acceptedPhaseRevision = null; stalePhaseRevision = null;
       }
@@ -134,18 +125,14 @@
   });
   function submitPhaseMutation(
     mutation: SavePhasesMutation,
-    scope: 'user' | 'workspace',
     sourceRows: readonly MutablePhase[] = phases
   ): void {
     const catalog = snapshot.phaseCatalog;
     if (!catalog || catalog.state !== 'ready' || phaseSavePending) return;
-    const payload = sourceRows
-      .filter((phase) => phase.scope === scope)
-      .map(toSavePhaseRow);
+    const payload = sourceRows.map(toSavePhaseRow);
     phaseSavePending = true; acceptedPhaseRevision = null;
     void savePhasesHelper({
-      scope,
-      expectedRevision: adoptedPhaseRevisions[scope],
+      expectedRevision: adoptedPhaseRevision,
       mutation,
       phases: payload
     }).then((result) => {
@@ -158,13 +145,13 @@
       }
       saveError = null;
       const accepted = result.result as { revision?: string } | undefined; acceptedPhaseRevision = accepted?.revision ?? '';
-      if (acceptedPhaseRevision === catalog.revisions[scope]) {
-        phaseSavePending = false; phaseMutation = null; phaseMutationScope = null;
+      if (acceptedPhaseRevision === catalog.revision) {
+        phaseSavePending = false; phaseMutation = null;
         phaseMutationSourceKey = null; acceptedPhaseRevision = null;
       }
     });
   }
-  function savePhases(): void { if (phaseMutation && phaseMutationScope) submitPhaseMutation(phaseMutation, phaseMutationScope); }
+  function savePhases(): void { if (phaseMutation) submitPhaseMutation(phaseMutation); }
   function saveModels(): void {
     void saveModelsHelper(JSON.parse(JSON.stringify(models)));
   }
@@ -209,7 +196,6 @@
     phases = [...phases, draft];
     selectedPhaseIndex = phases.length - 1;
     phaseMutation = { kind: 'create', phaseId: draft.id };
-    phaseMutationScope = draft.scope as 'user' | 'workspace';
     phaseMutationSourceKey = draft.sourceKey;
   }
   function duplicatePhase(index: number): void {
@@ -223,31 +209,27 @@
     selectedPhaseIndex = index + 1;
     phaseMutation = {
       kind: 'duplicate',
-      sourceScope: original.scope,
       sourcePhaseId: original.id,
       phaseId: duplicate.id
     };
-    phaseMutationScope = duplicate.scope as 'user' | 'workspace';
     phaseMutationSourceKey = duplicate.sourceKey;
   }
   async function removePhase(index: number, originatingElement?: HTMLElement | null): Promise<void> {
     const phase = phases[index];
-    if (!phase || phase.scope === 'built-in' || !phaseMutationsAllowed) return;
+    if (!phase || !phaseMutationsAllowed) return;
     const confirmed = await useConfirm('catalog.remove-phase', {
       originatingElement,
-      context: { phaseName: phase.name, phaseId: phase.id, scope: phase.scope }
+      context: { phaseName: phase.name, phaseId: phase.id }
     });
     if (!confirmed) return;
     const proposed = phases.filter((_, rowIndex) => rowIndex !== index);
     phaseMutation = { kind: 'remove', phaseId: phase.id };
-    phaseMutationScope = phase.scope;
     phaseMutationSourceKey = phase.sourceKey;
-    submitPhaseMutation(phaseMutation, phase.scope, proposed);
+    submitPhaseMutation(phaseMutation, proposed);
   }
   function movePhaseListUp(index: number): void {
     if (index <= 0 || phaseMutation) return;
-    const moved = phases[index], neighbor = phases[index - 1];
-    if (moved.scope === 'built-in' || neighbor?.scope !== moved.scope) return;
+    const moved = phases[index];
     const newPhases = [...phases];
     const tmp = newPhases[index - 1]; newPhases[index - 1] = newPhases[index];
     newPhases[index] = tmp;
@@ -255,12 +237,11 @@
     if (selectedPhaseIndex === index) selectedPhaseIndex = index - 1;
     else if (selectedPhaseIndex === index - 1) selectedPhaseIndex = index;
     phaseMutation = { kind: 'edit', phaseId: moved.id };
-    phaseMutationScope = moved.scope; phaseMutationSourceKey = moved.sourceKey;
+    phaseMutationSourceKey = moved.sourceKey;
   }
   function movePhaseListDown(index: number): void {
     if (index >= phases.length - 1 || phaseMutation) return;
-    const moved = phases[index], neighbor = phases[index + 1];
-    if (moved.scope === 'built-in' || neighbor?.scope !== moved.scope) return;
+    const moved = phases[index];
     const newPhases = [...phases];
     const tmp = newPhases[index + 1]; newPhases[index + 1] = newPhases[index];
     newPhases[index] = tmp;
@@ -268,7 +249,7 @@
     if (selectedPhaseIndex === index) selectedPhaseIndex = index + 1;
     else if (selectedPhaseIndex === index + 1) selectedPhaseIndex = index;
     phaseMutation = { kind: 'edit', phaseId: moved.id };
-    phaseMutationScope = moved.scope; phaseMutationSourceKey = moved.sourceKey;
+    phaseMutationSourceKey = moved.sourceKey;
   }
   function resetPhase(index: number): void {
     const sourceKey = phases[index]?.sourceKey;
@@ -277,7 +258,6 @@
       ? phases.map((phase, rowIndex) => rowIndex === index ? sourceRecordToMutable(original) : phase)
       : phases.filter((_, rowIndex) => rowIndex !== index);
     phaseMutation = null;
-    phaseMutationScope = null;
     phaseMutationSourceKey = null;
     selectedPhaseIndex = null;
   }
@@ -286,22 +266,18 @@
     if (!current || (phaseMutationSourceKey && current.sourceKey !== phaseMutationSourceKey)) return;
     phases = phases.map((phase, i) => i === index ? { ...phase, ...patch } : phase);
     const updated = phases[index];
-    if (!updated.persisted) {
-      updated.sourceKey = `draft::${updated.scope}::${updated.id}`;
-    }
-    if (updated?.persisted && updated.scope !== 'built-in') {
+    if (updated.persisted) {
       phaseMutation = { kind: 'edit', phaseId: current.id };
-      phaseMutationScope = updated.scope as 'user' | 'workspace';
       phaseMutationSourceKey = updated.sourceKey;
-    } else if (phaseMutation?.kind === 'create' && patch.id && typeof patch.id === 'string') {
+      return;
+    }
+    updated.sourceKey = `draft::${updated.id}`;
+    if (phaseMutation?.kind === 'create' && typeof patch.id === 'string') {
       phaseMutation = { kind: 'create', phaseId: patch.id };
-    } else if (phaseMutation?.kind === 'duplicate' && patch.id && typeof patch.id === 'string') {
+    } else if (phaseMutation?.kind === 'duplicate' && typeof patch.id === 'string') {
       phaseMutation = { ...phaseMutation, phaseId: patch.id };
     }
-    if (!updated.persisted) {
-      phaseMutationScope = updated.scope as 'user' | 'workspace';
-      phaseMutationSourceKey = updated.sourceKey;
-    }
+    phaseMutationSourceKey = updated.sourceKey;
   }
   function onRawJsonSave(index: number, parsed: Record<string, unknown>): void {
     updatePhase(index, parsed as Partial<MutablePhase>);
@@ -393,7 +369,20 @@
     {#if showWorkspaceTrustBanner}
       <TrustBanner variant="workspace-trust" />
     {/if}
-    {#if activeTab === 'pipelines'}
+    {#if showWorkspaceTrustBanner && activeTab !== 'models'}
+      <!--
+        Feature 099 (T493c, FR-052) — an untrusted workspace activates no
+        catalog, so the three definition tabs have no rows to render. Showing
+        their editors anyway would present an empty catalog, which reads as
+        "nothing is defined here" when the truth is "this workspace is not
+        trusted". The banner above plus this line are the report. The Models
+        tab is not store-backed (FR-056) and keeps its editor.
+      -->
+      <p class="empty-selection" data-testid="builder-trust-gated">
+        Phase, Pipeline, and Workflow definitions are not read until this
+        workspace is trusted.
+      </p>
+    {:else if activeTab === 'pipelines'}
       <PipelineCatalogEditor
         {snapshot}
         pipelines={pipelineStore.pipelines}
@@ -403,7 +392,6 @@
         historyLength={pipelineStore.historyLength}
         newPhaseId={pipelineStore.newPhaseId}
         trusted={pipelineMutationsAllowed}
-        showTrustBanner={showPipelinesBanner}
         {saveError}
         savePending={pipelineStore.savePending}
         mutationActive={pipelineStore.mutationActive}
@@ -464,12 +452,11 @@
       <!--
         Feature 083 — the Workflow Library's only mount site. The editor owns
         its rows, its revision handshake, and its confirmations; this branch
-        supplies the trust verdict it is not allowed to compute for itself and
-        the banner that explains a disabled control (FR-029).
+        supplies the trust verdict it is not allowed to compute for itself.
+        Feature 099 (T492, FR-046) — that verdict is now Workspace Trust alone,
+        and the untrusted case is reported by the branch above, so there is no
+        second banner to render here.
       -->
-      {#if showWorkflowsBanner}
-        <TrustBanner variant="workflows" />
-      {/if}
       <WorkflowCatalogEditor {snapshot} trusted={workflowMutationsAllowed} />
     {:else if activeTab === 'models'}
       <!-- Feature 096 T025 — the import entry point for the Model Catalog, its

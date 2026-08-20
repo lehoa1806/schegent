@@ -24,7 +24,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -34,17 +33,28 @@ import type {
 import { DEFECT_FIELD_MAX } from '../../../src/services/process-yaml/phase-yaml-validator';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 type OpenResult =
   | { outcome: 'read'; bytes: Uint8Array }
   | { outcome: 'canceled' }
   | { outcome: 'failed'; message: string };
 
+/**
+ * Seeded so a plan's revisions can be asserted against values this file names,
+ * and so no two of the three catalogs can be confused for one another.
+ */
+const SEEDED_PHASE_REVISION = 'rev-phase-workflow-preflight';
+const SEEDED_PIPELINE_REVISION = 'rev-pipeline-workflow-preflight';
+const SEEDED_WORKFLOW_REVISION = 'rev-workflow-preflight';
+
 interface Harness {
   readonly ctx: Parameters<typeof preflightHandler>[0];
   readonly acks: CommandAckMessage[];
   readonly warnings: string[];
-  readonly writePhaseConfig: ReturnType<typeof vi.fn>;
+  readonly store: FakeCatalogStore;
+  /** What the Pipeline read reported, so a case can assert against it. */
+  readonly storedPipelines: readonly unknown[];
   readonly updateConfig: ReturnType<typeof vi.fn>;
   readonly executeCommand: ReturnType<typeof vi.fn>;
 }
@@ -53,9 +63,9 @@ function buildHarness(
   opts: {
     text?: string;
     bytes?: Uint8Array;
-    workflows?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-    pipelines?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
-    phases?: { user?: readonly unknown[]; workspace?: readonly unknown[] };
+    workflows?: readonly unknown[];
+    pipelines?: readonly unknown[];
+    phases?: readonly unknown[];
     sanitize?: (value: string) => string;
     /** Feature 086 T071 — what the host-side read reports, when not a clean read. */
     open?: OpenResult;
@@ -67,7 +77,13 @@ function buildHarness(
 ): Harness {
   const acks: CommandAckMessage[] = [];
   const warnings: string[] = [];
-  const writePhaseConfig = vi.fn();
+  const store = new FakeCatalogStore({
+    revisions: {
+      phase: SEEDED_PHASE_REVISION,
+      pipeline: SEEDED_PIPELINE_REVISION,
+      workflow: SEEDED_WORKFLOW_REVISION
+    }
+  });
   const updateConfig = vi.fn();
   const executeCommand = vi.fn();
 
@@ -84,18 +100,19 @@ function buildHarness(
   const ctx = {
     deps: {
       readPhaseConfig: () => ({
-        user: opts.phases?.user ?? [],
-        workspace: opts.phases?.workspace ?? []
+        rows: opts.phases ?? [],
+        revision: store.revisionOf('phase')
       }),
       readPipelineConfig: () => ({
-        user: opts.pipelines?.user ?? [],
-        workspace: opts.pipelines?.workspace ?? []
+        rows: opts.pipelines ?? [],
+        revision: store.revisionOf('pipeline')
       }),
       readWorkflowConfig: () => ({
-        user: opts.workflows?.user ?? [],
-        workspace: opts.workflows?.workspace ?? []
+        rows: opts.workflows ?? [],
+        revision: store.revisionOf('workflow')
       }),
-      writePhaseConfig,
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       updateConfig,
       executeCommand,
       ...(opts.withOpenAdapter === false ? {} : { openProcessYamlDocument }),
@@ -116,7 +133,15 @@ function buildHarness(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  return { ctx, acks, warnings, writePhaseConfig, updateConfig, executeCommand };
+  return {
+    ctx,
+    acks,
+    warnings,
+    store,
+    storedPipelines: opts.pipelines ?? [],
+    updateConfig,
+    executeCommand
+  };
 }
 
 /**
@@ -328,7 +353,7 @@ describe('Feature 086 T033 — the host dispatches on the declared kind, for thr
   it('writes nothing while planning a Workflow package (SC-008)', async () => {
     const { harness } = await preflight({ text: PACKAGE_DOCUMENT });
 
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
     expect(harness.executeCommand).not.toHaveBeenCalled();
   });
@@ -427,21 +452,30 @@ describe('Feature 086 T033 — an import row carries what the write will store (
     expect(root.definition.workflowId).toBe('ship-it-flow');
   });
 
-  it('reports one revision per layer this plan can write (FR-036)', async () => {
-    const { result } = await preflight({ text: PACKAGE_DOCUMENT });
+  it('reports one revision per catalog this plan can write (FR-036)', async () => {
+    const { harness, result } = await preflight({ text: PACKAGE_DOCUMENT });
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
 
-    for (const revisions of [
+    // Feature 099 (FR-042) — one revision per catalog, not a map of layer names.
+    // Order and distinctness both matter: a plan that reported one catalog's
+    // revision in another's field would satisfy a weaker assertion.
+    const revisions = [
       result.plan.computedAgainstRevision,
       result.plan.computedAgainstPipelineRevision,
       result.plan.computedAgainstWorkflowRevision
-    ]) {
-      expect(Object.keys(revisions ?? {}).sort()).toEqual(['user', 'workspace']);
-    }
-    // The fixture's ids must not collide with a built-in, or a `skip` would be
-    // asserted above as an `import` for the wrong reason.
-    expect(BUILT_IN_PIPELINES.some((pipeline) => pipeline.id === 'spec-authoring')).toBe(false);
+    ];
+    expect(revisions).toEqual([
+      SEEDED_PHASE_REVISION,
+      SEEDED_PIPELINE_REVISION,
+      SEEDED_WORKFLOW_REVISION
+    ]);
+    expect(new Set(revisions).size).toBe(3);
+    // The catalog this preflight read must not already hold the fixture's ids, or
+    // a `skip` would be asserted above as an `import` for the wrong reason. The
+    // built-in tier is gone, so stored rows are the only place a collision could
+    // now come from.
+    expect(harness.storedPipelines).toEqual([]);
   });
 
   it('counts one bucket per outcome, summing to the row count (FR-028)', async () => {
@@ -551,7 +585,7 @@ describe('Feature 086 T031 — a refused Workflow document produces no plan (FR-
     expect(keys).toEqual(['outcome', 'refusal']);
     expect(harness.acks[0]!.status).toBe('rejected');
     expect(harness.acks[0]!.reason).toBe('refused');
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 
@@ -636,7 +670,7 @@ describe('Feature 086 T031 — a refused Workflow document produces no plan (FR-
     const { code, keys, harness } = await refusalOf({ bytes: oversized });
     expect(code).toBe('too-large');
     expect(keys).toEqual(['outcome', 'refusal']);
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
   });
 
   it('still plans the same document once the refusal is resolved', async () => {
@@ -697,7 +731,7 @@ describe('Feature 086 T071 — a read failure reports generically (FR-057)', () 
     expect(serialized).not.toContain('someone');
     expect(serialized).not.toMatch(/[/\\]/);
     // Nothing was written on the way to failing, and no plan was built.
-    expect(harness.writePhaseConfig).not.toHaveBeenCalled();
+    expect(harness.store.layerSaves).toEqual([]);
     expect(harness.updateConfig).not.toHaveBeenCalled();
   });
 

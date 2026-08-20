@@ -2,10 +2,9 @@
 
 Operators can author custom phases that loop on numeric metrics emitted
 by the model — not just the legacy Open Questions / Remaining Issues
-contract. Declare `retryCondition: "<expression>"` on a
-`schegent.phases[]` entry and the controller evaluates the boolean
-expression against the captured metrics map after every well-formed
-CLI invocation.
+contract. Declare `retryCondition: "<expression>"` on a phase definition
+and the controller evaluates the boolean expression against the captured
+metrics map after every well-formed CLI invocation.
 
 The expression DSL is **sandboxed**: identifiers, signed numeric
 literals, comparisons (`> >= < <= == !=`), logical combinators
@@ -15,18 +14,17 @@ function calls, member access, or chained comparisons. See
 
 ## Minimal worked example
 
-```json
-{
-  "schegent.phases": [
-    {
-      "id": "review",
-      "name": "Review",
-      "instruction": "Audit src/. End your audit log with: 'unresolved_findings: <count>'.",
-      "loopable": true,
-      "retryCondition": "unresolved_findings > 0"
-    }
-  ]
-}
+```yaml
+apiVersion: schegent/v1
+kind: Phase
+metadata:
+  phaseId: review
+  name: Review
+  version: 1
+spec:
+  instruction: "Audit src/. End your audit log with: 'unresolved_findings: <count>'."
+  loopable: true
+  retryCondition: unresolved_findings > 0
 ```
 
 Iteration 1 emits `unresolved_findings: 3` → loops. Iteration 2 emits

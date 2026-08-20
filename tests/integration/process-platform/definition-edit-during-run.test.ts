@@ -41,7 +41,7 @@ const PIPELINE_ID = 'edited-mid-run';
  * this fixture loudly now rather than silently.
  */
 function phase(id: string, name: string): PhaseDef {
-  return { id, name, version: 1, instruction: `Run ${name}.`, sourceScope: 'built-in' };
+  return { id, name, version: 1, instruction: `Run ${name}.` };
 }
 
 const PHASES: PhaseDef[] = [

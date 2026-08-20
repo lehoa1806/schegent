@@ -53,17 +53,30 @@ function readPackageJson(): {
 }
 
 describe('Feature 056 Track 3 — settings defaults parity', () => {
-  it('keeps legacy loopable phase settings schema-valid without requiring the field', () => {
-    const pkg = readPackageJson();
-    const phases = pkg.contributes.configuration.properties['schegent.phases'] as unknown as {
-      items: {
-        required: readonly string[];
-        properties: Record<string, { type?: string }>;
-      };
-    };
+  // Feature 099 (T496f, FR-041) — the three definition keys leave package.json
+  // with the settings-backed catalog. The loopable claim was never about the
+  // Settings UI: it says a phase authored before `loopable` was optional still
+  // loads, and a phase without it still loads. Both arms now settle where the
+  // rows are actually read, so the claim moves to the row validator and the
+  // parity file keeps only what parity can still see — that the contribution
+  // is gone, and no host bucket still expects it.
+  it('accepts a stored phase row with or without the deprecated loopable field', async () => {
+    const { resolvePhaseCatalog } = await import('../../src/config/process-catalog.js');
+    const base = { id: 'legacy', name: 'Legacy', instruction: 'Do the thing.' };
+    const resolution = resolvePhaseCatalog({
+      rows: [{ ...base, loopable: true }, { ...base, id: 'modern' }],
+      revision: 'rev-phase-loopable'
+    });
+    expect(resolution.records.map((record) => record.status)).toEqual(['effective', 'effective']);
+    expect(resolution.effective.map((phase) => phase.phaseId)).toEqual(['legacy', 'modern']);
+  });
 
-    expect(phases.items.properties.loopable?.type).toBe('boolean');
-    expect(phases.items.required).not.toContain('loopable');
+  it('contributes none of the three definition keys any more', () => {
+    const pkg = readPackageJson();
+    const props = pkg.contributes.configuration.properties;
+    expect(props['schegent.phases']).toBeUndefined();
+    expect(props['schegent.pipelines']).toBeUndefined();
+    expect(props['schegent.workflows']).toBeUndefined();
   });
 
   it('package.json default pipeline id matches the host KEY_SPECS default', () => {
@@ -238,6 +251,10 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
  *     validated by their respective domain modules at load time.
  *   - `backend.runner`: a closed enum consumed by the runner factory.
  *
+ * Feature 099 (T496f) — `phases`, `pipelines`, and `workflows` left the
+ * settings surface for the catalog store, so they are no longer parity
+ * subjects here; the store's own tests own their round-trip.
+ *
  * Adding a new `schegent.*` contribution requires either extending
  * `KEY_SPECS` or extending this test's bucket list. There is no
  * "validated nowhere" bucket — that was the bug class FR-016 closes.
@@ -252,10 +269,12 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     const generalSettings = await import('../../src/config/general-settings.js');
     const hostValidatedKeys = generalSettings.ALLOWED_KEYS;
 
-    // Catalog layers validated per row by their own resolver rather than by
-    // the general-settings IPC handler. Feature 083 adds `workflows`, which
-    // `src/config/workflow-catalog.ts` resolves and defect-annotates.
-    const complexObjectKeys = new Set<string>(['models', 'phases', 'pipelines', 'workflows']);
+    // Feature 099 (T496f, FR-041) — `phases`, `pipelines`, and `workflows` are
+    // no longer settings at all: their rows live in the catalog store, so there
+    // is no contribution left for a bucket to claim. The Model Catalog is out of
+    // scope for 099 (it stays as feature 096 left it) and remains the one
+    // complex object still validated per row off a settings key.
+    const complexObjectKeys = new Set<string>(['models']);
     const backendRunnerKey = new Set<string>([
       'backend.runner',
       'backend.probeTimeoutSeconds'
@@ -286,11 +305,13 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // resolver re-reads them on every call so there is no host-side
     // validator beyond the JSON schema in package.json. Not part of
     // KEY_SPECS by design (no writeGeneralSettings path).
+    // Feature 099 (T492, FR-046) — `trust.allowPipelineOverrides` and
+    // `trust.allowWorkflowOverrides` asked whether one layer could redefine what
+    // another declares; one layer poses no such question, so both capabilities
+    // and both contributions are deleted.
     const trustScopeKeys = new Set<string>([
       'trust.allowCustomPhases',
-      'trust.allowCustomRetryConditions',
-      'trust.allowPipelineOverrides',
-      'trust.allowWorkflowOverrides'
+      'trust.allowCustomRetryConditions'
     ]);
     const uiKeys = new Set<string>(['ui.confirmations.enable']);
 
@@ -317,8 +338,14 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // package.json. Catches accidental removal of a contribution that a
     // domain module still expects to read.
     const allPackageKeys = new Set(allKeys);
-    for (const key of [...complexObjectKeys, ...backendRunnerKey]) {
+    for (const key of [...complexObjectKeys, ...backendRunnerKey, ...trustScopeKeys]) {
       expect(allPackageKeys.has(key)).toBe(true);
+    }
+
+    // The mirror of the bucket edit above: a retired key must not come back as
+    // a contribution without a host validator to match it.
+    for (const key of ['phases', 'pipelines', 'workflows', 'trust.allowPipelineOverrides', 'trust.allowWorkflowOverrides']) {
+      expect(allPackageKeys.has(key)).toBe(false);
     }
   });
 

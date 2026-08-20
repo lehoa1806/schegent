@@ -198,18 +198,13 @@ export const SETTINGS_KEYS = [
   "schegent.loop.maxIterations",
   "schegent.models",
   "schegent.multiRoot.suppressWarning",
-  "schegent.phases",
-  "schegent.pipelines",
   "schegent.queue.globalConcurrencyCap",
   "schegent.retry.forceContinueOnCap",
   "schegent.retry.maxAttempts",
   "schegent.trust.allowCustomPhases",
   "schegent.trust.allowCustomRetryConditions",
-  "schegent.trust.allowPipelineOverrides",
-  "schegent.trust.allowWorkflowOverrides",
   "schegent.ui.confirmations.enable",
-  "schegent.watchdog.pollIntervalMinutes",
-  "schegent.workflows"
+  "schegent.watchdog.pollIntervalMinutes"
 ] as const;
 
 export const QUEUE_STATUSES = [

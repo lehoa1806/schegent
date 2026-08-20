@@ -430,30 +430,6 @@
           "itemPattern": null
         },
         {
-          "key": "schegent.phases",
-          "type": "array",
-          "default": [],
-          "scope": "resource",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": "object",
-          "itemPattern": null
-        },
-        {
-          "key": "schegent.pipelines",
-          "type": "array",
-          "default": [],
-          "scope": "resource",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": "object",
-          "itemPattern": null
-        },
-        {
           "key": "schegent.queue.globalConcurrencyCap",
           "type": "integer",
           "default": 1,
@@ -514,30 +490,6 @@
           "itemPattern": null
         },
         {
-          "key": "schegent.trust.allowPipelineOverrides",
-          "type": "boolean|null",
-          "default": null,
-          "scope": "window",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": null,
-          "itemPattern": null
-        },
-        {
-          "key": "schegent.trust.allowWorkflowOverrides",
-          "type": "boolean|null",
-          "default": null,
-          "scope": "window",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": null,
-          "itemPattern": null
-        },
-        {
           "key": "schegent.ui.confirmations.enable",
           "type": "boolean",
           "default": true,
@@ -559,18 +511,6 @@
           "maximum": null,
           "pattern": null,
           "itemType": null,
-          "itemPattern": null
-        },
-        {
-          "key": "schegent.workflows",
-          "type": "array",
-          "default": [],
-          "scope": "resource",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": "object",
           "itemPattern": null
         }
       ]

@@ -13,24 +13,6 @@ import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-d
 /** How long a Workflow id may be. See `PHASE_ID_MAX_LEN` for why it lives here. */
 export const WORKFLOW_ID_MAX_LEN = 64;
 
-export const WORKFLOW_DEFINITION_SCOPES = ['built-in', 'user', 'workspace'] as const;
-export type WorkflowDefinitionScope = (typeof WORKFLOW_DEFINITION_SCOPES)[number];
-export type WritableWorkflowDefinitionScope = Exclude<WorkflowDefinitionScope, 'built-in'>;
-
-export const WORKFLOW_WRITABLE_SCOPES = ['user', 'workspace'] as const;
-
-export function isWorkflowDefinitionScope(value: unknown): value is WorkflowDefinitionScope {
-  return (
-    typeof value === 'string' && (WORKFLOW_DEFINITION_SCOPES as readonly string[]).includes(value)
-  );
-}
-
-export function isWritableWorkflowDefinitionScope(
-  value: unknown
-): value is WritableWorkflowDefinitionScope {
-  return typeof value === 'string' && (WORKFLOW_WRITABLE_SCOPES as readonly string[]).includes(value);
-}
-
 /** Collection selection rules (FR-018). `exactlyOne` fails at run time on any size but one. */
 export const WORKFLOW_SELECTION_RULES = ['first', 'last', 'exactlyOne'] as const;
 export type WorkflowSelectionRule = (typeof WORKFLOW_SELECTION_RULES)[number];
@@ -166,12 +148,12 @@ export interface WorkflowFieldError {
   readonly message: string;
 }
 
-export type WorkflowSourceStatus = 'effective' | 'shadowed' | 'invalid';
+/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
+export type WorkflowSourceStatus = 'effective' | 'invalid';
 
 export interface WorkflowSourceRecord {
   readonly key: string;
   readonly workflowId: string;
-  readonly scope: WorkflowDefinitionScope;
   readonly status: WorkflowSourceStatus;
   readonly definition: WorkflowDefinition | null;
   /** Recognized authored fields only. Host-internal; sanitized before IPC. */
@@ -200,7 +182,8 @@ export interface WorkflowCatalogWarning {
 export interface WorkflowCatalogResolution {
   readonly records: readonly WorkflowSourceRecord[];
   readonly effective: readonly WorkflowDefinition[];
-  readonly revisions: Readonly<Record<WritableWorkflowDefinitionScope, string>>;
+  /** One revision for the one layer (FR-044), derived from the store's manifest (FR-044a). */
+  readonly revision: string;
   readonly warnings: readonly WorkflowCatalogWarning[];
 }
 
@@ -218,15 +201,14 @@ export type WorkflowCatalogMutation =
   | { readonly kind: 'edit'; readonly workflowId: string }
   | {
       readonly kind: 'duplicate';
-      readonly sourceScope: WorkflowDefinitionScope;
       readonly sourceWorkflowId: string;
       readonly workflowId: string;
     }
   | { readonly kind: 'remove'; readonly workflowId: string }
   | { readonly kind: 'reset' };
 
-export interface ScopedWorkflowSavePayload {
-  readonly scope: WritableWorkflowDefinitionScope;
+/** One save against the one layer. Formerly `ScopedWorkflowSavePayload` (FR-043). */
+export interface WorkflowSavePayload {
   readonly expectedRevision: string;
   readonly mutation: WorkflowCatalogMutation;
   /** Rows stay `unknown` at the boundary; the host is the authoritative validator (FR-008). */

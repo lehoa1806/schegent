@@ -34,8 +34,7 @@ function row(overrides: Partial<MutableWorkflow> = {}): MutableWorkflow {
     nodes: [{ nodeId: 'design', pipelineId: 'design-review' }],
     connections: [],
     startNodeIds: ['design'],
-    sourceKey: 'workspace::design-then-build::0',
-    scope: 'workspace',
+    sourceKey: 'design-then-build::0',
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: true,
@@ -47,7 +46,6 @@ function row(overrides: Partial<MutableWorkflow> = {}): MutableWorkflow {
 
 const mount = (selected: MutableWorkflow | null) =>
   render(WorkflowToolbar, {
-    scope: 'workspace',
     savePending: false,
     mutatingDisabled: false,
     noPipelines: false,
@@ -55,7 +53,6 @@ const mount = (selected: MutableWorkflow | null) =>
     removeDisabled: false,
     saveDisabled: false,
     selected,
-    onscope: () => {},
     onadd: () => {},
     onduplicate: () => {},
     onremove: () => {},

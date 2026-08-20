@@ -301,7 +301,7 @@ export type {
   ImportPlan,
   ImportPlanCounts,
   ImportPlanRow,
-  ProcessYamlLayerRevisions
+  ProcessYamlCatalogRevision
 } from './sidebar-ipc/process-yaml';
 export { TRUST_DENIED_REASONS } from './sidebar-ipc/trust';
 export type {
@@ -422,7 +422,7 @@ export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OP
   readonly payload: { readonly id: string };
 }
 
-// Catalog saves carry a scoped, revisioned complete-layer envelope; the shapes
+// Catalog saves carry a revisioned complete-layer envelope; the shapes
 // live in a focused module and the barrel stays the single import site.
 import type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
 import type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';

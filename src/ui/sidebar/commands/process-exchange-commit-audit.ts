@@ -3,7 +3,7 @@
 //
 // Feature 084 audited a document refusal and a capability denial and deliberately
 // audited neither a plan nor a write: one Phase either landed or it did not, and
-// the catalog itself was the record. A package writes two catalog layers that can
+// the catalog itself was the record. A package writes two catalogs that can
 // succeed independently (FR-042a), so the catalog stops being that record — a
 // workspace holding two Phases and no Pipeline is indistinguishable from one
 // where the operator imported the Phases alone. These records are the difference.
@@ -23,7 +23,6 @@
 // (084's rule, unchanged).
 
 import type { ProcessExchangePayload } from '../../../contracts/audit-events';
-import type { PhaseDefinitionScope } from '../../../contracts/process-definitions';
 import { RESOURCE_ID_MAX_LEN } from '../../../contracts/sidebar-ipc/process-yaml';
 import type { ProcessYamlResourceKind } from '../../../services/process-yaml/types';
 import type { HandlerContext } from './handler-contract';
@@ -32,8 +31,11 @@ import type { HandlerContext } from './handler-contract';
 const RESOURCE_IDS_MAX = 20;
 
 /**
- * The one layer write an `import-package` mutation is about. Built by the
+ * The one catalog write an `import-package` mutation is about. Built by the
  * handler, which is the only thing that knows how to read its own mutation kind.
+ *
+ * Feature 099 (FR-041) — `scope` is gone with the layer tier it named: there is
+ * one catalog per kind, so the `resourceKind` already says where the write went.
  */
 export interface ImportCommitTarget {
   readonly resourceKind: ProcessYamlResourceKind;
@@ -43,7 +45,6 @@ export interface ImportCommitTarget {
    * yet — so they are bounded and sanitized on the way into the log.
    */
   readonly resourceIds: readonly string[];
-  readonly scope: PhaseDefinitionScope;
 }
 
 function payloadFor(
@@ -61,7 +62,6 @@ function payloadFor(
     resourceIds: target.resourceIds
       .slice(0, RESOURCE_IDS_MAX)
       .map((id) => sanitize(id).slice(0, RESOURCE_ID_MAX_LEN[target.resourceKind])),
-    scope: target.scope,
     outcomes: [outcome],
     counts
   };
@@ -96,7 +96,7 @@ async function append(
 }
 
 /**
- * One layer of a package landed. `counts.imported` is the untruncated number of
+ * One kind of a package landed. `counts.imported` is the untruncated number of
  * declared ids even when `resourceIds` is capped, so the cap is visible rather
  * than silent (FR-049).
  *
@@ -122,7 +122,7 @@ export async function auditImportCommitted(
 }
 
 /**
- * One layer of a package did not land, and `reason` is the save gate's own
+ * One kind of a package did not land, and `reason` is the save gate's own
  * rejection literal — never document-derived text (FR-060).
  *
  * Recorded for every gate an `import-package` write can be refused by, because

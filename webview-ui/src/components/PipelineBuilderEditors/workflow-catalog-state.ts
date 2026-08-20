@@ -27,8 +27,7 @@ import {
   type WorkflowConditionOperand,
   type WorkflowConditionOperator,
   type WorkflowConnection,
-  type WorkflowNode,
-  type WritableWorkflowDefinitionScope
+  type WorkflowNode
 } from '../../lib/snapshot-types';
 import type { SaveWorkflowRow } from '../../lib/save-workflows';
 import type { MutableWorkflow } from './types';
@@ -100,7 +99,6 @@ export function sourceRecordToMutableWorkflow(
     connections: (definition?.connections ?? []).map(copyConnection),
     startNodeIds: [...(definition?.startNodeIds ?? [])],
     sourceKey: record.key,
-    scope: record.scope,
     sourceStatus: record.status,
     sourceErrors: record.errors,
     persisted: true,
@@ -111,7 +109,7 @@ export function sourceRecordToMutableWorkflow(
 
 /**
  * Reduce a draft to the authored contract fields. Nothing projection-only —
- * scope, source status, derived ports, defect list — may ride back to the host,
+ * source status, derived ports, defect list — may ride back to the host,
  * and a blank description is omitted rather than persisted as an empty string.
  */
 export function toSaveWorkflowRow(workflow: MutableWorkflow): SaveWorkflowRow {
@@ -127,9 +125,8 @@ export function toSaveWorkflowRow(workflow: MutableWorkflow): SaveWorkflowRow {
   };
 }
 
-/** A blank draft in `scope`, with an id no row in that scope already uses. */
+/** A blank draft, with an id no row in the catalog already uses. */
 export function makeNewWorkflowDraft(
-  scope: WritableWorkflowDefinitionScope,
   takenIds: readonly string[]
 ): MutableWorkflow {
   const workflowId = freeIdentifier('new-workflow', takenIds);
@@ -140,8 +137,7 @@ export function makeNewWorkflowDraft(
     nodes: [],
     connections: [],
     startNodeIds: [],
-    sourceKey: `${scope}::${workflowId}::draft`,
-    scope,
+    sourceKey: `${workflowId}::draft`,
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -150,10 +146,9 @@ export function makeNewWorkflowDraft(
   };
 }
 
-/** A copy of `source` under a free id, unsaved and owned by `scope`. */
+/** A copy of `source` under a free id, unsaved. */
 export function makeDuplicateWorkflowDraft(
   source: MutableWorkflow,
-  scope: WritableWorkflowDefinitionScope,
   takenIds: readonly string[]
 ): MutableWorkflow {
   const workflowId = freeIdentifier(`${source.workflowId}-copy`, takenIds);
@@ -164,8 +159,7 @@ export function makeDuplicateWorkflowDraft(
     nodes: source.nodes.map(copyNode),
     connections: source.connections.map(copyConnection),
     startNodeIds: [...source.startNodeIds],
-    sourceKey: `${scope}::${workflowId}::draft`,
-    scope,
+    sourceKey: `${workflowId}::draft`,
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -622,7 +616,7 @@ export function boundFieldErrors(
  * Advisory pre-save checks. Everything here is cheap, local, and unambiguous;
  * the graph rules the host owns are deliberately absent (see the module header).
  *
- * @param takenIds Identifiers already used in the target scope. A persisted row
+ * @param takenIds Identifiers already used in the catalog. A persisted row
  *                 keeping its own id is not colliding with itself, so the
  *                 uniqueness check applies to drafts only.
  */
@@ -642,7 +636,7 @@ export function validateWorkflowDraft(
     errors.push({
       field: 'workflowId',
       code: 'duplicate-id',
-      message: `A Workflow named "${workflow.workflowId}" already exists in this scope.`
+      message: `A Workflow named "${workflow.workflowId}" already exists.`
     });
   }
 
@@ -695,7 +689,7 @@ export function validateWorkflowDraft(
   return errors;
 }
 
-/** Dirty compares the save shape only: a scope badge changing is not an edit. */
+/** Dirty compares the save shape only: a status badge changing is not an edit. */
 export function isWorkflowDirty(
   workflow: MutableWorkflow,
   baseline: MutableWorkflow | null

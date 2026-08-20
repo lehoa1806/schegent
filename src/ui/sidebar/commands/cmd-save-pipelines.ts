@@ -1,21 +1,23 @@
-// Feature 082 (US1, T025) — scoped, revisioned, intent-declaring Pipeline save.
+// Feature 082 (US1, T025) — revisioned, intent-declaring Pipeline save.
 // Contract: specs/082-pipeline-contracts-builder/contracts/save-pipelines-ipc.md
 //
 // The ordered gate table is implemented top to bottom and returns on the first
-// failure, so no configuration write happens unless every gate passes (FR-020).
+// failure, so no store write happens unless every gate passes (FR-020).
 //
-// Feature 059's per-capability trust gate is preserved verbatim as gates 11–12:
-// a payload byte-equivalent to `BUILT_IN_PIPELINES` and a `reset` that empties
-// the layer both bypass `pipelineOverrides`, so an operator can always return to
-// defaults from a denied state (I-2).
+// Feature 099 (T493d, FR-042a) — the commit writes the versioned catalog store
+// rather than the retired Pipeline settings key, which is deleted. Three gates went with the
+// layer tier and none of the rest moved:
+//
+//   * Gate 8's `built-in-immutable` arm — there is no built-in layer to be
+//     immutable, so a mutation naming an unknown row is a plain mismatch.
+//   * Gates 11 and 12, feature 059's `pipelineOverrides` capability — it asked
+//     whether this layer could redefine what another declares, and one layer
+//     poses no such question (FR-046).
+//
+// The single-intent, expected-revision gate is exactly what FR-047 keeps: the
+// surface still sends a complete layer and the host still re-derives the diff.
 
 import {
-  BUILT_IN_PHASES,
-  BUILT_IN_PIPELINES,
-  equalsBuiltInPipelines
-} from '../../../config/pipeline-config';
-import {
-  pipelineLayerRevision,
   pipelineSourceIdentity,
   resolvePipelineCatalog,
   unknownPhaseErrors
@@ -30,16 +32,14 @@ import { WORKFLOW_ID_MAX_LEN } from '../../../config/workflow-definition-validat
 import type {
   PipelineCatalogMutation,
   PipelineDefinition,
-  PipelineFieldError,
-  WritablePipelineDefinitionScope
+  PipelineFieldError
 } from '../../../contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../contracts/process-definitions';
-import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
 import type { SavePipelinesCommand } from '../messages';
+import { commitCatalogLayer } from './catalog-layer-commit';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 import {
-  auditImportCommitted,
   auditImportRefused,
   type ImportCommitTarget
 } from './process-exchange-commit-audit';
@@ -54,7 +54,6 @@ import {
   type LayerIntentAdapter,
   type LayerMutationIntent
 } from './save-layer-intent';
-import { denyAndAudit } from './trust-gate';
 
 interface NormalizedLayer {
   readonly definitions: readonly PipelineDefinition[];
@@ -161,7 +160,13 @@ function crossReferenceErrors(
   return errors;
 }
 
-/** The authored settings shape, matching the `schegent.pipelines` JSON schema. */
+/**
+ * The authored row shape, as the store holds it.
+ *
+ * Unchanged by feature 099: the store takes a body verbatim and never validates
+ * or normalises it (FR-010, FR-011), so the bytes a version record carries are
+ * the bytes the retired Pipeline settings key used to carry.
+ */
 function persistedRow(definition: PipelineDefinition): Record<string, unknown> {
   return {
     id: definition.pipelineId,
@@ -199,19 +204,17 @@ function boundedValidationResult(
 function currentMetadata(
   mutation: PipelineCatalogMutation,
   current: ReadonlyMap<string, PipelineDefinition>,
-  scope: WritablePipelineDefinitionScope,
   sanitize: (value: string) => string
 ): unknown {
-  if (mutation.kind === 'reset') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'reset') return { legalActions: ['refresh'] };
   // A package names a set, not a row, and `reapply` is not offered: the plan was
   // computed against the revision this gate just rejected, so its skip and
   // blocked decisions may no longer hold. The operator re-runs the preflight.
-  if (mutation.kind === 'import-package') return { scope, legalActions: ['refresh'] };
+  if (mutation.kind === 'import-package') return { legalActions: ['refresh'] };
   const pipelineId =
     mutation.kind === 'duplicate' ? mutation.sourcePipelineId : mutation.pipelineId;
   const definition = current.get(pipelineId);
   return {
-    scope,
     pipelineId: sanitize(pipelineId).slice(0, 64),
     ...(definition
       ? { name: sanitize(definition.name).slice(0, 80), version: definition.version }
@@ -234,15 +237,10 @@ function currentMetadata(
  * consumer: a recommendation pointing at a removed Pipeline degrades to the
  * `pipeline-recommended-next-unresolved` warning and never blocks (FR-019a).
  *
- * Definition names carry their scope. The same Workflow identifier may exist
- * in more than one layer, and only the blocking layer is worth editing.
+ * Feature 099 (FR-043) — a definition name used to carry its scope, because the
+ * same Workflow identifier could exist in several layers and only the blocking
+ * one was worth editing. One layer: the identifier names it.
  */
-/**
- * `${scope}::${workflowId}` — the longest scope is `workspace`, so eleven
- * characters of prefix sit on top of a full-length Workflow identifier.
- */
-const SCOPED_WORKFLOW_NAME_MAX_LEN = WORKFLOW_ID_MAX_LEN + 'workspace::'.length;
-
 function consumingWorkflowsReferencing(
   ctx: Parameters<typeof handler>[0],
   pipelineIds: ReadonlySet<string>
@@ -252,7 +250,7 @@ function consumingWorkflowsReferencing(
   for (const reference of ctx.deps.readWorkflowPipelineRefs?.() ?? []) {
     if (!pipelineIds.has(reference.pipelineId)) continue;
     if (reference.kind === 'workflow-definition') {
-      definitionIds.add(`${reference.scope}::${reference.workflowId}`);
+      definitionIds.add(reference.workflowId);
     } else {
       runRequestIds.add(reference.workflowId);
     }
@@ -261,26 +259,30 @@ function consumingWorkflowsReferencing(
 }
 
 export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command) => {
-  const { scope, expectedRevision, mutation } = command.payload;
-  // Feature 085 (FR-061) — the one layer write a package import is about, or
+  const { expectedRevision, mutation } = command.payload;
+  // Feature 085 (FR-061) — the one catalog write a package import is about, or
   // null for every other mutation. Read before gate 1 so a refusal at any gate
   // leaves a record; every audit call below is a no-op when null.
   const exchange: ImportCommitTarget | null =
     mutation.kind === 'import-package'
-      ? { resourceKind: 'pipeline', resourceIds: mutation.pipelineIds, scope }
+      ? { resourceKind: 'pipeline', resourceIds: mutation.pipelineIds }
       : null;
 
-  // Gate 1 — host configuration operations.
-  if (!ctx.deps.updateConfig || !ctx.deps.readPipelineConfig) {
+  // Gate 1 — somewhere to write. `null` is an untrusted workspace, where no
+  // catalog is activated at all (FR-051); `undefined` is a window that wired no
+  // store. Both mean this save has nowhere to land, and the Builder reports the
+  // trust gate on its own surface rather than through a save refusal (FR-052).
+  const store = ctx.deps.catalogStore;
+  if (!store || !ctx.deps.readPipelineConfig) {
     await auditImportRefused(ctx, exchange, 'config-ops-unavailable');
     await ack(ctx, 'rejected', 'config-ops-unavailable');
     return;
   }
 
   const intent = pipelineIntent(mutation);
-  const layers = ctx.deps.readPipelineConfig();
-  const currentRows = layers[scope];
-  const currentRevision = pipelineLayerRevision(currentRows);
+  const stored = ctx.deps.readPipelineConfig();
+  const currentRows = stored.rows;
+  const currentRevision = stored.revision;
   const currentLayer = normalizeLayer(currentRows);
   const currentById = definitionMap(currentLayer.definitions, pipelineIntentAdapter);
   const currentIdentities = layerIdentities(currentRows, pipelineIntentAdapter);
@@ -290,7 +292,7 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     await auditImportRefused(ctx, exchange, 'stale-catalog');
     await ack(ctx, 'rejected', 'stale-catalog', {
       currentRevision,
-      current: currentMetadata(mutation, currentById, scope, ctx.deps.logger.sanitize)
+      current: currentMetadata(mutation, currentById, ctx.deps.logger.sanitize)
     });
     return;
   }
@@ -309,11 +311,10 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
   }
 
   // Gate 5 — Phase and binding resolution against the effective Phase catalog.
-  const phaseLayers = ctx.deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
+  const storedPhases = ctx.deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
   const effectivePhases = resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: phaseLayers.user,
-    workspace: phaseLayers.workspace
+    rows: storedPhases.rows,
+    revision: storedPhases.revision
   }).effective;
   const unresolved = crossReferenceErrors(proposedLayer.definitions, effectivePhases);
   if (unresolved.length > 0) {
@@ -358,15 +359,12 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
       });
       return;
     }
-    // Gate 8 — the built-in layer is never a save target (FR-024). Only `edit`
-    // and `remove` can name a row this layer does not own.
-    const builtInIds = new Set(BUILT_IN_PIPELINES.map((pipeline) => pipeline.id));
-    const builtInOnly = (mutation.kind === 'edit' || mutation.kind === 'remove')
-      && builtInIds.has(mutation.pipelineId)
-      && !currentById.has(mutation.pipelineId);
-    const reason = builtInOnly ? 'built-in-immutable' : 'pipeline-mutation-mismatch';
-    await auditImportRefused(ctx, exchange, reason);
-    await ack(ctx, 'rejected', reason);
+    // Feature 099 (FR-039, FR-046) — gate 8's `built-in-immutable` arm is gone
+    // with the built-in layer. An `edit` or `remove` naming a row the catalog
+    // does not hold is now what it always was underneath: a declared mutation
+    // the observed diff cannot produce.
+    await auditImportRefused(ctx, exchange, 'pipeline-mutation-mismatch');
+    await ack(ctx, 'rejected', 'pipeline-mutation-mismatch');
     return;
   }
 
@@ -397,16 +395,6 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     }
   }
 
-  // Gates 11 and 12 — feature 059 I-2: returning to defaults is always allowed,
-  // whether expressed as a layer-emptying `reset` or as a payload byte-equal to
-  // the built-ins. Everything else needs the `pipelineOverrides` capability.
-  const reset = mutation.kind === 'reset' && proposedLayer.definitions.length === 0;
-  const restoresDefaults = reset || equalsBuiltInPipelines(command.payload.pipelines);
-  if (!restoresDefaults && !isCapabilityAllowed('pipelineOverrides')) {
-    await denyAndAudit(ctx, 'pipelineOverrides');
-    return;
-  }
-
   const versionSources = repairTargetId !== null && mutation.kind === 'edit'
     ? new Map([
         ...currentIdentities.versions,
@@ -430,9 +418,8 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
   // simply becomes effective.
   if (mutation.kind === 'remove' || mutation.kind === 'reset') {
     const prospective = resolvePipelineCatalog({
-      builtIn: BUILT_IN_PIPELINES,
-      user: scope === 'user' ? persistedRows : layers.user,
-      workspace: scope === 'workspace' ? persistedRows : layers.workspace,
+      rows: persistedRows,
+      revision: currentRevision,
       phaseCatalog: effectivePhases
     });
     const candidateIds = (mutation.kind === 'remove'
@@ -452,11 +439,16 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
           pipelineIds: bounded([...unresolvedIds]),
           dependentWorkflowIds: bounded(runRequestIds),
           // Additive (083 FR-041); `dependentWorkflowIds` keeps its 082 meaning
-          // of queued run requests so the existing contract stays valid. The
-          // wider cap leaves room for the scope prefix on top of a full-length
-          // workflow id — truncating one would defeat "the refusal names the
-          // referencing Workflows".
-          dependentWorkflowDefinitionIds: bounded(definitionIds, SCOPED_WORKFLOW_NAME_MAX_LEN),
+          // of queued run requests so the existing contract stays valid.
+          //
+          // Feature 099 (FR-043) — the cap used to be `WORKFLOW_ID_MAX_LEN + 11`,
+          // room for the `workspace::` prefix these ids carried while the same
+          // Workflow identifier could exist in several layers. There is one
+          // layer, so the id is a bare Workflow id and its own maximum is the
+          // cap. Named rather than left to `bounded`'s default, which is the same
+          // number for a different reason: truncating one of these would defeat
+          // "the refusal names the referencing Workflows".
+          dependentWorkflowDefinitionIds: bounded(definitionIds, WORKFLOW_ID_MAX_LEN),
           total: runRequestIds.length + definitionIds.length
         });
         return;
@@ -464,22 +456,14 @@ export const handler: CommandHandler<SavePipelinesCommand> = async (ctx, command
     }
   }
 
-  // Gate 14 — the single commit point for the targeted layer.
-  try {
-    await ctx.deps.updateConfig('pipelines', persistedRows, scope);
-  } catch (error) {
-    ctx.deps.logger.warn(
-      `pipeline catalog save failed: ${ctx.deps.logger.sanitize((error as Error).message)}`
-    );
-    await auditImportRefused(ctx, exchange, 'persistence-failed');
-    await ack(ctx, 'rejected', 'persistence-failed');
-    return;
-  }
-
-  await auditImportCommitted(ctx, exchange);
-  await ack(ctx, 'accepted', undefined, {
-    scope,
-    revision: pipelineLayerRevision(persistedRows),
-    mutation: mutation.kind
+  // Gate 14 — the single commit point. One `saveLayer` call rather than one
+  // `save` per row: the revision gate is per kind (FR-044), so N calls would
+  // move the revision on the first and refuse themselves as stale on the second.
+  await commitCatalogLayer(ctx, store, {
+    kind: 'pipeline',
+    definitions: persistedRows.map((row) => ({ id: row.id as string, body: row })),
+    expectedRevision,
+    mutationKind: mutation.kind,
+    exchange
   });
 };

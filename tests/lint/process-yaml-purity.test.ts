@@ -136,7 +136,13 @@ function valueImportClosure(): { readonly files: readonly string[]; readonly bar
         if (!bare.has(entry.specifier)) bare.set(entry.specifier, repoRelative(file));
         continue;
       }
-      const target = resolve(dirname(file), `${entry.specifier}.ts`);
+      // Feature 099 (T496f) — a specifier can now name a DIRECTORY with an
+      // `index.ts` (`../catalog`), so the walk tries the file first and the
+      // directory entry point second. Resolving fewer files would shrink the
+      // closure silently, which is the one failure mode this scan cannot have.
+      const direct = resolve(dirname(file), `${entry.specifier}.ts`);
+      const asIndex = resolve(dirname(file), entry.specifier, 'index.ts');
+      const target = existsSync(direct) ? direct : asIndex;
       // A specifier this walk cannot resolve would silently shrink the closure,
       // so it fails the scan rather than being skipped.
       expect(existsSync(target), `${repoRelative(file)} imports unresolvable ${entry.specifier}`).toBe(true);

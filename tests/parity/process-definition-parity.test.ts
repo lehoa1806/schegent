@@ -47,6 +47,14 @@
 // graph. The Workflow fixtures are therefore shape-valid on both sides and the
 // broken one is broken *in the graph* — which is why T031 names a connection to a
 // missing node rather than, say, a missing `name`.
+//
+// Feature 099 (T496f, FR-042) — the parity claim is untouched by the layer
+// collapse; only the way each surface is handed a catalog changed. What used to be
+// "supporting rows in the user layer, saves aimed at the empty workspace layer" is
+// now "supporting rows in the one catalog, and a payload that carries them across
+// unchanged alongside the row under test". Both readings make the same case: every
+// save is a plain `create`, so the mutation gates — which run after validation —
+// stay out of a comparison that is about validation.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -67,10 +75,9 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
-import { pipelineLayerRevision, resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
-import { phaseLayerRevision, resolvePhaseCatalog } from '../../src/config/process-catalog';
-import { workflowLayerRevision } from '../../src/config/workflow-catalog';
+import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
+import { resolvePhaseCatalog } from '../../src/config/process-catalog';
+import { FakeCatalogStore } from '../fixtures/fake-catalog-store';
 import { validateProcessDefinition } from '../../src/headless/process-definition-api';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
@@ -86,10 +93,11 @@ type Kind = 'phase' | 'pipeline' | 'workflow';
 type Row = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
-// Fixtures. The supporting rows live in the USER layer and every save under test
-// targets the WORKSPACE layer, so the layer being written is always empty before
-// the save. That keeps the mutation intent a plain `create` on every case, and
-// keeps the mutation gates — which run after validation — out of the comparison.
+// Fixtures. The supporting rows are seeded into the one catalog and every save
+// under test carries them across untouched, so the diff the mutation gates see is
+// a single addition on every case. No fixture id collides with a supporting one,
+// which is what keeps the intent a plain `create` and keeps the mutation gates —
+// which run after validation — out of the comparison.
 // ---------------------------------------------------------------------------
 
 const PHASE_ROWS: readonly Row[] = [
@@ -239,16 +247,21 @@ const PIPELINE_NO_VERSION: Row = (() => {
 // own resolvers.
 // ---------------------------------------------------------------------------
 
+/**
+ * The revision every seeded store reports. Feature 099 (FR-044a): seeding rows
+ * does not move a revision, so both surfaces and every save agree on it without
+ * having to compute a hash of the layer the way `*LayerRevision` once did.
+ */
+const SEEDED = new FakeCatalogStore();
+
 const EFFECTIVE_PHASES = resolvePhaseCatalog({
-  builtIn: BUILT_IN_PHASES,
-  user: PHASE_ROWS,
-  workspace: []
+  rows: PHASE_ROWS,
+  revision: SEEDED.revisionOf('phase')
 }).effective;
 
 const PIPELINE_RESOLUTION = resolvePipelineCatalog({
-  builtIn: BUILT_IN_PIPELINES,
-  user: PIPELINE_ROWS,
-  workspace: [],
+  rows: PIPELINE_ROWS,
+  revision: SEEDED.revisionOf('pipeline'),
   phaseCatalog: EFFECTIVE_PHASES
 });
 
@@ -308,6 +321,13 @@ const SAVE: Record<Kind, { readonly type: string; readonly key: string }> = {
   workflow: { type: CMD_SAVE_WORKFLOWS, key: 'workflows' }
 };
 
+/** The rows the catalog already holds for each kind, seeded into every harness. */
+const SEED_ROWS: Record<Kind, readonly Row[]> = {
+  phase: PHASE_ROWS,
+  pipeline: PIPELINE_ROWS,
+  workflow: []
+};
+
 function mutationFor(kind: Kind, row: Row): Record<string, unknown> {
   const id = (row.id ?? row.pipelineId ?? row.phaseId ?? row.workflowId) as string;
   if (kind === 'phase') return { kind: 'create', phaseId: id };
@@ -315,15 +335,13 @@ function mutationFor(kind: Kind, row: Row): Record<string, unknown> {
   return { kind: 'create', workflowId: id };
 }
 
-const EMPTY_REVISION: Record<Kind, string> = {
-  phase: phaseLayerRevision([]),
-  pipeline: pipelineLayerRevision([]),
-  workflow: workflowLayerRevision([])
-};
-
 async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
   const acks: CommandAckMessage[] = [];
-  const written: string[] = [];
+  const store = new FakeCatalogStore({
+    phases: SEED_ROWS.phase,
+    pipelines: SEED_ROWS.pipeline,
+    workflows: SEED_ROWS.workflow
+  });
   const deps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -338,12 +356,17 @@ async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
       sanitize: (value: string) => value
     },
     audit: { append: async () => undefined },
-    updateConfig: async (configKey: string) => {
-      written.push(configKey);
-    },
-    readPhaseConfig: () => ({ user: PHASE_ROWS, workspace: [] }),
-    readPipelineConfig: () => ({ user: PIPELINE_ROWS, workspace: [] }),
-    readWorkflowConfig: () => ({ user: [], workspace: [] })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
+    readPipelineConfig: () => ({
+      rows: store.rowsOf('pipeline'),
+      revision: store.revisionOf('pipeline')
+    }),
+    readWorkflowConfig: () => ({
+      rows: store.rowsOf('workflow'),
+      revision: store.revisionOf('workflow')
+    })
   } as unknown as RouterDeps;
 
   await new MessageRouter(deps).dispatch(
@@ -351,10 +374,11 @@ async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
       type: SAVE[kind].type,
       correlationId: `parity-${kind}`,
       payload: {
-        scope: 'workspace',
-        expectedRevision: EMPTY_REVISION[kind],
+        expectedRevision: store.revisionOf(kind),
         mutation: mutationFor(kind, row),
-        [SAVE[kind].key]: [row]
+        // The seeded rows ride across unchanged, so the only difference between
+        // the stored catalog and the payload is the row under test.
+        [SAVE[kind].key]: [...SEED_ROWS[kind], row]
       }
     } as unknown as SidebarCommand,
     async (message) => {
@@ -369,7 +393,7 @@ async function sidebarVerdict(kind: Kind, row: Row): Promise<SidebarOutcome> {
     valid: ack?.status === 'accepted',
     defects: sorted((result?.errors ?? []).map((error) => `${error.field}|${error.code}`)),
     reason: ack?.reason,
-    wrote: written.length > 0
+    wrote: store.layerSaves.length > 0
   };
 }
 
@@ -445,11 +469,11 @@ describe('the fixture resolves as intended (positive controls)', () => {
     expect(pipelineIds).toContain('parity-source');
     expect(pipelineIds).toContain('parity-target');
     // The empty invalid-Pipeline map handed to the graph validator is correct
-    // only while this holds.
+    // only while this holds. Feature 099 (T496f, FR-042) — the `scope` exemption
+    // that used to sit here excused built-in rows; with one layer there are no
+    // rows to excuse, so every invalid record counts.
     expect(
-      PIPELINE_RESOLUTION.records.filter(
-        (record) => record.scope !== 'built-in' && record.status === 'invalid'
-      )
+      PIPELINE_RESOLUTION.records.filter((record) => record.status === 'invalid')
     ).toEqual([]);
   });
 

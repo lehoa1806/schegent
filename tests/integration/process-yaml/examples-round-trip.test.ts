@@ -53,7 +53,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { CMD_PREFLIGHT_PROCESS_YAML, CMD_SAVE_MODELS } from '../../../src/contracts/sidebar-ipc';
@@ -76,6 +75,7 @@ import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/c
 import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
 import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
 import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 const EXAMPLES_DIR = resolve(__dirname, '..', '..', '..', 'examples');
 const CORRELATION = 'examples-round-trip-1';
@@ -168,24 +168,26 @@ function rowKey(row: ImportPlanRow): DeclaredKey {
 
 type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;
 
+/**
+ * Feature 099 (T496f, FR-041/FR-042) — an installation is now a catalog store
+ * and the Model Catalog, which is out of 099's scope and still a setting.
+ *
+ * The three definition catalogs used to be three per-layer settings arrays and
+ * this fixture carried the layer pair for each. There is one layer, and it lives
+ * in the store, so a fresh install is an empty store — the same claim the
+ * `{ user: [], workspace: [] }` triple made, with nothing left to enumerate.
+ */
 interface Installation {
-  phases: { user: readonly unknown[]; workspace: readonly unknown[] };
-  pipelines: { user: readonly unknown[]; workspace: readonly unknown[] };
-  workflows: { user: readonly unknown[]; workspace: readonly unknown[] };
+  readonly store: FakeCatalogStore;
   models: ModelsConfig;
 }
 
-/** What a fresh install holds: nothing, in every layer of every catalog. */
+/** What a fresh install holds: nothing, in every catalog. */
 function emptyInstallation(): Installation {
   const models = Object.fromEntries(
     SUPPORTED_BACKENDS.map((backend) => [backend, [] as readonly string[]])
   ) as ModelsConfig;
-  return {
-    phases: { user: [], workspace: [] },
-    pipelines: { user: [], workspace: [] },
-    workflows: { user: [], workspace: [] },
-    models
-  };
+  return { store: new FakeCatalogStore(), models };
 }
 
 function logger() {
@@ -200,9 +202,18 @@ function logger() {
 
 function readDeps(inst: Installation) {
   return {
-    readPhaseConfig: () => inst.phases,
-    readPipelineConfig: () => inst.pipelines,
-    readWorkflowConfig: () => inst.workflows,
+    readPhaseConfig: () => ({
+      rows: inst.store.rowsOf('phase'),
+      revision: inst.store.revisionOf('phase')
+    }),
+    readPipelineConfig: () => ({
+      rows: inst.store.rowsOf('pipeline'),
+      revision: inst.store.revisionOf('pipeline')
+    }),
+    readWorkflowConfig: () => ({
+      rows: inst.store.rowsOf('workflow'),
+      revision: inst.store.revisionOf('workflow')
+    }),
     readModelsConfig: () => inst.models,
     audit: { append: async () => undefined },
     logger: logger()
@@ -285,13 +296,14 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
   const ctx = {
     deps: {
       ...readDeps(inst),
+      catalogStore: inst.store,
+      refreshCatalog: async () => undefined,
       readConfig: () => undefined,
-      updateConfig: async (key: string, value: unknown, target: 'user' | 'workspace') => {
-        if (key === 'models') {
-          inst.models = value as ModelsConfig;
-          return;
-        }
-        (inst as unknown as Record<string, Record<string, unknown>>)[key]![target] = value;
+      // The Model Catalog is the one kind still written through settings
+      // (feature 096, untouched by 099); the definition kinds go to the store.
+      updateConfig: async (key: string, value: unknown) => {
+        if (key !== 'models') throw new Error(`unexpected settings write: ${key}`);
+        inst.models = value as ModelsConfig;
       },
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() }
@@ -310,10 +322,9 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
       type: CMD_SAVE_PHASES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'user',
-        expectedRevision: plan.computedAgainstRevision.user,
+        expectedRevision: plan.computedAgainstRevision,
         mutation: { kind: 'import-package', phaseIds: phases.map((d) => d.phaseId) },
-        phases: [...inst.phases.user, ...phases.map(phaseRow)]
+        phases: [...inst.store.rowsOf('phase'), ...phases.map(phaseRow)]
       }
     } as SavePhasesCommand);
   }
@@ -326,10 +337,9 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
       type: CMD_SAVE_PIPELINES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'user',
-        expectedRevision: revisions!.user,
+        expectedRevision: revisions!,
         mutation: { kind: 'import-package', pipelineIds: pipelines.map((d) => d.pipelineId) },
-        pipelines: [...inst.pipelines.user, ...pipelines.map(pipelineRow)]
+        pipelines: [...inst.store.rowsOf('pipeline'), ...pipelines.map(pipelineRow)]
       }
     } as SavePipelinesCommand);
   }
@@ -354,17 +364,15 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
 
 function phaseCatalog(inst: Installation) {
   return resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: inst.phases.user,
-    workspace: inst.phases.workspace
+    rows: inst.store.rowsOf('phase'),
+    revision: inst.store.revisionOf('phase')
   });
 }
 
 function pipelineCatalog(inst: Installation) {
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: inst.pipelines.user,
-    workspace: inst.pipelines.workspace,
+    rows: inst.store.rowsOf('pipeline'),
+    revision: inst.store.revisionOf('pipeline'),
     phaseCatalog: phaseCatalog(inst).effective
   });
 }
@@ -373,9 +381,9 @@ function pipelineCatalog(inst: Installation) {
  * The keys the installation resolves as effective.
  *
  * Phases and Pipelines carry a per-row status, so `effective` is read off the
- * record. The Model Catalog has one layer and no precedence — nothing can shadow
- * a model id — so a model resolves effective exactly when the merged config
- * holds it under the backend it was declared with.
+ * record. The Model Catalog is a single settings key with no per-row status, so a
+ * model resolves effective exactly when the config holds it under the backend it
+ * was declared with.
  */
 function effectiveKeys(inst: Installation): ReadonlySet<DeclaredKey> {
   const keys = new Set<DeclaredKey>();

@@ -28,17 +28,17 @@ import { ensureExtendedFeatureRequest, type FeatureRequest } from '../../../src/
 import { WorkflowRunFactory } from '../../../src/services/workflow-run-factory';
 
 const ALPHA: PhaseDef = {
-  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.', sourceScope: 'built-in'
+  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.'
 };
 const BETA: PhaseDef = {
-  id: 'beta', name: 'Beta', version: 1, instruction: 'Beta prompt.', sourceScope: 'built-in'
+  id: 'beta', name: 'Beta', version: 1, instruction: 'Beta prompt.'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 const AB_FLOW: PipelineDef = {
-  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta'], sourceScope: 'workspace'
+  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta']
 };
 
 function catalog(): PipelineCatalog {

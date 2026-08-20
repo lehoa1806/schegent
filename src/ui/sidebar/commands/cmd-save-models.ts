@@ -77,7 +77,7 @@ export const handler: CommandHandler<SaveModelsCommand> = async (ctx, command) =
 
   // Manual add/remove — pre-existing behavior, unchanged.
   if (mutation === undefined) {
-    await ctx.deps.updateConfig('models', models, 'workspace');
+    await ctx.deps.updateConfig('models', models);
     await ack(ctx, 'accepted');
     return;
   }
@@ -85,8 +85,7 @@ export const handler: CommandHandler<SaveModelsCommand> = async (ctx, command) =
   // Import-confirm — gated sequence.
   const exchange: ImportCommitTarget = {
     resourceKind: 'modelCatalog',
-    resourceIds: Object.values(models).flat(),
-    scope: 'workspace'
+    resourceIds: Object.values(models).flat()
   };
 
   const currentModelsConfig = ctx.deps.readModelsConfig?.() ?? EMPTY_MODELS_CONFIG;
@@ -111,7 +110,7 @@ export const handler: CommandHandler<SaveModelsCommand> = async (ctx, command) =
   const mergedCatalog = mergeImportedRows(currentModelsConfig, rows);
 
   try {
-    await ctx.deps.updateConfig('models', mergedCatalog, 'workspace');
+    await ctx.deps.updateConfig('models', mergedCatalog);
   } catch (error) {
     ctx.deps.logger.warn(
       `model catalog save failed: ${ctx.deps.logger.sanitize((error as Error).message)}`

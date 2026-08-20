@@ -217,11 +217,6 @@
           "type": "EvidenceHealthSnapshot"
         },
         {
-          "name": "phasePrecedence",
-          "optional": true,
-          "type": "PhasePrecedenceProjection"
-        },
-        {
           "name": "phaseCatalog",
           "optional": true,
           "type": "PhaseCatalogProjection"
@@ -254,7 +249,7 @@
         {
           "name": "resolvedTrust",
           "optional": false,
-          "type": "{ readonly phases: boolean; readonly retryConditions: boolean; readonly pipelineOverrides: boolean; readonly workflowOverrides: boolean; }"
+          "type": "{ readonly phases: boolean; readonly retryConditions: boolean; }"
         },
         {
           "name": "confirmSuppression",

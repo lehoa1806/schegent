@@ -1,7 +1,7 @@
 // Feature 084 T037/T039/T040 — the import surface's decisions, as pure functions.
 //
 // Everything the commit decides lives outside the component so it can be pinned
-// directly: which scope is offerable (FR-035), when confirmation is unavailable
+// directly: where a confirmed import writes (FR-035), when confirmation is unavailable
 // and why (FR-036, FR-057), what the save carries (FR-037, FR-038, FR-046a), and
 // how the save's single ack becomes a per-row result (FR-042, FR-044).
 
@@ -12,7 +12,6 @@ import type { SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases'
 import type { SavePipelinesRequest, SavePipelinesResult } from '../../lib/save-pipelines';
 import type { SaveWorkflowsRequest, SaveWorkflowsResult } from '../../lib/save-workflows';
 import {
-  IMPORT_TARGET_SCOPES,
   buildImportWrites,
   commitOutcome,
   commitOutcomeStatement,
@@ -44,15 +43,14 @@ import {
   type ImportedWorkflowDefinition
 } from '../ProcessImport/process-import-state';
 
-const REVISIONS = Object.freeze({ user: 'user-rev-1', workspace: 'workspace-rev-1' });
-const PIPELINE_REVISIONS = Object.freeze({
-  user: 'user-pipe-rev-1',
-  workspace: 'workspace-pipe-rev-1'
-});
-const WORKFLOW_REVISIONS = Object.freeze({
-  user: 'user-flow-rev-1',
-  workspace: 'workspace-flow-rev-1'
-});
+// Feature 099 (T496f, FR-042, FR-044) — three maps of layer to revision stood
+// here, and every write picked its gate out of one of them by the scope the
+// operator had chosen. One catalog per kind leaves one revision per kind: still
+// three, because three catalogs still move independently, and a single shared
+// revision would refuse a Phase write because a Workflow had been saved.
+const PHASE_REVISION = 'phase-rev-1';
+const PIPELINE_REVISION = 'pipeline-rev-1';
+const WORKFLOW_REVISION = 'workflow-rev-1';
 
 /** Every portable field, so a dropped one is visible rather than plausible. */
 const FULL: ImportedPhaseDefinition = {
@@ -89,7 +87,6 @@ const SKIP_ROW: ImportPlanRow = {
   resourceKind: 'phase',
   resourceId: 'specify',
   name: 'Specify',
-  presentIn: 'user',
   presentRowStatus: 'invalid'
 };
 
@@ -110,7 +107,7 @@ function plan(rows: readonly ImportPlanRow[]): ImportPlan {
       blocked: rows.filter((row) => row.outcome === 'blocked').length,
       invalid: rows.filter((row) => row.outcome === 'invalid').length
     },
-    computedAgainstRevision: REVISIONS
+    computedAgainstRevision: PHASE_REVISION
   };
 }
 
@@ -219,7 +216,7 @@ const MODEL_CATALOG_IMPORT_ROW: ImportPlanRow = {
   modelId: 'custom-model-a'
 };
 
-/** A Model Catalog skip row — `ModelCatalogSkipRow`, not the presence-scope arm. */
+/** A Model Catalog skip row — `ModelCatalogSkipRow`, not the presence arm. */
 const MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW: ImportPlanRow = {
   outcome: 'skip',
   resourceKind: 'modelCatalog',
@@ -244,7 +241,7 @@ const MODEL_CATALOG_SKIP_UNRECOGNIZED_BACKEND_ROW: ImportPlanRow = {
  * Phase-only shape, so the two cases cannot be confused in a test's fixtures.
  */
 function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
-  return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISIONS };
+  return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISION };
 }
 
 /**
@@ -255,12 +252,12 @@ function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
  * of them would make every "held closed" case unreachable.
  */
 function workflowPackagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
-  return { ...packagePlan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISIONS };
+  return { ...packagePlan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISION };
 }
 
 /** A references-only Workflow package: nothing to write but the Workflow itself. */
 function workflowOnlyPlan(rows: readonly ImportPlanRow[]): ImportPlan {
-  return { ...plan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISIONS };
+  return { ...plan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISION };
 }
 
 const HELD = Object.freeze({ id: 'held', name: 'Held', version: 4, instruction: 'Hold.' });
@@ -281,10 +278,18 @@ const HELD_WORKFLOW = Object.freeze({
 
 const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [], workflows: [] };
 
-describe('Feature 084 — the offerable import targets (FR-035)', () => {
-  it('offers the two writable scopes and never built-in', () => {
-    expect(IMPORT_TARGET_SCOPES).toEqual(['user', 'workspace']);
-    expect(IMPORT_TARGET_SCOPES).not.toContain('built-in');
+describe('Feature 084 — the import target (FR-035)', () => {
+  it('takes no import target — the destination is not an input (T496f)', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — `IMPORT_TARGET_SCOPES` enumerated the
+    // scopes an import could target so the surface could offer a choice, and this
+    // case pinned the two writable ones with `built-in` excluded. There is one
+    // catalog, so there is no choice to offer and no list to enumerate it. The
+    // structural consequence is what remains assertable: the destination reaches
+    // none of the three commit entry points as an argument, so no caller can pick
+    // one and none can be picked wrongly.
+    expect(buildImportWrites).toHaveLength(2);
+    expect(runImportCommit).toHaveLength(3);
+    expect(commitStatement).toHaveLength(1);
   });
 });
 
@@ -317,7 +322,7 @@ describe('Feature 084 — the retry-condition advisory (T062, FR-012a)', () => {
     // A blocked Confirm would turn an advisory into a second gate — one this
     // surface would be deciding from a value it cannot verify.
     expect(
-      confirmBlockedReason({ state: 'planned', plan: plan([importRow(FULL, true)]), scope: 'user' })
+      confirmBlockedReason({ state: 'planned', plan: plan([importRow(FULL, true)]) })
     ).toBeNull();
   });
 
@@ -325,8 +330,8 @@ describe('Feature 084 — the retry-condition advisory (T062, FR-012a)', () => {
     // Same document, same request, whether or not the advisory fired. If the
     // flag altered the payload it would be part of the gate rather than a
     // description of the document.
-    const advised = buildImportWrites(plan([importRow(FULL, true)]), 'user', EMPTY_LAYERS);
-    const silent = buildImportWrites(plan([importRow(FULL, false)]), 'user', EMPTY_LAYERS);
+    const advised = buildImportWrites(plan([importRow(FULL, true)]), EMPTY_LAYERS);
+    const silent = buildImportWrites(plan([importRow(FULL, false)]), EMPTY_LAYERS);
     expect(advised).toEqual(silent);
     const request = advised[0].request as SavePhasesRequest;
     expect(request.phases[0]).toHaveProperty('retryCondition', 'open_questions > 0');
@@ -394,9 +399,13 @@ describe('Feature 084 — a refusal states a reason (T051, FR-057)', () => {
 });
 
 describe('Feature 084 — confirmation availability (FR-036, FR-056, FR-057)', () => {
-  const ready = { state: 'planned' as const, plan: plan([importRow()]), scope: 'user' as const };
+  const ready = { state: 'planned' as const, plan: plan([importRow()]) };
 
-  it('is available once there is a plan with an import row and a chosen scope', () => {
+  it('is available once there is a plan with an import row, nothing else to choose', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — `ready` used to carry a chosen scope,
+    // and this asserted that a plan plus that choice opened the gate. The choice
+    // is deleted, and the inversion is the claim: a planned plan with an eligible
+    // row is confirmable on the strength of those two facts alone.
     expect(confirmBlockedReason(ready)).toBeNull();
   });
 
@@ -407,7 +416,7 @@ describe('Feature 084 — confirmation availability (FR-036, FR-056, FR-057)', (
   });
 
   it('is unavailable with a stated reason for a refused document', () => {
-    const reason = confirmBlockedReason({ state: 'refused', plan: null, scope: 'user' });
+    const reason = confirmBlockedReason({ state: 'refused', plan: null });
     expect(reason).toContain('refused');
   });
 
@@ -416,10 +425,15 @@ describe('Feature 084 — confirmation availability (FR-036, FR-056, FR-057)', (
     expect(reason).toContain('nothing to import');
   });
 
-  // FR-056: no default. An unchosen scope is not silently the workspace.
-  it('is unavailable until the operator chooses a scope, and says so', () => {
-    const reason = confirmBlockedReason({ ...ready, scope: null });
-    expect(reason).toContain('Choose');
+  // Feature 099 (T496f, FR-043) — a fourth refusal, "Choose the scope to import
+  // into", stood here: FR-056 gave the target no default, so an unchosen scope
+  // held the gate closed rather than silently becoming the workspace. There is one
+  // catalog, so an operator can no longer fail to have chosen where a write lands,
+  // and no refusal this function can produce may ask them to choose anything.
+  it('asks the operator to choose nothing, in any state (T496f)', () => {
+    for (const state of ['idle', 'validating', 'canceled', 'refused', 'failed', 'committing'] as const) {
+      expect(confirmBlockedReason({ ...ready, state }) ?? '').not.toContain('Choose');
+    }
   });
 
   it('is unavailable while a commit is already in flight', () => {
@@ -429,7 +443,7 @@ describe('Feature 084 — confirmation availability (FR-036, FR-056, FR-057)', (
 
   it('states a reason for every state that is not a confirmable plan', () => {
     for (const state of ['idle', 'validating', 'canceled', 'refused', 'failed'] as const) {
-      expect(confirmBlockedReason({ state, plan: null, scope: 'user' })).toBeTruthy();
+      expect(confirmBlockedReason({ state, plan: null })).toBeTruthy();
     }
   });
 });
@@ -455,8 +469,7 @@ describe('Feature 085 T035 — the plan is kind-tagged (FR-056)', () => {
         resourceKind: 'workflow',
         resourceId: 'ship-it-flow',
         name: 'Ship It Flow',
-        presentIn: 'workspace',
-        presentRowStatus: 'shadowed'
+        presentRowStatus: 'invalid'
       })
     ).toBe('Workflow');
   });
@@ -637,8 +650,7 @@ describe('Feature 085 T048 — confirmation with a package in the plan (FR-057)'
     expect(
       confirmBlockedReason({
         state: 'planned',
-        plan: packagePlan([PIPELINE_IMPORT_ROW, SKIP_ROW]),
-        scope: 'user'
+        plan: packagePlan([PIPELINE_IMPORT_ROW, SKIP_ROW])
       })
     ).toBeNull();
   });
@@ -646,8 +658,7 @@ describe('Feature 085 T048 — confirmation with a package in the plan (FR-057)'
   it('reports "nothing to import" when no row is eligible, whatever the kinds', () => {
     const reason = confirmBlockedReason({
       state: 'planned',
-      plan: plan([BLOCKED_PIPELINE_ROW, SKIP_ROW, INVALID_ROW]),
-      scope: 'user'
+      plan: plan([BLOCKED_PIPELINE_ROW, SKIP_ROW, INVALID_ROW])
     });
     expect(reason).toContain('nothing to import');
   });
@@ -657,15 +668,14 @@ describe('Feature 085 T048 — confirmation with a package in the plan (FR-057)'
     expect(
       confirmBlockedReason({
         state: 'planned',
-        plan: packagePlan([importRow(), second, PIPELINE_IMPORT_ROW]),
-        scope: 'user'
+        plan: packagePlan([importRow(), second, PIPELINE_IMPORT_ROW])
       })
     ).toBeNull();
   });
 
   it('still confirms an ordinary single-Phase document', () => {
     expect(
-      confirmBlockedReason({ state: 'planned', plan: plan([importRow()]), scope: 'user' })
+      confirmBlockedReason({ state: 'planned', plan: plan([importRow()]) })
     ).toBeNull();
   });
 
@@ -675,46 +685,48 @@ describe('Feature 085 T048 — confirmation with a package in the plan (FR-057)'
   it('holds closed a Pipeline plan carrying no Pipeline revision, and says why', () => {
     const reason = confirmBlockedReason({
       state: 'planned',
-      plan: plan([PIPELINE_IMPORT_ROW]),
-      scope: 'user'
+      plan: plan([PIPELINE_IMPORT_ROW])
     });
     expect(reason).toContain('Pipeline catalog revision');
     expect(reason).not.toContain('nothing to import');
     // And nothing partial is buildable from it either — not even the Phase half
     // of a plan that also had Phases.
-    expect(buildImportWrites(plan([importRow(), PIPELINE_IMPORT_ROW]), 'user', EMPTY_LAYERS))
+    expect(buildImportWrites(plan([importRow(), PIPELINE_IMPORT_ROW]), EMPTY_LAYERS))
       .toEqual([]);
   });
 });
 
 describe('Feature 085 T035 — what confirming will write, stated first (FR-058)', () => {
-  it('names the eligible count and the chosen scope, and excludes the rest', () => {
-    const statement = commitStatement(plan([importRow(), SKIP_ROW, INVALID_ROW]), 'user');
+  it('names the eligible count and the destination, and excludes the rest', () => {
+    const statement = commitStatement(plan([importRow(), SKIP_ROW, INVALID_ROW]));
     expect(statement).toContain('1 resource');
-    expect(statement).toContain('user layer');
+    expect(statement).toContain('the catalog');
     expect(statement).toContain('nothing else');
     expect(statement).toContain('2 rows are left unchanged');
   });
 
-  it('says a scope is what it is waiting for, rather than naming a default', () => {
-    // FR-046 — the target is the operator's choice and never the document's, so
-    // an unchosen scope must not read as one already picked.
-    const statement = commitStatement(plan([importRow()]), null);
-    expect(statement).toContain('the scope you choose');
-    for (const scope of ['user layer', 'workspace layer']) {
-      expect(statement).not.toContain(scope);
+  it('names one destination and never a layer', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — with two writable layers this asked
+    // what the sentence says BEFORE a scope is chosen, and pinned that an
+    // unchosen one must not read as one already picked. Nothing is left to
+    // choose, so the sentence has exactly one destination to name; what carries
+    // over is the negative half, because naming a layer would describe a tier
+    // that no longer exists.
+    const statement = commitStatement(plan([importRow()]));
+    expect(statement).toContain('the catalog');
+    for (const layer of ['user layer', 'workspace layer', 'built-in']) {
+      expect(statement).not.toContain(layer);
     }
   });
 
   it('mentions no leftover when every row is eligible', () => {
-    const statement = commitStatement(plan([importRow(), PIPELINE_IMPORT_ROW]), 'workspace');
+    const statement = commitStatement(plan([importRow(), PIPELINE_IMPORT_ROW]));
     expect(statement).toContain('2 resources');
-    expect(statement).toContain('workspace layer');
     expect(statement).not.toContain('unchanged');
   });
 
   it('says nothing would be written when no row is eligible', () => {
-    const statement = commitStatement(plan([SKIP_ROW, INVALID_ROW]), 'user');
+    const statement = commitStatement(plan([SKIP_ROW, INVALID_ROW]));
     expect(statement).toContain('write nothing');
     // It must not name a count of resources it would write, which is zero.
     expect(statement).not.toContain('0 resources');
@@ -772,8 +784,8 @@ describe('Feature 085 T048 — the Pipeline save row built from a document (FR-0
 });
 
 describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a)', () => {
-  it('appends the imported row to the chosen layer and gates on that layer revision', () => {
-    const writes = buildImportWrites(plan([importRow()]), 'user', {
+  it('appends the imported row to the stored layer and gates on the plan revision', () => {
+    const writes = buildImportWrites(plan([importRow()]), {
       phases: [HELD],
       pipelines: [],
       workflows: []
@@ -782,8 +794,9 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
       {
         key: 'phases',
         request: {
-          scope: 'user',
-          expectedRevision: 'user-rev-1',
+          // Feature 099 (T496f, FR-042) — a `scope` stood beside the revision.
+          // `toEqual` is exact, so its absence is pinned by this assertion.
+          expectedRevision: PHASE_REVISION,
           mutation: { kind: 'import', phaseId: 'brought-in' },
           phases: [HELD, savePhaseRowFromDefinition(FULL)]
         }
@@ -791,17 +804,27 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
     ]);
   });
 
-  // FR-038: the gate is the revision the PLAN was computed against, per scope.
-  it('takes the expected revision from the scope the operator chose', () => {
-    const writes = buildImportWrites(plan([importRow()]), 'workspace', EMPTY_LAYERS);
-    expect(writes[0].request.expectedRevision).toBe('workspace-rev-1');
+  // FR-038: the gate is the revision the PLAN was computed against.
+  it('takes the expected revision from the plan, not from a live catalog read', () => {
+    // Feature 099 (T496f, FR-042, FR-044) — the revision used to be selected out
+    // of a layer map by the scope the operator chose. One catalog leaves one
+    // revision per kind, so the selection is gone and where the value is READ is
+    // what remains to pin: a plan computed against a different revision must gate
+    // on that one, or the staleness check has nothing to compare.
+    const moved: ImportPlan = {
+      ...plan([importRow()]),
+      computedAgainstRevision: 'moved-phase-rev'
+    };
+    expect(buildImportWrites(moved, EMPTY_LAYERS)[0].request.expectedRevision).toBe(
+      'moved-phase-rev'
+    );
   });
 
   // The layer rows are passed through untouched, so a row the catalog could not
   // parse is carried across rather than dropped by the import.
   it('preserves the layer it was given, in order', () => {
     const unparseable = { id: 'broken', name: 'Invalid Phase', version: 1 };
-    const writes = buildImportWrites(plan([importRow()]), 'workspace', {
+    const writes = buildImportWrites(plan([importRow()]), {
       phases: [HELD, unparseable],
       pipelines: [],
       workflows: []
@@ -814,7 +837,7 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
 
   it('builds nothing for a plan with no import rows', () => {
     expect(
-      buildImportWrites(plan([SKIP_ROW]), 'user', { phases: [HELD], pipelines: [], workflows: [] })
+      buildImportWrites(plan([SKIP_ROW]), { phases: [HELD], pipelines: [], workflows: [] })
     ).toEqual([]);
   });
 
@@ -825,7 +848,6 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   it('orders a package as the Phase layer then the Pipeline layer', () => {
     const writes = buildImportWrites(
       packagePlan([PIPELINE_IMPORT_ROW, importRow()]),
-      'user',
       EMPTY_LAYERS
     );
     expect(writes.map((write) => write.key)).toEqual(['phases', 'pipelines']);
@@ -835,18 +857,16 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   it('gates each layer on its own catalog revision', () => {
     const writes = buildImportWrites(
       packagePlan([importRow(), PIPELINE_IMPORT_ROW]),
-      'workspace',
       EMPTY_LAYERS
     );
-    expect(writes[0].request.expectedRevision).toBe('workspace-rev-1');
-    expect(writes[1].request.expectedRevision).toBe('workspace-pipe-rev-1');
+    expect(writes[0].request.expectedRevision).toBe(PHASE_REVISION);
+    expect(writes[1].request.expectedRevision).toBe(PIPELINE_REVISION);
   });
 
   it('declares exactly one intent per layer, naming every id it adds', () => {
     const second = importRow({ ...FULL, phaseId: 'also-in', name: 'Also In' });
     const writes = buildImportWrites(
       packagePlan([importRow(), second, PIPELINE_IMPORT_ROW]),
-      'user',
       EMPTY_LAYERS
     );
     expect(writes[0].request.mutation).toEqual({
@@ -863,13 +883,12 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   // with different legal actions per intent kind — so the shipped standalone
   // path keeps the intent it shipped with.
   it('keeps the single-Phase standalone intent as `import`, not `import-package`', () => {
-    const standalone = buildImportWrites(plan([importRow()]), 'user', EMPTY_LAYERS);
+    const standalone = buildImportWrites(plan([importRow()]), EMPTY_LAYERS);
     expect(standalone[0].request.mutation).toEqual({ kind: 'import', phaseId: 'brought-in' });
     // One Phase, but a package: the Phase write is part of an ordered pair, so
     // it declares the package intent.
     const withPipeline = buildImportWrites(
       packagePlan([importRow(), PIPELINE_IMPORT_ROW]),
-      'user',
       EMPTY_LAYERS
     );
     expect(withPipeline[0].request.mutation).toEqual({
@@ -879,7 +898,7 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   });
 
   it('appends the Pipeline row to the stored Pipeline layer, in order', () => {
-    const writes = buildImportWrites(packagePlan([PIPELINE_IMPORT_ROW]), 'user', {
+    const writes = buildImportWrites(packagePlan([PIPELINE_IMPORT_ROW]), {
       phases: [],
       pipelines: [HELD_PIPELINE],
       workflows: []
@@ -894,7 +913,7 @@ describe('Feature 084/085 — the commit writes (FR-037, FR-038, FR-043, FR-046a
   // the Pipeline revision yields no writes at all — not the Phase half.
   it('builds nothing at all when a Pipeline row has no revision to gate on', () => {
     expect(
-      buildImportWrites(plan([importRow(), PIPELINE_IMPORT_ROW]), 'user', EMPTY_LAYERS)
+      buildImportWrites(plan([importRow(), PIPELINE_IMPORT_ROW]), EMPTY_LAYERS)
     ).toEqual([]);
   });
 });
@@ -937,25 +956,28 @@ describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
   const landed = (...keys: readonly ImportLayerKey[]): readonly ImportLayerResult[] =>
     keys.map((key) => ({ key, ack: { status: 'accepted' } }));
 
-  it('names the scope on a complete import', () => {
-    expect(commitOutcomeStatement('imported', 'workspace', landed('phases'))).toContain(
-      'workspace layer'
-    );
+  it('names the catalog on a complete import', () => {
+    // Feature 099 (T496f, FR-042, FR-043) — the sentence named the layer the
+    // operator had chosen. There is one, so it names the catalog, and the layer
+    // vocabulary going with it is the point rather than a wording change.
+    const statement = commitOutcomeStatement('imported', landed('phases'));
+    expect(statement).toContain('the catalog');
+    expect(statement).not.toContain('layer');
   });
 
   it('says nothing was written on a failure', () => {
-    expect(commitOutcomeStatement('failed', 'user', [])).toContain('Nothing was written');
+    expect(commitOutcomeStatement('failed', [])).toContain('Nothing was written');
   });
 
   it('states that a partial write was left in place and how to finish it', () => {
     // FR-042c — no compensating delete happened, so the sentence must not imply
     // a rollback; FR-042b — the recovery is re-running the same document, which
     // is safe because an already-present id is a skip.
-    const statement = commitOutcomeStatement('partial', 'user', [
+    const statement = commitOutcomeStatement('partial', [
       ...landed('phases'),
       { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
-    expect(statement).toContain('user layer');
+    expect(statement).toContain('the catalog');
     expect(statement).toContain('still there');
     expect(statement.toLowerCase()).toContain('same document');
     for (const undone of ['rolled back', 'removed', 'reverted', 'undo']) {
@@ -968,7 +990,7 @@ describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
   // sentence reads the acks rather than the plan, so it can only name a layer
   // that actually came back accepted.
   it('names the one layer that landed when the second of three was refused', () => {
-    const statement = commitOutcomeStatement('partial', 'user', [
+    const statement = commitOutcomeStatement('partial', [
       ...landed('phases'),
       { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
@@ -978,7 +1000,7 @@ describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
   });
 
   it('names both layers that landed when only the Workflow write was refused', () => {
-    const statement = commitOutcomeStatement('partial', 'workspace', [
+    const statement = commitOutcomeStatement('partial', [
       ...landed('phases', 'pipelines'),
       { key: 'workflows', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
@@ -995,7 +1017,7 @@ describe('Feature 085 T048 — the outcome sentence (FR-042b, FR-042c)', () => {
       [...landed('phases', 'pipelines'), { key: 'workflows', ack: { status: 'rejected', reason: 'r' } }]
     ];
     for (const results of shapes) {
-      const statement = commitOutcomeStatement('partial', 'user', results).toLowerCase();
+      const statement = commitOutcomeStatement('partial', results).toLowerCase();
       for (const undone of ['rolled back', 'removed', 'reverted', 'undo', 'delete']) {
         expect(statement).not.toContain(undone);
       }
@@ -1009,7 +1031,7 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
   const bothKinds = packagePlan([importRow(), PIPELINE_IMPORT_ROW, SKIP_ROW]);
 
   it('produces exactly one result per plan row, in order', () => {
-    const results = projectCommitResults(mixed, 'user', [
+    const results = projectCommitResults(mixed, [
       { key: 'phases', ack: { status: 'accepted' } }
     ]);
     expect(results).toHaveLength(mixed.rows.length);
@@ -1017,15 +1039,15 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
   });
 
   it('reports every import row as imported when its layer was accepted', () => {
-    const results = projectCommitResults(mixed, 'user', [
+    const results = projectCommitResults(mixed, [
       { key: 'phases', ack: { status: 'accepted' } }
     ]);
     expect(results[0]).toMatchObject({ outcome: 'imported' });
-    expect(results[0].detail).toContain('user');
+    expect(results[0].detail).toContain('catalog');
   });
 
   it('reports every import row as failed, with the reason, when its layer was rejected', () => {
-    const results = projectCommitResults(mixed, 'user', [
+    const results = projectCommitResults(mixed, [
       { key: 'phases', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
     expect(results[0].outcome).toBe('failed');
@@ -1035,7 +1057,7 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
   });
 
   it('keeps the preflight outcome and reason for rows the commit never touched', () => {
-    const results = projectCommitResults(mixed, 'user', [
+    const results = projectCommitResults(mixed, [
       { key: 'phases', ack: { status: 'rejected', reason: 'phase-denied' } }
     ]);
     expect(results[1]).toEqual({
@@ -1050,19 +1072,23 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
     });
   });
 
-  // FR-046 — the origin named is the scope the operator picked, never anything
-  // the document claimed.
-  it('names the scope the write landed in', () => {
-    const results = projectCommitResults(mixed, 'workspace', [
+  // Feature 099 (T496f, FR-042, FR-043) — FR-046 made the origin the scope the
+  // operator picked and never anything the document claimed, and this pinned that
+  // the row said which. There is one destination, so the row cannot name the wrong
+  // one; what it must still not do is name a layer, which would describe a tier
+  // the operator can no longer have picked.
+  it('names the destination without naming a layer', () => {
+    const results = projectCommitResults(mixed, [
       { key: 'phases', ack: { status: 'accepted' } }
     ]);
-    expect(results[0].detail).toContain('workspace');
+    expect(results[0].detail).toContain('catalog');
+    expect(results[0].detail).not.toContain('layer');
   });
 
   // FR-042a — the partial outcome, reported exactly. Each row reads the ack of
   // ITS OWN layer, which is the only way both halves can be true at once.
   it('reports the Phases imported and the Pipeline failed, in one table', () => {
-    const results = projectCommitResults(bothKinds, 'user', [
+    const results = projectCommitResults(bothKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
@@ -1076,7 +1102,7 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
   it('uses the Pipeline rejection formatter for a Pipeline row', () => {
     // Not the Phase formatter: the two read different structured payloads, and
     // a Pipeline blocked by dependents must name them.
-    const results = projectCommitResults(bothKinds, 'user', [
+    const results = projectCommitResults(bothKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       {
         key: 'pipelines',
@@ -1095,7 +1121,7 @@ describe('Feature 085 T048 — projecting the layer acks onto the plan (FR-042, 
     // The Phase write was refused, so the sequence stopped. The Pipeline row was
     // not rejected — it was never sent — and reporting the Phase layer's reason
     // against it would send the operator to fix the wrong thing.
-    const results = projectCommitResults(bothKinds, 'user', [
+    const results = projectCommitResults(bothKinds, [
       { key: 'phases', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
     expect(results[0].detail).toContain('stale-catalog');
@@ -1128,7 +1154,7 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
 
   it('sends the Phase write before the Pipeline write', async () => {
     const order: string[] = [];
-    const report = await runImportCommit(bothKinds, 'user', EMPTY_LAYERS, {
+    const report = await runImportCommit(bothKinds, EMPTY_LAYERS, {
       savePhases: async () => {
         order.push('phases');
         return { status: 'accepted' };
@@ -1148,7 +1174,7 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
 
   it('stops at the first rejection and never sends the second write', async () => {
     const injected = deps({ status: 'rejected', reason: 'stale-catalog' }, { status: 'accepted' });
-    const report = await runImportCommit(bothKinds, 'user', EMPTY_LAYERS, injected);
+    const report = await runImportCommit(bothKinds, EMPTY_LAYERS, injected);
     expect(injected.savePhases).toHaveBeenCalledTimes(1);
     expect(injected.savePipelines).not.toHaveBeenCalled();
     expect(report.outcome).toBe('failed');
@@ -1158,7 +1184,7 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
   // way to see that from here is that nothing further is sent at all.
   it('sends no third write to undo the first when the second is refused', async () => {
     const injected = deps({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
-    const report = await runImportCommit(bothKinds, 'user', EMPTY_LAYERS, injected);
+    const report = await runImportCommit(bothKinds, EMPTY_LAYERS, injected);
     expect(injected.savePhases).toHaveBeenCalledTimes(1);
     expect(injected.savePipelines).toHaveBeenCalledTimes(1);
     expect(report.outcome).toBe('partial');
@@ -1171,7 +1197,6 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
     // No Pipeline revision — the plan is unwritable, so the commit is a no-op.
     const report = await runImportCommit(
       plan([PIPELINE_IMPORT_ROW]),
-      'user',
       EMPTY_LAYERS,
       injected
     );
@@ -1183,13 +1208,16 @@ describe('Feature 085 T048 — running the commit (FR-038, FR-042, FR-042c)', ()
 
   it('carries the built request through to the save it belongs to', async () => {
     const injected = deps({ status: 'accepted' }, { status: 'accepted' });
-    await runImportCommit(bothKinds, 'workspace', EMPTY_LAYERS, injected);
+    await runImportCommit(bothKinds, EMPTY_LAYERS, injected);
     expect(injected.savePhases).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'workspace', expectedRevision: 'workspace-rev-1' })
+      expect.objectContaining({ expectedRevision: PHASE_REVISION })
     );
     expect(injected.savePipelines).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'workspace', expectedRevision: 'workspace-pipe-rev-1' })
+      expect.objectContaining({ expectedRevision: PIPELINE_REVISION })
     );
+    // Feature 099 (T496f, FR-042) — and neither request names a destination.
+    expect(injected.savePhases.mock.calls[0][0]).not.toHaveProperty('scope');
+    expect(injected.savePipelines.mock.calls[0][0]).not.toHaveProperty('scope');
   });
 });
 
@@ -1230,7 +1258,7 @@ describe('Feature 086 T054 — the Workflow import rows (FR-045)', () => {
 describe('Feature 086 T054 — the Workflow save row built from a document (FR-046a)', () => {
   it('carries every declared field verbatim, renaming nothing', () => {
     // Unlike the Phase and Pipeline rows there is no key to rename: the
-    // `schegent.workflows` layer is new as of feature 083, so `workflowId` is the
+    // Workflow catalog is new as of feature 083, so `workflowId` is the
     // only identity spelling the row has ever had.
     expect(saveWorkflowRowFromDefinition(FULL_WORKFLOW)).toEqual(FULL_WORKFLOW);
   });
@@ -1270,7 +1298,7 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   ]);
 
   it('orders the package as Phases, then Pipelines, then the Workflow', () => {
-    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
+    const writes = buildImportWrites(threeLayers, EMPTY_LAYERS);
     expect(writes.map((write) => write.key)).toEqual(['phases', 'pipelines', 'workflows']);
   });
 
@@ -1278,7 +1306,7 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
     // The plan is deliberately reversed here. A write order read off the rows
     // would publish a Workflow before the Pipelines its nodes name.
     const reversed = workflowPackagePlan([WORKFLOW_IMPORT_ROW, PIPELINE_IMPORT_ROW, importRow()]);
-    expect(buildImportWrites(reversed, 'user', EMPTY_LAYERS).map((write) => write.key)).toEqual([
+    expect(buildImportWrites(reversed, EMPTY_LAYERS).map((write) => write.key)).toEqual([
       'phases',
       'pipelines',
       'workflows'
@@ -1286,25 +1314,32 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   });
 
   it('gates each of the three layers on its own catalog revision', () => {
-    const writes = buildImportWrites(threeLayers, 'workspace', EMPTY_LAYERS);
+    const writes = buildImportWrites(threeLayers, EMPTY_LAYERS);
     expect(writes.map((write) => write.request.expectedRevision)).toEqual([
-      'workspace-rev-1',
-      'workspace-pipe-rev-1',
-      'workspace-flow-rev-1'
+      PHASE_REVISION,
+      PIPELINE_REVISION,
+      WORKFLOW_REVISION
     ]);
   });
 
-  it('takes all three revisions from the scope the operator chose', () => {
-    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
-    expect(writes.map((write) => write.request.expectedRevision)).toEqual([
-      'user-rev-1',
-      'user-pipe-rev-1',
-      'user-flow-rev-1'
-    ]);
+  it('takes all three revisions from the plan they were computed against', () => {
+    // Feature 099 (T496f, FR-042, FR-044) — this asked which SCOPE the three came
+    // from, back when each kind carried one revision per layer and the operator's
+    // choice picked between them. One catalog per kind leaves one revision per
+    // kind, so what survives is where they are read: a plan computed against three
+    // different revisions must produce three writes gated on ITS values.
+    const moved: ImportPlan = {
+      ...threeLayers,
+      computedAgainstRevision: 'moved-phase-rev',
+      computedAgainstPipelineRevision: 'moved-pipeline-rev',
+      computedAgainstWorkflowRevision: 'moved-workflow-rev'
+    };
+    expect(buildImportWrites(moved, EMPTY_LAYERS).map((write) => write.request.expectedRevision))
+      .toEqual(['moved-phase-rev', 'moved-pipeline-rev', 'moved-workflow-rev']);
   });
 
   it('declares exactly one intent per layer, naming every id it adds', () => {
-    const writes = buildImportWrites(threeLayers, 'user', EMPTY_LAYERS);
+    const writes = buildImportWrites(threeLayers, EMPTY_LAYERS);
     expect(writes.map((write) => write.request.mutation)).toEqual([
       { kind: 'import-package', phaseIds: ['brought-in'] },
       { kind: 'import-package', pipelineIds: ['ship-it'] },
@@ -1313,7 +1348,7 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   });
 
   it('appends the Workflow row to the stored Workflow layer, in order', () => {
-    const writes = buildImportWrites(threeLayers, 'user', {
+    const writes = buildImportWrites(threeLayers, {
       phases: [],
       pipelines: [],
       workflows: [HELD_WORKFLOW]
@@ -1330,11 +1365,10 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   it('writes only the Workflow layer for a package that supplies nothing else', () => {
     const writes = buildImportWrites(
       workflowOnlyPlan([WORKFLOW_IMPORT_ROW, SKIP_ROW]),
-      'user',
       EMPTY_LAYERS
     );
     expect(writes.map((write) => write.key)).toEqual(['workflows']);
-    expect(writes[0].request.expectedRevision).toBe('user-flow-rev-1');
+    expect(writes[0].request.expectedRevision).toBe(WORKFLOW_REVISION);
   });
 
   // The same rule the Pipeline half already obeys (FR-040): a layer with no gate
@@ -1342,14 +1376,13 @@ describe('Feature 086 T054 — three ordered writes (FR-045, FR-046, FR-050)', (
   // package is the one outcome no requirement here admits.
   it('builds nothing at all when a Workflow row has no revision to gate on', () => {
     expect(
-      buildImportWrites(packagePlan([importRow(), WORKFLOW_IMPORT_ROW]), 'user', EMPTY_LAYERS)
+      buildImportWrites(packagePlan([importRow(), WORKFLOW_IMPORT_ROW]), EMPTY_LAYERS)
     ).toEqual([]);
   });
 
   it('still builds the two-layer package unchanged when no Workflow row is present', () => {
     const writes = buildImportWrites(
       packagePlan([importRow(), PIPELINE_IMPORT_ROW]),
-      'user',
       EMPTY_LAYERS
     );
     expect(writes.map((write) => write.key)).toEqual(['phases', 'pipelines']);
@@ -1360,8 +1393,7 @@ describe('Feature 086 T054 — confirmation with a Workflow in the plan (FR-050)
   it('confirms a three-layer package', () => {
     const gate = {
       state: 'planned' as const,
-      plan: workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]),
-      scope: 'user' as const
+      plan: workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW])
     };
     expect(confirmBlockedReason(gate)).toBeNull();
   });
@@ -1369,8 +1401,7 @@ describe('Feature 086 T054 — confirmation with a Workflow in the plan (FR-050)
   it('confirms a references-only Workflow package', () => {
     const gate = {
       state: 'planned' as const,
-      plan: workflowOnlyPlan([WORKFLOW_IMPORT_ROW]),
-      scope: 'user' as const
+      plan: workflowOnlyPlan([WORKFLOW_IMPORT_ROW])
     };
     expect(confirmBlockedReason(gate)).toBeNull();
   });
@@ -1378,8 +1409,7 @@ describe('Feature 086 T054 — confirmation with a Workflow in the plan (FR-050)
   it('holds closed a Workflow plan carrying no Workflow revision, and says why', () => {
     const gate = {
       state: 'planned' as const,
-      plan: packagePlan([WORKFLOW_IMPORT_ROW]),
-      scope: 'user' as const
+      plan: packagePlan([WORKFLOW_IMPORT_ROW])
     };
     const reason = confirmBlockedReason(gate);
     expect(reason).toContain('Workflow catalog revision');
@@ -1391,19 +1421,19 @@ describe('Feature 086 T054 — projecting the third layer’s ack (FR-042, FR-05
   const threeKinds = workflowPackagePlan([importRow(), PIPELINE_IMPORT_ROW, WORKFLOW_IMPORT_ROW]);
 
   it('reports the Workflow row imported when its own layer was accepted', () => {
-    const results = projectCommitResults(threeKinds, 'workspace', [
+    const results = projectCommitResults(threeKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       { key: 'pipelines', ack: { status: 'accepted' } },
       { key: 'workflows', ack: { status: 'accepted' } }
     ]);
     expect(results[2]).toMatchObject({ resourceId: 'ship-it-flow', outcome: 'imported' });
-    expect(results[2].detail).toContain('workspace');
+    expect(results[2].detail).toContain('catalog');
   });
 
   // FR-051's second partial shape, as the operator sees it: two layers say
   // imported and the third says why it did not, in one table.
   it('reports the Phases and Pipeline imported and the Workflow failed', () => {
-    const results = projectCommitResults(threeKinds, 'user', [
+    const results = projectCommitResults(threeKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       { key: 'pipelines', ack: { status: 'accepted' } },
       { key: 'workflows', ack: { status: 'rejected', reason: 'stale-catalog' } }
@@ -1417,7 +1447,7 @@ describe('Feature 086 T054 — projecting the third layer’s ack (FR-042, FR-05
   it('uses the Workflow rejection formatter for a Workflow row', () => {
     // Not the Pipeline formatter: a Workflow rejection can carry the suppressed
     // ancestry note, which the Pipeline formatter would drop.
-    const results = projectCommitResults(threeKinds, 'user', [
+    const results = projectCommitResults(threeKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       { key: 'pipelines', ack: { status: 'accepted' } },
       {
@@ -1440,7 +1470,7 @@ describe('Feature 086 T054 — projecting the third layer’s ack (FR-042, FR-05
   });
 
   it('says the Workflow layer was never reached rather than borrowing a reason', () => {
-    const results = projectCommitResults(threeKinds, 'user', [
+    const results = projectCommitResults(threeKinds, [
       { key: 'phases', ack: { status: 'accepted' } },
       { key: 'pipelines', ack: { status: 'rejected', reason: 'stale-catalog' } }
     ]);
@@ -1472,7 +1502,7 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
 
   it('sends the three writes in dependency order', async () => {
     const order: string[] = [];
-    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, {
+    const report = await runImportCommit(threeLayers, EMPTY_LAYERS, {
       savePhases: async () => {
         order.push('phases');
         return { status: 'accepted' };
@@ -1498,7 +1528,7 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
       { status: 'rejected', reason: 'stale-catalog' },
       { status: 'accepted' }
     );
-    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, injected);
+    const report = await runImportCommit(threeLayers, EMPTY_LAYERS, injected);
     expect(injected.savePipelines).toHaveBeenCalledTimes(1);
     expect(injected.saveWorkflows).not.toHaveBeenCalled();
     expect(report.outcome).toBe('partial');
@@ -1512,7 +1542,7 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
       { status: 'accepted' },
       { status: 'rejected', reason: 'stale-catalog' }
     );
-    const report = await runImportCommit(threeLayers, 'user', EMPTY_LAYERS, injected);
+    const report = await runImportCommit(threeLayers, EMPTY_LAYERS, injected);
     expect(injected.savePhases).toHaveBeenCalledTimes(1);
     expect(injected.savePipelines).toHaveBeenCalledTimes(1);
     expect(injected.saveWorkflows).toHaveBeenCalledTimes(1);
@@ -1522,7 +1552,7 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
 
   it('reports imported only when all three acks were accepted', async () => {
     const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
-    const report = await runImportCommit(threeLayers, 'workspace', EMPTY_LAYERS, injected);
+    const report = await runImportCommit(threeLayers, EMPTY_LAYERS, injected);
     expect(report.outcome).toBe('imported');
     expect(report.results.map((result) => result.key)).toEqual([
       'phases',
@@ -1533,11 +1563,10 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
 
   it('carries the Workflow request through to the save it belongs to', async () => {
     const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
-    await runImportCommit(threeLayers, 'workspace', EMPTY_LAYERS, injected);
+    await runImportCommit(threeLayers, EMPTY_LAYERS, injected);
     expect(injected.saveWorkflows).toHaveBeenCalledWith(
       expect.objectContaining({
-        scope: 'workspace',
-        expectedRevision: 'workspace-flow-rev-1',
+        expectedRevision: WORKFLOW_REVISION,
         mutation: { kind: 'import-package', workflowIds: ['ship-it-flow'] }
       })
     );
@@ -1547,7 +1576,6 @@ describe('Feature 086 T054 — running the three-layer commit (FR-045, FR-051)',
     const injected = deps({ status: 'accepted' }, { status: 'accepted' }, { status: 'accepted' });
     const report = await runImportCommit(
       workflowOnlyPlan([WORKFLOW_IMPORT_ROW]),
-      'user',
       EMPTY_LAYERS,
       injected
     );
@@ -1669,15 +1697,23 @@ describe('Feature 086 T071 — a capped defect list says it was capped (FR-030)'
     ).toEqual([': ']);
   });
 
-  it('bounds nothing on a skip row either, whatever its identifier (FR-030)', () => {
-    // The 085 assertion covered blocked rows; a skip row also renders an
-    // author-supplied identifier, through a different arm. Both layers named in
-    // the sentence are host-supplied enums, so the only free text is the id.
+  it('renders no author text at all on a skip row, so bounds nothing (FR-030)', () => {
+    // Feature 099 (T496f, FR-043, FR-049) — the sentence used to open with which
+    // layer already held the id, and this pinned that the id it also carried was
+    // never truncated. With one catalog the layer half is gone and the id went
+    // with it: what decides the skip is that a stored row exists and at what
+    // status, both host-supplied enums. So the claim strengthens — there is no
+    // free text in the sentence to bound, however long the identifier is.
     const long = 'z'.repeat(64);
-    const [line] = reasonLines({ ...SKIP_ROW, outcome: 'skip', resourceId: long });
+    const [line] = reasonLines({
+      outcome: 'skip',
+      resourceKind: 'phase',
+      resourceId: long,
+      name: 'Specify',
+      presentRowStatus: 'invalid'
+    });
     expect(line).not.toContain('…');
-    // The sentence is about the layer the row is already in, and it says which.
-    expect(line).toContain('user');
+    expect(line).not.toContain(long);
     expect(line).toContain('invalid');
   });
 
@@ -1754,14 +1790,16 @@ describe('Feature 096 T023 — the Model Catalog import rows (FR-015)', () => {
 });
 
 describe('Feature 096 T023 — confirmation with a Model Catalog plan (FR-015, FR-056)', () => {
-  it('confirms with no scope chosen — Model Catalog has no scope to choose', () => {
-    // The one behavior that sets this branch apart from the Phase/Pipeline/
-    // Workflow checks below it in the source: FR-056's "choose a scope" gate
-    // must never fire for a plan this branch has already claimed.
+  it('confirms without asking for a Pipeline or Workflow revision it does not carry', () => {
+    // Feature 099 (T496f, FR-043) — this pinned that FR-056's "choose a scope"
+    // gate never fired for a plan this branch had already claimed. That gate is
+    // deleted; the branch-ordering property it was evidence for is not. A Model
+    // Catalog plan carries neither of the two store revisions checked below it in
+    // the source, so falling through to those checks would hold it closed for a
+    // gate that does not apply to it.
     const reason = confirmBlockedReason({
       state: 'planned',
-      plan: modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW]),
-      scope: null
+      plan: modelCatalogPlan([MODEL_CATALOG_IMPORT_ROW])
     });
     expect(reason).toBeNull();
   });
@@ -1769,8 +1807,7 @@ describe('Feature 096 T023 — confirmation with a Model Catalog plan (FR-015, F
   it('holds closed a Model Catalog plan carrying no Model Catalog revision, and says why', () => {
     const reason = confirmBlockedReason({
       state: 'planned',
-      plan: plan([MODEL_CATALOG_IMPORT_ROW]),
-      scope: null
+      plan: plan([MODEL_CATALOG_IMPORT_ROW])
     });
     expect(reason).toContain('Model Catalog revision');
     expect(reason).not.toContain('nothing to import');
@@ -1781,8 +1818,7 @@ describe('Feature 096 T023 — confirmation with a Model Catalog plan (FR-015, F
     // zero import rows never reaches the Model Catalog branch at all.
     const reason = confirmBlockedReason({
       state: 'planned',
-      plan: modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW]),
-      scope: null
+      plan: modelCatalogPlan([MODEL_CATALOG_SKIP_ALREADY_EXISTS_ROW])
     });
     expect(reason).toContain('nothing to import');
     expect(reason).not.toContain('Model Catalog revision');
@@ -1790,7 +1826,7 @@ describe('Feature 096 T023 — confirmation with a Model Catalog plan (FR-015, F
 });
 
 describe('Feature 096 T023 — what confirming a Model Catalog import will do (FR-058)', () => {
-  it('names the eligible count and excludes the rest, without naming a scope', () => {
+  it('names the eligible count and excludes the rest, without naming a layer', () => {
     const statement = modelCatalogCommitStatement(
       modelCatalogPlan([
         MODEL_CATALOG_IMPORT_ROW,
@@ -1801,8 +1837,8 @@ describe('Feature 096 T023 — what confirming a Model Catalog import will do (F
     expect(statement).toContain('1 model');
     expect(statement).toContain('model catalog');
     expect(statement).toContain('2 rows are left unchanged');
-    for (const scope of ['user layer', 'workspace layer']) {
-      expect(statement).not.toContain(scope);
+    for (const layer of ['user layer', 'workspace layer']) {
+      expect(statement).not.toContain(layer);
     }
   });
 
@@ -1994,11 +2030,11 @@ describe('Feature 096 T023 — the Model Catalog commit outcome sentence (FR-042
     expect(modelCatalogCommitOutcomeStatement('failed')).toContain('Nothing was added');
   });
 
-  it('names no scope or layer — Model Catalog has exactly one implicit target', () => {
+  it('names no layer — Model Catalog has exactly one implicit target', () => {
     for (const outcome of ['imported', 'failed'] as const) {
       const statement = modelCatalogCommitOutcomeStatement(outcome);
-      for (const scope of ['user layer', 'workspace layer', 'built-in']) {
-        expect(statement).not.toContain(scope);
+      for (const layer of ['user layer', 'workspace layer', 'built-in']) {
+        expect(statement).not.toContain(layer);
       }
     }
   });

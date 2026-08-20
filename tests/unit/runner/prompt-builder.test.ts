@@ -207,8 +207,7 @@ describe('PromptBuilder.build', () => {
           id: 'security-audit',
           name: 'Security Audit',
           version: 1,
-          skill: 'security-review',
-          sourceScope: 'workspace'
+          skill: 'security-review'
         },
         iteration: 1,
         iterationCap: 10,

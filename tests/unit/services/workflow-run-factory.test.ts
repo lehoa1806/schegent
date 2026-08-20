@@ -36,17 +36,17 @@ import {
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 
 const ALPHA: PhaseDef = {
-  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.', sourceScope: 'built-in'
+  id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.'
 };
 const BETA: PhaseDef = {
-  id: 'beta', name: 'Beta', version: 1, instruction: 'Beta prompt.', sourceScope: 'built-in'
+  id: 'beta', name: 'Beta', version: 1, instruction: 'Beta prompt.'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 const AB_FLOW: PipelineDef = {
-  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta'], sourceScope: 'workspace'
+  id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta']
 };
 
 function catalog(): PipelineCatalog {
@@ -178,7 +178,7 @@ describe('an unresolvable definition is refused, not substituted (T020)', () => 
     // `undefined` and the Phase was dropped — a Run that silently executed a
     // shorter sequence than the Pipeline named (FR-022).
     const gapped: PipelineDef = {
-      id: 'gapped', name: 'Has a gap', phases: ['alpha', 'ghost'], sourceScope: 'workspace'
+      id: 'gapped', name: 'Has a gap', phases: ['alpha', 'ghost']
     };
     const subject = factory(() =>
       buildCatalog([ALPHA, BETA], [gapped], { claude: [], codex: [], agy: [] }, 'gapped')

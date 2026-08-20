@@ -187,7 +187,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     pipelines: [],
     models: EMPTY_MODELS_BY_BACKEND
   };
-  const phasePrecedence = deps.getPhasePrecedence?.();
   const phaseCatalog = deps.getPhaseCatalog?.();
   // Absent means "availability is unknown", which every consumer already reads
   // as "warn about nothing" — so the fallback is empty rather than a guess.
@@ -245,9 +244,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     workspaceTrust = resolved.workspaceTrust;
     resolvedTrust = Object.freeze({
       phases: resolved.phases,
-      retryConditions: resolved.retryConditions,
-      pipelineOverrides: resolved.pipelineOverrides,
-      workflowOverrides: resolved.workflowOverrides
+      retryConditions: resolved.retryConditions
     });
   } catch (error) {
     ctx.logger?.warn(
@@ -294,7 +291,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     telemetry: ctx.telemetry,
     workspaceTrust,
     resolvedTrust,
-    ...(phasePrecedence !== undefined ? { phasePrecedence } : {}),
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
     ...(pipelineCatalogProjection !== undefined
       ? { pipelineCatalog: pipelineCatalogProjection }

@@ -268,8 +268,10 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   defaultPipelineId: {
     title: 'Default pipeline',
     body:
+      // Feature 099 (T494a, FR-054) — the retired Pipeline settings key is
+      // deleted, not drained. The list is the Pipeline catalog the store holds.
       'Pipeline used when /speckit-auto runs without an explicit selection. ' +
-      'The list reflects pipelines discovered in `schegent.pipelines`.'
+      'The list reflects the Pipelines in the catalog.'
   },
   'defaultPipelineId-save': {
     body:

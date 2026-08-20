@@ -148,13 +148,14 @@ describe('Feature 096 — Model Catalog export', () => {
     expect(h.acks[0]!.result).toEqual({ outcome: 'saved' });
 
     // The audit envelope carries the fixed literal id (contract §3 — a
-    // singleton, nothing to identify) and the fixed 'workspace' scope, never
-    // an 'unavailable' outcome or a location.
+    // singleton, nothing to identify), never an 'unavailable' outcome or a
+    // location. Feature 099 (FR-041) removed `scope` from every export payload:
+    // with one catalog there is no layer left to name beside the id.
     expect(h.audits[0]!.payload).toMatchObject({
       resourceKind: 'modelCatalog',
       resourceIds: ['model-catalog'],
-      scope: 'workspace',
       outcomes: ['saved']
     });
+    expect(h.audits[0]!.payload).not.toHaveProperty('scope');
   });
 });

@@ -14,7 +14,6 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../src/config/pipeline-config';
 import { resolvePhaseCatalog } from '../../src/config/process-catalog';
 import { resolvePipelineCatalog } from '../../src/config/pipeline-catalog';
 import { resolveWorkflowCatalog } from '../../src/config/workflow-catalog';
@@ -27,18 +26,22 @@ import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
 // Feature 098 (T080) — `PORTED_PIPELINE` names `speckit-specify` and
 // `speckit-plan`, which used to resolve out of the built-in Phase layer. That layer
 // stays wired in because the product still resolves it, but it is empty, so the
-// rows arrive as a configured layer. Without them the Pipeline is `invalid`, the
-// Workflow that binds it resolves to nothing, and the projection under test is
-// empty. See the fixture header for why the ids are the real Spec Kit ones.
+// rows must be stored. Without them the Pipeline is `invalid`, the Workflow that
+// binds it resolves to nothing, and the projection under test is empty. See the
+// fixture header for why the ids are the real Spec Kit ones.
+//
+// Feature 099 (T496f, FR-042) — one layer, so the three-layer call collapses to
+// the stored rows and the revision the store reported with them. The seeded
+// revisions are named rather than blank because the projection echoes them to
+// the webview as `expectedRevision`.
 const PHASE_CATALOG = resolvePhaseCatalog({
-  builtIn: BUILT_IN_PHASES,
-  user: [],
-  workspace: SPECKIT_PHASE_DEFS
+  rows: SPECKIT_PHASE_DEFS,
+  revision: 'rev-phase-snapshot'
 });
 
 /**
- * A user-scope Pipeline that declares ports — the built-ins declare none, so a
- * node bound to one derives nothing and could not show the ports flow through.
+ * A stored Pipeline that declares ports — a Pipeline without them derives
+ * nothing on a node bound to it, and could not show the ports flow through.
  */
 const PORTED_PIPELINE = {
   id: 'ported',
@@ -54,9 +57,8 @@ const PORTED_PIPELINE = {
 };
 
 const PIPELINE_CATALOG = resolvePipelineCatalog({
-  builtIn: BUILT_IN_PIPELINES,
-  user: [PORTED_PIPELINE],
-  workspace: [],
+  rows: [PORTED_PIPELINE],
+  revision: 'rev-pipeline-snapshot',
   phaseCatalog: PHASE_CATALOG.effective
 });
 
@@ -132,9 +134,8 @@ describe('sidebar snapshot — workflowCatalog is additive (feature 083)', () =>
       getPipelineCatalog: () => PIPELINE_CATALOG,
       getWorkflowCatalog: () =>
         resolveWorkflowCatalog({
-          builtIn: [],
-          user: [WORKFLOW_ROW],
-          workspace: [],
+          rows: [WORKFLOW_ROW],
+          revision: 'rev-workflow-snapshot',
           pipelineCatalog: PIPELINE_CATALOG
         })
     });

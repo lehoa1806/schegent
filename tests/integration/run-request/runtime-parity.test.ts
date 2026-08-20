@@ -115,14 +115,12 @@ class FakeMemento implements Memento {
 
 const COMPOSE: PhaseDef = {
   id: 'compose', name: 'Compose', version: 1, instruction: 'Compose the thing.',
-  sourceScope: 'built-in'
 };
 const REFINE: PhaseDef = {
   id: 'refine', name: 'Refine', version: 1, instruction: 'Refine the thing.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 /**
@@ -135,7 +133,6 @@ const PARITY_FLOW: PipelineDef = {
   id: 'parity-flow',
   name: 'Parity Flow',
   phases: ['compose', 'refine', 'done'],
-  sourceScope: 'workspace',
   inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
   outputs: []
 };

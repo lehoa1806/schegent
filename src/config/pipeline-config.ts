@@ -1,7 +1,6 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
-import type { PhaseDefinitionScope } from '../contracts/process-definitions';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
 // so a second copy would let the document field and the runtime field drift with
@@ -14,15 +13,12 @@ export {
   type PhaseEvidencePolicy
 } from '../contracts/process-definitions';
 import type { PhaseSideEffects, PhaseEvidencePolicy } from '../contracts/process-definitions';
-import {
-  isPipelineDefinitionScope,
-  type PhaseBinding,
-  type PipelineDefinitionScope,
-  type PipelineExecutionDefaults,
-  type PipelineInputPort,
-  type PipelineOutputPort
+import type {
+  PhaseBinding,
+  PipelineExecutionDefaults,
+  PipelineInputPort,
+  PipelineOutputPort
 } from '../contracts/pipeline-definitions';
-import { mergePhaseRunnerPolicy } from './pipeline-snapshot';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
 import { validatePipelineDefinition } from './pipeline-definition-validator';
 export interface PhaseDef {
@@ -48,13 +44,11 @@ export interface PhaseDef {
   readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
   readonly promptVersion?: string;
-  /** Resolution origin used only to derive host-owned runtime policy. */
-  readonly sourceScope?: PhaseDefinitionScope;
 }
 // Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the
 // legacy required trio; every contract field added by the Pipeline Builder is
-// optional and normalizes on parse so an existing `schegent.pipelines` row keeps
-// resolving without a configuration rewrite (research R2).
+// optional and normalizes on parse so a row authored before those fields existed
+// keeps resolving without a rewrite (research R2).
 export interface PipelineDef {
   readonly id: string;
   readonly name: string;
@@ -66,7 +60,6 @@ export interface PipelineDef {
   readonly bindings?: readonly PhaseBinding[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
-  readonly sourceScope?: PipelineDefinitionScope;
 }
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
@@ -100,86 +93,24 @@ export const TIMEOUT_MAX = 3600;
 export const SOFT_CAP_PHASES = 50;
 export const SOFT_CAP_PIPELINES = 20;
 export const SOFT_CAP_PIPELINE_PHASES = 50;
-// Feature 098 (T036, FR-010, FR-011) — the built-in layer, emptied.
-//
-// It held seventeen Phases and three Pipelines, and `import-planner.ts` scans
-// every layer including this one before writing, so the two example documents
-// that ship in the VSIX resolved to sixteen skip rows and zero writes: the
-// import UI was the only route in and it wrote nothing. The rows moved to
-// `examples/`, where an operator imports them; the layer stays because
-// three-scope precedence, the `shadowed` status and the presence scan are all
-// still the machinery this product resolves with (FR-017, and the retention
-// test `tests/unit/config/built-in-scope-retention.test.ts`).
-//
-// `BUILT_IN_WORKFLOWS` has been `Object.freeze([])` since feature 086, which is
-// the existence proof that the seventeen `{ builtIn, user, workspace }` call
-// sites need no change to accept an empty first layer.
-export const BUILT_IN_PHASES: readonly PhaseDef[] = Object.freeze([]);
-
-// The Pipeline half of the same change (T036). Two of the three definitions this
-// array held are now `examples/speckit-new-feature.pipeline.yaml` and
-// `examples/speckit-bugfix.pipeline.yaml`. The third, `dev-new-feature`, has no
-// document successor: the shipped example set is good as it stands (standing
-// decision, 2026-08-19), so an operator who wants that Pipeline authors it like
-// any other. Nothing here is load-bearing for it — a Pipeline with no document
-// is simply one nobody has imported.
-//
-// Feature 098 (T081) — four id constants stood here until this point:
-// `BUILT_IN_PIPELINE_ID`, `BUILT_IN_BUGFIX_PIPELINE_ID`,
-// `BUILT_IN_DEV_NEW_FEATURE_PIPELINE_ID` and `DEFAULT_PIPELINE_ID`. T036 left
-// them deliberately, because thirteen expressions still substituted them for an
-// absent Pipeline id and deleting them alongside the rows would have ended that
-// phase on a tree that did not compile. Those consumers are gone, so the names
-// go too: a constant naming a definition no installation has is a standing
-// invitation to substitute it again.
-export const BUILT_IN_PIPELINES: readonly PipelineDef[] = Object.freeze([]);
-
-// Feature 059 — default-detection helpers used by the per-capability
-// trust gate in `cmd-save-phases.ts` and `cmd-save-pipelines.ts`. The
-// I-2 invariant of the save-command contract requires that saving the
-// built-in payload bypasses the gate unconditionally so an operator can
-// always reset-to-defaults from a denied state.
-//
-// `stableJsonStringify` produces a key-sorted, deterministic JSON
-// rendering so byte equality is independent of object-property order
-// from the wire (the webview emits properties in declaration order, but
-// that order is a JS-engine implementation detail). Stable across runs.
-function stableJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return '[' + value.map(stableJsonStringify).join(',') + ']';
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj)
-    .filter((k) => obj[k] !== undefined)
-    .sort();
-  const parts = keys.map((k) => JSON.stringify(k) + ':' + stableJsonStringify(obj[k]));
-  return '{' + parts.join(',') + '}';
-}
-
 /**
- * `true` iff `payload` is byte-equivalent (after key-sorted JSON
- * normalization) to the built-in Phase layer — which, since T036, means
- * `payload` is empty. The trust gate reads this to recognize a
- * reset-to-defaults save, so an operator can always return to defaults from
- * a denied state (feature 059's I-2 invariant).
+ * `true` iff `payload` is the reset-to-defaults save: the empty catalog.
  *
- * Feature 098 (T037) kept the comparison in this form rather than reducing it
- * to `payload.length === 0`. The two are equivalent for an array, and this is
- * the form `equalsBuiltInWorkflows()` has used since feature 086 against its
- * own empty layer: the three functions are one family, read together by the
- * three save commands, and a fourteen-line saving is not worth two of them
- * answering the question differently from the third.
+ * Feature 099 (T489, FR-039) — this replaces `equalsBuiltInPhases`,
+ * `equalsBuiltInPipelines`, and `equalsBuiltInWorkflows`, which each compared a
+ * payload against its layer's `BUILT_IN_*` constant. All three constants were
+ * `Object.freeze([])` by the end of feature 098, and all three are deleted with
+ * the layer tier, so "byte-equivalent to the built-in layer" is now spelled
+ * "empty" — one function rather than three, because three answers to one
+ * question is three chances to drift.
+ *
+ * The trust gate reads this to recognize a reset, so an operator can always
+ * return to defaults from a denied state (feature 059's I-2 invariant). Only the
+ * Phase gate still consults it: the Pipeline and Workflow override capabilities
+ * are gone (FR-045), so their saves have no per-capability gate left to bypass.
  */
-export function equalsBuiltInPhases(payload: readonly unknown[]): boolean {
-  return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PHASES);
-}
-
-/** The Pipeline half of {@link equalsBuiltInPhases}, on the same terms. */
-export function equalsBuiltInPipelines(payload: readonly unknown[]): boolean {
-  return stableJsonStringify(payload) === stableJsonStringify(BUILT_IN_PIPELINES);
+export function isResetToDefaultsPayload(payload: readonly unknown[]): boolean {
+  return payload.length === 0;
 }
 
 /**
@@ -192,7 +123,7 @@ export function equalsBuiltInPipelines(payload: readonly unknown[]): boolean {
  * `evidencePolicy` to the authored set, so this filter discarded both before
  * `validatePhaseRaw` could reach its own enum checks for them — the one oracle
  * whose job is to catch a bad containment class could not see the field. Only
- * `phaseId` is dropped, the YAML spelling of `id` that a `schegent.phases` row
+ * `phaseId` is dropped, the YAML spelling of `id` that a stored Phase row
  * never carries.
  */
 export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set(
@@ -233,11 +164,7 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
     (v.forceContinueOnRetryCap === undefined ||
       typeof v.forceContinueOnRetryCap === 'boolean') &&
-    (v.runner === undefined || isBackendRunnerKind(v.runner)) &&
-    (v.sourceScope === undefined ||
-      v.sourceScope === 'built-in' ||
-      v.sourceScope === 'user' ||
-      v.sourceScope === 'workspace')
+    (v.runner === undefined || isBackendRunnerKind(v.runner))
   );
   return structurallyValid;
 }
@@ -265,123 +192,74 @@ export function isPipelineDef(value: unknown): value is PipelineDef {
         !Array.isArray(v.executionDefaults))) &&
     (v.recommendedNext === undefined ||
       (Array.isArray(v.recommendedNext) &&
-        v.recommendedNext.every((r) => typeof r === 'string'))) &&
-    (v.sourceScope === undefined || isPipelineDefinitionScope(v.sourceScope))
+        v.recommendedNext.every((r) => typeof r === 'string')))
   );
 }
 
-interface MergeInput {
-  readonly phases?: readonly PhaseDef[];
-  readonly pipelines?: readonly PipelineDef[];
+export interface RuntimePolicyInput {
   readonly models?: Record<BackendRunnerKind, readonly string[]> | readonly string[]; // support migration from array
   readonly defaultPipelineId?: string;
 }
 
-export function mergeCatalog(
-  builtin: MergeInput,
-  user: MergeInput,
-  workspace: MergeInput
+/**
+ * Merge the two runtime-policy settings that are still layered: the model lists
+ * (union, workspace then user) and `defaultPipelineId` (workspace wins).
+ *
+ * Feature 099 (T489, FR-042) — this is what is left of `mergeCatalog`. That
+ * function merged Phases and Pipelines across `built-in`/`user`/`workspace` too,
+ * and both of those halves are gone: definitions now come from one layer, so
+ * `resolvePhaseCatalog` and `resolvePipelineCatalog` produce the whole effective
+ * set on their own and there is nothing left to precedence-order. Its
+ * per-layer duplicate warnings go with it — `invalidateDuplicates` in the two
+ * resolvers already reports a repeated id, and reports it as a defect on the row
+ * rather than as "last-defined wins".
+ *
+ * `schegent.models` and `schegent.defaultPipelineId` are not retired keys
+ * (FR-054 names only the three definition keys), so they keep their user and
+ * workspace scopes and keep needing this.
+ */
+export function mergeRuntimePolicy(
+  user: RuntimePolicyInput,
+  workspace: RuntimePolicyInput
 ): {
-  catalog: {
-    phases: readonly PhaseDef[];
-    pipelines: readonly PipelineDef[];
-    models: Record<BackendRunnerKind, readonly string[]>;
-    defaultPipelineId: string;
-  };
-  duplicateWarnings: readonly ValidationWarning[];
+  models: Record<BackendRunnerKind, readonly string[]>;
+  defaultPipelineId: string;
 } {
-  const duplicateWarnings: ValidationWarning[] = [];
-  const phasesMap = new Map<string, PhaseDef>();
-  const pipelinesMap = new Map<string, PipelineDef>();
   const modelsMap = new Map<BackendRunnerKind, Set<string>>();
 
-  const phaseLayers: ReadonlyArray<{ name: string; input: MergeInput }> = [
-    { name: 'builtin', input: builtin },
-    { name: 'user', input: user },
-    { name: 'workspace', input: workspace }
-  ];
-
-  for (const { name, input } of phaseLayers) {
-    const layerPhaseIds = new Set<string>();
-    for (const p of input.phases ?? []) {
-      if (layerPhaseIds.has(p.id) && name !== 'builtin') {
-        duplicateWarnings.push({
-          source: 'phase',
-          id: p.id,
-          message: `Duplicate phase id '${p.id}' in ${name} settings; last-defined wins`
-        });
+  // Workspace before user, the established model union order.
+  for (const input of [workspace, user]) {
+    if (!input.models) continue;
+    if (Array.isArray(input.models)) {
+      let set = modelsMap.get('claude');
+      if (!set) {
+        set = new Set<string>();
+        modelsMap.set('claude', set);
       }
-      layerPhaseIds.add(p.id);
-      phasesMap.set(p.id, mergePhaseRunnerPolicy(phasesMap.get(p.id), p));
+      for (const m of input.models) set.add(m);
+      continue;
+    }
+    for (const kind of SUPPORTED_BACKENDS) {
+      const arr = (input.models as Record<BackendRunnerKind, readonly string[]>)[kind];
+      if (!arr) continue;
+      let set = modelsMap.get(kind);
+      if (!set) {
+        set = new Set<string>();
+        modelsMap.set(kind, set);
+      }
+      for (const m of arr) set.add(m);
     }
   }
-
-  // Feature 081 changes Phase precedence only. Pipeline and model merge order
-  // remains the established built-in -> workspace -> user behavior.
-  const catalogLayers: ReadonlyArray<{ name: string; input: MergeInput }> = [
-    { name: 'builtin', input: builtin },
-    { name: 'workspace', input: workspace },
-    { name: 'user', input: user }
-  ];
-
-  for (const { name, input } of catalogLayers) {
-    const layerPipelineIds = new Set<string>();
-    for (const pl of input.pipelines ?? []) {
-      if (layerPipelineIds.has(pl.id) && name !== 'builtin') {
-        duplicateWarnings.push({
-          source: 'pipeline',
-          id: pl.id,
-          message: `Duplicate pipeline id '${pl.id}' in ${name} settings; last-defined wins`
-        });
-      }
-      layerPipelineIds.add(pl.id);
-      pipelinesMap.set(pl.id, pl);
-    }
-
-    if (input.models) {
-      if (Array.isArray(input.models)) {
-        let set = modelsMap.get('claude');
-        if (!set) {
-          set = new Set<string>();
-          modelsMap.set('claude', set);
-        }
-        for (const m of input.models) set.add(m);
-      } else {
-        for (const kind of SUPPORTED_BACKENDS) {
-          const arr = (input.models as Record<BackendRunnerKind, readonly string[]>)[kind];
-          if (arr) {
-            let set = modelsMap.get(kind);
-            if (!set) {
-              set = new Set<string>();
-              modelsMap.set(kind, set);
-            }
-            for (const m of arr) set.add(m);
-          }
-        }
-      }
-    }
-  }
-
-  // Feature 098 (T081, FR-033) — the final fallback named the built-in
-  // Pipeline. With no layer supplying one, the merged catalog has no default,
-  // and the empty string is how that is spelled (FR-033a).
-  const defaultPipelineId =
-    workspace.defaultPipelineId ?? user.defaultPipelineId ?? builtin.defaultPipelineId ?? '';
-
-  const mergedModels: Record<BackendRunnerKind, readonly string[]> = {
-    claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
-    codex: Object.freeze(Array.from(modelsMap.get('codex') ?? [])),
-    agy: Object.freeze(Array.from(modelsMap.get('agy') ?? []))
-  };
 
   return {
-    catalog: {
-      phases: Array.from(phasesMap.values()),
-      pipelines: Array.from(pipelinesMap.values()),
-      models: mergedModels,
-      defaultPipelineId
+    models: {
+      claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
+      codex: Object.freeze(Array.from(modelsMap.get('codex') ?? [])),
+      agy: Object.freeze(Array.from(modelsMap.get('agy') ?? []))
     },
-    duplicateWarnings
+    // Feature 098 (T081, FR-033) — no layer supplies a built-in default, so an
+    // unconfigured host has none, and the empty string is how that is spelled.
+    defaultPipelineId: workspace.defaultPipelineId ?? user.defaultPipelineId ?? ''
   };
 }
 

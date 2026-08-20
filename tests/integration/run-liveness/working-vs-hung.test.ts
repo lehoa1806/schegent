@@ -71,10 +71,10 @@ const PIPELINE = Object.freeze({
   id: 'ab-flow',
   name: 'A then B',
   phases: Object.freeze([
-    Object.freeze({ id: 'alpha', name: 'Alpha', version: 1, instruction: 'a', sourceScope: 'built-in' }),
-    Object.freeze({ id: 'beta', name: 'Beta', version: 1, instruction: 'b', sourceScope: 'built-in' }),
-    Object.freeze({ id: 'gamma', name: 'Gamma', version: 1, instruction: 'c', sourceScope: 'built-in' }),
-    Object.freeze({ id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in' })
+    Object.freeze({ id: 'alpha', name: 'Alpha', version: 1, instruction: 'a' }),
+    Object.freeze({ id: 'beta', name: 'Beta', version: 1, instruction: 'b' }),
+    Object.freeze({ id: 'gamma', name: 'Gamma', version: 1, instruction: 'c' }),
+    Object.freeze({ id: 'done', name: 'Done', version: 1, instruction: '(no-op)' })
   ])
 }) as unknown as WorkflowRun['pipeline'];
 

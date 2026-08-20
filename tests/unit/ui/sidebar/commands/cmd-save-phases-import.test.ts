@@ -29,7 +29,7 @@ vi.mock('../../../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { phaseLayerRevision } from '../../../../../src/config/process-catalog';
+import { FakeCatalogStore, layerWrites } from '../../../../fixtures/fake-catalog-store';
 import { handler } from '../../../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../../../src/ui/sidebar/messages';
 import type {
@@ -42,18 +42,20 @@ const EXISTING = [{ id: 'held', name: 'Held', version: 4, instruction: 'Hold.' }
 /** A document-authored row: `version` is whatever the source installation held. */
 const IMPORTED = { id: 'brought-in', name: 'Brought In', version: 7, instruction: 'Do it.' };
 
+/** Feature 099 (T496f, FR-044a) - seeding rows does not move a revision. */
+const SEEDED_REVISION = new FakeCatalogStore().revisionOf('phase');
+
 function harness(current: readonly unknown[] = EXISTING) {
   const acks: CommandAckMessage[] = [];
-  const writes: unknown[] = [];
+  const store = new FakeCatalogStore({ phases: current });
   const ctx = {
     deps: {
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize: String },
-      readPhaseConfig: () => ({ user: [], workspace: current }),
-      updateConfig: vi.fn(async (_key: string, value: unknown) => {
-        writes.push(value);
-      })
+      catalogStore: store,
+      refreshCatalog: vi.fn(async () => undefined),
+      readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
     },
     correlationId: 'import-intent',
     postAck: async (ack: CommandAckMessage) => {
@@ -61,20 +63,18 @@ function harness(current: readonly unknown[] = EXISTING) {
       return true;
     }
   } as unknown as Parameters<typeof handler>[0];
-  return { ctx, acks, writes };
+  return { ctx, acks, store, writes: () => layerWrites(store) };
 }
 
 function importCommand(
   phases: readonly unknown[],
-  phaseId = 'brought-in',
-  current: readonly unknown[] = EXISTING
+  phaseId = 'brought-in'
 ): SavePhasesCommand {
   return {
     type: CMD_SAVE_PHASES,
     correlationId: 'import-intent',
     payload: {
-      scope: 'workspace',
-      expectedRevision: phaseLayerRevision(current),
+      expectedRevision: SEEDED_REVISION,
       mutation: { kind: 'import', phaseId },
       phases
     }
@@ -89,7 +89,7 @@ describe('Feature 084 — the import mutation intent', () => {
     await handler(ctx, importCommand([...EXISTING, IMPORTED]));
 
     expect(acks[0]).toMatchObject({ status: 'accepted', result: { mutation: 'import' } });
-    expect(writes[0]).toEqual([
+    expect(writes()[0]).toEqual([
       expect.objectContaining({ id: 'held', version: 4 }),
       expect.objectContaining({ id: 'brought-in', version: 7 })
     ]);
@@ -109,7 +109,7 @@ describe('Feature 084 — the import mutation intent', () => {
     };
     await handler(ctx, importCommand([...EXISTING, carried]));
 
-    expect(writes[0]).toEqual([expect.objectContaining({ id: 'held' }), carried]);
+    expect(writes()[0]).toEqual([expect.objectContaining({ id: 'held' }), carried]);
   });
 
   it('is a create to the diff check: an id already in the layer is refused', async () => {
@@ -120,7 +120,7 @@ describe('Feature 084 — the import mutation intent', () => {
     );
 
     expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'phase-mutation-mismatch' });
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('still refuses a version transition dictated for a row it is not importing', async () => {
@@ -128,7 +128,7 @@ describe('Feature 084 — the import mutation intent', () => {
     await handler(ctx, importCommand([{ ...EXISTING[0], version: 5 }, IMPORTED]));
 
     expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'phase-version-invalid' });
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('refuses a stale revision without writing (FR-038)', async () => {
@@ -142,7 +142,7 @@ describe('Feature 084 — the import mutation intent', () => {
     } as SavePhasesCommand);
 
     expect(acks[0]).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('requires the phases capability (FR-040)', async () => {
@@ -151,7 +151,7 @@ describe('Feature 084 — the import mutation intent', () => {
     await handler(ctx, importCommand([...EXISTING, IMPORTED]));
 
     expect(acks[0].status).toBe('rejected');
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 
   it('requires the retryConditions capability for a document that declares one (FR-012a)', async () => {
@@ -163,6 +163,6 @@ describe('Feature 084 — the import mutation intent', () => {
     );
 
     expect(acks[0].status).toBe('rejected');
-    expect(writes).toEqual([]);
+    expect(writes()).toEqual([]);
   });
 });

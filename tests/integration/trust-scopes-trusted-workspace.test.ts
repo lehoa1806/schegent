@@ -8,7 +8,7 @@
 //   - The host's MessageRouter dispatches `CMD_SAVE_PHASES` with a
 //     NON-default payload.
 //   - The save command MUST reject with `trust-denied`, the on-disk
-//     `schegent.phases` (modeled here as the `updateConfig` call) MUST be
+//     the Phase catalog (modeled here as the `saveLayer` request) MUST be
 //     unchanged, and a single `trust.capability-denied` audit entry MUST
 //     land in `<workspaceRoot>/.schegent/audit.log` with the contracted
 //     payload shape.
@@ -58,7 +58,7 @@ vi.mock('../../src/state/workspace-folder-picker', () => ({
 
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { phaseLayerRevision } from '../../src/config/process-catalog';
+import { FakeCatalogStore, layerWrites } from '../fixtures/fake-catalog-store';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
   CMD_SAVE_PHASES,
@@ -120,13 +120,13 @@ interface Harness {
   router: MessageRouter;
   audit: AuditLogWriter;
   logger: SanitizedLogger;
-  updateConfigCalls: Array<{ key: string; value: unknown }>;
+  store: FakeCatalogStore;
 }
 
 function buildHarness(): Harness {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
-  const updateConfigCalls: Array<{ key: string; value: unknown }> = [];
+  const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     queueRemover: { remove: vi.fn().mockResolvedValue(true) },
@@ -135,16 +135,15 @@ function buildHarness(): Harness {
     notifyWarning: vi.fn(),
     logger,
     audit,
-    updateConfig: async (key, value) => {
-      updateConfigCalls.push({ key, value });
-    },
-    readPhaseConfig: () => ({ user: [], workspace: [] })
+    catalogStore: store,
+    refreshCatalog: async () => undefined,
+    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') })
   };
-  return { router: new MessageRouter(deps), audit, logger, updateConfigCalls };
+  return { router: new MessageRouter(deps), audit, logger, store };
 }
 
 async function dispatchSave(
-  router: MessageRouter,
+  harness: Harness,
   phases: readonly unknown[],
   correlationId = 'integ-trust-1'
 ): Promise<CapturedAck> {
@@ -153,13 +152,12 @@ async function dispatchSave(
     type: CMD_SAVE_PHASES,
     correlationId,
     payload: {
-      scope: 'workspace',
-      expectedRevision: phaseLayerRevision([]),
+      expectedRevision: harness.store.revisionOf('phase'),
       mutation: { kind: 'create', phaseId: String((phases[0] as { id?: unknown })?.id) },
       phases
     }
   } as unknown as SidebarCommand;
-  await router.dispatch(command, async (msg: CommandAckMessage) => {
+  await harness.router.dispatch(command, async (msg: CommandAckMessage) => {
     captured = {
       status: msg.status,
       reason: msg.reason,
@@ -177,7 +175,8 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
     mocks.state.capabilities.set('phases', false);
     mocks.state.scopes.set('phases', 'workspace');
 
-    const { router, audit, updateConfigCalls } = buildHarness();
+    const harness = buildHarness();
+    const { audit, store } = harness;
     const nonDefaultPhases = [
       {
         id: 'speckit-specify',
@@ -187,7 +186,7 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
       }
     ];
 
-    const ack = await dispatchSave(router, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhases);
 
     expect(ack.status).toBe('rejected');
     expect(ack.reason).toBe('trust-denied');
@@ -198,8 +197,8 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
     expect(typeof err.reason).toBe('string');
 
     // On-disk persistence MUST be untouched: the handler must not call
-    // `updateConfig` once the gate fires.
-    expect(updateConfigCalls).toEqual([]);
+    // the store once the gate fires.
+    expect(store.layerSaves).toEqual([]);
 
     // Audit log on disk MUST contain exactly one `trust.capability-denied`
     // entry with the contracted payload shape. A harmless trailing append
@@ -224,7 +223,8 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
     mocks.state.capabilities.set('phases', true);
     mocks.state.scopes.set('phases', 'workspace');
 
-    const { router, audit, updateConfigCalls } = buildHarness();
+    const harness = buildHarness();
+    const { audit, store } = harness;
     const nonDefaultPhases = [
       {
         id: 'speckit-specify',
@@ -234,13 +234,13 @@ describe('Feature 059 T010 — trusted workspace + workspace-scope deny path', (
       }
     ];
 
-    const ack = await dispatchSave(router, nonDefaultPhases);
+    const ack = await dispatchSave(harness, nonDefaultPhases);
 
     expect(ack.status).toBe('accepted');
     expect(ack.reason).toBeUndefined();
-    expect(updateConfigCalls).toHaveLength(1);
-    expect(updateConfigCalls[0].key).toBe('phases');
-    expect(updateConfigCalls[0].value).toEqual([
+    expect(store.layerSaves).toHaveLength(1);
+    expect(store.layerSaves[0].kind).toBe('phase');
+    expect(layerWrites(store)[0]).toEqual([
       expect.objectContaining({ ...nonDefaultPhases[0], version: 1 })
     ]);
 

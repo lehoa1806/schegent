@@ -13,11 +13,11 @@ one.
 
 ## Before you start
 
-An import is a catalog write, so it is gated by the same per-capability
-trust scopes as any other catalog edit. Which scopes a document needs
-depends on what it carries — see
+An import is a catalog write, so it is gated by Workspace Trust and by
+the same per-capability trust scopes as any other catalog edit. Which
+scopes a document needs depends on what it carries — see
 [Per-capability trust scopes](trust-scopes.md), which walks the
-one-scope, three-scope, and four-scope cases in order.
+no-capability, one-scope, and two-scope cases in order.
 
 An **export** is a read. It needs no trust scope and asks for no
 confirmation.
@@ -40,8 +40,8 @@ The extension ships process documents under `examples/` for exactly this:
 
 They are ordinary documents with no privileged status. Importing one
 produces `import` rows on a fresh catalog and `skip` rows on a second
-run, exactly as any document you wrote would — the built-in layer is
-permanently empty, so it claims no id and forces no skips.
+run, exactly as any document you wrote would — no id is claimed in
+advance, so nothing forces a skip until you have imported something.
 
 ## Import a document
 
@@ -86,20 +86,23 @@ Each row lands in exactly one of four outcomes:
 | `invalid` | This resource is itself defective | No |
 
 **`skip` is a guarantee, not a warning.** Schegent resolves presence
-against the *stored* rows of every layer — built-in, user, and workspace
-— at every status, including rows that are shadowed and rows that are
-currently invalid. If any layer holds that id, the import skips it. The
-row tells you which scope holds it and what that stored row's status is.
-The effect is that an import never overwrites work you authored,
-including a broken definition you are half-way through fixing.
+against the *stored* rows of the catalog at **every status**, including
+rows that are currently invalid. If the catalog holds that id, the import
+skips it. The row tells you what that stored row's status is. The effect
+is that an import never overwrites work you authored, including a broken
+definition you are half-way through fixing.
+
+The property is unchanged by the move to a single-layer catalog store;
+only the *scan* collapsed, from a walk across three layers to one pass
+over the manifest.
 
 **`blocked` names what it is waiting on**, and the reason tells you which
 kind of repair is needed:
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| `dependency-absent` | The named Phase or Pipeline is in no catalog layer, and this document does not supply it | Import the dependency first, or re-export the source as a package that includes it |
-| `dependency-unresolvable` | A stored row claims that id, but it is not effective — it is shadowed by another layer, or it is invalid | Repair or unshadow that row; nothing about this document will fix it |
+| `dependency-absent` | The named Phase or Pipeline is not in the catalog, and this document does not supply it | Import the dependency first, or re-export the source as a package that includes it |
+| `dependency-unresolvable` | A stored row claims that id, but it is invalid, so it is not effective | Repair that row; nothing about this document will fix it |
 | `dependency-blocked` | The dependency resolves but is itself blocked | Ignore this row and fix the root cause it points at via `via` — this row is propagation, not a separate fault |
 
 **`invalid` lists the defects** with the field each one is about. The row
@@ -112,28 +115,30 @@ well-formed one.
 
 ### 3. Confirm
 
-Choose a target scope — **user** or **workspace** — and press **Confirm
-import**. Scope is chosen at confirm time, not at preview, because the
-same previewed plan is legitimately committed into either.
+Press **Confirm import**. There is no scope to choose: there is one
+catalog, under `<workspaceRoot>/.schegent/catalog/`, and it is where the
+document lands.
 
 Two things are re-evaluated at this moment rather than inherited from the
 preview:
 
-- **Trust capabilities.** A scope you granted or revoked between
+- **Trust capabilities.** A capability you granted or revoked between
   previewing and confirming is honored as of the confirm. The preview's
   note that a document "requires the retry-condition capability" is
   advisory; the gate is the confirm.
-- **Catalog freshness.** The plan carries the revision of each layer it
-  was computed against. If that layer changed underneath you — another
-  window, a settings edit — the write is refused as stale rather than
-  applied to a catalog the plan never described. Re-run the preview and
-  confirm again.
+- **Catalog freshness.** The plan carries the revision of each catalog it
+  was computed against. If that catalog changed underneath you — another
+  window, another import — the write is refused as `stale-catalog` rather
+  than applied to a catalog the plan never described. Re-run the preview
+  and confirm again.
 
-A package commits as **ordered writes, one per catalog layer**: Phases
+A package commits as **ordered writes, one per catalog kind**: Phases
 first, then Pipelines, then Workflows. The order is dependency order — a
 Pipeline's bindings are only satisfiable once its Phases are effective,
 and a Workflow's nodes only resolve once its Pipelines are. A document
-that supplies fewer layers performs fewer writes.
+that supplies fewer kinds performs fewer writes. Each write that lands
+produces an immutable new version of every definition it touches, exactly
+as an ordinary save does.
 
 ### 4. Read the outcome
 
@@ -141,18 +146,21 @@ The result is one of three words.
 
 | Outcome | Meaning |
 |---|---|
-| `imported` | Every layer the document supplied was written |
-| `partial` | Some layers were written and a later one was not |
+| `imported` | Every kind the document supplied was written |
+| `partial` | Some kinds were written and a later one was not |
 | `failed` | Nothing was written |
 
 **`partial` is a real, expected outcome — not a corrupted state.** The
-layers commit independently, and the first rejection stops the sequence
+writes commit independently, and the first rejection stops the sequence
 where it stands. Where it stopped tells you what was missing:
 
-- Phases written, no Pipeline → the Pipeline layer was refused (most
-  often `allowPipelineOverrides`).
-- Phases and Pipelines written, no Workflow → the Workflow layer was
-  refused (most often `allowWorkflowOverrides`).
+- Phases written, no Pipeline → the Pipeline write was refused. The Phase
+  write is the one carrying capability gates (`allowCustomPhases`, and
+  `allowCustomRetryConditions` for a document declaring one); a Pipeline
+  write needs Workspace Trust and nothing further, so the usual cause
+  here is a stale catalog revision rather than a missing capability.
+- Phases and Pipelines written, no Workflow → the Workflow write was
+  refused, on the same terms.
 
 **Whatever landed stays written.** Schegent does not undo a partial
 import. A compensating delete would remove rows you may already have
@@ -160,9 +168,9 @@ edited, and it would be a destructive write performed on a failure path
 that nobody confirmed.
 
 **Re-running the same document is the recovery, at any depth.** Fix the
-cause — grant the missing scope, supply the missing dependency, repair
-the shadowed row — and import the same file again. The presence scan
-turns everything that already landed into `skip` rows, so the retry
+cause — grant the missing capability, supply the missing dependency,
+repair the invalid row — and import the same file again. The presence
+scan turns everything that already landed into `skip` rows, so the retry
 writes only the part that did not. This is self-healing regardless of how
 far the first attempt got.
 
@@ -173,15 +181,15 @@ far the first attempt got.
 Press **Export** on the Phase, Pipeline, or Workflow you want to move.
 
 Export reads the **effective** catalog — the definition that would
-actually run, after layer shadowing. If a workspace row shadows a user
-row, you export the workspace row, because that is the one that is real
-in this workspace.
+actually run — and within it the **active** version. Earlier versions in
+a definition's history are readable in the Builder, but they are not what
+Export serializes.
 
 Two situations produce an **unavailable** result rather than a document:
 
 | Reason | Meaning |
 |---|---|
-| `not-found` | No row in any layer carries that id — most commonly an unsaved draft. Save it first |
+| `not-found` | No row in the catalog carries that id — most commonly an unsaved draft. Save it first |
 | `does-not-resolve` | A row exists, but the effective catalog has no valid definition for it. Repair it first |
 | `dependency-does-not-resolve` | The resource itself resolves, but something it references does not. The result names the first unresolved dependency in reference order |
 
@@ -248,9 +256,11 @@ above do not apply to it. This section only covers where it differs; the
 document lifecycle (preview before write, confirm before commit) is the
 same one described above.
 
-**No scope choice.** A Phase, Pipeline, or Workflow can land in **user**
-or **workspace**. The Model Catalog has one writable layer — this
-workspace — so there is nothing to choose at confirm time.
+**Still configuration, not a catalog store.** The Model Catalog is the
+one exchange target feature 099 left where it was: it is read from and
+written to configuration, has no version history, and produces no
+immutable version record on save. A Phase, Pipeline, or Workflow does all
+three.
 
 **Two outcomes, not four.** A Model Catalog row is never `blocked` or
 `invalid`: a model id has no dependency to be blocked on, and nothing
@@ -294,18 +304,20 @@ The trust gate keys on the field being *there*, never on what it says.
 ## What is recorded
 
 Exchange activity is audited as metadata only — ids, versions, statuses,
-outcomes, counts, scopes. No instruction text, prompt, transcript, file
-name, or workspace path appears in these entries.
+outcomes, counts, and the resource kind. No instruction text, prompt,
+transcript, file name, or workspace path appears in these entries, and
+there is no `scope` field: with one catalog per kind, the kind already
+says where the write went.
 
 | When | What is recorded |
 |---|---|
 | Preview | One entry per refused document. A planned document records nothing — no write was requested |
-| Confirm | One entry per catalog layer of a package import, saying whether that layer landed |
+| Confirm | One entry per catalog write of a package import, saying whether that write landed |
 | Export | One entry |
 
 A single-Phase import records nothing at commit: one write cannot be
 partial, so the catalog is already the record. A package can be partial,
-which is exactly why its layers are recorded individually.
+which is exactly why its writes are recorded individually.
 
 Long id lists are capped in the entry, but the untruncated count stays in
 `counts`, so a cap is visible rather than silent. See

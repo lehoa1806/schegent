@@ -25,12 +25,10 @@
 // supplies a smaller object.
 
 import { resolvePipelineCatalog } from '../../config/pipeline-catalog';
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../config/pipeline-config';
 import { coerceModels } from '../../config/pipeline-config-loader';
 import { modelsLayerRevision } from '../../config/model-catalog';
 import { resolvePhaseCatalog } from '../../config/process-catalog';
 import { invalidPipelineCauses, resolveWorkflowCatalog } from '../../config/workflow-catalog';
-import { BUILT_IN_WORKFLOWS } from '../../config/workflow-config';
 import { WORKFLOW_ERROR_FIELD_MAX } from '../../config/workflow-definition-validator';
 import { planPhaseImport, planPipelineImport, planWorkflowImport } from './import-planner';
 import type {
@@ -183,7 +181,6 @@ function boundRow(row: ImportPlanRow, sanitize: Sanitize): ImportPlanRow {
       resourceKind: row.resourceKind,
       resourceId: bound(row.resourceId, RESOURCE_ID_MAX_LEN[row.resourceKind], sanitize),
       name: bound(row.name, NAME_MAX, sanitize),
-      presentIn: row.presentIn,
       presentRowStatus: row.presentRowStatus
     };
   }
@@ -343,7 +340,6 @@ async function appendRefusalAudit(
     operation: 'import-preflight',
     resourceKind,
     resourceIds: [],
-    scope: null,
     outcomes: [refusal.code],
     counts: { refused: 1 }
   };
@@ -395,11 +391,10 @@ function resolvedPipelineCatalog(
   deps: PreflightDeps,
   phaseCatalog: ReturnType<typeof resolvePhaseCatalog>
 ): ReturnType<typeof resolvePipelineCatalog> {
-  const layers = deps.readPipelineConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readPipelineConfig?.() ?? { rows: [], revision: '' };
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
+    revision: stored.revision,
     phaseCatalog: phaseCatalog.effective
   });
 }
@@ -412,11 +407,11 @@ function packageContext(
     phaseRows: phaseCatalog.records,
     pipelineRows: pipelineCatalog.records,
     effectivePhases: phaseCatalog.effective,
-    revisions: phaseCatalog.revisions,
+    revision: phaseCatalog.revision,
     // Read here, from the same resolve the presence oracle came from, so the
-    // revision a confirmed write is gated on describes the layer this plan was
+    // revision a confirmed write is gated on describes the catalog this plan was
     // actually computed against (FR-040, FR-043).
-    pipelineRevisions: pipelineCatalog.revisions
+    pipelineRevision: pipelineCatalog.revision
   };
 }
 
@@ -439,7 +434,7 @@ function workflowContext(
   phaseCatalog: ReturnType<typeof resolvePhaseCatalog>
 ): WorkflowPackageImportContext {
   const pipelineCatalog = resolvedPipelineCatalog(deps, phaseCatalog);
-  const layers = deps.readWorkflowConfig?.() ?? { user: [], workspace: [] };
+  const stored = deps.readWorkflowConfig?.() ?? { rows: [], revision: '' };
   // One context object, read by the catalog resolve and by the causes map, so the
   // graph oracle the planner uses is built from the same two lists resolution is.
   const pipelineContext = {
@@ -447,15 +442,14 @@ function workflowContext(
     records: pipelineCatalog.records
   };
   const workflowCatalog = resolveWorkflowCatalog({
-    builtIn: BUILT_IN_WORKFLOWS,
-    user: layers.user,
-    workspace: layers.workspace,
+    rows: stored.rows,
+    revision: stored.revision,
     pipelineCatalog: pipelineContext
   });
   return {
     ...packageContext(phaseCatalog, pipelineCatalog),
     workflowRows: workflowCatalog.records,
-    workflowRevisions: workflowCatalog.revisions,
+    workflowRevision: workflowCatalog.revision,
     effectivePipelines: pipelineCatalog.effective,
     // The catalog's own exported map, not a second implementation: a transitive
     // cause the preflight reports must be the one the next reload derives.
@@ -491,14 +485,13 @@ export async function preflightProcessDocument(
     return refuse(deps, kind, sanitize, input.correlationId);
   }
 
-  const phaseLayers = deps.readPhaseConfig?.() ?? { user: [], workspace: [] };
-  // `records` is the STORED ROWS of every layer, whatever their status — not
-  // `effective`. A shadowed or invalid row still claims its id, so an import
-  // cannot take an id the operator is repairing (FR-030, research R4).
+  const phaseStored = deps.readPhaseConfig?.() ?? { rows: [], revision: '' };
+  // `records` is the STORED ROWS, whatever their status — not `effective`. An
+  // invalid row still claims its id, so an import cannot take an id the operator
+  // is repairing (FR-030, research R4).
   const phaseCatalog = resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: phaseLayers.user,
-    workspace: phaseLayers.workspace
+    rows: phaseStored.rows,
+    revision: phaseStored.revision
   });
 
   // One reader per kind, chosen once. A `switch` rather than a nested ternary now
@@ -510,7 +503,7 @@ export async function preflightProcessDocument(
       planned = planPhaseImport(
         validatePhaseDocument(parsed.node),
         phaseCatalog.records,
-        phaseCatalog.revisions
+        phaseCatalog.revision
       );
       break;
     case 'pipeline':
@@ -531,9 +524,9 @@ export async function preflightProcessDocument(
         planned = { outcome: 'refused', refusal: parsedModelCatalog.refusal };
         break;
       }
-      // Feature 096 — Model Catalog has one writable layer, so there is no
-      // pipeline/workflow-style layer split to read; `readModelsConfig` is the
-      // whole of it (data-model.md Decision 6).
+      // Feature 096 — the Model Catalog stays in VS Code configuration and is
+      // out of feature 099's scope; `readModelsConfig` is the whole of it
+      // (data-model.md Decision 6).
       const modelsConfig = coerceModels(deps.readModelsConfig?.());
       const rows = planModelCatalogImport(parsedModelCatalog.document, modelsConfig);
       const counts: ImportPlanCounts = {
@@ -549,7 +542,7 @@ export async function preflightProcessDocument(
           counts,
           // Always the Phase catalog's revision (every plan can write
           // Phases); ModelCatalog's own revision is the field below.
-          computedAgainstRevision: phaseCatalog.revisions,
+          computedAgainstRevision: phaseCatalog.revision,
           computedAgainstModelsRevision: modelsLayerRevision(modelsConfig)
         }
       };

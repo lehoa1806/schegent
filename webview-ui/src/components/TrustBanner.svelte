@@ -12,9 +12,16 @@
    * When `workspaceTrust === false`, the parent component MUST suppress
    * per-capability banners and render only the `'workspace-trust'`
    * variant (FR-010e).
+   *
+   * Feature 099 (T492, FR-046) — the `pipelines` and `workflows` arms are gone
+   * with the layer tier. Each announced that a per-capability *override* scope
+   * was withheld, and an override is a statement about one layer redefining
+   * another's row; with one layer there is nothing to override. Those two tabs
+   * are gated by Workspace Trust alone, which the first arm already reports.
+   * The two survivors gate document CONTENT and are untouched (FR-053).
    */
   interface Props {
-    variant: 'workspace-trust' | 'phases' | 'retry-conditions' | 'pipelines' | 'workflows';
+    variant: 'workspace-trust' | 'phases' | 'retry-conditions';
   }
   const { variant }: Props = $props();
 
@@ -33,16 +40,6 @@
       title: 'Custom retry-condition expressions disabled by workspace policy',
       body:
         'Default retry-conditions for each phase remain editable. See docs/operations/trust-scopes.md.'
-    },
-    pipelines: {
-      title: 'Custom pipelines disabled by workspace policy',
-      body:
-        'Reset-to-defaults remains available. See docs/operations/trust-scopes.md.'
-    },
-    workflows: {
-      title: 'Custom workflows disabled by workspace policy',
-      body:
-        'Reset-to-defaults remains available. See docs/operations/trust-scopes.md.'
     }
   };
 

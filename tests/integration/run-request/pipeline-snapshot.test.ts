@@ -34,18 +34,16 @@ import { WorkflowRunFactory } from '../../../src/services/workflow-run-factory';
 
 const ALPHA: PhaseDef = {
   id: 'alpha', name: 'Alpha', version: 1, instruction: 'Original alpha prompt.',
-  sourceScope: 'built-in'
 };
 const BETA: PhaseDef = {
   id: 'beta', name: 'Beta', version: 1, instruction: 'Original beta prompt.',
-  sourceScope: 'built-in'
 };
 const DONE: PhaseDef = {
-  id: 'done', name: 'Done', version: 1, instruction: '(no-op)', sourceScope: 'built-in'
+  id: 'done', name: 'Done', version: 1, instruction: '(no-op)'
 };
 
 function pipelineAB(): PipelineDef {
-  return { id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta'], sourceScope: 'workspace' };
+  return { id: 'ab-flow', name: 'A then B', phases: ['alpha', 'beta'] };
 }
 
 /**

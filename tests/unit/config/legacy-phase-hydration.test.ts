@@ -63,8 +63,15 @@ const LEGACY_SKILL_ROW = {
 /** Port-shaped keys that must never appear on a hydrated Phase. */
 const PORT_KEYS = ['inputs', 'outputs', 'ports', 'inputContract', 'outputContract'] as const;
 
+/**
+ * Feature 099 (T496f, FR-042, FR-044) — the three layers collapsed to one stored
+ * catalog, and the revision arrives with the rows rather than being derived from
+ * them. A legacy row is still just a row, which is the whole point of this file.
+ */
+const LEGACY_REVISION = 'rev-phase-legacy';
+
 function resolveLegacyLayer(rows: readonly unknown[]) {
-  return resolvePhaseCatalog({ builtIn: [], user: rows, workspace: [] });
+  return resolvePhaseCatalog({ rows, revision: LEGACY_REVISION });
 }
 
 describe('a Phase stored before this platform hydrates unchanged (FR-016, SC-005)', () => {
@@ -109,15 +116,14 @@ describe('a Phase stored before this platform hydrates unchanged (FR-016, SC-005
       id: 'legacy-draft',
       name: 'Legacy Draft',
       version: 1,
-      instruction: 'Draft the thing.',
-      sourceScope: 'user'
+      instruction: 'Draft the thing.'
     });
     for (const key of PORT_KEYS) {
       expect(phaseDef).not.toHaveProperty(key);
     }
     // The same projection the run path uses, reached directly — so this holds
     // for a Phase resolved anywhere, not only through the catalog walk above.
-    expect(phaseDefinitionToPhaseDef(resolved.effective[0]!, 'user', new Map())).toEqual(phaseDef);
+    expect(phaseDefinitionToPhaseDef(resolved.effective[0]!)).toEqual(phaseDef);
   });
 });
 
@@ -141,9 +147,12 @@ describe('hydration writes nothing back to configuration (T018, FR-019)', () => 
     const first = resolveLegacyLayer(stored);
     const second = resolveLegacyLayer(stored);
 
-    // A resolver that upgraded the shape would produce a different revision on
-    // the second pass, because the revision hashes the layer it was given.
-    expect(second.revisions).toEqual(first.revisions);
+    // Feature 099 (T496f, FR-044) — the revision is the store's now, not a hash
+    // the resolver computes over the layer, so "the revision moved" is no longer
+    // the tell that a row was rewritten. The records are: an in-place upgrade
+    // would resolve differently on the second pass, and this compares all of them.
+    expect(second.revision).toBe(first.revision);
+    expect(second.records).toEqual(first.records);
     expect(second.effective).toEqual(first.effective);
     expect(second.effectivePhaseDefs).toEqual(first.effectivePhaseDefs);
   });

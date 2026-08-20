@@ -5,12 +5,17 @@
 // same boundary — what an exchange operation is allowed to say about itself:
 //
 //   T054 (FR-047, FR-048) — an audit entry carries operation, resource ids,
-//     scope, per-resource outcomes, and counts. Never document contents,
-//     instruction or skill text, a file name, an absolute path, or a workspace
-//     root.
+//     per-resource outcomes, and counts. Never document contents, instruction or
+//     skill text, a file name, an absolute path, or a workspace root.
 //   T055 (FR-049) — a refusal and a capability denial each leave a record, and
 //     an import that never happened leaves none. All three are distinguishable.
-//   T056 (FR-010, FR-046) — the document has no say in which layer is written.
+//   T056 (FR-010, FR-046) — the document has no say in what is written.
+//
+// Feature 099 (T496f, FR-041/FR-042) — there is one catalog, so `scope` is gone
+// from every exchange audit payload and from the save request. T054's bound gets
+// tighter by one field rather than looser; T056's "the document cannot choose the
+// layer" becomes "the document cannot choose anything about the write", which is
+// the same guarantee over a smaller surface.
 //
 // T052 closes the export side: the emitted document's key set is a closed
 // allowlist, so a runtime-only field, a session value, or a secret cannot ride
@@ -39,7 +44,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { phaseLayerRevision } from '../../../src/config/process-catalog';
 import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -48,13 +52,13 @@ import type {
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
-import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
 import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
+import { FakeCatalogStore, layerWrites } from '../../fixtures/fake-catalog-store';
 
 interface AuditEntry {
   readonly eventType: string;
@@ -180,8 +184,7 @@ async function preflight(
     | { readonly outcome: 'canceled' }
     | { readonly outcome: 'failed' },
   opts: {
-    readonly user?: readonly unknown[];
-    readonly workspace?: readonly unknown[];
+    readonly rows?: readonly unknown[];
     readonly auditThrows?: Error;
     readonly withAudit?: boolean;
   } = {}
@@ -189,6 +192,7 @@ async function preflight(
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
   const warnings: string[] = [];
+  const store = new FakeCatalogStore({ phases: opts.rows ?? [] });
   const audit = {
     append: async (entry: AuditEntry) => {
       if (opts.auditThrows) throw opts.auditThrows;
@@ -198,7 +202,12 @@ async function preflight(
   };
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: opts.user ?? [], workspace: opts.workspace ?? [] }),
+      readPhaseConfig: () => ({
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
+      }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       openProcessYamlDocument: async () => opened,
       ...(opts.withAudit === false ? {} : { audit }),
       logger: {
@@ -238,16 +247,17 @@ interface ExportRun {
   readonly ack: CommandAckMessage;
 }
 
-async function exportPhase(
-  resourceId: string,
-  layers: { readonly user?: readonly unknown[]; readonly workspace?: readonly unknown[] }
-): Promise<ExportRun> {
+async function exportPhase(resourceId: string, rows: readonly unknown[]): Promise<ExportRun> {
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
   const saved: { suggestedFileName: string; text: string }[] = [];
+  const store = new FakeCatalogStore({ phases: rows });
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: layers.user ?? [], workspace: layers.workspace ?? [] }),
+      readPhaseConfig: () => ({
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
+      }),
       saveProcessYamlDocument: async (request: { suggestedFileName: string; text: string }) => {
         saved.push({ ...request });
         return { outcome: 'saved' as const };
@@ -287,15 +297,12 @@ async function exportPhase(
 interface CommitRun {
   readonly ack: CommandAckMessage;
   readonly audits: readonly AuditEntry[];
-  readonly writes: readonly { scope: string; value: readonly unknown[] }[];
+  /** The layer each `saveLayer` was asked to write, in order. */
+  readonly writes: readonly (readonly unknown[])[];
 }
 
-/** The request the webview builds from a plan — the operator's scope, not the document's. */
-function commitCommand(
-  plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope,
-  layer: readonly unknown[]
-): SavePhasesCommand {
+/** The request the webview builds from a plan — the operator's, not the document's. */
+function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesCommand {
   const row = plan.rows.find(
     (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
   );
@@ -308,29 +315,24 @@ function commitCommand(
     type: CMD_SAVE_PHASES,
     correlationId: 'audit-test-1',
     payload: {
-      scope,
-      expectedRevision: plan.computedAgainstRevision[scope],
+      expectedRevision: plan.computedAgainstRevision,
       mutation: { kind: 'import', phaseId },
       phases: [...layer, { id: phaseId, ...declared }]
     }
   };
 }
 
-async function commit(
-  command: SavePhasesCommand,
-  layers: { user: readonly unknown[]; workspace: readonly unknown[] }
-): Promise<CommitRun> {
+async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
-  const writes: { scope: string; value: readonly unknown[] }[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: layers.user, workspace: layers.workspace }),
-      updateConfig: async (key: string, value: unknown, scope: WritablePhaseDefinitionScope) => {
-        expect(key).toBe('phases');
-        writes.push({ scope, value: value as readonly unknown[] });
-        layers[scope] = value as readonly unknown[];
-      },
+      readPhaseConfig: () => ({
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
+      }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
@@ -358,11 +360,11 @@ async function commit(
 
   await saveHandler(ctx, command);
   expect(acks).toHaveLength(1);
-  return { ack: acks[0]!, audits, writes };
+  return { ack: acks[0]!, audits, writes: layerWrites(store) };
 }
 
-async function planFor(text: string, layer: readonly unknown[] = []): Promise<ImportPlan> {
-  const { result } = await preflight({ outcome: 'read', bytes: bytes(text) }, { user: layer });
+async function planFor(text: string, rows: readonly unknown[] = []): Promise<ImportPlan> {
+  const { result } = await preflight({ outcome: 'read', bytes: bytes(text) }, { rows });
   expect(result.outcome).toBe('planned');
   if (result.outcome !== 'planned') throw new Error('unreachable');
   return result.plan;
@@ -378,7 +380,7 @@ beforeEach(() => {
 
 describe('Feature 084 — an exported document names only portable fields (T052, FR-009, SC-008)', () => {
   it('emits exactly the allowlisted keys for a maximally populated Phase', async () => {
-    const run = await exportPhase('audited-phase', { user: [MAXIMAL_PHASE] });
+    const run = await exportPhase('audited-phase', [MAXIMAL_PHASE]);
     expect(run.saved).toHaveLength(1);
 
     const keys = run.saved[0]!.text
@@ -392,7 +394,7 @@ describe('Feature 084 — an exported document names only portable fields (T052,
   });
 
   it('names no runtime-only field, session value, run history, audit field, result, or secret', async () => {
-    const run = await exportPhase('audited-phase', { user: [MAXIMAL_PHASE] });
+    const run = await exportPhase('audited-phase', [MAXIMAL_PHASE]);
     const text = run.saved[0]!.text;
     for (const forbidden of FORBIDDEN_DOCUMENT_KEYS) {
       expect(text, `${forbidden} must not appear in an exported document`).not.toContain(forbidden);
@@ -409,23 +411,25 @@ describe('Feature 084 — an exported document names only portable fields (T052,
 // ---------------------------------------------------------------------------
 
 describe('Feature 084 — the audit records the operation, not the document (T054, FR-047, FR-048)', () => {
-  it('bounds an export entry to operation, ids, scope, outcomes, and counts', async () => {
-    const run = await exportPhase('audited-phase', { user: [MAXIMAL_PHASE] });
+  it('bounds an export entry to operation, ids, outcomes, and counts', async () => {
+    const run = await exportPhase('audited-phase', [MAXIMAL_PHASE]);
     expect(run.audits).toHaveLength(1);
     const entry = run.audits[0]!;
+    // Feature 099 (FR-041) — `scope` is not in this list because there is no
+    // second layer for an entry to distinguish itself from.
     expect(Object.keys(entry.payload).sort()).toEqual([
       'counts',
       'operation',
       'outcomes',
       'resourceIds',
-      'resourceKind',
-      'scope'
+      'resourceKind'
     ]);
+    expect(entry.payload).not.toHaveProperty('scope');
     // The id is what FR-047 permits; the name beside it in the same record is not.
     expect(entry.payload.resourceIds).toEqual(['audited-phase']);
   });
 
-  it('bounds a refusal entry to the same five fields', async () => {
+  it('bounds a refusal entry to the same four fields', async () => {
     const run = await preflight({ outcome: 'read', bytes: bytes(REFUSED_DOCUMENT) });
     expect(run.audits).toHaveLength(1);
     expect(Object.keys(run.audits[0]!.payload).sort()).toEqual([
@@ -433,13 +437,13 @@ describe('Feature 084 — the audit records the operation, not the document (T05
       'operation',
       'outcomes',
       'resourceIds',
-      'resourceKind',
-      'scope'
+      'resourceKind'
     ]);
+    expect(run.audits[0]!.payload).not.toHaveProperty('scope');
   });
 
   it('carries no document content out of an export, though the document held all of it', async () => {
-    const run = await exportPhase('audited-phase', { user: [MAXIMAL_PHASE] });
+    const run = await exportPhase('audited-phase', [MAXIMAL_PHASE]);
     // The document itself proves the tokens were reachable — otherwise the
     // absence below would say nothing.
     const text = run.saved[0]!.text;
@@ -507,13 +511,15 @@ describe('Feature 084 — the audit records the operation, not the document (T05
     expect(new Set(recorded).size).toBe(cases.length);
   });
 
-  it('names no scope and no resource for a document-level refusal', async () => {
+  it('names no resource for a document-level refusal', async () => {
+    // Feature 099 — this used to also assert `scope: null`, the placeholder a
+    // refusal that targeted no layer had to carry. Exact equality is the stronger
+    // successor: the key is not merely null, it is not in the payload at all.
     const run = await preflight({ outcome: 'read', bytes: bytes(REFUSED_DOCUMENT) });
     expect(run.audits[0]!.payload).toEqual({
       operation: 'import-preflight',
       resourceKind: 'phase',
       resourceIds: [],
-      scope: null,
       outcomes: ['unsupported-kind'],
       counts: { refused: 1 }
     });
@@ -535,16 +541,16 @@ describe('Feature 084 — a blocked import is distinguishable from one that neve
 
   it('records a capability denial as a denial, and writes nothing', async () => {
     capabilities.set('phases', false);
-    const layers = { user: [] as readonly unknown[], workspace: [] as readonly unknown[] };
+    const store = new FakeCatalogStore();
     const plan = await planFor(PLANTED_DOCUMENT);
-    const revisionBefore = phaseLayerRevision(layers.user);
+    const revisionBefore = store.revisionOf('phase');
 
-    const run = await commit(commitCommand(plan, 'user', layers.user), layers);
+    const run = await commit(commitCommand(plan, store.rowsOf('phase')), store);
 
     expect(run.ack.status).toBe('rejected');
     expect(run.ack.reason).toBe('trust-denied');
     expect(run.writes).toHaveLength(0);
-    expect(phaseLayerRevision(layers.user)).toBe(revisionBefore);
+    expect(store.revisionOf('phase')).toBe(revisionBefore);
 
     const denials = run.audits.filter((entry) => entry.eventType === 'trust.capability-denied');
     expect(denials).toHaveLength(1);
@@ -556,9 +562,9 @@ describe('Feature 084 — a blocked import is distinguishable from one that neve
 
   it('records the workspace basename but never the root, on the denial path', async () => {
     capabilities.set('phases', false);
-    const layers = { user: [] as readonly unknown[], workspace: [] as readonly unknown[] };
+    const store = new FakeCatalogStore();
     const plan = await planFor(PLANTED_DOCUMENT);
-    const run = await commit(commitCommand(plan, 'user', layers.user), layers);
+    const run = await commit(commitCommand(plan, store.rowsOf('phase')), store);
 
     const serialized = JSON.stringify(run.audits);
     // Feature 059 I-6: the basename is the deliberate disclosure.
@@ -608,10 +614,10 @@ describe('Feature 084 — a blocked import is distinguishable from one that neve
 });
 
 // ---------------------------------------------------------------------------
-// T056 — the document cannot encode or influence the target scope
+// T056 — the document cannot encode or influence the write
 // ---------------------------------------------------------------------------
 
-describe('Feature 084 — the document has no say in the target layer (T056, FR-010, FR-046)', () => {
+describe('Feature 084 — the document has no say in what is written (T056, FR-010, FR-046)', () => {
   for (const field of ['scope', 'sourceScope', 'targetScope'] as const) {
     it(`rejects a document declaring metadata.${field}`, async () => {
       const plan = await planFor(
@@ -659,35 +665,63 @@ describe('Feature 084 — the document has no say in the target layer (T056, FR-
     expect(Object.keys(row.definition)).not.toContain('sourceScope');
   });
 
-  it('writes the same bytes to whichever layer the operator chose', async () => {
-    for (const scope of ['user', 'workspace'] as const) {
-      const layers = { user: [] as readonly unknown[], workspace: [] as readonly unknown[] };
-      const plan = await planFor(PLANTED_DOCUMENT);
-      const run = await commit(commitCommand(plan, scope, layers[scope]), layers);
+  // Feature 099 — this ran the same commit into each of the two writable layers
+  // and asserted the bytes did not vary with the choice. There is one catalog, so
+  // the thing that can still vary is where in it the row lands; the claim is the
+  // same one, that the persisted row is the document's content and nothing about
+  // the surrounding write leaks into it.
+  it('writes the same bytes wherever in the catalog the row lands', async () => {
+    const persisted: string[] = [];
+    for (const held of [[], [OTHER_ROW], [OTHER_ROW, THIRD_ROW]]) {
+      const store = new FakeCatalogStore({ phases: held });
+      const plan = await planFor(PLANTED_DOCUMENT, held);
+      const run = await commit(commitCommand(plan, held), store);
 
       expect(run.ack.status).toBe('accepted');
       expect(run.writes).toHaveLength(1);
-      expect(run.writes[0]!.scope).toBe(scope);
-      // The layer the operator did not choose is untouched.
-      const other = scope === 'user' ? 'workspace' : 'user';
-      expect(layers[other]).toEqual([]);
-      expect(layers[scope]).toHaveLength(1);
+      // The rows already there are carried through untouched, and the imported
+      // row is appended after them.
+      expect(store.rowsOf('phase').slice(0, held.length)).toEqual(held);
+      expect(store.rowsOf('phase')).toHaveLength(held.length + 1);
+      persisted.push(JSON.stringify(store.rowsOf('phase')[held.length]));
     }
+    expect(new Set(persisted).size).toBe(1);
   });
 
-  it('records no scope for the preflight, because a preflight targets no layer', async () => {
+  it('records no layer for the preflight, because there is no layer to name', async () => {
     const run = await preflight({ outcome: 'read', bytes: bytes(REFUSED_DOCUMENT) });
-    expect(run.audits[0]!.payload.scope).toBeNull();
+    expect(run.audits[0]!.payload).not.toHaveProperty('scope');
   });
 
-  it('records the layer an export actually resolved from, not one a document claimed', async () => {
-    // The same id in both writable layers. The workspace layer wins, and the
-    // audit says so, because the catalog decided it — not the document.
-    const run = await exportPhase('audited-phase', {
-      user: [MAXIMAL_PHASE],
-      workspace: [{ ...MAXIMAL_PHASE, name: 'Workspace Wins' }]
-    });
-    expect(run.audits[0]!.payload.scope).toBe('workspace');
-    expect(run.saved[0]!.text).toContain('name: Workspace Wins');
+  // Feature 099 — this put the same id in both writable layers and asserted the
+  // audit named the layer the catalog picked rather than the one the document
+  // claimed. Shadowing is gone with the tier; what survives is the half that was
+  // load-bearing: the audit reports what the CATALOG resolved, which the document
+  // has no way to influence. The id now names exactly one row, so the export must
+  // find it wherever it sits and record that id and nothing else.
+  it('records the id an export resolved, and no layer, because there is none', async () => {
+    const run = await exportPhase('audited-phase', [
+      { ...MAXIMAL_PHASE, phaseId: 'decoy-before', name: 'Decoy Before' },
+      { ...MAXIMAL_PHASE, name: 'Catalog Wins' },
+      { ...MAXIMAL_PHASE, phaseId: 'decoy-after', name: 'Decoy After' }
+    ]);
+    expect(run.audits[0]!.payload.resourceIds).toEqual(['audited-phase']);
+    expect(run.audits[0]!.payload).not.toHaveProperty('scope');
+    expect(run.saved[0]!.text).toContain('name: Catalog Wins');
+    expect(run.saved[0]!.text).not.toContain('Decoy');
   });
+});
+
+/** Two rows for the position sweep above, distinct from the imported one. */
+const OTHER_ROW = Object.freeze({
+  id: 'other-row',
+  name: 'Other Row',
+  version: 1,
+  instruction: 'Hold.'
+});
+const THIRD_ROW = Object.freeze({
+  id: 'third-row',
+  name: 'Third Row',
+  version: 1,
+  instruction: 'Hold too.'
 });

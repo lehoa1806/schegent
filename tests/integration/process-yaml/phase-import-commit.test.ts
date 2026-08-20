@@ -1,6 +1,6 @@
 // Feature 084 T041 — the import commit, across both host commands.
 //
-// Covers QS-34 (all-or-nothing), QS-35 (origin is the chosen scope), and QS-36
+// Covers QS-34 (all-or-nothing), QS-35 (the write is targeted), and QS-36
 // (`version` preserved as authored). The preflight handler produces the plan and
 // the shipped `CMD_SAVE_PHASES` handler applies it, against one mutable
 // installation both read, so a commit here is observable to a later resolve
@@ -11,6 +11,12 @@
 // mirrored below rather than imported because the webview is a separate program;
 // what this file asserts is that the two HOST commands compose over the shape
 // the contract specifies.
+//
+// Feature 099 (T496f, FR-042) — the installation is the catalog store rather than
+// a user/workspace settings pair, and there is one catalog per kind. QS-34 and
+// QS-36 are unchanged claims against the new write port. QS-35 asked which of two
+// layers an import landed in; with one layer that question has no content, so the
+// case carries the property one axis over — see its own note.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,8 +33,7 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { BUILT_IN_PHASES } from '../../../src/config/pipeline-config';
-import { phaseLayerRevision, resolvePhaseCatalog } from '../../../src/config/process-catalog';
+import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
@@ -36,20 +41,33 @@ import type {
   PreflightProcessYamlCommand,
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
-import type { WritablePhaseDefinitionScope } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
 import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
 import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
-/** The two writable layers, mutated in place by an accepted commit. */
-interface Installation {
-  user: readonly unknown[];
-  workspace: readonly unknown[];
-}
+/** A Pipeline and a Workflow row, so a Phase write has neighbours it could clobber. */
+const NEIGHBOUR_PIPELINE = Object.freeze({
+  id: 'held-pipeline',
+  name: 'Held Pipeline',
+  version: 1,
+  phases: [{ phaseId: 'held' }]
+});
+const NEIGHBOUR_WORKFLOW = Object.freeze({
+  id: 'held-workflow',
+  name: 'Held Workflow',
+  version: 1,
+  nodes: []
+});
 
-function installation(seed: Partial<Installation> = {}): Installation {
-  return { user: seed.user ?? [], workspace: seed.workspace ?? [] };
+/** The one catalog, mutated in place by an accepted commit. */
+function installation(phases: readonly unknown[] = []): FakeCatalogStore {
+  return new FakeCatalogStore({
+    phases,
+    pipelines: [NEIGHBOUR_PIPELINE],
+    workflows: [NEIGHBOUR_WORKFLOW]
+  });
 }
 
 function bytes(text: string): Uint8Array {
@@ -72,6 +90,14 @@ const IMPORTED_DOCUMENT = document([
 
 const HELD_ROW = Object.freeze({ id: 'held', name: 'Held', version: 4, instruction: 'Hold.' });
 
+/** The row another window lands between the preflight and the confirm. */
+const LANDED_FIRST = Object.freeze({
+  id: 'landed-first',
+  name: 'Landed First',
+  version: 1,
+  instruction: 'First.'
+});
+
 // ---------------------------------------------------------------------------
 // Preflight
 // ---------------------------------------------------------------------------
@@ -81,12 +107,17 @@ interface PreflightRun {
   readonly opens: number;
 }
 
-async function preflight(inst: Installation, text: string): Promise<PreflightRun> {
+async function preflight(store: FakeCatalogStore, text: string): Promise<PreflightRun> {
   const acks: CommandAckMessage[] = [];
   let opens = 0;
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: inst.user, workspace: inst.workspace }),
+      readPhaseConfig: () => ({
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
+      }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       openProcessYamlDocument: async () => {
         opens += 1;
         return { outcome: 'read' as const, bytes: bytes(text) };
@@ -119,8 +150,8 @@ async function preflight(inst: Installation, text: string): Promise<PreflightRun
 }
 
 /** The plan a document is expected to produce, or a failure if it did not. */
-async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
-  const { result } = await preflight(inst, text);
+async function planFor(store: FakeCatalogStore, text: string): Promise<ImportPlan> {
+  const { result } = await preflight(store, text);
   expect(result.outcome).toBe('planned');
   if (result.outcome !== 'planned') throw new Error('unreachable');
   return result.plan;
@@ -131,15 +162,11 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
 // ---------------------------------------------------------------------------
 
 /**
- * The request the webview builds from a plan, per contracts "Commit": the layer
- * as held plus the declared definition, the plan's revision for the CHOSEN
- * scope, and the `import` intent naming the added identity.
+ * The request the webview builds from a plan, per contracts "Commit": the catalog
+ * as held plus the declared definition, the plan's revision, and the `import`
+ * intent naming the added identity.
  */
-function commitCommand(
-  plan: ImportPlan,
-  scope: WritablePhaseDefinitionScope,
-  layer: readonly unknown[]
-): SavePhasesCommand {
+function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesCommand {
   const row = plan.rows.find(
     (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
   );
@@ -152,8 +179,7 @@ function commitCommand(
     type: CMD_SAVE_PHASES,
     correlationId: 'import-commit-1',
     payload: {
-      scope,
-      expectedRevision: plan.computedAgainstRevision[scope],
+      expectedRevision: plan.computedAgainstRevision,
       mutation: { kind: 'import', phaseId },
       phases: [...layer, { id: phaseId, ...declared }]
     }
@@ -165,22 +191,17 @@ interface CommitRun {
   readonly writes: number;
 }
 
-async function commit(
-  inst: Installation,
-  command: SavePhasesCommand,
-  opts: { readonly writeThrows?: Error } = {}
-): Promise<CommitRun> {
+async function commit(store: FakeCatalogStore, command: SavePhasesCommand): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
-  let writes = 0;
+  const savesBefore = store.layerSaves.length;
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: inst.user, workspace: inst.workspace }),
-      updateConfig: async (key: string, value: unknown, scope: WritablePhaseDefinitionScope) => {
-        writes += 1;
-        if (opts.writeThrows) throw opts.writeThrows;
-        expect(key).toBe('phases');
-        inst[scope] = value as readonly unknown[];
-      },
+      readPhaseConfig: () => ({
+        rows: store.rowsOf('phase'),
+        revision: store.revisionOf('phase')
+      }),
+      catalogStore: store,
+      refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
@@ -202,90 +223,108 @@ async function commit(
 
   await saveHandler(ctx, command);
   expect(acks).toHaveLength(1);
-  return { ack: acks[0]!, writes };
+  return { ack: acks[0]!, writes: store.layerSaves.length - savesBefore };
 }
 
-function resolved(inst: Installation) {
+function resolved(store: FakeCatalogStore) {
   return resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: inst.user,
-    workspace: inst.workspace
+    rows: store.rowsOf('phase'),
+    revision: store.revisionOf('phase')
   });
 }
 
-/** The layer exactly as stored, for a byte-for-byte comparison. */
-function snapshot(inst: Installation, scope: WritablePhaseDefinitionScope): string {
-  return JSON.stringify(inst[scope]);
+/** The catalog exactly as stored, for a byte-for-byte comparison. */
+function snapshot(store: FakeCatalogStore): string {
+  return JSON.stringify(store.rowsOf('phase'));
 }
 
 beforeEach(() => capabilities.clear());
 
 describe('Feature 084 QS-34 — a commit that cannot persist changes nothing', () => {
-  it('leaves the layer byte-for-byte unchanged and its revision unmoved on a stale revision', async () => {
-    const inst = installation({ workspace: [HELD_ROW] });
-    const plan = await planFor(inst, IMPORTED_DOCUMENT);
+  it('leaves the catalog byte-for-byte unchanged and its revision unmoved on a stale revision', async () => {
+    const store = installation([HELD_ROW]);
+    const plan = await planFor(store, IMPORTED_DOCUMENT);
 
-    // Someone else writes the target layer between the preflight and the confirm,
-    // so the revision the plan was computed against no longer describes it.
-    inst.workspace = [HELD_ROW, { id: 'landed-first', name: 'Landed First', version: 1, instruction: 'First.' }];
-    const before = snapshot(inst, 'workspace');
-    const revisionBefore = phaseLayerRevision(inst.workspace);
+    // Someone else writes the catalog between the preflight and the confirm, so
+    // the revision the plan was computed against no longer describes it.
+    const interleaved = await store.saveLayer({
+      kind: 'phase',
+      expectedRevision: store.revisionOf('phase'),
+      definitions: [HELD_ROW, LANDED_FIRST].map((row) => ({ id: row.id, body: row }))
+    });
+    expect(interleaved.outcome).toBe('saved');
+    const before = snapshot(store);
+    const revisionBefore = store.revisionOf('phase');
 
-    const { ack, writes } = await commit(inst, commitCommand(plan, 'workspace', [HELD_ROW]));
+    const { ack, writes } = await commit(store, commitCommand(plan, [HELD_ROW]));
 
     expect(ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
     expect(writes).toBe(0);
-    expect(snapshot(inst, 'workspace')).toBe(before);
-    expect(phaseLayerRevision(inst.workspace)).toBe(revisionBefore);
-    expect(resolved(inst).effective.some((def) => def.phaseId === 'brought-in')).toBe(false);
+    expect(snapshot(store)).toBe(before);
+    expect(store.revisionOf('phase')).toBe(revisionBefore);
+    expect(resolved(store).effective.some((def) => def.phaseId === 'brought-in')).toBe(false);
   });
 
-  it('leaves the layer byte-for-byte unchanged when the write itself fails (FR-043, SC-017)', async () => {
-    const inst = installation({ workspace: [HELD_ROW] });
-    const plan = await planFor(inst, IMPORTED_DOCUMENT);
-    const before = snapshot(inst, 'workspace');
-    const revisionBefore = phaseLayerRevision(inst.workspace);
+  it('leaves the catalog byte-for-byte unchanged when the write itself fails (FR-043, SC-017)', async () => {
+    const store = installation([HELD_ROW]);
+    const plan = await planFor(store, IMPORTED_DOCUMENT);
+    const before = snapshot(store);
+    const revisionBefore = store.revisionOf('phase');
 
-    const { ack } = await commit(inst, commitCommand(plan, 'workspace', [HELD_ROW]), {
-      writeThrows: new Error('EACCES: settings.json is read-only')
-    });
+    // Feature 099 — the write that fails is the store's, not a settings write, so
+    // the failure arrives as the store's own refusal rather than a thrown EACCES.
+    store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+    const { ack } = await commit(store, commitCommand(plan, [HELD_ROW]));
 
     // FR-044a — the save is one all-or-nothing write, so a failure cannot leave
     // the imported row half-applied, and it is not reported as an import.
     expect(ack).toMatchObject({ status: 'rejected', reason: 'persistence-failed' });
-    expect(snapshot(inst, 'workspace')).toBe(before);
-    expect(phaseLayerRevision(inst.workspace)).toBe(revisionBefore);
-    expect(resolved(inst).records.some((record) => record.phaseId === 'brought-in')).toBe(false);
+    expect(ack.result).toMatchObject({ storeRefusal: 'not-writable' });
+    expect(snapshot(store)).toBe(before);
+    expect(store.revisionOf('phase')).toBe(revisionBefore);
+    expect(resolved(store).records.some((record) => record.phaseId === 'brought-in')).toBe(false);
   });
 
-  it('leaves the layer unchanged when the phases capability is denied (FR-040)', async () => {
+  it('leaves the catalog unchanged when the phases capability is denied (FR-040)', async () => {
     capabilities.set('phases', false);
-    const inst = installation({ workspace: [HELD_ROW] });
-    const plan = await planFor(inst, IMPORTED_DOCUMENT);
-    const before = snapshot(inst, 'workspace');
+    const store = installation([HELD_ROW]);
+    const plan = await planFor(store, IMPORTED_DOCUMENT);
+    const before = snapshot(store);
 
-    const { ack, writes } = await commit(inst, commitCommand(plan, 'workspace', [HELD_ROW]));
+    const { ack, writes } = await commit(store, commitCommand(plan, [HELD_ROW]));
 
     expect(ack.status).toBe('rejected');
     expect(writes).toBe(0);
-    expect(snapshot(inst, 'workspace')).toBe(before);
+    expect(snapshot(store)).toBe(before);
   });
 });
 
-describe('Feature 084 QS-35 — the origin is the scope the operator chose (FR-046)', () => {
-  it('resolves an imported Phase in the chosen layer, whichever one that is', async () => {
-    for (const scope of ['user', 'workspace'] as const) {
-      const inst = installation();
-      const plan = await planFor(inst, IMPORTED_DOCUMENT);
-      const { ack } = await commit(inst, commitCommand(plan, scope, []));
+// Feature 084 QS-35 asserted that an import landed in the scope the operator
+// chose and that the OTHER writable layer was untouched. Feature 099 (FR-042)
+// deletes the layer tier, so "which layer" is no longer a question the operator
+// answers. The property that mattered — a save reaches exactly the catalog it
+// named and nothing else — survives one axis over, on the three catalog KINDS: a
+// Phase import must not touch the Pipeline or Workflow catalog. FR-046's other
+// half, that a document may not name an origin at all, is unchanged and stronger:
+// `scope` is now not a key anywhere in the model.
+describe('Feature 084 QS-35 — the write reaches the catalog it named, and no other (FR-046)', () => {
+  it('resolves an imported Phase in the Phase catalog and leaves the other kinds alone', async () => {
+    const store = installation();
+    const plan = await planFor(store, IMPORTED_DOCUMENT);
+    const { ack } = await commit(store, commitCommand(plan, []));
 
-      expect(ack).toMatchObject({ status: 'accepted', result: { scope, mutation: 'import' } });
-      const record = resolved(inst).records.find((row) => row.phaseId === 'brought-in');
-      expect(record).toMatchObject({ scope, status: 'effective' });
-      // The layer the operator did not pick is untouched.
-      const other = scope === 'user' ? 'workspace' : 'user';
-      expect(inst[other]).toEqual([]);
-    }
+    expect(ack).toMatchObject({ status: 'accepted', result: { mutation: 'import' } });
+    expect(ack.result).toMatchObject({ revision: store.revisionOf('phase') });
+    const record = resolved(store).records.find((row) => row.phaseId === 'brought-in');
+    expect(record).toMatchObject({ status: 'effective' });
+
+    // The catalogs the operator did not import into are untouched — not merely
+    // equal by luck, but never written at all.
+    expect(store.layerSaves.map((request) => request.kind)).toEqual(['phase']);
+    expect(store.rowsOf('pipeline')).toEqual([NEIGHBOUR_PIPELINE]);
+    expect(store.rowsOf('workflow')).toEqual([NEIGHBOUR_WORKFLOW]);
+    expect(store.revisionOf('pipeline')).toBe('rev-pipeline-0');
+    expect(store.revisionOf('workflow')).toBe('rev-workflow-0');
   });
 
   it('admits no origin claim in the document at all', async () => {
@@ -312,19 +351,19 @@ describe('Feature 084 QS-35 — the origin is the scope the operator chose (FR-0
 
 describe('Feature 084 QS-36 — `version` is preserved as authored (FR-046a)', () => {
   it('stores and resolves the version the document declared, not a fresh 1', async () => {
-    const inst = installation({ user: [HELD_ROW] });
-    const plan = await planFor(inst, IMPORTED_DOCUMENT);
+    const store = installation([HELD_ROW]);
+    const plan = await planFor(store, IMPORTED_DOCUMENT);
 
-    const { ack } = await commit(inst, commitCommand(plan, 'user', [HELD_ROW]));
+    const { ack } = await commit(store, commitCommand(plan, [HELD_ROW]));
     expect(ack.status).toBe('accepted');
 
-    expect(inst.user).toEqual([
+    expect(store.rowsOf('phase')).toEqual([
       HELD_ROW,
       { id: 'brought-in', name: 'Brought In', version: 9, instruction: 'Do the thing.' }
     ]);
-    const definition = resolved(inst).effective.find((def) => def.phaseId === 'brought-in');
+    const definition = resolved(store).effective.find((def) => def.phaseId === 'brought-in');
     expect(definition?.version).toBe(9);
-    // The rest of the layer keeps the version the host currently holds.
-    expect(resolved(inst).effective.find((def) => def.phaseId === 'held')?.version).toBe(4);
+    // The rest of the catalog keeps the version the host currently holds.
+    expect(resolved(store).effective.find((def) => def.phaseId === 'held')?.version).toBe(4);
   });
 });

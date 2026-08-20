@@ -1,7 +1,8 @@
 // Feature 083 (T026) — CMD_SAVE_WORKFLOWS ingress validator.
 //
 // Structurally identical to `save-pipelines.ts` and `save-phases.ts`: all three
-// catalog saves share one scoped, revisioned complete-layer envelope. This gate
+// catalog saves share one revisioned complete-layer envelope (feature 099
+// FR-042 removed the `scope` field; see `save-pipelines.ts`). This gate
 // checks the envelope only (gate 2 of
 // specs/083-workflow-graph-builder/contracts/save-workflows-ipc.md). Rows stay
 // `unknown` — node, connection, and condition shape is the host validator's
@@ -36,10 +37,11 @@ function validMutation(value: unknown): value is WorkflowCatalogMutation {
       && mutation.workflowIds.every(validWorkflowId);
   }
   return mutation.kind === 'duplicate'
-    && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourceWorkflowId', 'workflowId'])
-    && (mutation.sourceScope === 'built-in'
-      || mutation.sourceScope === 'user'
-      || mutation.sourceScope === 'workspace')
+    // Feature 099 (FR-043) — `sourceScope` left the duplicate mutation with the
+    // layer tier. It said which layer to copy FROM, and one catalog per kind
+    // leaves the source id naming the row exactly. Still listed nowhere, so an
+    // envelope carrying it is refused rather than silently stripped.
+    && !hasUnexpectedKeys(mutation, ['kind', 'sourceWorkflowId', 'workflowId'])
     && validWorkflowId(mutation.sourceWorkflowId)
     && validWorkflowId(mutation.workflowId);
 }
@@ -53,8 +55,7 @@ export function validateSaveWorkflows(
     return fail('missing-payload', { type: CMD_SAVE_WORKFLOWS, correlationId });
   }
   const value = payload as Record<string, unknown>;
-  const invalid = hasUnexpectedKeys(value, ['scope', 'expectedRevision', 'mutation', 'workflows'])
-    || (value.scope !== 'user' && value.scope !== 'workspace')
+  const invalid = hasUnexpectedKeys(value, ['expectedRevision', 'mutation', 'workflows'])
     || typeof value.expectedRevision !== 'string'
     || value.expectedRevision.length === 0
     || value.expectedRevision.length > 128
@@ -65,7 +66,6 @@ export function validateSaveWorkflows(
     type: CMD_SAVE_WORKFLOWS,
     correlationId,
     payload: {
-      scope: value.scope,
       expectedRevision: value.expectedRevision,
       mutation: value.mutation,
       workflows: value.workflows

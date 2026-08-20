@@ -38,9 +38,9 @@ acyclic graph whose nodes are Pipelines. It is a document, not an execution. Sav
 one starts nothing; it describes how Pipeline outputs may guide explicit follow-up
 runs.
 
-Where you will meet it: the `schegent.workflows` setting, the Workflow Library in the
-Pipeline Builder sidebar, `WorkflowDefinition` in the contracts module, and the
-`schegent.trust.allowWorkflowOverrides` trust scope.
+Where you will meet it: the `workflows/` subtree of the catalog store, the Workflow
+Library in the Pipeline Builder sidebar, `WorkflowDefinition` in the contracts module,
+and the `Workflow` kind in a `schegent/v1` document.
 
 ### Telling them apart in practice
 
@@ -48,7 +48,7 @@ Pipeline Builder sidebar, `WorkflowDefinition` in the contracts module, and the
 |---|---|---|
 | Type name | `WorkflowRun` | `WorkflowDefinition` |
 | Identifier | `runId` (host-issued, per execution) | `workflowId` (operator-authored, stable) |
-| Setting | none — it is state, not configuration | `schegent.workflows` |
+| Where it lives | workspace state (`workspaceState`) | the catalog store, under `workflows/` |
 | Lifetime | one execution | until edited or deleted |
 | What it contains | a Pipeline snapshot and progress | nodes, connections, start nodes |
 | What it does | executes | describes |
@@ -59,8 +59,8 @@ the Builder UI, and the configuration reference means the definition.
 
 ## Composition vocabulary
 
-The three definition layers, smallest first. Each is a separate catalog with the same
-scope and save semantics.
+The three definition kinds, smallest first. Each is a separate catalog with the same
+save and versioning semantics.
 
 - **Phase** — one backend CLI invocation: a prompt template, a runner, a retry policy,
   and declared input and output ports. The smallest unit that produces evidence. See
@@ -110,30 +110,40 @@ scope and save semantics.
 All three definition catalogs — Phase, Pipeline, Workflow — share this vocabulary and
 these rules.
 
-- **Scope** — one of `built-in`, `user`, or `workspace`. `built-in` ships with the
-  extension and is never a save target.
-- **Layer** — the set of definitions held by one scope. A save writes exactly one
-  layer.
-- **Precedence** — `workspace` overrides `user` overrides `built-in`, resolved by
-  identifier.
-- **Shadowing** — a lower-precedence definition being hidden by a same-identifier
-  definition in a higher-precedence scope. The shadowed row remains visible in the
-  Library, marked, so the override is legible rather than silent.
-- **Effective catalog** — the resolved result of applying precedence and dropping
-  invalid definitions. An invalid definition never enters the effective layer.
-  Cross-catalog references resolve against the *effective* catalog only — a Pipeline
-  binding against effective Phases, a Workflow node against effective Pipelines —
-  because resolving against a raw layer would let a shadowed or invalid definition
+- **Catalog store** — the file-backed home of every definition, under
+  `<workspaceRoot>/.schegent/catalog/`. There is exactly **one layer**: no
+  built-in scope, no user-versus-workspace tier, and so no precedence to resolve
+  and nothing that shadows anything.
+- **Manifest** — `manifest.json`, the only mutable file in the store and its single
+  ordering point. It names, per definition, which version is active.
+- **Version record** — one immutable file at `<kind>/<id>/<versionId>.json`, written
+  once and never rewritten. Every save produces one.
+- **`versionId`** — the monotonic per-definition version number. Never reused, never
+  reordered. Distinct from a definition's own `version` field, which is
+  operator-visible and host-defaulted.
+- **`contentHash`** — a SHA-256 over the definition's canonical JSON. A save whose
+  hash matches the active version writes nothing, so opening an editor and closing it
+  cannot manufacture history.
+- **Effective catalog** — the set of definitions that resolve. A definition is either
+  effective or **invalid**; there is no third status. Cross-catalog references resolve
+  against the effective catalog only — a Pipeline binding against effective Phases, a
+  Workflow node against effective Pipelines — because an invalid definition must not
   appear to satisfy a reference that runtime resolution will not honor.
-- **Revision** — an opaque per-layer token sent with every save. The host re-reads the
-  target layer and rejects a superseded token as `stale-catalog` rather than
-  overwriting a concurrent edit.
-- **Mutation intent** — the single declared reason for a save (`upsert`, `remove`,
-  `reset`). Exactly one per write, checked against the proposed layer, so a save
-  cannot claim one shape of change and perform another.
-- **Trust scope** — the per-capability grant that allows a workspace layer to override
-  user or built-in definitions: `schegent.trust.allowPipelineOverrides`,
-  `schegent.trust.allowWorkflowOverrides`, and siblings. See
+- **Revision** — an opaque per-kind token sent with every save. The host re-reads the
+  catalog and rejects a superseded token as `stale-catalog` rather than overwriting a
+  concurrent edit.
+- **Mutation intent** — the single declared reason for a save (`create`, `edit`,
+  `duplicate`, `remove`, `reset`, `import-package`). Exactly one per write, checked
+  against the proposed contents, so a save cannot claim one shape of change and
+  perform another.
+- **Retention** — the 50-version bound on each definition's history, pruned
+  oldest-first and reported. The active version is never pruned, and neither is a
+  version a retained run's provenance references — an exemption already wired,
+  and load-bearing once run history records which version it ran.
+- **Trust scope** — a per-capability grant keyed on what a document *says*:
+  `schegent.trust.allowCustomPhases` and
+  `schegent.trust.allowCustomRetryConditions`. Editing pipelines and workflows is
+  gated by Workspace Trust alone. See
   [Trust Scopes](../operations/trust-scopes.md).
 
 ## Run vocabulary
@@ -159,12 +169,12 @@ Terms that read as synonyms and are not.
 | Workflow / Workflow Run | Definition versus execution. See above. |
 | Pipeline / Pipeline snapshot | The catalog definition versus the frozen copy on a run. |
 | `phaseIndex` / `nodeId` | Pipeline bindings address by index; Workflow connections address by identifier. |
-| Layer / effective catalog | One scope's raw contents versus the resolved, precedence-applied, validity-filtered result. |
+| Stored / effective | Everything the catalog holds, versus the subset that resolves. An invalid definition is stored and visible but not effective. |
 | Condition / retry condition | A Workflow connection guard is structured data with no evaluator. A Phase `retryCondition` is a sandboxed expression DSL. Different mechanisms, unrelated safety properties. |
-| Invalid / shadowed | An invalid definition failed validation and is excluded from the effective catalog. A shadowed one is valid but outranked. |
+| `version` / `versionId` | `version` is a field on the definition, authored-visible and host-defaulted. `versionId` is the store's own monotonic counter, assigned on every save. |
 
 ## See also
 
-- [Settings](settings.md) — every `schegent.*` key, including the three definition catalogs.
+- [Settings](settings.md) — every `schegent.*` key, plus the shape of a stored definition.
 - [Audit Events](audit-events.md) — where `runId` and the run-side vocabulary appear on disk.
 - [File Layout](file-layout.md) — how `runId` maps to evidence paths.

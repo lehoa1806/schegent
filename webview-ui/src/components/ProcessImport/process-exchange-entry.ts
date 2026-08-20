@@ -3,15 +3,18 @@
 //
 // Three decisions, none of which the components can make for themselves: whether
 // a given row can be exported at all, whether an import can be started right
-// now, and what the two writable layers currently hold. Each is a pure function
-// here rather than an expression in the template, because each has a wrong answer
-// that would be invisible in markup.
+// now, and what the catalog currently holds. Each is a pure function here rather
+// than an expression in the template, because each has a wrong answer that would
+// be invisible in markup.
+//
+// Feature 099 (T494a, FR-040/FR-043) — the third decision used to be "what the
+// two writable layers hold", keyed per scope. There is one layer, so it is one
+// projection and the key is gone.
 
 import type {
   PhaseCatalogSourceRecord,
   PipelineCatalogSourceRecord,
-  WorkflowCatalogSourceProjection,
-  WritablePhaseDefinitionScope
+  WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
 import type { SavePhaseRow } from '../../lib/save-phases';
 import type { SavePipelineRow } from '../../lib/save-pipelines';
@@ -20,7 +23,7 @@ import type { ImportTargetLayers } from './process-import-state';
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */
 export interface ExportableRow {
-  readonly sourceStatus: 'effective' | 'shadowed' | 'invalid';
+  readonly sourceStatus: 'effective' | 'invalid';
   /** False for a draft that has never been saved. */
   readonly persisted: boolean;
 }
@@ -37,13 +40,12 @@ export interface ExportAvailability {
  * Mirrors the two absences `cmd-export-process-yaml` distinguishes, so a control
  * that would fail is disabled before the click rather than after it (FR-015):
  * `'does-not-resolve'` for a row carrying no valid definition, `'not-found'` for
- * an id no layer holds — which is exactly an unsaved draft.
+ * an id the catalog does not hold — which is exactly an unsaved draft.
  *
- * A `shadowed` row stays ENABLED. Export is of the effective catalog by FR-014,
- * so what it writes is the definition this installation would run; the row's own
- * `shadowed` badge already says that is not this row. Disabling it would invent a
- * restriction the spec does not state and would leave the operator with no way to
- * obtain the definition that actually resolves.
+ * Feature 099 (T494a, FR-040) — this used to carry a third paragraph explaining
+ * why a `shadowed` row stayed enabled. The status is gone with the layer tier, so
+ * the two refusals below are the whole rule: an unsaved draft, and a row that
+ * carries no valid definition.
  */
 export function phaseExportAvailability(row: ExportableRow): ExportAvailability {
   if (!row.persisted) {
@@ -98,8 +100,7 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
 }
 
 /**
- * Both writable catalogs, per writable scope, as they are STORED — what the
- * commit appends to.
+ * All three catalogs as they are STORED — what the commit appends to.
  *
  * Taken from each record's `display` — the host's bounded projection of the row
  * as authored — and not rebuilt from the parsed definition. The difference only
@@ -123,38 +124,28 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
  * the "forget one" failure is why it must: the Workflow write sends its whole
  * layer, so a commit handed an empty projection would not add a Workflow to the
  * catalog, it would replace the catalog with that one Workflow.
+ *
+ * Feature 099 (T494a, FR-043) — no per-scope keying. The three filters this held
+ * each asked which layer a stored row belonged to, and with one layer the answer
+ * is "this one" for every row: the projection IS the record list, so the filters
+ * are gone rather than left comparing a field against a constant.
  */
 export function storedWritableLayers(
   phaseRecords: readonly PhaseCatalogSourceRecord[],
   pipelineRecords: readonly PipelineCatalogSourceRecord[] = [],
   workflowRecords: readonly WorkflowCatalogSourceProjection[] = []
-): Readonly<Record<WritablePhaseDefinitionScope, ImportTargetLayers>> {
+): ImportTargetLayers {
   // `display` carries the identity key under whichever name the row used, so the
   // spread is the whole row. The assertion is the boundary this module owns: the
   // host re-validates every row it is handed, and a row that does not satisfy the
   // shape is precisely one it must keep refusing.
-  const phasesFor = (scope: WritablePhaseDefinitionScope): readonly SavePhaseRow[] =>
-    phaseRecords
-      .filter((record) => record.scope === scope)
-      .map((record) => ({ ...record.display }) as unknown as SavePhaseRow);
-  const pipelinesFor = (scope: WritablePhaseDefinitionScope): readonly SavePipelineRow[] =>
-    pipelineRecords
-      .filter((record) => record.scope === scope)
-      .map((record) => ({ ...record.display }) as unknown as SavePipelineRow);
-  const workflowsFor = (scope: WritablePhaseDefinitionScope): readonly SaveWorkflowRow[] =>
-    workflowRecords
-      .filter((record) => record.scope === scope)
-      .map((record) => ({ ...record.display }) as unknown as SaveWorkflowRow);
   return {
-    user: {
-      phases: phasesFor('user'),
-      pipelines: pipelinesFor('user'),
-      workflows: workflowsFor('user')
-    },
-    workspace: {
-      phases: phasesFor('workspace'),
-      pipelines: pipelinesFor('workspace'),
-      workflows: workflowsFor('workspace')
-    }
+    phases: phaseRecords.map((record) => ({ ...record.display }) as unknown as SavePhaseRow),
+    pipelines: pipelineRecords.map(
+      (record) => ({ ...record.display }) as unknown as SavePipelineRow
+    ),
+    workflows: workflowRecords.map(
+      (record) => ({ ...record.display }) as unknown as SaveWorkflowRow
+    )
   };
 }

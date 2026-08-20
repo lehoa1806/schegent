@@ -1,10 +1,15 @@
 // Feature 082 (T024) — CMD_SAVE_PIPELINES ingress validator.
 //
 // Structurally identical to `save-phases.ts`: the two catalog saves share one
-// scoped, revisioned complete-layer envelope. The pre-082 unscoped
-// `{ pipelines }` payload is turned away here as `invalid-payload` (gate 2 of
+// revisioned complete-layer envelope. The pre-082 payload carrying no revision
+// at all is turned away here as `invalid-payload` (gate 2 of
 // specs/082-pipeline-contracts-builder/contracts/save-pipelines-ipc.md) — the
 // ingress gate is the only place it can be rejected before router dispatch.
+//
+// Feature 099 (FR-042) — `scope` is no longer part of the envelope. It named the
+// layer a write landed in, and there is one catalog per kind, so it is not
+// merely optional here: an envelope that still carries it is an envelope from a
+// caller that believes in layers, and `hasUnexpectedKeys` refuses it.
 
 import { CMD_SAVE_PIPELINES, type SidebarCommand } from '../sidebar-ipc';
 import type { PipelineCatalogMutation } from '../pipeline-definitions';
@@ -32,10 +37,11 @@ function validMutation(value: unknown): value is PipelineCatalogMutation {
       && mutation.pipelineIds.every(validPipelineId);
   }
   return mutation.kind === 'duplicate'
-    && !hasUnexpectedKeys(mutation, ['kind', 'sourceScope', 'sourcePipelineId', 'pipelineId'])
-    && (mutation.sourceScope === 'built-in'
-      || mutation.sourceScope === 'user'
-      || mutation.sourceScope === 'workspace')
+    // Feature 099 (FR-043) — `sourceScope` left the duplicate mutation with the
+    // layer tier. It said which layer to copy FROM, and one catalog per kind
+    // leaves the source id naming the row exactly. Still listed nowhere, so an
+    // envelope carrying it is refused rather than silently stripped.
+    && !hasUnexpectedKeys(mutation, ['kind', 'sourcePipelineId', 'pipelineId'])
     && validPipelineId(mutation.sourcePipelineId)
     && validPipelineId(mutation.pipelineId);
 }
@@ -49,8 +55,7 @@ export function validateSavePipelines(
     return fail('missing-payload', { type: CMD_SAVE_PIPELINES, correlationId });
   }
   const value = payload as Record<string, unknown>;
-  const invalid = hasUnexpectedKeys(value, ['scope', 'expectedRevision', 'mutation', 'pipelines'])
-    || (value.scope !== 'user' && value.scope !== 'workspace')
+  const invalid = hasUnexpectedKeys(value, ['expectedRevision', 'mutation', 'pipelines'])
     || typeof value.expectedRevision !== 'string'
     || value.expectedRevision.length === 0
     || value.expectedRevision.length > 128
@@ -61,7 +66,6 @@ export function validateSavePipelines(
     type: CMD_SAVE_PIPELINES,
     correlationId,
     payload: {
-      scope: value.scope,
       expectedRevision: value.expectedRevision,
       mutation: value.mutation,
       pipelines: value.pipelines

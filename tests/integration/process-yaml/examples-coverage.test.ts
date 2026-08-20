@@ -39,7 +39,6 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { BUILT_IN_PHASES, BUILT_IN_PIPELINES } from '../../../src/config/pipeline-config';
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
@@ -55,6 +54,7 @@ import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cm
 import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
 import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
 import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
+import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
 
 const EXAMPLES_DIR = path.resolve(__dirname, '../../../examples');
@@ -87,29 +87,43 @@ function logger() {
 }
 
 /**
- * The two writable catalogs, mutated in place by an accepted write. Seeded empty
- * on purpose: a fresh install holds nothing, and with the built-in layers gone
- * (FR-018) that is the whole catalog the operator starts from.
+ * The catalogs an accepted write mutates. Seeded empty on purpose: a fresh
+ * install holds nothing, and with the built-in layers gone (FR-018) that is the
+ * whole catalog the operator starts from.
+ *
+ * Feature 099 (T496f, FR-041/FR-042) — the definitions moved out of settings
+ * into the store, and the layer pair collapsed with them, so the installation is
+ * the store itself rather than three per-layer arrays.
  */
 interface Installation {
-  phases: { user: readonly unknown[]; workspace: readonly unknown[] };
-  pipelines: { user: readonly unknown[]; workspace: readonly unknown[] };
-  workflows: { user: readonly unknown[]; workspace: readonly unknown[] };
+  readonly store: FakeCatalogStore;
 }
 
-const emptyInstallation = (): Installation => ({
-  phases: { user: [], workspace: [] },
-  pipelines: { user: [], workspace: [] },
-  workflows: { user: [], workspace: [] }
-});
+const emptyInstallation = (): Installation => ({ store: new FakeCatalogStore() });
+
+/** The `{ rows, revision }` seams every handler in this file reads through. */
+function readDeps(inst: Installation) {
+  return {
+    readPhaseConfig: () => ({
+      rows: inst.store.rowsOf('phase'),
+      revision: inst.store.revisionOf('phase')
+    }),
+    readPipelineConfig: () => ({
+      rows: inst.store.rowsOf('pipeline'),
+      revision: inst.store.revisionOf('pipeline')
+    }),
+    readWorkflowConfig: () => ({
+      rows: inst.store.rowsOf('workflow'),
+      revision: inst.store.revisionOf('workflow')
+    })
+  };
+}
 
 async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
-      readWorkflowConfig: () => inst.workflows,
+      ...readDeps(inst),
       openProcessYamlDocument: async () => ({
         outcome: 'read' as const,
         bytes: new Uint8Array(Buffer.from(text, 'utf8'))
@@ -167,13 +181,10 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => inst.phases,
-      readPipelineConfig: () => inst.pipelines,
-      readWorkflowConfig: () => inst.workflows,
+      ...readDeps(inst),
+      catalogStore: inst.store,
+      refreshCatalog: async () => undefined,
       readConfig: () => undefined,
-      updateConfig: async (key: string, value: unknown, target: 'user' | 'workspace') => {
-        (inst as unknown as Record<string, Record<string, unknown>>)[key]![target] = value;
-      },
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
@@ -193,10 +204,9 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
       type: CMD_SAVE_PHASES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'user',
-        expectedRevision: plan.computedAgainstRevision.user,
+        expectedRevision: plan.computedAgainstRevision,
         mutation: { kind: 'import-package', phaseIds: phases.map((d) => d.phaseId) },
-        phases: [...inst.phases.user, ...phases.map(phaseRow)]
+        phases: [...inst.store.rowsOf('phase'), ...phases.map(phaseRow)]
       }
     } as SavePhasesCommand);
   }
@@ -209,10 +219,9 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
       type: CMD_SAVE_PIPELINES,
       correlationId: CORRELATION,
       payload: {
-        scope: 'user',
-        expectedRevision: revisions!.user,
+        expectedRevision: revisions!,
         mutation: { kind: 'import-package', pipelineIds: pipelines.map((d) => d.pipelineId) },
-        pipelines: [...inst.pipelines.user, ...pipelines.map(pipelineRow)]
+        pipelines: [...inst.store.rowsOf('pipeline'), ...pipelines.map(pipelineRow)]
       }
     } as SavePipelinesCommand);
   }
@@ -222,17 +231,15 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
 
 function phaseCatalog(inst: Installation) {
   return resolvePhaseCatalog({
-    builtIn: BUILT_IN_PHASES,
-    user: inst.phases.user,
-    workspace: inst.phases.workspace
+    rows: inst.store.rowsOf('phase'),
+    revision: inst.store.revisionOf('phase')
   });
 }
 
 function pipelineCatalog(inst: Installation) {
   return resolvePipelineCatalog({
-    builtIn: BUILT_IN_PIPELINES,
-    user: inst.pipelines.user,
-    workspace: inst.pipelines.workspace,
+    rows: inst.store.rowsOf('pipeline'),
+    revision: inst.store.revisionOf('pipeline'),
     phaseCatalog: phaseCatalog(inst).effective
   });
 }

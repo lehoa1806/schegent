@@ -55,17 +55,24 @@ function readExample(name: string): string {
 }
 
 /**
- * Preflight one document through the sidebar command, with every catalog layer
- * the host can read left empty. An empty operator catalog is the state a fresh
- * install is in, which is the state these documents are shipped for.
+ * Preflight one document through the sidebar command, with the stored catalog
+ * left empty. An empty operator catalog is the state a fresh install is in, which
+ * is the state these documents are shipped for.
+ *
+ * Feature 099 (T496f, FR-042) — "every catalog layer the host can read" was three
+ * empty pairs; there is one layer now, so it is three empty stores. The claim is
+ * the same one it always was and the fixture no longer enumerates tiers to make it.
  */
+/** What an empty store reports itself at; nothing here depends on its shape. */
+const FRESH_STORE_REVISION = 'empty-store';
+
 async function preflightExample(name: string): Promise<PreflightProcessYamlResult> {
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
-      readPhaseConfig: () => ({ user: [], workspace: [] }),
-      readPipelineConfig: () => ({ user: [], workspace: [] }),
-      readWorkflowConfig: () => ({ user: [], workspace: [] }),
+      readPhaseConfig: () => ({ rows: [], revision: FRESH_STORE_REVISION }),
+      readPipelineConfig: () => ({ rows: [], revision: FRESH_STORE_REVISION }),
+      readWorkflowConfig: () => ({ rows: [], revision: FRESH_STORE_REVISION }),
       readModelsConfig: () => ({}),
       writePhaseConfig: vi.fn(),
       updateConfig: vi.fn(),

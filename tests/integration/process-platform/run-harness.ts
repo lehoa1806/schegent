@@ -21,7 +21,8 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
+import { loadCatalog } from '../../../src/config/pipeline-config-loader';
+import type { CatalogSnapshot } from '../../../src/contracts/catalog-store';
 import type { PipelineCatalog } from '../../../src/config/pipeline-config';
 import type { RunRequest } from '../../../src/contracts/run-request';
 import { launchPipelineRun } from '../../../src/headless/pipeline-run-api';
@@ -33,47 +34,48 @@ import {
   FIXTURE_PIPELINE_DEFINITIONS,
   FIXTURE_PIPELINE_IDS
 } from '../../fixtures/process-catalog-fixture';
+import { snapshotOf } from '../../fixtures/catalog-snapshot-fixture';
 
-/** The authored rows one scope holds, as VS Code hands them back. */
-export interface AuthoredLayer {
+/** The rows a store holds, as a snapshot hands them back. */
+export interface AuthoredCatalog {
   readonly phases?: readonly unknown[];
   readonly pipelines?: readonly unknown[];
-  readonly models?: readonly unknown[];
-  readonly defaultPipelineId?: string;
 }
 
 /**
- * A reader over one authored workspace layer, with `user` unset — the shape a
- * workspace that imported a document into workspace scope reports.
+ * A snapshot over the rows given — the shape a workspace that imported a
+ * document reports.
+ *
+ * Feature 099 (T496f, FR-042) — was `workspaceReader`, which answered a scope
+ * argument and left `user` unset. Rows come from the store now, so there is no
+ * scope to answer and the settings reader carries only the two keys that stayed
+ * in settings; a suite that needs a default Pipeline id passes it separately.
  */
-export function workspaceReader(layer: AuthoredLayer): CatalogConfigReader {
-  const at = <T>(scope: 'user' | 'workspace', value: T): T | undefined =>
-    scope === 'workspace' ? value : undefined;
-  return {
-    getPhases: (scope) => at(scope, layer.phases),
-    getPipelines: (scope) => at(scope, layer.pipelines),
-    getModels: (scope) => at(scope, layer.models),
-    getDefaultPipelineId: (scope) => at(scope, layer.defaultPipelineId)
-  };
+export function storedCatalog(rows: AuthoredCatalog): CatalogSnapshot {
+  return snapshotOf({ phases: rows.phases ?? [], pipelines: rows.pipelines ?? [] });
 }
 
 /**
  * The catalog a workspace resolves once the T005 fixture definitions have been
- * imported into it, through the layered resolution the host runs.
+ * imported into it, through the resolution the host runs.
  *
  * Feature 098 (T080) — the predecessor read through a reader whose every scope
  * was unset and called the result "the catalog a fresh workspace resolves". That
  * is now the *empty* catalog, and a fixture asserting resolve/compose/run needs
  * something to resolve. So the definitions arrive the only way they can arrive
- * now: authored into a scope. Nothing else about the path changed.
+ * now: stored. Nothing else about the path changed.
  */
 export function importedCatalog(): ReturnType<typeof loadCatalog> {
   return loadCatalog(
-    workspaceReader({
+    storedCatalog({
       phases: FIXTURE_PHASE_DEFINITIONS,
-      pipelines: FIXTURE_PIPELINE_DEFINITIONS,
-      defaultPipelineId: FIXTURE_PIPELINE_IDS.single
-    })
+      pipelines: FIXTURE_PIPELINE_DEFINITIONS
+    }),
+    {
+      getModels: () => undefined,
+      getDefaultPipelineId: (scope) =>
+        scope === 'workspace' ? FIXTURE_PIPELINE_IDS.single : undefined
+    }
   );
 }
 
