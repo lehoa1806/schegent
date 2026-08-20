@@ -37,6 +37,7 @@ import type {
   SupplementalInput,
   ValidationOutcome
 } from '../../contracts/run-request';
+import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type {
   PipelineInputPort,
   PipelineInputPortType
@@ -103,6 +104,21 @@ export interface RunRequestValidationContext {
   readonly localInputs: LocalInputProbe;
   readonly outputProbe: OutputTargetProbe;
   readonly priorOutputs: PriorRunOutputSource;
+  /**
+   * Feature 102 (T036, FR-021, FR-022) — the published version the caller
+   * resolved for the definition in `pipeline`, stamped onto the plan verbatim.
+   *
+   * A value, never a lookup. This module resolves nothing of its own: a second
+   * resolver over the effective catalog would be a second oracle, and the two
+   * would answer differently the moment a publication lands between them. The
+   * caller reads the version at the same gate it read the definition, so the
+   * version and the body it describes come from one read.
+   *
+   * Absent means the caller resolved none — a start against a caller-supplied
+   * snapshot, or a host with no version port wired — and the plan then records
+   * none (FR-021, FR-027). This module never substitutes one.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
 }
 
 /**
@@ -513,7 +529,11 @@ export async function validateRunRequest(
       supplemental: supplemental.frozen,
       outputs: outputs.outputs,
       ...(request.instructions === undefined ? {} : { instructions: request.instructions }),
-      frozenAt: context.now
+      frozenAt: context.now,
+      // Feature 102 (T036, FR-021, FR-027). Stamped, not resolved: whatever the
+      // caller resolved is what the plan records, and an absent value records
+      // absence rather than becoming `''` or a guess.
+      ...(context.catalogVersion === undefined ? {} : { catalogVersion: context.catalogVersion })
     }
   };
 }

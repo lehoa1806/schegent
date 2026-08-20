@@ -24,7 +24,7 @@ export {
 export { publishPackage, type PackagePublishPorts } from './package-publish';
 export { storedIds, storedRows } from './snapshot-rows';
 export { planRetention, withVersionsRemoved, type RetentionExemption, type RetentionPlan } from './catalog-retention';
-export { runProvenanceNone } from './run-provenance-none';
+export { createQueueRunProvenance, type RunVersionCarrier } from './run-provenance-queue';
 export type {
   CandidateDefinition,
   CatalogFsPort,

@@ -4,6 +4,7 @@ import type { BackendPingService } from '../../../services/backend-ping-service'
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
+import type { CatalogVersionRef } from '../../../contracts/catalog-version';
 import type { RunOutputRecord } from '../../../contracts/run-results';
 import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
@@ -294,6 +295,16 @@ export interface RouterDeps {
    */
   readonly readModelsConfig?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getCatalog?: () => PipelineCatalog;
+  /**
+   * Feature 102 (T038, FR-022) — the published version behind `getCatalog`'s copy
+   * of a Pipeline, for the two commands that freeze a plan.
+   *
+   * Declared here so it travels with `getCatalog` and reaches
+   * `startPipelineRun()` on the same `deps` object rather than as a second
+   * argument the two call sites could disagree about. Handlers never call it;
+   * only the freeze does.
+   */
+  readonly resolveCatalogVersion?: (pipelineId: string) => CatalogVersionRef | undefined;
   /**
    * Feature 087 (T044, US3, plan D3) — the one seam `CMD_LAUNCH_PIPELINE`
    * submits through: the `GuardedRunService` itself, narrowed to the single

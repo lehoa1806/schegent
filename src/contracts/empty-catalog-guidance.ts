@@ -49,6 +49,31 @@ export const EMPTY_CATALOG_GUIDANCE: EmptyCatalogGuidance = Object.freeze({
 });
 
 /**
+ * Feature 102 (T044, US5, FR-030) — the *other* reason a section lists nothing.
+ *
+ * A workspace can hold a dozen definitions and offer none of them, because Runs
+ * offers Active versions and nothing else (FR-003). That produces the identical
+ * empty list as an empty catalog and is not the identical situation: the message
+ * above sends the operator to import, and importing is exactly the thing that
+ * will not help. They can import all afternoon and Runs will still be empty.
+ *
+ * So this arm names the one action that does help, by the label the Builder puts
+ * on the control — "Publish", not a synonym — and names where that control is.
+ * FR-004 keeps Runs from offering the action itself, which makes this the one
+ * place on the surface where the word appears at all.
+ *
+ * Kind-agnostic on purpose. The section heading beside it already says whether
+ * this is Pipelines or Workflows, and a per-kind pair of strings would be four
+ * messages to keep in step where two will do.
+ */
+export const NONE_ACTIVE_GUIDANCE: EmptyCatalogGuidance = Object.freeze({
+  headline: 'Nothing published yet',
+  body:
+    'Runs offers published definitions only. Open Builder, pick a definition, ' +
+    'and choose Publish to make its current version available here.'
+});
+
+/**
  * The one rule deciding whether the guidance shows: it shows when there is
  * nothing, and not otherwise (FR-030, FR-032).
  *

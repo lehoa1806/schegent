@@ -3,6 +3,7 @@ import type { BackendPingState } from '../../services/backend-ping-service';
 import type { PhaseDefinition, PhaseSourceStatus } from '../../contracts/process-definitions';
 import type {
   PipelineDefinition,
+  PipelineInputPortType,
   PipelineSourceStatus
 } from '../../contracts/pipeline-definitions';
 import type {
@@ -235,6 +236,77 @@ export interface WorkflowCatalogProjection {
   readonly revision: string;
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
   readonly error?: { readonly code: string; readonly message: string };
+}
+
+/**
+ * Feature 102 — what Runs may start. Contract:
+ * `specs/102-runs-launch-surface/contracts/launch-projection.md`.
+ *
+ * Derived on read from the two catalog projections above, which already carry
+ * everything a launchable needs. Nothing here re-resolves the store, and nothing
+ * here is persisted.
+ */
+export interface LaunchablePort {
+  readonly portId: string;
+  readonly label: string;
+  readonly type: PipelineInputPortType;
+  /**
+   * FR-009 — what the definition itself declares, never what the surface infers.
+   *
+   * Present for a Pipeline, whose `PipelineInputPort` declares it. **Absent for a
+   * Workflow**, because `WorkflowDerivedPort` is `{ nodeId, portId, label, type }`
+   * and the derivation does not carry requiredness through. Absent therefore
+   * means "the definition does not declare this port required" — reconstructing
+   * it here by reaching back into each node's Pipeline would put a second
+   * derivation beside `deriveWorkflowPorts`, and the two would disagree the first
+   * time either moved.
+   */
+  readonly required?: boolean;
+  readonly description?: string;
+  /** Workflows only — which node in the graph asks for this port. */
+  readonly nodeId?: string;
+}
+
+/** One entry Runs offers. Identity is `(kind, id)`, never `id` alone (FR-014). */
+export interface Launchable {
+  readonly kind: 'pipeline' | 'workflow';
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  /**
+   * Required here, unlike on `CatalogVersionRef`. A launchable exists *because*
+   * its definition has an active version — that is what put it in the list
+   * (FR-003). An entry without one is not an entry.
+   */
+  readonly activeVersionId: string;
+  /** Pipelines: the declared input ports. Workflows: the derived, unsatisfied ones. */
+  readonly inputs: readonly LaunchablePort[];
+  /** Workflows only; documented non-empty when present. Drives FR-043. */
+  readonly startNodeIds?: readonly string[];
+}
+
+/**
+ * What one section is showing.
+ *
+ * **`loading` is not an arm.** It is the absence of `launchables` on the
+ * snapshot, which is how this file already signals "not resolved" for
+ * `phaseCatalog`, `pipelineCatalog`, and `workflowCatalog`. A fourth arm would
+ * give one fact two representations, and the two would eventually disagree about
+ * a host that has no catalog wired at all.
+ *
+ * Three arms rather than two because two of them produce an empty list for
+ * different reasons and the surface cannot tell them apart from the list: a
+ * workspace holding unpublished drafts must be told about *publishing*, not told
+ * it has no definitions (FR-028).
+ */
+export type LaunchSection =
+  | { readonly state: 'entries'; readonly entries: readonly Launchable[] }
+  | { readonly state: 'no-definitions' }
+  | { readonly state: 'none-active' };
+
+export interface LaunchProjection {
+  readonly pipelines: LaunchSection;
+  readonly workflows: LaunchSection;
 }
 
 export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
@@ -772,6 +844,20 @@ export interface WorkflowSnapshot {
    */
   readonly workflowCatalog?: WorkflowCatalogProjection;
   /**
+   * Feature 102 — what Runs may start: Active only, at the active version,
+   * filtered and ordered host-side (FR-001, FR-002, FR-003).
+   *
+   * Additive and optional. Absence means the host has not resolved a catalog
+   * yet, so each section renders a loading state (FR-006) — the same convention
+   * the three catalog projections above already use, which is why `LaunchSection`
+   * has no `loading` arm. Derived state only: never persisted, never written to
+   * `WorkflowRun` or the audit log.
+   *
+   * `availablePipelines` keeps its existing runtime-selection meaning and is
+   * untouched, exactly as feature 082 left it when `pipelineCatalog` arrived.
+   */
+  readonly launchables?: LaunchProjection;
+  /**
    * Feature 088 — the connected runs the operator can act on, each already
    * folded to per-node state, legal actions, and `hydrating` by
    * `connected-run-projector.ts`. Derived on read from the stored aggregate and
@@ -842,7 +928,7 @@ export interface SessionArtifactsProjection {
  * explicit `TrustProjection` annotation widens the literal booleans to
  * the `WorkflowSnapshot` field type.
  */
-interface TrustProjection {
+export interface TrustProjection {
   readonly workspaceTrust: boolean;
   readonly resolvedTrust: Readonly<{
     phases: boolean;

@@ -133,7 +133,18 @@ const DECLARED_SEAM_CALLERS: ReadonlySet<string> = new Set([
   'src/controller/schedule-watchdog.ts',
   'src/services/scheduled-start-coordinator.ts',
   // Contract and type declarations, not call sites.
-  'src/contracts/sidebar-ipc.ts'
+  'src/contracts/sidebar-ipc.ts',
+  // Feature 102 (FR-025) — one `import type` and one `export interface`, 51
+  // lines, no runtime code at all. It matches on prose: the doc comment on
+  // `CatalogVersionRef` says the frozen plan is "carried through
+  // `guardedRun.scheduleOrEnqueue()` untouched", which is the immutability
+  // claim the field exists to make. Named rather than paraphrased, because the
+  // seam it survives is the point — a reader who has to guess which seam has
+  // been told nothing. Declaring a types-only module here is safe in a way
+  // declaring an implementation module would not be: there is no runtime import
+  // for a call to hide behind, so the grep cannot go quiet on this file for any
+  // reason but the one recorded.
+  'src/contracts/catalog-version.ts'
 ]);
 
 function listMatchingFiles(pattern: string): readonly string[] {

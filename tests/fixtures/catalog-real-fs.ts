@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { join, posix, sep } from 'node:path';
 
 import { nodeDigest, systemClock } from '../../src/activation/catalog-store-wiring';
-import { createCatalogStore, runProvenanceNone, type CatalogStore } from '../../src/catalog';
+import { createCatalogStore, createQueueRunProvenance, type CatalogStore } from '../../src/catalog';
 import type { RunProvenance } from '../../src/catalog';
 import { draftTokenOf, type ExpectedDraftVersion } from '../../src/contracts/catalog-lifecycle';
 import type { CatalogKind, LifecycleWriteOutcome } from '../../src/contracts/catalog-store';
@@ -58,6 +58,18 @@ export function storeRootOf(workspaceRoot: string): string {
 }
 
 /**
+ * The shipped provenance reader over a host with nothing running.
+ *
+ * Feature 102 (T050) — this replaces the `false`-for-everything module feature
+ * 099 shipped, and it is the real reader rather than a second stub: a fixture
+ * that doubles the port proves nothing about the code that answers in
+ * production, and "no live run" is a state the real reader has to handle anyway.
+ */
+function noLiveRuns() {
+  return createQueueRunProvenance(() => []);
+}
+
+/**
  * One window onto the store at `workspaceRoot`.
  *
  * Call it twice with the same root to get two independent windows — which is
@@ -72,7 +84,7 @@ export function openStore(
     fs: createCatalogFsAdapter(storeRootOf(workspaceRoot)),
     clock: systemClock,
     digest: nodeDigest,
-    provenance: options.provenance ?? runProvenanceNone
+    provenance: options.provenance ?? noLiveRuns()
   });
 }
 
@@ -82,7 +94,7 @@ export function openStoreWithoutWorkspace(): CatalogStore {
     fs: createCatalogFsAdapter(null),
     clock: systemClock,
     digest: nodeDigest,
-    provenance: runProvenanceNone
+    provenance: noLiveRuns()
   });
 }
 
