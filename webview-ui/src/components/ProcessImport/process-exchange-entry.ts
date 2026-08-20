@@ -16,9 +16,11 @@ import type {
   PipelineCatalogSourceRecord,
   WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
-import type { SavePhaseRow } from '../../lib/save-phases';
-import type { SavePipelineRow } from '../../lib/save-pipelines';
-import type { SaveWorkflowRow } from '../../lib/save-workflows';
+import type {
+  SavePhaseRow,
+  SavePipelineRow,
+  SaveWorkflowRow
+} from '../../lib/definition-rows';
 import type { ImportTargetLayers } from './process-import-state';
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */

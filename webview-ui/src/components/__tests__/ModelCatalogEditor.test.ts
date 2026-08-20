@@ -237,3 +237,51 @@ describe('ModelCatalogEditor detect control', () => {
     expect(ondetect).not.toHaveBeenCalled();
   });
 });
+
+// ── Feature 101 (US1, T038, FR-041, SC-011) ─────────────────────────────────
+
+describe('ModelCatalogEditor stays out of the lifecycle (US1, T038, FR-041)', () => {
+  // Model configuration is not in the versioned catalog store, so the Builder's
+  // lifecycle chrome has nothing to say about it: no state badge, no created or
+  // modified time, no active version, no history, no changed-field summary.
+  //
+  // "Unchanged" is the kind of requirement that holds until someone mounts the
+  // shared row in all the tabs and this one comes along for the ride. Feature
+  // 101 still has six stories to land on the other three tabs, and this is what
+  // turns red if any of them reaches this one.
+  const LIFECYCLE_MARKERS: readonly string[] = [
+    'definition-row-',
+    'state-badge',
+    'row-defects',
+    'lifecycle'
+  ];
+
+  it('renders no lifecycle chrome of any kind', () => {
+    const { container } = render(ModelCatalogEditor, { props: baseProps });
+
+    for (const marker of LIFECYCLE_MARKERS) {
+      expect(container.innerHTML, `Models tab must not carry "${marker}"`).not.toContain(marker);
+    }
+    expect(container.querySelector('[data-testid^="definition-row-"]')).toBeNull();
+  });
+
+  it('says nothing about Draft, Active, Publish, or versions', () => {
+    const { container } = render(ModelCatalogEditor, { props: baseProps });
+    const text = container.textContent ?? '';
+
+    for (const word of ['Draft', 'Active with draft', 'Publish', 'Active version', 'Modified']) {
+      expect(text, `Models tab must not read "${word}"`).not.toContain(word);
+    }
+  });
+
+  it('holds its rendered markup as the baseline the rest of the feature must not move', () => {
+    // SC-011 wants byte-identical, and a byte comparison needs something to
+    // compare against. This is that something: the tab's markup as it stands
+    // before US3 onward touch the other three tabs. It is not a claim about the
+    // markup's contents — it is a tripwire, and a diff here means a change
+    // reached the one tab the feature said it would not.
+    const { container } = render(ModelCatalogEditor, { props: baseProps });
+
+    expect(container.innerHTML).toMatchSnapshot();
+  });
+});

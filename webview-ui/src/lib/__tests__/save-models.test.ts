@@ -2,7 +2,9 @@
 //
 // Contract: specs/096-model-list-import-export/contracts/model-catalog-exchange.md §4
 // — "structurally identical to savePipelines/saveWorkflows: UUIDv4 correlation,
-// snapshotStore.markPending, one-shot onceAck, 5-second timeout." Kept apart
+// snapshotStore.markPending, one-shot onceAck, 5-second timeout." Those two named
+// helpers are gone (Feature 101 T030 folded them into `catalog-lifecycle.ts`); the
+// four properties the contract actually names are what this asserts. Kept apart
 // from `saveModels`'s existing coverage in `save-catalog-command.test.ts`:
 // that helper posts the manual add/remove shape (`{ models }`, no revision)
 // and discards `ack.result`; this one posts the import-confirm shape

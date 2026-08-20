@@ -29,7 +29,7 @@ import {
   type WorkflowConnection,
   type WorkflowNode
 } from '../../lib/snapshot-types';
-import type { SaveWorkflowRow } from '../../lib/save-workflows';
+import type { SaveWorkflowRow } from '../../lib/definition-rows';
 import type { MutableWorkflow } from './types';
 
 /**

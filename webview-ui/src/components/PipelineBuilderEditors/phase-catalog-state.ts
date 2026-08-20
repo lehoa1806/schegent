@@ -1,8 +1,40 @@
 import type { PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
-import type { SavePhaseRow, SavePhasesMutation } from '../../lib/save-phases';
+import type { SavePhaseRow } from '../../lib/definition-rows';
 import type { MutablePhase } from './types';
 
 type PhaseCatalogRecord = NonNullable<WorkflowSnapshot['phaseCatalog']>['records'][number];
+
+/**
+ * A declared Phase edit, awaiting a save.
+ *
+ * Feature 101 (T030) — moved here from the deleted `save-phases.ts`, and renamed
+ * from `SavePhasesMutation` for symmetry with `PipelineCatalogMutation` and
+ * `WorkflowCatalogMutation`, the two sibling unions it is used beside. The arms
+ * are unchanged. What a mutation *is* changed underneath it: it no longer travels
+ * to the host at all (100 FR-051 retired the tag from the wire), so this is purely
+ * the editor's record of which single row a pending save will write.
+ */
+export type PhaseCatalogMutation =
+  | { readonly kind: 'create'; readonly phaseId: string }
+  /**
+   * Feature 084 (FR-046a) — a `create` whose row came from a portable document,
+   * so its declared `version` is stored as authored instead of being renumbered.
+   * A `create` in every other respect, including the gates it passes.
+   */
+  | { readonly kind: 'import'; readonly phaseId: string }
+  /**
+   * Feature 085 (FR-043) — the Phase half of a package import: a set of rows
+   * added under ONE intent, each keeping the version its document declared.
+   */
+  | { readonly kind: 'import-package'; readonly phaseIds: readonly string[] }
+  | { readonly kind: 'edit'; readonly phaseId: string }
+  | {
+      readonly kind: 'duplicate';
+      readonly sourcePhaseId: string;
+      readonly phaseId: string;
+    }
+  | { readonly kind: 'remove'; readonly phaseId: string }
+  | { readonly kind: 'reset' };
 
 export function effectivePhasesToMutable(
   phases: readonly PhaseDefinition[]
@@ -63,7 +95,7 @@ function targetIndex(
 export function rebasePhaseMutation(
   records: readonly PhaseCatalogRecord[],
   draftRows: readonly MutablePhase[],
-  mutation: SavePhasesMutation,
+  mutation: PhaseCatalogMutation,
   sourceKey: string | null
 ): MutablePhase[] {
   const fresh = records.map(sourceRecordToMutable);

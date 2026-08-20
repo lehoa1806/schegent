@@ -19,13 +19,16 @@ import type {
   PreflightProcessYamlResult
 } from '../../lib/messages';
 import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
-import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
+import type { LifecycleResult } from '../../lib/catalog-lifecycle';
 import type {
+  PackageLayer,
+  PackagePublishRequest
+} from '../../../../src/contracts/catalog-lifecycle';
+import type {
+  SavePhaseRow,
   SavePipelineRow,
-  SavePipelinesRequest,
-  SavePipelinesResult
-} from '../../lib/save-pipelines';
-import type { SaveWorkflowRow } from '../../lib/save-workflows';
+  SaveWorkflowRow
+} from '../../lib/definition-rows';
 import { refusalHeadline } from '../ProcessImport/process-import-state';
 import type {
   ImportedPhaseDefinition,
@@ -37,25 +40,39 @@ vi.mock('../../lib/process-yaml-ipc', () => ({
   preflightProcessYaml: () => preflightSpy()
 }));
 
-// The commit goes through the shared savePhases helper — import adds no mutating
-// IPC command of its own (research R2) — so stubbing that helper is stubbing the
-// whole write path, and the request it is handed is the assertable artifact.
-const saveSpy = vi.fn<(request: SavePhasesRequest) => Promise<SavePhasesResult>>();
-vi.mock('../../lib/save-phases', () => ({
-  savePhases: (request: SavePhasesRequest) => saveSpy(request)
+// The commit goes through the shared package publish — import adds no mutating
+// IPC command of its own (research R2) — so stubbing that sender is stubbing the
+// whole write path, and the layers it is handed are the assertable artifact.
+//
+// Feature 101 (T029) — one spy where there were three. The three per-kind `save*`
+// shims each translated into exactly this call before dispatching; with them gone
+// the kind travels in the layer, so `layersSent` is how a test names which write
+// it is looking at. Acks are queued in send order and default to accepted.
+const publishSpy = vi.fn<(request: PackagePublishRequest) => Promise<LifecycleResult>>();
+vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
+  publishDefinitionPackage: (request: PackagePublishRequest) => publishSpy(request)
 }));
 
-// Feature 085 T048 — the Pipeline half of a package commit goes through the
-// Pipeline catalog's own shared helper, for the same reason: one write per layer,
-// each carrying its own expected revision and its own single intent (FR-043).
-const savePipelinesSpy = vi.fn<(request: SavePipelinesRequest) => Promise<SavePipelinesResult>>();
-vi.mock('../../lib/save-pipelines', () => ({
-  savePipelines: (request: SavePipelinesRequest) => savePipelinesSpy(request)
-}));
+/** Every layer the commit sent, flattened in send order. */
+function layersSent(): readonly PackageLayer[] {
+  return publishSpy.mock.calls.flatMap((call) => call[0].layers);
+}
+
+/** The one layer sent for `kind`, or `undefined` if that kind was never written. */
+function layerFor(kind: PackageLayer['kind']): PackageLayer | undefined {
+  return layersSent().find((layer) => layer.kind === kind);
+}
+
+/** Queue the acks the sender answers with, in send order; the rest are accepted. */
+function ackWith(...acks: readonly LifecycleResult[]): void {
+  let call = 0;
+  publishSpy.mockImplementation(async () => acks[call++] ?? { status: 'accepted' });
+}
 
 // Feature 096 T024 — Model Catalog commits through its own single-write helper,
-// never through `runImportCommit`/`savePhases` (Implementation Notes point 1),
-// so it gets its own mock rather than reusing `saveSpy`.
+// never through `runImportCommit`/the package publish (Implementation Notes
+// point 1), so it gets its own mock rather than reusing `publishSpy`.
 const saveModelsImportSpy = vi.fn<
   (request: SaveModelsImportRequest) => Promise<SaveModelsImportResult>
 >();
@@ -144,10 +161,8 @@ async function confirm(getByTestId: (id: string) => HTMLElement): Promise<void> 
 
 beforeEach(() => {
   preflightSpy.mockReset();
-  saveSpy.mockReset();
-  saveSpy.mockResolvedValue({ status: 'accepted' });
-  savePipelinesSpy.mockReset();
-  savePipelinesSpy.mockResolvedValue({ status: 'accepted' });
+  publishSpy.mockReset();
+  publishSpy.mockResolvedValue({ status: 'accepted' });
   saveModelsImportSpy.mockReset();
   saveModelsImportSpy.mockResolvedValue({ status: 'accepted' });
 });
@@ -520,7 +535,7 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
 
     expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
     expect(getByTestId('process-import-confirm-blocked').textContent).toContain('nothing to import');
-    expect(saveSpy).not.toHaveBeenCalled();
+    expect(publishSpy).not.toHaveBeenCalled();
   });
 
   it('offers no confirmation at all for a refused document (FR-036)', async () => {
@@ -537,37 +552,53 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     expect(container.querySelector('[data-testid="process-import-scope"]')).toBeNull();
   });
 
-  it('sends the declared definition, the plan revision, and the import intent (FR-037, FR-046a)', async () => {
+  it('sends the declared definition under the plan revision (FR-037, FR-046a)', async () => {
     preflightSpy.mockResolvedValue(importable());
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    expect(saveSpy).toHaveBeenCalledTimes(1);
-    expect(saveSpy.mock.calls[0][0]).toEqual({
-      // FR-038 — the revision the PLAN was computed against, so a catalog written
-      // since the preflight refuses as stale. Feature 099 (T496f, FR-042) — the
-      // request named a destination beside it; `toEqual` is exact, so its absence
-      // is pinned by this assertion and not by a second one.
-      expectedRevision: REVISION,
-      // The single-Phase standalone document keeps `import`, which the host reads
-      // differently from `import-package` when it refuses a stale save.
-      mutation: { kind: 'import', phaseId: 'brought-in' },
-      // Feature 100 (T509b, FR-039a) — the write carries the document's own row
-      // and nothing else. It used to carry `HELD` in front of it, because a save
-      // replaced the whole layer and omitting a stored row deleted it; a
-      // publication names definitions, and one it does not name it leaves exactly
-      // as it was (FR-039b). Carrying `HELD` now would publish a new version of a
-      // definition this document never mentioned. The declared version is still
-      // sent as authored (FR-046a).
-      phases: [{ id: 'brought-in', name: 'Brought In', version: 7, instruction: 'Do the thing.' }]
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    expect(publishSpy.mock.calls[0][0]).toEqual({
+      layers: [
+        {
+          kind: 'phase',
+          // FR-038 — the revision the PLAN was computed against, so a catalog
+          // written since the preflight refuses as stale. Feature 099 (T496f,
+          // FR-042) — the request named a destination beside it; `toEqual` is
+          // exact, so its absence is pinned by this assertion and not a second one.
+          //
+          // Feature 101 (T029) — a `mutation` naming the `import` intent stood
+          // here too. It has reached no host since feature 100 routed this write
+          // through the package publish, which carries ids and no intent.
+          expectedRevision: REVISION,
+          // Feature 100 (T509b, FR-039a) — the write carries the document's own
+          // row and nothing else. It used to carry `HELD` in front of it, because
+          // a save replaced the whole layer and omitting a stored row deleted it;
+          // a publication names definitions, and one it does not name it leaves
+          // exactly as it was (FR-039b). Carrying `HELD` now would publish a new
+          // version of a definition this document never mentioned. The declared
+          // version is still sent as authored (FR-046a).
+          definitions: [
+            {
+              id: 'brought-in',
+              body: {
+                id: 'brought-in',
+                name: 'Brought In',
+                version: 7,
+                instruction: 'Do the thing.'
+              }
+            }
+          ]
+        }
+      ]
     });
     // `HELD` is not merely absent from the array — it has no route into the write
     // at all, so a reintroduced merge fails here rather than in one fixture.
-    expect(JSON.stringify(saveSpy.mock.calls[0][0])).not.toContain(HELD.id);
+    expect(JSON.stringify(publishSpy.mock.calls[0][0])).not.toContain(HELD.id);
     // No Pipeline row in the plan, so no Pipeline write — a layer nobody asked to
     // change must not be rewritten on its way past.
-    expect(savePipelinesSpy).not.toHaveBeenCalled();
+    expect(layerFor('pipeline')).toBeUndefined();
   });
 
   it('gates on the revision the plan carries, not on one read at confirm time', async () => {
@@ -584,8 +615,8 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    expect(saveSpy.mock.calls[0][0]).toMatchObject({ expectedRevision: 'moved-rev' });
-    expect(saveSpy.mock.calls[0][0]).not.toHaveProperty('scope');
+    expect(layerFor('phase')).toMatchObject({ expectedRevision: 'moved-rev' });
+    expect(layerFor('phase')).not.toHaveProperty('scope');
   });
 
   it('renders one result per plan row once the save is acked (FR-042)', async () => {
@@ -620,7 +651,7 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
 
   it('reports a rejected save as a failure with its reason, not as an import', async () => {
     preflightSpy.mockResolvedValue(importable());
-    saveSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    ackWith({ status: 'rejected', reason: 'stale-catalog' });
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
@@ -631,10 +662,10 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
 
   it('withholds confirmation while a commit is in flight, and says why', async () => {
     preflightSpy.mockResolvedValue(importable());
-    let settle: (result: SavePhasesResult) => void = () => {};
-    saveSpy.mockImplementation(
+    let settle: (result: LifecycleResult) => void = () => {};
+    publishSpy.mockImplementation(
       () =>
-        new Promise<SavePhasesResult>((resolve) => {
+        new Promise<LifecycleResult>((resolve) => {
           settle = resolve;
         })
     );
@@ -649,7 +680,7 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     // A second activation cannot double-write.
     await fireEvent.click(getByTestId('process-import-confirm'));
     await tick();
-    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(publishSpy).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="process-import-results"]')).toBeNull();
 
     settle({ status: 'accepted' });
@@ -1050,8 +1081,7 @@ describe('Feature 085 T034 — a package in the plan', () => {
     expect(reason).not.toContain('nothing to import');
 
     await confirm(getByTestId);
-    expect(saveSpy).not.toHaveBeenCalled();
-    expect(savePipelinesSpy).not.toHaveBeenCalled();
+    expect(publishSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1109,15 +1139,6 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   }
 
   it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
-    const order: string[] = [];
-    saveSpy.mockImplementation(async () => {
-      order.push('phases');
-      return { status: 'accepted' };
-    });
-    savePipelinesSpy.mockImplementation(async () => {
-      order.push('pipelines');
-      return { status: 'accepted' };
-    });
     preflightSpy.mockResolvedValue(packageResult());
 
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -1125,39 +1146,61 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     await confirm(getByTestId);
 
     // A Pipeline written first would reference Phases the catalog does not hold.
-    expect(order).toEqual(['phases', 'pipelines']);
+    // Two publishes, not one carrying both layers: the second is conditional on
+    // the first, and one package would send them together.
+    expect(publishSpy).toHaveBeenCalledTimes(2);
+    expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'pipeline']);
   });
 
-  it('gates each layer on its OWN revision and declares one intent per write (FR-043)', async () => {
+  it('gates each layer on its OWN revision, naming only the ids it writes (FR-043)', async () => {
     preflightSpy.mockResolvedValue(packageResult());
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    expect(saveSpy).toHaveBeenCalledTimes(1);
-    expect(saveSpy.mock.calls[0][0]).toEqual({
-      expectedRevision: REVISION,
-      // Two Phases under one intent — a package is not N `import` saves, because
-      // both are gated on the same revision, and the first accepted save moves
-      // the revision the second would have gated on.
-      mutation: { kind: 'import-package', phaseIds: ['specify', 'plan'] },
-      // Feature 100 (T509b, FR-039a) — the document's two Phases, and only those.
-      // `HELD_PHASE` used to lead this array; see the standalone case above for
-      // why it no longer travels.
-      phases: [
-        { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
-        { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
+    expect(publishSpy.mock.calls[0][0]).toEqual({
+      layers: [
+        {
+          kind: 'phase',
+          // Two Phases in one layer — a package is not N separate saves, because
+          // both are gated on the same revision, and the first accepted save
+          // moves the revision the second would have gated on.
+          //
+          // Feature 101 (T029) — the `import-package` intent that said so
+          // explicitly is gone with the whole-array request; the shared gate is
+          // what carries the claim now.
+          expectedRevision: REVISION,
+          // Feature 100 (T509b, FR-039a) — the document's two Phases, and only
+          // those. `HELD_PHASE` used to lead this array; see the standalone case
+          // above for why it no longer travels.
+          definitions: [
+            {
+              id: 'specify',
+              body: { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' }
+            },
+            {
+              id: 'plan',
+              body: { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
+            }
+          ]
+        }
       ]
     });
 
-    expect(savePipelinesSpy).toHaveBeenCalledTimes(1);
-    expect(savePipelinesSpy.mock.calls[0][0]).toEqual({
-      // The Pipeline catalog's revision, not the Phase catalog's — they move
-      // independently, and cross-wiring them would gate on the wrong write.
-      expectedRevision: PIPELINE_REVISION,
-      mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
-      pipelines: [
-        { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'], inputs: [], outputs: [], bindings: [], recommendedNext: [] }
+    expect(publishSpy.mock.calls[1][0]).toEqual({
+      layers: [
+        {
+          kind: 'pipeline',
+          // The Pipeline catalog's revision, not the Phase catalog's — they move
+          // independently, and cross-wiring them would gate on the wrong write.
+          expectedRevision: PIPELINE_REVISION,
+          definitions: [
+            {
+              id: 'ship-it',
+              body: { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'], inputs: [], outputs: [], bindings: [], recommendedNext: [] }
+            }
+          ]
+        }
       ]
     });
   });
@@ -1174,14 +1217,14 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    expect(saveSpy.mock.calls[0][0]).not.toHaveProperty('scope');
-    expect(savePipelinesSpy.mock.calls[0][0]).not.toHaveProperty('scope');
-    expect(saveSpy.mock.calls[0][0].phases.map((row) => row.id)).toEqual(['specify', 'plan']);
-    expect(savePipelinesSpy.mock.calls[0][0].pipelines.map((row) => row.id)).toEqual(['ship-it']);
+    expect(layerFor('phase')).not.toHaveProperty('scope');
+    expect(layerFor('pipeline')).not.toHaveProperty('scope');
+    expect(layerFor('phase')?.definitions.map((row) => row.id)).toEqual(['specify', 'plan']);
+    expect(layerFor('pipeline')?.definitions.map((row) => row.id)).toEqual(['ship-it']);
     // The rows the catalog already holds were handed to the component and reached
     // neither write — the property, rather than these two orderings of it.
-    expect(JSON.stringify(saveSpy.mock.calls[0][0])).not.toContain(HELD_PHASE.id);
-    expect(JSON.stringify(savePipelinesSpy.mock.calls[0][0])).not.toContain(HELD_PIPELINE.id);
+    expect(JSON.stringify(layersSent())).not.toContain(HELD_PHASE.id);
+    expect(JSON.stringify(layersSent())).not.toContain(HELD_PIPELINE.id);
   });
 
   it('reports every row imported when both layers are accepted', async () => {
@@ -1200,7 +1243,7 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   });
 
   it('reports the partial outcome exactly, and offers no undo (FR-042a, FR-042c)', async () => {
-    savePipelinesSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    ackWith({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
@@ -1225,14 +1268,14 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   });
 
   it('does not send the Pipeline write when the Phase write is rejected', async () => {
-    saveSpy.mockResolvedValue({ status: 'rejected', reason: 'stale-catalog' });
+    ackWith({ status: 'rejected', reason: 'stale-catalog' });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
     // A Pipeline whose Phases were never written would reference absent rows.
-    expect(savePipelinesSpy).not.toHaveBeenCalled();
+    expect(layerFor('pipeline')).toBeUndefined();
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-result-row"]')
     ) as HTMLElement[];
@@ -1245,7 +1288,7 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
 });
 
 // Feature 096 T024 — wiring the modelCatalog branch: confirm dispatches through
-// `saveModelsImport`, never `savePhases`.
+// `saveModelsImport`, never the catalog lifecycle.
 describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () => {
   it('names Model Catalog among the accepted document kinds', () => {
     render(ProcessImportPreflight);
@@ -1294,9 +1337,8 @@ describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () =>
       expectedRevision: MODELS_REVISION,
       mutation: { kind: 'import-package' }
     });
-    // Model Catalog's single write must not fall through to the Phase path.
-    expect(saveSpy).not.toHaveBeenCalled();
-    expect(savePipelinesSpy).not.toHaveBeenCalled();
+    // Model Catalog's single write must not fall through to the catalog path.
+    expect(publishSpy).not.toHaveBeenCalled();
   });
 
   it('renders the Model Catalog outcome sentence, not the layered one (FR-042a)', async () => {

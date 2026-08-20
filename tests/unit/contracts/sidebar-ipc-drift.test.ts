@@ -65,6 +65,15 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       // itself optional, so `{}` is the minimal valid payload — a bare
       // envelope with no `payload` key at all is correctly rejected.
       [Authoritative.CMD_READ_METRICS]: {},
+      // Feature 101 (T058) — a coordinate, and all three parts are required:
+      // each one chooses which record is opened, so a guard that accepted a
+      // bare envelope would let `undefined` resolve into another definition's
+      // history.
+      [Authoritative.CMD_READ_DEFINITION_VERSION]: {
+        kind: 'phase',
+        id: 'specify',
+        versionId: 'v2'
+      },
       [Authoritative.CMD_PING_BACKEND]: { runner: 'claude' },
       // Feature 084/085 — the Phase arm of the export union is the minimal
       // one: `resourceKind` discriminates, `resourceId` names what to resolve

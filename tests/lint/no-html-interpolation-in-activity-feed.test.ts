@@ -31,7 +31,14 @@ const SCAN_ROOTS: readonly string[] = [
   // Activity feed (feature 029): assistant text, tool args, tool
   // results, system text. All host-sanitized for secrets but not for
   // HTML.
-  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'PhaseLogFeed')
+  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'PhaseLogFeed'),
+  // Builder surface (feature 101, FR-039): definition names, descriptions, and
+  // version notes. Every one of those is operator-authored or imported from a
+  // file on disk, so all three are untrusted text arriving from outside the
+  // host. The Builder renders lifecycle chrome around them — rows, a history
+  // panel, a changed-field summary — and each of those is a new render site
+  // that must stay on Svelte's auto-escaping path.
+  resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'Builder')
 ];
 
 // Empty allowlist — every existing scanned component renders text via

@@ -7,8 +7,8 @@
 // why a row was skipped.
 //
 // Nothing here posts, reads, or retains anything. The commit itself is the
-// existing `savePhases` helper — import adds no mutating IPC command (research
-// R2) — so this module's job ends at building its request and reading its ack.
+// existing package publish — import adds no mutating IPC command (research R2)
+// — so this module's job ends at building its request and reading its ack.
 //
 // Feature 085 T035 — the plan is now kind-tagged. Preflight takes no kind from
 // the request (FR-055a), so one plan can carry Phase rows and Pipeline rows at
@@ -47,17 +47,17 @@ import type {
   ProcessYamlResourceKind
 } from '../../lib/messages';
 import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
-import type { SavePhaseRow, SavePhasesRequest, SavePhasesResult } from '../../lib/save-phases';
+import type { LifecycleResult } from '../../lib/catalog-lifecycle';
+import { pipelineRowId } from '../../lib/definition-rows';
 import type {
+  SavePhaseRow,
   SavePipelineRow,
-  SavePipelinesRequest,
-  SavePipelinesResult
-} from '../../lib/save-pipelines';
+  SaveWorkflowRow
+} from '../../lib/definition-rows';
 import type {
-  SaveWorkflowRow,
-  SaveWorkflowsRequest,
-  SaveWorkflowsResult
-} from '../../lib/save-workflows';
+  PackageLayer,
+  PackagePublishRequest
+} from '../../../../src/contracts/catalog-lifecycle';
 import { formatModelCatalogSaveRejection } from '../PipelineBuilderEditors/model-catalog-state';
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
 import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
@@ -546,11 +546,20 @@ export interface ImportTargetLayers {
 
 export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows';
 
-/** One layer write. The key says which catalog, and so which save sends it. */
-export type ImportLayerWrite =
-  | { readonly key: 'phases'; readonly request: SavePhasesRequest }
-  | { readonly key: 'pipelines'; readonly request: SavePipelinesRequest }
-  | { readonly key: 'workflows'; readonly request: SaveWorkflowsRequest };
+/**
+ * One layer write. The key says which catalog it reports against.
+ *
+ * Feature 101 (T029) — a `PackageLayer` rather than one of three whole-array
+ * request shapes. The three shapes were already translated into exactly this
+ * layer before dispatch by the retired `save*` shims; naming it directly removes
+ * the translation without changing a byte of what is sent. One layer per write,
+ * still: the writes are ordered and each is conditional on the last, so they
+ * cannot be collapsed into a single package (see `runImportCommit`).
+ */
+export interface ImportLayerWrite {
+  readonly key: ImportLayerKey;
+  readonly layer: PackageLayer;
+}
 
 /**
  * The layer keys in write order — the one place the order is stated.
@@ -583,13 +592,12 @@ const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
  * (FR-040) rather than overwrite an operator's work. Reading any of the three
  * revisions live at this moment would leave that gate unable to fire.
  *
- * The intent is `import` only for the shipped single-Phase standalone case, and
- * `import-package` for everything else — one intent per layer, never one intent
- * spanning two. The distinction is observable: the host returns different legal
- * actions on a `stale-catalog` rejection per kind, so relabelling the standalone
- * path would change an operator's recovery affordances for no gain. The Workflow
- * layer has no standalone form to keep: `WorkflowCatalogMutation` declares no
- * single-id `import` kind, so a Workflow import is always `import-package`.
+ * Feature 101 (T029) — the `import`/`import-package` mutation intent is gone. It
+ * was already dropped before dispatch: feature 100 rewired every one of these
+ * writes onto the package publish, which carries layers and ids and no intent at
+ * all, so the standalone/package distinction has not reached the host since. It
+ * is not recorded here as a comment either, because a field nothing reads is a
+ * claim nothing checks.
  *
  * Returns nothing at all — not a partial list — when a Pipeline or Workflow
  * row's plan carries no revision for that layer. Half a package is the one
@@ -620,41 +628,46 @@ export function buildImportWrites(plan: ImportPlan): readonly ImportLayerWrite[]
 
   const writes: ImportLayerWrite[] = [];
   if (phases.length > 0) {
-    const standalone = phases.length === 1 && pipelines.length === 0 && workflows.length === 0;
     writes.push({
       key: 'phases',
-      request: {
+      layer: {
+        kind: 'phase',
         expectedRevision: plan.computedAgainstRevision,
-        mutation: standalone
-          ? { kind: 'import', phaseId: phases[0].resourceId }
-          : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
-        phases: phases.map((row) => savePhaseRowFromDefinition(row.definition))
+        definitions: phases.map((row) => {
+          const body = savePhaseRowFromDefinition(row.definition);
+          return { id: body.id, body };
+        })
       }
     });
   }
   if (pipelines.length > 0 && pipelineRevision !== undefined) {
     writes.push({
       key: 'pipelines',
-      request: {
+      layer: {
+        kind: 'pipeline',
         expectedRevision: pipelineRevision,
-        mutation: {
-          kind: 'import-package',
-          pipelineIds: pipelines.map((row) => row.resourceId)
-        },
-        pipelines: pipelines.map((row) => savePipelineRowFromDefinition(row.definition))
+        // `pipelineRowId` rather than `body.id` for the same reason the Builder
+        // uses it: `id` and `pipelineId` are both accepted spellings. A row from
+        // this path always carries `id`, because the contract requires
+        // `pipelineId` and the translation above renames it — the shared reader
+        // is what keeps the two paths from disagreeing if that ever changes.
+        definitions: pipelines.map((row) => {
+          const body = savePipelineRowFromDefinition(row.definition);
+          return { id: pipelineRowId(body), body };
+        })
       }
     });
   }
   if (workflows.length > 0 && workflowRevision !== undefined) {
     writes.push({
       key: 'workflows',
-      request: {
+      layer: {
+        kind: 'workflow',
         expectedRevision: workflowRevision,
-        mutation: {
-          kind: 'import-package',
-          workflowIds: workflows.map((row) => row.resourceId)
-        },
-        workflows: workflows.map((row) => saveWorkflowRowFromDefinition(row.definition))
+        definitions: workflows.map((row) => {
+          const body = saveWorkflowRowFromDefinition(row.definition);
+          return { id: body.workflowId, body };
+        })
       }
     });
   }
@@ -666,7 +679,7 @@ export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
 
 export interface ImportLayerResult {
   readonly key: ImportLayerKey;
-  readonly ack: SavePhasesResult | SavePipelinesResult | SaveWorkflowsResult;
+  readonly ack: LifecycleResult;
 }
 
 /**
@@ -780,11 +793,16 @@ export function commitOutcomeStatement(
   return `${written} written to the catalog; the rest of this document was not. What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.`;
 }
 
-/** The three saves, injected so the commit can be exercised without a host. */
+/**
+ * The send, injected so the commit can be exercised without a host.
+ *
+ * Feature 101 (T029) — one member where there were three. The three were
+ * per-kind only in their argument shape; each translated to the same package
+ * publish and returned the same `LifecycleResult`, so the kind now travels in
+ * the layer rather than in the choice of function.
+ */
 export interface ImportCommitDeps {
-  readonly savePhases: (request: SavePhasesRequest) => Promise<SavePhasesResult>;
-  readonly savePipelines: (request: SavePipelinesRequest) => Promise<SavePipelinesResult>;
-  readonly saveWorkflows: (request: SaveWorkflowsRequest) => Promise<SaveWorkflowsResult>;
+  readonly publishPackage: (request: PackagePublishRequest) => Promise<LifecycleResult>;
 }
 
 export interface ImportCommitReport {
@@ -810,17 +828,12 @@ export async function runImportCommit(
 ): Promise<ImportCommitReport> {
   const results: ImportLayerResult[] = [];
   for (const write of buildImportWrites(plan)) {
-    // Awaited inside the loop deliberately: the writes are ordered, and each is
-    // conditional on the one before it. Issuing them together would send the
-    // Pipeline before its Phases exist, and the Workflow before its Pipelines do.
-    let ack: SavePhasesResult | SavePipelinesResult | SaveWorkflowsResult;
-    if (write.key === 'phases') {
-      ack = await deps.savePhases(write.request);
-    } else if (write.key === 'pipelines') {
-      ack = await deps.savePipelines(write.request);
-    } else {
-      ack = await deps.saveWorkflows(write.request);
-    }
+    // Awaited inside the loop deliberately, and one layer per publish: the writes
+    // are ordered and each is conditional on the one before it. A single package
+    // carrying all three would send the Pipeline before its Phases exist, and the
+    // Workflow before its Pipelines do — and would report one verdict where the
+    // per-row table needs one per layer (FR-042).
+    const ack = await deps.publishPackage({ layers: [write.layer] });
     results.push({ key: write.key, ack });
     if (ack.status !== 'accepted') break;
   }

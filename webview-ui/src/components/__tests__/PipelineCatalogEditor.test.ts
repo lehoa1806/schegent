@@ -1086,10 +1086,17 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     // scope one is deleted with the tier. The audit property is unchanged and
     // still worth asserting on what remains: the status is legible without
     // seeing the colour it is painted in.
+    // Feature 101 (T037) — the badge is read off the whole row rather than off
+    // the selection button. It moved out of the button and into
+    // `DefinitionLifecycleRow` beside it, because T042 hangs interactive
+    // lifecycle actions off that row and a control nested in a button is invalid
+    // markup. The audit property is unchanged: the status is still legible
+    // without seeing the colour it is painted in.
     const { container } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
-    const row = container.querySelector(
-      '[data-testid="pipelines-list-item-custom-flow"]'
-    ) as HTMLElement;
+    const row = container
+      .querySelector('[data-testid="pipelines-list-item-custom-flow"]')
+      ?.closest('.phase-list-row') as HTMLElement;
+    expect(row).not.toBeNull();
     expect(row.querySelector('.scope-badge')).toBeNull();
     expect(row.querySelector('.status-badge')?.textContent?.trim()).toBe('effective');
   });

@@ -14,6 +14,7 @@
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
+import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
 import type { PhaseCatalogProjection } from './snapshot';
 
 type Sanitize = (value: string) => string;
@@ -33,6 +34,12 @@ export interface PhaseCatalogComposeOptions {
   readonly sanitize: Sanitize;
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly defaultRunnerKind: BackendRunnerKind;
+  /**
+   * Feature 101 (T014) — the lifecycle facts for this kind. Optional so a host
+   * with no catalog store wired keeps projecting rows; every record then omits
+   * `lifecycle`, which is the truth rather than a filled-in default.
+   */
+  readonly lifecycle?: BuilderLifecycleLookup;
 }
 
 function catalogText(value: string, sanitize: Sanitize, max: number): string {
@@ -102,6 +109,7 @@ export function composePhaseCatalogProjection(
 ): PhaseCatalogProjection | undefined {
   if (!phaseCatalog) return undefined;
   const { sanitize, availableModels, defaultRunnerKind } = options;
+  const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
   return Object.freeze({
     state: 'ready' as const,
     records: Object.freeze(phaseCatalog.records.map((record) => {
@@ -109,6 +117,10 @@ export function composePhaseCatalogProjection(
         ? projectPhaseDefinition(record.definition, sanitize)
         : null;
       const runner = definition?.runner ?? defaultRunnerKind;
+      // Keyed by the record's own `phaseId`, not by its `key`: the key carries a
+      // positional suffix for the Library's repair affordance, and the manifest
+      // knows a definition only by its id.
+      const lifecycle = lifecycleOf(record.phaseId);
       return Object.freeze({
         key: catalogText(record.key, sanitize, KEY_MAX),
         phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
@@ -122,7 +134,8 @@ export function composePhaseCatalogProjection(
         }))),
         ...(definition?.model !== undefined
           ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
-          : {})
+          : {}),
+        ...(lifecycle !== undefined ? { lifecycle } : {})
       });
     })),
     effective: Object.freeze(

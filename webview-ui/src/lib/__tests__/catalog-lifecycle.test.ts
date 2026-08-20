@@ -6,8 +6,12 @@
 // one-shot ack, the structured `result`, the five-second timeout, no
 // cross-resolution, the RFC 4122 v4 layout — because each helper carried its own
 // copy of the code. There is one `dispatch` now, so the transport is asserted once
-// here and those three files keep only what is still theirs: the translation from
-// an authored layer to a package layer.
+// here.
+//
+// Feature 101 (T030) — those three files and the helpers under them are deleted.
+// The translation each of them kept (an authored row to a definition body) went
+// with its editor, and is asserted where the editor sends: the per-editor suites
+// read the `body` off the draft write.
 //
 // Two things this file adds that no retired suite could have had:
 //

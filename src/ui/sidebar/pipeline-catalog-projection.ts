@@ -11,6 +11,7 @@
 // never persisted, never written to `WorkflowRun`, and never audited (C10).
 
 import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
+import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
 import type {
   PipelineDefinition,
   PipelineInputPort,
@@ -181,6 +182,12 @@ export interface PipelineCatalogProjectionOptions {
    * exposes none, which projects no `consumingWorkflowIds` at all.
    */
   readonly workflowRefs?: readonly { readonly workflowId: string; readonly pipelineId: string }[];
+  /**
+   * Feature 101 (T015) — the lifecycle facts for this kind. Optional so a host
+   * with no catalog store wired keeps projecting rows; every record then omits
+   * `lifecycle`, which is the truth rather than a filled-in default.
+   */
+  readonly lifecycle?: BuilderLifecycleLookup;
 }
 
 /**
@@ -214,6 +221,7 @@ export function projectPipelineCatalog(
 ): PipelineCatalogProjection {
   const { sanitize } = options;
   const consumers = consumersByPipelineId(options.workflowRefs ?? [], sanitize);
+  const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
   const records: PipelineCatalogSourceProjection[] = catalog.records.map((record) => {
     const definition = record.definition
       ? projectPipelineDefinition(record.definition, sanitize)
@@ -221,6 +229,7 @@ export function projectPipelineCatalog(
     const runner = definition?.executionDefaults?.runner ?? options.defaultRunnerKind;
     const model = definition?.executionDefaults?.model;
     const pipelineId = text(record.pipelineId, sanitize, ID_MAX);
+    const lifecycle = lifecycleOf(record.pipelineId);
     return Object.freeze({
       key: text(record.key, sanitize, KEY_MAX),
       pipelineId,
@@ -239,7 +248,11 @@ export function projectPipelineCatalog(
       ...(model !== undefined
         ? { modelAvailable: (options.availableModels[runner] ?? []).includes(model) }
         : {}),
-      ...(consumers.has(pipelineId) ? { consumingWorkflowIds: consumers.get(pipelineId) } : {})
+      ...(consumers.has(pipelineId) ? { consumingWorkflowIds: consumers.get(pipelineId) } : {}),
+      // Looked up by the record's own id, before sanitizing and capping: the
+      // manifest holds the authored id, and a capped one would miss every
+      // definition whose id is longer than the display bound.
+      ...(lifecycle !== undefined ? { lifecycle } : {})
     });
   });
 

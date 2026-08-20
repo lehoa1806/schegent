@@ -39,7 +39,7 @@ describe('Feature 092 T098 — the nav enum is unchanged (FR-061)', () => {
       'history',
       'metrics',
       'system',
-      'pipeline-builder',
+      'builder',
       'settings'
     ]);
   });
