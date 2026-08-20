@@ -10,6 +10,25 @@ export type FeatureRequestStatus =
   | 'failed';
 
 /**
+ * The statuses that end a Task, enumerated beside the union they come from.
+ *
+ * Feature 102 (T049) — sited here for the reason `TERMINAL_RUN_STATUSES` is
+ * sited beside `WorkflowRunStatus`: the set and the union change together, and a
+ * caller that spelled the three words itself would be a second copy nobody
+ * updates. It is emphatically not the same list as that one — this is the queue's
+ * vocabulary, that is a Run's, and the two unions differ on `in-flight` and
+ * `running`.
+ *
+ * Enumerated rather than derived by negating the active statuses: `!== 'pending'`
+ * also admits `paused`, and a paused Task is accepted work that has not run yet.
+ */
+export const TERMINAL_REQUEST_STATUSES = ['completed', 'canceled', 'failed'] as const;
+
+export function isTerminalRequestStatus(status: FeatureRequestStatus | string): boolean {
+  return (TERMINAL_REQUEST_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * Queue lifecycle discriminator. Single source of truth for whether
  * `AutoDrainCoordinator` may promote the next pending task.
  *

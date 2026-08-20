@@ -23,6 +23,10 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 
 const COMPONENT = resolve(__dirname, '../CatalogEmptyState.svelte');
 const RUNS_SURFACE = resolve(__dirname, '../../RunsSurface.svelte');
+// Feature 102 (T045) — the Runs half of SC-008 moved down a level. `RunsSurface`
+// rendered the guidance when Runs had one empty state; it now has two per section
+// and each section states its own, so the import lives with the renderer.
+const RUNS_SECTION = resolve(__dirname, '../../Runs/LaunchableSection.svelte');
 
 afterEach(() => cleanup());
 
@@ -58,11 +62,17 @@ describe('CatalogEmptyState — the words are the shared ones (US6, T062, FR-032
   });
 
   it('shares that constant with the Runs surface (SC-008)', () => {
-    // The other half of the contract. If the Runs surface ever inlines the
-    // text, the two can drift without either file's own tests noticing.
-    const runs = readFileSync(RUNS_SURFACE, 'utf8');
-    expect(runs).toContain('empty-catalog-guidance');
-    expect(runs).not.toContain(EMPTY_CATALOG_GUIDANCE.headline);
+    // The other half of the contract. If the Runs side ever inlines the text, the
+    // two can drift without either file's own tests noticing.
+    //
+    // The import is asserted against whichever Runs file renders the guidance —
+    // today the section, not the surface — and the no-inline half is asserted
+    // against both, because the surface losing the render is not permission for it
+    // to grow a copy of the words.
+    const section = readFileSync(RUNS_SECTION, 'utf8');
+    expect(section).toContain('empty-catalog-guidance');
+    expect(section).not.toContain(EMPTY_CATALOG_GUIDANCE.headline);
+    expect(readFileSync(RUNS_SURFACE, 'utf8')).not.toContain(EMPTY_CATALOG_GUIDANCE.headline);
   });
 
   it('asks the shared rule when to show, rather than testing the count itself', () => {

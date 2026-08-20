@@ -35,8 +35,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nodeDigest, systemClock } from '../../src/activation/catalog-store-wiring';
 import {
   createCatalogStore,
+  createQueueRunProvenance,
   publishPackage,
-  runProvenanceNone,
   storedIds,
   storedRows,
   type CatalogStore
@@ -117,7 +117,7 @@ function openStoreFailingWrite(matches: WriteMatcher, errno: string): CatalogSto
     fs,
     clock: systemClock,
     digest: nodeDigest,
-    provenance: runProvenanceNone
+    provenance: createQueueRunProvenance(() => [])
   });
 }
 
@@ -127,7 +127,7 @@ function openStore(): CatalogStore {
     fs: createCatalogFsAdapter(storeRootOf(workspaceRoot)),
     clock: systemClock,
     digest: nodeDigest,
-    provenance: runProvenanceNone
+    provenance: createQueueRunProvenance(() => [])
   });
 }
 

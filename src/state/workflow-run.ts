@@ -1,5 +1,6 @@
 import type { Phase, PhaseOutcome } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
+import type { CatalogVersionRef } from '../contracts/catalog-version';
 import type {
   PhaseBinding,
   PipelineExecutionDefaults,
@@ -32,6 +33,22 @@ export interface WorkflowRunPipeline {
   readonly bindings?: readonly PhaseBinding[];
   readonly executionDefaults?: PipelineExecutionDefaults;
   readonly recommendedNext?: readonly string[];
+  /**
+   * Feature 102 (T037, FR-021, FR-026) — which published version this snapshot
+   * froze, when it was frozen from the catalog rather than supplied ready-made.
+   *
+   * It lives here, on the body, rather than in a map beside it, because a version
+   * that can be separated from the body it describes is the failure this feature
+   * exists to prevent. A connected run freezes each member Pipeline once at
+   * start; every later member start reads its version off the snapshot it is
+   * about to execute, so the version a plan records always describes the body
+   * that plan runs — never today's Active version of a definition the run stopped
+   * tracking at start.
+   *
+   * Additive and optional, like feature 082's fields above, so a Run persisted
+   * before this feature reads back unchanged and no `STATE_SCHEMA_VERSION` moves.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
 }
 
 export type WorkflowRunStatus = 'running' | 'paused' | 'failed' | 'completed' | 'canceled';

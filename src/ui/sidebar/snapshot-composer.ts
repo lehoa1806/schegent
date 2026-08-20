@@ -1,7 +1,6 @@
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { SanitizedLogger } from '../../lib/logger';
-import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunStateMap } from '../../state/run-state-migrator';
@@ -27,12 +26,13 @@ import { NO_BUILDER_LIFECYCLE_BY_KIND } from './builder-lifecycle';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
+import { buildLaunchProjection } from './launch-projection';
+import { composeTrustProjection } from './trust-projection';
 import type { StateProjectorDeps } from './state-projector';
 import {
   IDLE_EVIDENCE_HEALTH,
   IDLE_GENERAL_SETTINGS,
   IDLE_SESSION_ARTIFACTS,
-  IDLE_TRUST_PROJECTION,
   SCHEMA_VERSION,
   type AuditTailEntry,
   type HistoryEntry,
@@ -241,20 +241,10 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     )
   });
 
-  let workspaceTrust = IDLE_TRUST_PROJECTION.workspaceTrust;
-  let resolvedTrust = IDLE_TRUST_PROJECTION.resolvedTrust;
-  try {
-    const resolved = getResolvedCapabilities();
-    workspaceTrust = resolved.workspaceTrust;
-    resolvedTrust = Object.freeze({
-      phases: resolved.phases,
-      retryConditions: resolved.retryConditions
-    });
-  } catch (error) {
-    ctx.logger?.warn(
-      `projector: failed to resolve trust capabilities: ${(error as Error).message}`
-    );
-  }
+  const trust = composeTrustProjection((message) => ctx.logger?.warn(message));
+  // Feature 102 (FR-R3-018) — read off the two catalog projections above, never
+  // re-resolved from the store; absent while either is still unresolved.
+  const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog);
 
   return Object.freeze({
     schemaVersion: SCHEMA_VERSION,
@@ -293,8 +283,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     sessionArtifacts: deps.getSessionArtifacts?.() ?? IDLE_SESSION_ARTIFACTS,
     evidenceHealth: deps.getEvidenceHealth?.() ?? IDLE_EVIDENCE_HEALTH,
     telemetry: ctx.telemetry,
-    workspaceTrust,
-    resolvedTrust,
+    workspaceTrust: trust.workspaceTrust,
+    resolvedTrust: trust.resolvedTrust,
+    ...(launchables !== undefined ? { launchables } : {}),
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
     ...(pipelineCatalogProjection !== undefined
       ? { pipelineCatalog: pipelineCatalogProjection }

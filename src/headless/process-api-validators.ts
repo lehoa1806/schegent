@@ -16,7 +16,7 @@
 // This module imports no editor host API (FR-007). It performs no I/O, reads no
 // configuration, and retains nothing.
 
-import { validRunRequest } from '../contracts/validators/launch-pipeline';
+import { validRunRequest } from '../contracts/validators/run-request-shape';
 import { validateExportProcessYaml } from '../contracts/validators/process-yaml';
 import { QUEUE_ID_MAX } from '../contracts/validators/shared';
 import { validateContinueWorkflow } from '../contracts/validators/workflow-run';

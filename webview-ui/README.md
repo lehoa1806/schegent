@@ -7,7 +7,7 @@ Svelte 5 + Vite 7 app that renders both the Schegent **sidebar** and the **dashb
 | Surface | Entry | Purpose |
 |---|---|---|
 | Sidebar | `webview-ui/src/App.svelte` (mounted via `index.html`) | Compact, non-scrolling **status bar** (~160px). Four zones: Status Row, Stats Strip (done/pending/failed counters + active phase line), Current Task (freshness + activity + optional CLI monitor row), and a single **Open Dashboard** button. |
-| Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: queue management across up to twenty queues, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. |
+| Dashboard | `webview-ui/src/dashboard/App.svelte` (mounted via `dashboard.html`; route components live under `webview-ui/src/components/`) | Full-window operator console: queue management across up to twenty queues, pending-task edit/reorder, history rerun, monitor tail, audit drill-in, controls (cancel / resume / retry-active-run), phase tiles. All previously-sidebar capabilities live here. Its `runs` route owns the **launch surface** — the one place a run is started (spec 102). |
 
 The Dashboard's default route (`operations`) is itself three drill-down tiers (see "Drill-down locations under `operations`" below). Feature 097 deleted `Dashboard.svelte` and its subtree and redistributed its content: tier 2 (`drilldown/QueueDetailTier.svelte`) now owns the task list (`QueueDetailRows.svelte`), queue controls (`QueueControls.svelte`), the on-demand task composer, and the scheduled-start indicator (`QueueIdlePendingPanel.svelte`); tier 3 (`drilldown/RunDetailTier.svelte`) now owns a single run's phase progression, phase log feed, and outputs.
 
@@ -30,8 +30,11 @@ webview-ui/
 │   │                       surfaces; Feature 092 reinstated multi-queue
 │   │                       operation as OperationsSurface + drilldown/,
 │   │                       not by restoring either removed component.)
-│   │   └── drilldown/    — QueuesTier / QueueDetailTier / RunDetailTier,
-│   │                       the three tiers OperationsSurface routes between
+│   │   ├── drilldown/    — QueuesTier / QueueDetailTier / RunDetailTier,
+│   │   │                   the three tiers OperationsSurface routes between
+│   │   └── Runs/         — the launch surface RunsSurface mounts: the two
+│   │                       Launchable* components, WorkflowTriggerForm, and
+│   │                       the pure launch-selection state (spec 102)
 │   └── lib/
 │       ├── derive-stats.ts — pure helper: deriveSidebarStats / deriveActivePhase
 │       ├── deletion-confirmation.ts — status-aware destructive confirmation copy
@@ -53,6 +56,15 @@ Webview → host commands and host → webview snapshots are typed in `src/contr
 - Validation: `MessageRouter` validates every inbound command via `src/contracts/runtime-validators.ts`. Unknown shapes are rejected and audited as `audit.invalid_command`.
 
 The webview's command literal types are re-exported from `src/contracts/`. There is no separate webview-side definition.
+
+Spec 102 adds `WorkflowSnapshot.launchables` in that direction and nothing new
+in the other: the launch surface starts runs through the command shapes that
+already existed. `lib/workflow-run-ipc.ts`'s `launchWorkflow()` shipped in spec
+088 with no caller and now has one — `components/Runs/WorkflowTriggerForm.svelte`.
+The payload it sends carries **no `catalogVersion`**; provenance is resolved
+host-side inside `validateRunRequest()` and a payload asserting its own is
+refused (`tests/contract/catalog-version-not-accepted.test.ts`), so this is a
+field the webview never learns to send rather than one the host strips.
 
 ### Dynamic pipelines (spec 009)
 
@@ -204,7 +216,7 @@ after `Operations`). The route ids and their nav labels are declared in
 | Route (id) | Nav label | Component | Purpose |
 |---|---|---|---|
 | `operations` | Queues | `components/OperationsSurface.svelte` | The three drill-down tiers (spec 092). Tier 2 (`drilldown/QueueDetailTier.svelte`) renders the task list, queue controls, an on-demand composer, and the scheduled-start indicator; tier 3 (`drilldown/RunDetailTier.svelte`) renders one run's phase progression, phase log feed, and outputs. Feature 097 deleted `components/Dashboard.svelte`, which tier 2 embedded until then. |
-| `runs` | Runs | `components/RunsSurface.svelte` | Connected composed runs and the Run composer. See "Connected-run surfaces" below. |
+| `runs` | Runs | `components/RunsSurface.svelte` | The launch surface — Pipelines and Workflows, each listing only Active definitions, with an explicit select → Trigger → fulfil inputs → Run flow — plus connected composed runs and the Run composer. See "Connected-run surfaces" and "The launch surface" below. |
 | `history` | History | `components/HistoryDashboard.svelte` | Completed-run history and rerun. |
 | `metrics` | Metrics | `components/MetricsDashboard/MetricsDashboard.svelte` | On-demand audit-log rollup (spec 073). |
 | `system` | System Log | `components/SystemTab.svelte` | **System-scoped audit entries** (lifecycle, queue/task control, scheduling, audit pipeline housekeeping). See "Audit surfaces" below. |
@@ -327,6 +339,38 @@ pass through TypeScript. `__tests__/` is skipped as both node and edge, so a
 component reachable only from its own test counts as unreachable. Deliberately
 retired components sit in a 10-entry `ALLOWLIST`, each with a recorded reason;
 `WorkflowRun.svelte` and `RunLauncher.svelte` may never be added to it.
+
+### The launch surface (spec 102)
+
+Runs is now where work is **started**, and the only place it is started.
+`components/Runs/` is a new owned directory under `RunsSurface`:
+
+| Module | Role |
+|---|---|
+| [`LaunchableSection.svelte`](src/components/Runs/LaunchableSection.svelte) | One section — Pipelines or Workflows — listing only definitions with an active version |
+| [`LaunchableRow.svelte`](src/components/Runs/LaunchableRow.svelte) | One offered definition and its **Trigger** control |
+| [`LaunchableDetail.svelte`](src/components/Runs/LaunchableDetail.svelte) | The selected definition's trigger panel |
+| [`WorkflowTriggerForm.svelte`](src/components/Runs/WorkflowTriggerForm.svelte) | Fulfil a Workflow's derived inputs, then Run — the first call site `launchWorkflow()` has ever had |
+| [`launch-selection.ts`](src/components/Runs/launch-selection.ts) | Pure selection state: which definition is picked, across both sections |
+
+The flow is explicit at every step — select, Trigger, fulfil inputs, Run — and
+nothing starts on a click that was not the last one. The two sections read
+`snapshot.launchables`, which the host projects (see ARCHITECTURE.md, "Launch
+projection"); the webview derives no second list of its own, and a **missing**
+`launchables` is the loading arm rather than an empty catalog.
+
+Two contract facts the webview does not get to bend. A launch payload carries
+**no `catalogVersion`** — provenance is resolved host-side inside
+`validateRunRequest()`, and a payload arriving with one is refused rather than
+sanitized. And a Workflow's trigger inputs are the host's derived ports,
+recomputed per open and never persisted, so a form opened after a node's
+Pipeline changed shape asks for the new ports and not the old ones.
+
+The restructure moved both older components rather than retiring them.
+`WorkflowRun.svelte` and `RunLauncher.svelte` are still mounted from
+`RunsSurface.svelte` and still absent from the reachability `ALLOWLIST` — a
+restructure that quieted the gate by allowlisting them would have deleted the
+surfaces in every sense but the file listing.
 
 ### Settings sub-tabs (spec 012 reduction)
 

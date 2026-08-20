@@ -11,6 +11,8 @@
 
 import type { CMD_LAUNCH_PIPELINE, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
+import { validRunRequest } from '../validators/run-request-shape';
+import { hasUnexpectedKeys } from '../validators/shared';
 
 export type { RunRequest, RunRequestFieldError };
 
@@ -64,12 +66,15 @@ export type LaunchPipelineOutcome = LaunchPipelineResult['outcome'];
  * which is why the guard wrapping this one stays there. Field-level rules are
  * not this function's job: `validateRunRequest()` owns them and reports every
  * failing field at once (FR-013), which a boolean predicate cannot do.
+ *
+ * Feature 102 (T039, FR-023) — it used to check only that the four required
+ * keys were present and leave every other key alone, which meant the ingress
+ * validator refused a submitted `catalogVersion` and this guard accepted the
+ * same payload. Both answer for the same wire message, so they now share one
+ * rule: `validRunRequest`, allowlisted at every depth.
  */
 export function isLaunchPipelinePayload(payload: unknown): payload is LaunchPipelineRequest {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  const req = (payload as { request?: unknown }).request as Record<string, unknown> | undefined;
-  if (!req || typeof req !== 'object' || Array.isArray(req)) return false;
-  return typeof req.pipelineId === 'string' && req.pipelineId.length > 0
-    && Array.isArray(req.inputs) && Array.isArray(req.supplemental)
-    && Array.isArray(req.outputs);
+  if (hasUnexpectedKeys(payload as Record<string, unknown>, ['request'])) return false;
+  return validRunRequest((payload as { request?: unknown }).request);
 }
