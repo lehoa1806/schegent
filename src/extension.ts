@@ -45,6 +45,7 @@ import {
   recordCompletedInterruptedReset
 } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
+import { buildBuilderLifecycleByKind } from './ui/sidebar/builder-lifecycle';
 import { createWorkflowPipelineRefReader } from './ui/sidebar/workflow-pipeline-ref-source';
 import {
   readGeneralSettings,
@@ -894,6 +895,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // the Library and Builder. Re-resolved with the Pipeline catalog it was
     // validated against, so a Pipeline catalog change refreshes both.
     getWorkflowCatalog: () => catalogSession.workflowCatalog,
+    // Feature 101 (FR-005, FR-007) — the lifecycle facts behind those three
+    // resolutions. Rebuilt on every compose from the session's current snapshot,
+    // which is the same read the resolutions came from, so a row and its badge
+    // cannot describe two different states of the store.
+    getBuilderLifecycle: () => buildBuilderLifecycleByKind(catalogSession.definitions),
     // Feature 063 — surface `schegent.ui.confirmations.enable` into the
     // snapshot so the webview's `useConfirm` helper can short-circuit
     // without an IPC round-trip. Re-read on every projection; the

@@ -1,39 +1,42 @@
 <script lang="ts">
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
-  import { savePhases as savePhasesHelper, type SavePhasesMutation } from '../lib/save-phases';
+  import {
+    deactivateDefinition,
+    draftTokenOfRecord,
+    saveDefinitionDraft,
+    type LifecycleResult
+  } from '../lib/catalog-lifecycle';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
   import ProcessImportPreflight from './ProcessImport/ProcessImportPreflight.svelte';
   import PipelineCatalogEditor from './PipelineBuilderEditors/PipelineCatalogEditor.svelte';
   import WorkflowCatalogEditor from './PipelineBuilderEditors/WorkflowCatalogEditor.svelte';
-  import type { MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
+  import type { BuilderTab, MutablePhase, PhaseEditState } from './PipelineBuilderEditors/types';
   import { PipelineCatalogStore } from './PipelineBuilderEditors/pipeline-catalog-store.svelte';
   import {
     effectivePhasesToMutable,
     formatPhaseSaveRejection,
-    makeDuplicatePhaseDraft,
-    makeNewPhaseDraft,
     phaseTooltip,
     rebasePhaseMutation,
     sourceRecordToMutable,
-    toSavePhaseRow
+    toSavePhaseRow,
+    type PhaseCatalogMutation
   } from './PipelineBuilderEditors/phase-catalog-state';
+  import {
+    addPhaseRow, duplicatePhaseRow, movePhaseRow, phasesAtHistoryStep, resetPhaseRow,
+    retryConditionToggle, updatePhaseRow, withPhaseHistoryEntry, withRawJsonToggled,
+    type PhaseMutationEdit, type PhaseRowsEdit
+  } from './PipelineBuilderEditors/phase-catalog-actions';
   import { initialModels, withModelAdded, withModelRemoved, withModelReplaced, withModelsDetected } from './PipelineBuilderEditors/model-catalog-state';
+  import BuilderTabs from './Builder/BuilderTabs.svelte';
   import TrustBanner from './TrustBanner.svelte';
   import './PipelineBuilderEditors/pipeline-builder.css';
   interface Props {
     snapshot: WorkflowSnapshot;
-    initialTab?: 'pipelines' | 'phases' | 'workflows' | 'models';
+    initialTab?: BuilderTab;
   }
   const { snapshot, initialTab }: Props = $props();
-  type BuilderTab = 'pipelines' | 'phases' | 'workflows' | 'models';
-  const BUILDER_TABS = Object.freeze([
-    { id: 'pipelines', label: 'Pipelines' },
-    { id: 'phases', label: 'Phases' },
-    { id: 'workflows', label: 'Workflows' },
-    { id: 'models', label: 'Models' }
-  ] satisfies ReadonlyArray<{ id: BuilderTab; label: string }>);
   const workspaceTrust = $derived(snapshot.workspaceTrust === true);
   const trustPhases = $derived(
     workspaceTrust && snapshot.resolvedTrust?.phases === true
@@ -59,9 +62,13 @@
   let lastAdoptedModels: Record<string, readonly string[]> | null = null; // re-sync on snapshot change
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
-  let phaseMutation = $state<SavePhasesMutation | null>(null);
+  let phaseMutation = $state<PhaseCatalogMutation | null>(null);
   let phaseMutationSourceKey = $state<string | null>(null);
-  let phaseSavePending = $state(false); let acceptedPhaseRevision = $state<string | null>(null); let stalePhaseRevision = $state<string | null>(null);
+  // Feature 101 (T026) — both handshake flags are booleans now. They were named
+  // after the revision string the retired `savePhases` ack carried, and the acks
+  // carry no revision: what the effect below has always read out of them is
+  // "a write landed" and "the last write was refused as stale".
+  let phaseSavePending = $state(false); let phaseSaveAccepted = $state(false); let phaseRebasePending = $state(false);
   /** The revision the visible rows were projected from; '' before the first. */
   let adoptedPhaseRevision = $state('');
   const phaseCatalogReady = $derived(snapshot.phaseCatalog?.state === 'ready');
@@ -106,11 +113,11 @@
       // The handshake is otherwise unchanged: it is still the expected-revision
       // gate, now reading the store's manifest revision for the Phase kind.
       const revision = catalog.revision;
-      if (stalePhaseRevision !== null && phaseMutation && revision !== adoptedPhaseRevision) {
+      if (phaseRebasePending && phaseMutation && revision !== adoptedPhaseRevision) {
         phases = rebasePhaseMutation(catalog.records, phases, phaseMutation, phaseMutationSourceKey);
-        adoptedPhaseRevision = revision; stalePhaseRevision = null;
+        adoptedPhaseRevision = revision; phaseRebasePending = false;
       }
-      const acceptedRefresh = acceptedPhaseRevision !== null && revision !== adoptedPhaseRevision;
+      const acceptedRefresh = phaseSaveAccepted && revision !== adoptedPhaseRevision;
       const shouldAdopt = adoptedPhaseRevision === '' || phaseMutation === null || acceptedRefresh;
       if (revision !== adoptedPhaseRevision && shouldAdopt) {
         phases = catalog.records.map(sourceRecordToMutable);
@@ -118,25 +125,23 @@
         phaseSavePending = false;
         phaseMutation = null;
         phaseMutationSourceKey = null;
-        selectedPhaseIndex = null; acceptedPhaseRevision = null; stalePhaseRevision = null;
+        selectedPhaseIndex = null; phaseSaveAccepted = false; phaseRebasePending = false;
       }
     }
   });
-  function submitPhaseMutation(
-    mutation: SavePhasesMutation,
-    sourceRows: readonly MutablePhase[] = phases,
-    prompt: { removedName?: string; originatingElement?: HTMLElement | null } = {}
-  ): void {
-    const catalog = snapshot.phaseCatalog;
-    if (!catalog || catalog.state !== 'ready' || phaseSavePending) return;
-    const payload = sourceRows.map(toSavePhaseRow);
-    phaseSavePending = true; acceptedPhaseRevision = null;
-    void savePhasesHelper({
-      expectedRevision: adoptedPhaseRevision,
-      mutation,
-      phases: payload,
-      ...prompt
-    }).then((result) => {
+  /**
+   * Feature 101 (T026, FR-026a) — one lifecycle write, sent and settled.
+   *
+   * `send` is a thunk rather than a request because the two writers differ in
+   * more than payload: a draft save is ungated and a deactivation raises its
+   * confirmation inside the helper (FR-049). What they share is this — the
+   * pending gate, the refusal handling, and when to stop waiting — so that is
+   * what lives here and nothing else does.
+   */
+  function submitPhaseWrite(send: () => Promise<LifecycleResult>): void {
+    if (phaseSavePending) return;
+    phaseSavePending = true; phaseSaveAccepted = false;
+    void send().then((result) => {
       if (result.status === 'rejected') {
         phaseSavePending = false;
         // Feature 100 (T509b) — the operator closed the removal prompt. Nothing
@@ -145,228 +150,123 @@
           phaseMutation = null; phaseMutationSourceKey = null;
           return;
         }
-        const stale = result.result as { currentRevision?: unknown } | undefined;
-        if (result.reason === 'stale-catalog' && typeof stale?.currentRevision === 'string') stalePhaseRevision = stale.currentRevision;
+        if (result.reason === 'stale-catalog') phaseRebasePending = true;
         showSaveError(formatPhaseSaveRejection(result.reason, result.result));
         return;
       }
       saveError = null;
-      const accepted = result.result as { revision?: string } | undefined; acceptedPhaseRevision = accepted?.revision ?? '';
-      if (acceptedPhaseRevision === catalog.revision) {
-        phaseSavePending = false; phaseMutation = null;
-        phaseMutationSourceKey = null; acceptedPhaseRevision = null;
+      phaseSaveAccepted = true;
+      // FR-026d — an unchanged save is a success that writes nothing, so the
+      // projection will not move and no snapshot is coming. Settle here, or the
+      // editor waits on a revision change that never arrives.
+      if ((result.result as { appended?: boolean } | undefined)?.appended === false) {
+        phaseSavePending = false; phaseSaveAccepted = false;
+        phaseMutation = null; phaseMutationSourceKey = null;
       }
     });
   }
-  function savePhases(): void { if (phaseMutation) submitPhaseMutation(phaseMutation); }
+  /**
+   * FR-026a — save writes a DRAFT of the one edited definition.
+   *
+   * The whole-layer publish this replaced made an edit live and manufactured a
+   * fresh version of every untouched sibling as a side effect (FR-026b, FR-026c).
+   * The row is found by source key rather than by id because the id is itself an
+   * editable field.
+   */
+  function savePhaseDraft(): void {
+    const catalog = snapshot.phaseCatalog;
+    if (!phaseMutation || catalog?.state !== 'ready') return;
+    const row = phases.find((candidate) => candidate.sourceKey === phaseMutationSourceKey);
+    if (!row) return;
+    const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
+    submitPhaseWrite(() =>
+      saveDefinitionDraft({
+        kind: 'phase',
+        id: row.id,
+        expectedDraftVersion: draftTokenOfRecord(record),
+        body: toSavePhaseRow(row)
+      })
+    );
+  }
   function saveModels(): void {
     void saveModelsHelper(JSON.parse(JSON.stringify(models)));
-  }
-  function getPhaseTooltip(phaseId: string): string {
-    return phaseTooltip(effectivePhases, phaseId);
   }
   let selectedPhaseIndex = $state<number | null>(null);
   let phaseHistory = $state<MutablePhase[][]>([]);
   let phaseHistoryIndex = $state(-1);
   let isPhaseUndoRedoAction = false;
   let editStateById = $state<Record<string, PhaseEditState>>({});
-  function ensureEditState(id: string): PhaseEditState {
-    if (!editStateById[id]) editStateById = { ...editStateById, [id]: { rawJsonMode: false } };
-    return editStateById[id];
+  // Feature 101 (T002) — the row mutations live in `phase-catalog-actions.ts`.
+  // Each returns the rows and pending-mutation state its edit leaves behind, or
+  // `null` when it refuses; this is the one place that assignment happens.
+  function applyPhaseEdit(edit: PhaseMutationEdit | PhaseRowsEdit | null): void {
+    if (!edit) return;
+    phases = edit.phases;
+    phaseMutation = edit.mutation;
+    phaseMutationSourceKey = edit.mutationSourceKey;
+    if ('selectedIndex' in edit) selectedPhaseIndex = edit.selectedIndex;
   }
-  function toggleRawJson(id: string): void {
-    const cur = ensureEditState(id);
-    editStateById = { ...editStateById, [id]: { rawJsonMode: !cur.rawJsonMode } };
+  function updatePhase(index: number, patch: Partial<MutablePhase>): void {
+    applyPhaseEdit(updatePhaseRow(phases, index, patch, phaseMutation, phaseMutationSourceKey));
+  }
+  function movePhase(index: number, target: number): void {
+    if (phaseMutation) return;
+    applyPhaseEdit(movePhaseRow(phases, index, target, selectedPhaseIndex));
+  }
+  function stepPhaseHistory(step: number): void {
+    isPhaseUndoRedoAction = true;
+    phaseHistoryIndex = step;
+    phases = phasesAtHistoryStep(phaseHistory, step);
   }
   $effect(() => {
     if (!initialized) return;
     const currentStr = JSON.stringify(phases);
     if (!isPhaseUndoRedoAction) {
-      const lastStateStr = phaseHistoryIndex >= 0 ? JSON.stringify(phaseHistory[phaseHistoryIndex]) : null;
-      if (currentStr !== lastStateStr) {
-        phaseHistory = phaseHistory.slice(0, phaseHistoryIndex + 1);
-        phaseHistory.push(JSON.parse(currentStr));
-        phaseHistoryIndex++;
-      }
+      const recorded = withPhaseHistoryEntry(phaseHistory, phaseHistoryIndex, currentStr);
+      if (recorded) { phaseHistory = recorded.history; phaseHistoryIndex = recorded.index; }
     }
     isPhaseUndoRedoAction = false;
   });
-  function undoPhase(): void {
-    if (phaseHistoryIndex > 0) { isPhaseUndoRedoAction = true; phaseHistoryIndex--; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
-  }
-  function redoPhase(): void {
-    if (phaseHistoryIndex < phaseHistory.length - 1) { isPhaseUndoRedoAction = true; phaseHistoryIndex++; phases = JSON.parse(JSON.stringify(phaseHistory[phaseHistoryIndex])); }
-  }
-  function addPhase(): void {
-    if (phaseMutation) return;
-    const draft = makeNewPhaseDraft(phases);
-    phases = [...phases, draft];
-    selectedPhaseIndex = phases.length - 1;
-    phaseMutation = { kind: 'create', phaseId: draft.id };
-    phaseMutationSourceKey = draft.sourceKey;
-  }
-  function duplicatePhase(index: number): void {
-    if (phaseMutation) return;
-    const original = phases[index];
-    if (!original) return;
-    const duplicate = makeDuplicatePhaseDraft(original, phases);
-    const newPhases = [...phases];
-    newPhases.splice(index + 1, 0, duplicate);
-    phases = newPhases;
-    selectedPhaseIndex = index + 1;
-    phaseMutation = {
-      kind: 'duplicate',
-      sourcePhaseId: original.id,
-      phaseId: duplicate.id
-    };
-    phaseMutationSourceKey = duplicate.sourceKey;
-  }
   // Feature 100 (T509b) — the confirmation moved into `deactivateDefinition`,
   // the only function that can post the command it authorises (FR-049). This
   // handler supplies what the prompt needs to say and no longer asks itself.
+  // It stays here rather than moving with the others because it submits.
+  //
+  // Feature 101 (T026) — removal is still a deactivation and not a draft: a draft
+  // changes what the definition WILL be, and this changes whether it runs at all.
+  // The proposed row list it used to compute is gone with the whole-layer payload
+  // — an omission was how a package expressed a removal, and a package no longer
+  // carries this write.
   function removePhase(index: number, originatingElement?: HTMLElement | null): void {
     const phase = phases[index];
-    if (!phase || !phaseMutationsAllowed) return;
-    const proposed = phases.filter((_, rowIndex) => rowIndex !== index);
+    const catalog = snapshot.phaseCatalog;
+    if (!phase || !phaseMutationsAllowed || catalog?.state !== 'ready') return;
+    const record = catalog.records.find((candidate) => candidate.key === phase.sourceKey);
     phaseMutation = { kind: 'remove', phaseId: phase.id };
     phaseMutationSourceKey = phase.sourceKey;
-    submitPhaseMutation(phaseMutation, proposed, {
-      removedName: phase.name,
-      originatingElement: originatingElement ?? null
-    });
-  }
-  function movePhaseListUp(index: number): void {
-    if (index <= 0 || phaseMutation) return;
-    const moved = phases[index];
-    const newPhases = [...phases];
-    const tmp = newPhases[index - 1]; newPhases[index - 1] = newPhases[index];
-    newPhases[index] = tmp;
-    phases = newPhases;
-    if (selectedPhaseIndex === index) selectedPhaseIndex = index - 1;
-    else if (selectedPhaseIndex === index - 1) selectedPhaseIndex = index;
-    phaseMutation = { kind: 'edit', phaseId: moved.id };
-    phaseMutationSourceKey = moved.sourceKey;
-  }
-  function movePhaseListDown(index: number): void {
-    if (index >= phases.length - 1 || phaseMutation) return;
-    const moved = phases[index];
-    const newPhases = [...phases];
-    const tmp = newPhases[index + 1]; newPhases[index + 1] = newPhases[index];
-    newPhases[index] = tmp;
-    phases = newPhases;
-    if (selectedPhaseIndex === index) selectedPhaseIndex = index + 1;
-    else if (selectedPhaseIndex === index + 1) selectedPhaseIndex = index;
-    phaseMutation = { kind: 'edit', phaseId: moved.id };
-    phaseMutationSourceKey = moved.sourceKey;
-  }
-  function resetPhase(index: number): void {
-    const sourceKey = phases[index]?.sourceKey;
-    const original = snapshot.phaseCatalog?.records.find((record) => record.key === sourceKey);
-    phases = original
-      ? phases.map((phase, rowIndex) => rowIndex === index ? sourceRecordToMutable(original) : phase)
-      : phases.filter((_, rowIndex) => rowIndex !== index);
-    phaseMutation = null;
-    phaseMutationSourceKey = null;
-    selectedPhaseIndex = null;
-  }
-  function updatePhase(index: number, patch: Partial<MutablePhase>): void {
-    const current = phases[index];
-    if (!current || (phaseMutationSourceKey && current.sourceKey !== phaseMutationSourceKey)) return;
-    phases = phases.map((phase, i) => i === index ? { ...phase, ...patch } : phase);
-    const updated = phases[index];
-    if (updated.persisted) {
-      phaseMutation = { kind: 'edit', phaseId: current.id };
-      phaseMutationSourceKey = updated.sourceKey;
-      return;
-    }
-    updated.sourceKey = `draft::${updated.id}`;
-    if (phaseMutation?.kind === 'create' && typeof patch.id === 'string') {
-      phaseMutation = { kind: 'create', phaseId: patch.id };
-    } else if (phaseMutation?.kind === 'duplicate' && typeof patch.id === 'string') {
-      phaseMutation = { ...phaseMutation, phaseId: patch.id };
-    }
-    phaseMutationSourceKey = updated.sourceKey;
-  }
-  function onRawJsonSave(index: number, parsed: Record<string, unknown>): void {
-    updatePhase(index, parsed as Partial<MutablePhase>);
-  }
-  function onRetryConditionChange(index: number, e: { source: string; valid: boolean }): void {
-    updatePhase(index, { retryCondition: e.source });
-  }
-  function isRetryEnabled(phase: MutablePhase): boolean {
-    return typeof phase.retryCondition === 'string';
-  }
-  function toggleRetryCondition(index: number): void {
-    const phase = phases[index];
-    if (isRetryEnabled(phase)) {
-      // Disable: clear retryCondition
-      updatePhase(index, { retryCondition: undefined });
-    } else {
-      // Enable: seed with empty string so editor appears; user must fill it in
-      updatePhase(index, { retryCondition: '' });
-    }
+    submitPhaseWrite(() =>
+      deactivateDefinition(
+        { kind: 'phase', id: phase.id, expectedDraftVersion: draftTokenOfRecord(record) },
+        { definitionName: phase.name, originatingElement: originatingElement ?? null }
+      )
+    );
   }
   let newModelInput = $state<Record<string, string>>({});
   // The catalog transforms live in `model-catalog-state.ts` beside the seeding
-  // and merge rules they share; these are the bindings that apply them.
+  // and merge rules they share; this is the one binding that needs a body,
+  // because an accepted add is also what clears the input box.
   function addModel(backend: string): void {
     const next = withModelAdded(models, backend, newModelInput[backend] ?? '');
     if (!next) return;
     models = next;
     newModelInput[backend] = '';
   }
-  function removeModel(backend: string, index: number): void {
-    models = withModelRemoved(models, backend, index);
-  }
-  function updateModel(backend: string, index: number, value: string): void {
-    models = withModelReplaced(models, backend, index, value);
-  }
-  function detectModels(backend: string): void {
-    const kind = backend as keyof typeof snapshot.availableModels;
-    models = withModelsDetected(models, backend, snapshot.availableModels?.[kind] ?? []);
-  }
-  function activateTab(tab: BuilderTab, focus = false): void {
-    activeTab = tab;
-    if (!focus) return;
-    queueMicrotask(() => document.getElementById(`builder-tab-${tab}`)?.focus());
-  }
-  function onBuilderTabKeydown(event: KeyboardEvent): void {
-    const current = BUILDER_TABS.findIndex((tab) => tab.id === activeTab);
-    let next = current;
-    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-      next = (current - 1 + BUILDER_TABS.length) % BUILDER_TABS.length;
-    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-      next = (current + 1) % BUILDER_TABS.length;
-    } else if (event.key === 'Home') {
-      next = 0;
-    } else if (event.key === 'End') {
-      next = BUILDER_TABS.length - 1;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    activateTab(BUILDER_TABS[next].id, true);
-  }
 </script>
 <main class="pb" data-testid="pipeline-builder-root">
   <div class="header">
-    <h2>Process Library</h2>
+    <h2>Builder</h2>
     <p>Author and manage reusable phases, pipelines, workflows, and models.</p>
-    <div class="builder-tabs" role="tablist" aria-label="Process library catalogs">
-      {#each BUILDER_TABS as tab (tab.id)}
-        <button
-          id="builder-tab-{tab.id}"
-          type="button"
-          class="tab-btn {activeTab === tab.id ? 'active' : ''}"
-          role="tab"
-          aria-selected={activeTab === tab.id}
-          aria-controls="builder-panel-{tab.id}"
-          tabindex={activeTab === tab.id ? 0 : -1}
-          onclick={() => activateTab(tab.id)}
-          onkeydown={onBuilderTabKeydown}
-        >{tab.label}</button>
-      {/each}
-    </div>
+    <BuilderTabs {activeTab} onactivate={(tab) => activeTab = tab} />
   </div>
   <div
     id="builder-panel-{activeTab}"
@@ -404,7 +304,7 @@
         savePending={pipelineStore.savePending}
         mutationActive={pipelineStore.mutationActive}
         editableSourceKey={pipelineStore.mutationSourceKey}
-        {getPhaseTooltip}
+        getPhaseTooltip={(phaseId) => phaseTooltip(effectivePhases, phaseId)}
         onselect={(index) => pipelineStore.selectedIndex = index}
         onadd={() => pipelineStore.add()}
         onremove={(index, element) => pipelineStore.remove(index, element)}
@@ -440,21 +340,21 @@
         mutationActive={phaseMutation !== null}
         editableSourceKey={phaseMutationSourceKey}
         onselect={(index) => selectedPhaseIndex = index}
-        onadd={addPhase}
+        onadd={() => { if (!phaseMutation) applyPhaseEdit(addPhaseRow(phases)); }}
         onremove={removePhase}
-        onreset={resetPhase}
+        onreset={(index) => applyPhaseEdit(resetPhaseRow(phases, index, snapshot.phaseCatalog?.records))}
         onphasechange={updatePhase}
-        onmoveup={movePhaseListUp}
-        onmovedown={movePhaseListDown}
-        onundo={undoPhase}
-        onredo={redoPhase}
-        onsave={savePhases}
+        onmoveup={(index) => movePhase(index, index - 1)}
+        onmovedown={(index) => movePhase(index, index + 1)}
+        onundo={() => { if (phaseHistoryIndex > 0) stepPhaseHistory(phaseHistoryIndex - 1); }}
+        onredo={() => { if (phaseHistoryIndex < phaseHistory.length - 1) stepPhaseHistory(phaseHistoryIndex + 1); }}
+        onsave={savePhaseDraft}
         ondismisssaveerror={() => saveError = null}
-        ontoggleraw={toggleRawJson}
-        onrawsave={onRawJsonSave}
-        ontoggleretry={toggleRetryCondition}
-        onretrychange={onRetryConditionChange}
-        onduplicate={duplicatePhase}
+        ontoggleraw={(id) => editStateById = withRawJsonToggled(editStateById, id)}
+        onrawsave={(index, parsed) => updatePhase(index, parsed as Partial<MutablePhase>)}
+        ontoggleretry={(index) => updatePhase(index, retryConditionToggle(phases[index]))}
+        onretrychange={(index, e) => updatePhase(index, { retryCondition: e.source })}
+        onduplicate={(index) => { if (!phaseMutation) applyPhaseEdit(duplicatePhaseRow(phases, index)); }}
       />
     {:else if activeTab === 'workflows'}
       <!--
@@ -483,11 +383,13 @@
           updated[backend] = value;
           newModelInput = updated;
         }}
-        onmodelchange={updateModel}
+        onmodelchange={(backend, index, value) => models = withModelReplaced(models, backend, index, value)}
         onadd={addModel}
-        onremove={removeModel}
+        onremove={(backend, index) => models = withModelRemoved(models, backend, index)}
         onsave={saveModels}
-        ondetect={detectModels}
+        ondetect={(backend) => models = withModelsDetected(
+          models, backend, snapshot.availableModels?.[backend as keyof typeof snapshot.availableModels] ?? []
+        )}
       />
     {/if}
   </div>

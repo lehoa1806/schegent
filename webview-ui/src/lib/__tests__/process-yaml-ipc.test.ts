@@ -1,9 +1,9 @@
 // The `preflightProcessYaml` correlated-request contract, and specifically its
 // ack budget.
 //
-// The other helpers in this family (`savePhases`, `saveQueueSettings`, …) time
-// out at 5 s, which is right for them: they post to handlers that compute an
-// answer and ack. Preflight does not. Its handler
+// The other helpers in this family (`saveQueueSettings`, the lifecycle senders in
+// `catalog-lifecycle.ts`, …) time out at 5 s, which is right for them: they post
+// to handlers that compute an answer and ack. Preflight does not. Its handler
 // (`src/ui/sidebar/commands/cmd-preflight-process-yaml.ts`) awaits
 // `openProcessYamlDocument()` — a native `showOpenDialog` — before it can ack
 // anything, so the budget spans an operator browsing a file picker. A 5 s

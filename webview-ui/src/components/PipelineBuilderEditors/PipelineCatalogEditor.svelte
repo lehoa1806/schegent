@@ -14,16 +14,30 @@
   // trust banner: the Pipelines tab is gated by Workspace Trust alone, and the
   // Builder reports that gate itself rather than rendering an empty list
   // (T493c, FR-052).
-  import type {
-    PipelineInputPort,
-    PipelineOutputPort,
-    WorkflowSnapshot
-  } from '../../lib/snapshot-types';
+  //
+  // Feature 101 (T006) — the error, aria, export and port derivations are pure
+  // functions in `pipeline-catalog-state`; what stays here is the selection,
+  // the runes, and the wiring.
+  import type { BuilderLifecycle, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { exportPipelineYaml } from '../../lib/process-yaml-ipc';
+  import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
+  import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
   import PipelineFieldErrors from './PipelineFieldErrors.svelte';
   import PipelinePortsEditor from './PipelinePortsEditor.svelte';
   import {
-    pipelineErrorAnchor,
+    pipelineAnchoredErrors,
+    pipelineConsumingWorkflows,
+    pipelineErrorDescribedBy,
+    pipelineErrorInvalidFlag,
+    pipelineErrorRegionId,
+    pipelineErrorsAt,
+    pipelineExportDisabledReason,
+    pipelineExportInclusionId,
+    pipelineExportReasonId,
+    pipelinePortAppended,
+    pipelinePortPatched,
+    pipelinePortRemoved,
+    pipelineSequenceStatus,
     validatePipelineDraft,
     type PipelineDraftError,
     type PipelineErrorAnchor
@@ -123,12 +137,6 @@
     )
   );
 
-  const selectedErrors = $derived(
-    selectedPipeline
-      ? draftErrors.filter((error) => error.sourceKey === selectedPipeline.sourceKey)
-      : []
-  );
-
   // Only draft errors gate the save. `sourceErrors` describe the record as last
   // persisted and do not clear until the host reprojects, so blocking on them
   // would trap the operator inside the very row they opened to repair.
@@ -136,24 +144,10 @@
     !trusted || savePending || noEffectivePhase || draftErrors.length > 0
   );
 
-  /**
-   * Host errors first — they describe the persisted record, not the draft —
-   * each paired with the control it belongs beside (FR-038).
-   */
-  const anchoredErrors = $derived.by<
-    readonly { error: PipelineDraftError; anchor: PipelineErrorAnchor }[]
-  >(() => {
-    const pipeline = selectedPipeline;
-    if (!pipeline) return [];
-    return [...pipeline.sourceErrors, ...selectedErrors].map((error) => ({
-      error,
-      anchor: pipelineErrorAnchor(error, pipeline)
-    }));
-  });
+  const anchoredErrors = $derived(pipelineAnchoredErrors(selectedPipeline, draftErrors));
 
-  function errorsAt(match: (anchor: PipelineErrorAnchor) => boolean): PipelineDraftError[] {
-    return anchoredErrors.filter(({ anchor }) => match(anchor)).map(({ error }) => error);
-  }
+  const errorsAt = (match: (anchor: PipelineErrorAnchor) => boolean): PipelineDraftError[] =>
+    pipelineErrorsAt(anchoredErrors, match);
 
   const fieldErrorsOf = (field: string): PipelineDraftError[] =>
     errorsAt((anchor) => anchor.kind === 'field' && anchor.field === field);
@@ -169,99 +163,25 @@
   const versionErrors = $derived(fieldErrorsOf('version'));
   const descriptionErrors = $derived(fieldErrorsOf('description'));
 
-  function regionId(pipeline: MutablePipeline, region: string): string {
-    return `pipeline-errors-${pipeline.id}-${region}`;
-  }
-
-  function describedBy(
-    pipeline: MutablePipeline,
-    region: string,
-    errors: readonly PipelineDraftError[]
-  ): string | undefined {
-    return errors.length > 0 ? regionId(pipeline, region) : undefined;
-  }
-
-  function invalidFlag(errors: readonly PipelineDraftError[]): 'true' | undefined {
-    return errors.length > 0 ? 'true' : undefined;
-  }
-
   function addPort(kind: 'inputs' | 'outputs'): void {
     if (selectedIndex === null || !selectedPipeline) return;
-    const next =
-      kind === 'inputs'
-        ? { portId: '', label: '', type: 'text' as const }
-        : { portId: '', label: '', type: 'markdown' as const };
-    onpipelinechange(selectedIndex, {
-      [kind]: [...selectedPipeline[kind], next]
-    } as Partial<MutablePipeline>);
-  }
-
-  /** FR-038 — the text cue that replaces "read the visual order" for reordering. */
-  function sequenceStatus(pipeline: MutablePipeline): string {
-    const count = pipeline.phases.length;
-    if (count === 0) return 'No Phases in this sequence.';
-    const order = pipeline.phases.map((phaseId, position) => `${position + 1}. ${phaseId}`).join(', ');
-    return `${count} ${count === 1 ? 'Phase runs' : 'Phases run'} in this order: ${order}.`;
-  }
-
-  /** Widened to the element union — `inputs | outputs` has no usable signature. */
-  function portsOf(kind: 'inputs' | 'outputs'): readonly (PipelineInputPort | PipelineOutputPort)[] {
-    return selectedPipeline ? selectedPipeline[kind] : [];
+    onpipelinechange(selectedIndex, pipelinePortAppended(selectedPipeline, kind));
   }
 
   function removePort(kind: 'inputs' | 'outputs', index: number): void {
     if (selectedIndex === null || !selectedPipeline) return;
-    onpipelinechange(selectedIndex, {
-      [kind]: portsOf(kind).filter((_port, position) => position !== index)
-    } as Partial<MutablePipeline>);
+    onpipelinechange(selectedIndex, pipelinePortRemoved(selectedPipeline, kind, index));
   }
 
   function changePort(kind: 'inputs' | 'outputs', index: number, patch: PipelinePortPatch): void {
     if (selectedIndex === null || !selectedPipeline) return;
-    onpipelinechange(selectedIndex, {
-      [kind]: portsOf(kind).map((port, position) =>
-        position === index ? { ...port, ...patch } : port
-      )
-    } as Partial<MutablePipeline>);
+    onpipelinechange(selectedIndex, pipelinePortPatched(selectedPipeline, kind, index, patch));
   }
 
-  /**
-   * FR-002 — the Workflows that would be affected by a change, from the same
-   * host-side collector gate 13 blocks removals against. A host that exposes no
-   * Workflow references projects no field, and the list renders empty rather
-   * than claiming there are none.
-   */
-  function consumingWorkflows(pipeline: MutablePipeline): readonly string[] {
-    const record = snapshot.pipelineCatalog?.records.find(
-      (candidate) => candidate.key === pipeline.sourceKey
-    );
-    return record?.consumingWorkflowIds ?? [];
-  }
+  const consumingWorkflows = (pipeline: MutablePipeline): readonly string[] =>
+    pipelineConsumingWorkflows(snapshot, pipeline);
 
-  /**
-   * Feature 085 T022 (FR-011, FR-055) — why the selected Pipeline cannot be
-   * exported, or `null` when it can.
-   *
-   * Export reads the catalog the host holds, so a draft that has never been
-   * saved names nothing to read; that is the one condition this surface can
-   * decide on its own, and it is stated rather than merely applied.
-   *
-   * Deliberately NOT gated on `sourceStatus`. A references-only document carries
-   * Phase identifiers and no Phase definitions, so a Pipeline whose referenced
-   * Phases are missing from every layer is still exportable with its sequence
-   * intact (FR-018) — refusing it here would break the exact case that
-   * requirement exists for. Whether a row resolves is the host's decision,
-   * because only the host can tell a missing reference from a structural defect.
-   */
-  const exportDisabledReason = $derived(
-    selectedPipeline === null || selectedPipeline.persisted
-      ? null
-      : 'Save this Pipeline first. Export writes the definition the catalog holds, not an unsaved draft.'
-  );
-
-  function exportReasonId(pipeline: MutablePipeline): string {
-    return `pipeline-export-reason-${pipeline.id}`;
-  }
+  const exportDisabledReason = $derived(pipelineExportDisabledReason(selectedPipeline));
 
   /**
    * Feature 085 T027 (FR-012) — the inclusion choice, made BEFORE the document
@@ -273,10 +193,6 @@
    * one session's exports, and the default is the smaller document (FR-013).
    */
   let includeReferencedPhases = $state(false);
-
-  function exportInclusionId(pipeline: MutablePipeline): string {
-    return `pipeline-export-inclusion-${pipeline.id}`;
-  }
 
   /**
    * FR-013 / FR-015 — references only unless the operator asked for the
@@ -299,6 +215,19 @@
       includeReferencedPhases ? 'include-referenced' : 'references-only'
     );
   }
+
+  /**
+   * Feature 101 (US1, T037, FR-013) — lifecycle facts, keyed by projection
+   * record. Read off the record rather than carried on `MutablePipeline`: the
+   * mutable row is the editable copy every save body is stripped out of, and a
+   * projected view field there is one strip away from being sent back to the
+   * host (FR-010). Off the record, it cannot reach a write.
+   */
+  const lifecycleByKey = $derived(
+    new Map<string, BuilderLifecycle | undefined>(
+      (snapshot.pipelineCatalog?.records ?? []).map((record) => [record.key, record.lifecycle])
+    )
+  );
 </script>
 
 {#if !snapshot.pipelineCatalog}
@@ -335,20 +264,34 @@
     <button class="save-error-dismiss" aria-label="Dismiss Pipeline save error" onclick={ondismisssaveerror}>✕</button>
   </div>
 {/if}
+<!-- Feature 101 (US6, T065, FR-032/FR-033) — the front door, and this tab's only
+     import entry: the Pipelines tab never grew a standalone preflight region.
+     Ordered after the trust check by construction — PipelineBuilder gates the
+     three definition tabs, so an untrusted workspace never reaches here and the
+     guidance can never point at an action that cannot succeed. -->
+<CatalogEmptyState kind="pipeline" count={pipelines.length} />
 <div class="split-pane">
   <div class="pane-left">
     <div class="phase-list">
       {#each pipelines as pipeline, index (pipeline.sourceKey)}
         <div class="phase-list-row">
-          <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="pipelines-list-item-{pipeline.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
-            <div class="phase-list-title">{pipeline.name || 'Untitled Pipeline'}</div>
-            <div class="phase-list-id">{pipeline.id}</div>
-            <div class="phase-badges">
-              <!-- Feature 099 (T494a, FR-043) — no scope badge. A badge that can
-                   only ever read one value is not a badge. -->
-              <span class="status-badge status-{pipeline.sourceStatus}">{pipeline.sourceStatus}</span>
-            </div>
-          </button>
+          <div class="phase-list-main">
+            <button class="phase-list-item {selectedIndex === index ? 'selected' : ''}" data-testid="pipelines-list-item-{pipeline.id}" aria-current={selectedIndex === index ? 'true' : undefined} onclick={() => onselect(index)}>
+              <div class="phase-list-title">{pipeline.name || 'Untitled Pipeline'}</div>
+              <div class="phase-list-id">{pipeline.id}</div>
+            </button>
+          </div>
+          <!-- Feature 101 (US1, T037) — the state, timestamps, active version,
+               and the validity badge that used to sit inside the button above.
+               Outside it, because T042 hangs the lifecycle actions off this row. -->
+          <DefinitionLifecycleRow
+            kind="pipeline"
+            definitionId={pipeline.id}
+            definitionName={pipeline.name || 'Untitled Pipeline'}
+            lifecycle={lifecycleByKey.get(pipeline.sourceKey)}
+            validity={pipeline.sourceStatus}
+            defects={pipeline.sourceErrors}
+          />
         </div>
       {/each}
     </div>
@@ -368,15 +311,15 @@
             <button class="btn btn-ghost" data-testid="pipelines-duplicate" disabled={!trusted || savePending || mutationActive || noEffectivePhase} onclick={() => onduplicate(index)}>Duplicate Pipeline</button>
             <!-- FR-012 — the choice sits beside the control it changes, so it is
                  made before the document is produced rather than after. -->
-            <label class="form-field checkbox-field" for={exportInclusionId(pipeline)}>
-              <input type="checkbox" id={exportInclusionId(pipeline)} data-testid="pipelines-export-inclusion" disabled={exportDisabledReason !== null} checked={includeReferencedPhases} onchange={(event) => (includeReferencedPhases = event.currentTarget.checked)} />
+            <label class="form-field checkbox-field" for={pipelineExportInclusionId(pipeline)}>
+              <input type="checkbox" id={pipelineExportInclusionId(pipeline)} data-testid="pipelines-export-inclusion" disabled={exportDisabledReason !== null} checked={includeReferencedPhases} onchange={(event) => (includeReferencedPhases = event.currentTarget.checked)} />
               <span class="form-label" title="Carry a complete definition of every Phase this Pipeline references, so it opens on a catalog that does not have them">Include Phase definitions</span>
             </label>
             <!-- Export is read-only: it needs neither trust nor an idle save,
                  because it writes nothing this extension owns. -->
-            <button class="btn btn-ghost" data-testid="pipelines-export" disabled={exportDisabledReason !== null} title={exportDisabledReason ?? `Export ${pipeline.id} as a document`} aria-label={`Export ${pipeline.id}`} aria-describedby={exportDisabledReason !== null ? exportReasonId(pipeline) : undefined} onclick={() => onExport(pipeline)}>Export Pipeline</button>
+            <button class="btn btn-ghost" data-testid="pipelines-export" disabled={exportDisabledReason !== null} title={exportDisabledReason ?? `Export ${pipeline.id} as a document`} aria-label={`Export ${pipeline.id}`} aria-describedby={exportDisabledReason !== null ? pipelineExportReasonId(pipeline) : undefined} onclick={() => onExport(pipeline)}>Export Pipeline</button>
             {#if exportDisabledReason !== null}
-              <span class="field-help" id={exportReasonId(pipeline)} data-testid="pipelines-export-disabled-reason">{exportDisabledReason}</span>
+              <span class="field-help" id={pipelineExportReasonId(pipeline)} data-testid="pipelines-export-disabled-reason">{exportDisabledReason}</span>
             {/if}
             {#if !selectedReadOnly}<button class="btn btn-secondary" disabled={saveDisabled} onclick={onsave}>Save Pipeline</button>{/if}
             {#if !selectedReadOnly}<button class="btn btn-destructive" data-testid="pipelines-remove" disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Delete Pipeline</button>{/if}
@@ -386,34 +329,34 @@
           <div class="form-grid">
             <label class="form-field">
               <span class="form-label">Name</span>
-              <input class="text-input" data-testid="pipelines-name-field-{pipeline.id}" value={pipeline.name} readonly={selectedReadOnly} aria-invalid={invalidFlag(nameErrors)} aria-describedby={describedBy(pipeline, 'name', nameErrors)} oninput={(event) => onpipelinechange(index, { name: event.currentTarget.value })} placeholder="Pipeline display name" />
+              <input class="text-input" data-testid="pipelines-name-field-{pipeline.id}" value={pipeline.name} readonly={selectedReadOnly} aria-invalid={pipelineErrorInvalidFlag(nameErrors)} aria-describedby={pipelineErrorDescribedBy(pipeline, 'name', nameErrors)} oninput={(event) => onpipelinechange(index, { name: event.currentTarget.value })} placeholder="Pipeline display name" />
             </label>
-            <PipelineFieldErrors id={regionId(pipeline, 'name')} errors={nameErrors} />
+            <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'name')} errors={nameErrors} />
             <label class="form-field">
               <span class="form-label">ID</span>
-              <input class="text-input" data-testid="pipelines-id-field-{pipeline.id}" value={pipeline.id} readonly={pipeline.persisted} aria-invalid={invalidFlag(idErrors)} aria-describedby={describedBy(pipeline, 'pipelineId', idErrors)} oninput={(event) => onpipelinechange(index, { id: event.currentTarget.value })} placeholder="pipeline-id" />
+              <input class="text-input" data-testid="pipelines-id-field-{pipeline.id}" value={pipeline.id} readonly={pipeline.persisted} aria-invalid={pipelineErrorInvalidFlag(idErrors)} aria-describedby={pipelineErrorDescribedBy(pipeline, 'pipelineId', idErrors)} oninput={(event) => onpipelinechange(index, { id: event.currentTarget.value })} placeholder="pipeline-id" />
               {#if pipeline.persisted}<span class="field-help">Duplicate this Pipeline to create a new identity.</span>{/if}
             </label>
-            <PipelineFieldErrors id={regionId(pipeline, 'pipelineId')} errors={idErrors} />
+            <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'pipelineId')} errors={idErrors} />
             <!-- Feature 099 (T494a, FR-043) — no target-scope picker. A save has
                  one destination, so there was nothing left for this control to
                  choose between. -->
             <label class="form-field">
               <span class="form-label">Version</span>
-              <input class="text-input" data-testid="pipelines-version-{pipeline.id}" value={pipeline.version} readonly aria-invalid={invalidFlag(versionErrors)} aria-describedby={describedBy(pipeline, 'version', versionErrors)} />
+              <input class="text-input" data-testid="pipelines-version-{pipeline.id}" value={pipeline.version} readonly aria-invalid={pipelineErrorInvalidFlag(versionErrors)} aria-describedby={pipelineErrorDescribedBy(pipeline, 'version', versionErrors)} />
             </label>
-            <PipelineFieldErrors id={regionId(pipeline, 'version')} errors={versionErrors} />
+            <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'version')} errors={versionErrors} />
             <label class="form-field full-width">
               <span class="form-label">Description</span>
-              <textarea class="text-area" rows="2" data-testid="pipelines-description-{pipeline.id}" value={pipeline.description ?? ''} readonly={selectedReadOnly} aria-invalid={invalidFlag(descriptionErrors)} aria-describedby={describedBy(pipeline, 'description', descriptionErrors)} oninput={(event) => onpipelinechange(index, { description: event.currentTarget.value || undefined })} placeholder="Optional Pipeline description"></textarea>
+              <textarea class="text-area" rows="2" data-testid="pipelines-description-{pipeline.id}" value={pipeline.description ?? ''} readonly={selectedReadOnly} aria-invalid={pipelineErrorInvalidFlag(descriptionErrors)} aria-describedby={pipelineErrorDescribedBy(pipeline, 'description', descriptionErrors)} oninput={(event) => onpipelinechange(index, { description: event.currentTarget.value || undefined })} placeholder="Optional Pipeline description"></textarea>
             </label>
-            <PipelineFieldErrors id={regionId(pipeline, 'description')} errors={descriptionErrors} />
+            <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'description')} errors={descriptionErrors} />
           </div>
           <div class="phases-sequence-editor">
             <div class="sequence-label" id="pipeline-phases-label-{pipeline.id}">Phase sequence</div>
             <!-- FR-038 — reordering is announced as text, not by visual position alone. -->
-            <div class="sequence-status" data-testid="pipelines-sequence-status" role="status" aria-live="polite">{sequenceStatus(pipeline)}</div>
-            <div class="sequence-list" role="list" aria-labelledby="pipeline-phases-label-{pipeline.id}" aria-describedby={describedBy(pipeline, 'sequence', sequenceErrors)}>
+            <div class="sequence-status" data-testid="pipelines-sequence-status" role="status" aria-live="polite">{pipelineSequenceStatus(pipeline)}</div>
+            <div class="sequence-list" role="list" aria-labelledby="pipeline-phases-label-{pipeline.id}" aria-describedby={pipelineErrorDescribedBy(pipeline, 'sequence', sequenceErrors)}>
               {#if pipeline.phases.length === 0}
                 <div class="empty-selection">No Phases in this Pipeline. Add one below.</div>
               {/if}
@@ -422,7 +365,7 @@
                 <div class="sequence-item" role="listitem">
                   <div class="custom-tooltip">{getPhaseTooltip(phaseId)}</div>
                   <div class="sequence-number">{phaseIndex + 1}</div>
-                  <select class="select-input sequence-select" data-testid="pipelines-phase-select-{phaseIndex}" aria-label="Phase {phaseIndex + 1} of {pipeline.name}" value={phaseId} disabled={selectedReadOnly} aria-invalid={invalidFlag(phaseErrors)} aria-describedby={describedBy(pipeline, `phase-${phaseIndex}`, phaseErrors)} onchange={(event) => onphasechange(index, phaseIndex, event.currentTarget.value)}>
+                  <select class="select-input sequence-select" data-testid="pipelines-phase-select-{phaseIndex}" aria-label="Phase {phaseIndex + 1} of {pipeline.name}" value={phaseId} disabled={selectedReadOnly} aria-invalid={pipelineErrorInvalidFlag(phaseErrors)} aria-describedby={pipelineErrorDescribedBy(pipeline, `phase-${phaseIndex}`, phaseErrors)} onchange={(event) => onphasechange(index, phaseIndex, event.currentTarget.value)}>
                     {#each phases as availablePhase (availablePhase.sourceKey)}
                       <option value={availablePhase.id}>{availablePhase.name} ({availablePhase.id})</option>
                     {/each}
@@ -435,11 +378,11 @@
                     <button class="icon-btn" data-testid="pipelines-move-phase-down-{phaseIndex}" aria-label="Move Phase {phaseIndex + 1} down" disabled={selectedReadOnly || phaseIndex === pipeline.phases.length - 1} onclick={() => onmovephasedown(phaseIndex)}>↓</button>
                     <button class="icon-btn destructive-icon" data-testid="pipelines-remove-phase-{phaseIndex}" aria-label="Remove Phase {phaseIndex + 1}" disabled={selectedReadOnly} onclick={() => onremovephase(phaseIndex)}>✕</button>
                   </div>
-                  <PipelineFieldErrors id={regionId(pipeline, `phase-${phaseIndex}`)} errors={phaseErrors} />
+                  <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, `phase-${phaseIndex}`)} errors={phaseErrors} />
                 </div>
               {/each}
             </div>
-            <PipelineFieldErrors id={regionId(pipeline, 'sequence')} errors={sequenceErrors} />
+            <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'sequence')} errors={sequenceErrors} />
             {#if !selectedReadOnly}
               <div class="add-phase-row">
                 <select class="select-input flex-1" data-testid="pipelines-new-phase" aria-label="Phase to append" value={newPhaseId} disabled={noEffectivePhase} onchange={(event) => onnewphaseidchange(event.currentTarget.value)}>
@@ -471,7 +414,7 @@
             </ul>
           </div>
           <!-- Errors that name no rendered control still have to be seen. -->
-          <PipelineFieldErrors id={regionId(pipeline, 'pipeline')} errors={pipelineErrors} withField testId="pipelines-pipeline-errors" />
+          <PipelineFieldErrors id={pipelineErrorRegionId(pipeline, 'pipeline')} errors={pipelineErrors} withField testId="pipelines-pipeline-errors" />
         </div>
       </div>
     {:else}

@@ -4,8 +4,13 @@
 // Feature 100 (FR-R3-016) T509b — the `savePhases` case followed it out, for a
 // different reason. It asserted that an explicit `isRequired: false` survived the
 // payload, against `CMD_SAVE_PHASES`; that command is retired, and the same claim
-// now belongs where the translation lives (`save-phases.test.ts`), because the row
-// has become a definition *body* rather than an element of a layer array.
+// belonged where the translation lives, because the row has become a definition
+// *body* rather than an element of a layer array.
+//
+// Feature 101 (T030) — both destinations were deleted with the three `save-*`
+// transports they tested. The claims they carried live in
+// `catalog-lifecycle.test.ts` and in the per-editor suites that assert the body
+// each save sends.
 //
 // What is left is the Model Catalog, which `save-catalog-command.ts` still serves:
 // it is the one catalog that did NOT move into the versioned store (099, out of

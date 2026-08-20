@@ -29,15 +29,18 @@ import {
   CMD_SAVE_DEFINITION_DRAFT,
   type SidebarCommand
 } from './messages';
-import type {
-  DeactivateRequest,
-  DiscardDraftRequest,
-  PackagePublishRequest,
-  PublishRequest,
-  RestoreRequest,
-  SaveDraftRequest
+import {
+  NO_DRAFT,
+  type DeactivateRequest,
+  type DiscardDraftRequest,
+  type ExpectedDraftVersion,
+  type PackagePublishRequest,
+  type PublishRequest,
+  type RestoreRequest,
+  type SaveDraftRequest
 } from '../../../src/contracts/catalog-lifecycle';
 import type { CatalogKind } from '../../../src/contracts/catalog-store';
+import type { BuilderLifecycle } from './snapshot-types';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
 import { useConfirm } from './use-confirm';
@@ -81,6 +84,27 @@ const KIND_LABEL: Readonly<Record<CatalogKind, string>> = Object.freeze({
   pipeline: 'Pipeline',
   workflow: 'Workflow'
 });
+
+/**
+ * The write token to quote back for the definition a projection record describes
+ * (FR-012).
+ *
+ * Feature 101 — the three retired save shims each hardcoded `NO_DRAFT` here,
+ * which is correct for the first write to a definition and refused as stale for
+ * every one after it. The projection now carries the token
+ * (`contracts/builder-projection.md` §A.2), already folded by `currentDraftToken`,
+ * so this reads it rather than deriving it a second time.
+ *
+ * `NO_DRAFT` survives as the answer to two honest absences and no others: a row
+ * the store has never seen (a draft the operator just created), and a host that
+ * resolved a catalog with no store behind it, which projects no `lifecycle` at
+ * all (invariant 0). Both mean "there is no draft to be stale against".
+ */
+export function draftTokenOfRecord(
+  record: { readonly lifecycle?: BuilderLifecycle } | undefined
+): ExpectedDraftVersion {
+  return record?.lifecycle?.expectedDraftVersion ?? NO_DRAFT;
+}
 
 /**
  * Post one lifecycle command and resolve with its ack.

@@ -16,6 +16,11 @@
 import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import { deriveWorkflowPorts } from '../../config/workflow-derived-ports';
+import {
+  NO_BUILDER_LIFECYCLE,
+  type BuilderLifecycleByKind,
+  type BuilderLifecycleLookup
+} from './builder-lifecycle';
 import type {
   WorkflowCatalogProjection,
   WorkflowCatalogSourceProjection
@@ -76,6 +81,12 @@ export interface WorkflowCatalogProjectionOptions {
    * disagree. A record with no definition derives nothing.
    */
   readonly effectivePipelines: readonly PipelineDefinition[];
+  /**
+   * Feature 101 (T016) — the lifecycle facts for this kind. Optional so a host
+   * with no catalog store wired keeps projecting rows; every record then omits
+   * `lifecycle`, which is the truth rather than a filled-in default.
+   */
+  readonly lifecycle?: BuilderLifecycleLookup;
 }
 
 /** C1–C8: every source row retained, bounded, sanitized once, advisories as warnings. */
@@ -84,11 +95,15 @@ export function projectWorkflowCatalog(
   options: WorkflowCatalogProjectionOptions
 ): WorkflowCatalogProjection {
   const { sanitize } = options;
+  const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
   const records: WorkflowCatalogSourceProjection[] = catalog.records.map((record) => {
     const derived = record.definition
       ? deriveWorkflowPorts(record.definition, options.effectivePipelines)
       : { inputs: [], outputs: [] };
     const workflowId = text(record.workflowId, sanitize, ID_MAX);
+    // The record's own id, before sanitizing and capping — the manifest holds
+    // the authored id, and a capped one would miss any longer than the bound.
+    const lifecycle = lifecycleOf(record.workflowId);
     return Object.freeze({
       key: text(record.key, sanitize, KEY_MAX),
       workflowId,
@@ -115,7 +130,8 @@ export function projectWorkflowCatalog(
         derived.outputs
           .slice(0, PORTS_PER_RECORD_MAX)
           .map((port) => projectWorkflowPort(port, sanitize))
-      )
+      ),
+      ...(lifecycle !== undefined ? { lifecycle } : {})
     });
   });
 
@@ -184,6 +200,12 @@ export interface WorkflowCatalogSources {
   readonly getPipelineCatalog?: () =>
     | { readonly effective: readonly PipelineDefinition[] }
     | undefined;
+  /**
+   * Feature 101 (T016) — the lifecycle lookups, all three kinds. Read here rather
+   * than taken as a fourth parameter so the composer's call site stays one line:
+   * that file is five lines under a pinned budget and T017 allows it no logic.
+   */
+  readonly getBuilderLifecycle?: () => BuilderLifecycleByKind;
 }
 
 /**
@@ -203,7 +225,8 @@ export function composeWorkflowCatalogProjection(
     if (!catalog) return undefined;
     return projectWorkflowCatalog(catalog, {
       sanitize,
-      effectivePipelines: sources.getPipelineCatalog?.()?.effective ?? []
+      effectivePipelines: sources.getPipelineCatalog?.()?.effective ?? [],
+      lifecycle: sources.getBuilderLifecycle?.().workflow ?? NO_BUILDER_LIFECYCLE
     });
   } catch (error) {
     onError?.(`projector: failed to resolve workflow catalog: ${(error as Error).message}`);

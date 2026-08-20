@@ -15,10 +15,13 @@
 import type {
   PhaseBinding,
   PipelineCatalogMutation,
-  PipelineCatalogSourceRecord
+  PipelineCatalogSourceRecord,
+  PipelineInputPort,
+  PipelineOutputPort,
+  WorkflowSnapshot
 } from '../../lib/snapshot-types';
-import type { SavePipelineRow } from '../../lib/save-pipelines';
-import type { MutablePipeline } from './types';
+import type { SavePipelineRow } from '../../lib/definition-rows';
+import type { MutablePipeline, PipelinePortPatch } from './types';
 
 export const PIPELINE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export const PIPELINE_NAME_MAX_LEN = 80;
@@ -209,6 +212,57 @@ export function reorderPipelinePhases(
         }
   );
   return { ...pipeline, phases, bindings };
+}
+
+/**
+ * Feature 101 (T006) — a port edit, in the patch shape the editor's
+ * `onpipelinechange` applies.
+ *
+ * What a port edit *is* belongs beside `reorderPipelinePhases` with the other
+ * draft-shape rules; the editor keeps only the selection guard it needs to post
+ * one. Each returns a whole replacement array under a single key, because the
+ * caller merges the patch shallowly.
+ */
+export function pipelinePortAppended(
+  pipeline: MutablePipeline,
+  kind: 'inputs' | 'outputs'
+): Partial<MutablePipeline> {
+  const next =
+    kind === 'inputs'
+      ? { portId: '', label: '', type: 'text' as const }
+      : { portId: '', label: '', type: 'markdown' as const };
+  return { [kind]: [...portsOf(pipeline, kind), next] } as Partial<MutablePipeline>;
+}
+
+export function pipelinePortRemoved(
+  pipeline: MutablePipeline,
+  kind: 'inputs' | 'outputs',
+  index: number
+): Partial<MutablePipeline> {
+  return {
+    [kind]: portsOf(pipeline, kind).filter((_port, position) => position !== index)
+  } as Partial<MutablePipeline>;
+}
+
+export function pipelinePortPatched(
+  pipeline: MutablePipeline,
+  kind: 'inputs' | 'outputs',
+  index: number,
+  patch: PipelinePortPatch
+): Partial<MutablePipeline> {
+  return {
+    [kind]: portsOf(pipeline, kind).map((port, position) =>
+      position === index ? { ...port, ...patch } : port
+    )
+  } as Partial<MutablePipeline>;
+}
+
+/** Widened to the element union — `inputs | outputs` has no usable signature. */
+function portsOf(
+  pipeline: MutablePipeline,
+  kind: 'inputs' | 'outputs'
+): readonly (PipelineInputPort | PipelineOutputPort)[] {
+  return pipeline[kind];
 }
 
 function targetIndex(
@@ -493,6 +547,80 @@ export function pipelineErrorAnchor(
   return { kind: 'pipeline' };
 }
 
+/**
+ * A draft error carrying the row it was raised against, so the selected row can
+ * pick its own out of the catalog-wide pre-flight pass.
+ */
+export interface KeyedPipelineDraftError extends PipelineDraftError {
+  readonly sourceKey: string;
+}
+
+export interface AnchoredPipelineError {
+  readonly error: PipelineDraftError;
+  readonly anchor: PipelineErrorAnchor;
+}
+
+/**
+ * Every error the selected row has to show, each paired with the control it
+ * belongs beside (FR-038). Host errors first — they describe the persisted
+ * record, not the draft.
+ */
+export function pipelineAnchoredErrors(
+  pipeline: MutablePipeline | null,
+  draftErrors: readonly KeyedPipelineDraftError[]
+): readonly AnchoredPipelineError[] {
+  if (!pipeline) return [];
+  const own = draftErrors.filter((error) => error.sourceKey === pipeline.sourceKey);
+  return [...pipeline.sourceErrors, ...own].map((error) => ({
+    error,
+    anchor: pipelineErrorAnchor(error, pipeline)
+  }));
+}
+
+/** The errors whose anchor `match` accepts, with the anchors dropped again. */
+export function pipelineErrorsAt(
+  anchored: readonly AnchoredPipelineError[],
+  match: (anchor: PipelineErrorAnchor) => boolean
+): PipelineDraftError[] {
+  return anchored.filter(({ anchor }) => match(anchor)).map(({ error }) => error);
+}
+
+/**
+ * The aria wiring for one error region: the id the region renders under, the
+ * `aria-describedby` that points at it, and the `aria-invalid` flag on the
+ * control it describes. All three read the same `region` name, so a control and
+ * its messages cannot end up naming different ids.
+ *
+ * The latter two return `undefined` rather than an empty value when there is
+ * nothing wrong, because Svelte then omits the attribute entirely — an
+ * `aria-describedby` naming a region that is not rendered is a broken reference.
+ */
+export function pipelineErrorRegionId(pipeline: MutablePipeline, region: string): string {
+  return `pipeline-errors-${pipeline.id}-${region}`;
+}
+
+export function pipelineErrorDescribedBy(
+  pipeline: MutablePipeline,
+  region: string,
+  errors: readonly PipelineDraftError[]
+): string | undefined {
+  return errors.length > 0 ? pipelineErrorRegionId(pipeline, region) : undefined;
+}
+
+export function pipelineErrorInvalidFlag(
+  errors: readonly PipelineDraftError[]
+): 'true' | undefined {
+  return errors.length > 0 ? 'true' : undefined;
+}
+
+/** FR-038 — the text cue that replaces "read the visual order" for reordering. */
+export function pipelineSequenceStatus(pipeline: MutablePipeline): string {
+  const count = pipeline.phases.length;
+  if (count === 0) return 'No Phases in this sequence.';
+  const order = pipeline.phases.map((phaseId, position) => `${position + 1}. ${phaseId}`).join(', ');
+  return `${count} ${count === 1 ? 'Phase runs' : 'Phases run'} in this order: ${order}.`;
+}
+
 /** Structural comparison; the row is dirty when it differs from its baseline. */
 export function isPipelineDirty(
   pipeline: MutablePipeline,
@@ -508,6 +636,51 @@ export function pipelineTooltip(pipeline: MutablePipeline): string {
   const summary = pipeline.description ?? 'No description';
   const truncated = `${summary.slice(0, 100)}${summary.length > 100 ? '...' : ''}`;
   return `ID: ${pipeline.id}\nName: ${pipeline.name}\nPhases: ${pipeline.phases.length}\n${truncated}`;
+}
+
+/**
+ * FR-002 — the Workflows that would be affected by a change, from the same
+ * host-side collector gate 13 blocks removals against. A host that exposes no
+ * Workflow references projects no field, and the list renders empty rather
+ * than claiming there are none.
+ */
+export function pipelineConsumingWorkflows(
+  snapshot: WorkflowSnapshot,
+  pipeline: MutablePipeline
+): readonly string[] {
+  const record = snapshot.pipelineCatalog?.records.find(
+    (candidate) => candidate.key === pipeline.sourceKey
+  );
+  return record?.consumingWorkflowIds ?? [];
+}
+
+/**
+ * Feature 085 T022 (FR-011, FR-055) — why the selected Pipeline cannot be
+ * exported, or `null` when it can.
+ *
+ * Export reads the catalog the host holds, so a draft that has never been
+ * saved names nothing to read; that is the one condition this surface can
+ * decide on its own, and it is stated rather than merely applied.
+ *
+ * Deliberately NOT gated on `sourceStatus`. A references-only document carries
+ * Phase identifiers and no Phase definitions, so a Pipeline whose referenced
+ * Phases are missing from every layer is still exportable with its sequence
+ * intact (FR-018) — refusing it here would break the exact case that
+ * requirement exists for. Whether a row resolves is the host's decision,
+ * because only the host can tell a missing reference from a structural defect.
+ */
+export function pipelineExportDisabledReason(pipeline: MutablePipeline | null): string | null {
+  return pipeline === null || pipeline.persisted
+    ? null
+    : 'Save this Pipeline first. Export writes the definition the catalog holds, not an unsaved draft.';
+}
+
+export function pipelineExportReasonId(pipeline: MutablePipeline): string {
+  return `pipeline-export-reason-${pipeline.id}`;
+}
+
+export function pipelineExportInclusionId(pipeline: MutablePipeline): string {
+  return `pipeline-export-inclusion-${pipeline.id}`;
 }
 
 /** Turns a host rejection into one line the operator can act on. */

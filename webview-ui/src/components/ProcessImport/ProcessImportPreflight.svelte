@@ -24,7 +24,7 @@
   // variable is named `state` makes `$state` read as a store subscription on it,
   // which svelte-check reports as the rune being shadowed.
   //
-  // T037–T040 — the commit. It is the EXISTING `savePhases` helper, not a new
+  // T037–T040 — the commit. It is the EXISTING package publish, not a new
   // command (research R2): the revision gate, the gate ordering, the trust
   // gates, the primary-window check, and all-or-nothing are all inherited from a
   // handler that is already pinned by tests. Every decision around it — why
@@ -50,11 +50,11 @@
   // fact and no new judgment: an outcome that can be `partial`. Everything that
   // decides — which writes, in what order, on which revision, and what each row
   // is then reported as — stays in `process-import-state.ts`; `runImportCommit`
-  // is handed the two save helpers and returns the whole report. No compensating
-  // action is offered here, because there is none to offer (FR-042c).
+  // is handed the sender and returns the whole report. No compensating action is
+  // offered here, because there is none to offer (FR-042c).
   //
   // Feature 086 T054/T055 — a third ordered write, and again no new judgment
-  // here: one more save helper handed in, and the layer acks held alongside the
+  // here: one more layer built there, and the layer acks held alongside the
   // rows so the outcome sentence can name which layers landed (FR-051). What is
   // NOT added is a retry, a rollback, or any other compensating affordance —
   // whichever prefix of the three writes landed, stays landed, and re-inspecting
@@ -71,9 +71,7 @@
   import ProcessImportPlanTable from './ProcessImportPlanTable.svelte';
   import ProcessImportResultsTable from './ProcessImportResultsTable.svelte';
   import { saveModelsImport } from '../../lib/save-models';
-  import { savePhases } from '../../lib/save-phases';
-  import { savePipelines } from '../../lib/save-pipelines';
-  import { saveWorkflows } from '../../lib/save-workflows';
+  import { publishDefinitionPackage } from '../../lib/catalog-lifecycle';
   //
   // Feature 085 T034 — one entry point, two kinds of document (FR-055a). The
   // operator no longer picks a per-kind action, so this surface can be handed a
@@ -213,11 +211,7 @@
     // The three writes, in dependency order, each gated on its own revision.
     // `runImportCommit` stops at the first rejection and reports what did land —
     // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
-    const report = await runImportCommit(plan, {
-      savePhases,
-      savePipelines,
-      saveWorkflows
-    });
+    const report = await runImportCommit(plan, { publishPackage: publishDefinitionPackage });
     committing = false;
     outcome = report.outcome;
     layerResults = report.results;

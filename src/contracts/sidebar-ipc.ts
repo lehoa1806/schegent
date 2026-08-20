@@ -36,6 +36,7 @@ export const CMD_DEACTIVATE_DEFINITION = 'CMD_DEACTIVATE_DEFINITION' as const;
 export const CMD_RESTORE_DEFINITION_VERSION = 'CMD_RESTORE_DEFINITION_VERSION' as const;
 export const CMD_DISCARD_DEFINITION_DRAFT = 'CMD_DISCARD_DEFINITION_DRAFT' as const;
 export const CMD_PUBLISH_PACKAGE = 'CMD_PUBLISH_PACKAGE' as const;
+export const CMD_READ_DEFINITION_VERSION = 'CMD_READ_DEFINITION_VERSION' as const;
 // Feature 011 — scalar settings save + manual delayed-retry trigger.
 export const CMD_SAVE_GENERAL_SETTINGS = 'CMD_SAVE_GENERAL_SETTINGS' as const;
 export const CMD_RETRY_PHASE_NOW = 'CMD_RETRY_PHASE_NOW' as const;
@@ -172,6 +173,7 @@ export const COMMAND_TYPES = [
   CMD_RESTORE_DEFINITION_VERSION,
   CMD_DISCARD_DEFINITION_DRAFT,
   CMD_PUBLISH_PACKAGE,
+  CMD_READ_DEFINITION_VERSION,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
   CMD_PAUSE_PHASE,
@@ -459,6 +461,8 @@ export type {
   RestoreDefinitionVersionCommand,
   SaveDefinitionDraftCommand
 } from './sidebar-ipc/catalog-lifecycle';
+import { isCmdReadDefinitionVersion, type ReadDefinitionVersionCommand } from './sidebar-ipc/catalog-history';
+export * from './sidebar-ipc/catalog-history';
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
   readonly payload: {
@@ -572,6 +576,7 @@ export type SidebarCommand =
   | RestoreDefinitionVersionCommand
   | DiscardDefinitionDraftCommand
   | PublishPackageCommand
+  | ReadDefinitionVersionCommand
   | SaveGeneralSettingsCommand
   // Thirteen live-queue controls, named as the one family they are; the arms
   // are spelled out in sidebar-ipc/run-controls.ts.
@@ -978,6 +983,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_RESTORE_DEFINITION_VERSION]: isCmdRestoreDefinitionVersion,
   [CMD_DISCARD_DEFINITION_DRAFT]: isCmdDiscardDefinitionDraft,
   [CMD_PUBLISH_PACKAGE]: isCmdPublishPackage,
+  [CMD_READ_DEFINITION_VERSION]: isCmdReadDefinitionVersion,
   [CMD_SAVE_GENERAL_SETTINGS]: isCmdSaveGeneralSettings,
   [CMD_RETRY_PHASE_NOW]: isCmdRetryPhaseNow,
   [CMD_PAUSE_PHASE]: isCmdPausePhase,

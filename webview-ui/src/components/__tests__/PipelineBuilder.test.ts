@@ -22,8 +22,10 @@ import type {
   BackendRunnerKind
 } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
-import { savePhases as savePhasesHelper } from '../../lib/save-phases';
-import { savePipelines as savePipelinesHelper } from '../../lib/save-pipelines';
+import {
+  deactivateDefinition as deactivateHelper,
+  saveDefinitionDraft as saveDraftHelper
+} from '../../lib/catalog-lifecycle';
 import { saveModels as saveModelsHelper } from '../../lib/save-models';
 import { useConfirm } from '../../lib/use-confirm';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
@@ -37,11 +39,16 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
     onceAck: vi.fn()
   }
 }));
-vi.mock('../../lib/save-phases', () => ({
-  savePhases: vi.fn(async () => ({ status: 'accepted' as const }))
-}));
-vi.mock('../../lib/save-pipelines', () => ({
-  savePipelines: vi.fn(async () => ({ status: 'accepted' as const }))
+// Feature 101 (T030) — `save-phases.ts` and `save-pipelines.ts` folded into
+// `catalog-lifecycle.ts`, so one mock replaces two. Only the senders are stubbed;
+// `draftTokenOfRecord` in particular keeps its real body, because it is the
+// derivation that turns a record's lifecycle block into the write token and
+// stubbing it would let the editors send any token while the assertions below
+// still read 'no-draft'.
+vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
+  saveDefinitionDraft: vi.fn(async () => ({ status: 'accepted' as const })),
+  deactivateDefinition: vi.fn(async () => ({ status: 'accepted' as const }))
 }));
 vi.mock('../../lib/save-models', () => ({
   saveModels: vi.fn(async () => ({ status: 'accepted' as const }))
@@ -179,6 +186,18 @@ async function switchTab(container: HTMLElement, label: string): Promise<void> {
   throw new Error(`Tab "${label}" not found`);
 }
 
+/**
+ * The row a draft write carried, defaulting to the first write.
+ *
+ * Feature 101 (T030) — the cases below used to destructure `phases` off the
+ * request and index into it, because the write was the whole layer and the
+ * edited row was one entry in it. A draft write carries exactly one definition,
+ * so the index is gone and this is what replaces it.
+ */
+function savedBody(call = 0): Record<string, unknown> {
+  return vi.mocked(saveDraftHelper).mock.calls[call][0].body as Record<string, unknown>;
+}
+
 describe('PipelineBuilder — restored 3-tab design', () => {
   const REMOVABLE_PHASE: PhaseDefinition = Object.freeze({
     id: 'remove-me', name: 'Remove me', version: 1, instruction: 'Run.'
@@ -212,22 +231,27 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(deleteBtn);
     await tick();
 
-    expect(savePhasesHelper).toHaveBeenCalledOnce();
-    expect(savePhasesHelper).toHaveBeenCalledWith({
-      expectedRevision: 'phase-revision',
-      mutation: { kind: 'remove', phaseId: 'remove-me' },
-      // The surviving rows still travel, because the Builder still holds a whole
-      // layer; the helper is what declines to republish them (FR-039a).
-      phases: [],
-      removedName: 'Remove me',
-      originatingElement: deleteBtn
-    });
+    expect(deactivateHelper).toHaveBeenCalledOnce();
+    // Feature 101 (T030) — `toEqual` on both arguments is exact, and that is the
+    // point. The surviving rows used to travel with the removal because the
+    // Builder held a whole layer; a per-definition deactivation names one id and
+    // carries no rows, so there is nothing left for a stale sibling to ride in on.
+    expect(deactivateHelper).toHaveBeenCalledWith(
+      {
+        kind: 'phase',
+        id: 'remove-me',
+        // The fixture record carries no draft, so the staleness token is the
+        // sentinel rather than a version id (FR-024).
+        expectedDraftVersion: 'no-draft'
+      },
+      { definitionName: 'Remove me', originatingElement: deleteBtn }
+    );
     // Asking here as well would prompt twice for one removal.
     expect(useConfirm).not.toHaveBeenCalled();
   });
 
   it('reports nothing when the operator declines, because nothing was sent', async () => {
-    vi.mocked(savePhasesHelper).mockResolvedValueOnce({
+    vi.mocked(deactivateHelper).mockResolvedValueOnce({
       status: 'rejected' as const,
       reason: 'declined'
     });
@@ -276,7 +300,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'stale-phase', name: 'Original', version: 1, instruction: 'Run.'
     });
-    vi.mocked(savePhasesHelper).mockResolvedValueOnce({
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
       status: 'rejected',
       reason: 'stale-catalog',
       result: {
@@ -305,7 +329,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'invalid-phase', name: 'Original', version: 1, instruction: 'Run.'
     });
-    vi.mocked(savePhasesHelper).mockResolvedValueOnce({
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
       status: 'rejected',
       reason: 'phase-validation',
       result: {
@@ -339,7 +363,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       id: 'sibling-phase', name: 'Original sibling', version: 1, instruction: 'Run.'
     });
     const initial = buildSnapshot([phase, sibling]);
-    vi.mocked(savePhasesHelper)
+    vi.mocked(saveDraftHelper)
       .mockResolvedValueOnce({
         status: 'rejected', reason: 'stale-catalog',
         result: { currentRevision: 'intermediate-workspace-revision' }
@@ -371,30 +395,44 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
     await tick();
 
-    expect(savePhasesHelper).toHaveBeenCalledWith(expect.objectContaining({
-      expectedRevision: 'phase-revision',
-      phases: expect.arrayContaining([expect.objectContaining({ name: 'Dirty draft' })])
+    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'phase',
+      id: 'concurrent-phase',
+      body: expect.objectContaining({ name: 'Dirty draft' })
     }));
     const retry = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await vi.waitFor(() => expect(retry.disabled).toBe(false));
     await fireEvent.click(retry);
     await tick();
-    expect(savePhasesHelper).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      expectedRevision: 'newer-phase-revision',
-      phases: [
-        expect.objectContaining({ id: 'inserted-phase', name: 'Concurrent insertion' }),
-        expect.objectContaining({ name: 'Dirty draft' }),
-        expect.objectContaining({ id: 'sibling-phase', name: 'Concurrent sibling edit' })
-      ]
+    // Feature 101 (T030) — the retry used to be asserted as a whole layer: the
+    // concurrently inserted row, then the preserved draft, then the concurrently
+    // edited sibling, in projection order. That assertion existed because the
+    // rebase had to fold the operator's edit back into rows it would otherwise
+    // republish stale. A draft write names one definition, so the rebase has
+    // nothing to fold and the two concurrent rows are simply not in the payload.
+    // What survives — and is the only part that was ever about this test's
+    // subject — is that the preserved edit is what gets retried.
+    expect(saveDraftHelper).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      kind: 'phase',
+      id: 'concurrent-phase',
+      body: expect.objectContaining({ name: 'Dirty draft' })
     }));
+    const retried = vi.mocked(saveDraftHelper).mock.calls[1][0] as { body: unknown };
+    expect(retried.body).not.toMatchObject({ id: 'inserted-phase' });
+    expect(retried.body).not.toMatchObject({ id: 'sibling-phase' });
   });
 
   it('accepts a newer authoritative revision when the acknowledged revision was skipped', async () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'fast-phase', name: 'Original', version: 1, instruction: 'Run.'
     });
-    let resolveSave!: (result: { status: 'accepted'; result: { revision: string } }) => void;
-    vi.mocked(savePhasesHelper).mockImplementationOnce(() => new Promise((resolve) => {
+    // Feature 101 (T030) — the ack used to carry the revision it had written, and
+    // this test resolved it with a revision already overtaken by `later-revision`.
+    // Lifecycle acks carry no revision at all, so "the acknowledged revision was
+    // skipped" is now the only case there is: the editor settles on the projection
+    // moving, whatever the ack says, which is exactly what is asserted below.
+    let resolveSave!: (result: { status: 'accepted' }) => void;
+    vi.mocked(saveDraftHelper).mockImplementationOnce(() => new Promise((resolve) => {
       resolveSave = resolve;
     }));
     const initial = buildSnapshot([phase]);
@@ -417,7 +455,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       }
     } as WorkflowSnapshot;
     await rerender({ snapshot: later, initialTab: 'phases' });
-    resolveSave({ status: 'accepted', result: { revision: 'acknowledged-revision' } });
+    resolveSave({ status: 'accepted' });
     await vi.waitFor(() => expect(container.textContent).not.toContain('Saving…'));
     expect(container.textContent).toContain('Later authoritative edit');
   });
@@ -459,12 +497,10 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
     await tick();
 
-    expect(savePhasesHelper).toHaveBeenCalledWith(expect.objectContaining({
-      expectedRevision: 'phase-revision',
-      mutation: { kind: 'edit', phaseId: 'shared' },
-      phases: expect.arrayContaining([
-        expect.objectContaining({ id: 'shared', name: 'Second row edited' })
-      ])
+    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'phase',
+      id: 'shared',
+      body: expect.objectContaining({ id: 'shared', name: 'Second row edited' })
     }));
   });
 
@@ -480,7 +516,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(discard!);
     await tick();
     expect(container.textContent).not.toContain('new-phase');
-    expect(savePhasesHelper).not.toHaveBeenCalled();
+    expect(saveDraftHelper).not.toHaveBeenCalled();
   });
 
   it('preserves configured unavailable runner and model values visibly', async () => {
@@ -594,9 +630,16 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(container.querySelector('[data-testid="raw-json-save"]')!);
     await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
     await tick();
-    expect(savePhasesHelper).toHaveBeenCalledWith(expect.objectContaining({
-      mutation: { kind: 'edit', phaseId: 'INVALID' },
-      phases: [expect.objectContaining({ id: 'repaired-id' })]
+    // Feature 101 (T030) — the mutation addressed the row by the id it had BEFORE
+    // the repair while the payload carried the new one, because a whole-layer
+    // write needed to say which existing row it was replacing. A draft write
+    // addresses the definition it writes, so the repaired id is both the address
+    // and the body: repairing an id writes a new definition rather than renaming
+    // the broken one, and that is the behaviour this now pins.
+    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'phase',
+      id: 'repaired-id',
+      body: expect.objectContaining({ id: 'repaired-id' })
     }));
   });
 
@@ -630,12 +673,21 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   // Feature 096 T025 — the Model Catalog import trigger. Unmounted on every
   // other tab, same as the per-tab save affordances above: it must not be
   // reachable before the Models tab is active.
+  //
+  // Feature 101 (US6, T065) — the pre-switch assertion used to be "no preflight
+  // at all", which held only because this fixture opens on Pipelines and that
+  // tab had no import entry. It has one now: an empty catalog renders the shared
+  // front door, and the front door offers the import (FR-032). The claim the
+  // test is actually for survives intact — each tab mounts exactly one entry
+  // point and unmounts it with the tab — so that is what it asserts.
   it('Models tab: mounts the Model Catalog import entry point', async () => {
     const snap = buildSnapshot([], [], ['claude-sonnet-4-6']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
-    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
     await switchTab(container, 'Models');
-    expect(container.querySelector('[data-testid="process-import-preflight"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
     expect(container.querySelector('[data-testid="process-import-inspect"]')).not.toBeNull();
   });
 
@@ -643,7 +695,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   // and only that change is submitted against the adopted layer revision. A
   // Save click with nothing declared is inert (FR-029).
   it('Pipelines tab: save is inert until a mutation is declared', async () => {
-    vi.mocked(savePipelinesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
       name: 'Custom Pipeline',
@@ -658,7 +710,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
     await tick();
-    expect(savePipelinesHelper).not.toHaveBeenCalled();
+    expect(saveDraftHelper).not.toHaveBeenCalled();
   });
 
   it('Models tab: saves through the shared save-models helper', async () => {
@@ -680,7 +732,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     });
   });
   it('Pipelines tab: Pipeline Name field updates name and saves correctly (BUG-005)', async () => {
-    vi.mocked(savePipelinesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
       name: 'Custom Pipeline',
@@ -713,13 +765,14 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await fireEvent.click(saveBtn!);
     await tick();
 
-    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual({
-      expectedRevision: 'pipeline-revision',
-      mutation: { kind: 'edit', pipelineId: 'custom' },
-      pipelines: [
-        { id: 'custom', name: 'Renamed Pipeline', version: 1, phases: ['speckit-specify'] }
-      ]
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(saveDraftHelper).mock.calls[0][0]).toEqual({
+      kind: 'pipeline',
+      id: 'custom',
+      // The fixture record carries no draft, so the staleness token is the
+      // sentinel rather than a version id (FR-024).
+      expectedDraftVersion: 'no-draft',
+      body: { id: 'custom', name: 'Renamed Pipeline', version: 1, phases: ['speckit-specify'] }
     });
   });
 });
@@ -774,8 +827,8 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     expect(select!.value).toBe('');
   });
 
-  it('saves with the chosen Effort by routing through the save-phases helper', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+  it('saves with the chosen Effort by routing through the draft-write helper', async () => {
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditorForPlan();
     const select = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
@@ -785,14 +838,12 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    expect(savePhasesHelper).toHaveBeenCalledTimes(1);
-    const [{ phases }] = vi.mocked(savePhasesHelper).mock.calls[0];
-    expect(phases).toHaveLength(1);
-    expect(phases[0]).toMatchObject({ id: 'speckit-plan', effort: 'high' });
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', effort: 'high' });
   });
 
   it('preserves the deprecated loopable field during structured saves', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor({
       ...phase,
       loopable: true
@@ -805,14 +856,11 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     );
     await tick();
 
-    expect(vi.mocked(savePhasesHelper).mock.calls[0][0].phases[0]).toMatchObject({
-      id: 'speckit-plan',
-      loopable: true
-    });
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', loopable: true });
   });
 
   it('defaults legacy phases to Required and saves an explicit optional choice', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditorForPlan();
     const required = container.querySelector(
       '[data-testid="phases-required-speckit-plan"]'
@@ -825,14 +873,11 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     );
     await tick();
 
-    expect(vi.mocked(savePhasesHelper).mock.calls[0][0].phases[0]).toMatchObject({
-      id: 'speckit-plan',
-      isRequired: false
-    });
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', isRequired: false });
   });
 
   it('renders and saves every supported runner through the shared helper', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditorForPlan();
     const select = container.querySelector(
       '[data-testid="phases-runner-speckit-plan"]'
@@ -850,10 +895,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     );
     await tick();
 
-    expect(vi.mocked(savePhasesHelper).mock.calls[0][0].phases[0]).toMatchObject({
-      id: 'speckit-plan',
-      runner: 'agy'
-    });
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', runner: 'agy' });
   });
 
   it('does not restrict runners on a Phase named for a former built-in', async () => {
@@ -895,7 +937,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
   );
 
   it('omits runner when the operator selects Inherit', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, { runner: 'codex' });
     const select = container.querySelector(
       '[data-testid="phases-runner-speckit-plan"]'
@@ -906,7 +948,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     );
     await tick();
 
-    expect(vi.mocked(savePhasesHelper).mock.calls[0][0].phases[0].runner).toBeUndefined();
+    expect(savedBody().runner).toBeUndefined();
   });
 
   it.each([
@@ -934,7 +976,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
 
 
   it('Inherit option submits the row with effort omitted (not null, not empty string)', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, { effort: 'high' });
     const select = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
@@ -944,14 +986,13 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    expect(savePhasesHelper).toHaveBeenCalledTimes(1);
-    const [{ phases }] = vi.mocked(savePhasesHelper).mock.calls[0];
-    expect(phases[0]).toMatchObject({ id: 'speckit-plan' });
-    expect((phases[0] as unknown as Record<string, unknown>).effort).toBeUndefined();
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan' });
+    expect(savedBody().effort).toBeUndefined();
   });
 
   it('FR-003 orthogonality: changing Effort does not clear an existing Model override', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-4-6' });
     const effort = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
@@ -961,8 +1002,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    const [{ phases }] = vi.mocked(savePhasesHelper).mock.calls[0];
-    expect(phases[0]).toMatchObject({
+    expect(savedBody()).toMatchObject({
       id: 'speckit-plan',
       effort: 'high',
       model: 'claude-sonnet-4-6'
@@ -970,7 +1010,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
   });
 
   it('FR-003 orthogonality: choosing Inherit for Effort leaves an existing Model override intact', async () => {
-    vi.mocked(savePhasesHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, {
       effort: 'high',
       model: 'claude-sonnet-4-6'
@@ -983,9 +1023,8 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    const [{ phases }] = vi.mocked(savePhasesHelper).mock.calls[0];
-    expect(phases[0]).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-4-6' });
-    expect((phases[0] as unknown as Record<string, unknown>).effort).toBeUndefined();
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-4-6' });
+    expect(savedBody().effort).toBeUndefined();
   });
 
 
@@ -1102,7 +1141,7 @@ describe('PipelineBuilder — BUG-012 phase list reordering', () => {
     expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a', 'phase-c']);
   });
 
-  it('persists a Phase reorder as one atomic edit mutation', async () => {
+  it('saves the moved row after a reorder, the list order being the store\'s to keep', async () => {
     const container = await renderPhasesList();
     await fireEvent.click(container.querySelector(
       '[data-testid="phases-move-down-phase-a"]'
@@ -1110,13 +1149,18 @@ describe('PipelineBuilder — BUG-012 phase list reordering', () => {
     await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
     await tick();
 
-    expect(savePhasesHelper).toHaveBeenCalledWith(expect.objectContaining({
-      mutation: { kind: 'edit', phaseId: 'phase-a' },
-      phases: [
-        expect.objectContaining({ id: 'phase-b' }),
-        expect.objectContaining({ id: 'phase-a' }),
-        expect.objectContaining({ id: 'phase-c' })
-      ]
+    // Feature 101 (T030) — this asserted the reordered layer travelled as one
+    // atomic write: `phase-b`, `phase-a`, `phase-c`, in that order. It could,
+    // because the write WAS the layer and the array's order was the catalog's
+    // order. A draft write names one definition, and the order definitions are
+    // listed in belongs to the store's manifest (FR-002, FR-018), which no
+    // lifecycle command reorders. So the reorder is a view arrangement, and what
+    // the save persists is the moved row's body.
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'phase',
+      id: 'phase-a',
+      body: expect.objectContaining({ id: 'phase-a' })
     }));
   });
 
@@ -1296,7 +1340,7 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
   }
 
   beforeEach(() => {
-    vi.mocked(savePipelinesHelper).mockClear();
+    vi.mocked(deactivateHelper).mockClear();
     vi.mocked(useConfirm).mockClear();
   });
 
@@ -1310,14 +1354,20 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     await fireEvent.click(deleteBtn);
     await tick();
 
-    expect(savePipelinesHelper).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual({
-      expectedRevision: 'pipeline-revision',
-      mutation: { kind: 'remove', pipelineId: 'custom' },
-      pipelines: [],
-      removedName: 'Custom Pipeline',
-      originatingElement: deleteBtn
-    });
+    expect(deactivateHelper).toHaveBeenCalledTimes(1);
+    // Feature 101 (T030) — `toEqual` on both arguments is exact. The empty
+    // `pipelines: []` that stood here was the removal itself, an omission from a
+    // republished layer; a deactivation names the definition and carries no rows.
+    expect(deactivateHelper).toHaveBeenCalledWith(
+      {
+        kind: 'pipeline',
+        id: 'custom',
+        // The fixture record carries no draft, so the staleness token is the
+        // sentinel rather than a version id (FR-024).
+        expectedDraftVersion: 'no-draft'
+      },
+      { definitionName: 'Custom Pipeline', originatingElement: deleteBtn }
+    );
   });
 
   it('asks nothing itself, so one removal cannot prompt twice', async () => {
@@ -1330,7 +1380,7 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
   });
 
   it('settles without an error when the operator declines', async () => {
-    vi.mocked(savePipelinesHelper).mockResolvedValueOnce({
+    vi.mocked(deactivateHelper).mockResolvedValueOnce({
       status: 'rejected' as const,
       reason: 'declined'
     });
