@@ -236,6 +236,11 @@
           "type": "WorkflowCatalogProjection"
         },
         {
+          "name": "launchables",
+          "optional": true,
+          "type": "LaunchProjection"
+        },
+        {
           "name": "connectedRuns",
           "optional": true,
           "type": "readonly ConnectedRunProjection[]"

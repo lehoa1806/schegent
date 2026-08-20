@@ -82,6 +82,7 @@ import {
   createHostCatalogStore,
   nodeDigest
 } from './activation/catalog-store-wiring';
+import { liveRunPlans } from './activation/run-provenance-enumeration';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
@@ -335,7 +336,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
   // no catalog activates at all. The snapshot still has to exist for the resolvers,
   // so the two facts stay apart: no store, and the empty catalog it resolves to.
-  const catalogStore = createHostCatalogStore();
+  // Feature 102 (T051, FR-037) — the store is built here and `queue` below it, so
+  // the enumerator closes over both rather than receiving them, and re-reads per
+  // question. Same late binding as the Workflow-reference reader further down.
+  const catalogStore = createHostCatalogStore(() =>
+    liveRunPlans(queue.listAll(), Object.values(store.getRunMap()))
+  );
   // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
   // before anything is composed, and the session owns that snapshot together with
   // everything resolved from it. See `CatalogSession` for why the five bindings
@@ -1057,6 +1063,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // command never writes.
     readModelsConfig: () => coerceModels(catalogReader.getModels('workspace')),
     getCatalog: () => catalogSession.catalog,
+    // Feature 102 (T038, FR-022) — the version behind the line above, read
+    // through the same session so a freeze cannot pair one window's body with
+    // another read's version. `'pipeline'` is named here and only here: this
+    // seam starts Pipelines, and a Workflow's own version is a question it has
+    // no way to ask (FR-026).
+    resolveCatalogVersion: (pipelineId) => catalogSession.activeVersion('pipeline', pipelineId),
     guardedRun: guardedRunService,
     defaultRunnerKind: backendKind,
     // Feature 091 (T014, FR-010/FR-011) — the supply the command router was

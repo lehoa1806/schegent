@@ -29,6 +29,7 @@
 
 import * as fs from 'fs/promises';
 import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
+import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
 import type { RunRequestFieldError } from '../../contracts/run-request';
 import type { FrozenRunPlan, RunRequest } from '../../contracts/run-request';
@@ -106,6 +107,20 @@ export interface NodeRunStartDeps {
     scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
   };
   readonly getCatalog?: () => PipelineCatalog;
+  /**
+   * Feature 102 (T037, FR-022) — which published version the effective catalog's
+   * copy of a Pipeline came from.
+   *
+   * The effective catalog carries no version ids (`pipelinesById` is
+   * `PipelineDef`s), so the identity comes from the store on this narrow port
+   * rather than by widening the resolved config. It takes an id and no kind: the
+   * resolver names the kind, so this seam structurally cannot ask what version a
+   * Workflow is at — a Workflow is never started here (FR-026).
+   *
+   * Optional. An absent dep yields an absent version, which is "not recorded"
+   * (FR-027) and not an error.
+   */
+  readonly resolveCatalogVersion?: (pipelineId: string) => CatalogVersionRef | undefined;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
   readonly logger: Pick<SanitizedLogger, 'warn' | 'sanitize'>;
@@ -178,19 +193,45 @@ function describe(plan: FrozenRunPlan, override: string | undefined): string {
 }
 
 /**
+ * What Gate 1 yields when it resolves: the Pipeline to validate and freeze
+ * against, and the published version that Pipeline's body came from.
+ *
+ * One value carrying both, deliberately. The version is not a second fact looked
+ * up beside the body — it is a property *of* the body, and the rule the whole
+ * design rests on is that **the version comes from wherever the body came from**.
+ * A separate resolution beside this one could answer for a different body than
+ * the one the branch above selected, which is exactly the "version the system did
+ * not resolve" FR-021 forbids.
+ */
+interface ResolvedPipelineSource {
+  readonly source: EffectivePipelineSource;
+  readonly catalogVersion?: CatalogVersionRef;
+}
+
+/**
  * Gate 1 for both callers: the Pipeline the request will be validated and frozen
  * against, or the refusal that stands in for it.
  */
 function resolvePipelineSource(
   deps: NodeRunStartDeps,
   input: NodeRunStartInput
-): EffectivePipelineSource | { readonly reason: NodeRunStartRejection } {
+): ResolvedPipelineSource | { readonly reason: NodeRunStartRejection } {
   if (input.frozenPipeline !== undefined) {
     // A start addressed at a Pipeline the snapshot does not hold is a
     // mis-addressed start, not a catalog problem — refused rather than quietly
     // run against whichever Pipeline the caller did supply.
     if (input.frozenPipeline.id !== input.request.pipelineId) return { reason: 'pipeline-not-found' };
-    return frozenPipelineSource(input.frozenPipeline);
+    // Read off the snapshot, never re-resolved. The snapshot's body was frozen
+    // when the connected run started; today's Active version describes a body
+    // this start is not going to execute, and stamping it would attach a version
+    // to a plan that never froze it. A pre-feature snapshot carries none, and
+    // that plan records none (FR-027).
+    return {
+      source: frozenPipelineSource(input.frozenPipeline),
+      ...(input.frozenPipeline.catalogVersion !== undefined
+        ? { catalogVersion: input.frozenPipeline.catalogVersion }
+        : {})
+    };
   }
 
   const catalog = deps.getCatalog?.();
@@ -216,10 +257,36 @@ function resolvePipelineSource(
     if (!phase) return { reason: 'pipeline-invalid' };
     phases.push(phase);
   }
+
+  // FR-022, and FR-044's ordering. Resolved here, against the same effective
+  // catalog the body above came from, and stamped onto the plan at the freeze a
+  // few lines below. What happens if housekeeping runs in the interval:
+  //
+  //   Housekeeping yields, and the exclusion is the ACTIVE-VERSION EXEMPTION
+  //   rather than a lock. What this port returns is the definition's Active
+  //   version, and `catalog/catalog-retention.ts` exempts the Active version
+  //   before any other test — no port call, no timing. So for as long as this
+  //   version is the one a launch would resolve, retention cannot remove it. It
+  //   stops being Active only by a publish, and a publish ADDS a version rather
+  //   than removing the one it supersedes: reaching the just-superseded version
+  //   in that same pass would require the oldest-first walk to step past every
+  //   older version as exempt. Once the plan below is written, FR-033 carries the
+  //   exemption on: the queue reader reports the version referenced for as long
+  //   as the run has not reached a terminal state. Active, then referenced, with
+  //   no gap between them in which the version is neither.
+  //
+  //   No lock, deliberately. One would serialize every launch behind every
+  //   catalog save to close a window the exemption already closes, and would put
+  //   the freeze — which must stay a pure function of what it read — behind a
+  //   store the freeze does not otherwise touch.
+  const catalogVersion = deps.resolveCatalogVersion?.(input.request.pipelineId);
   return {
-    definition,
-    phases,
-    ...(deps.defaultRunnerKind ? { defaultRunnerKind: deps.defaultRunnerKind } : {})
+    source: {
+      definition,
+      phases,
+      ...(deps.defaultRunnerKind ? { defaultRunnerKind: deps.defaultRunnerKind } : {})
+    },
+    ...(catalogVersion === undefined ? {} : { catalogVersion })
   };
 }
 
@@ -244,8 +311,8 @@ export async function startPipelineRun(
   // otherwise against the EFFECTIVE catalog and nothing else: a row that is
   // shadowed or invalid is not in the effective catalog, and that is the point —
   // the definition frozen below has to be the one that would actually run.
-  const source = resolvePipelineSource(deps, input);
-  if ('reason' in source) return { outcome: 'rejected-definition', reason: source.reason };
+  const resolved = resolvePipelineSource(deps, input);
+  if ('reason' in resolved) return { outcome: 'rejected-definition', reason: resolved.reason };
 
   if (input.workspaceRoot === null) {
     // Reported once, as a definition-family refusal, rather than as one
@@ -260,12 +327,16 @@ export async function startPipelineRun(
   // checks against the frozen snapshot, and accumulates rather than short-
   // circuits, so the response carries all failing fields.
   const validated = await validateRunRequest(input.request, {
-    pipeline: source,
+    pipeline: resolved.source,
     workspaceRoot: input.workspaceRoot,
     now: Date.now(),
     localInputs: { checkFile: checkLocalFile, checkFolder: checkLocalFolder },
     outputProbe: OUTPUT_PROBE,
-    priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null }
+    priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null },
+    // Carried, not re-resolved (FR-021). Gate 1 resolved it from the same read
+    // that produced the body; asking again here would be a second oracle that
+    // could answer for a different body than the one about to be frozen.
+    ...(resolved.catalogVersion === undefined ? {} : { catalogVersion: resolved.catalogVersion })
   });
   if (!validated.ok) {
     // Forwarded verbatim. Every `message` is one of a closed set of fixed

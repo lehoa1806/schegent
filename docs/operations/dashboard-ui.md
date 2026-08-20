@@ -331,6 +331,18 @@ projection — `connectedRuns`, `queue.orderedItems`, `availablePipelines`. The
 webview simply never read it. Submission uses the existing
 `CMD_LAUNCH_PIPELINE` / `CMD_LAUNCH_WORKFLOW` commands.
 
+**The launch surface (spec 102).** Above the panels above, Runs now leads with
+two sections — **Pipelines** and **Workflows** — each listing only definitions
+that are Active, with an explicit *select → Trigger → fulfil inputs → Run*
+flow. Runs is where work is started and the only place it is started: it offers
+exactly what is published, so a definition missing from these sections is a
+definition that was never published or has since been deactivated. Each entry
+names the version it will freeze, and the run executes that version regardless
+of what is published afterwards. A Workflow's trigger form asks for its
+**derived** inputs, recomputed each time you open it, so a form opened after a
+node's Pipeline changed shape asks for the new ports. Operator detail is in
+[Run a Workflow](workflow-runs.md#where-runs-are-started).
+
 **Declared outputs in Run details (spec 087, populated by 091).** The Run
 details panel lists the outputs a completed run declared. Until 091 the list was
 always empty — the resolver shipped but no host module called it. Outputs are

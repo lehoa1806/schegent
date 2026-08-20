@@ -8,7 +8,10 @@
 // returns at the first bad field makes the operator fix a request one round
 // trip at a time, and the failure is invisible until a request has two faults.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import type { CatalogVersionRef } from '../../../../src/contracts/catalog-version';
 import type { PipelineInputPort, PipelineOutputPort } from '../../../../src/contracts/pipeline-definitions';
 import type { RunRequest } from '../../../../src/contracts/run-request';
 import { MAX_DESCRIPTION_LENGTH } from '../../../../src/queue/feature-request';
@@ -393,5 +396,140 @@ describe('Feature 098 (T054) — a launch against an empty catalog is refused by
     });
 
     expect(result).toEqual({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
+  });
+});
+
+// Feature 102 (T033, US4 — FR-021, FR-022, FR-024) — the envelope carries the
+// version it was handed, and the validator resolves none of its own.
+//
+// The record of which published version a run froze is one optional field on
+// `ExecutionEnvelope`, and validation is where the envelope is built, so this is
+// where it is stamped. What matters is that stamping is all that happens here.
+// A validator that could look a version up would be a second resolver beside
+// the one in the start path — two oracles for one fact, agreeing until the day
+// they read the catalog at different moments and a plan records a version the
+// run did not execute.
+//
+// So the claims are deliberately narrow, and one of them is about absence:
+//
+//   * present and verbatim when the context supplies one, including a value
+//     that disagrees with the Pipeline being validated. A validator that
+//     resolved anything would repair that disagreement, and the case would fail;
+//   * the field is *missing*, not `undefined` and never `''`, when the context
+//     supplies none (FR-027). A key present with an empty identity reads as a
+//     version downstream;
+//   * nothing about it comes from the request. `RunRequest` declares no field
+//     for it (FR-024), and a key smuggled onto one at run time reaches no plan.
+describe('Feature 102 (T033) — the frozen plan records what the host resolved', () => {
+  const VERSION: CatalogVersionRef = { kind: 'pipeline', id: 'ab-flow', versionId: 'v4' };
+
+  async function planFor(
+    overrides: Partial<RunRequestValidationContext> = {},
+    body: Partial<RunRequest> = {}
+  ) {
+    const outcome = await validateRunRequest(request(body), context(overrides));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('validation refused a request this suite assumes is valid');
+    return outcome.plan;
+  }
+
+  it('carries the context version onto the envelope verbatim', async () => {
+    const plan = await planFor({ catalogVersion: VERSION });
+
+    expect(plan.catalogVersion).toEqual(VERSION);
+  });
+
+  it('copies the reference rather than rebuilding it', async () => {
+    // Same object, not merely the same fields: a rebuilt record is a second
+    // construction site for a value the host already resolved, and it is where
+    // a "helpful" default for a missing member would appear.
+    const plan = await planFor({ catalogVersion: VERSION });
+
+    expect(plan.catalogVersion).toBe(VERSION);
+  });
+
+  it('resolves nothing of its own, even when the version disagrees with the Pipeline', async () => {
+    // `other-flow` is not the Pipeline under validation, and `workflow` is not
+    // its kind. Both survive: resolution is the start path's job (FR-022), and a
+    // validator that corrected this would be the second oracle.
+    const foreign: CatalogVersionRef = { kind: 'workflow', id: 'other-flow', versionId: 'v9' };
+
+    const plan = await planFor({ catalogVersion: foreign });
+
+    expect(plan.catalogVersion).toEqual(foreign);
+  });
+
+  it('omits the field entirely when the context supplies none', async () => {
+    const plan = await planFor();
+
+    // `in`, not `=== undefined`: FR-027 distinguishes "not recorded" from a
+    // present-but-blank identity, and only the first is representable here.
+    expect('catalogVersion' in plan).toBe(false);
+  });
+
+  it('never writes a blank identity in place of an absent one', async () => {
+    const plan = await planFor();
+
+    expect(JSON.stringify(plan)).not.toContain('catalogVersion');
+  });
+
+  it('takes nothing from the request, even when one carries the key (FR-024)', async () => {
+    // What a payload that got past the boundary would look like. It cannot, but
+    // the plan must not depend on that: the version is the host's to resolve.
+    const smuggled = { catalogVersion: VERSION } as unknown as Partial<RunRequest>;
+
+    const plan = await planFor({}, smuggled);
+
+    expect('catalogVersion' in plan).toBe(false);
+  });
+
+  it('prefers the host record over a smuggled one rather than merging them', async () => {
+    const smuggled = {
+      catalogVersion: { kind: 'pipeline', id: 'ab-flow', versionId: 'forged' }
+    } as unknown as Partial<RunRequest>;
+
+    const plan = await planFor({ catalogVersion: VERSION }, smuggled);
+
+    expect(plan.catalogVersion).toEqual(VERSION);
+  });
+
+  it('declares no field for it on the submission shape (FR-024)', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../../../../src/contracts/run-request.ts'),
+      'utf8'
+    );
+    const body = /export interface RunRequest \{([\s\S]*?)\n\}/.exec(source)?.[1];
+
+    expect(body, 'RunRequest must still be declared in run-request.ts').toBeDefined();
+    expect([...(body ?? '').matchAll(/^\s*readonly (\w+)\??:/gm)].map((m) => m[1])).toEqual([
+      'pipelineId',
+      'inputs',
+      'supplemental',
+      'outputs',
+      'instructions'
+    ]);
+  });
+
+  it('reaches no resolver from the validator module', () => {
+    // The behavioural cases above show it does not resolve on the paths they
+    // walk. This shows it *cannot*: the version type is imported for its shape
+    // and erased, and no module that could answer "what is Active" is reachable
+    // as a value from here.
+    const source = readFileSync(
+      resolve(__dirname, '../../../../src/services/run-request/run-request-validator.ts'),
+      'utf8'
+    ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+    const valueImports = [...source.matchAll(/^import (?!type )[\s\S]*?from '([^']+)';/gm)].map(
+      (match) => match[1]
+    );
+
+    expect(valueImports.length, 'the scan must see the imports it filters').toBeGreaterThan(0);
+    for (const specifier of valueImports) {
+      expect(specifier).not.toMatch(/catalog-version|catalog-store|catalog\//);
+    }
+    for (const vocabulary of ['activeVersionId', 'effectiveCatalog', 'applyLifecycleWrite']) {
+      expect(source).not.toContain(vocabulary);
+    }
   });
 });

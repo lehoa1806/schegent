@@ -33,11 +33,79 @@
   //
   // Operator-authored strings — Pipeline names, run and workflow identifiers —
   // are interpolated with `{}`, which escapes. Nothing here uses `{@html}`.
+  //
+  // Feature 102 (US1, T014, FR-020) — the compose controls are gone and the two
+  // launch sections stand in their place. The `<select>` offered the *effective
+  // Pipeline catalog* and nothing else: no Workflows, no version, and no way to
+  // tell a definition that is published from one that merely exists. What
+  // replaces it is a projection built host-side, which is where the answer to
+  // "what is published" already lives.
+  //
+  // The connected-runs zone above is untouched (FR-020). It answers a different
+  // question — what is already under way — and the restructure is about what can
+  // be started.
+  //
+  // The FR-030a guidance moved with the choices it replaced. It belonged beside
+  // the picker because the picker was the thing an empty catalog left useless;
+  // now each section knows its own empty reason, and one guidance line above two
+  // sections that each state their own would be the surface saying it twice.
+  //
+  // Feature 102 (T046, US5 — FR-032) — with one exception, which is why this
+  // surface still owns a decision about emptiness at all. An untrusted workspace
+  // activates no catalog (099 FR-051), so both sections would resolve to
+  // "no definitions" and both would tell the operator to import something. That is
+  // a true reading of an empty catalog and a false account of why it is empty:
+  // importing cannot succeed here, and neither can publishing. The trust
+  // explanation replaces the whole launch zone rather than sitting above it,
+  // because a section left rendering beneath the banner would still be offering
+  // its own wrong remedy.
+  //
+  // Read as `=== false`, never as falsy. `workspaceTrust` is optional on the
+  // projection for hosts that predate feature 059, and an absent field means "this
+  // host does not report trust", not "untrusted" — treating it as the latter would
+  // hide the launch surface from every one of them. Fail-closed belongs on the
+  // host gate that actually refuses a launch, not on an explanatory banner.
+
+  // Feature 102 (T022 to T024, US2 — FR-013 to FR-015) — the surface holds the
+  // selection, and it is the only thing on Runs that holds any state at all.
+  //
+  // It lives here rather than in either section because there is exactly one of
+  // it: two sections each keeping their own would have to be told when the other
+  // changed, and "selected in both" would be reachable by forgetting to tell.
+  // Held here, it is unrepresentable.
+  //
+  // Selecting is a toggle. The row reports `aria-pressed`, and a control that
+  // announces itself as pressed and cannot be un-pressed is lying about what a
+  // second press does. Any change to the selection — to another definition or to
+  // none — closes an open form, because the values in it were composed against
+  // the definition being left behind.
+
+  // Feature 102 (T028, US3 — FR-016, FR-017, FR-043) — the Workflow half of the
+  // Trigger action mounts here, beside `RunLauncher`, rather than inside
+  // `LaunchableDetail` as the task text reads.
+  //
+  // The detail panel reads and does not edit — T017 sweeps it for form controls
+  // and requires none — so a form mounted inside it would fail the rule the panel
+  // exists to keep. The Pipeline form is already a sibling for that reason, and
+  // putting the two composers on different sides of the same boundary would make
+  // "where does the form live" a question with two answers.
+  //
+  // The two arms are exclusive by construction: they branch on `selection.kind`,
+  // which holds one value.
 
   import WorkflowRun from './WorkflowRun/WorkflowRun.svelte';
+  import TrustBanner from './TrustBanner.svelte';
+  import LaunchableSection from './Runs/LaunchableSection.svelte';
+  import LaunchableDetail from './Runs/LaunchableDetail.svelte';
   import RunLauncher from './RunLauncher/RunLauncher.svelte';
-  import { emptyCatalogGuidance } from '../../../src/contracts/empty-catalog-guidance';
-  import type { WorkflowSnapshot } from '../lib/snapshot-types';
+  import WorkflowTriggerForm from './Runs/WorkflowTriggerForm.svelte';
+  import {
+    isSelected,
+    reconcileSelection,
+    selectedEntry,
+    type LaunchSelection
+  } from './Runs/launch-selection';
+  import type { Launchable, WorkflowSnapshot } from '../lib/snapshot-types';
 
   interface Props {
     readonly snapshot: WorkflowSnapshot;
@@ -49,30 +117,81 @@
   const pipelines = $derived(snapshot.availablePipelines ?? []);
   const queueItems = $derived(snapshot.queue?.orderedItems ?? []);
 
-  let selectedPipelineId = $state<string | null>(null);
-  let composing = $state(false);
+  /**
+   * What Runs may start (FR-001). Absent until the host has resolved both
+   * catalogs, and passed through absent rather than defaulted: each section
+   * renders its own loading arm, which is not the same thing as an empty one
+   * (FR-006).
+   */
+  const launchables = $derived(snapshot.launchables);
+
+  let selection = $state<LaunchSelection>(null);
+  let triggered = $state(false);
+
+  /** Read out of the projection every time, never remembered (FR-017). */
+  const selected = $derived(selectedEntry(launchables, selection));
 
   /**
-   * The Pipeline the composer opens against, re-resolved from the catalog on
-   * every projection. A Pipeline removed while the composer is open resolves to
-   * nothing and closes it, rather than composing against a definition the host
-   * would no longer accept.
+   * Whether this window may start work (FR-015). It is the window's own answer
+   * and never a judgement about what the operator has typed — the surface does
+   * not form those (FR-010).
    */
-  const composePipeline = $derived(
-    composing ? pipelines.find((pipeline) => pipeline.id === selectedPipelineId) : undefined
+  const canLaunch = $derived(snapshot.isPrimary === true);
+
+  /** FR-032 — the one reason the launch zone shows no sections at all. */
+  const untrusted = $derived(snapshot.workspaceTrust === false);
+
+  /**
+   * The effective-catalog definition the form is composed against. The effective
+   * catalog *is* the set of Active versions, so it and the projection name the
+   * same Pipeline; resolving here rather than carrying a definition on the
+   * projection keeps one source for the contract the run is validated against.
+   */
+  const selectedPipeline = $derived(
+    selection?.kind === 'pipeline'
+      ? pipelines.find((pipeline) => pipeline.id === selection?.id)
+      : undefined
   );
 
   /**
-   * Feature 098 (T057, FR-030a / FR-032) — the same text the sidebar's phase
-   * tracker shows, not a second wording of it. Imported from the one shared
-   * source rather than restated here, which is what makes "the two surfaces
-   * cannot drift apart" a property of the code rather than a convention.
+   * The active graph behind a selected Workflow, read from the same field the
+   * Builder reads.
+   *
+   * The launch projection says which nodes a Workflow starts from; it carries no
+   * node-to-Pipeline map, because a copy of the graph beside the graph is two
+   * graphs (FR-018). A launch has to name the start node's Pipeline — the host
+   * refuses `pipeline-mismatch` otherwise — so the two are joined at the form.
+   * Resolved here every render, never remembered (FR-017).
    */
-  const guidance = $derived(emptyCatalogGuidance(pipelines.length));
+  const selectedGraph = $derived(
+    selection?.kind === 'workflow'
+      ? snapshot.workflowCatalog?.effective.find(
+          (definition) => definition.workflowId === selection?.id
+        )
+      : undefined
+  );
 
-  function onCompose(): void {
-    if (selectedPipelineId === null) return;
-    composing = true;
+  $effect(() => {
+    // FR-013 — a selection the next projection no longer offers is let go of,
+    // along with any form open over it. The predicate is absence, and the surface
+    // is never told why; see `reconcileSelection`.
+    if (reconcileSelection(launchables, selection) === null && selection !== null) {
+      selection = null;
+      triggered = false;
+    }
+  });
+
+  function onSelect(entry: Launchable): void {
+    selection = isSelected(entry, selection) ? null : { kind: entry.kind, id: entry.id };
+    triggered = false;
+  }
+
+  function onTrigger(): void {
+    // FR-015 is enforced where the state changes, not only where the control is
+    // drawn. A form this window could not submit is a form that wastes the
+    // operator's typing, so the disabled control and this guard state the same
+    // rule twice on purpose — the second one is the one that holds.
+    triggered = canLaunch;
   }
 </script>
 
@@ -94,40 +213,38 @@
     {/if}
   </section>
 
-  <section class="compose-zone" data-testid="runs-surface-compose-zone">
+  <section class="launch-zone" data-testid="runs-surface-launch-zone">
     <header class="zone-title">Start a Run</header>
-    {#if guidance}
-      <div class="empty-catalog" data-testid="runs-surface-empty-catalog">
-        <p class="empty-catalog-headline">{guidance.headline}</p>
-        <p class="empty">{guidance.body}</p>
-      </div>
+    {#if untrusted}
+      <TrustBanner variant="workspace-trust" />
     {:else}
-      <div class="compose-controls">
-        <label class="compose-label" for="runs-surface-pipeline-select">Pipeline</label>
-        <select
-          id="runs-surface-pipeline-select"
-          class="compose-select"
-          data-testid="runs-surface-pipeline-select"
-          bind:value={selectedPipelineId}
-        >
-          <option value={null}>Choose a Pipeline…</option>
-          {#each pipelines as pipeline (pipeline.id)}
-            <option value={pipeline.id}>{pipeline.name}</option>
-          {/each}
-        </select>
-        <button
-          type="button"
-          class="compose-button"
-          data-testid="runs-surface-compose"
-          disabled={selectedPipelineId === null}
-          onclick={onCompose}
-        >
-          Compose
-        </button>
-      </div>
-
-      {#if composePipeline}
-        <RunLauncher pipeline={composePipeline} onClose={() => (composing = false)} />
+      <LaunchableSection
+        name="Pipelines"
+        kind="pipeline"
+        section={launchables?.pipelines}
+        {selection}
+        {onSelect}
+      />
+      <LaunchableSection
+        name="Workflows"
+        kind="workflow"
+        section={launchables?.workflows}
+        {selection}
+        {onSelect}
+      />
+      {#if selected}
+        <LaunchableDetail entry={selected} {canLaunch} {onTrigger} />
+      {/if}
+      {#if triggered && selectedPipeline}
+        <RunLauncher pipeline={selectedPipeline} onClose={() => (triggered = false)} />
+      {/if}
+      {#if triggered && selected?.kind === 'workflow'}
+        <WorkflowTriggerForm
+          entry={selected}
+          graph={selectedGraph}
+          {pipelines}
+          onClose={() => (triggered = false)}
+        />
       {/if}
     {/if}
   </section>
@@ -143,7 +260,7 @@
     overflow-y: auto;
   }
   .runs-zone,
-  .compose-zone {
+  .launch-zone {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -172,48 +289,5 @@
     margin: 0;
     font-size: 0.85em;
     opacity: 0.8;
-  }
-  .compose-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .compose-label {
-    font-size: 0.85em;
-    opacity: 0.9;
-  }
-  .compose-select {
-    background: var(--vscode-dropdown-background);
-    color: var(--vscode-dropdown-foreground);
-    border: 1px solid var(--vscode-dropdown-border, transparent);
-    border-radius: 2px;
-    padding: 3px 6px;
-    font-size: 0.85em;
-    min-width: 0;
-  }
-  .compose-button {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: none;
-    border-radius: 2px;
-    padding: 4px 10px;
-    font-size: 0.85em;
-    cursor: pointer;
-  }
-  .compose-button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .empty-catalog {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .empty-catalog-headline {
-    margin: 0;
-    font-size: 0.9em;
-    font-weight: 600;
   }
 </style>

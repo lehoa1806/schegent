@@ -12,12 +12,13 @@ import * as vscode from 'vscode';
 import {
   createCatalogStore,
   createLifecycleService,
+  createQueueRunProvenance,
   publishPackage,
-  runProvenanceNone,
   type CatalogLifecycleOps,
   type CatalogStore,
   type Clock,
-  type Digest
+  type Digest,
+  type RunVersionCarrier
 } from '../catalog';
 import { createDefinitionSemantics } from '../config/definition-semantics';
 import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../lib/catalog-fs-adapter';
@@ -60,16 +61,25 @@ export function isCatalogActivationTrusted(): boolean {
  * open still gets a store: its reads report the empty catalog (FR-001a) and its
  * writes refuse `no-workspace` by name (FR-033a), which is more useful than a
  * second null to disambiguate downstream.
+ *
+ * @param enumeratePlans Feature 102 (T051, FR-037) — the versions live runs have
+ *                       frozen, read fresh on every retention question. Late-bound
+ *                       and defaulted to nothing, because the store is built
+ *                       before the queue that answers this exists: a caller with
+ *                       no queue yet (a fixture, a probe) gets a store whose
+ *                       retention exempts nothing, which is the correct answer for
+ *                       a host that runs nothing. `liveRunPlans` in
+ *                       `run-provenance-enumeration.ts` is what activation passes.
  */
-export function createHostCatalogStore(): CatalogStore | null {
+export function createHostCatalogStore(
+  enumeratePlans: () => Iterable<RunVersionCarrier> = () => []
+): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
   return createCatalogStore({
     fs: createCatalogFsAdapter(catalogStoreRoot()),
     clock: systemClock,
     digest: nodeDigest,
-    // Feature 099 (FR-038) — the exemption exists and is testable before the data
-    // behind it does. FR-R3-018 replaces this with the real run-provenance reader.
-    provenance: runProvenanceNone
+    provenance: createQueueRunProvenance(enumeratePlans)
   });
 }
 

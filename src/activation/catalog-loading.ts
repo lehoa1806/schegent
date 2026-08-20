@@ -17,6 +17,7 @@ import type {
   CatalogSnapshot,
   StoredDefinition
 } from '../contracts/catalog-store';
+import type { CatalogVersionRef } from '../contracts/catalog-version';
 import type { WorkflowCatalogResolution } from '../contracts/workflow-definitions';
 import type { SanitizedLogger } from '../lib/logger';
 
@@ -187,6 +188,32 @@ export class CatalogSession {
    */
   get definitions(): readonly StoredDefinition[] {
     return this.snapshot.definitions;
+  }
+
+  /**
+   * Feature 102 (T038, FR-022) — which published version a definition's active
+   * body came from, out of the same snapshot the effective catalog was resolved
+   * from.
+   *
+   * Narrow and additive on purpose. The effective catalog is bodies —
+   * `pipelinesById` holds `PipelineDef`s and no version id — and widening the
+   * resolved config to carry one would push a store concern through every
+   * resolver that never needs it. The manifest is where the identity lives, so
+   * that is where it is read.
+   *
+   * `undefined` for a definition the manifest does not hold, and for a draft-only
+   * entry with no active version: neither has a published version this run could
+   * have frozen, and the plan then records none (FR-027) rather than a blank one.
+   * `''` can never be returned — an entry whose `activeVersionId` is empty is
+   * treated as having none.
+   */
+  activeVersion(kind: CatalogKind, id: string): CatalogVersionRef | undefined {
+    const entry = this.snapshot.definitions.find(
+      (definition) => definition.kind === kind && definition.id === id
+    );
+    const versionId = entry?.activeVersionId;
+    if (versionId === undefined || versionId === null || versionId === '') return undefined;
+    return { kind, id, versionId };
   }
 
   /**
