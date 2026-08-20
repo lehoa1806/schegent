@@ -6,6 +6,11 @@ import type { TerminationReason } from '../state/workflow-run';
 // for a closed union, and the way it goes wrong is that the audit records a
 // phase name the transaction can no longer reach.
 import type { ResetPhase, ResetRefusalReason } from '../state/reset-transaction';
+// Feature 100 (T513) — `CatalogLifecyclePayload.resourceKind` reuses the store's
+// own closed union for the same reason the reset literals above are reused: a
+// restated copy would be a second source of truth, and the way it goes wrong is
+// that the audit records a kind the store can no longer produce.
+import type { CatalogKind } from './catalog-store';
 
 // Wake-up withdrawal — the `wakeup-runner-invocation` and
 // `wakeup-daemon-*` event types were removed with the capability that
@@ -435,6 +440,31 @@ export const PROCESS_EXCHANGE_EVENT_TYPES = [
 // ids to names at display time.
 export const CONCURRENCY_EVENT_TYPES = ['runs-overlapped'] as const;
 
+// Feature 100 (T513, FR-052, FR-053, FR-054, FR-055) — the three catalog
+// lifecycle transitions that move a definition's pointers. Three event types
+// rather than one with an `operation` field, because FR-052 asks for exactly
+// that: an operator reading the log filters on the event type, and three
+// literals make "what publications happened" a selection rather than a scan
+// with a predicate.
+//
+// The three that are here are the three that move a pointer. `saveDraft` and
+// `discardDraft` are deliberately absent (FR-054, SC-010): a draft is work in
+// progress, its record is the store's own version history, and auditing every
+// keystroke-adjacent save would turn the log into a second copy of that history
+// — 085's rule for `import`, applied to the operations it applies to.
+//
+// The payload is `CatalogLifecyclePayload` below, which has no field a body, a
+// note, or a workspace root could ride out in. Additive — no
+// `AUDIT_SCHEMA_VERSION` bump: `isKnownAuditEventType` already skips a literal
+// it does not recognize and the parser's warn-and-preserve discipline carries an
+// unknown one through, so no existing consumer breaks on these (FR-055, and the
+// same reasoning 084/085/092 recorded above).
+export const CATALOG_LIFECYCLE_EVENT_TYPES = [
+  'definition-published',
+  'definition-deactivated',
+  'definition-restored'
+] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -466,7 +496,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...BACKEND_PING_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
-  ...CONCURRENCY_EVENT_TYPES
+  ...CONCURRENCY_EVENT_TYPES,
+  ...CATALOG_LIFECYCLE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -499,6 +530,7 @@ export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
+export type CatalogLifecycleEventType = (typeof CATALOG_LIFECYCLE_EVENT_TYPES)[number];
 
 /**
  * Feature 084 — the closed payload for a process exchange audit entry, widened
@@ -548,6 +580,47 @@ export interface ProcessExchangePayload {
    */
   readonly outcomes: readonly string[];
   readonly counts: Readonly<Record<string, number>>;
+}
+
+/**
+ * Feature 100 (T513, FR-053, FR-054) — the closed payload shared by all three
+ * `CATALOG_LIFECYCLE_EVENT_TYPES`.
+ *
+ * Three fields, and the closure is the requirement rather than an economy. FR-054
+ * forbids a definition body, operator-authored description text, and a workspace
+ * root path, and the way to keep them out is to give the payload nowhere to put
+ * them — 084's envelope discipline, applied to a different write. There is no
+ * `body`, no `draftBody`, no `note`, no `name`, no `workspaceRoot`, and no `path`.
+ *
+ * FR-053's fourth item — "the time it occurred" — is the audit entry's own
+ * `timestamp` and is deliberately NOT a payload field. Every entry carries one,
+ * so a `publishedAt` here would be a second clock reading of the same instant,
+ * and two timestamps that can disagree is worse than one that cannot.
+ *
+ * `versionId` names a different version per event, because each operation is
+ * about a different one, and the event type is what says which:
+ *
+ *   definition-published    → the version that BECAME active.
+ *   definition-deactivated  → the version that WAS active and is now held as the
+ *                             definition's draft (FR-024a). Deactivation writes no
+ *                             new record, so this is the version that stopped
+ *                             being live, which is the fact worth recording.
+ *   definition-restored     → the version restored FROM — the operator's
+ *                             selection, and the only thing that distinguishes one
+ *                             restore from another. The draft it produced is
+ *                             bookkeeping the store already holds.
+ *
+ * One envelope with a per-event reading, rather than three payload types or three
+ * differently-named fields: the union of a `fromVersionId`, an `activeVersionId`,
+ * and a `deactivatedVersionId` would be three optional fields of which exactly one
+ * is ever set, which is a discriminated union spelled badly.
+ */
+export interface CatalogLifecyclePayload {
+  readonly resourceKind: CatalogKind;
+  /** The definition's id — sanitized and length-bounded by the emitter. */
+  readonly resourceId: string;
+  /** A store-assigned `v<N>`; see the per-event reading above. */
+  readonly versionId: string;
 }
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
@@ -901,7 +974,15 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'process-exchange-import-refused',
     // Feature 085 — a package import commit is the same kind of thing: a
     // catalog write the operator asked for, belonging to no run.
-    'process-exchange-import-committed'
+    'process-exchange-import-committed',
+    // Feature 100 (T513) — the three lifecycle transitions are catalog writes on
+    // the same footing: the operator asked for them, they belong to no run, and
+    // they carry no `runId` an Activity Feed entry could hang off. A run holding a
+    // frozen plan is unaffected by them by construction (FR-010, FR-026), so there
+    // is not even an indirect run for the task scope to claim.
+    'definition-published',
+    'definition-deactivated',
+    'definition-restored'
   ])
 );
 

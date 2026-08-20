@@ -15,13 +15,22 @@ export {
   snapshotOfRead,
   type CatalogStore
 } from './catalog-store';
+export {
+  createLifecycleService,
+  type CatalogLifecycleOps,
+  type LifecycleService,
+  type LifecycleServicePorts
+} from './lifecycle-service';
+export { publishPackage, type PackagePublishPorts } from './package-publish';
 export { storedIds, storedRows } from './snapshot-rows';
 export { planRetention, withVersionsRemoved, type RetentionExemption, type RetentionPlan } from './catalog-retention';
 export { runProvenanceNone } from './run-provenance-none';
 export type {
+  CandidateDefinition,
   CatalogFsPort,
   CatalogStorePorts,
   Clock,
+  DefinitionSemantics,
   Digest,
   FsReadOutcome,
   FsRemoveOutcome,

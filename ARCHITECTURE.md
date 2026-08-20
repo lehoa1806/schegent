@@ -963,12 +963,11 @@ three `SourceStatus` unions, `phase-precedence.ts` and `PhasePrecedenceLayer`
 whole, and the `PRESENCE_SCAN_ORDER` iteration are gone. A `SourceStatus` is now
 `effective` or `invalid`. The `scope` field left all three save envelopes and is
 **refused rather than tolerated** on ingress, and three rungs left each of the
-save-gate tables in
-[cmd-save-phases.ts](src/ui/sidebar/commands/cmd-save-phases.ts) and
-[cmd-save-pipelines.ts](src/ui/sidebar/commands/cmd-save-pipelines.ts) —
-built-in immutability, which had no layer left to protect, and the two
-`allow*Overrides` capability gates, which asked which layer could redefine
-another. Definitions moved out of `settings.json` entirely and into the
+save-gate tables in `cmd-save-phases.ts` and `cmd-save-pipelines.ts` (inline code
+because feature 100 then deleted both — see below) — built-in immutability, which
+had no layer left to protect, and the two `allow*Overrides` capability gates,
+which asked which layer could redefine another. Definitions moved out of
+`settings.json` entirely and into the
 versioned catalog store under `.schegent/catalog/`; `schegent.phases`,
 `schegent.pipelines`, and `schegent.workflows` are **deleted, not drained**
 (there is no installed base to migrate), and the operator re-imports from YAML.
@@ -988,6 +987,28 @@ unreferenced record is *collectable* rather than an error, a manifest entry
 naming an absent record is a reported integrity fault that costs exactly one
 definition, and a partial write stays written with no compensating delete. The
 full contract is in the workspace-root
+[ARCHITECTURE.md](../ARCHITECTURE.md).
+
+**Feature 100 (FR-R3-016) gave the store's two inert lifecycle fields meaning.**
+Editing a definition and making it live are now separate operator acts: a save
+writes a **draft**, and only an explicit publish moves the active pointer, so
+nothing runs because someone typed in it. A definition is `'draft'`,
+`'active'`, or `'active-with-draft'` — derived from the two manifest pointers by
+one shared projection in
+[catalog-lifecycle.ts](src/contracts/catalog-lifecycle.ts), with no fourth arm
+because a definition with neither pointer has no manifest entry at all. The five
+per-definition operations and the package publish reach the host as six IPC
+commands through the single dispatch module
+[cmd-catalog-lifecycle.ts](src/ui/sidebar/commands/cmd-catalog-lifecycle.ts),
+which checks the per-definition `expectedDraftVersion` **before** any capability
+so a stale untrusted write reports the staleness. The three whole-array
+`CMD_SAVE_*` commands and the mutation-intent algebra are deleted: a
+per-definition operation declares its intent by being the command it is, so there
+is no diff to reconcile a declaration against. Import now writes a draft rather
+than something runnable, which is why the import-presence scan counts Draft as a
+claim on an id and why the preflight augmentation carve-out extends to publish.
+The full contract — states, refusals, retention interaction, and the three
+system-scoped audit events with their closed payload — is in the workspace-root
 [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 [src/services/process-yaml/](src/services/process-yaml/) is the portable

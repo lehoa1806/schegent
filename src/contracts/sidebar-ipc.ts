@@ -20,11 +20,22 @@ export const CMD_RETRY_ACTIVE_RUN = 'CMD_RETRY_ACTIVE_RUN' as const;
 export const CMD_RERUN_FROM_HISTORY = 'CMD_RERUN_FROM_HISTORY' as const;
 export const CMD_OPEN_QUEUE_ITEM_DETAILS = 'CMD_OPEN_QUEUE_ITEM_DETAILS' as const;
 export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as const;
-// Feature 011 — pipelines/phases/models catalog save (operator-authored).
-export const CMD_SAVE_PIPELINES = 'CMD_SAVE_PIPELINES' as const;
-export const CMD_SAVE_PHASES = 'CMD_SAVE_PHASES' as const;
+// Feature 011 — the Model Catalog save, the last catalog written through
+// configuration. Feature 100 (T509) retired its three siblings — `SAVE_PIPELINES`,
+// `SAVE_PHASES`, `SAVE_WORKFLOWS` — with the whole-array layer envelope they
+// carried; the six commands below replace them.
 export const CMD_SAVE_MODELS = 'CMD_SAVE_MODELS' as const;
-export const CMD_SAVE_WORKFLOWS = 'CMD_SAVE_WORKFLOWS' as const; // Feature 083.
+// Feature 100 (FR-R3-016) — the per-definition lifecycle. These are what the
+// three layer saves above become: one definition, one declared operation. All
+// six are mutating and all six are registered in `MUTATING_COMMAND_REASONS`.
+// Only the first name carries a verb the naming-convention lint recognises, so
+// the other five entries there are deliberate rather than incidental.
+export const CMD_SAVE_DEFINITION_DRAFT = 'CMD_SAVE_DEFINITION_DRAFT' as const;
+export const CMD_PUBLISH_DEFINITION = 'CMD_PUBLISH_DEFINITION' as const;
+export const CMD_DEACTIVATE_DEFINITION = 'CMD_DEACTIVATE_DEFINITION' as const;
+export const CMD_RESTORE_DEFINITION_VERSION = 'CMD_RESTORE_DEFINITION_VERSION' as const;
+export const CMD_DISCARD_DEFINITION_DRAFT = 'CMD_DISCARD_DEFINITION_DRAFT' as const;
+export const CMD_PUBLISH_PACKAGE = 'CMD_PUBLISH_PACKAGE' as const;
 // Feature 011 — scalar settings save + manual delayed-retry trigger.
 export const CMD_SAVE_GENERAL_SETTINGS = 'CMD_SAVE_GENERAL_SETTINGS' as const;
 export const CMD_RETRY_PHASE_NOW = 'CMD_RETRY_PHASE_NOW' as const;
@@ -108,12 +119,12 @@ export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
 export const CMD_PING_BACKEND = 'CMD_PING_BACKEND' as const;
 // Feature 084 — read-only Phase export. NOT a member of
 // `MUTATING_COMMAND_REASONS`: it writes a file the operator named in a host
-// dialog and changes no extension state. Import commits through the existing
-// `CMD_SAVE_PHASES`, so the exchange feature adds no mutating command.
+// dialog and changes no extension state. Import commits through
+// `CMD_PUBLISH_PACKAGE`, so the exchange feature adds no mutating command.
 export const CMD_EXPORT_PROCESS_YAML = 'CMD_EXPORT_PROCESS_YAML' as const;
 // Feature 084 — read-only import preflight. Also NOT mutating: it reads the
 // operator's chosen document once and returns a plan. Nothing is written until
-// the operator confirms, and that confirmation is a `CMD_SAVE_PHASES`.
+// the operator confirms, and that confirmation is a `CMD_PUBLISH_PACKAGE`.
 export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
 // Feature 087 — compose, validate, freeze, enqueue. Mutating, unlike the two
 // exchange commands above; see `MUTATING_COMMAND_REASONS`.
@@ -154,10 +165,13 @@ export const COMMAND_TYPES = [
   CMD_RERUN_FROM_HISTORY,
   CMD_OPEN_QUEUE_ITEM_DETAILS,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
-  CMD_SAVE_PIPELINES,
-  CMD_SAVE_PHASES,
   CMD_SAVE_MODELS,
-  CMD_SAVE_WORKFLOWS,
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_PUBLISH_DEFINITION,
+  CMD_DEACTIVATE_DEFINITION,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_DISCARD_DEFINITION_DRAFT,
+  CMD_PUBLISH_PACKAGE,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
   CMD_PAUSE_PHASE,
@@ -422,12 +436,29 @@ export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OP
   readonly payload: { readonly id: string };
 }
 
-// Catalog saves carry a revisioned complete-layer envelope; the shapes
-// live in a focused module and the barrel stays the single import site.
-import type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
-import type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';
-export type { SavePhasesCommand, SavePipelinesCommand } from './sidebar-ipc/catalog-save';
-export type { SaveWorkflowsCommand } from './sidebar-ipc/catalog-save';
+// Feature 100 — the per-definition lifecycle shapes and their payload
+// predicates. Same split as the launcher commands: the payload checks live in
+// the sub-module and need nothing from here; only the discriminator does.
+import {
+  isDefinitionOperationPayload,
+  isPublishPackagePayload,
+  isRestoreDefinitionVersionPayload,
+  isSaveDefinitionDraftPayload,
+  type DeactivateDefinitionCommand,
+  type DiscardDefinitionDraftCommand,
+  type PublishDefinitionCommand,
+  type PublishPackageCommand,
+  type RestoreDefinitionVersionCommand,
+  type SaveDefinitionDraftCommand
+} from './sidebar-ipc/catalog-lifecycle';
+export type {
+  DeactivateDefinitionCommand,
+  DiscardDefinitionDraftCommand,
+  PublishDefinitionCommand,
+  PublishPackageCommand,
+  RestoreDefinitionVersionCommand,
+  SaveDefinitionDraftCommand
+} from './sidebar-ipc/catalog-lifecycle';
 
 export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
   readonly payload: {
@@ -466,92 +497,35 @@ export interface SaveGeneralSettingsCommand
   };
 }
 
-// Feature 011 — operates on one queue's active run. Rejections:
-// 'no-active-run', 'not-pending-retry', 'already-retrying',
-// 'secondary-window-readonly'.
-//
-// Feature 093 (FR-018 / T080) — every lifecycle control below names the queue
-// whose Run it addresses. With N Runs concurrent there is no ambient "the"
-// active Run to fall back on, and a control that omits the queue is refused at
-// the boundary rather than resolved to a guess. `queueId` is required even
-// where the old payload was optional or absent, which is why
-// `ResumePhaseCommand`'s payload is no longer optional.
-export interface RetryPhaseNowCommand extends CommandBase<typeof CMD_RETRY_PHASE_NOW> {
-  readonly payload: { readonly queueId: string };
-}
-
-
-export interface PausePhaseCommand extends CommandBase<typeof CMD_PAUSE_PHASE> {
-  readonly payload: { readonly queueId: string };
-}
-export interface ResumePhaseCommand extends CommandBase<typeof CMD_RESUME_PHASE> {
-  readonly payload: { readonly queueId: string; readonly prompt?: string };
-}
-
-export interface RestartPhaseCommand extends CommandBase<typeof CMD_RESTART_PHASE> {
-  readonly payload: { readonly queueId: string; readonly phaseId: string };
-}
-
-export interface SkipPhaseCommand extends CommandBase<typeof CMD_SKIP_PHASE> {
-  readonly payload: { readonly queueId: string; readonly phaseId: string };
-}
-
-export interface DisablePhaseCommand extends CommandBase<typeof CMD_DISABLE_PHASE> {
-  readonly payload: { readonly queueId: string; readonly phaseId: string };
-}
-
-export interface EnablePhaseCommand extends CommandBase<typeof CMD_ENABLE_PHASE> {
-  readonly payload: { readonly queueId: string; readonly phaseId: string };
-}
-
-export interface RemoveTaskPhaseCommand extends CommandBase<typeof CMD_REMOVE_TASK_PHASE> {
-  readonly payload: { readonly taskId: string; readonly phaseId: string; readonly confirmed: true };
-}
-
-export interface ModifyTaskCommand extends CommandBase<typeof CMD_MODIFY_TASK> {
-  readonly payload: { readonly taskId: string; readonly description: string };
-}
-
-export interface ReorderTaskCommand extends CommandBase<typeof CMD_REORDER_TASK> {
-  readonly payload: { readonly taskId: string; readonly newPosition: number };
-}
-
-// Feature 017 — BUG-001. Transitions a `canceled` `FeatureRequest` back
-// to `pending`. Host rejects with `not-found` when no task matches, or
-// `illegal-state` when the matched task is not in `canceled` status.
-export interface RestartCanceledTaskCommand
-  extends CommandBase<typeof CMD_RESTART_CANCELED_TASK> {
-  readonly payload: { readonly taskId: string };
-}
+// The live-queue controls — the phase controls, the two breakpoint commands,
+// and the task edits — moved to a focused module in feature 100 (FR-R3-016).
+// The ratchet in tests/lint/source-loc-budget.test.ts is what asked: this
+// barrel keeps literals, guards, and registrations, and domain wire shapes go
+// to sub-modules. The guards below stay because they need the literals as
+// runtime values, which is the import cycle the split exists to avoid.
+import type {
+  ClearPhaseBreakpointCommand,
+  DisablePhaseCommand,
+  EnablePhaseCommand,
+  ModifyTaskCommand,
+  PausePhaseCommand,
+  RemoveTaskPhaseCommand,
+  ReorderTaskCommand,
+  RestartCanceledTaskCommand,
+  RestartPhaseCommand,
+  ResumePhaseCommand,
+  RetryPhaseNowCommand,
+  RunControlCommand,
+  SetPhaseBreakpointCommand,
+  SkipPhaseCommand
+} from './sidebar-ipc/run-controls';
+export type * from './sidebar-ipc/run-controls';
 
 export interface OpenVerboseSettingCommand
   extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
 
 export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND> {
   readonly payload: { readonly runner: 'claude' | 'codex' | 'agy' }; }
-
-// Feature 028 — set/clear future-phase breakpoint. Both commands carry
-// `{ runId, phaseId }` payloads. The host validates the (runId, phaseId)
-// tuple against the run's immutable pipeline snapshot before mutating
-// `WorkflowRun.phaseBreakpoints`. Failure codes are enumerated in
-// specs/028-advanced-phase-pausing/contracts/ipc.md.
-export interface SetPhaseBreakpointCommand
-  extends CommandBase<typeof CMD_SET_PHASE_BREAKPOINT> {
-  readonly payload: {
-    readonly queueId: string;
-    readonly runId: string;
-    readonly phaseId: string;
-  };
-}
-
-export interface ClearPhaseBreakpointCommand
-  extends CommandBase<typeof CMD_CLEAR_PHASE_BREAKPOINT> {
-  readonly payload: {
-    readonly queueId: string;
-    readonly runId: string;
-    readonly phaseId: string;
-  };
-}
 
 // BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
 // the oldest pending task to in-flight. Rejected when no pending tasks
@@ -591,34 +565,27 @@ export type SidebarCommand =
   | RerunFromHistoryCommand
   | OpenQueueItemDetailsCommand
   | OpenHistoryItemDetailsCommand
-  | SavePipelinesCommand
-  | SavePhasesCommand
   | SaveModelsCommand
-  | SaveWorkflowsCommand
+  | SaveDefinitionDraftCommand
+  | PublishDefinitionCommand
+  | DeactivateDefinitionCommand
+  | RestoreDefinitionVersionCommand
+  | DiscardDefinitionDraftCommand
+  | PublishPackageCommand
   | SaveGeneralSettingsCommand
-  | RetryPhaseNowCommand
-  | PausePhaseCommand
-  | ResumePhaseCommand
-  | RestartPhaseCommand
-  | SkipPhaseCommand
-  | DisablePhaseCommand
-  | EnablePhaseCommand
-  | RemoveTaskPhaseCommand
+  // Thirteen live-queue controls, named as the one family they are; the arms
+  // are spelled out in sidebar-ipc/run-controls.ts.
+  | RunControlCommand
   | CreateQueueCommand
   | RenameQueueCommand
   | DeleteQueueCommand
   | SaveQueueSettingsCommand
   | MoveTaskCommand
-  | ModifyTaskCommand
-  | ReorderTaskCommand
-  | RestartCanceledTaskCommand
   | ReadPhaseLogCommand
   | StartPhaseLogTailCommand
   | StopPhaseLogTailCommand
   | OpenVerboseSettingCommand
   | ResolveAuditPointerCommand
-  | SetPhaseBreakpointCommand
-  | ClearPhaseBreakpointCommand
   | StartQueueCommand
   | ClearAllCommand
   | SetConfirmSuppressionCommand
@@ -710,14 +677,37 @@ export function isCmdOpenHistoryItemDetails(value: unknown): value is OpenHistor
   return isObjectWithType(value, CMD_OPEN_HISTORY_ITEM_DETAILS);
 }
 // Feature 011 catalog/settings/retry guards.
-export function isCmdSavePipelines(value: unknown): value is SavePipelinesCommand {
-  return isObjectWithType(value, CMD_SAVE_PIPELINES);
+// Feature 100 lifecycle guards. Unlike the layer saves above, these check the
+// payload: `kind`, `id`, and `expectedDraftVersion` choose which definition is
+// written and gate the write, so an absent one must not reach the store as
+// `undefined`. The definition body stays `unknown` at the boundary as ever.
+export function isCmdSaveDefinitionDraft(value: unknown): value is SaveDefinitionDraftCommand {
+  return isObjectWithType(value, CMD_SAVE_DEFINITION_DRAFT)
+    && isSaveDefinitionDraftPayload((value as { payload?: unknown }).payload);
 }
-export function isCmdSavePhases(value: unknown): value is SavePhasesCommand {
-  return isObjectWithType(value, CMD_SAVE_PHASES);
+export function isCmdPublishDefinition(value: unknown): value is PublishDefinitionCommand {
+  return isObjectWithType(value, CMD_PUBLISH_DEFINITION)
+    && isDefinitionOperationPayload((value as { payload?: unknown }).payload);
 }
-export function isCmdSaveWorkflows(value: unknown): value is SaveWorkflowsCommand {
-  return isObjectWithType(value, CMD_SAVE_WORKFLOWS);
+export function isCmdDeactivateDefinition(value: unknown): value is DeactivateDefinitionCommand {
+  return isObjectWithType(value, CMD_DEACTIVATE_DEFINITION)
+    && isDefinitionOperationPayload((value as { payload?: unknown }).payload);
+}
+export function isCmdRestoreDefinitionVersion(
+  value: unknown
+): value is RestoreDefinitionVersionCommand {
+  return isObjectWithType(value, CMD_RESTORE_DEFINITION_VERSION)
+    && isRestoreDefinitionVersionPayload((value as { payload?: unknown }).payload);
+}
+export function isCmdDiscardDefinitionDraft(
+  value: unknown
+): value is DiscardDefinitionDraftCommand {
+  return isObjectWithType(value, CMD_DISCARD_DEFINITION_DRAFT)
+    && isDefinitionOperationPayload((value as { payload?: unknown }).payload);
+}
+export function isCmdPublishPackage(value: unknown): value is PublishPackageCommand {
+  return isObjectWithType(value, CMD_PUBLISH_PACKAGE)
+    && isPublishPackagePayload((value as { payload?: unknown }).payload);
 }
 export function isCmdSaveModels(value: unknown): value is SaveModelsCommand {
   if (!isObjectWithType(value, CMD_SAVE_MODELS)) return false;
@@ -981,10 +971,13 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_RERUN_FROM_HISTORY]: isCmdRerunFromHistory,
   [CMD_OPEN_QUEUE_ITEM_DETAILS]: isCmdOpenQueueItemDetails,
   [CMD_OPEN_HISTORY_ITEM_DETAILS]: isCmdOpenHistoryItemDetails,
-  [CMD_SAVE_PIPELINES]: isCmdSavePipelines,
-  [CMD_SAVE_PHASES]: isCmdSavePhases,
-  [CMD_SAVE_WORKFLOWS]: isCmdSaveWorkflows,
   [CMD_SAVE_MODELS]: isCmdSaveModels,
+  [CMD_SAVE_DEFINITION_DRAFT]: isCmdSaveDefinitionDraft,
+  [CMD_PUBLISH_DEFINITION]: isCmdPublishDefinition,
+  [CMD_DEACTIVATE_DEFINITION]: isCmdDeactivateDefinition,
+  [CMD_RESTORE_DEFINITION_VERSION]: isCmdRestoreDefinitionVersion,
+  [CMD_DISCARD_DEFINITION_DRAFT]: isCmdDiscardDefinitionDraft,
+  [CMD_PUBLISH_PACKAGE]: isCmdPublishPackage,
   [CMD_SAVE_GENERAL_SETTINGS]: isCmdSaveGeneralSettings,
   [CMD_RETRY_PHASE_NOW]: isCmdRetryPhaseNow,
   [CMD_PAUSE_PHASE]: isCmdPausePhase,

@@ -553,10 +553,18 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
       // The single-Phase standalone document keeps `import`, which the host reads
       // differently from `import-package` when it refuses a stale save.
       mutation: { kind: 'import', phaseId: 'brought-in' },
-      // The stored rows are carried across and the declared version is sent as
-      // authored.
-      phases: [HELD, { id: 'brought-in', name: 'Brought In', version: 7, instruction: 'Do the thing.' }]
+      // Feature 100 (T509b, FR-039a) — the write carries the document's own row
+      // and nothing else. It used to carry `HELD` in front of it, because a save
+      // replaced the whole layer and omitting a stored row deleted it; a
+      // publication names definitions, and one it does not name it leaves exactly
+      // as it was (FR-039b). Carrying `HELD` now would publish a new version of a
+      // definition this document never mentioned. The declared version is still
+      // sent as authored (FR-046a).
+      phases: [{ id: 'brought-in', name: 'Brought In', version: 7, instruction: 'Do the thing.' }]
     });
+    // `HELD` is not merely absent from the array — it has no route into the write
+    // at all, so a reintroduced merge fails here rather than in one fixture.
+    expect(JSON.stringify(saveSpy.mock.calls[0][0])).not.toContain(HELD.id);
     // No Pipeline row in the plan, so no Pipeline write — a layer nobody asked to
     // change must not be rewritten on its way past.
     expect(savePipelinesSpy).not.toHaveBeenCalled();
@@ -1130,11 +1138,13 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     expect(saveSpy.mock.calls[0][0]).toEqual({
       expectedRevision: REVISION,
       // Two Phases under one intent — a package is not N `import` saves, because
-      // each save writes the whole layer and moves the revision the next would
-      // have gated on.
+      // both are gated on the same revision, and the first accepted save moves
+      // the revision the second would have gated on.
       mutation: { kind: 'import-package', phaseIds: ['specify', 'plan'] },
+      // Feature 100 (T509b, FR-039a) — the document's two Phases, and only those.
+      // `HELD_PHASE` used to lead this array; see the standalone case above for
+      // why it no longer travels.
       phases: [
-        HELD_PHASE,
         { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
         { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
       ]
@@ -1147,18 +1157,18 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
       expectedRevision: PIPELINE_REVISION,
       mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
       pipelines: [
-        HELD_PIPELINE,
         { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'], inputs: [], outputs: [], bindings: [], recommendedNext: [] }
       ]
     });
   });
 
-  it('writes both kinds without either write naming a destination (FR-036)', async () => {
+  it('writes both kinds naming only what the document declared (FR-036, FR-039a)', async () => {
     // Feature 099 (T496f, FR-042, FR-043) — this chose the workspace and pinned
     // that BOTH writes followed the one choice, the failure guarded against being
-    // a package split across two layers. Neither write can name a layer now, so
-    // that is what is asserted, and the property underneath it is unchanged: each
-    // write carries what its catalog already held plus what this document adds.
+    // a package split across two layers. Feature 100 (T509b) — neither write can
+    // name a layer OR a stored row now, and this is where that holds across two
+    // kinds at once: a merge reintroduced in one kind's row builder would leave
+    // the other correct, so both are asserted here in one case.
     preflightSpy.mockResolvedValue(packageResult());
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
@@ -1166,15 +1176,12 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
 
     expect(saveSpy.mock.calls[0][0]).not.toHaveProperty('scope');
     expect(savePipelinesSpy.mock.calls[0][0]).not.toHaveProperty('scope');
-    expect(saveSpy.mock.calls[0][0].phases.map((row) => row.id)).toEqual([
-      'held',
-      'specify',
-      'plan'
-    ]);
-    expect(savePipelinesSpy.mock.calls[0][0].pipelines.map((row) => row.id)).toEqual([
-      'held-pipeline',
-      'ship-it'
-    ]);
+    expect(saveSpy.mock.calls[0][0].phases.map((row) => row.id)).toEqual(['specify', 'plan']);
+    expect(savePipelinesSpy.mock.calls[0][0].pipelines.map((row) => row.id)).toEqual(['ship-it']);
+    // The rows the catalog already holds were handed to the component and reached
+    // neither write — the property, rather than these two orderings of it.
+    expect(JSON.stringify(saveSpy.mock.calls[0][0])).not.toContain(HELD_PHASE.id);
+    expect(JSON.stringify(savePipelinesSpy.mock.calls[0][0])).not.toContain(HELD_PIPELINE.id);
   });
 
   it('reports every row imported when both layers are accepted', async () => {

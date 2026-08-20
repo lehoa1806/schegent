@@ -28,6 +28,14 @@ import type { AuditEventType } from '../../contracts/audit-events';
 interface StoredCatalog {
   readonly rows: readonly unknown[];
   readonly revision: string;
+  /**
+   * Feature 100 (T512, FR-043) — every id the store holds an entry for, at every
+   * state. Optional for the reason the readers themselves are: a caller that
+   * supplies rows and no ids gets the pre-lifecycle behaviour (presence answered
+   * by the rows alone), which is exactly right for a fixture describing a store
+   * with no drafts in it. The real reader always supplies it.
+   */
+  readonly ids?: ReadonlySet<string>;
 }
 
 /**

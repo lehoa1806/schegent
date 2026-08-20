@@ -17,6 +17,11 @@
 // layer" becomes "the document cannot choose anything about the write", which is
 // the same guarantee over a smaller surface.
 //
+// Feature 100 (T514) — the commit is `CMD_PUBLISH_PACKAGE` over a single-Phase
+// layer, and the request no longer carries the rest of the catalog. T056 tightens
+// again: a document could not choose the write before, and now it cannot reach the
+// neighbouring rows at all, because the request has no place to put them.
+//
 // T052 closes the export side: the emitted document's key set is a closed
 // allowlist, so a runtime-only field, a session value, or a secret cannot ride
 // out inside a Phase.
@@ -44,20 +49,24 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
+import {
+  CMD_EXPORT_PROCESS_YAML,
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_PACKAGE
+} from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ExportProcessYamlCommand,
   ImportPlan,
   PreflightProcessYamlCommand,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
 import { PHASE_YAML_MAX_BYTES } from '../../../src/services/process-yaml/types';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 import { FakeCatalogStore, layerWrites } from '../../fixtures/fake-catalog-store';
 
 interface AuditEntry {
@@ -297,12 +306,19 @@ async function exportPhase(resourceId: string, rows: readonly unknown[]): Promis
 interface CommitRun {
   readonly ack: CommandAckMessage;
   readonly audits: readonly AuditEntry[];
-  /** The layer each `saveLayer` was asked to write, in order. */
+  /** The bodies each layer write carried, one entry per write, in order. */
   readonly writes: readonly (readonly unknown[])[];
 }
 
-/** The request the webview builds from a plan — the operator's, not the document's. */
-function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesCommand {
+/**
+ * The request the webview builds from a plan — the operator's, not the document's.
+ *
+ * Feature 100 (T514) — one layer holding the one definition the plan is importing.
+ * The rows already in the catalog are no longer part of the request: a merge writes
+ * what it is given and leaves the rest alone, so there is nothing for the caller to
+ * carry through, and no way for a caller to disturb a row it never named.
+ */
+function commitCommand(plan: ImportPlan): PublishPackageCommand {
   const row = plan.rows.find(
     (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
   );
@@ -312,17 +328,21 @@ function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesC
   }
   const { phaseId, ...declared } = row.definition;
   return {
-    type: CMD_SAVE_PHASES,
+    type: CMD_PUBLISH_PACKAGE,
     correlationId: 'audit-test-1',
     payload: {
-      expectedRevision: plan.computedAgainstRevision,
-      mutation: { kind: 'import', phaseId },
-      phases: [...layer, { id: phaseId, ...declared }]
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: plan.computedAgainstRevision,
+          definitions: [{ id: phaseId, body: { id: phaseId, ...declared } }]
+        }
+      ]
     }
   };
 }
 
-async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Promise<CommitRun> {
+async function commit(command: PublishPackageCommand, store: FakeCatalogStore): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
   const audits: AuditEntry[] = [];
   const ctx = {
@@ -332,6 +352,7 @@ async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Prom
         revision: store.revisionOf('phase')
       }),
       catalogStore: store,
+      catalogLifecycle: fakeCatalogLifecycle(store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
@@ -358,7 +379,7 @@ async function commit(command: SavePhasesCommand, store: FakeCatalogStore): Prom
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  await saveHandler(ctx, command);
+  await publishDefinitionPackage(ctx, command);
   expect(acks).toHaveLength(1);
   return { ack: acks[0]!, audits, writes: layerWrites(store) };
 }
@@ -545,7 +566,7 @@ describe('Feature 084 — a blocked import is distinguishable from one that neve
     const plan = await planFor(PLANTED_DOCUMENT);
     const revisionBefore = store.revisionOf('phase');
 
-    const run = await commit(commitCommand(plan, store.rowsOf('phase')), store);
+    const run = await commit(commitCommand(plan), store);
 
     expect(run.ack.status).toBe('rejected');
     expect(run.ack.reason).toBe('trust-denied');
@@ -564,7 +585,7 @@ describe('Feature 084 — a blocked import is distinguishable from one that neve
     capabilities.set('phases', false);
     const store = new FakeCatalogStore();
     const plan = await planFor(PLANTED_DOCUMENT);
-    const run = await commit(commitCommand(plan, store.rowsOf('phase')), store);
+    const run = await commit(commitCommand(plan), store);
 
     const serialized = JSON.stringify(run.audits);
     // Feature 059 I-6: the basename is the deliberate disclosure.
@@ -675,12 +696,15 @@ describe('Feature 084 — the document has no say in what is written (T056, FR-0
     for (const held of [[], [OTHER_ROW], [OTHER_ROW, THIRD_ROW]]) {
       const store = new FakeCatalogStore({ phases: held });
       const plan = await planFor(PLANTED_DOCUMENT, held);
-      const run = await commit(commitCommand(plan, held), store);
+      const run = await commit(commitCommand(plan), store);
 
       expect(run.ack.status).toBe('accepted');
       expect(run.writes).toHaveLength(1);
-      // The rows already there are carried through untouched, and the imported
-      // row is appended after them.
+      // The rows already there are untouched, and the imported row lands after
+      // them. Feature 100 (T514) — untouched because the write never named them:
+      // the layer carried one definition, so the neighbours survive by not being
+      // in the request rather than by being copied back correctly.
+      expect(run.writes[0]).toHaveLength(1);
       expect(store.rowsOf('phase').slice(0, held.length)).toEqual(held);
       expect(store.rowsOf('phase')).toHaveLength(held.length + 1);
       persisted.push(JSON.stringify(store.rowsOf('phase')[held.length]));

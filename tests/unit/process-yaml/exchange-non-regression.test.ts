@@ -44,11 +44,22 @@ const CATALOG_SUITES: Readonly<Record<string, readonly string[]>> = Object.freez
     'tests/unit/config/pipeline-config.test.ts',
     'tests/unit/config/process-catalog.test.ts'
   ],
-  revision: ['tests/unit/ui/sidebar/commands/cmd-save-phases.test.ts'],
+  // Feature 100 (T509, FR-036/FR-024) — the same substitution feature 099 made
+  // for `precedence`, for the same reason. `revision` was the question "did the
+  // layer move under me between read and write?" and the layer save that asked
+  // it is gone; the question is now asked per definition, by the draft token, so
+  // it moves to the suites that assert the token gate and its ordering against
+  // trust. `save-semantics` splits the same way: validation is what the publish
+  // gate runs, identity and removal are what deactivation and its reversal
+  // assert, and the primary-window gate suite carries over unchanged. Dropping
+  // either row would leave SC-013 claiming coverage of a concern nothing checks.
+  revision: [
+    'tests/unit/catalog/lifecycle-concurrency.test.ts',
+    'tests/unit/ui/sidebar/commands/lifecycle-staleness-before-trust.test.ts'
+  ],
   'save-semantics': [
-    'tests/unit/ui/sidebar/commands/cmd-save-phases-validation.test.ts',
-    'tests/unit/ui/sidebar/commands/cmd-save-phases-identity.test.ts',
-    'tests/unit/ui/sidebar/commands/cmd-save-phases-removal.test.ts',
+    'tests/unit/catalog/lifecycle-publish-gate.test.ts',
+    'tests/unit/catalog/lifecycle-deactivate-reversible.test.ts',
     'tests/unit/ui/sidebar/save-commands-primary-gate.test.ts'
   ]
 });
@@ -99,16 +110,32 @@ describe('Feature 084 T064 — the Phase catalog is unchanged by the exchange (S
     ).toEqual([]);
   });
 
-  it('leaves the Phase save path with one write command, not a second for imports', () => {
-    // Import commits through the existing CMD_SAVE_PHASES (research R2). A second
-    // write command is how the gates would silently diverge.
+  it('leaves the catalog write path without a second command for imports', () => {
+    // Import commits through the same command the Builder commits through
+    // (research R2). A second, import-only write command is how the gates would
+    // silently diverge — one of them would grow a check the other never got.
+    //
+    // Feature 100 (T509) — the command changed name and shape: the commit is now
+    // `CMD_PUBLISH_PACKAGE`, one document under one confirmation, and the layer
+    // save the pin used to name is gone. The claim is unchanged and is pinned
+    // twice over: no write command mentions importing at all, and the set of
+    // commands that write a definition is exactly the lifecycle's six. A seventh
+    // appearing is the divergence this test exists to catch.
     const contracts = readFileSync(
       resolve(REPO_ROOT, 'src', 'contracts', 'sidebar-ipc.ts'),
       'utf8'
     );
-    const phaseWriteCommands = [
-      ...contracts.matchAll(/export const (CMD_[A-Z_]*(?:SAVE|WRITE|IMPORT)[A-Z_]*PHASES?)\b/g)
-    ].map((match) => match[1]!);
-    expect(phaseWriteCommands).toEqual(['CMD_SAVE_PHASES']);
+    const literals = (pattern: RegExp): string[] =>
+      [...contracts.matchAll(pattern)].map((match) => match[1]!);
+
+    expect(literals(/export const (CMD_[A-Z_]*(?:IMPORT|EXCHANGE)[A-Z_]*)\b/g)).toEqual([]);
+    expect(literals(/export const (CMD_[A-Z_]*(?:DEFINITION|PACKAGE)[A-Z_]*)\b/g)).toEqual([
+      'CMD_SAVE_DEFINITION_DRAFT',
+      'CMD_PUBLISH_DEFINITION',
+      'CMD_DEACTIVATE_DEFINITION',
+      'CMD_RESTORE_DEFINITION_VERSION',
+      'CMD_DISCARD_DEFINITION_DRAFT',
+      'CMD_PUBLISH_PACKAGE'
+    ]);
   });
 });

@@ -31,6 +31,39 @@
 // exactly as `phase-import-commit.test.ts` mirrors the single-Phase one. What
 // this file asserts is that the two HOST commands compose over the shape the
 // contract specifies.
+//
+// Feature 100 (T514, FR-035, FR-037, FR-040) — there are no longer two host
+// commands to compose. One `CMD_PUBLISH_PACKAGE` carries every layer, and the
+// ordering that used to live in the webview's send sequence lives in the host,
+// where it belongs: `publishPackage` sorts by dependency rank, so a request that
+// lists the Pipeline first is published Phases-first anyway.
+//
+// Three of this file's claims change shape rather than going away, and the change
+// is in each case a strengthening:
+//
+//   ordered      — still Phases before the Pipeline (FR-035), now asserted over the
+//                  store's two write ports rather than over the caller's loop. The
+//                  behavioural half moved: a Pipeline no longer needs its Phases to
+//                  have LANDED, because the whole document is validated as one
+//                  candidate set with every member overlaid (FR-017). So the test
+//                  that reversed the writes is replaced by the sharper pair — the
+//                  same Pipeline validates WITH its Phases in the request and is
+//                  refused WITHOUT them — and the ordering claim becomes what it
+//                  always was underneath: when the Pipeline's pointer moves, the
+//                  Phases it binds are already live.
+//   independent  — one ack, not two, and the host computes the outcome the webview
+//                  used to derive. `partial` is a first-class arm of the reply
+//                  (FR-037), so "never reported as wholly succeeded or wholly
+//                  failed when it was neither" is now a property of the contract
+//                  rather than a rule a caller could forget to apply.
+//   irreversible — unchanged, and still the point: whichever prefix landed stays
+//                  written, no compensating delete runs on any path (FR-038), and
+//                  re-running the same document completes it (FR-039).
+//
+// What a "partial" is has moved one level down, too. A failure is a failure of one
+// of the two passes, so a partial leaves a layer PUBLISHED and a layer DRAFTED —
+// written, present in history, and not triggerable. That is the state the cases
+// below observe, and it is why nothing needs undoing.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -51,22 +84,21 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
-import { CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
+import { CMD_PREFLIGHT_PROCESS_YAML, CMD_PUBLISH_PACKAGE } from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ImportPlan,
   PreflightProcessYamlCommand,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as savePhasesHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { handler as savePipelinesHandler } from '../../../src/ui/sidebar/commands/cmd-save-pipelines';
-import { CMD_SAVE_PHASES, CMD_SAVE_PIPELINES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand, SavePipelinesCommand } from '../../../src/ui/sidebar/messages';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import type { CatalogKind } from '../../../src/contracts/catalog-store';
-import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { FakeCatalogStore, NO_WRITES, tokenFor, writesOf } from '../../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 
 /** The catalog each write targets, and the order the two occur in. */
 type LayerKey = 'phases' | 'pipelines';
@@ -74,6 +106,13 @@ type LayerKey = 'phases' | 'pipelines';
 const KIND_OF: Readonly<Record<LayerKey, CatalogKind>> = {
   phases: 'phase',
   pipelines: 'pipeline'
+};
+
+/** The other direction, for reading a recorded write request back as a layer key. */
+const KEY_OF: Readonly<Record<CatalogKind, LayerKey | 'workflows'>> = {
+  phase: 'phases',
+  pipeline: 'pipelines',
+  workflow: 'workflows'
 };
 
 /** Both writable catalogs, behind the one store a package write goes through. */
@@ -95,27 +134,30 @@ function installation(seed: {
   };
 }
 
-/** The read seams every handler in this file shares, wired to one store. */
+/**
+ * The read seams every handler in this file shares, wired to one store.
+ *
+ * Feature 100 (T512, T514, FR-043) — each layer carries `ids` as well as `rows`,
+ * because the host's `storedLayer` does and the difference between the two is what
+ * the import presence gate reads: `rows` is the active bodies, `ids` is every entry
+ * at every state. A harness that supplied only `rows` would fall back to the row ids
+ * and report an operator's unpublished draft as absent, which is the one thing
+ * FR-044 forbids — and the partial-recovery case below would then pass by importing
+ * over a draft instead of skipping it.
+ */
 function catalogDeps(store: FakeCatalogStore): Record<string, unknown> {
+  const layer = (kind: CatalogKind) => () => ({
+    rows: store.rowsOf(kind),
+    revision: store.revisionOf(kind),
+    ids: new Set(store.idsOf(kind))
+  });
   return {
     catalogStore: store,
     refreshCatalog: async () => undefined,
-    readPhaseConfig: () => ({ rows: store.rowsOf('phase'), revision: store.revisionOf('phase') }),
-    readPipelineConfig: () => ({
-      rows: store.rowsOf('pipeline'),
-      revision: store.revisionOf('pipeline')
-    })
+    readPhaseConfig: layer('phase'),
+    readPipelineConfig: layer('pipeline'),
+    readWorkflowConfig: layer('workflow')
   };
-}
-
-/** The rows of both catalogs as the operator's preview saw them, for the proposal. */
-interface Held {
-  readonly phases: readonly unknown[];
-  readonly pipelines: readonly unknown[];
-}
-
-function held(inst: Installation): Held {
-  return { phases: inst.store.rowsOf('phase'), pipelines: inst.store.rowsOf('pipeline') };
 }
 
 /**
@@ -131,12 +173,22 @@ async function concurrentWrite(
   rows: readonly Record<string, unknown>[]
 ): Promise<void> {
   const kind = KIND_OF[key];
-  const outcome = await inst.store.saveLayer({
+  // Feature 100 (T514) — both passes, because the write has to be LIVE: a case that
+  // seeds a competing row and then reads the effective catalog would otherwise be
+  // reading a draft that nothing runs. Two revision moves rather than one, which is
+  // irrelevant to every caller here — a stale gate is stale either way.
+  const written = await inst.store.saveDraftLayer({
     kind,
     expectedRevision: inst.store.revisionOf(kind),
     definitions: rows.map((row) => ({ id: row.id as string, body: row }))
   });
-  expect(outcome.outcome).toBe('saved');
+  expect(written.outcome).toBe('saved');
+  const published = await inst.store.publishLayer({
+    kind,
+    ids: rows.map((row) => row.id as string),
+    expectedRevision: inst.store.revisionOf(kind)
+  });
+  expect(published.outcome).toBe('published');
 }
 
 const CORRELATION = 'package-import-1';
@@ -315,97 +367,91 @@ function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
 }
 
 /**
- * One attempted layer write. Appending the added rows is what makes the
- * positional shape check pass: deleting them from the proposal reproduces the
- * layer the operator's preview described, in order.
+ * The one command the confirmation sends, with a layer per kind the plan imports.
+ *
+ * Feature 100 (T514, FR-039b) — the `[...layers.phases, ...]` prefix is gone from
+ * both layers. A layer write MERGES now: an id the request does not name is left
+ * exactly as it is, so echoing the held rows back would assert nothing except that
+ * the caller can copy an array. Its absence is the stronger claim, and the cases
+ * that seed a held row and read it back afterwards are what make it.
+ *
+ * The layers are built Phases-first because that reads naturally, not because the
+ * order matters here — the host sorts them (FR-035), which the ordering case below
+ * asserts by sending them the other way round.
  */
-interface Attempt {
-  readonly key: LayerKey;
-  readonly command: SavePhasesCommand | SavePipelinesCommand;
-}
-
-function attemptsFor(plan: ImportPlan, layers: Held): readonly Attempt[] {
-  const attempts: Attempt[] = [];
+function packageCommand(plan: ImportPlan): PublishPackageCommand {
   const phases = importedPhases(plan);
   const pipelines = importedPipelines(plan);
+  const layers: PublishPackageCommand['payload']['layers'][number][] = [];
 
-  // FR-038 — the Phase attempt is built and run first, unconditionally.
   if (phases.length > 0) {
-    attempts.push({
-      key: 'phases',
-      command: {
-        type: CMD_SAVE_PHASES,
-        correlationId: CORRELATION,
-        payload: {
-          expectedRevision: plan.computedAgainstRevision,
-          mutation: {
-            kind: 'import-package',
-            phaseIds: phases.map((definition) => definition.phaseId)
-          },
-          phases: [...layers.phases, ...phases.map(phaseRow)]
-        }
-      }
+    layers.push({
+      kind: 'phase',
+      expectedRevision: plan.computedAgainstRevision,
+      definitions: phases.map((definition) => ({
+        id: definition.phaseId,
+        body: phaseRow(definition)
+      }))
     });
   }
 
   if (pipelines.length > 0) {
-    // FR-043 — the Pipeline catalog carries ITS OWN revision, not the Phase
+    // FR-036 — the Pipeline catalog carries ITS OWN revision, not the Phase
     // catalog's. A single revision could not gate two independently mutable
     // catalogs, and using the live one at confirm time would defeat FR-040.
     const revision = plan.computedAgainstPipelineRevision;
     expect(revision).toBeDefined();
-    attempts.push({
-      key: 'pipelines',
-      command: {
-        type: CMD_SAVE_PIPELINES,
-        correlationId: CORRELATION,
-        payload: {
-          expectedRevision: revision!,
-          mutation: {
-            kind: 'import-package',
-            pipelineIds: pipelines.map((definition) => definition.pipelineId)
-          },
-          pipelines: [...layers.pipelines, ...pipelines.map(pipelineRow)]
-        }
-      }
+    layers.push({
+      kind: 'pipeline',
+      expectedRevision: revision!,
+      definitions: pipelines.map((definition) => ({
+        id: definition.pipelineId,
+        body: pipelineRow(definition)
+      }))
     });
   }
 
-  return attempts;
-}
-
-interface LayerResult {
-  readonly key: LayerKey;
-  readonly ack: CommandAckMessage;
+  return { type: CMD_PUBLISH_PACKAGE, correlationId: CORRELATION, payload: { layers } };
 }
 
 interface CommitRun {
-  /** Catalogs a write request actually reached, in the order the store saw them. */
-  readonly writes: readonly LayerKey[];
-  readonly results: readonly LayerResult[];
+  readonly ack: CommandAckMessage;
+  /** Layers pass 1 sent a draft write for, in the order the store saw them. */
+  readonly drafted: readonly LayerKey[];
+  /** Layers pass 2 sent a publication for, in the order the store saw them. */
+  readonly published: readonly LayerKey[];
   readonly outcome: 'imported' | 'partial' | 'failed';
 }
 
 /**
- * The webview's outcome rule, mirrored (FR-042a): the import is never reported
- * as wholly succeeded or wholly failed when it was neither.
+ * The outcome as the host reports it (FR-037).
+ *
+ * This used to be the webview's rule, mirrored: count the accepted acks. There is
+ * one ack now and `partial` is one of its reasons, so the rule the surface applies
+ * is a read rather than a derivation — an import cannot be reported as wholly
+ * succeeded or wholly failed when it was neither, because no caller is computing it.
  */
-function outcomeOf(results: readonly LayerResult[]): CommitRun['outcome'] {
-  const accepted = results.filter((result) => result.ack.status === 'accepted').length;
-  if (accepted === results.length) return 'imported';
-  return accepted === 0 ? 'failed' : 'partial';
+function outcomeOf(ack: CommandAckMessage): CommitRun['outcome'] {
+  if (ack.status === 'accepted') return 'imported';
+  return ack.reason === 'package-partial' ? 'partial' : 'failed';
+}
+
+/** Which pass of which layer the store should refuse, for the partial cases. */
+interface FailPoint {
+  readonly key: LayerKey;
+  readonly pass: 'draft' | 'publish';
 }
 
 async function commitPackage(
   inst: Installation,
   plan: ImportPlan,
-  layers: Held,
-  opts: { readonly failOn?: LayerKey } = {}
+  opts: { readonly failOn?: FailPoint; readonly command?: PublishPackageCommand } = {}
 ): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
   const ctx = {
     deps: {
       ...catalogDeps(inst.store),
+      catalogLifecycle: fakeCatalogLifecycle(inst.store),
       readConfig: () => undefined,
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
@@ -420,37 +466,41 @@ async function commitPackage(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  const results: LayerResult[] = [];
-  const savesBefore = inst.store.layerSaves.length;
-  for (const attempt of attemptsFor(plan, layers)) {
-    // Feature 099 (T496f, FR-029) — `failOn` made the settings writer throw. The
-    // store never throws; it names the fault, and `not-writable` is the same
-    // fault by its own name, answering exactly one write.
-    if (opts.failOn === attempt.key) {
-      inst.store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
-    }
-    if (attempt.key === 'phases') {
-      await savePhasesHandler(ctx, attempt.command as SavePhasesCommand);
-    } else {
-      await savePipelinesHandler(ctx, attempt.command as SavePipelinesCommand);
-    }
-    const ack = acks[acks.length - 1];
-    expect(ack).toBeDefined();
-    results.push({ key: attempt.key, ack: ack! });
-    // A rejected write stops the sequence. The ordering exists so the Pipeline
-    // never lands without its Phases; carrying on past a failed Phase write
-    // would be exactly that.
-    if (ack!.status !== 'accepted') break;
+  // Feature 099 (T496f, FR-029) — `failOn` made the settings writer throw. The
+  // store never throws; it names the fault, and `not-writable` is the same fault by
+  // its own name. Feature 100 (T514) — keyed by kind, because the pass that must
+  // fail is no longer the first write the store sees.
+  if (opts.failOn !== undefined) {
+    const kind = KIND_OF[opts.failOn.key];
+    const refusal = { outcome: 'refused' as const, reason: 'not-writable' as const, id: null };
+    if (opts.failOn.pass === 'draft') inst.store.draftLayerVerdicts.set(kind, refusal);
+    else inst.store.publishLayerVerdicts.set(kind, refusal);
   }
 
-  // The writes this run reached, in the order the store saw them. A gate that
-  // rejects ahead of the store leaves no request behind, which is what the
-  // `expect(run.writes).toEqual([])` cases are asserting.
-  const writes = inst.store.layerSaves
-    .slice(savesBefore)
-    .map((request) => (request.kind === 'phase' ? 'phases' : 'pipelines') as LayerKey);
+  const draftsBefore = inst.store.draftLayerSaves.length;
+  const publishesBefore = inst.store.publishLayers.length;
 
-  return { writes, results, outcome: outcomeOf(results) };
+  await publishDefinitionPackage(ctx, opts.command ?? packageCommand(plan));
+
+  expect(acks).toHaveLength(1);
+  const ack = acks[0]!;
+
+  // The layers each pass reached, in order. A gate that answers ahead of the store
+  // leaves no request behind on either port, which is what the `NO_WRITES` cases
+  // assert; a request that was refused still recorded itself here, which is what
+  // makes "the Pipeline pass ran and was turned away" distinguishable from "the
+  // Pipeline pass never ran".
+  const layersOf = <T extends { readonly kind: CatalogKind }>(
+    requests: readonly T[],
+    from: number
+  ): readonly LayerKey[] => requests.slice(from).map((request) => KEY_OF[request.kind] as LayerKey);
+
+  return {
+    ack,
+    drafted: layersOf(inst.store.draftLayerSaves, draftsBefore),
+    published: layersOf(inst.store.publishLayers, publishesBefore),
+    outcome: outcomeOf(ack)
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +549,7 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(plan.counts).toEqual({ import: 2, skip: 1, blocked: 0, invalid: 0 });
 
-    const run = await commitPackage(inst, plan, held(inst));
+    const run = await commitPackage(inst, plan);
 
     expect(run.outcome).toBe('imported');
     expect(inst.store.rowsOf('phase')).toEqual([
@@ -513,40 +563,116 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     ]);
   });
 
-  it('writes the Phase catalog before the Pipeline catalog (FR-038)', async () => {
+  it('publishes the Phase catalog before the Pipeline catalog (FR-035)', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, held(inst));
+    const run = await commitPackage(inst, plan);
 
-    expect(run.writes).toEqual(['phases', 'pipelines']);
-    expect(run.results.map((result) => result.ack.status)).toEqual(['accepted', 'accepted']);
     expect(run.outcome).toBe('imported');
+    // Both passes, both in dependency order. The draft port is asserted as well as
+    // the publish port because the drafts are what pass 2 gates on: a pass 1 that
+    // wrote the Pipeline first would still publish in rank order, and this case
+    // would pass while the store had seen the document backwards.
+    expect(run.drafted).toEqual(['phases', 'pipelines']);
+    expect(run.published).toEqual(['phases', 'pipelines']);
+    // One ack naming both layers, which is the whole of what the surface has to
+    // read to report the import — no counting of acks, no deriving of an outcome.
+    expect(run.ack.result).toEqual({
+      published: [
+        { kind: 'phase', ids: ['specify', 'plan'], total: 2 },
+        { kind: 'pipeline', ids: ['ship-it'], total: 1 }
+      ]
+    });
   });
 
-  it('accepts the Pipeline only because its Phases already landed (FR-038)', async () => {
-    // The behavioral half of the ordering rule. The Pipeline save resolves
-    // references against the EFFECTIVE Phase catalog, so this same command sent
-    // first is a rejection rather than a save — which is what makes the order a
-    // correctness rule and not a preference.
+  it('publishes Phases first even when the request lists the Pipeline first (FR-035)', async () => {
+    // The ordering is the HOST's now. Feature 085 asserted it by the sequence the
+    // webview sent its two commands in, which is a claim about the webview; there is
+    // one command, so the claim is that `publishPackage` sorts by dependency rank
+    // whatever order the layers arrive in. Sent backwards, it comes out forwards.
+    const inst = installation();
+    const plan = await planFor(inst, SELF_CONTAINED);
+    const sent = packageCommand(plan);
+    const reversed: PublishPackageCommand = {
+      ...sent,
+      payload: { layers: [...sent.payload.layers].reverse() }
+    };
+    expect(reversed.payload.layers.map((layer) => layer.kind)).toEqual(['pipeline', 'phase']);
+
+    const run = await commitPackage(inst, plan, { command: reversed });
+
+    expect(run.outcome).toBe('imported');
+    expect(run.drafted).toEqual(['phases', 'pipelines']);
+    expect(run.published).toEqual(['phases', 'pipelines']);
+  });
+
+  it('validates the Pipeline against the Phases arriving with it (FR-017)', async () => {
+    // The behavioural half of the old ordering claim, sharpened. A Pipeline used to
+    // need its Phases to have LANDED, so reversing the two writes turned an accepted
+    // save into an `unknown-phase` rejection. It no longer does: the document is one
+    // candidate set and every member is overlaid before anything is validated, so the
+    // Pipeline resolves against what this publication is about to make live.
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(effectivePhaseIds(inst)).not.toContain('specify');
 
-    const reversed = await commitPackage(
-      installation(),
-      plan,
-      { phases: [], pipelines: [] },
-      // Nothing lands, so the Phase attempt cannot have run second.
-      { failOn: 'phases' }
-    );
-    expect(reversed.outcome).toBe('failed');
-    expect(reversed.writes).toEqual(['phases']);
+    const run = await commitPackage(inst, plan);
 
-    const run = await commitPackage(inst, plan, held(inst));
     expect(run.outcome).toBe('imported');
     expect(effectivePhaseIds(inst)).toEqual(expect.arrayContaining(['specify', 'plan']));
     expect(effectivePipelineIds(inst)).toContain('ship-it');
+  });
+
+  it('refuses the same Pipeline when its Phases are not in the request (FR-017)', async () => {
+    // The other half of the pair, and what keeps the carve-out from being a hole: the
+    // union is the CANDIDATE set, not the union of everything anyone might publish
+    // next. Drop the Phase layer and the identical Pipeline body no longer resolves —
+    // nothing is written on either port, and the refusal names the missing dependency
+    // rather than a generic failure.
+    const inst = installation();
+    const plan = await planFor(inst, SELF_CONTAINED);
+    const sent = packageCommand(plan);
+    const pipelineOnly: PublishPackageCommand = {
+      ...sent,
+      payload: { layers: sent.payload.layers.filter((layer) => layer.kind === 'pipeline') }
+    };
+
+    const run = await commitPackage(inst, plan, { command: pipelineOnly });
+
+    expect(run.outcome).toBe('failed');
+    expect(run.ack.reason).toBe('validation-failed');
+    const detail = run.ack.result as { readonly defects: readonly { readonly code: string }[] };
+    expect(detail.defects.map((defect) => defect.code)).toContain('unknown-phase');
+    expect(JSON.stringify(detail.defects)).toContain('specify');
+    expect(writesOf(inst.store)).toEqual(NO_WRITES);
+  });
+
+  it('leaves the Pipeline unpublished when the Phase publication is refused (FR-035)', async () => {
+    // Why the order still has teeth once validation no longer depends on it: a
+    // Pipeline whose Phases did not go live must not go live either. Refuse the Phase
+    // pointer move and pass 2 stops there — the Pipeline body is written, drafted,
+    // and not triggerable, and the operator is told which layer stopped it.
+    const inst = installation();
+    const plan = await planFor(inst, SELF_CONTAINED);
+
+    const run = await commitPackage(inst, plan, { failOn: { key: 'phases', pass: 'publish' } });
+
+    expect(run.outcome).toBe('partial');
+    expect(run.drafted).toEqual(['phases', 'pipelines']);
+    // Reached the Phase port and was turned away; never reached the Pipeline's.
+    expect(run.published).toEqual(['phases']);
+    expect(run.ack.result).toMatchObject({
+      published: [],
+      draftedOnly: ['phase', 'pipeline'],
+      failedKind: 'phase',
+      cause: 'not-writable'
+    });
+    expect(effectivePhaseIds(inst)).not.toContain('specify');
+    expect(effectivePipelineIds(inst)).not.toContain('ship-it');
+    expect(inst.store.draftRowsOf('pipeline')).toEqual([
+      expect.objectContaining({ id: 'ship-it', phases: ['specify', 'plan'] })
+    ]);
   });
 
   it('writes the eligible Phase even though the Pipeline is blocked (FR-039)', async () => {
@@ -554,11 +680,13 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     const plan = await planFor(inst, BLOCKED_ROOT);
     expect(plan.counts).toEqual({ import: 1, skip: 0, blocked: 1, invalid: 0 });
 
-    const run = await commitPackage(inst, plan, held(inst));
+    const run = await commitPackage(inst, plan);
 
     // A blocked row is not a failed write — it was never eligible, so there is
-    // no Pipeline attempt at all and nothing partial about the outcome.
-    expect(run.writes).toEqual(['phases']);
+    // no Pipeline layer in the request at all and nothing partial about the
+    // outcome. Both ports see one layer, which is the same claim on either.
+    expect(run.drafted).toEqual(['phases']);
+    expect(run.published).toEqual(['phases']);
     expect(run.outcome).toBe('imported');
     expect(effectivePhaseIds(inst)).toContain('specify');
     expect(inst.store.rowsOf('pipeline')).toEqual([]);
@@ -570,81 +698,87 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     });
   });
 
-  it('refuses both catalogs when the Phase catalog changed since preflight (FR-040)', async () => {
+  it('refuses the package when the Phase catalog changed since preflight (FR-036)', async () => {
     const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst);
 
     await concurrentWrite(inst, 'phases', [
-      HELD_PHASE,
       { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }
     ]);
     const before = snapshot(inst);
 
-    const run = await commitPackage(inst, plan, layers);
+    const run = await commitPackage(inst, plan);
 
-    expect(run.results.map((result) => result.ack.status)).toEqual(['rejected']);
-    expect(run.results[0]?.ack).toMatchObject({ reason: 'stale-catalog' });
     expect(run.outcome).toBe('failed');
-    expect(run.writes).toEqual([]);
+    expect(run.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    // The layer, and only the layer. A package names several kinds and only some of
+    // them can be stale, so the actionable fact is which one — recompute the plan
+    // and the fresh revision comes with it. There is no per-definition token to
+    // report either, which is why this refusal carries no `current` record.
+    expect(run.ack.result).toEqual({ kind: 'phase' });
+    expect(run.drafted).toEqual([]);
+    expect(run.published).toEqual([]);
     expect(snapshot(inst)).toBe(before);
   });
 
-  it('refuses the Pipeline catalog alone when only it changed since preflight (FR-040)', async () => {
+  it('refuses the whole package when only the Pipeline catalog changed (FR-036)', async () => {
     // `held` is the Phase this Pipeline names, so the concurrent write below is a
     // valid catalog rather than one the write gate would reject for its own reasons.
     const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst);
 
     // The two catalogs have independent revisions, so a concurrent Pipeline write
-    // must stop the Pipeline half without pretending the Phase half is stale.
+    // must stop this publication without pretending the Phase half is stale.
     await concurrentWrite(inst, 'pipelines', [HELD_PIPELINE]);
 
-    const run = await commitPackage(inst, plan, layers);
+    const run = await commitPackage(inst, plan);
 
-    expect(run.writes).toEqual(['phases']);
-    expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
-      ['phases', 'accepted'],
-      ['pipelines', 'rejected']
-    ]);
-    expect(run.results[1]?.ack).toMatchObject({ reason: 'stale-catalog' });
-    expect(run.outcome).toBe('partial');
-    expect(effectivePhaseIds(inst)).toEqual(expect.arrayContaining(['specify', 'plan']));
+    // Feature 100 (T514) — this used to be a `partial`: two commands went out in
+    // order, the Phase one landed, and the Pipeline one was refused for its own
+    // revision. One command means the staleness question is asked of EVERY declared
+    // layer before any write, so a stale Pipeline revision now costs nothing — the
+    // Phase layer is not written and then stranded. Strictly better, and the
+    // per-layer claim is untouched: the refusal names `pipeline`, so the Phase
+    // revision was checked against its own and passed.
+    expect(run.outcome).toBe('failed');
+    expect(run.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    expect(run.ack.result).toEqual({ kind: 'pipeline' });
+    expect(run.drafted).toEqual([]);
+    expect(run.published).toEqual([]);
+    expect(effectivePhaseIds(inst)).not.toContain('specify');
     expect(inst.store.rowsOf('pipeline')).toEqual([HELD_PIPELINE]);
   });
 
-  it('reports staleness rather than the denied capability (FR-041)', async () => {
+  it('reports staleness rather than the denied capability (FR-036)', async () => {
     // Both gates would fire. The operator is told the one that is actionable:
     // the preview no longer describes the catalog, so re-running the preflight
     // is the next step whether or not the capability is ever granted.
     capabilities.set('phases', false);
     const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
-    const layers = held(inst);
     await concurrentWrite(inst, 'phases', [
-      HELD_PHASE,
       { id: 'landed', name: 'Landed', version: 1, instruction: 'First.' }
     ]);
 
-    const run = await commitPackage(inst, plan, layers);
+    const run = await commitPackage(inst, plan);
 
-    expect(run.results[0]?.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
-    expect(run.writes).toEqual([]);
+    expect(run.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    expect(run.drafted).toEqual([]);
+    expect(run.published).toEqual([]);
   });
 
-  it('reports staleness on the Pipeline catalog with every capability denied (FR-041)', async () => {
+  it('reports staleness on the Pipeline layer with every capability denied (FR-036)', async () => {
     // Feature 099 (T496f, FR-046) — this denied `pipelineOverrides`, which is
-    // deleted along with the layer tier: a Pipeline save consults no capability at
-    // all now, so "both gates would fire" is unreachable on this path. What
-    // survives is the half that still has teeth — the staleness answer does not
-    // depend on the resolver — so every remaining capability is denied and the
-    // Pipeline write must still report the actionable reason.
+    // deleted along with the layer tier: a Pipeline publication consults no
+    // capability at all now, so "both gates would fire" is unreachable on this
+    // path. What survives is the half that still has teeth — the staleness answer
+    // does not depend on the resolver — so every remaining capability is denied
+    // and the publication must still report the actionable reason.
     //
-    // The document's Phases are seeded, so they plan `skip` and the Pipeline is
-    // the only attempt. Otherwise the denied `phases` capability would stop the
-    // run one write earlier and the Pipeline gate would go unobserved.
-    for (const capability of ['phases', 'retryConditions', 'pipelineOverrides']) {
+    // The document's Phases are seeded, so they plan `skip` and the Pipeline layer
+    // is the only one declared. Otherwise the denied `phases` capability would be
+    // the gate under test rather than the staleness one.
+    for (const capability of ['phases', 'retryConditions']) {
       capabilities.set(capability, false);
     }
     const inst = installation({
@@ -656,79 +790,116 @@ describe('Feature 085 T043 — the ordered two-layer write', () => {
     });
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(plan.counts).toEqual({ import: 1, skip: 2, blocked: 0, invalid: 0 });
-    const layers = held(inst);
     await concurrentWrite(inst, 'pipelines', [HELD_PIPELINE]);
 
-    const run = await commitPackage(inst, plan, layers);
+    const run = await commitPackage(inst, plan);
 
-    expect(run.results.map((result) => result.key)).toEqual(['pipelines']);
-    expect(run.results[0]?.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
-    expect(run.writes).toEqual([]);
+    expect(run.ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
+    expect(run.ack.result).toEqual({ kind: 'pipeline' });
+    expect(run.drafted).toEqual([]);
+    expect(run.published).toEqual([]);
   });
 });
 
-describe('Feature 085 T044 — a failed second write is partial, and stays partial', () => {
-  it('leaves the Phases written and reports the outcome as partial (FR-042a)', async () => {
+describe('Feature 085 T044 — a failed second pass is partial, and stays partial', () => {
+  it('leaves the Phases live and reports the outcome as partial (FR-037)', async () => {
     const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
+    const run = await commitPackage(inst, plan, { failOn: { key: 'pipelines', pass: 'publish' } });
 
     expect(run.outcome).toBe('partial');
-    expect(run.results.map((result) => [result.key, result.ack.status])).toEqual([
-      ['phases', 'accepted'],
-      ['pipelines', 'rejected']
-    ]);
-    expect(run.results[1]?.ack).toMatchObject({ reason: 'persistence-failed' });
-    // Exactly which resources landed is observable, which is what FR-042a asks
-    // the surface to report: the two Phases did, the Pipeline did not.
+    // Exactly which resources landed is observable, which is what FR-037 asks the
+    // surface to report: the Phase layer published, the Pipeline layer did not, and
+    // the reason it did not is named.
+    expect(run.ack).toMatchObject({ status: 'rejected', reason: 'package-partial' });
+    expect(run.ack.result).toEqual({
+      published: [{ kind: 'phase', total: 2 }],
+      draftedOnly: ['pipeline'],
+      failedKind: 'pipeline',
+      cause: 'not-writable'
+    });
     expect(effectivePhaseIds(inst)).toEqual(expect.arrayContaining(['specify', 'plan']));
     expect(effectivePipelineIds(inst)).not.toContain('ship-it');
+    // And what "drafted only" means, checked rather than taken on the ack's word:
+    // the Pipeline body is written and readable, it is simply not what runs.
+    expect(inst.store.draftRowsOf('pipeline')).toEqual([
+      expect.objectContaining({ id: 'ship-it', version: 3, phases: ['specify', 'plan'] })
+    ]);
   });
 
-  it('triggers no compensating delete of the Phases that landed (FR-042c)', async () => {
+  it('triggers no compensating delete of the Phases that landed (FR-038)', async () => {
     const inst = installation({ phases: [HELD_PHASE] });
     const plan = await planFor(inst, SELF_CONTAINED);
 
-    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
+    const run = await commitPackage(inst, plan, { failOn: { key: 'pipelines', pass: 'publish' } });
 
-    // Two attempts, two writes, and no third. Removing a resource the operator
-    // never confirmed removing is a destructive write in its own right, and it
-    // can destroy a concurrent edit.
-    expect(run.writes).toEqual(['phases', 'pipelines']);
+    // Two drafts and two publications attempted, and nothing after the refusal.
+    // Removing a resource the operator never confirmed removing is a destructive
+    // write in its own right, and it can destroy a concurrent edit.
+    expect(run.drafted).toEqual(['phases', 'pipelines']);
+    expect(run.published).toEqual(['phases', 'pipelines']);
     expect(inst.store.rowsOf('phase')).toEqual([
       HELD_PHASE,
       { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
       { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
     ]);
+    // Nor is the half-written layer withdrawn: the draft the failed pass wrote is
+    // still there. A partial deletes nothing, in either direction (SC-009).
+    expect(inst.store.stateOf('pipeline', 'ship-it')).toBe('draft');
   });
 
-  it('is recovered by re-running the same document, with no manual cleanup (FR-042b)', async () => {
+  it('needs no cleanup to re-run, and re-running writes nothing twice (FR-039)', async () => {
+    // Feature 100 (T514, FR-039/FR-039a) — recovery changes shape here, and the
+    // change is the point rather than a casualty. Under two whole-array writes the
+    // failed one had written NOTHING, so re-running re-sent the Pipeline and it
+    // landed. Under the lifecycle the failed pass had already written the body as a
+    // draft, so the re-run finds it present (FR-044 — every state, including Draft)
+    // and plans it as a skip. A skip is never published (FR-039a): an import must
+    // not publish a draft as a side effect, and the store cannot tell a draft this
+    // document wrote from one the operator was midway through authoring.
+    //
+    // So the recovery FR-039 promises is that nothing needs redoing and nothing
+    // needs undoing — every landed write is still exactly what it was, and the one
+    // step left is the deliberate publication the partial ack already named in
+    // `draftedOnly`. That last step is taken below, through the same service, to
+    // show the draft is complete and publishable as it stands.
     const inst = installation({ phases: [HELD_PHASE] });
     const first = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, first, held(inst), { failOn: 'pipelines' });
+    const partial = await commitPackage(inst, first, {
+      failOn: { key: 'pipelines', pass: 'publish' }
+    });
+    expect(partial.outcome).toBe('partial');
 
     // The same bytes, nothing edited, nothing removed by hand.
     const second = await planFor(inst, SELF_CONTAINED);
 
-    // The landed Phases are present, so they plan `skip` — and a `skip` resolves
-    // the root's references (FR-034), which is precisely why re-running heals.
-    expect(second.counts).toEqual({ import: 1, skip: 2, blocked: 0, invalid: 0 });
-    expect(
-      second.rows.filter((row) => row.outcome === 'skip').map((row) => row.resourceId)
-    ).toEqual(['specify', 'plan']);
+    // Every resource the first run wrote is present — two Phases live, one Pipeline
+    // drafted — so the whole document plans as skips and there is nothing to write.
+    expect(second.counts).toEqual({ import: 0, skip: 3, blocked: 0, invalid: 0 });
+    expect(second.rows.map((row) => row.resourceId)).toEqual(['ship-it', 'specify', 'plan']);
 
-    const run = await commitPackage(inst, second, held(inst));
+    const run = await commitPackage(inst, second);
 
-    expect(run.writes).toEqual(['pipelines']);
     expect(run.outcome).toBe('imported');
-    expect(effectivePipelineIds(inst)).toContain('ship-it');
+    expect(run.ack.result).toEqual({ published: [] });
+    expect(run.drafted).toEqual([]);
+    expect(run.published).toEqual([]);
     // The Phases were not rewritten, so the versions the first run stored stand.
     expect(inst.store.rowsOf('phase')).toEqual([
       HELD_PHASE,
       { id: 'specify', name: 'Specify', version: 2, instruction: 'Write the spec.' },
       { id: 'plan', name: 'Plan', version: 5, instruction: 'Write the plan.' }
     ]);
+
+    // And the one step the operator owns completes it, off the document.
+    const published = await fakeCatalogLifecycle(inst.store).publish({
+      kind: 'pipeline',
+      id: 'ship-it',
+      expectedDraftVersion: tokenFor(inst.store, 'pipeline', 'ship-it')
+    });
+    expect(published.outcome).toBe('published');
+    expect(effectivePipelineIds(inst)).toContain('ship-it');
   });
 });
 
@@ -746,10 +917,12 @@ describe('Feature 085 T044 — a failed second write is partial, and stays parti
 // the missing gate CORRECT is that a write only ever appends, and a resource the
 // host already holds plans `skip` (FR-030) and is left exactly as authored.
 
+// Feature 100 (T514) — the two `CMD_SAVE_*` names are gone with the commands. The
+// import path is the preflight and the one package publish it confirms into, and
+// those are the names that must stay off the destructive list.
 const IMPORT_PATH_COMMANDS: readonly string[] = [
   'CMD_PREFLIGHT_PROCESS_YAML',
-  'CMD_SAVE_PHASES',
-  'CMD_SAVE_PIPELINES'
+  'CMD_PUBLISH_PACKAGE'
 ];
 
 describe('Feature 085 T052 — import registers no destructive-action confirmation (FR-054)', () => {
@@ -777,8 +950,22 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
       resolve(__dirname, '..', '..', '..', 'webview-ui', 'src', 'lib', 'action-copy.ts'),
       'utf8'
     );
-    const keys = copy.slice(copy.indexOf('export type ActionKey'), copy.indexOf(';', copy.indexOf('export type ActionKey')));
-    expect(keys).toContain("'catalog.remove-phase'");
+    // Feature 100 (T514) — the member LINES, not the raw slice. This used to cut at
+    // the first `;` after the declaration, and the union now carries a comment that
+    // contains one, so the slice stopped before the keys — leaving the two negatives
+    // below passing because they were looking at prose instead of at key names.
+    // Filtering to the `|` lines fixes both halves at once: nothing is truncated, and
+    // a comment that happened to say "import" cannot fail a test about what the
+    // surface can confirm.
+    const keys = copy
+      .slice(copy.indexOf('export type ActionKey'), copy.indexOf('export type Severity'))
+      .split('\n')
+      .filter((line) => line.trim().startsWith('|'))
+      .join('\n');
+    // Feature 100 (T509a, FR-049) — the positive anchor was `catalog.remove-phase`,
+    // one of the four removal keys the two lifecycle keys replace. It has to be a
+    // key that EXISTS, or the negatives would pass against an empty slice.
+    expect(keys).toContain("'catalog.deactivate-definition'");
     expect(keys.toLowerCase()).not.toContain('import');
     expect(keys.toLowerCase()).not.toContain('exchange');
   });
@@ -795,7 +982,7 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     };
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    const run = await commitPackage(inst, plan, held(inst));
+    const run = await commitPackage(inst, plan);
     expect(run.outcome).toBe('imported');
 
     // Each catalog is its prior contents, in order, followed by the imported rows.
@@ -825,7 +1012,7 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     const plan = await planFor(inst, SELF_CONTAINED);
     expect(plan.counts).toEqual({ import: 2, skip: 1, blocked: 0, invalid: 0 });
 
-    await commitPackage(inst, plan, held(inst));
+    await commitPackage(inst, plan);
 
     expect(inst.store.rowsOf('phase')[0]).toEqual(AUTHORED);
     expect(
@@ -852,12 +1039,17 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     const untouchedRevision = inst.store.revisionOf('workflow');
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    const run = await commitPackage(inst, plan, held(inst));
+    const run = await commitPackage(inst, plan);
     expect(run.outcome).toBe('imported');
 
     expect(inst.store.rowsOf('workflow')).toEqual([WORKFLOW_ROW]);
     expect(inst.store.revisionOf('workflow')).toBe(untouchedRevision);
-    expect(inst.store.layerSaves.map((request) => request.kind)).toEqual(['phase', 'pipeline']);
+    // Both write ports, because a kind is untouched only if neither pass named it.
+    expect(inst.store.draftLayerSaves.map((request) => request.kind)).toEqual([
+      'phase',
+      'pipeline'
+    ]);
+    expect(inst.store.publishLayers.map((request) => request.kind)).toEqual(['phase', 'pipeline']);
   });
 
   it('removes nothing when the second write fails, so recovery needs no undo (FR-042c)', async () => {
@@ -869,7 +1061,7 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     const before = [...inst.store.rowsOf('phase')];
 
     const plan = await planFor(inst, SELF_CONTAINED);
-    const run = await commitPackage(inst, plan, held(inst), { failOn: 'pipelines' });
+    const run = await commitPackage(inst, plan, { failOn: { key: 'pipelines', pass: 'publish' } });
 
     expect(run.outcome).toBe('partial');
     expect(inst.store.rowsOf('phase').slice(0, before.length)).toEqual(before);
@@ -931,7 +1123,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
 
     // The commit is driven entirely by the plan. If the document were a source,
     // the write would need to consult it again.
-    await commitPackage(inst, result.plan, held(inst));
+    await commitPackage(inst, result.plan);
     expect(opens).toBe(1);
     expect(effectivePipelineIds(inst)).toContain('ship-it');
   });
@@ -939,7 +1131,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
   it('survives the document changing underneath it after the commit', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, held(inst));
+    await commitPackage(inst, plan);
     const after = snapshot(inst);
 
     // A later read of a document that now says something else must be
@@ -965,7 +1157,7 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
     // catalog applies to every row is not a trace of anything.
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, held(inst));
+    await commitPackage(inst, plan);
 
     const addsNothing = (stored: readonly unknown[], declared: readonly Record<string, unknown>[]) => {
       expect(stored).toHaveLength(declared.length);
@@ -987,7 +1179,7 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
   it('resolves as effective, with the definition the document declared', async () => {
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
-    await commitPackage(inst, plan, held(inst));
+    await commitPackage(inst, plan);
 
     const resolved = pipelineCatalogOf(inst);
 
@@ -1004,36 +1196,18 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
 
   it('is refused by the same validation an authored row is, not a lenient one', async () => {
     // A binding naming a port the Pipeline does not declare. Preflight plans the
-    // row — the document is well formed — and the save command applies the same
+    // row — the document is well formed — and the publication applies the same
     // cross-reference gate it applies to an operator's own edit. Import is not a
     // way around the catalog's rules.
     //
-    // The Phases are seeded so this isolates the binding gate: with the layer
-    // empty, `unknown-phase` would fire first and the binding defect would go
-    // unobserved even though the save still failed.
+    // The Phases are seeded so this isolates the binding gate: with the catalog
+    // empty, `unknown-phase` would fire alongside it and the binding defect would
+    // be one of two rather than the one the case is about.
     const seed = installation();
     const plan = await planFor(seed, SELF_CONTAINED);
     const inst = installation({ phases: importedPhases(plan).map(phaseRow) });
     const [pipeline] = importedPipelines(plan);
     expect(pipeline).toBeDefined();
-
-    const acks: CommandAckMessage[] = [];
-    const ctx = {
-      deps: {
-        ...catalogDeps(inst.store),
-        readConfig: () => undefined,
-        executeCommand: vi.fn(),
-        queueRemover: { remove: vi.fn() },
-        audit: { append: async () => undefined },
-        logger: logger()
-      },
-      postAck: async (msg: CommandAckMessage) => {
-        acks.push(msg);
-        return true;
-      },
-      correlationId: CORRELATION
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any;
 
     const broken = {
       ...pipelineRow(pipeline!),
@@ -1047,71 +1221,76 @@ describe('Feature 085 T058 — an imported Pipeline is a catalog row like any ot
       ]
     };
 
-    await savePipelinesHandler(ctx, {
-      type: CMD_SAVE_PIPELINES,
-      correlationId: CORRELATION,
-      payload: {
-        expectedRevision: plan.computedAgainstPipelineRevision!,
-        mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
-        pipelines: [broken]
+    const run = await commitPackage(inst, plan, {
+      command: {
+        type: CMD_PUBLISH_PACKAGE,
+        correlationId: CORRELATION,
+        payload: {
+          layers: [
+            {
+              kind: 'pipeline',
+              expectedRevision: inst.store.revisionOf('pipeline'),
+              definitions: [{ id: 'ship-it', body: broken }]
+            }
+          ]
+        }
       }
-    } as SavePipelinesCommand);
+    });
 
-    expect(acks).toHaveLength(1);
-    expect(acks[0]!.status).toBe('rejected');
-    expect(acks[0]!.reason).toBe('pipeline-validation');
+    expect(run.ack.status).toBe('rejected');
+    expect(run.ack.reason).toBe('validation-failed');
     // The specific defect, not just the reason class: a coarse code alone would
     // pass on a rejection that happened for some unrelated reason.
-    expect(acks[0]!.result).toMatchObject({
-      errors: [{ pipelineId: 'ship-it', code: 'binding-unknown-input-port' }],
+    expect(run.ack.result).toMatchObject({
+      kind: null,
+      defects: [
+        expect.objectContaining({
+          kind: 'pipeline',
+          id: 'ship-it',
+          code: 'binding-unknown-input-port'
+        })
+      ],
       total: 1
     });
     expect(inst.store.rowsOf('pipeline')).toEqual([]);
-    // A rejected save must not reach a write.
-    expect(inst.store.layerSaves).toEqual([]);
+    // A refused publication reaches neither write port — not even the draft one.
+    // Feature 100 (T514) — this is the stronger form of the old claim: validation
+    // runs BEFORE pass 1 (FR-016), so an invalid body is not written and then
+    // withheld, it is never written at all.
+    expect(writesOf(inst.store)).toEqual(NO_WRITES);
   });
 
-  it('is refused when its Phases are not there, exactly as an authored row would be', async () => {
-    // The other half of FR-046, and the reason FR-038 orders the two writes: a
-    // Pipeline whose Phases have not landed does not resolve. Writing the
-    // Pipeline catalog alone reproduces the reversed order and must fail.
+  it('is refused when its Phases are nowhere, exactly as an authored row would be', async () => {
+    // The other half of FR-046. A Pipeline whose Phases are neither live nor in the
+    // request does not resolve, and the publication is refused for the same defect
+    // an operator's own save would be. Feature 100 (T514, FR-017) — "not there" now
+    // means absent from the CANDIDATE SET as well as from the catalog, which is what
+    // makes the union a carve-out rather than a hole; the union half is pinned above.
     const inst = installation();
     const plan = await planFor(inst, SELF_CONTAINED);
     const [pipeline] = importedPipelines(plan);
 
-    const acks: CommandAckMessage[] = [];
-    const ctx = {
-      deps: {
-        ...catalogDeps(inst.store),
-        readConfig: () => undefined,
-        executeCommand: vi.fn(),
-        queueRemover: { remove: vi.fn() },
-        audit: { append: async () => undefined },
-        logger: logger()
-      },
-      postAck: async (msg: CommandAckMessage) => {
-        acks.push(msg);
-        return true;
-      },
-      correlationId: CORRELATION
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any;
-
-    await savePipelinesHandler(ctx, {
-      type: CMD_SAVE_PIPELINES,
-      correlationId: CORRELATION,
-      payload: {
-        expectedRevision: plan.computedAgainstPipelineRevision!,
-        mutation: { kind: 'import-package', pipelineIds: ['ship-it'] },
-        pipelines: [pipelineRow(pipeline!)]
+    const run = await commitPackage(inst, plan, {
+      command: {
+        type: CMD_PUBLISH_PACKAGE,
+        correlationId: CORRELATION,
+        payload: {
+          layers: [
+            {
+              kind: 'pipeline',
+              expectedRevision: plan.computedAgainstPipelineRevision!,
+              definitions: [{ id: 'ship-it', body: pipelineRow(pipeline!) }]
+            }
+          ]
+        }
       }
-    } as SavePipelinesCommand);
+    });
 
-    expect(acks[0]!.status).toBe('rejected');
-    expect(acks[0]!.reason).toBe('pipeline-validation');
-    const detail = acks[0]!.result as { readonly errors: readonly { readonly code: string }[] };
-    expect(detail.errors.map((error) => error.code)).toContain('unknown-phase');
-    expect(JSON.stringify(detail.errors)).toContain('specify');
-    expect(inst.store.layerSaves).toEqual([]);
+    expect(run.ack.status).toBe('rejected');
+    expect(run.ack.reason).toBe('validation-failed');
+    const detail = run.ack.result as { readonly defects: readonly { readonly code: string }[] };
+    expect(detail.defects.map((defect) => defect.code)).toContain('unknown-phase');
+    expect(JSON.stringify(detail.defects)).toContain('specify');
+    expect(writesOf(inst.store)).toEqual(NO_WRITES);
   });
 });

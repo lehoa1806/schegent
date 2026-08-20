@@ -597,13 +597,19 @@ const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
  * `confirmBlockedReason` writes nothing rather than the layers it happens to
  * have a gate for.
  *
- * Each `existingLayer` is passed through in the order given, so a row the
- * catalog could not parse is carried across rather than dropped by an import.
+ * **Feature 100 (T511, FR-039a, FR-039b) — the document's own rows, and nothing
+ * else.** Each layer used to carry the stored rows too, because the whole-array
+ * command it went to treated an id the request did not name as a removal. A
+ * package publish is a merge: an id it does not name is left exactly as it is, so
+ * the stored rows no longer need carrying and must not be carried. Sending them
+ * would name every stored definition in a publication, and publishing an id
+ * publishes its head — so an operator's pending, deliberately unpublished draft
+ * of an untouched definition would go live as a side effect of importing a
+ * document that says nothing about it. That is the one thing FR-039a forbids by
+ * name, and dropping the concatenation is what makes it true of this surface as
+ * well as of the headless one.
  */
-export function buildImportWrites(
-  plan: ImportPlan,
-  layers: ImportTargetLayers
-): readonly ImportLayerWrite[] {
+export function buildImportWrites(plan: ImportPlan): readonly ImportLayerWrite[] {
   const phases = phaseImportRows(plan);
   const pipelines = pipelineImportRows(plan);
   const workflows = workflowImportRows(plan);
@@ -622,10 +628,7 @@ export function buildImportWrites(
         mutation: standalone
           ? { kind: 'import', phaseId: phases[0].resourceId }
           : { kind: 'import-package', phaseIds: phases.map((row) => row.resourceId) },
-        phases: [
-          ...layers.phases,
-          ...phases.map((row) => savePhaseRowFromDefinition(row.definition))
-        ]
+        phases: phases.map((row) => savePhaseRowFromDefinition(row.definition))
       }
     });
   }
@@ -638,10 +641,7 @@ export function buildImportWrites(
           kind: 'import-package',
           pipelineIds: pipelines.map((row) => row.resourceId)
         },
-        pipelines: [
-          ...layers.pipelines,
-          ...pipelines.map((row) => savePipelineRowFromDefinition(row.definition))
-        ]
+        pipelines: pipelines.map((row) => savePipelineRowFromDefinition(row.definition))
       }
     });
   }
@@ -654,10 +654,7 @@ export function buildImportWrites(
           kind: 'import-package',
           workflowIds: workflows.map((row) => row.resourceId)
         },
-        workflows: [
-          ...layers.workflows,
-          ...workflows.map((row) => saveWorkflowRowFromDefinition(row.definition))
-        ]
+        workflows: workflows.map((row) => saveWorkflowRowFromDefinition(row.definition))
       }
     });
   }
@@ -809,11 +806,10 @@ export interface ImportCommitReport {
  */
 export async function runImportCommit(
   plan: ImportPlan,
-  layers: ImportTargetLayers,
   deps: ImportCommitDeps
 ): Promise<ImportCommitReport> {
   const results: ImportLayerResult[] = [];
-  for (const write of buildImportWrites(plan, layers)) {
+  for (const write of buildImportWrites(plan)) {
     // Awaited inside the loop deliberately: the writes are ordered, and each is
     // conditional on the one before it. Issuing them together would send the
     // Pipeline before its Phases exist, and the Workflow before its Pipelines do.

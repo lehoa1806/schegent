@@ -19,10 +19,14 @@ export type ActionKey =
   | 'history.rerun'
   | 'workspace.reset'
   | 'run.skip-phase'
-  | 'catalog.remove-phase'
-  | 'catalog.remove-pipeline'
-  | 'catalog.remove-workflow'
-  | 'catalog.reset-workflows'
+  // Feature 100 (T509a, FR-049) — two keys replace the four catalog removal keys
+  // of features 082/083. Those were one per kind plus a whole-layer reset, because
+  // a removal was an omission from a whole-array write and the array was per-kind.
+  // A lifecycle operation names one definition of any kind, so the kind became a
+  // parameter; and a layer reset is no longer one write the store can make, so it
+  // is no longer one decision the operator can take.
+  | 'catalog.deactivate-definition'
+  | 'catalog.discard-draft'
   | 'run.overwrite-output'
   | 'queue.delete';
 
@@ -58,26 +62,27 @@ export type ActionCopyContext = {
   'history.rerun': { readonly taskTitle: string };
   'workspace.reset': Record<string, never>;
   'run.skip-phase': { readonly phaseName: string };
-  // Feature 099 (T494a, FR-043) — no `scope` on any of the four catalog
-  // prompts. There is one catalog, so naming the layer a delete targets said
-  // nothing, and the promise that came with it — that a lower-precedence
-  // definition might become effective — is now false.
-  'catalog.remove-phase': {
-    readonly phaseName: string;
-    readonly phaseId: string;
+  // Feature 099 (T494a, FR-043) — no `scope` on either catalog prompt. There is
+  // one catalog, so naming the layer a removal targets said nothing, and the
+  // promise that came with it — that a lower-precedence definition might become
+  // effective — is now false.
+  //
+  // Feature 100 (T509a) — `kindLabel` carries what the four retired keys carried
+  // in their names. It is a display word ("Phase", "Pipeline", "Workflow"), not
+  // the wire `kind`, so the copy table stays the only place user-visible strings
+  // are written.
+  'catalog.deactivate-definition': {
+    readonly kindLabel: string;
+    readonly definitionName: string;
+    readonly definitionId: string;
   };
-  'catalog.remove-pipeline': {
-    readonly pipelineName: string;
-    readonly pipelineId: string;
-  };
-  'catalog.remove-workflow': {
-    readonly workflowName: string;
-    readonly workflowId: string;
-  };
-  // The count is what distinguishes this prompt from the single-row one: the
-  // operator is told how many definitions the catalog is about to lose.
-  'catalog.reset-workflows': {
-    readonly workflowCount: number;
+  // `removesEntry` decides which of two different losses the prompt describes:
+  // an unpublished edit, or the whole definition (FR-030).
+  'catalog.discard-draft': {
+    readonly kindLabel: string;
+    readonly definitionName: string;
+    readonly definitionId: string;
+    readonly removesEntry: boolean;
   };
   // Feature 087 (FR-023) — the operator named a target that already holds
   // content. `target` is workspace-relative: that is the only form that crosses
@@ -182,28 +187,21 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
     confirmLabel: 'Skip Phase',
     severity: 'caution'
   },
-  'catalog.remove-phase': {
-    title: 'Delete Phase definition?',
-    bodyTemplate: 'Deletes **{phaseName}** (`{phaseId}`) from the Phase catalog.',
-    confirmLabel: 'Delete Phase',
+  // The body has to say what survives, or the operator reads "remove" as "delete
+  // forever" and never uses it. Every version is kept and publishing again brings
+  // the definition back; what is lost is that it can be launched.
+  'catalog.deactivate-definition': {
+    title: 'Remove from the active catalog?',
+    bodyTemplate:
+      'Removes **{definitionName}** (`{definitionId}`) from the active {kindLabel} catalog, so it can no longer be launched. Its version history is kept, and publishing it again restores it.',
+    confirmLabel: 'Remove',
     severity: 'destructive'
   },
-  'catalog.remove-pipeline': {
-    title: 'Delete Pipeline definition?',
-    bodyTemplate: 'Deletes **{pipelineName}** (`{pipelineId}`) from the Pipeline catalog.',
-    confirmLabel: 'Delete Pipeline',
-    severity: 'destructive'
-  },
-  'catalog.remove-workflow': {
-    title: 'Delete Workflow definition?',
-    bodyTemplate: 'Deletes **{workflowName}** (`{workflowId}`) from the Workflow catalog. The Pipelines it composed are not affected.',
-    confirmLabel: 'Delete Workflow',
-    severity: 'destructive'
-  },
-  'catalog.reset-workflows': {
-    title: 'Reset Workflow definitions?',
-    bodyTemplate: 'Deletes all {workflowCount} Workflow definitions from the catalog. The Pipelines they composed are not affected.',
-    confirmLabel: 'Reset Workflows',
+  'catalog.discard-draft': {
+    title: 'Discard unpublished changes?',
+    bodyTemplate:
+      'Discards the unpublished draft of **{definitionName}** (`{definitionId}`).{entrySummary}',
+    confirmLabel: 'Discard Draft',
     severity: 'destructive'
   },
   'run.overwrite-output': {
@@ -289,27 +287,24 @@ export function renderActionBody<K extends ActionKey>(
       const ctx = context as ActionCopyContext['run.retry-phase-now' | 'run.skip-phase'];
       return entry.bodyTemplate.replace('{phaseName}', ctx.phaseName);
     }
-    case 'catalog.remove-phase': {
-      const ctx = context as ActionCopyContext['catalog.remove-phase'];
+    case 'catalog.deactivate-definition': {
+      const ctx = context as ActionCopyContext['catalog.deactivate-definition'];
       return entry.bodyTemplate
-        .replace('{phaseName}', ctx.phaseName)
-        .replace('{phaseId}', ctx.phaseId);
+        .replace('{definitionName}', ctx.definitionName)
+        .replace('{definitionId}', ctx.definitionId)
+        .replace('{kindLabel}', ctx.kindLabel);
     }
-    case 'catalog.remove-pipeline': {
-      const ctx = context as ActionCopyContext['catalog.remove-pipeline'];
+    case 'catalog.discard-draft': {
+      const ctx = context as ActionCopyContext['catalog.discard-draft'];
       return entry.bodyTemplate
-        .replace('{pipelineName}', ctx.pipelineName)
-        .replace('{pipelineId}', ctx.pipelineId);
-    }
-    case 'catalog.remove-workflow': {
-      const ctx = context as ActionCopyContext['catalog.remove-workflow'];
-      return entry.bodyTemplate
-        .replace('{workflowName}', ctx.workflowName)
-        .replace('{workflowId}', ctx.workflowId);
-    }
-    case 'catalog.reset-workflows': {
-      const ctx = context as ActionCopyContext['catalog.reset-workflows'];
-      return entry.bodyTemplate.replace('{workflowCount}', String(ctx.workflowCount));
+        .replace('{definitionName}', ctx.definitionName)
+        .replace('{definitionId}', ctx.definitionId)
+        .replace(
+          '{entrySummary}',
+          ctx.removesEntry
+            ? ` This ${ctx.kindLabel} has never been published, so discarding removes it entirely.`
+            : ` The published ${ctx.kindLabel} stays active and is not affected.`
+        );
     }
     case 'run.overwrite-output': {
       const ctx = context as ActionCopyContext['run.overwrite-output'];

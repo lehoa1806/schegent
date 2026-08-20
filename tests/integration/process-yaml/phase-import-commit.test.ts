@@ -17,6 +17,23 @@
 // QS-36 are unchanged claims against the new write port. QS-35 asked which of two
 // layers an import landed in; with one layer that question has no content, so the
 // case carries the property one axis over — see its own note.
+//
+// Feature 100 (T514, FR-041, FR-047) — the commit command is `CMD_PUBLISH_PACKAGE`,
+// and two things about the request changed with it.
+//
+// It no longer carries the layer. `saveLayer` replaced the array, so the webview had
+// to send every held row back or lose them; `saveDraftLayer` MERGES (FR-039b), so the
+// request names only what the document declares and an unnamed id is left exactly as
+// it is. The `[...layer, …]` argument every case here used to thread is gone, and its
+// absence is now the assertion: QS-34's held row survives a commit that never
+// mentioned it.
+//
+// And the commit is two writes, not one — a draft pass and a publish pass (FR-041).
+// "All-or-nothing" therefore needs restating rather than deleting: a *refused* commit
+// still writes nothing at all, which is what QS-34 measured and what the cases below
+// keep measuring. What is genuinely new is the partial outcome, where a prefix lands
+// and stays — that is T514f's subject, in `package-partial.test.ts`, and not asserted
+// twice here.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,10 +59,11 @@ import type {
   PreflightProcessYamlResult
 } from '../../../src/contracts/sidebar-ipc';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
+import { CMD_PUBLISH_PACKAGE } from '../../../src/contracts/sidebar-ipc';
+import type { PublishPackageCommand } from '../../../src/contracts/sidebar-ipc';
 import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 
 /** A Pipeline and a Workflow row, so a Phase write has neighbours it could clobber. */
 const NEIGHBOUR_PIPELINE = Object.freeze({
@@ -162,11 +180,14 @@ async function planFor(store: FakeCatalogStore, text: string): Promise<ImportPla
 // ---------------------------------------------------------------------------
 
 /**
- * The request the webview builds from a plan, per contracts "Commit": the catalog
- * as held plus the declared definition, the plan's revision, and the `import`
- * intent naming the added identity.
+ * The request the webview builds from a plan: one layer per kind the plan writes,
+ * carrying only the declared definitions and that kind's revision.
+ *
+ * Feature 100 — no held rows and no mutation intent. Merge semantics make the
+ * former unnecessary (FR-039b) and the six operations make the latter meaningless:
+ * the operation IS the intent (FR-051).
  */
-function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesCommand {
+function commitCommand(plan: ImportPlan): PublishPackageCommand {
   const row = plan.rows.find(
     (candidate) => candidate.outcome === 'import' && candidate.resourceKind === 'phase'
   );
@@ -176,24 +197,33 @@ function commitCommand(plan: ImportPlan, layer: readonly unknown[]): SavePhasesC
   }
   const { phaseId, ...declared } = row.definition;
   return {
-    type: CMD_SAVE_PHASES,
+    type: CMD_PUBLISH_PACKAGE,
     correlationId: 'import-commit-1',
     payload: {
-      expectedRevision: plan.computedAgainstRevision,
-      mutation: { kind: 'import', phaseId },
-      phases: [...layer, { id: phaseId, ...declared }]
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: plan.computedAgainstRevision,
+          definitions: [{ id: phaseId, body: { id: phaseId, ...declared } }]
+        }
+      ]
     }
   };
 }
 
 interface CommitRun {
   readonly ack: CommandAckMessage;
+  /** Writes of either pass. A refused commit performs none of either. */
   readonly writes: number;
 }
 
-async function commit(store: FakeCatalogStore, command: SavePhasesCommand): Promise<CommitRun> {
+function writeCount(store: FakeCatalogStore): number {
+  return store.draftLayerSaves.length + store.publishLayers.length;
+}
+
+async function commit(store: FakeCatalogStore, command: PublishPackageCommand): Promise<CommitRun> {
   const acks: CommandAckMessage[] = [];
-  const savesBefore = store.layerSaves.length;
+  const writesBefore = writeCount(store);
   const ctx = {
     deps: {
       readPhaseConfig: () => ({
@@ -201,10 +231,12 @@ async function commit(store: FakeCatalogStore, command: SavePhasesCommand): Prom
         revision: store.revisionOf('phase')
       }),
       catalogStore: store,
+      catalogLifecycle: fakeCatalogLifecycle(store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
+      audit: { append: async () => undefined },
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -221,9 +253,9 @@ async function commit(store: FakeCatalogStore, command: SavePhasesCommand): Prom
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  await saveHandler(ctx, command);
+  await publishDefinitionPackage(ctx, command);
   expect(acks).toHaveLength(1);
-  return { ack: acks[0]!, writes: store.layerSaves.length - savesBefore };
+  return { ack: acks[0]!, writes: writeCount(store) - writesBefore };
 }
 
 function resolved(store: FakeCatalogStore) {
@@ -246,17 +278,19 @@ describe('Feature 084 QS-34 — a commit that cannot persist changes nothing', (
     const plan = await planFor(store, IMPORTED_DOCUMENT);
 
     // Someone else writes the catalog between the preflight and the confirm, so
-    // the revision the plan was computed against no longer describes it.
-    const interleaved = await store.saveLayer({
+    // the revision the plan was computed against no longer describes it. A draft
+    // write is enough: it moves the kind's revision without touching what runs,
+    // which is precisely the case a per-kind gate has to catch.
+    const interleaved = await store.saveDraftLayer({
       kind: 'phase',
       expectedRevision: store.revisionOf('phase'),
-      definitions: [HELD_ROW, LANDED_FIRST].map((row) => ({ id: row.id, body: row }))
+      definitions: [{ id: LANDED_FIRST.id, body: LANDED_FIRST }]
     });
     expect(interleaved.outcome).toBe('saved');
     const before = snapshot(store);
     const revisionBefore = store.revisionOf('phase');
 
-    const { ack, writes } = await commit(store, commitCommand(plan, [HELD_ROW]));
+    const { ack, writes } = await commit(store, commitCommand(plan));
 
     expect(ack).toMatchObject({ status: 'rejected', reason: 'stale-catalog' });
     expect(writes).toBe(0);
@@ -273,13 +307,14 @@ describe('Feature 084 QS-34 — a commit that cannot persist changes nothing', (
 
     // Feature 099 — the write that fails is the store's, not a settings write, so
     // the failure arrives as the store's own refusal rather than a thrown EACCES.
-    store.nextLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
-    const { ack } = await commit(store, commitCommand(plan, [HELD_ROW]));
+    // Feature 100 — and it fails on the FIRST pass, the draft write. A refusal
+    // there is the whole-commit refusal FR-044a described: no pointer moved, no
+    // record was written, and there is no prefix to report.
+    store.nextDraftLayerVerdict = { outcome: 'refused', reason: 'not-writable', id: null };
+    const { ack } = await commit(store, commitCommand(plan));
 
-    // FR-044a — the save is one all-or-nothing write, so a failure cannot leave
-    // the imported row half-applied, and it is not reported as an import.
     expect(ack).toMatchObject({ status: 'rejected', reason: 'persistence-failed' });
-    expect(ack.result).toMatchObject({ storeRefusal: 'not-writable' });
+    expect(ack.result).toMatchObject({ storeReason: 'not-writable' });
     expect(snapshot(store)).toBe(before);
     expect(store.revisionOf('phase')).toBe(revisionBefore);
     expect(resolved(store).records.some((record) => record.phaseId === 'brought-in')).toBe(false);
@@ -291,7 +326,7 @@ describe('Feature 084 QS-34 — a commit that cannot persist changes nothing', (
     const plan = await planFor(store, IMPORTED_DOCUMENT);
     const before = snapshot(store);
 
-    const { ack, writes } = await commit(store, commitCommand(plan, [HELD_ROW]));
+    const { ack, writes } = await commit(store, commitCommand(plan));
 
     expect(ack.status).toBe('rejected');
     expect(writes).toBe(0);
@@ -311,16 +346,19 @@ describe('Feature 084 QS-35 — the write reaches the catalog it named, and no o
   it('resolves an imported Phase in the Phase catalog and leaves the other kinds alone', async () => {
     const store = installation();
     const plan = await planFor(store, IMPORTED_DOCUMENT);
-    const { ack } = await commit(store, commitCommand(plan, []));
+    const { ack } = await commit(store, commitCommand(plan));
 
-    expect(ack).toMatchObject({ status: 'accepted', result: { mutation: 'import' } });
-    expect(ack.result).toMatchObject({ revision: store.revisionOf('phase') });
+    expect(ack).toMatchObject({
+      status: 'accepted',
+      result: { published: [{ kind: 'phase', ids: ['brought-in'], total: 1 }] }
+    });
     const record = resolved(store).records.find((row) => row.phaseId === 'brought-in');
     expect(record).toMatchObject({ status: 'effective' });
 
     // The catalogs the operator did not import into are untouched — not merely
-    // equal by luck, but never written at all.
-    expect(store.layerSaves.map((request) => request.kind)).toEqual(['phase']);
+    // equal by luck, but never written at all, on either pass.
+    expect(store.draftLayerSaves.map((request) => request.kind)).toEqual(['phase']);
+    expect(store.publishLayers.map((request) => request.kind)).toEqual(['phase']);
     expect(store.rowsOf('pipeline')).toEqual([NEIGHBOUR_PIPELINE]);
     expect(store.rowsOf('workflow')).toEqual([NEIGHBOUR_WORKFLOW]);
     expect(store.revisionOf('pipeline')).toBe('rev-pipeline-0');
@@ -354,9 +392,10 @@ describe('Feature 084 QS-36 — `version` is preserved as authored (FR-046a)', (
     const store = installation([HELD_ROW]);
     const plan = await planFor(store, IMPORTED_DOCUMENT);
 
-    const { ack } = await commit(store, commitCommand(plan, [HELD_ROW]));
+    const { ack } = await commit(store, commitCommand(plan));
     expect(ack.status).toBe('accepted');
 
+    // The held row is still here, and the request never named it (FR-039b).
     expect(store.rowsOf('phase')).toEqual([
       HELD_ROW,
       { id: 'brought-in', name: 'Brought In', version: 9, instruction: 'Do the thing.' }

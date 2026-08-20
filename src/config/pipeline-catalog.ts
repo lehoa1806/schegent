@@ -256,6 +256,15 @@ function unavailableModelWarnings(
  * Feature 099 (T489, FR-042) — `rows` is the stored catalog and `revision` is the
  * store's manifest revision (FR-044a). See `resolvePhaseCatalog` for the shape of
  * the collapse.
+ *
+ * **Feature 100 (FR-R3-016) T505 — the effective catalog is the set of ACTIVE
+ * versions** (FR-007), and this resolver is unchanged for it. `rows` comes from
+ * `storedRows`, which reads a definition's active body and never its draft, so a
+ * Pipeline saved as a draft is absent from `effective` and from `records` alike —
+ * it cannot be launched, and it cannot satisfy another definition's reference,
+ * until it is published (FR-008). The `phaseCatalog` this validates bindings
+ * against is that same active-only set one level down, so a draft Phase cannot
+ * make a Pipeline resolve either.
  */
 export function resolvePipelineCatalog(input: {
   readonly rows: readonly unknown[] | undefined;

@@ -103,8 +103,14 @@
   interface Props {
     /**
      * All three catalogs as the snapshot currently holds them, projected the same
-     * way the managers project them for a save. The parent owns the projection
-     * because it owns the snapshot; this component only appends to it.
+     * way the managers project them for a save.
+     *
+     * Feature 100 (T511, FR-039a) — **no longer read.** A package publish is a
+     * merge: an id it does not name is left exactly as it is, so the commit sends
+     * only the document's own rows, and sending the stored ones alongside them
+     * would publish an operator's pending draft of an untouched definition as a
+     * side effect. Kept declared so the manager that supplies it keeps compiling;
+     * FR-R3-017 removes the prop with the surface that supplies it.
      */
     layers?: ImportTargetLayers;
     /**
@@ -116,8 +122,7 @@
     disabledReason?: string | null;
   }
 
-  const EMPTY_LAYERS: ImportTargetLayers = { phases: [], pipelines: [], workflows: [] };
-  const { layers = EMPTY_LAYERS, disabledReason = null }: Props = $props();
+  const { disabledReason = null }: Props = $props();
 
   type PreflightSurface =
     | { readonly kind: 'idle' }
@@ -208,7 +213,7 @@
     // The three writes, in dependency order, each gated on its own revision.
     // `runImportCommit` stops at the first rejection and reports what did land —
     // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
-    const report = await runImportCommit(plan, layers, {
+    const report = await runImportCommit(plan, {
       savePhases,
       savePipelines,
       saveWorkflows

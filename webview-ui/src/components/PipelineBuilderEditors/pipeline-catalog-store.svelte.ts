@@ -18,7 +18,6 @@
 
 import type { PipelineCatalogMutation, WorkflowSnapshot } from '../../lib/snapshot-types';
 import { savePipelines as savePipelinesHelper } from '../../lib/save-pipelines';
-import { useConfirm } from '../../lib/use-confirm';
 import {
   formatPipelineSaveRejection,
   makeDuplicatePipelineDraft,
@@ -145,19 +144,23 @@ export class PipelineCatalogStore {
     );
   }
 
-  async remove(index: number, originatingElement?: HTMLElement | null): Promise<void> {
+  /**
+   * Feature 100 (T509b) — the confirmation moved into `deactivateDefinition`,
+   * which is the only function that can post the command it authorises. This
+   * method therefore no longer asks; it supplies what the prompt needs to say and
+   * lets the helper raise it before dispatch (FR-049).
+   */
+  remove(index: number, originatingElement?: HTMLElement | null): void {
     const pipeline = this.pipelines[index];
     if (!pipeline || this.savePending) return;
-    const confirmed = await useConfirm('catalog.remove-pipeline', {
-      originatingElement,
-      context: { pipelineName: pipeline.name, pipelineId: pipeline.id }
-    });
-    if (!confirmed) return;
     const proposed = this.pipelines.filter((_row, rowIndex) => rowIndex !== index);
     const mutation: PipelineCatalogMutation = { kind: 'remove', pipelineId: pipeline.id };
     this.mutation = mutation;
     this.mutationSourceKey = pipeline.sourceKey;
-    this.#submit(mutation, proposed);
+    this.#submit(mutation, proposed, {
+      removedName: pipeline.name,
+      originatingElement: originatingElement ?? null
+    });
   }
 
   /** Drops an unsaved draft, or restores a persisted row from the projection. */
@@ -260,7 +263,8 @@ export class PipelineCatalogStore {
 
   #submit(
     mutation: PipelineCatalogMutation,
-    sourceRows: readonly MutablePipeline[] = this.pipelines
+    sourceRows: readonly MutablePipeline[] = this.pipelines,
+    prompt: { removedName?: string; originatingElement?: HTMLElement | null } = {}
   ): void {
     const catalog = this.#options.getSnapshot().pipelineCatalog;
     if (!catalog || catalog.state !== 'ready' || this.savePending) return;
@@ -270,10 +274,18 @@ export class PipelineCatalogStore {
     void savePipelinesHelper({
       expectedRevision: this.#adopted,
       mutation,
-      pipelines
+      pipelines,
+      ...prompt
     }).then((result) => {
       if (result.status === 'rejected') {
         this.savePending = false;
+        // Feature 100 (T509b) — the operator closed the removal prompt. Nothing
+        // was sent and nothing failed, so the editor returns to where it was
+        // instead of reporting an error it would have to invent.
+        if (result.reason === 'declined') {
+          this.#clearMutation();
+          return;
+        }
         const stale = result.result as { currentRevision?: unknown } | undefined;
         if (result.reason === 'stale-catalog' && typeof stale?.currentRevision === 'string') {
           this.#staleRevision = stale.currentRevision;

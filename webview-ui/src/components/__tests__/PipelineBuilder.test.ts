@@ -180,38 +180,69 @@ async function switchTab(container: HTMLElement, label: string): Promise<void> {
 }
 
 describe('PipelineBuilder — restored 3-tab design', () => {
-  it('does not remove a persisted Phase when confirmation is cancelled', async () => {
-    const phase: PhaseDefinition = Object.freeze({
-      id: 'remove-me', name: 'Remove me', version: 1, instruction: 'Run.'
-    });
-    vi.mocked(useConfirm).mockResolvedValueOnce(false);
-    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot([phase]) } });
-    await switchTab(container, 'Phases');
-    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-remove-me"]')!);
-    await fireEvent.click(container.querySelector('[data-testid="phases-remove"]')!);
-    await tick();
-    expect(useConfirm).toHaveBeenCalledWith('catalog.remove-phase', expect.objectContaining({
-      context: { phaseName: 'Remove me', phaseId: 'remove-me' }
-    }));
-    expect(savePhasesHelper).not.toHaveBeenCalled();
+  const REMOVABLE_PHASE: PhaseDefinition = Object.freeze({
+    id: 'remove-me', name: 'Remove me', version: 1, instruction: 'Run.'
   });
 
-  it('submits one remove mutation after confirmation', async () => {
-    const phase: PhaseDefinition = Object.freeze({
-      id: 'remove-me', name: 'Remove me', version: 1, instruction: 'Run.'
+  /** Renders the Phases tab, selects the row, and returns its delete button. */
+  async function openPhaseDeleteControl(): Promise<{
+    container: HTMLElement;
+    deleteBtn: HTMLButtonElement;
+  }> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([REMOVABLE_PHASE]) }
     });
-    vi.mocked(useConfirm).mockResolvedValueOnce(true);
-    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot([phase]) } });
     await switchTab(container, 'Phases');
     await fireEvent.click(container.querySelector('[data-testid="phases-list-item-remove-me"]')!);
-    await fireEvent.click(container.querySelector('[data-testid="phases-remove"]')!);
+    const deleteBtn = container.querySelector(
+      '[data-testid="phases-remove"]'
+    ) as HTMLButtonElement | null;
+    expect(deleteBtn).not.toBeNull();
+    return { container, deleteBtn: deleteBtn! };
+  }
+
+  // Feature 100 (T509b, FR-049) — this pair used to assert that the Builder
+  // raised `catalog.remove-phase` itself and sent nothing when the operator said
+  // no. The prompt moved into `deactivateDefinition`, the only function that can
+  // post the command it authorises, so the Builder's side of the contract is now:
+  // hand the helper the removal and everything the prompt has to say, ask nothing,
+  // and treat a decline as neither a save nor a failure.
+  it('hands the removal to the helper that owns the prompt, and asks nothing itself', async () => {
+    const { deleteBtn } = await openPhaseDeleteControl();
+    await fireEvent.click(deleteBtn);
     await tick();
+
     expect(savePhasesHelper).toHaveBeenCalledOnce();
     expect(savePhasesHelper).toHaveBeenCalledWith({
       expectedRevision: 'phase-revision',
       mutation: { kind: 'remove', phaseId: 'remove-me' },
-      phases: []
+      // The surviving rows still travel, because the Builder still holds a whole
+      // layer; the helper is what declines to republish them (FR-039a).
+      phases: [],
+      removedName: 'Remove me',
+      originatingElement: deleteBtn
     });
+    // Asking here as well would prompt twice for one removal.
+    expect(useConfirm).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the operator declines, because nothing was sent', async () => {
+    vi.mocked(savePhasesHelper).mockResolvedValueOnce({
+      status: 'rejected' as const,
+      reason: 'declined'
+    });
+    const { container, deleteBtn } = await openPhaseDeleteControl();
+    await fireEvent.click(deleteBtn);
+    await tick();
+    await tick();
+
+    // A decline is not a rejection to report: the operator closed a dialog.
+    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
+    // And the row is still there, still deletable — the pending flag cleared.
+    expect(container.querySelector('[data-testid="phases-list-item-remove-me"]')).not.toBeNull();
+    expect(
+      (container.querySelector('[data-testid="phases-remove"]') as HTMLButtonElement).disabled
+    ).toBe(false);
   });
 
   it('duplicates a Phase into a version-1 draft', async () => {
@@ -1269,33 +1300,11 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     vi.mocked(useConfirm).mockClear();
   });
 
-  it('names the Pipeline in the confirmation prompt', async () => {
-    vi.mocked(useConfirm).mockResolvedValueOnce(false);
-    const { deleteBtn } = await openDeleteControl();
-
-    await fireEvent.click(deleteBtn);
-    await tick();
-
-    expect(useConfirm).toHaveBeenCalledWith(
-      'catalog.remove-pipeline',
-      expect.objectContaining({
-        context: { pipelineName: 'Custom Pipeline', pipelineId: 'custom' }
-      })
-    );
-  });
-
-  it('does not remove a persisted Pipeline when confirmation is cancelled', async () => {
-    vi.mocked(useConfirm).mockResolvedValueOnce(false);
-    const { deleteBtn } = await openDeleteControl();
-
-    await fireEvent.click(deleteBtn);
-    await tick();
-
-    expect(savePipelinesHelper).not.toHaveBeenCalled();
-  });
-
-  it('submits one remove mutation after confirmation', async () => {
-    vi.mocked(useConfirm).mockResolvedValueOnce(true);
+  // Feature 100 (T509b, FR-049) — the prompt is raised by `deactivateDefinition`,
+  // which is the only function that can post the command it authorises. What the
+  // Pipelines tab still owns is everything the prompt needs in order to name the
+  // right row and return focus to the control that opened it.
+  it('submits one removal, addressed by id, carrying what the prompt must say', async () => {
     const { deleteBtn } = await openDeleteControl();
 
     await fireEvent.click(deleteBtn);
@@ -1305,20 +1314,37 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     expect(vi.mocked(savePipelinesHelper).mock.calls[0][0]).toEqual({
       expectedRevision: 'pipeline-revision',
       mutation: { kind: 'remove', pipelineId: 'custom' },
-      pipelines: []
+      pipelines: [],
+      removedName: 'Custom Pipeline',
+      originatingElement: deleteBtn
     });
   });
 
-  it('hands the triggering control to the dialog so focus can return to it', async () => {
-    vi.mocked(useConfirm).mockResolvedValueOnce(false);
+  it('asks nothing itself, so one removal cannot prompt twice', async () => {
     const { deleteBtn } = await openDeleteControl();
 
     await fireEvent.click(deleteBtn);
     await tick();
 
-    expect(useConfirm).toHaveBeenCalledWith(
-      'catalog.remove-pipeline',
-      expect.objectContaining({ originatingElement: deleteBtn })
-    );
+    expect(useConfirm).not.toHaveBeenCalled();
+  });
+
+  it('settles without an error when the operator declines', async () => {
+    vi.mocked(savePipelinesHelper).mockResolvedValueOnce({
+      status: 'rejected' as const,
+      reason: 'declined'
+    });
+    const { container, deleteBtn } = await openDeleteControl();
+
+    await fireEvent.click(deleteBtn);
+    await tick();
+    await tick();
+
+    // Nothing was sent and nothing failed, so there is no rejection to report —
+    // and the row stays selected with its delete control live.
+    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
+    expect(
+      (container.querySelector('[data-testid="pipelines-remove"]') as HTMLButtonElement).disabled
+    ).toBe(false);
   });
 });

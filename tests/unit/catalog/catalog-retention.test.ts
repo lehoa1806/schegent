@@ -14,10 +14,18 @@
 // The exemptions are asserted twice: on `planRetention` directly, where a small
 // bound makes the algebra readable, and through the real store at its shipped bound
 // of 50, where the wiring between the plan and the prune is what is under test.
+//
+// Feature 100 (T514) — two things moved. The draft exemption is no longer reported as
+// `active`: FR-021 makes a pending draft a real exemption with its own name, so the
+// reported reason is now `draft`, and a test that accepted either label would not
+// notice the pointer being confused with the active one. And retention now runs on
+// the SAVE path as well as the publish path, which is what the store-level cases
+// below exercise — 51 draft saves prune, with no publication anywhere in them.
 
 import { describe, expect, it } from 'vitest';
 
 import { planRetention, withVersionsRemoved } from '../../../src/catalog';
+import { draftTokenOf, type ExpectedDraftVersion } from '../../../src/contracts/catalog-lifecycle';
 import type { CatalogKind, CatalogManifestEntry } from '../../../src/contracts/catalog-store';
 import { CATALOG_RETENTION_BOUND } from '../../../src/contracts/catalog-store';
 import {
@@ -59,10 +67,29 @@ function references(...versionIds: readonly string[]) {
   return async (versionId: string) => set.has(versionId);
 }
 
-async function revisionOf(test: TestStore, kind: CatalogKind): Promise<string> {
+/** The draft token the store currently holds for one definition (FR-012). */
+async function tokenOf(
+  test: TestStore,
+  kind: CatalogKind,
+  id: string
+): Promise<ExpectedDraftVersion> {
   const result = await test.store.read();
   if (result.outcome !== 'read') throw new Error(`store unreadable: ${result.fault.fault}`);
-  return result.snapshot.revisions[kind];
+  const found = result.snapshot.definitions.find(
+    (definition) => definition.kind === kind && definition.id === id
+  );
+  return draftTokenOf(found?.draftVersionId ?? null);
+}
+
+/** One draft save of `implement`, at whatever draft the store currently holds. */
+async function saveDraft(test: TestStore, body: unknown) {
+  return test.store.applyLifecycleWrite({
+    op: 'save-draft',
+    kind: 'phase',
+    id: 'implement',
+    body,
+    expectedDraftVersion: await tokenOf(test, 'phase', 'implement')
+  });
 }
 
 describe('planRetention: the bound', () => {
@@ -127,14 +154,37 @@ describe('planRetention: exemptions advance past rather than stop', () => {
     expect(plan.retained).toEqual(['v1', 'v2', 'v3', 'v7', 'v8', 'v9', 'v10']);
   });
 
-  it('exempts the draft, which is inert now and meaningful in FR-R3-016', async () => {
+  it('exempts the pending draft under its own name, not the active one', async () => {
+    // FR-021. A draft is work in progress that nothing else holds a copy of, so
+    // pruning it discards an edit the operator never published and cannot get back.
+    // The REASON is asserted, not just the survival: feature 099 exempted this
+    // version already but reported it as `active`, which was invisible while the
+    // pointer was inert and is a lie now that an operator can be shown why a version
+    // is still here.
     const plan = await planRetention(
       entryOf(6, { active: 'v6', draft: 'v1' }),
       referencesNothing,
       5
     );
     expect(plan.remove).toEqual(['v2']);
-    expect(plan.exempt).toEqual([{ versionId: 'v1', why: 'active' }]);
+    expect(plan.exempt).toEqual([{ versionId: 'v1', why: 'draft' }]);
+  });
+
+  it('exempts both pointers when a definition has an active version and a draft', async () => {
+    // The state FR-013 calls `active-with-draft`, at a bound that forces a choice:
+    // seven versions, bound five, so two must go and the two pointers are not
+    // candidates. An implementation that checked only one pointer would prune the
+    // other and report success.
+    const plan = await planRetention(
+      entryOf(7, { active: 'v1', draft: 'v2' }),
+      referencesNothing,
+      5
+    );
+    expect(plan.remove).toEqual(['v3', 'v4']);
+    expect(plan.exempt).toEqual([
+      { versionId: 'v1', why: 'active' },
+      { versionId: 'v2', why: 'draft' }
+    ]);
   });
 
   it('removes nothing when every candidate is exempt, and says why', async () => {
@@ -213,13 +263,8 @@ describe('catalog store: retention at the shipped bound', () => {
     });
 
     for (let n = 1; n <= 51; n += 1) {
-      const outcome = await test.store.save({
-        kind: 'phase',
-        id: 'implement',
-        body: { n },
-        expectedRevision: await revisionOf(test, 'phase')
-      });
-      expect(outcome).toMatchObject({ outcome: 'saved' });
+      const outcome = await saveDraft(test, { n });
+      expect(outcome).toMatchObject({ outcome: 'written' });
       if (n === 51) expect(outcome).toMatchObject({ pruned: ['v2'] });
     }
 
@@ -233,29 +278,30 @@ describe('catalog store: retention at the shipped bound', () => {
     const test = createTestStore();
     let lastPruned: readonly string[] = [];
     for (let n = 1; n <= 53; n += 1) {
-      const outcome = await test.store.save({
-        kind: 'phase',
-        id: 'implement',
-        body: { n },
-        expectedRevision: await revisionOf(test, 'phase')
-      });
-      if (outcome.outcome === 'saved') lastPruned = outcome.pruned;
+      const outcome = await saveDraft(test, { n });
+      if (outcome.outcome === 'written') lastPruned = outcome.pruned;
     }
-    // FR-035: pruned on publish and reported, oldest first, one per save once over
-    // the bound.
+    // FR-035, and the clause feature 100 widened: pruned and reported, oldest first,
+    // one per write once over the bound — on a draft save as much as on a publish. An
+    // unbounded run of draft saves is the easiest way to grow a history, so a bound
+    // that only applied at publication would not be a bound at all.
     expect(lastPruned).toEqual(['v3']);
   });
 
   it('keeps the definition resolving after a prune', async () => {
     const test = createTestStore();
     for (let n = 1; n <= 52; n += 1) {
-      await test.store.save({
-        kind: 'phase',
-        id: 'implement',
-        body: { n },
-        expectedRevision: await revisionOf(test, 'phase')
-      });
+      await saveDraft(test, { n });
     }
+    // Published at the end, because "resolving" means an ACTIVE version: 52 draft
+    // saves leave a definition no resolver sees (FR-007), which would make the
+    // assertion below pass for the wrong reason.
+    await test.store.applyLifecycleWrite({
+      op: 'publish',
+      kind: 'phase',
+      id: 'implement',
+      expectedDraftVersion: await tokenOf(test, 'phase', 'implement')
+    });
 
     const result = await test.store.read();
     expect(result.outcome).toBe('read');

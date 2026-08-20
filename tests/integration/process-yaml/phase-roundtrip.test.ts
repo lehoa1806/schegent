@@ -2,10 +2,10 @@
 //
 // QS-37: export a Phase carrying every portable field, import the document into
 // a clean installation, export the same id again — byte-identical. This is the
-// end-to-end statement of SC-003, and the only test that exercises all four
-// commands over one document. It is also what makes the `import` mutation intent
-// observable as a requirement rather than a preference: a `create` renumbers the
-// version to 1, and the second document then differs by one line.
+// end-to-end statement of SC-003, and the only test that exercises the whole
+// exchange over one document. It is also what makes the version's survival
+// observable as a requirement rather than a preference: renumber it to 1 on the
+// way in, and the second document differs by one line.
 //
 // QS-38: nothing links the imported Phase to the file it came from. The document
 // is read exactly once, and the bytes on the harness's "disk" are rewritten after
@@ -15,6 +15,13 @@
 // than a user/workspace pair, so the commit no longer picks a target. Both claims
 // are unchanged: the loop still has to close byte-for-byte, and the imported row
 // still has to carry nothing that points back at the file.
+//
+// Feature 100 (T514) — and the commit no longer declares an intent either. The
+// `import` mutation intent existed to tell the writer not to renumber; the store
+// keeps bodies verbatim (099 FR-010), so there is nothing left to tell. The loop
+// closing is now a property of the store rather than of a flag the caller
+// remembered to set, which is a stronger version of the same claim: a caller
+// cannot get it wrong.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,19 +38,23 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
   })
 }));
 
-import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from '../../../src/contracts/sidebar-ipc';
+import {
+  CMD_EXPORT_PROCESS_YAML,
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_PACKAGE
+} from '../../../src/contracts/sidebar-ipc';
 import type {
   CommandAckMessage,
   ExportProcessYamlCommand,
   ExportProcessYamlResult,
   PreflightProcessYamlCommand,
-  PreflightProcessYamlResult
+  PreflightProcessYamlResult,
+  PublishPackageCommand
 } from '../../../src/contracts/sidebar-ipc';
+import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { handler as exportHandler } from '../../../src/ui/sidebar/commands/cmd-export-process-yaml';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
-import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-phases';
-import { CMD_SAVE_PHASES } from '../../../src/ui/sidebar/messages';
-import type { SavePhasesCommand } from '../../../src/ui/sidebar/messages';
+import { fakeCatalogLifecycle } from '../../fixtures/fake-catalog-lifecycle';
 import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
 
 /** One installation: the Phase catalog it holds. Nothing else persists. */
@@ -200,10 +211,12 @@ async function commit(
         revision: store.revisionOf('phase')
       }),
       catalogStore: store,
+      catalogLifecycle: fakeCatalogLifecycle(store),
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
       queueRemover: { remove: vi.fn() },
+      audit: { append: async () => undefined },
       logger: logger()
     },
     postAck: async (msg: CommandAckMessage) => {
@@ -214,16 +227,24 @@ async function commit(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  const command: SavePhasesCommand = {
-    type: CMD_SAVE_PHASES,
+  // Feature 100 (T514) — one layer holding one definition, rather than the whole
+  // Phase catalog with the new row appended. The loop closes because the body is
+  // stored as sent (099 FR-010): there is no intent to declare, and re-sending the
+  // untouched neighbours is no longer how a single import is expressed.
+  const command: PublishPackageCommand = {
+    type: CMD_PUBLISH_PACKAGE,
     correlationId: 'roundtrip-commit',
     payload: {
-      expectedRevision: plan.computedAgainstRevision,
-      mutation: { kind: 'import', phaseId },
-      phases: [...stored(store), { id: phaseId, ...declared }]
+      layers: [
+        {
+          kind: 'phase',
+          expectedRevision: plan.computedAgainstRevision,
+          definitions: [{ id: phaseId, body: { id: phaseId, ...declared } }]
+        }
+      ]
     }
   };
-  await saveHandler(ctx, command);
+  await publishDefinitionPackage(ctx, command);
   expect(acks[0]?.status, JSON.stringify(acks[0]?.result)).toBe('accepted');
   return acks[0]!;
 }
@@ -261,11 +282,11 @@ describe('Feature 084 QS-37 — export, import, export is byte-identical', () =>
     expect(second).toBe(first);
   });
 
-  it('would not close if the version were renumbered, which is why import is a distinct intent', async () => {
+  it('would not close if the version were renumbered, which is what verbatim storage buys', async () => {
     // The negative control for the assertion above: the same loop with the
     // version reset to 1 produces a document that differs, and differs only
-    // there. If `import` ever collapses back into `create`, the test above
-    // fails and this one explains why.
+    // there. If a write ever normalizes what it was handed, the test above fails
+    // and this one explains what the difference would look like.
     const source = installation([EVERY_PORTABLE_FIELD]);
     const authored = await exportDocument(source, 'round-trip');
     const renumbered = await exportDocument(

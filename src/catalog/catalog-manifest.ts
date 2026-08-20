@@ -112,11 +112,23 @@ function readEntry(value: unknown): CatalogManifestEntry | null {
     if (current <= previous) return null;
   }
 
-  // An id the manifest names but no version backs is not representable: an entry
-  // with versions must name an active one among them.
-  if (activeVersionId !== null && !read.some((version) => version.versionId === activeVersionId)) {
-    return null;
-  }
+  // An id the manifest names but no version backs is not representable: a pointer
+  // must name a version among `versions`. Feature 100 (T498f) holds the draft
+  // pointer to the same rule the active pointer already met — now that both are
+  // live, a draft naming a version that is not there would be a second way to
+  // produce the dangling-record fault, discovered one record read later.
+  const backed = new Set(read.map((version) => version.versionId));
+  if (activeVersionId !== null && !backed.has(activeVersionId)) return null;
+  if (draftVersionId !== null && !backed.has(draftVersionId)) return null;
+
+  // Feature 100 (FR-005): an entry is exactly the assertion that a definition has at
+  // least one pointer. Neither pointer set is the *absence* of a definition, and its
+  // one legal spelling is the absence of an entry — so an entry saying otherwise is
+  // a shape fault rather than a fourth state to interpret. Without this line the
+  // three-literal `DefinitionState` union would have a case it cannot represent, and
+  // `deriveDefinitionState` would have to answer for a manifest that should not
+  // parse.
+  if (draftVersionId === null && activeVersionId === null) return null;
 
   return { kind, id, draftVersionId, activeVersionId, createdAt, updatedAt, versions: read };
 }

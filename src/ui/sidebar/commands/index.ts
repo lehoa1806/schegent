@@ -6,8 +6,10 @@ import {
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_CONTINUE_WORKFLOW,
   CMD_CREATE_QUEUE,
+  CMD_DEACTIVATE_DEFINITION,
   CMD_DELETE_QUEUE,
   CMD_DISABLE_PHASE,
+  CMD_DISCARD_DEFINITION_DRAFT,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_ENABLE_PHASE,
   CMD_EXPORT_PROCESS_YAML,
@@ -26,6 +28,8 @@ import {
   CMD_PAUSE_QUEUE,
   CMD_PING_BACKEND,
   CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_DEFINITION,
+  CMD_PUBLISH_PACKAGE,
   CMD_READ_METRICS,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
@@ -43,12 +47,11 @@ import {
   CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_SAVE_DEFINITION_DRAFT,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_SAVE_MODELS,
-  CMD_SAVE_PHASES,
-  CMD_SAVE_PIPELINES,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_SAVE_WORKFLOWS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SKIP_PHASE,
@@ -103,12 +106,17 @@ import { handler as resumeQueue } from './cmd-resume-queue';
 import { handler as retryActiveRun } from './cmd-retry-active-run';
 import { handler as retryPhaseNow } from './cmd-retry-phase-now';
 import { handler as retryQueueItem } from './cmd-retry-queue-item';
+import {
+  deactivateDefinition,
+  discardDefinitionDraft,
+  publishDefinition,
+  publishDefinitionPackage,
+  restoreDefinitionVersion,
+  saveDefinitionDraft
+} from './cmd-catalog-lifecycle';
 import { handler as saveGeneralSettings } from './cmd-save-general-settings';
 import { handler as saveModels } from './cmd-save-models';
-import { handler as savePhases } from './cmd-save-phases';
-import { handler as savePipelines } from './cmd-save-pipelines';
 import { handler as saveQueueSettings } from './cmd-save-queue-settings';
-import { handler as saveWorkflows } from './cmd-save-workflows';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
@@ -173,12 +181,16 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_RETRY_ACTIVE_RUN, retryActiveRun as CommandHandler],
   [CMD_RETRY_PHASE_NOW, retryPhaseNow as CommandHandler],
   [CMD_RETRY_QUEUE_ITEM, retryQueueItem as CommandHandler],
+  // Feature 100 (T508) — the six lifecycle commands, all six from one module.
+  [CMD_DEACTIVATE_DEFINITION, deactivateDefinition as CommandHandler],
+  [CMD_DISCARD_DEFINITION_DRAFT, discardDefinitionDraft as CommandHandler],
+  [CMD_PUBLISH_DEFINITION, publishDefinition as CommandHandler],
+  [CMD_PUBLISH_PACKAGE, publishDefinitionPackage as CommandHandler],
+  [CMD_RESTORE_DEFINITION_VERSION, restoreDefinitionVersion as CommandHandler],
+  [CMD_SAVE_DEFINITION_DRAFT, saveDefinitionDraft as CommandHandler],
   [CMD_SAVE_GENERAL_SETTINGS, saveGeneralSettings as CommandHandler],
   [CMD_SAVE_MODELS, saveModels as CommandHandler],
-  [CMD_SAVE_PHASES, savePhases as CommandHandler],
-  [CMD_SAVE_PIPELINES, savePipelines as CommandHandler],
   [CMD_SAVE_QUEUE_SETTINGS, saveQueueSettings as CommandHandler],
-  [CMD_SAVE_WORKFLOWS, saveWorkflows as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
