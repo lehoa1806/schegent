@@ -330,8 +330,10 @@ describe('Feature 033 US1 — pause then resume preserves -c continuation (032 i
           // but BEFORE the next loop iteration runs. setImmediate puts
           // the pause on the microtask drain right after the awaited
           // invoke().
-          setImmediate(async () => {
-            await harness.controller.pauseActivePhase();
+          setImmediate(() => {
+            void (async () => {
+              await harness.controller.pauseActivePhase();
+            })();
           });
         }
         return makeCleanOutput();
@@ -422,17 +424,19 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
       () => {
         if (!breakpointInstalled) {
           breakpointInstalled = true;
-          setImmediate(async () => {
-            const run = harness.store.getRun(DEFAULT_QUEUE_ID);
-            if (run !== null) {
-              await harness.store.setRun(DEFAULT_QUEUE_ID, {
-                ...run,
-                phaseBreakpoints: [
-                  ...run.phaseBreakpoints,
-                  { phaseId: 'speckit-clarify', setAt: Date.now(), actor: 'operator' as const }
-                ]
-              });
-            }
+          setImmediate(() => {
+            void (async () => {
+              const run = harness.store.getRun(DEFAULT_QUEUE_ID);
+              if (run !== null) {
+                await harness.store.setRun(DEFAULT_QUEUE_ID, {
+                  ...run,
+                  phaseBreakpoints: [
+                    ...run.phaseBreakpoints,
+                    { phaseId: 'speckit-clarify', setAt: Date.now(), actor: 'operator' as const }
+                  ]
+                });
+              }
+            })();
           });
         }
         return cleanSpecify();
@@ -542,9 +546,11 @@ describe('Feature 033 US3 — operator queue-pause survives phase pause+resume',
       () => {
         if (!pauseInjected) {
           pauseInjected = true;
-          setImmediate(async () => {
-            await harness.controller.pauseActivePhase();
-            await harness.queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'operator-test-pause');
+          setImmediate(() => {
+            void (async () => {
+              await harness.controller.pauseActivePhase();
+              await harness.queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'operator-test-pause');
+            })();
           });
         }
         return makeCleanOutput();

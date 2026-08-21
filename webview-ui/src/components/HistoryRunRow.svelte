@@ -53,7 +53,7 @@
     onOpenDetails
   }: Props = $props();
 
-  const readOnlyAria: 'false' = 'false';
+  const readOnlyAria = 'false' as const;
 
   // A run still going cannot be re-run: there is no recorded plan to repeat,
   // and the one it is executing is the same one. The button stays present so

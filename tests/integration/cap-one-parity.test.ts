@@ -365,9 +365,11 @@ describe('Feature 093 (T034, US2 scenario 2) — every control resolves the sole
         paused = true;
         // Fire after this invocation resolves but before the loop iterates,
         // so the drive loop observes the pause and settles into it.
-        setImmediate(async () => {
-          const result = await harness.controller.pauseActivePhase();
-          expect(result.ok).toBe(true);
+        setImmediate(() => {
+          void (async () => {
+            const result = await harness.controller.pauseActivePhase();
+            expect(result.ok).toBe(true);
+          })();
         });
       }
       return cleanOutput(req.phase);
@@ -432,16 +434,18 @@ describe('Feature 093 (T034, US2 scenario 2) — every control resolves the sole
     harness.script((req) => {
       if (!armed) {
         armed = true;
-        setImmediate(async () => {
-          const run = harness.store.getRun(SOLE_QUEUE);
-          if (run === null) return;
-          const next = (run.pipeline?.phases ?? [])
-            .map((p) => p.id)
-            .find((id) => id !== run.currentPhase);
-          if (next === undefined) return;
-          // No queue argument — `resolveControlTarget` must find the sole Run.
-          const result = await harness.controller.setPhaseBreakpoint(run.id, next);
-          expect(result.ok).toBe(true);
+        setImmediate(() => {
+          void (async () => {
+            const run = harness.store.getRun(SOLE_QUEUE);
+            if (run === null) return;
+            const next = (run.pipeline?.phases ?? [])
+              .map((p) => p.id)
+              .find((id) => id !== run.currentPhase);
+            if (next === undefined) return;
+            // No queue argument — `resolveControlTarget` must find the sole Run.
+            const result = await harness.controller.setPhaseBreakpoint(run.id, next);
+            expect(result.ok).toBe(true);
+          })();
         });
       }
       return cleanOutput(req.phase);

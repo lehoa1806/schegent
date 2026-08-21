@@ -201,7 +201,9 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
   it('rejects setting an unknown default queue id', async () => {
     expect(() => store.setDefaultQueueId('missing')).toThrow(QueueMutationRejected);
     try {
-      store.setDefaultQueueId('missing');
+      // Typed as async, but the rejection this asserts is thrown synchronously
+      // (line above) so no promise is ever created. Discard is explicit.
+      void store.setDefaultQueueId('missing');
     } catch (err) {
       expect(err).toMatchObject({
         reason: 'unknown-queue-id'

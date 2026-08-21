@@ -409,8 +409,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "typecheck:webview": "npm --prefix webview-ui run typecheck",
-    "lint": "eslint --ext .ts src tests",
-    "lint:webview": "npm --prefix webview-ui run lint --if-present",
+    "lint": "node scripts/lint.mjs host",
+    "lint:webview": "node scripts/lint.mjs webview",
     "test": "vitest run && npm --prefix webview-ui run test",
     "test:host": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -425,26 +425,29 @@
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run build:host && npm run package:smoke",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.60.0",
     "@secretlint/node": "^13.0.2",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.28.0",
-    "eslint": "^8.57.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-svelte": "^3.23.0",
+    "globals": "^14.0.0",
     "prettier": "^3.2.0",
+    "svelte": "^5.55.7",
     "ts-morph": "^28.0.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^3.2.4"
   },
   "overrides": {
@@ -457,50 +460,5 @@
   "bugs": {
     "url": "https://github.com/lehoa1806/schegent/issues"
   },
-  "homepage": "https://github.com/lehoa1806/schegent",
-  "eslintConfig": {
-    "root": true,
-    "parser": "@typescript-eslint/parser",
-    "parserOptions": {
-      "ecmaVersion": 2022,
-      "sourceType": "module"
-    },
-    "plugins": [
-      "@typescript-eslint"
-    ],
-    "extends": [
-      "eslint:recommended",
-      "plugin:@typescript-eslint/recommended"
-    ],
-    "ignorePatterns": [
-      "dist/",
-      "node_modules/",
-      "out/",
-      ".specify/",
-      "specs/",
-      "docs/",
-      ".claude/",
-      "webview-ui/",
-      "*.mjs",
-      "*.config.js"
-    ],
-    "rules": {
-      "no-console": "off",
-      "no-empty": [
-        "error",
-        {
-          "allowEmptyCatch": true
-        }
-      ],
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-unused-vars": [
-        "warn",
-        {
-          "argsIgnorePattern": "^_",
-          "varsIgnorePattern": "^_"
-        }
-      ],
-      "@typescript-eslint/no-non-null-assertion": "off"
-    }
-  }
+  "homepage": "https://github.com/lehoa1806/schegent"
 }

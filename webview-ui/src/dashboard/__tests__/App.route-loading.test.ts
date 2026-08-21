@@ -235,7 +235,7 @@ describe('Feature 105 — the loader effect (US5, FR-005)', () => {
       '  function navigate(next: DashboardRoute): void {\n    route = next;\n  }'
     );
     expect(readFileSync(OUTLET_SOURCE_PATH, 'utf8')).toMatch(
-      /\$effect\(\(\) => \{\n    const active = route;/
+      /\$effect\(\(\) => \{\n {4}const active = route;/
     );
   });
 
