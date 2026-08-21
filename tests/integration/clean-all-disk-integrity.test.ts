@@ -116,7 +116,7 @@ describe('Clean All preserves on-disk .schegent/audit.log (Feature 064 T017 / SC
       } as unknown as QueueManager,
       audit,
       lock: {
-        isHeld: vi.fn(() => true),
+        hasPrimacy: vi.fn(async () => true),
         release: vi.fn(async () => undefined)
       } as unknown as WorkspaceLockManager,
       notifier: {
@@ -189,7 +189,7 @@ describe('Clean All preserves on-disk .schegent/audit.log (Feature 064 T017 / SC
       } as unknown as QueueManager,
       audit,
       lock: {
-        isHeld: vi.fn(() => true),
+        hasPrimacy: vi.fn(async () => true),
         release: vi.fn(async () => undefined)
       } as unknown as WorkspaceLockManager,
       notifier: {
