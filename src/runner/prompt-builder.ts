@@ -2,7 +2,14 @@ import type { Phase } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 
-const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on its OWN line: [SCHEGENT_STATUS: CLEAR]. If issues remain, emit a heading "Open questions:" or "Remaining issues:" followed by a Markdown bullet list. Do not decorate the token; do not place it inside a code fence.`;
+// Feature 107 (FR-R3-023) — the position sentence is new here, not new as a
+// rule. `.specify/memory/constitution.md` § Output Formatting & Loop
+// Termination has always required the token to be "the **last non-empty line**
+// of stdout for terminal phases", and the host now enforces it: a token is read
+// as a verdict only from the region at and after the audit block's close marker
+// (threat model T25). Enforcing a requirement the prompt did not state is the
+// same drift this feature exists to close, so the prompt states it.
+const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on its OWN line: [SCHEGENT_STATUS: CLEAR]. Emit it AFTER the audit log block, as the last non-empty line of your output — a token printed before the block, or anywhere else in the stream, is not read as a completion signal. If issues remain, emit a heading "Open questions:" or "Remaining issues:" followed by a Markdown bullet list. Do not decorate the token; do not place it inside a code fence.`;
 
 // Feature 098 (FR-008, FR-019) — `BUILT_IN_INSTRUCTIONS` stood here: ten Spec
 // Kit instruction strings keyed by Phase id, consulted by `taskInstructionFor`

@@ -1,11 +1,24 @@
-// Feature 030 BUG-002 — ClaudeCliRunner completion-marker grace-terminate.
+// Feature 030 BUG-002 — ClaudeCliRunner terminal-result grace-terminate.
 //
-// When `completionMarker` is set and appears in stdout, the runner stops
-// waiting out the long idle timeout: it grace-terminates the process after a
-// short settle window if it has not exited, returning `completedAwaitingExit:
-// true` (NOT `timedOut`, NOT `killed`). A process that exits promptly after the
-// marker is a normal completion. A process with no output and no marker still
-// trips the idle timeout (`timedOut: true`) — the stall backstop is preserved.
+// When the invocation's terminal stream-json line (`{"type":"result"}`) arrives,
+// the runner stops waiting out the long idle timeout: it grace-terminates the
+// process after a short settle window if it has not exited, returning
+// `completedAwaitingExit: true` (NOT `timedOut`, NOT `killed`). A process that
+// exits promptly after its result is a normal completion. A process with no
+// output at all still trips the idle timeout (`timedOut: true`) — the stall
+// backstop is preserved.
+//
+// Feature 107 (FR-023) rewrote this header. It described arming as "when
+// `completionMarker` is set and appears in stdout", the substring mechanism
+// `e2bf9ad` had already replaced, and the file's own first test disproved it:
+// output containing the close marker *inside an assistant message* does not
+// arm — only the separate `result` line does. The 14 `completionMarker`
+// arguments the tests passed went to a field with no reader and are gone.
+//
+// The distinction is the whole point of the boundary. A substring is forgeable
+// by anything the model prints; a `result` envelope is emitted by the CLI
+// harness around the model's content, so content cannot forge it. That is why
+// this feature removed the field instead of region-qualifying it.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
@@ -71,8 +84,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 90 * 60_000
     });
 
     await vi.advanceTimersByTimeAsync(10);
@@ -106,7 +118,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -161,7 +172,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -188,8 +198,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 90 * 60_000, // long idle window — must NOT be what fires
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 90 * 60_000 // long idle window — must NOT be what fires
     });
     await vi.advanceTimersByTimeAsync(6000); // pass the history-replay window and deliver stdout
     await vi.advanceTimersByTimeAsync(30_000); // past the short settle window
@@ -214,8 +223,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 90 * 60_000
     });
     await vi.advanceTimersByTimeAsync(6000);
     const raw = await p;
@@ -261,7 +269,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -303,8 +310,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 90 * 60_000
     });
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -350,7 +356,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -382,8 +387,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 90 * 60_000
     });
 
     await vi.advanceTimersByTimeAsync(4_000);
@@ -415,7 +419,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -452,7 +455,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -491,7 +493,6 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const p = runner.invoke({
       ...baseReq,
       timeoutMs: 90 * 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER,
       sessionReuse: true,
       resumeSessionId: 'owned-session'
     });
@@ -512,8 +513,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     const runner = new ClaudeCliRunner(spawnFn);
     const p = runner.invoke({
       ...baseReq,
-      timeoutMs: 60_000,
-      completionMarker: AUDIT_LOG_CLOSE_MARKER
+      timeoutMs: 60_000
     });
     await vi.advanceTimersByTimeAsync(60_000 + 10);
     const raw = await p;

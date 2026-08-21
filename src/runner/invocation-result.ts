@@ -139,18 +139,22 @@ export interface InvocationRequest {
    * values do not trigger the `--resume` append.
    */
   resumeSessionId?: string;
-  /**
-   * Feature 030 BUG-002 — optional completion sentinel. When set, the
-   * runner watches the streamed stdout for this substring; once seen it
-   * stops waiting out the long idle timeout and instead grace-terminates
-   * the process after a short settle window if it has not exited on its
-   * own. A CLI that emits its terminal result but fails to exit therefore
-   * no longer hangs the run until the idle-timeout fires. The phase layer
-   * supplies the SCHEGENT AUDIT LOG close marker (`=== END AUDIT LOG ===`).
-   * Omitted by non-phase callers (contract harnesses), which keep the
-   * exit-only completion path unchanged.
+  /*
+   * Feature 107 (FR-020) — `completionMarker?: string` stood here.
+   *
+   * Feature 030 BUG-002 introduced it with a real reader: the runner scanned
+   * accumulated stdout for the substring and armed grace-termination on a
+   * match. `e2bf9ad` (2026-08-01) replaced that reader with an envelope check
+   * on the stream-json `{"type":"result"}` line and did not remove the field,
+   * so from then on the phase layer passed a value nothing read.
+   *
+   * The field is gone rather than pinned inert because it had no reader at all;
+   * the inert-pin idiom is for a field that is live at exactly one site. The
+   * replacement boundary is stronger than a substring: a `result` envelope comes
+   * from the CLI harness, so content inside a message cannot forge it, whereas
+   * a close marker in a quoted diff could. `no-content-driven-process-control`
+   * is the gate that keeps the substring reader from returning.
    */
-  completionMarker?: string;
   /**
    * Effective fatal-signature list (code-resident floor merged with the
    * operator-additive setting) for THIS invocation, so the runner can scan
@@ -180,10 +184,12 @@ export interface RawInvocationOutput {
   killed: boolean;
   timedOut: boolean;
   /**
-   * Feature 030 BUG-002 — `true` iff the runner observed the request's
-   * `completionMarker` in stdout and then grace-terminated the process
-   * because it had produced its terminal result but did not exit within
-   * the settle window. Distinct from `timedOut` (a genuine no-output idle
+   * Feature 030 BUG-002 — `true` iff the runner observed the invocation's
+   * terminal `{"type":"result"}` stream-json line and then grace-terminated the
+   * process because it had produced its terminal result but did not exit within
+   * the settle window. (Until `e2bf9ad` the trigger was a `completionMarker`
+   * substring in stdout; Feature 107 removed the residual field.)
+   * Distinct from `timedOut` (a genuine no-output idle
    * stall): a `completedAwaitingExit` invocation carries a complete result
    * in `stdout` and is classified by its parsed outcome, not as a timeout
    * failure. `killed` stays `false` on this path so the controller does

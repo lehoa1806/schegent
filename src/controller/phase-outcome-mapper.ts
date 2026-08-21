@@ -42,7 +42,11 @@ export function failClosedOnTruncatedOutput(
   truncated: boolean
 ): InvocationResult {
   if (!truncated) return result;
-  const existingWarnings = result.kind === 'malformed' ? result.warnings : [];
+  // Feature 107 (FR-032) — read `warnings` from whichever variant carries it.
+  // This read was `kind === 'malformed' ? ... : []`, which was exhaustive when
+  // only that variant had the field; it now silently discards the constitution
+  // warnings on every other path, including the out-of-region token report.
+  const existingWarnings = result.kind === 'rate_limited' ? [] : result.warnings ?? [];
   if (existingWarnings.includes(OUTPUT_TRUNCATED_WARNING)) return result;
   return {
     kind: 'malformed',

@@ -124,11 +124,6 @@
           "type": "string"
         },
         {
-          "name": "completionMarker",
-          "optional": true,
-          "type": "string"
-        },
-        {
           "name": "effectiveFatalSignatures",
           "optional": true,
           "type": "ReadonlyArray<EffectiveSignature>"

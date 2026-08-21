@@ -20,8 +20,14 @@ import type {
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
 
+// Feature 107 (T623) — the token trails the audit block, as it always should
+// have. `.specify/memory/constitution.md` § Output Formatting & Loop
+// Termination has required the token to be "the **last non-empty line** of
+// stdout for terminal phases" since the contract was written; this fixture put
+// it first, which no compliant run ever emits. The host did not enforce the
+// rule until the trailing region landed, so the fixture passed anyway. Moving
+// it corrects the fixture rather than accommodating a behavior change.
 const cleanStdout = [
-  '[SCHEGENT_STATUS: CLEAR]',
   '=== SCHEGENT AUDIT LOG ===',
   'phase: speckit-specify',
   'files_created: ["specs/001-mock/spec.md"]',
@@ -31,7 +37,8 @@ const cleanStdout = [
   'network_calls: ["none"]',
   'ruleset_switches: ["none"]',
   'notes: ok',
-  '=== END AUDIT LOG ==='
+  '=== END AUDIT LOG ===',
+  '[SCHEGENT_STATUS: CLEAR]'
 ].join('\n');
 
 type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };
@@ -325,9 +332,15 @@ describe('PhaseRunner.run', () => {
 
       const output = await runner.run({ ...baseInputs, phase: 'speckit-clarify' });
 
+      // Feature 107 (T623, FR-032) — `[constitution] missing audit log` now
+      // survives the truncation rewrite. It was always constructed; before this
+      // feature `failClosedOnTruncatedOutput` read `warnings` only off the
+      // `malformed` variant, so a warning built on any other path was dropped
+      // here and this assertion pinned the loss. The truncation marker stays
+      // last, because that is the classification the outcome is derived from.
       expect(output.result).toMatchObject({
         kind: 'malformed',
-        warnings: ['output-truncated-unclassifiable']
+        warnings: ['[constitution] missing audit log', 'output-truncated-unclassifiable']
       });
       expect(output.outcome).toBe('transient_error');
       expect(output.terminationReason).toBe('error');
@@ -840,6 +853,9 @@ describe('PhaseRunner.run', () => {
   });
 
   it('truncates very long stdout in summary', async () => {
+    // The head token is deliberate: it is out of region and must not be read as a
+    // verdict. `cleanStdout` supplies the in-region one, so the assertion under
+    // test (summary truncation) is unaffected either way.
     const huge = 'x'.repeat(10_000) + '\n[SCHEGENT_STATUS: CLEAR]\n' + cleanStdout;
     cliRunner = makeFakeRunner(async () => makeRawOutput({ stdout: huge }));
     runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
@@ -971,7 +987,6 @@ describe('PhaseRunner.run', () => {
 
     const cleanStdoutWithMetric = (metricLine: string) =>
       [
-        '[SCHEGENT_STATUS: CLEAR]',
         '=== SCHEGENT AUDIT LOG ===',
         'phase: security-audit',
         'files_created: []',
@@ -982,7 +997,8 @@ describe('PhaseRunner.run', () => {
         'ruleset_switches: ["none"]',
         'notes: ok',
         metricLine,
-        '=== END AUDIT LOG ==='
+        '=== END AUDIT LOG ===',
+        '[SCHEGENT_STATUS: CLEAR]'
       ].join('\n');
 
     it('emits exactly one phase.retry_evaluated event with expression+metrics+decision (FR-017)', async () => {
@@ -1071,7 +1087,6 @@ describe('PhaseRunner.run', () => {
 
     it('records missingKeys via the payload when an identifier is unresolved (FR-012)', async () => {
       const stdoutNoMetric = [
-        '[SCHEGENT_STATUS: CLEAR]',
         '=== SCHEGENT AUDIT LOG ===',
         'phase: security-audit',
         'files_created: []',
@@ -1081,7 +1096,8 @@ describe('PhaseRunner.run', () => {
         'network_calls: ["none"]',
         'ruleset_switches: ["none"]',
         'notes: ok',
-        '=== END AUDIT LOG ==='
+        '=== END AUDIT LOG ===',
+        '[SCHEGENT_STATUS: CLEAR]'
       ].join('\n');
       cliRunner = makeFakeRunner(async () => makeRawOutput({ stdout: stdoutNoMetric }));
       runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());

@@ -23,15 +23,24 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 
 const SIGKILL_DELAY_MS = 2_000;
-// Feature 030 BUG-002 — after the request's `completionMarker` appears in
-// stdout, the runner waits at most this long for the process to exit on its
-// own before grace-terminating it. Short enough that a lingering process does
-// not stall the queue; long enough for a well-behaved CLI to flush and exit
-// normally. Distinct from the idle/stall window (`timeoutMs`).
+// Feature 030 BUG-002 — after the invocation's terminal stream-json result line
+// (`{"type":"result"}`) appears in stdout, the runner waits at most this long
+// for the process to exit on its own before grace-terminating it. Short enough
+// that a lingering process does not stall the queue; long enough for a
+// well-behaved CLI to flush and exit normally. Distinct from the idle/stall
+// window (`timeoutMs`).
+//
+// Feature 107 (FR-023) corrected this comment. It described the arming trigger
+// as the request's `completionMarker` substring, which `e2bf9ad` had already
+// replaced with the envelope check below — the header of
+// `claude-cli-completion.test.ts` documented the same removed mechanism. The
+// distinction is load-bearing, not cosmetic: a substring can be forged by
+// content the model prints, a `result` envelope is emitted by the CLI harness
+// and cannot be.
 //
 // BUG-003 (FR-026) raised this from 5 s. The bound it is derived from is a
-// live turn's time-to-first-token, not a flush duration: whenever the marker
-// arms in error, this window is all that stands between a healthy streaming
+// live turn's time-to-first-token, not a flush duration: whenever arming fires
+// in error, this window is all that stands between a healthy streaming
 // process and a SIGTERM, so it must exceed the longest ordinary pause between
 // stream-json events. The cost of the larger value is paid only by a process
 // that genuinely finished and will not exit — it lingers 15 s instead of 5 s
