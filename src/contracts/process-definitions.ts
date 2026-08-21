@@ -11,6 +11,43 @@ import type { BackendRunnerKind } from '../runner/backend-runner-factory';
  */
 export const PHASE_ID_MAX_LEN = 64;
 
+/**
+ * How long a Phase `retryCondition` expression may be (feature 111, FR-001).
+ *
+ * 512 characters. The derivation, not a round number picked for looking like one:
+ * the longest expression the product ships is 77 characters
+ * (`examples/speckit-new-feature.pipeline.yaml`), and the longest identifier the
+ * grammar admits is 24. An eight-clause condition — already past what an operator
+ * writes by hand — is eight identifiers, seven operators, and the parentheses to
+ * group them: 8 x 24 + 7 x 4 + 16 = 236, and doubling that for the operator who
+ * writes a longer one lands above 256 (472). So 256 is too tight to be obviously
+ * safe and 1024 buys nothing a bounded evaluator needs. 512 also sits between the
+ * skill bound (256) and the description bound (1024) in both modules that declare
+ * this family — `config/process-definition-validator.ts` and
+ * `ui/sidebar/phase-catalog-projection.ts` — and equals the latter's `MESSAGE_MAX`.
+ *
+ * What it replaces on the projection path is the number worth noticing:
+ * `retryCondition` was truncated there at `INSTRUCTION_MAX`, 8192. This is a 16x
+ * tightening of the one sink that already bounded the field, and the first bound of
+ * any kind on the three that did not.
+ *
+ * The bound is a **character count on the source string** — every check reads
+ * `source.length` — not a byte count. A multi-byte identifier costs the same as an
+ * ASCII one, which is the correct posture for a grammar whose cost is per token.
+ *
+ * Declared here rather than beside its four siblings in
+ * `config/process-definition-validator.ts` for two independent reasons. The webview
+ * reads bounds from `contracts/`, as `PHASE_ID_MAX_LEN` above records. And the
+ * module that consumes this one — `lib/retry-condition.ts` — imports nothing at
+ * all: it is byte-mirrored into `webview-ui/src/lib/`, and
+ * `tests/lint/retry-condition-stays-inert.test.ts` pins its importer list at
+ * exactly three. So the evaluator takes the bound as an argument and the contract
+ * owns the number, which is what the FR-037 law asks for anyway: declare a bound
+ * once, in the contract that declares the field. T23 in
+ * `docs/security/threat-model.md` prescribes the same placement in as many words.
+ */
+export const PHASE_RETRY_CONDITION_MAX_LEN = 512;
+
 export const PHASE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 

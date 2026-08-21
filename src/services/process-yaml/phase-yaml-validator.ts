@@ -20,13 +20,19 @@
 //     by the single `SPEC_KEY_ORDER` edit that property describes; the two that
 //     remain refused are host-resolved state, not authored fields, which is why
 //     they are named here rather than merely omitted.
-//   * Every length, pattern and range is imported from the catalog validator,
-//     so the format cannot drift from the values the catalog already accepts
-//     (FR-008).
+//   * Every length, pattern and range is imported rather than restated, so the
+//     format cannot drift from the values the catalog already accepts (FR-008).
+//     Four of the five lengths come from the catalog validator. The fifth,
+//     `PHASE_RETRY_CONDITION_MAX_LEN` (feature 111), comes from
+//     `contracts/process-definitions` instead, for the reason declared there: the
+//     module that consumes it imports nothing, so the contract owns the number.
+//     It also does not travel through the `RESOURCE_ID_MAX_LEN` map, which is
+//     keyed by resource kind — this is a field on one kind, not a kind.
 //
 // What this module deliberately does NOT do: parse `retryCondition`. It is
 // carried as inert text in both directions (FR-012); the DSL is evaluated by
-// the existing save path at commit time, unchanged.
+// the existing save path at commit time, unchanged. Feature 111 added a length
+// check here, which does not change that: a length is not a parse.
 //
 // Errors are values. Nothing here throws.
 
@@ -42,6 +48,7 @@ import {
 import {
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
+  PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   type PhaseDefinitionEffort,
   type PhaseEvidencePolicy,
@@ -442,6 +449,22 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     if (retryNode.value.trim().length === 0) {
       defects.push(
         defect('retryCondition', 'non-empty-required', 'Phase retryCondition must be non-empty')
+      );
+    } else if (retryNode.value.length > PHASE_RETRY_CONDITION_MAX_LEN) {
+      // A length is not a parse: this stays a closed-format length check like the
+      // four above it, and the DSL remains inert on this path (feature 111, FR-008).
+      //
+      // The wording, unlike the shape, is deliberately not the siblings'. FR-012
+      // asks every route to name the actual length beside the limit, and this is
+      // the only one of the five bounded fields whose refusal an operator can meet
+      // on three routes; the same sentence is emitted by the catalog resolver and
+      // by `lib/retry-condition.ts`, so meeting it twice reads as once.
+      defects.push(
+        defect(
+          'retryCondition',
+          'invalid-length',
+          `retryCondition is ${retryNode.value.length} characters; the maximum is ${PHASE_RETRY_CONDITION_MAX_LEN}`
+        )
       );
     } else {
       // Carried verbatim. Never parsed, normalized, or rewritten here (FR-012).

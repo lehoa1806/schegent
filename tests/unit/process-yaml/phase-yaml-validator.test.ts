@@ -12,6 +12,7 @@
 // FR-001, FR-002, FR-005, FR-006, FR-008, FR-009, FR-026, QS-11, QS-19-22.
 
 import { describe, it, expect } from 'vitest';
+import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import {
   DEFECT_FIELD_MAX,
@@ -311,6 +312,43 @@ describe('phase-yaml-validator — portable behavior fields (FR-008)', () => {
     expect(found).toContainEqual(
       expect.objectContaining({ field: 'retryCondition', code: 'non-empty-required' })
     );
+  });
+
+  // Feature 111 (T691) — the length bound. It is a length check on an inert
+  // string, so it does not make this module a second parse site: the case above
+  // ('carries retryCondition as text without judging the expression') still holds,
+  // and is what keeps these two assertions from being the same assertion.
+
+  it('accepts a retryCondition of exactly the bound', () => {
+    const atBound = `a > 0 or ${'b'.repeat(PHASE_RETRY_CONDITION_MAX_LEN - 13)} > 0`;
+    expect(atBound).toHaveLength(PHASE_RETRY_CONDITION_MAX_LEN);
+    const document = accepted(doc({ spec: ['instruction: i', `retryCondition: ${atBound}`] }));
+    expect(document.spec.retryCondition).toBe(atBound);
+  });
+
+  it('refuses one character past the bound, as a length', () => {
+    const over = `a > 0 or ${'b'.repeat(PHASE_RETRY_CONDITION_MAX_LEN - 12)} > 0`;
+    expect(over).toHaveLength(PHASE_RETRY_CONDITION_MAX_LEN + 1);
+    const found = defects(doc({ spec: ['instruction: i', `retryCondition: ${over}`] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({ field: 'retryCondition', code: 'invalid-length' })
+    );
+    // The same sentence the catalog resolver and the runner emit, asserted whole
+    // (FR-012): both numbers, and the identical wording on every route.
+    expect(found.find((d) => d.field === 'retryCondition')?.message).toBe(
+      `retryCondition is ${over.length} characters; the maximum is 512`
+    );
+  });
+
+  it('refuses an over-long condition on length even when it is also unparseable', () => {
+    // The import route never parses, so an over-long garbage string can only ever
+    // come back as a length — pinning that this module did not quietly gain an
+    // expression check alongside the length one.
+    const found = defects(
+      doc({ spec: ['instruction: i', `retryCondition: ${'('.repeat(600)}`] })
+    );
+    const codes = found.filter((d) => d.field === 'retryCondition').map((d) => d.code);
+    expect(codes).toEqual(['invalid-length']);
   });
 });
 
