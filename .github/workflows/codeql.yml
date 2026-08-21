@@ -1,7 +1,7 @@
 name: CodeQL
 
 # Static analysis for security weaknesses in JS/TS using GitHub's
-# CodeQL engine. Runs on PRs against `main`, on pushes to `main`, and
+# CodeQL engine. Runs on PRs against `develop`, on pushes to `develop`, and
 # on a weekly schedule so an unmaintained tree still gets a periodic
 # sweep. Findings surface in the repository's Security tab; the job
 # does not fail the build by default — operators triage in a security
@@ -9,9 +9,9 @@ name: CodeQL
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
   pull_request:
-    branches: [main]
+    branches: [develop]
   schedule:
     # Tuesdays 04:00 UTC — separated from the dependency audit
     # (Mondays 03:00 UTC) so the two scans don't compete for runner
